@@ -9,7 +9,7 @@ import {
 import { proofAuthority } from './ctfProofOperationAuthority.ts'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   subtractProofs,
   sumProofs,
   takeProofsForLock,
@@ -321,7 +321,7 @@ function probeParent(
   if (inputs.length > limits.maxInputs) {
     return { kind: 'rejected', reason: 'input limit', selectedInputCount: inputs.length }
   }
-  const inputFee = computeInputFeeSatsForProofs(inputs, { [keyset.id]: keyset.inputFeePpk })
+  const inputFee = computeInputFeeSubunitsForProofs(inputs, { [keyset.id]: keyset.inputFeePpk })
   const change = checkedSubtract(sumProofs(inputs), target + inputFee, 'parent change')
   const outputs = parentOutputs(kind, children, keyset, change)
   if (outputs.length > limits.maxOutputs) return { kind: 'rejected', reason: 'output limit' }

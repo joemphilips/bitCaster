@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,8 +9,16 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
+import {
+  bindRangePreparationCapability,
+  encodeCanonicalRangePreparation,
+  insertRangePreparation,
+  linkRangePreparationSource,
+  transitionRangePreparation,
+} from '../src/ctfRangeOrderJournalSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
+import { createDaemonCounterSource } from '../src/walletOps.ts'
 import {
   openDaemonStateSqlite,
   subscribeToDaemonWalletHoldingsCommits,
@@ -34,7 +43,11 @@ import {
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
+  readExactBoundCounter,
   readState,
+  recordDiscoveredOrder,
+  recordOrderStatus,
+  recordSubmittedOrder,
   reserveDaemonKeysetCounter,
   updateState,
   writeState,
@@ -115,7 +128,7 @@ test('target-v1 state round-trips through retained typed SQLite rows and artifac
         amountSubunits: 100,
       },
       baseAsset: 'sat',
-      divisibility: 10_000,
+      divisibility: 1_000,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:01.000Z',
     }
@@ -262,6 +275,245 @@ test('monitoring observers ignore lease commits and receive holdings commits', a
   })
 })
 
+test('order writes preserve range custody rows and do not notify wallet holdings', async () => {
+  await withProfile(async (home) => {
+    const sourceEngineOrderId = '44444444-4444-4444-8444-444444444444'
+    let notifications = 0
+    const unsubscribe = subscribeToDaemonWalletHoldingsCommits(home, () => {
+      notifications += 1
+    })
+    try {
+      const fresh = await recordSubmittedOrder(
+        'condition-1-YES',
+        'fresh-client-order',
+        {
+          orderId: 'fresh-engine-order',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        },
+        null,
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(fresh.orderId, 'fresh-engine-order')
+      assert.equal((await readState())?.orders['fresh-engine-order']?.status, 'submitted')
+      assert.equal(notifications, 0)
+
+      const sourceProof = proof('range-source-proof', 1)
+      const state = walletStateWithProofs([sourceProof])
+      state.orders[fresh.orderId] = fresh
+      state.proofOperations['range-source-operation'] = rangeSourceOperation(sourceProof)
+      await writeState(state)
+      const mutation = await claimMutation(home, 'order-write-preservation')
+      await reserveDaemonKeysetCounter(COUNTER_KEYSET_ID, 4, mutation, COUNTER_BINDING)
+
+      const database = await openDaemonStateSqlite(home)
+      try {
+        insertRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          sourceOperationId: 'range-source-operation',
+          authorizationId: 'range-authorization-source',
+          clientOrderId: 'source-client-order',
+          orderRouteId: 'condition-1-YES',
+          normalizedMint: 'http://localhost:8086',
+          conditionId: 'condition-1',
+          unit: 'msat',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          priceSubunits: 500,
+          amountSubunits: 1_000,
+          minimumFillAmountSubunits: 1_000,
+          consolidateProofs: false,
+          divisibility: 1_000,
+          authorizationExpiresAtUnixSeconds: 2_000_000_000,
+          preparationBytes: encodeCanonicalRangePreparation({
+            rangeOperationId: 'range-operation-source',
+            authorizationId: 'range-authorization-source',
+          }),
+          feeConsentBytes: null,
+          createdAtMs: 1,
+        })
+        linkRangePreparationSource(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          sourceOperationId: 'range-source-operation',
+          reservationId: 'range-source-reservation',
+        })
+        transitionRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          expectedRevision: 0,
+          from: 'prepared',
+          to: 'capability-requested',
+          updatedAtMs: 2,
+        })
+        bindRangePreparationCapability(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          expectedRevision: 1,
+          updatedAtMs: 3,
+          capability: {
+            artifactId: '11111111-1111-4111-8111-111111111111',
+            bindingDigest: '22'.repeat(32),
+            artifactDigest: '33'.repeat(32),
+            orderId: sourceEngineOrderId,
+          },
+        })
+        const removedMetadata = database
+          .prepare('DELETE FROM target_state_metadata WHERE scope_id = ?')
+          .run(mutation.fence.scopeId)
+        assert.equal(removedMetadata.changes, 1)
+        assert.equal(
+          database
+            .prepare('SELECT 1 FROM target_state_metadata WHERE scope_id = ?')
+            .get(mutation.fence.scopeId),
+          undefined,
+        )
+      } finally {
+        database.close()
+      }
+
+      const before = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
+      const notificationsBeforeOrders = notifications
+      const submitted = await recordSubmittedOrder(
+        'condition-1-YES',
+        'source-client-order',
+        {
+          orderId: sourceEngineOrderId,
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        },
+        null,
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(submitted.orderId, sourceEngineOrderId)
+      const submittedRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        submitted.orderId,
+      )
+      assert.equal(submittedRow.scopeId, mutation.fence.scopeId)
+      assert.equal(submittedRow.revision, 0)
+      assert.equal(submittedRow.createdAtMs, Date.parse(submitted.createdAt))
+      assert.equal(submittedRow.updatedAtMs, Date.parse(submitted.updatedAt))
+      const metadataAfterSubmitted = await openDaemonStateSqlite(home)
+      try {
+        assert.equal(
+          (
+            metadataAfterSubmitted
+              .prepare('SELECT schema_version FROM target_state_metadata WHERE scope_id = ?')
+              .get(mutation.fence.scopeId) as { schema_version: number }
+          ).schema_version,
+          1,
+        )
+      } finally {
+        metadataAfterSubmitted.close()
+      }
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const discovered = await recordDiscoveredOrder(
+        'condition-1-YES',
+        'source-client-order',
+        { orderId: sourceEngineOrderId, status: 'filled' },
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(discovered.status, 'Filled')
+      const discoveredRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        discovered.orderId,
+      )
+      assert.equal(discoveredRow.scopeId, mutation.fence.scopeId)
+      assert.equal(discoveredRow.revision, submittedRow.revision + 1)
+      assert.equal(discoveredRow.createdAtMs, submittedRow.createdAtMs)
+      assert.ok(discoveredRow.updatedAtMs >= discoveredRow.createdAtMs)
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const cancelled = await recordOrderStatus('condition-1-YES', sourceEngineOrderId, {
+        orderId: sourceEngineOrderId,
+        status: 'cancelled',
+      })
+      assert.ok(cancelled)
+      assert.equal(cancelled.status, 'cancelled')
+      const cancelledRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        cancelled.orderId,
+      )
+      assert.equal(cancelledRow.scopeId, mutation.fence.scopeId)
+      assert.equal(cancelledRow.revision, discoveredRow.revision + 1)
+      assert.equal(cancelledRow.createdAtMs, submittedRow.createdAtMs)
+      assert.ok(cancelledRow.updatedAtMs >= discoveredRow.updatedAtMs)
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const concurrent = await Promise.all([
+        recordOrderStatus('condition-1-YES', 'concurrent-engine-a', {
+          orderId: 'concurrent-engine-a',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        }),
+        recordOrderStatus('condition-1-YES', 'concurrent-engine-b', {
+          orderId: 'concurrent-engine-b',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        }),
+      ])
+      assert.deepEqual(concurrent, [null, null])
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const rollbackBefore = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
+      await assert.rejects(
+        () =>
+          withDaemonStateSqliteTransaction(home, (rollbackDatabase) => {
+            rollbackDatabase
+              .prepare(
+                `UPDATE daemon_orders SET status = 'rollback-status'
+                 WHERE scope_id = ? AND order_id = ?`,
+              )
+              .run(mutation.fence.scopeId, sourceEngineOrderId)
+            throw new Error('order write rollback')
+          }),
+        /order write rollback/,
+      )
+      assert.deepEqual(
+        await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId),
+        rollbackBefore,
+      )
+      assert.equal((await readState())?.orders[sourceEngineOrderId]?.status, 'cancelled')
+      assert.equal(notifications, notificationsBeforeOrders)
+
+      const finalDatabase = await openDaemonStateSqlite(home)
+      try {
+        const foreignKeys = finalDatabase.prepare('PRAGMA foreign_key_check').all() as unknown[]
+        assert.deepEqual(foreignKeys, [])
+      } finally {
+        finalDatabase.close()
+      }
+    } finally {
+      unsubscribe()
+    }
+  })
+})
+
 test('keyset counter rows reserve adjacent ranges and advance monotonically', async () => {
   await withProfile(async (home) => {
     const mutation = await claimMutation(home, 'counter-ranges')
@@ -358,6 +610,144 @@ test('keyset counters bind the mint and unit and fail closed on a split authorit
       () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 1, mutation, sat),
       /one-sided or mismatched/,
     )
+  })
+})
+
+test('keyset counters refuse a second mint before adapter use, reservation, or advance', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-mint-alias')
+    const first = { normalizedMint: 'https://mint-one.example', unit: 'sat' as const }
+    const second = { normalizedMint: 'https://mint-two.example', unit: 'msat' as const }
+    await reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 2, mutation, first)
+    const before = await readCounterAuthoritySnapshot(home, mutation.fence.scopeId)
+
+    const secondMintCounter = createDaemonCounterSource(() => mutation, second)
+    let mintMutationCount = 0
+    await assert.rejects(async () => {
+      const range = await secondMintCounter.reserve(SHARED_KEYSET_ID, 1)
+      mintMutationCount += 1
+      return range
+    }, /another mint URL/)
+    assert.equal(mintMutationCount, 0)
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+    await assert.rejects(
+      () => advanceDaemonKeysetCounter(SHARED_KEYSET_ID, 12, mutation, second),
+      /another mint URL/,
+    )
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+    await assert.rejects(
+      () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, second),
+      /another mint URL/,
+    )
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      assert.throws(
+        () => readExactBoundCounter(database, mutation.fence.scopeId, SHARED_KEYSET_ID, second),
+        /another mint URL/,
+      )
+    } finally {
+      database.close()
+    }
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+  })
+})
+
+test('existing counter aliases in either table fail closed for reads and no-op mutations', async () => {
+  for (const table of ['target_keyset_counters', 'custody_keyset_counters'] as const) {
+    await withProfile(async (home) => {
+      const mutation = await claimMutation(home, `counter-alias-${table}`)
+      const requested = { normalizedMint: 'https://mint-one.example', unit: 'msat' as const }
+      const database = await openDaemonStateSqlite(home)
+      try {
+        insertCounterAlias(database, table, mutation.fence.scopeId, SHARED_KEYSET_ID)
+        const before = readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId)
+        assert.throws(
+          () =>
+            readExactBoundCounter(database, mutation.fence.scopeId, SHARED_KEYSET_ID, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+
+        await assert.rejects(
+          () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+        await assert.rejects(
+          () => advanceDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+      } finally {
+        database.close()
+      }
+    })
+  }
+})
+
+test('different keysets can keep counter authority under different mint URLs', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-distinct-mints')
+    const first = { normalizedMint: 'https://mint-one.example', unit: 'sat' as const }
+    const second = { normalizedMint: 'https://mint-two.example', unit: 'msat' as const }
+    assert.deepEqual(await reserveDaemonKeysetCounter(COUNTER_KEYSET_ID, 2, mutation, first), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter(MAXIMUM_BATCH_KEYSET_ID, 3, mutation, second),
+      {
+        start: 0,
+        count: 3,
+      },
+    )
+    assert.deepEqual(await readDaemonKeysetCounters(first), { [COUNTER_KEYSET_ID]: 2 })
+    assert.deepEqual(await readDaemonKeysetCounters(second), { [MAXIMUM_BATCH_KEYSET_ID]: 3 })
+  })
+})
+
+test('competing first counter reservations establish one mint URL for a keyset', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-competing-first-use')
+    const bindings = [
+      { normalizedMint: 'https://mint-one.example', unit: 'sat' as const },
+      { normalizedMint: 'https://mint-two.example', unit: 'msat' as const },
+    ] as const
+    const results = await Promise.allSettled(
+      bindings.map((binding) => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 1, mutation, binding)),
+    )
+    assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1)
+    const refusal = results.find(({ status }) => status === 'rejected')
+    assert.ok(refusal && refusal.status === 'rejected')
+    assert.match(String(refusal.reason), /another mint URL/)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const snapshot = readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId)
+      assert.equal(snapshot.target.length, 1)
+      assert.equal(snapshot.custody.length, 1)
+      assert.equal(snapshot.target[0]?.normalized_mint, snapshot.custody[0]?.normalized_mint)
+      assert.equal(
+        bindings
+          .map(({ normalizedMint }) => normalizedMint)
+          .filter((url) => url === snapshot.target[0]?.normalized_mint).length,
+        1,
+      )
+    } finally {
+      database.close()
+    }
   })
 })
 
@@ -617,7 +1007,7 @@ test('regular split hands off its exact send successor without an available wind
           schemaDatabase
             .prepare(
               `INSERT INTO daemon_complete_set_recovery_roots (
-                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_msat,
                  regular_operation_id, ctf_operation_id, state, created_at_ms, updated_at_ms
                ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'ctf-handoff', ?, ?)`,
             )
@@ -638,7 +1028,7 @@ test('regular split hands off its exact send successor without an available wind
           schemaDatabase
             .prepare(
               `INSERT INTO daemon_complete_set_recovery_roots (
-                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_msat,
                  regular_operation_id, regular_reservation_id, regular_purpose,
                  ctf_operation_id, ctf_reservation_id, ctf_purpose,
                  state, created_at_ms, updated_at_ms
@@ -1096,7 +1486,7 @@ test('state persistence clamps wall-clock regressions at creation time', async (
       orderId: 'order-1',
       marketId: 'condition-1-YES',
       baseAsset: 'sat',
-      divisibility: 10_000,
+      divisibility: 1_000,
       status: 'resting',
       createdAt: '2026-01-01T00:00:01.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
@@ -1116,6 +1506,167 @@ test('state persistence clamps wall-clock regressions at creation time', async (
     assert.equal(restored?.orders['order-1'].updatedAt, restored?.orders['order-1'].createdAt)
   })
 })
+
+type OrderWriteAuthoritySnapshot = Record<
+  'proofs' | 'counters' | 'operations' | 'sources' | 'artifacts',
+  { count: number; digest: string }
+>
+
+async function readOrderWriteAuthoritySnapshot(
+  home: string,
+  scopeId: string,
+): Promise<OrderWriteAuthoritySnapshot> {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    return {
+      proofs: snapshotSqlRows(
+        database,
+        `SELECT proof_id, normalized_mint, unit, keyset_id, amount, secret, signature,
+                proof_body, state, reserved_by, asset_kind, condition_id, outcome_set_id,
+                base_asset, created_at_ms, updated_at_ms
+         FROM target_wallet_proofs WHERE scope_id = ? ORDER BY proof_id`,
+        scopeId,
+      ),
+      counters: snapshotSqlRows(
+        database,
+        `SELECT normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         FROM target_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+        scopeId,
+      ),
+      operations: snapshotSqlRows(
+        database,
+        `SELECT operation_id, kind, purpose, state, normalized_mint,
+                request_artifact_id, output_artifact_id, result_artifact_id,
+                result_proofs_digest, input_count, input_amount, last_error,
+                reservation_id, created_at_ms, updated_at_ms
+         FROM target_proof_operations WHERE scope_id = ? ORDER BY operation_id`,
+        scopeId,
+      ),
+      sources: snapshotSqlRows(
+        database,
+        `SELECT range_operation_id, source_operation_id, reservation_id, operation_purpose
+         FROM daemon_ctf_range_sources WHERE scope_id = ? ORDER BY range_operation_id`,
+        scopeId,
+      ),
+      artifacts: snapshotSqlRows(
+        database,
+        `SELECT artifact_id, artifact_kind, encoding, body, fingerprint, revision,
+                private_material, created_at_ms
+         FROM custody_artifacts WHERE scope_id = ? ORDER BY artifact_id`,
+        scopeId,
+      ),
+    }
+  } finally {
+    database.close()
+  }
+}
+
+async function readOrderRowMetadata(
+  home: string,
+  scopeId: string,
+  orderId: string,
+): Promise<{ scopeId: string; revision: number; createdAtMs: number; updatedAtMs: number }> {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    const row = database
+      .prepare(
+        `SELECT scope_id, revision, created_at_ms, updated_at_ms
+         FROM daemon_orders WHERE scope_id = ? AND order_id = ?`,
+      )
+      .get(scopeId, orderId) as
+      | { scope_id: string; revision: number; created_at_ms: number; updated_at_ms: number }
+      | undefined
+    assert.ok(row)
+    return {
+      scopeId: row.scope_id,
+      revision: row.revision,
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    }
+  } finally {
+    database.close()
+  }
+}
+
+function snapshotSqlRows(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  query: string,
+  ...bindings: string[]
+): { count: number; digest: string } {
+  const rows = database.prepare(query).all(...bindings) as Array<Record<string, unknown>>
+  const normalizedRows = rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [key, normalizeSqlSnapshotValue(value)]),
+    ),
+  )
+  return {
+    count: rows.length,
+    digest: createHash('sha256').update(JSON.stringify(normalizedRows)).digest('hex'),
+  }
+}
+
+async function readCounterAuthoritySnapshot(home: string, scopeId: string) {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    return readCounterAuthoritySnapshotFromDatabase(database, scopeId)
+  } finally {
+    database.close()
+  }
+}
+
+function readCounterAuthoritySnapshotFromDatabase(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  scopeId: string,
+) {
+  return {
+    target: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         FROM target_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId) as Array<Record<string, unknown>>,
+    custody: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+         FROM custody_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId) as Array<Record<string, unknown>>,
+  }
+}
+
+function insertCounterAlias(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  table: 'target_keyset_counters' | 'custody_keyset_counters',
+  scopeId: string,
+  keysetId: string,
+): void {
+  if (table === 'target_keyset_counters') {
+    database
+      .prepare(
+        `INSERT INTO target_keyset_counters (
+           scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 7, 2)`,
+      )
+      .run(scopeId, keysetId)
+    return
+  }
+  database
+    .prepare(
+      `INSERT INTO custody_keyset_counters (
+         scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+       ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 7, 0, 2)`,
+    )
+    .run(scopeId, keysetId)
+}
+
+function normalizeSqlSnapshotValue(value: unknown): unknown {
+  if (typeof value === 'bigint') return `bigint:${value.toString()}`
+  if (value instanceof Uint8Array) return `blob:${Buffer.from(value).toString('hex')}`
+  return value
+}
 
 async function withProfile(run: (home: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-state-sqlite-'))
@@ -1182,6 +1733,29 @@ function preservedProofOperation(): ProofOperationRecord {
   }
 }
 
+function rangeSourceOperation(sourceProof: {
+  id: string
+  amount: number
+  secret: string
+  C: string
+}) {
+  return {
+    operationId: 'range-source-operation',
+    kind: 'wallet-send' as const,
+    state: 'prepared' as const,
+    mintUrl: 'http://localhost:8086',
+    inputs: [sourceProof],
+    outputs: { source: [] },
+    metadata: {
+      purpose: 'ctf-range-authorization-source',
+      reservationId: 'range-source-reservation',
+    },
+    lastError: null,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+}
+
 function completeSetAuthority(): ExactProofOperationAuthority {
   return {
     purpose: 'daemon-complete-set-ctf-split',
@@ -1220,7 +1794,7 @@ function completeSetRoot(
   rootOperationId: string
   mintUrl: string
   conditionId: string
-  amountSats: number
+  amountMsat: number
   regularOperationId: string
   ctfOperationId: string | null
 } {
@@ -1228,7 +1802,7 @@ function completeSetRoot(
     rootOperationId: 'complete-set-root',
     mintUrl: 'http://localhost:8086',
     conditionId: 'condition-1',
-    amountSats: 30,
+    amountMsat: 30,
     regularOperationId,
     ctfOperationId,
   }
@@ -1245,7 +1819,7 @@ function completeSetMetadata(
     successorAssets: authority.successorAssets,
     rootOperationId: root.rootOperationId,
     conditionId: root.conditionId,
-    amountSats: root.amountSats,
+    amountMsat: root.amountMsat,
   }
 }
 
@@ -1333,7 +1907,7 @@ function completeSetOperationRecord(
       purpose,
       rootOperationId,
       conditionId: 'condition-1',
-      amountSats: 30,
+      amountMsat: 30,
       amountSubunits: 30,
       reservationId: `${operationId}:reservation`,
       inputAsset,

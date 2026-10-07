@@ -16,10 +16,24 @@ function cursor() {
     recoveryId: 'recovery-1',
     walletScopeId: `custody:wallet:${'a'.repeat(64)}`,
     mintUrl: 'https://mint.example',
-    unit: 'sat',
+    unit: 'msat',
     keysetId: 'keyset-1',
   })
 }
+
+test('product seed recovery rejects a sat cursor unit', () => {
+  assert.throws(
+    () =>
+      createEmergencySeedRecoveryCursor({
+        recoveryId: 'recovery-sat',
+        walletScopeId: `custody:wallet:${'b'.repeat(64)}`,
+        mintUrl: 'https://mint.example',
+        unit: 'sat' as never,
+        keysetId: 'keyset-sat',
+      }),
+    /unit must be msat/,
+  )
+})
 
 test('ordinary seed recovery advances exactly and stops after the trailing gap', () => {
   const afterSignature = advanceEmergencySeedRecoveryCursor(cursor(), {

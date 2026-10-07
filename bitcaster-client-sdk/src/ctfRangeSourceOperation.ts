@@ -24,19 +24,27 @@ import {
 import type { PersistedCtfRangeOrderPreparation } from './ctfRangeOrderProtocol.ts'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   sumProofs,
   takeProofsForLock,
 } from './proofSelection.ts'
 import {
   decodeDurableSeedDerivedOutputPlan,
+  matchDurableSeedDerivedProofsToPlan,
   reconstructDurableSeedDerivedOutputs,
   reserveAndConstructDurableSeedDerivedOutputs,
   type DurableSeedDerivedOutputPlan,
 } from './durableSeedDerivedOutputs.ts'
 
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
+const MIXED_SOURCE_ENDPOINT = 'POST /v1/ctf/convert'
 declare const VALIDATED_SOURCE_COMPLETION: unique symbol
+
+export type CtfRangeSourceMode =
+  | 'wallet-send'
+  | 'conditional-keyset-swap'
+  | 'mixed-source-ctf-convert'
+  | 'ctf-range-collateral-convert'
 
 export interface ValidatedCtfRangeSourceCompletionOperation {
   readonly operation: DurableCustodyProofOperationInput
@@ -120,7 +128,7 @@ export async function prepareCtfRangeSourceOperation(input: {
     [input.preparation.offerKeyset.id]: input.preparation.offerKeyset.inputFeePpk,
   })
   if (selected === null) return null
-  const fees = computeInputFeeSatsForProofs(selected, {
+  const fees = computeInputFeeSubunitsForProofs(selected, {
     [input.preparation.offerKeyset.id]: input.preparation.offerKeyset.inputFeePpk,
   })
   const change = sumProofs(selected) - fees - target
@@ -166,24 +174,31 @@ export async function completeValidatedCtfRangeSourceOperation(
   wallet: CtfRangeSourceWallet,
 ): Promise<CtfRangeSourceResult> {
   const operation = validated.operation
-  if (sourceMode(operation) === 'conditional-keyset-swap') {
-    const result = await wallet.completeConditionalSwap({
-      keysetId: metadataText(operation, 'keysetId'),
-      inputs: operation.inputs as Proof[],
-      outputDataByLabel: validated.outputs,
-    })
-    return { authorization: result.authorization ?? [], keep: result.keep ?? [] }
+  const mode = sourceMode(operation)
+  switch (mode) {
+    case 'conditional-keyset-swap': {
+      const result = await wallet.completeConditionalSwap({
+        keysetId: metadataText(operation, 'keysetId'),
+        inputs: operation.inputs as Proof[],
+        outputDataByLabel: validated.outputs,
+      })
+      return { authorization: result.authorization ?? [], keep: result.keep ?? [] }
+    }
+    case 'wallet-send': {
+      const result = await wallet.completeSwap({
+        amount: Amount.from(metadataNumber(operation, 'amount')),
+        fees: Amount.from(metadataNumber(operation, 'fees')),
+        keysetId: metadataText(operation, 'keysetId'),
+        inputs: operation.inputs as Proof[],
+        sendOutputs: validated.outputs.authorization ?? [],
+        keepOutputs: validated.outputs.keep ?? [],
+        unselectedProofs: [],
+      })
+      return { authorization: result.send, keep: result.keep }
+    }
+    default:
+      return assertNever(mode)
   }
-  const result = await wallet.completeSwap({
-    amount: Amount.from(metadataNumber(operation, 'amount')),
-    fees: Amount.from(metadataNumber(operation, 'fees')),
-    keysetId: metadataText(operation, 'keysetId'),
-    inputs: operation.inputs as Proof[],
-    sendOutputs: validated.outputs.authorization ?? [],
-    keepOutputs: validated.outputs.keep ?? [],
-    unselectedProofs: [],
-  })
-  return { authorization: result.send, keep: result.keep }
 }
 
 export function validateCtfRangeSourceCompletionOperation(
@@ -208,32 +223,36 @@ export function ctfRangeSourceKeepDerivationLocators(
   keep: readonly Proof[],
 ): readonly CtfRangeSourceKeepDerivationLocator[] {
   const validated = validateCtfRangeSourceCompletionOperation(operation)
-  const plan = metadataKeepPlan(validated.operation)
-  if (plan === null) {
-    if (keep.length !== 0) throw new Error('range source keep proof count is invalid')
+  return ctfRangePlannedOutputDerivationLocators(
+    metadataKeepPlan(validated.operation),
+    keep,
+    'range source keep',
+  )
+}
+
+/** Match returned change proofs to one exact persisted seed-derived output plan. */
+export function ctfRangePlannedOutputDerivationLocators(
+  planValue: unknown,
+  proofs: readonly Proof[],
+  label: string,
+): readonly CtfRangeSourceKeepDerivationLocator[] {
+  if (planValue === null) {
+    if (proofs.length !== 0) throw new Error(`${label} proof count is invalid`)
     return []
   }
-  if (keep.length !== plan.counterCount) throw new Error('range source keep proof count is invalid')
-  const plannedIndexes = new Map<string, number>()
-  plan.outputs.forEach((output, index) => {
-    const identity = keepIdentity(
-      output.blindedMessage.id,
-      output.blindedMessage.amount,
-      output.secret,
-    )
-    if (plannedIndexes.has(identity)) {
-      throw new Error('range source keep output identity is duplicated')
-    }
-    plannedIndexes.set(identity, index)
-  })
-  const observed = new Set<string>()
-  return keep.map((proof) => {
-    const identity = keepIdentity(proof.id, String(proof.amount), utf8Hex(proof.secret))
-    const index = plannedIndexes.get(identity)
-    if (index === undefined || observed.has(identity)) {
-      throw new Error('range source keep proof does not match its exact output plan')
-    }
-    observed.add(identity)
+  const plan = decodeDurableSeedDerivedOutputPlan(planValue)
+  if (proofs.length !== plan.counterCount) throw new Error(`${label} proof count is invalid`)
+  let ordered: readonly Proof[]
+  try {
+    ordered = matchDurableSeedDerivedProofsToPlan({ plan, proofs })
+  } catch {
+    throw new Error(`${label} proof does not match its exact output plan`)
+  }
+  const planIndex = new Map<Proof, number>()
+  ordered.forEach((proof, index) => planIndex.set(proof, index))
+  return proofs.map((proof) => {
+    const index = planIndex.get(proof)
+    if (index === undefined) throw new Error(`${label} proof is foreign or duplicated`)
     return {
       schemaVersion: 1,
       kind: 'nut13',
@@ -367,16 +386,51 @@ function deserializeOutputs(
 }
 
 function assertSourceOperation(operation: DurableCustodyProofOperationInput): void {
-  const mode = sourceMode(operation)
+  const mode = ctfRangeSourceMode(operation)
+  switch (mode) {
+    case 'wallet-send':
+    case 'conditional-keyset-swap':
+      break
+    case 'mixed-source-ctf-convert':
+    case 'ctf-range-collateral-convert':
+      throw new Error('persisted range source mode requires its conversion validator')
+    default:
+      return assertNever(mode)
+  }
   if (
-    ((operation.kind !== 'ctf-range-regular-source' || mode !== 'wallet-send') &&
-      (operation.kind !== 'ctf-range-conditional-source' || mode !== 'conditional-keyset-swap')) ||
     operation.metadata?.purpose !== SOURCE_PURPOSE ||
     operation.metadata.unit !== 'msat' ||
     !hasExactMetadataKeys(operation.metadata)
   ) {
     throw new Error('persisted range source operation is invalid')
   }
+}
+
+/** Return the closed, validated source mode bound to a durable operation. */
+export function ctfRangeSourceMode(
+  operation: DurableCustodyProofOperationInput,
+): CtfRangeSourceMode {
+  const mode = operation.metadata?.sourceMode
+  switch (operation.kind) {
+    case 'ctf-range-regular-source':
+      if (mode === 'wallet-send') return mode
+      break
+    case 'ctf-range-conditional-source':
+      if (mode === 'conditional-keyset-swap') return mode
+      if (
+        mode === 'mixed-source-ctf-convert' &&
+        operation.metadata?.endpoint === MIXED_SOURCE_ENDPOINT
+      ) {
+        return mode
+      }
+      break
+    case 'ctf-range-collateral-convert':
+      if (mode === 'ctf-range-collateral-convert') return mode
+      break
+    default:
+      break
+  }
+  throw new Error('persisted range source mode is invalid for its durable kind')
 }
 
 interface SourceKeepOutputs {
@@ -482,11 +536,21 @@ function hasExactMetadataKeys(value: DurableCustodyProofOperationInput['metadata
 function sourceMode(
   operation: DurableCustodyProofOperationInput,
 ): 'wallet-send' | 'conditional-keyset-swap' {
-  const value = operation.metadata?.sourceMode
-  if (value !== 'wallet-send' && value !== 'conditional-keyset-swap') {
-    throw new Error('persisted range source mode is invalid')
+  const mode = ctfRangeSourceMode(operation)
+  switch (mode) {
+    case 'wallet-send':
+    case 'conditional-keyset-swap':
+      return mode
+    case 'mixed-source-ctf-convert':
+    case 'ctf-range-collateral-convert':
+      throw new Error('persisted range source mode requires its conversion validator')
+    default:
+      return assertNever(mode)
   }
-  return value
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled range source variant: ${String(value)}`)
 }
 
 function metadataText(operation: DurableCustodyProofOperationInput, field: string): string {
@@ -520,16 +584,6 @@ function assertExactOutputs(actual: OutputData[], expected: OutputData[]): void 
 
 function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item))
-}
-
-function utf8Hex(value: string): string {
-  return Array.from(new TextEncoder().encode(value), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('')
-}
-
-function keepIdentity(keysetId: string, amount: string, secret: string): string {
-  return `${keysetId}\0${amount}\0${secret}`
 }
 
 function withoutRequest(preparation: PersistedCtfRangeOrderPreparation) {

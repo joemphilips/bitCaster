@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Amount, deriveConditionalKeysetId } from '@cashu/cashu-ts'
+import { Amount, OutputData, deriveConditionalKeysetId } from '@cashu/cashu-ts'
 import {
   CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS,
   bindExactSeedRecoveryResponse,
+  bindRetainedOutputRecoveryResponse,
   bindConditionalKeysetSeedRecoveryResponse,
   planExactSeedRecoveryBatch,
   planConditionalKeysetSeedRecoveryPage,
@@ -424,3 +425,50 @@ function* boundedIntegers(): Iterable<number> {
     yield 1 + (state % 257)
   }
 }
+
+test('retained random-output binding preserves absence and rejects foreign or duplicate replies', () => {
+  const outputs = OutputData.createRandomData(Amount.from(3), {
+    id: '01' + 'ab'.repeat(32),
+    unit: 'msat',
+    keys: KEYS,
+  })
+  const wire = outputs.map(({ blindedMessage }) => ({
+    ...blindedMessage,
+    amount: blindedMessage.amount.toString(),
+  }))
+  const signatures = wire.map(({ id, amount }) => ({ id, amount, C_: PUBLIC_KEY }))
+  assert.deepEqual(
+    bindRetainedOutputRecoveryResponse({ outputs, response: { outputs: [], signatures: [] } }),
+    [],
+  )
+  const matches = bindRetainedOutputRecoveryResponse({
+    outputs,
+    response: { outputs: wire, signatures },
+  })
+  assert.equal(matches.length, outputs.length)
+  assert.equal(matches[0]!.outputData, outputs[0])
+  const reordered = bindRetainedOutputRecoveryResponse({
+    outputs,
+    response: { outputs: [...wire].reverse(), signatures: [...signatures].reverse() },
+  })
+  assert.deepEqual(
+    reordered.map(({ outputData }) => outputData),
+    outputs,
+  )
+
+  assert.equal(Object.hasOwn(matches[0]!, 'counter'), false)
+  assert.equal(
+    bindRetainedOutputRecoveryResponse({
+      outputs,
+      response: { outputs: wire.slice(0, 1), signatures: signatures.slice(0, 1) },
+    }).length,
+    1,
+  )
+  for (const response of [
+    { outputs: [wire[0], wire[0]], signatures: [signatures[0], signatures[0]] },
+    { outputs: [{ ...wire[0], B_: PUBLIC_KEY }], signatures: [signatures[0]] },
+    { outputs: [wire[0]], signatures: [{ ...signatures[0], amount: '999' }] },
+    { outputs: [wire[0]], signatures: [] },
+  ])
+    assert.throws(() => bindRetainedOutputRecoveryResponse({ outputs, response }))
+})

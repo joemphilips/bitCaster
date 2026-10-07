@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { isDeepStrictEqual } from 'node:util'
 import {
   DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
   DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX,
@@ -747,6 +748,114 @@ test('cross-scope proof identities cannot collide', () => {
   )
 })
 
+for (const independentPin of [
+  null,
+  'active-retry-cursor',
+  'pending-outbox',
+  'replay-tombstone',
+] as const) {
+  test(`exact successor admission releases only the reservation pin and preserves ${independentPin ?? 'no independent pin'}`, () => {
+    const record = intent()
+    const scopeState = claimDurableCustodyScope(
+      {
+        schemaVersion: 1,
+        scope: record.scope,
+        fencingEpoch: 0,
+        owner: null,
+        effectiveClock: { highWaterMarkMs: 0 },
+      },
+      { incarnationId: 'pin-owner', observedAtMs: 1, leaseExpiresAtMs: 100 },
+    )
+    const owner = { incarnationId: 'pin-owner', fencingEpoch: 1, observedAtMs: 2 }
+    const result = prepareDurableCustodyExactArtifact({ result: 1 })
+    const staged = reduceDurableCustodyState(
+      { scopeState, operation: record },
+      {
+        kind: 'stage-verified-result',
+        authorization: owner,
+        expectedRevision: 0,
+        outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: 'pin-result',
+        resultFingerprint: result.fingerprint,
+        exactResult: result,
+        selectedSuccessorProofIds: record.operation.proofStorage.lineage.successorProofIds,
+      },
+    )
+    assert.deepEqual(staged.operation.operation.proofStorage.pinReasons, ['active-reservation'])
+    if (independentPin) staged.operation.operation.proofStorage.pinReasons.push(independentPin)
+    staged.operation.operation.proofStorage.pinReasons.sort()
+    const before = structuredClone(staged.operation)
+    const admission = {
+      scopeId: record.scope.scopeId,
+      operationId: record.operation.operationId,
+      admissionId: 'pin-admission',
+      proofRows: record.operation.proofStorage.lineage.successorProofIds.map((proofId) => ({
+        proofId,
+        expectedRevision: null,
+        admittedRevision: 0,
+      })),
+    }
+    assert.throws(
+      () =>
+        reduceDurableCustodyState(staged, {
+          kind: 'apply-verified-result',
+          authorization: owner,
+          expectedRevision: 1,
+          successorAdmission: { ...admission, operationId: 'foreign-operation' },
+        }),
+      /successor admission/,
+    )
+    assert.equal(
+      isDeepStrictEqual(staged.operation, before),
+      true,
+      'refused admission must preserve every preimage',
+    )
+    const applied = reduceDurableCustodyState(staged, {
+      kind: 'apply-verified-result',
+      authorization: owner,
+      expectedRevision: 1,
+      successorAdmission: admission,
+    }).operation
+    assert.deepEqual(
+      applied.operation.proofStorage.pinReasons,
+      independentPin ? [independentPin] : [],
+    )
+    assert.equal(
+      applied.operation.proofStorage.storageClass,
+      before.operation.proofStorage.storageClass,
+    )
+    assert.equal(
+      isDeepStrictEqual(applied.operation.exactRequest, before.operation.exactRequest),
+      true,
+      'request authority must remain exact',
+    )
+    assert.equal(
+      isDeepStrictEqual(applied.operation.outputPlan, before.operation.outputPlan),
+      true,
+      'output plan must remain exact',
+    )
+    assert.equal(
+      isDeepStrictEqual(applied.operation.privateMaterial, before.operation.privateMaterial),
+      true,
+      'private material must remain exact',
+    )
+    assert.equal(
+      isDeepStrictEqual(
+        applied.operation.proofStorage.lineage.successorProofIds,
+        before.operation.proofStorage.lineage.successorProofIds,
+      ),
+      true,
+    )
+    assert.equal(
+      isDeepStrictEqual(
+        applied.operation.proofStorage.lineage.predecessorProofIds,
+        before.operation.proofStorage.lineage.predecessorProofIds,
+      ),
+      true,
+    )
+  })
+}
+
 test('P09 purge requires terminal status, replay cutoff, and resolved delivery', () => {
   const record = intent('ctf-range-refund', 'ctf-range-refund')
   assert.deepEqual(record.operation.proofStorage, {
@@ -837,6 +946,7 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
       fingerprint: deriveDurableCustodyArtifactFingerprint({ value: 1 }),
     },
   })
+  assert.deepEqual(state.operation.operation.proofStorage.pinReasons, ['pending-outbox'])
   state = reduceDurableCustodyState(state, {
     kind: 'resolve-delivery',
     authorization: authority(7),
@@ -854,6 +964,7 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
     tombstoneId: 'tombstone-1',
     terminalAuthorityId: 'authority-1',
   })
+  assert.deepEqual(state.operation.operation.proofStorage.pinReasons, ['replay-tombstone'])
   assert.deepEqual(decideDurableCustodyPurge(state.operation, state.scopeState), {
     kind: 'retain',
   })

@@ -15,9 +15,29 @@ export interface paths {
         put?: never;
         /**
          * Register a new market on the matching engine
-         * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
+         * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed. The complete multipart request must not exceed 6 MiB, including metadata, the thumbnail, and multipart boundaries.
          */
         post: operations["createMarket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/markets/{conditionId}/registration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch public registration facts for a market
+         * @description Returns the stored registration identity and unit facts without reading market prices, the catalogue, or mint data. This response does not claim that trades or prices are available. A missing registration returns 404; a failed registration read remains an error.
+         */
+        get: operations["getMarketRegistration"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -53,7 +73,7 @@ export interface paths {
         };
         /**
          * Fetch primitive outcome price history for a market
-         * @description Returns primitive outcome price points grouped by primitive outcome id. A newly registered market includes an initial zero-volume anchor point (`source = initial`) sourced from the creator probabilities. Initial anchors act as a left-edge carry-forward value and are clamped to the requested timeframe boundary when needed; settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
+         * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
          */
         get: operations["getMarketPriceHistory"];
         put?: never;
@@ -73,7 +93,7 @@ export interface paths {
         };
         /**
          * Fetch verified trade comments for a market
-         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
+         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey. It includes the associated confirmed fill id only inside trade when its exact price coordinate is available. It omits order ids, ephemeral pubkeys, and counterparty ids.
          */
         get: operations["getMarketComments"];
         put?: never;
@@ -168,6 +188,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/orders/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview one public FOK order
+         * @description Plans one read-only Fill-Or-Kill order against one captured market snapshot. The preview is not authorization, reservation, or order submission. Final admission rechecks the current market state and economic terms. NIP-98 authentication is optional; when present, the authenticated subject is used for self-match exclusion.
+         */
+        post: operations["PreviewFokOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/capacity-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview maximum public FOK capacity
+         * @description Returns the maximum face amount that one public FOK order can match in one captured market snapshot. This read-only estimate is not authorization, reservation, or an order. Final admission rechecks market state. Capacity includes all matching makers and excludes wallet balance and fees. Maker minimums can make smaller amounts unfillable. Optional NIP-98 authentication applies self-match exclusion. This operation shares the per-condition preview rate and concurrency limits with POST /api/v1/orders/preview.
+         */
+        post: operations["PreviewFokOrderCapacity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders/mine": {
         parameters: {
             query?: never;
@@ -209,23 +269,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/{marketId}/orders/{orderId}/continuation/decline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Decline one suspended residual continuation */
-        post: operations["declineOrderContinuation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
@@ -235,26 +278,6 @@ export interface paths {
         };
         /** Get the current order book snapshot */
         get: operations["getOrderBook"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{marketId}/liquidity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get liquidity state
-         * @description Returns the current public liquidity state for a market.
-         */
-        get: operations["getLiquidity"];
         put?: never;
         post?: never;
         delete?: never;
@@ -300,46 +323,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/ecash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit an ecash payment for market liquidity
-         * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
-         */
-        post: operations["requestEcashDeposit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/{conditionId}/deposit/{depositId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read the current state of a deposit
-         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
-         */
-        get: operations["getDepositStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/participation-score": {
         parameters: {
             query?: never;
@@ -349,31 +332,11 @@ export interface paths {
         };
         /**
          * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable participation Score balance and current match-debit policy. Score is a sat-denominated engine-use fee balance, separate from market collateral units.
+         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. The server applies the immutable capability-admission tariff from verified capability work facts. The tariff is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
          */
         get: operations["getParticipationScore"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/participation-score/ecash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Pay ecash to top up participation Score
-         * @description Pays a regular sat ecash token into the global Engine fee account. The fee is non-refundable and credits participation Score for the authenticated Nostr pubkey. The supplied token amount must exactly match `amountSats`; this endpoint never credits a market account.
-         */
-        post: operations["payParticipationScoreEcash"];
         delete?: never;
         options?: never;
         head?: never;
@@ -387,10 +350,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read one authenticated durable Cashu delivery status */
+        /**
+         * Read one authenticated durable Cashu delivery status
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         */
         get: operations["getDurableCashuDeliveryStatus"];
         put?: never;
-        /** Submit one authenticated durable Cashu delivery */
+        /**
+         * Submit one authenticated durable Cashu delivery
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         */
         post: operations["submitDurableCashuDelivery"];
         delete?: never;
         options?: never;
@@ -429,7 +398,7 @@ export interface paths {
          * Catalogue proxy — list markets with filters, sort, and pagination
          * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
          *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
-         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
+         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
          */
         get: operations["queryMarkets"];
         put?: never;
@@ -470,8 +439,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Submit one complete display-only asset holdings report
-         * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval or wallet lifecycle, returns a conflict.
+         * Submit one complete display-only asset holdings report for an account-wallet pair
+         * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. Each account-wallet pair has an independent monitoring interval. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval, returns a report conflict.
          */
         post: operations["submitAssetMonitoringReport"];
         delete?: never;
@@ -487,7 +456,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the active wallet asset-monitoring summary */
+        /**
+         * Read the selected account-wallet asset-monitoring summary
+         * @description Reads only the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval. A pair without a report returns an empty stale summary with no `asOf` value.
+         */
         get: operations["getAssetMonitoringSummary"];
         put?: never;
         post?: never;
@@ -504,7 +476,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read one page of active wallet monitored assets */
+        /**
+         * Read one page of monitored assets for the selected account-wallet pair
+         * @description Reads one page for the wallet id selected by the authenticated account. Its interval and cursors are independent of other wallet ids used by that account.
+         */
         get: operations["getAssetMonitoringAssets"];
         put?: never;
         post?: never;
@@ -521,7 +496,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read bounded estimated active wallet value history */
+        /**
+         * Read bounded estimated value history for the selected account-wallet pair
+         * @description Reads history for the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval.
+         */
         get: operations["getAssetMonitoringHistory"];
         put?: never;
         post?: never;
@@ -538,7 +516,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the bounded active wallet portfolio first-paint data */
+        /**
+         * Read bounded first-paint portfolio data for the selected account-wallet pair
+         * @description Returns portfolio data for the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval.
+         */
         get: operations["getPortfolio"];
         put?: never;
         post?: never;
@@ -557,7 +538,7 @@ export interface paths {
         };
         /**
          * Read the current range-settlement admission policy
-         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating or reauthorizing a range operation. Historical operations retain their persisted coordinator key.
+         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating a range operation. Historical operations retain their persisted coordinator key.
          */
         get: operations["getSettlementCapabilityAdmissionPolicy"];
         put?: never;
@@ -678,7 +659,7 @@ export interface components {
              */
             mintUrl: string;
             /** @enum {string} */
-            unit: "sat" | "msat";
+            unit: "msat";
             /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
             requestedAmount: string;
             creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
@@ -708,7 +689,7 @@ export interface components {
              */
             mintUrl: string;
             /** @enum {string} */
-            unit: "sat" | "msat";
+            unit: "msat";
             /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
             requestedAmount: string;
             creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
@@ -742,11 +723,6 @@ export interface components {
             result: components["schemas"]["DurableCashuDeliveryResult"] | null;
         } & (unknown & unknown);
         /**
-         * @description Canonical Cashu unit for a monitored asset or its display base asset.
-         * @enum {string}
-         */
-        AssetMonitoringUnit: "sat" | "msat";
-        /**
          * @description Canonical monitored-asset identity kind.
          * @enum {string}
          */
@@ -760,8 +736,8 @@ export interface components {
             canonicalMintUrl: string;
             /** @enum {string} */
             kind: "collateral";
-            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
-            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+            cashuUnit: components["schemas"]["CollateralUnit"];
+            displayBaseAsset: components["schemas"]["BaseAsset"];
         };
         AssetMonitoringConditionalAssetReference: {
             /**
@@ -771,8 +747,8 @@ export interface components {
             canonicalMintUrl: string;
             /** @enum {string} */
             kind: "conditional";
-            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
-            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+            cashuUnit: components["schemas"]["CollateralUnit"];
+            displayBaseAsset: components["schemas"]["BaseAsset"];
             conditionId: string;
             parentConditionId: string;
             outcomeUniverseDigest: components["schemas"]["Sha256Digest"];
@@ -804,7 +780,7 @@ export interface components {
              * @description Client-generated report identifier for exact retry handling.
              */
             reportId: string;
-            /** @description True for the first report and for a wallet switch. */
+            /** @description True for the first report for this account-wallet pair or to start a new interval for this pair. */
             startsNewInterval: boolean;
             holdings: components["schemas"]["AssetMonitoringReportedHolding"][];
         };
@@ -895,30 +871,6 @@ export interface components {
         };
         /** @enum {string} */
         SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
-        SettlementOrderContinuationReference: {
-            /** Format: uuid */
-            predecessorOrderId: string;
-            /** Format: uuid */
-            settlementGroupId: string;
-            /** Format: int32 */
-            settlementGroupRevision: number;
-            /** Format: int64 */
-            continuationRevision: number;
-        };
-        OrderContinuationState: {
-            /** Format: uuid */
-            settlementGroupId: string;
-            /** Format: int32 */
-            settlementGroupRevision: number;
-            /** Format: int64 */
-            revision: number;
-            /** @enum {string} */
-            status: "open" | "consumed" | "declined";
-        };
-        DeclineOrderContinuationRequest: {
-            /** Format: int64 */
-            expectedContinuationRevision: number;
-        };
         /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
         SettlementOrderIntent: {
             /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
@@ -926,6 +878,16 @@ export interface components {
             tokenSide: components["schemas"]["TokenSide"];
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
+            /**
+             * Format: int64
+             * @description Required nonnegative aggregate quote-payment maximum in msat for Buy FOK. Use the accepted preview payment. Absent or null for Sell. This bound does not include mint fees or replace the per-fill price.
+             */
+            maxQuotePaymentSubunits?: number | null;
+            /**
+             * Format: int64
+             * @description Required nonnegative aggregate quote-payment minimum in msat for Sell FOK. Use the accepted preview payment. Absent or null for Buy. This bound does not include mint fees or replace the per-fill price.
+             */
+            minQuotePaymentSubunits?: number | null;
             /** @description Conditional-token face amount in the market collateral sub-unit. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility. */
@@ -934,11 +896,11 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Required explicit collateral unit. No default is implied. */
             collateralUnit: components["schemas"]["CollateralUnit"];
-            /** @description GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid expiresAt. */
-            timeInForce: components["schemas"]["TimeInForce"];
+            /** @description Public settlement capability requests accept only FOK. FOK means Fill-Or-Kill and forbids expiresAt. */
+            timeInForce: components["schemas"]["SettlementCapabilityTimeInForce"];
             /**
              * Format: date-time
-             * @description Non-null for GTD intent and exactly null for every other time-in-force value. Requiring the field gives the authenticated intent one canonical wire representation.
+             * @description Exactly null for FOK. Requiring the field gives the authenticated intent one canonical wire representation.
              */
             expiresAt: string | null;
         };
@@ -951,8 +913,6 @@ export interface components {
             marketId: string;
             /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
             orderIntent: components["schemas"]["SettlementOrderIntent"];
-            /** @description Exactly null for an initial order. A fresh successor binds the confirmed predecessor continuation right and consumes it atomically when the capability is bound. */
-            continuation: components["schemas"]["SettlementOrderContinuationReference"] | null;
             /**
              * Format: byte
              * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -1015,7 +975,7 @@ export interface components {
          * @description Product collateral subunits in msat (1/1000 sat). Wire amount = collateral subunits. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
          */
         CollateralSubunits: number;
-        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market: categorical markets use D=10000 (0.01% precision), while future numeric markets use D=1000000 (0.0001% precision). */
+        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=1000 (0.1% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
         Probability: number;
         /**
          * @description Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
@@ -1049,15 +1009,136 @@ export interface components {
          */
         TimeInForce: "GTC" | "FOK" | "FAK" | "GTD";
         /**
-         * @description Closed public order lifecycle. `awaiting_authorization` means an unfilled resting remainder is intentionally non-matchable until its owner durably binds a replacement one-shot range authorization.
+         * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. Public capability requests are FOK-only. They cannot rest on the book and cannot carry an expiry.
          * @enum {string}
          */
-        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "awaiting_authorization" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
+        SettlementCapabilityTimeInForce: "FOK";
         /**
-         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O.
+         * @description Coarse reason for the read-only FOK preview result. `fillable` means the requested face amount passes the current price and match limits. `insufficient_liquidity` means more available market capacity may help. Other values do not promise that more capacity will help.
          * @enum {string}
          */
-        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission";
+        FokPreviewReason: "fillable" | "insufficient_liquidity" | "price_limit" | "request_too_large" | "market_unavailable" | "temporarily_unavailable";
+        /**
+         * @description ready means a complete snapshot produced a capacity result. market_unavailable means no market snapshot is available. temporarily_unavailable means snapshot or quote/revision data is incomplete. Only ready can report zero capacity.
+         * @enum {string}
+         */
+        FokCapacityPreviewStatus: "ready" | "market_unavailable" | "temporarily_unavailable";
+        /** @description Economic terms for a read-only capacity preview. No time-in-force, owner, capability, proof, order identity, expiry, or caller match bound is accepted. */
+        PreviewFokOrderCapacityRequest: {
+            /** @description Primitive outcome market id in {conditionId}-{outcomeName} form. Binary YES/NO markets expose only the {conditionId}-YES route; trade NO with tokenSide=Complement, not {conditionId}-NO. */
+            marketId: string;
+            /** @description Order direction relative to the selected token. */
+            side: components["schemas"]["OrderSide"];
+            /** @description Token represented by the selected-token price. Complement means the one-vs-rest complement of the primitive outcome route. */
+            tokenSide: components["schemas"]["TokenSide"];
+            /**
+             * Format: int32
+             * @description Optional absolute Custom limit-price numerator k. If omitted, derive the Auto limit from referencePrice using floor(D*20/100) ticks added to the best eligible Buy price or subtracted from the best eligible Sell price, clamped to 1..D-1 (20 percentage points, not relative 20%). If present, require k < D.
+             */
+            price?: number;
+        };
+        /** @description One read-only result from one captured snapshot. All fact fields are null when status is market_unavailable or temporarily_unavailable; neither status means zero capacity. Ready results include a price denominator and revision. Maximum face and quote amount are numeric, including zero when capacity is empty. Empty capacity has no worst price. No eligible executable maker means no reference price. Auto limit is null without a reference. Custom price remains known even then. A Custom limit can return zero capacity while reference and limit remain known. A positive maximum is a snapshot, not a reservation, and does not guarantee that every smaller amount fills because maker minimums can create gaps. Quote excludes wallet preparation and settlement fees. Final admission rechecks the plan. */
+        PreviewFokOrderCapacityResponse: {
+            status: components["schemas"]["FokCapacityPreviewStatus"];
+            /**
+             * Format: int32
+             * @description Best eligible selected-token price numerator before the limit and capacity sweep. Null when there is no eligible executable maker.
+             */
+            referencePrice: number | null;
+            /**
+             * Format: int32
+             * @description Selected-token limit numerator used for the sweep. This is the Auto limit derived from referencePrice or the supplied Custom price. Null when Auto has no reference price.
+             */
+            effectiveLimitPrice: number | null;
+            /**
+             * Format: int64
+             * @description Maximum face amount one FOK order can match under the selected limit, one-share taker minimum, 63-match ceiling, and 1e14 face ceiling. Any nonzero value is a whole-share multiple of D. Zero is a complete snapshot with no executable capacity. Null means status is market_unavailable or temporarily_unavailable.
+             */
+            maxFaceAmountSubunits: number | null;
+            /**
+             * Format: int64
+             * @description Exact quote amount for maxFaceAmountSubunits, using the existing order-preview quote convention. Zero when maximum capacity is zero. Null for unavailable status. This excludes client-composed fees.
+             */
+            quotePaymentSubunits: number | null;
+            /**
+             * Format: int32
+             * @description Worst selected-token execution-price numerator across fills of the maximum face amount. Null when capacity is zero or unavailable.
+             */
+            worstPrice: number | null;
+            /**
+             * Format: int32
+             * @description Immutable denominator D for the captured market. Non-null for ready status; null otherwise.
+             */
+            priceDenominator: number | null;
+            /** @description Opaque revision for the captured snapshot. Non-null for ready status and null otherwise. This is display metadata, not authorization for final admission. */
+            previewRevision: string | null;
+        };
+        /** @description Economic terms for one read-only public FOK preview. This request contains no time-in-force choice, owner, capability, proof, order identity, expiry, or caller match bound. */
+        PreviewFokOrderRequest: {
+            /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. The condition segment starts with an alphanumeric character and can then contain alphanumeric characters or hyphens. The outcome segment contains one or more alphanumeric characters and must not contain a finite outcome-set separator such as `|`. Binary YES/NO markets expose only the `{conditionId}-YES` route; trade NO with `tokenSide=Complement`, and do not use `{conditionId}-NO`. */
+            marketId: string;
+            /** @description Order direction relative to the selected token. */
+            side: components["schemas"]["OrderSide"];
+            /** @description Token represented by the selected-token price. `Complement` means the one-vs-rest complement of the primitive outcome route. */
+            tokenSide: components["schemas"]["TokenSide"];
+            /**
+             * Format: int32
+             * @description Selected-token limit-price numerator `k`. The server also requires `k < D` for the market's immutable price denominator and validates the token-side mapping before planning.
+             */
+            price: number;
+            /**
+             * Format: int64
+             * @description Positive conditional-token face amount in market collateral subunits. The server requires a whole tradable unit for the market's immutable divisibility `D`; the maximum is 1e14.
+             */
+            faceAmountSubunits: number;
+        };
+        /** @description One read-only FOK result from one captured market snapshot. Execution estimates are null unless the full requested face amount is currently executable. Quote payment excludes client-composed wallet preparation, settlement input, and consolidation fees. Final admission repeats the authoritative plan. */
+        PreviewFokOrderResponse: {
+            /** @description True only when the complete requested face amount passes the selected-token price and bounded match checks. */
+            fullFillAvailable: boolean;
+            reason: components["schemas"]["FokPreviewReason"];
+            /** @description Opaque revision for the captured preview snapshot. Null when no authoritative market snapshot is available. This value is display metadata and is not authorization for final admission. */
+            previewRevision: string | null;
+            /**
+             * Format: int64
+             * @description Exact quote payment in market base-asset subunits. Null when the request is not fully fillable. This excludes client-composed fees.
+             */
+            quotePaymentSubunits: number | null;
+            /** @description Selected-token average execution price, computed from the exact `quotePaymentSubunits` as `quotePaymentSubunits * D / faceAmountSubunits`. It may be fractional. Null when the request is not fully fillable; quotePaymentSubunits remains authoritative for exact payment. */
+            averagePrice: number | null;
+            /**
+             * Format: int32
+             * @description Worst selected-token execution-price numerator across the canonical fill order. Null when the request is not fully fillable.
+             */
+            worstPrice: number | null;
+            /**
+             * Format: int32
+             * @description Latest confirmed primitive-route displayed trade-price numerator. For two outcomes, use the newest confirmed trade from either primitive route in the captured preview. Map the opposite route as priceDenominator minus its price. For more than two outcomes, use only the requested primitive route. Null when that price or an authoritative snapshot is unavailable. This is a display price, not a selected-token execution price.
+             */
+            currentLatestTradePrice: number | null;
+            /**
+             * Format: int32
+             * @description Projected final primitive-route displayed trade-price numerator after this preview's canonical fills. Complement routes use the primitive-route display mapping. Null when the request is not fully fillable.
+             */
+            projectedFinalPrice: number | null;
+            /**
+             * Format: int32
+             * @description Immutable market price denominator `D`. Null when no authoritative market snapshot is available.
+             */
+            priceDenominator: number | null;
+            /** @description A conservative hint that additional condition funding capacity may help. True only for `insufficient_liquidity` when fresh capacity might make the request executable; it never guarantees execution. */
+            subsidyMayHelp: boolean;
+        };
+        /**
+         * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
+         * @enum {string}
+         */
+        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
+        /**
+         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O. `RejectedBeforeSubmission` means this group stopped before committing a mint request for a reason other than authorization expiry. `ExpiredBeforeSubmission` means authorization expired before submission. Neither status confirms wallet recovery or authorizes a refund.
+         * @enum {string}
+         */
+        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission" | "RejectedBeforeSubmission";
         SettlementGroupSummary: {
             /** Format: uuid */
             groupId: string;
@@ -1068,7 +1149,7 @@ export interface components {
             coalescingDeadline: string;
             /**
              * Format: date-time
-             * @description Null for `Prepared` and for `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
+             * @description Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
              */
             frozenAt: string | null;
         };
@@ -1118,6 +1199,8 @@ export interface components {
             attestedOutcome: string;
             oracleWitness: components["schemas"]["OracleWitness"];
             registeredAuthority: components["schemas"]["RegisteredConditionAuthority"];
+            /** @description Exact signed kind-89 event retained with the verified resolution. Its createdAt field carries the original NIP-01 created_at value. */
+            attestationEvent: components["schemas"]["OracleNostrEvent"];
         };
         RegisteredConditionAuthority: {
             eventId: string;
@@ -1174,7 +1257,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /**
              * Format: int64
              * @description Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment.
@@ -1243,10 +1326,18 @@ export interface components {
             timeInForce: components["schemas"]["TimeInForce"];
             /** Format: date-time */
             expiresAt?: string | null;
+            /**
+             * Format: int64
+             * @description The immutable accepted Buy FOK aggregate quote-payment maximum in msat. Null when not applicable.
+             */
+            maxQuotePaymentSubunits?: number | null;
+            /**
+             * Format: int64
+             * @description The immutable accepted Sell FOK aggregate quote-payment minimum in msat. Null when not applicable.
+             */
+            minQuotePaymentSubunits?: number | null;
             /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-            /** @description Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement. */
-            continuation: components["schemas"]["OrderContinuationState"] | null;
             tokenSide: components["schemas"]["TokenSide"];
             /** @description Base asset context for amount and price fields. */
             baseAsset: components["schemas"]["BaseAsset"];
@@ -1255,7 +1346,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
         };
         RestingOrderResponse: {
             /**
@@ -1284,7 +1375,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
         };
         ListRestingOrdersResponse: {
             orders: components["schemas"]["RestingOrderResponse"][];
@@ -1299,7 +1390,7 @@ export interface components {
              * Format: int32
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
             amountSubunits: components["schemas"]["CollateralSubunits"];
@@ -1334,7 +1425,7 @@ export interface components {
              * Format: int32
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
@@ -1369,7 +1460,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
@@ -1383,7 +1474,7 @@ export interface components {
          * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
          * @enum {string}
          */
-        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "participationScoreRequired" | "marketClosed" | "bookRejected";
+        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "marketClosed" | "bookRejected";
         BatchCancelOrdersRequest: {
             orderIds: string[];
         };
@@ -1437,10 +1528,16 @@ export interface components {
         CreateMarketOutcome: {
             /** @description Outcome label (e.g. "Yes", "Alice"). */
             name: string;
-            /** @description Initial implied probability for this outcome [1, 99]. */
-            probability: number;
+            /** @description Optional categorical outcome display color. The server accepts either hex letter case and resolves it to uppercase #RRGGBB. Omit this field to request a server-assigned color. */
+            color?: string;
         };
-        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
+        MarketOutcomeDetails: {
+            /** @description Exact outcome identity name from the corresponding outcomes list. */
+            name: string;
+            /** @description Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color or return null. */
+            color?: string | null;
+        };
+        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding. */
         CreateMarketRequest: {
             /** @description Human-readable market title. */
             title: string;
@@ -1449,16 +1546,10 @@ export interface components {
             /** @description The outcomes for the market (2 through 8). */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
-             * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+             * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
              * @enum {string}
              */
             outcomeType?: "yesno" | "categorical" | "numeric";
-            /**
-             * Format: int64
-             * @description Deprecated pre-create liquidity field. Market-maker funding is collected after creation through the funding flow; create requests should send `0`.
-             * @default 0
-             */
-            liquiditySats: number;
             /** @description Required immutable product base asset. Must be exact `sat`. */
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Optional category tags for the market. */
@@ -1471,32 +1562,54 @@ export interface components {
             conditionId: string;
             /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
             marketsCreated: string[];
+            /** @description Server-resolved display details for every created outcome. Each name matches an outcome identity from the request. Omitted by older engines. */
+            outcomeDetails?: components["schemas"]["MarketOutcomeDetails"][];
             /** @description Required immutable product base asset. Always exact `sat`. */
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description URL to the uploaded thumbnail, or null if none was provided. */
             thumbnailUrl?: string | null;
             /**
              * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
+             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
+        };
+        MarketRegistrationResponse: {
+            /** @description Registered condition ID. */
+            conditionId: string;
+            /** @description Creator Nostr pubkey recorded at registration, or null for legacy markets. */
+            creatorPubkey: string | null;
+            /** @description Registered outcome identity names, in registration order. */
+            outcomes: string[];
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Immutable registered market price denominator. Current markets use 1000; 1000000 is reserved for a future numeric trade representation.
+             */
+            divisibility: number;
+            /** @description Public thumbnail URL, or null when no thumbnail was registered. */
+            thumbnailUrl: string | null;
+            /** @description Registered display details aligned with the outcome identity list. */
+            outcomeDetails: components["schemas"]["MarketOutcomeDetails"][];
         };
         MarketPriceHistoryPoint: {
+            /** @description Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
+            eventOrder: string;
             /** Format: date-time */
             timestamp: string;
-            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision). */
+            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled. */
             price: number;
             /**
              * Format: int64
-             * @description Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
+             * @description Volume represented in the market's collateral/share subunits.
              */
             volumeSubunits: number;
             /**
-             * @description `initial` is the creator-probability anchor and is clamped to the selected timeframe boundary when used as carry-forward context. `fill` is a settlement-committed trade tick inside the selected timeframe.
+             * @description `fill` is a settlement-committed trade tick inside the selected timeframe.
              * @enum {string}
              */
-            source: "initial" | "fill";
+            source: "fill";
         };
         MarketOutcomePriceHistory: {
             /** @description Primitive outcome id. Compound outcome ids are not returned. */
@@ -1504,6 +1617,13 @@ export interface components {
             data: components["schemas"]["MarketPriceHistoryPoint"][];
         };
         MarketPriceHistoryResponse: {
+            /** @description Applied source position proven for this snapshot. Treat this value as opaque. */
+            snapshotEventOrder: string | null;
+            /**
+             * Format: date-time
+             * @description Server evaluation time for the selected history window.
+             */
+            asOf: string;
             conditionId: string;
             /** @enum {string} */
             timeframe: "1h" | "24h" | "7d" | "30d" | "all";
@@ -1523,41 +1643,43 @@ export interface components {
             createdAt: string;
             /** @description Nostr pubkey that signed the comment. */
             authorPubkey: string;
+            /** @description Confirmed fill coordinate for this comment. Null when the exact coordinate is unavailable. */
+            trade: components["schemas"]["MarketCommentTrade"] | null;
+        };
+        MarketCommentTrade: {
+            /**
+             * Format: int64
+             * @description Linked confirmed fill size in market face-amount subunits. Null means unknown size.
+             */
+            faceAmountSubunits?: number | null;
+            /**
+             * Format: uuid
+             * @description Confirmed fill associated with the comment.
+             */
+            fillId: string;
+            /** @description Primitive outcome route used by public trade history. */
+            outcomeId: string;
+            /**
+             * Format: date-time
+             * @description Confirmed fill time used by public trade history.
+             */
+            executedAt: string;
+            /**
+             * Format: int32
+             * @description Primitive outcome price numerator used by public trade history.
+             */
+            price: number;
+            /**
+             * Format: int32
+             * @description Market divisibility used as the price denominator.
+             */
+            priceDenominator: number;
         };
         MarketCommentsResponse: {
+            /** @description Applied source position proven for this snapshot. Treat this value as opaque. */
+            snapshotEventOrder: string | null;
             conditionId: string;
             comments: components["schemas"]["MarketComment"][];
-        };
-        LiquidityStateResponse: {
-            marketId: string;
-            /** Format: int64 */
-            reserveA: number;
-            /** Format: int64 */
-            reserveB: number;
-            impliedProbability: number;
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 10000 | 1000000;
-            /**
-             * Format: int64
-             * @description Liquidity represented by currently resting bot orders, in market-base subunits.
-             */
-            restingOrderLiquiditySubunits: number;
-            /**
-             * Format: int64
-             * @description Conservative value of free complete-set inventory, in market-base subunits.
-             */
-            completeSetLiquiditySubunits: number;
-            /**
-             * Format: int64
-             * @description Total public liquidity in market-base subunits.
-             */
-            totalLiquiditySubunits: number;
-            /** @description Number of active liquidity orders. */
-            activeOrders: number;
         };
         MarketMetadataSnapshot: {
             /** @description The market ID. */
@@ -1571,7 +1693,7 @@ export interface components {
             totalTrades: number;
             /**
              * Format: int64
-             * @description Total liquidity deposited in market collateral subunits.
+             * @description Always zero. Does not report bot funding, custody, or executable order-book depth.
              */
             totalLiquiditySubunits: number;
         };
@@ -1600,54 +1722,12 @@ export interface components {
             /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
             markets: components["schemas"]["CreatorMarketEntry"][];
         };
-        /**
-         * @description Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
-         * @enum {string}
-         */
-        DepositState: "requested" | "paid" | "credited" | "failed";
-        /**
-         * @description How the funder is paying the deposit.
-         * @enum {string}
-         */
-        DepositMethod: "lightningInvoice" | "ecash";
-        RequestEcashDepositRequest: {
-            /** @description Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /**
-             * @description Exact Cashu product-collateral unit for the supplied proofs.
-             * @enum {string}
-             */
-            unit: "msat";
-            /**
-             * Format: int32
-             * @description Exact market divisibility associated with the supplied proofs.
-             * @enum {integer}
-             */
-            divisibility: 10000 | 1000000;
-            /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
-            proofsToken: string;
-            /** @description Nostr public key (hex) of the market creator */
-            creatorPubkey?: string;
-            /**
-             * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
-             * @default false
-             */
-            fundAmm: boolean;
-        };
-        RequestEcashDepositResponse: {
-            /**
-             * Format: uuid
-             * @description Identifier for polling the deposit's lifecycle state.
-             */
-            depositId: string;
-            state: components["schemas"]["DepositState"];
-        };
         ParticipationScoreResponse: {
             /** @description Authenticated Nostr pubkey whose Score is returned. */
             pubkey: string;
             /**
              * Format: int64
-             * @description Current Participation Score balance. May be negative after a durable fill debit.
+             * @description Current Participation Score balance. It may be negative after a capability-admission charge.
              */
             balance: number;
             /**
@@ -1657,80 +1737,36 @@ export interface components {
             purchasedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by durable fill debits.
+             * @description Total Score consumed by capability-admission and invalid-validation charges.
              */
             consumedTotal: number;
-            /**
-             * Format: int64
-             * @description Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
-             */
-            matchDebitScore: number;
-            /** @description Whether durable fill Score debit is enabled by the engine. */
+            /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
         };
-        PayParticipationScoreEcashRequest: {
-            /** @description Exact sat amount carried by the supplied regular ecash token. */
-            amountSats: components["schemas"]["Sats"];
-            /** @description Opaque Cashu token paid as a non-refundable Engine fee. */
-            proofsToken: string;
-            /**
-             * Format: uuid
-             * @description Optional caller-supplied idempotency id for retrying the same ecash payment.
-             */
-            paymentId?: string;
-        };
-        PayParticipationScoreEcashResponse: {
-            /**
-             * Format: uuid
-             * @description Idempotency id assigned to this Score payment.
-             */
-            paymentId: string;
-            /**
-             * @description Terminal success state for the synchronous ecash payment flow.
-             * @enum {string}
-             */
-            status: "credited";
-            /** @description Ecash amount accepted as engine fee. */
-            amountSats: components["schemas"]["Sats"];
-            /**
-             * Format: int64
-             * @description Score credited for this payment.
-             */
-            creditedScore: number;
-            /**
-             * Format: date-time
-             * @description Time wallet-service accepted and credited the engine-fee payment.
-             */
-            creditedAt: string;
-        };
-        GetDepositResponseDto: {
+        /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
+        LatestConfirmedTrade: {
+            primitiveOutcomeId: string;
             /** Format: uuid */
-            depositId: string;
-            /** @description Condition the deposit funds. */
-            conditionId: string;
-            state: components["schemas"]["DepositState"];
-            method: components["schemas"]["DepositMethod"];
-            amountSubunits: components["schemas"]["CollateralSubunits"];
+            fillId: string;
             /** Format: date-time */
-            requestedAt: string;
+            executedAt: string;
+            eventOrder: string;
+            priceTick: number;
             /**
-             * Format: date-time
-             * @description Most recent state-change timestamp.
+             * Format: int32
+             * @enum {integer}
              */
-            updatedAt: string;
-            /**
-             * Format: date-time
-             * @description For LN deposits, when the bolt11 stops being payable.
-             */
-            expiresAt?: string | null;
-            /** @description Populated only when `state == Failed`. */
-            failureReason?: string | null;
+            divisibility: 1000 | 1000000;
+            /** Format: int64 */
+            faceAmountSubunits: number;
         };
         MarketCatalogueEntry: {
             /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
             conditionId: string;
             /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID. */
             outcomes: string[];
+            /** @description Display details for each outcome. Each name matches an outcome identity from outcomes. Legacy entries can omit colors. Outcomes remains the identity list. */
+            outcomeDetails?: components["schemas"]["MarketOutcomeDetails"][];
             /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
             title?: string | null;
             /** @description Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text. */
@@ -1778,9 +1814,11 @@ export interface components {
             liquiditySubunits: number;
             /**
              * Format: int64
-             * @description Static initial budget deposited to the LMSR bot at funding time, denominated in product collateral subunits (msat). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
+             * @description Total confirmed post-creation funding assigned to the LMSR bot, denominated in product collateral subunits (msat). It can increase after additional accepted funding payments. It is operator-owned and non-withdrawable. It is not a depositor position, live residual, or order-book depth.
              */
             ammBotBudgetSubunits: number;
+            /** @description Exact durable event order that produced `ammBotBudgetSubunits`. Null before the first confirmed funding receipt. Clients use this value to reject an older catalogue total after a live funding notification. */
+            fundingRevision: string | null;
             /**
              * Format: int64
              * @description Cumulative settled collateral face amount of all fills in the market's history.
@@ -1792,13 +1830,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
-            /** @description Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility. */
-            lastTradedPrice?: number | null;
-            /** @description Creator-specified registration-time probability per atomic outcome, expressed as integer percentages that sum to 100. Clients use this as the default market price before any trade has established a live last-traded price. */
-            initialProbabilities: {
-                [key: string]: number;
-            };
+            divisibility: 1000 | 1000000;
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
             categoryTags: string[];
             /**
@@ -1806,6 +1838,8 @@ export interface components {
              * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
              */
             lastSuccessfulRefreshAt: string;
+            /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. */
+            latestConfirmedTrades: components["schemas"]["LatestConfirmedTrade"][];
         };
         MarketCatalogueResponse: {
             /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */
@@ -1818,7 +1852,7 @@ export interface components {
              */
             lastSuccessfulRefreshAt: string;
         };
-        /** @description RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
+        /** @description RFC 9457 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
         ProblemDetails: {
             /** @description A URI reference identifying the problem type. */
             type?: string;
@@ -1830,6 +1864,12 @@ export interface components {
             detail?: string;
             /** @description A URI reference identifying the specific occurrence. */
             instance?: string;
+            /** @description Stable application error code, when provided by the endpoint. */
+            code?: string;
+            /** @description The capacity limit that rejected admission, when applicable. */
+            limitCode?: string;
+            /** @description Diagnostic correlation identifier, when provided. */
+            traceId?: string;
         };
     };
     responses: never;
@@ -1865,11 +1905,11 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": {
-                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, liquidity, and category tags. */
+                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. Maximum length is 65,536 UTF-16 code units. */
                     metadata: string;
                     /**
                      * Format: binary
-                     * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+                     * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MiB).
                      */
                     thumbnail?: string;
                 };
@@ -1909,6 +1949,64 @@ export interface operations {
                 content: {
                     "application/json": string;
                 };
+            };
+            /** @description The complete request body exceeds the 6 MiB limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMarketRegistration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored public market registration facts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketRegistrationResponse"];
+                };
+            };
+            /** @description Invalid condition ID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No market registration exists for this condition ID */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Anonymous or authenticated market-query rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The registration authority could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1960,6 +2058,10 @@ export interface operations {
     getMarketPriceHistory: {
         parameters: {
             query?: {
+                /** @description Opaque source position from a server response. Do not compare positions on the client. */
+                minimumEventOrder?: string;
+                /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
+                refresh?: boolean;
                 timeframe?: "1h" | "24h" | "7d" | "30d" | "all";
             };
             header?: never;
@@ -1980,8 +2082,15 @@ export interface operations {
                     "application/json": components["schemas"]["MarketPriceHistoryResponse"];
                 };
             };
-            /** @description Invalid condition id or timeframe */
+            /** @description Invalid condition id, timeframe, or event order */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The snapshot could not prove the requested position within the read deadline. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1991,7 +2100,12 @@ export interface operations {
     };
     getMarketComments: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque source position from a server response. Do not compare positions on the client. */
+                minimumEventOrder?: string;
+                /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
+                refresh?: boolean;
+            };
             header?: never;
             path: {
                 /** @description The condition identifier (hex string derived from the oracle announcement). */
@@ -2010,8 +2124,15 @@ export interface operations {
                     "application/json": components["schemas"]["MarketCommentsResponse"];
                 };
             };
-            /** @description Invalid condition id */
+            /** @description Invalid condition id or event order */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The snapshot could not prove the requested position within the read deadline. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2085,12 +2206,14 @@ export interface operations {
                     "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
                 };
             };
-            /** @description Malformed batch envelope or malformed condition path. A resolved per-item condition mismatch returns a `routeMismatch` failure result instead of HTTP 400. */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2099,26 +2222,41 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Condition not registered */
+            /** @description market-closed. The market is closed before submission. Framework authorization failures can return a different body. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-market-not-found. The condition is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Market is closed or batch conflicted with book state */
+            /** @description order-batch-conflict or order-market-closed. A failed whole-request response does not establish that no item was accepted. Reconcile the original item identities before retrying without changes. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Item-weighted rate limit exceeded */
+            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2147,12 +2285,14 @@ export interface operations {
                     "application/json": components["schemas"]["BatchCancelOrdersResponse"];
                 };
             };
-            /** @description Invalid batch envelope */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2161,19 +2301,23 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Condition not registered */
+            /** @description order-market-not-found. The condition is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Item-weighted rate limit exceeded */
+            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2196,6 +2340,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListRestingOrdersResponse"];
+                };
+            };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */
@@ -2232,13 +2385,13 @@ export interface operations {
                     "application/json": components["schemas"]["SubmitOrderResponse"];
                 };
             };
-            /** @description Validation error */
+            /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": string;
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */
@@ -2248,26 +2401,145 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Settlement capability is absent, belongs to another authenticated owner, or its binding digest does not match. */
+            /** @description The application closed-market gate returns market-closed. Framework authorization failures can return a different body. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Route market does not match the bound intent, or the capability is stale, expired, selected, or otherwise not current and no matching previously accepted admission exists. An exact accepted replay returns that prior result instead of this conflict. */
+            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. A submission failure alone does not authorize a refund. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Settlement capability authority is unavailable. */
+            /** @description order-admission-unavailable or order-processing-unavailable. Retain the original operation for retry and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    PreviewFokOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One bounded preview request. The raw request body is limited to 16 KiB and oversized declared-length or chunked bodies are rejected before JSON binding or planning. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewFokOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Read-only FOK preview result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewFokOrderResponse"];
+                };
+            };
+            /** @description Invalid market route, price, face amount, or request shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Raw request body exceeds the 16 KiB limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
                 content?: never;
+            };
+            /** @description Preview rate limit or concurrency limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Number of seconds before the client should retry. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    PreviewFokOrderCapacity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The raw request body is limited to 16 KiB. Oversized declared-length or chunked bodies are rejected before JSON binding or planning. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewFokOrderCapacityRequest"];
+            };
+        };
+        responses: {
+            /** @description Read-only FOK capacity result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewFokOrderCapacityResponse"];
+                };
+            };
+            /** @description Invalid market route, price, or request shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Raw request body exceeds the 16 KiB limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Preview rate limit or concurrency limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Number of seconds before the client should retry. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2292,12 +2564,14 @@ export interface operations {
                     "application/json": components["schemas"]["ListMyOrdersResponse"];
                 };
             };
-            /** @description Missing or invalid conditionId */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2331,6 +2605,15 @@ export interface operations {
                     "application/json": components["schemas"]["OrderStatusResponse"];
                 };
             };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
                 headers: {
@@ -2338,12 +2621,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Order not found */
-            404: {
+            /** @description The order belongs to another authenticated owner. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description order-not-found. The order is unavailable for this request. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2368,6 +2660,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
                 headers: {
@@ -2375,59 +2676,23 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Order not found */
+            /** @description order-not-found. Missing, foreign, and wrong-route cancellation targets return the same response. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-        };
-    };
-    declineOrderContinuation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-                orderId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeclineOrderContinuationRequest"];
-            };
-        };
-        responses: {
-            /** @description Continuation is durably declined. Exact replay is idempotent. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
-                content?: never;
             };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Order or continuation is absent. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Stale revision or continuation already consumed. */
+            /** @description order-cancellation-conflict. Order state changed before cancellation could be committed. Retry the original request. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2452,35 +2717,14 @@ export interface operations {
                     "application/json": components["schemas"]["OrderBookSnapshot"];
                 };
             };
-        };
-    };
-    getLiquidity: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current liquidity state */
-            200: {
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LiquidityStateResponse"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
-            };
-            /** @description No liquidity state for this market */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -2537,93 +2781,6 @@ export interface operations {
             };
         };
     };
-    requestEcashDeposit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestEcashDepositRequest"];
-            };
-        };
-        responses: {
-            /** @description Deposit recorded; verification proceeds asynchronously */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestEcashDepositResponse"];
-                };
-            };
-            /** @description Validation error (e.g. malformed proofs token, non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey deposit-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getDepositStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-                /** @description Deposit identifier returned by the request endpoint. */
-                depositId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deposit found */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GetDepositResponseDto"];
-                };
-            };
-            /** @description No deposit with this id for this condition */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     getParticipationScore: {
         parameters: {
             query?: never;
@@ -2644,58 +2801,6 @@ export interface operations {
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    payParticipationScoreEcash: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PayParticipationScoreEcashRequest"];
-            };
-        };
-        responses: {
-            /** @description Ecash accepted and Score credited */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PayParticipationScoreEcashResponse"];
-                };
-            };
-            /** @description Validation error (e.g. malformed token or non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey payment-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet-service payment error */
-            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2731,29 +2836,35 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The delivery belongs to a different subject. */
+            /** @description The delivery belongs to a different subject. Application code: cashu-delivery-forbidden. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description No delivery exists for deliveryId. */
+            /** @description No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Delivery status rate limit exceeded. */
-            429: {
+            /** @description The saved delivery was rejected. Application code: cashu-delivery-conflict. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description The durable recipient is unavailable. */
-            502: {
+            /** @description Delivery status rate limit exceeded. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2786,12 +2897,14 @@ export interface operations {
                     "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
                 };
             };
-            /** @description The delivery request is invalid. */
+            /** @description Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -2800,19 +2913,32 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The authenticated subject differs from accountSubject. */
+            /** @description Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description deliveryId is already bound to a different immutable tuple. */
+            /** @description Funding market not found. Application code: market-funding-market-not-found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Delivery submission rate limit exceeded. */
             429: {
@@ -2821,12 +2947,32 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The durable recipient is unavailable. */
+            /** @description Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body. */
             502: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Participation Score mint pre-admission is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2911,6 +3057,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
         };
     };
     createSettlementCapability: {
@@ -2935,12 +3090,14 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResponse"];
                 };
             };
-            /** @description Malformed, noncanonical, expired, or unsupported artifact. */
+            /** @description Application rejection of a malformed, noncanonical, expired, or unsupported artifact. Framework input binding can return a different error body. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -2949,33 +3106,50 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Participation Score is insufficient for capability preparation. */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Artifact or request exceeds the advertised byte/count limits. */
+            /** @description Application rejection of an artifact or request above the advertised byte/count limits. Framework request-size rejection can return a different error body. */
             413: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Per-subject capability admission is saturated. */
+            /** @description Application capability admission or process capacity is saturated. Framework rate-limit rejection can return a different error body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Mint validation or durable capability authority is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3013,12 +3187,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Latest-report idempotency or wallet interval lifecycle conflict. */
+            /** @description ProblemDetails.code is `asset-monitoring-baseline-required` when this account-wallet pair has no accepted baseline. It is `asset-monitoring-report-conflict` for changed latest-report content or another report conflict. A client may retry only the baseline-required response with `startsNewInterval: true`, and only when it has no pending submitted order. Other or unknown conflict codes do not permit an automatic interval restart. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Request exceeds the 1 MiB report limit. */
             413: {
@@ -3048,7 +3224,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Bounded active-wallet monitoring summary. */
+            /** @description Bounded summary for the selected account-wallet pair. */
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
@@ -3071,14 +3247,6 @@ export interface operations {
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3109,7 +3277,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Canonically ordered bounded active-wallet asset page. */
+            /** @description Canonically ordered bounded asset page for the selected account-wallet pair. */
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
@@ -3119,7 +3287,7 @@ export interface operations {
                     "application/json": components["schemas"]["AssetMonitoringAssetsResponse"];
                 };
             };
-            /** @description Malformed wallet id, page size, or cursor. */
+            /** @description Malformed wallet id, page size, or invalid or stale cursor. */
             400: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
@@ -3132,14 +3300,6 @@ export interface operations {
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3169,7 +3329,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description At most 300 deterministic value points from compact active-interval facts. */
+            /** @description At most 300 deterministic value points from compact facts in the selected account-wallet interval. */
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
@@ -3192,14 +3352,6 @@ export interface operations {
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3230,7 +3382,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Bounded active-wallet monitoring summary, asset page, and value history. */
+            /** @description Bounded summary, asset page, and value history for the selected account-wallet pair. */
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
@@ -3253,14 +3405,6 @@ export interface operations {
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3316,7 +3460,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3342,6 +3488,15 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResponse"];
                 };
             };
+            /** @description Invalid capability binding digest. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
@@ -3354,7 +3509,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3390,7 +3547,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3414,6 +3573,15 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
                 };
             };
+            /** @description Invalid operation identifier. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
@@ -3426,7 +3594,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3459,7 +3629,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -3473,14 +3645,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Result lifecycle version conflict. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

@@ -11,6 +11,12 @@
  */
 
 import { mnemonicToSeedSync } from "@scure/bip39";
+import { selectNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
+import { awaitAbortable } from "@bitcaster/client-sdk/engineClient";
+import {
+  derivePaymentRequestReceiveKeyPair,
+  type PaymentRequestReceiveKeyPair,
+} from "@bitcaster/client-sdk/paymentRequest";
 import { nip19, nip44 } from "nostr-tools";
 import {
   generateSecretKey,
@@ -28,11 +34,7 @@ import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 // Key derivation
 // ---------------------------------------------------------------------------
 
-export interface NostrKeyPair {
-  privateKey: Uint8Array;
-  privateKeyHex: string;
-  publicKey: string; // hex
-}
+export type NostrKeyPair = PaymentRequestReceiveKeyPair;
 
 /**
  * Derive a Nostr keypair from a BIP-39 mnemonic.
@@ -40,14 +42,7 @@ export interface NostrKeyPair {
  * matching cashu.me's `walletSeedGenerateKeyPair`.
  */
 export function deriveNostrKeyPair(mnemonic: string): NostrKeyPair {
-  const seed = mnemonicToSeedSync(mnemonic);
-  const privateKey = seed.slice(0, 32);
-  const publicKey = getPublicKey(privateKey);
-  return {
-    privateKey,
-    privateKeyHex: bytesToHex(privateKey),
-    publicKey,
-  };
+  return derivePaymentRequestReceiveKeyPair(mnemonicToSeedSync(mnemonic));
 }
 
 /**
@@ -92,7 +87,8 @@ export async function sendNip17DM(
   message: string,
   relays?: string[],
 ): Promise<void> {
-  const resolvedRelays = relays ?? DEFAULT_RELAYS;
+  const resolvedRelays = selectNostrRelayUrls(relays, DEFAULT_RELAYS);
+  if (resolvedRelays.length === 0) throw new Error("No Nostr relays are selected");
 
   // 1. Create kind 14 rumor (unsigned DM)
   const rumor: UnsignedEvent = {
@@ -139,23 +135,21 @@ export async function sendNip17DM(
     explicitRelayUrls: resolvedRelays,
     signer: new NDKPrivateKeySigner(bytesToHex(randomPrivKey)),
   });
-  await ndk.connect();
-
-  const ndkEvent = new NDKEvent(ndk);
-  ndkEvent.kind = wrapEvent.kind;
-  ndkEvent.content = wrapEvent.content;
-  ndkEvent.tags = wrapEvent.tags;
-  ndkEvent.created_at = wrapEvent.created_at;
-  ndkEvent.pubkey = randomPubKey;
-  ndkEvent.id = wrapEvent.id;
-  ndkEvent.sig = wrapEvent.sig;
-
   try {
+    await ndk.connect();
+
+    const ndkEvent = new NDKEvent(ndk);
+    ndkEvent.kind = wrapEvent.kind;
+    ndkEvent.content = wrapEvent.content;
+    ndkEvent.tags = wrapEvent.tags;
+    ndkEvent.created_at = wrapEvent.created_at;
+    ndkEvent.pubkey = randomPubKey;
+    ndkEvent.id = wrapEvent.id;
+    ndkEvent.sig = wrapEvent.sig;
+
     await ndkEvent.publish();
   } finally {
-    for (const relay of ndk.pool.relays.values()) {
-      relay.disconnect();
-    }
+    ndk.explicitRelayUrls = [];
   }
 }
 
@@ -174,8 +168,10 @@ export async function subscribeNip17DMs(
   publicKey: string,
   onMessage: (content: string, senderPubkey: string) => void,
   relays?: string[],
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<() => void> {
-  const resolvedRelays = relays ?? DEFAULT_RELAYS;
+  const resolvedRelays = selectNostrRelayUrls(relays, DEFAULT_RELAYS);
+  if (resolvedRelays.length === 0) return () => {};
   const privKey = hexToBytes(privateKeyHex);
   const seenIds = new Set<string>();
   const MAX_SEEN_IDS = 5000;
@@ -183,95 +179,126 @@ export async function subscribeNip17DMs(
   const ndk = createExplicitRelayNdk({
     explicitRelayUrls: resolvedRelays,
   });
+  let closed = false;
+  let subscription: ReturnType<typeof ndk.subscribe> | undefined;
+  let finishReadiness: (() => void) | undefined;
+  const unsubscribe = () => {
+    if (closed) return;
+    closed = true;
+    signal?.removeEventListener("abort", unsubscribe);
+    finishReadiness?.();
+    subscription?.stop();
+    ndk.explicitRelayUrls = [];
+  };
+  signal?.addEventListener("abort", unsubscribe, { once: true });
+  if (signal?.aborted) {
+    unsubscribe();
+    return unsubscribe;
+  }
 
-  // NDK connect is best-effort — it will keep retrying failed relays internally
-  await ndk.connect().catch((e) => {
-    console.warn("[nip17] NDK connect error (will retry):", e);
-  });
+  try {
+    // NDK connect is best-effort — it will keep retrying failed relays internally
+    await awaitAbortable(
+      ndk.connect().catch((e) => {
+        console.warn("[nip17] NDK connect error (will retry):", e);
+      }),
+      signal,
+    );
+    if (closed) return unsubscribe;
 
-  // Wait briefly for at least one relay to connect
-  await new Promise<void>((resolve) => {
-    let resolved = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const checkConnected = () => {
-      for (const relay of ndk.pool.relays.values()) {
-        if (relay.status >= NDKRelayStatus.CONNECTED) {
+    // Wait briefly for at least one relay to connect
+    await new Promise<void>((resolve) => {
+      let resolved = false;
+      let interval: ReturnType<typeof setInterval> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      finishReadiness = () => {
+        if (resolved) return;
+        resolved = true;
+        if (interval) clearInterval(interval);
+        if (timeout) clearTimeout(timeout);
+        resolve();
+      };
+      const checkConnected = () => {
+        for (const relay of ndk.pool.relays.values()) {
+          if (relay.status >= NDKRelayStatus.CONNECTED) {
+            if (!resolved) {
+              resolved = true;
+              if (interval) clearInterval(interval);
+              if (timeout) clearTimeout(timeout);
+              resolve();
+            }
+            return;
+          }
+        }
+      };
+      checkConnected();
+      if (!resolved) {
+        interval = setInterval(() => {
+          checkConnected();
+        }, 500);
+        timeout = setTimeout(() => {
+          if (interval) clearInterval(interval);
           if (!resolved) {
             resolved = true;
-            if (interval) clearInterval(interval);
-            if (timeout) clearTimeout(timeout);
+            console.warn("[nip17] No relay connected within 5s, subscribing anyway");
             resolve();
           }
+        }, 5000);
+      }
+    });
+    finishReadiness = undefined;
+    if (closed) return unsubscribe;
+
+    // Extended since window: 7 days to catch messages while user was offline
+    const since = Math.floor(Date.now() / 1000) - 604800;
+    const filter: NDKFilter = {
+      kinds: [1059 as number],
+      "#p": [publicKey],
+      since,
+    };
+
+    const sub = ndk.subscribe(filter, { closeOnEose: false, groupable: false });
+    subscription = sub;
+
+    sub.on("event", (wrapEvent: NDKEvent) => {
+      if (seenIds.has(wrapEvent.id)) return;
+      seenIds.add(wrapEvent.id);
+      if (seenIds.size > MAX_SEEN_IDS) seenIds.clear();
+
+      try {
+        // Unwrap: decrypt gift wrap → seal
+        const wrapConvKey = nip44.v2.utils.getConversationKey(privKey, wrapEvent.pubkey);
+        const sealString = nip44.v2.decrypt(wrapEvent.content, wrapConvKey);
+        const sealEvent = JSON.parse(sealString);
+
+        // Verify seal signature (NIP-17 requires valid Schnorr sig)
+        if (!verifyEvent(sealEvent)) {
+          console.warn("[nip17] Seal signature verification failed, ignoring");
           return;
         }
-      }
-    };
-    checkConnected();
-    if (!resolved) {
-      interval = setInterval(() => {
-        checkConnected();
-      }, 500);
-      timeout = setTimeout(() => {
-        if (interval) clearInterval(interval);
-        if (!resolved) {
-          resolved = true;
-          console.warn("[nip17] No relay connected within 5s, subscribing anyway");
-          resolve();
+
+        // Unwrap seal: decrypt → rumor
+        const sealConvKey = nip44.v2.utils.getConversationKey(privKey, sealEvent.pubkey);
+        const rumorString = nip44.v2.decrypt(sealEvent.content, sealConvKey);
+        const rumor = JSON.parse(rumorString);
+
+        // Verify sender consistency: seal pubkey must match rumor pubkey
+        if (sealEvent.pubkey !== rumor.pubkey) {
+          console.warn("[nip17] Seal/rumor pubkey mismatch, ignoring");
+          return;
         }
-      }, 5000);
-    }
-  });
 
-  // Extended since window: 7 days to catch messages while user was offline
-  const since = Math.floor(Date.now() / 1000) - 604800;
-  const filter: NDKFilter = {
-    kinds: [1059 as number],
-    "#p": [publicKey],
-    since,
-  };
-
-  const sub = ndk.subscribe(filter, { closeOnEose: false, groupable: false });
-
-  sub.on("event", (wrapEvent: NDKEvent) => {
-    if (seenIds.has(wrapEvent.id)) return;
-    seenIds.add(wrapEvent.id);
-    if (seenIds.size > MAX_SEEN_IDS) seenIds.clear();
-
-    try {
-      // Unwrap: decrypt gift wrap → seal
-      const wrapConvKey = nip44.v2.utils.getConversationKey(privKey, wrapEvent.pubkey);
-      const sealString = nip44.v2.decrypt(wrapEvent.content, wrapConvKey);
-      const sealEvent = JSON.parse(sealString);
-
-      // Verify seal signature (NIP-17 requires valid Schnorr sig)
-      if (!verifyEvent(sealEvent)) {
-        console.warn("[nip17] Seal signature verification failed, ignoring");
-        return;
+        onMessage(rumor.content, rumor.pubkey);
+      } catch (e) {
+        // Ignore events we can't decrypt (not for us, or malformed)
+        console.warn("[nip17] Failed to decrypt DM:", (e as Error).message);
       }
+    });
 
-      // Unwrap seal: decrypt → rumor
-      const sealConvKey = nip44.v2.utils.getConversationKey(privKey, sealEvent.pubkey);
-      const rumorString = nip44.v2.decrypt(sealEvent.content, sealConvKey);
-      const rumor = JSON.parse(rumorString);
-
-      // Verify sender consistency: seal pubkey must match rumor pubkey
-      if (sealEvent.pubkey !== rumor.pubkey) {
-        console.warn("[nip17] Seal/rumor pubkey mismatch, ignoring");
-        return;
-      }
-
-      onMessage(rumor.content, rumor.pubkey);
-    } catch (e) {
-      // Ignore events we can't decrypt (not for us, or malformed)
-      console.warn("[nip17] Failed to decrypt DM:", (e as Error).message);
-    }
-  });
-
-  return () => {
-    sub.stop();
-    for (const relay of ndk.pool.relays.values()) {
-      relay.disconnect();
-    }
-  };
+    return unsubscribe;
+  } catch (error) {
+    unsubscribe();
+    if (signal?.aborted) return unsubscribe;
+    throw error;
+  }
 }

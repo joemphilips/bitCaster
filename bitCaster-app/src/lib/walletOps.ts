@@ -1,7 +1,12 @@
-import { PaymentRequest, PaymentRequestTransportType, type Proof } from "@cashu/cashu-ts";
-import { decodeToken, receiveAndStoreTokenRecoverably } from "@/lib/cashu";
+import { PaymentRequest, type Proof } from "@cashu/cashu-ts";
+import {
+  createAmountlessCashuPaymentRequest,
+  normalizePaymentRequestMintUrl,
+} from "@bitcaster/client-sdk/paymentRequest";
+import { captureBrowserMintPersistenceContext, receiveAndStoreTokenRecoverably } from "@/lib/cashu";
 import { deriveNostrKeyPair, getNostrNprofile } from "@/lib/nip17";
 import { normalizeUrl } from "@/lib/url";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { useSettingsStore } from "@/stores/settings";
 import { useWalletStore, type StoredMint } from "@/stores/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -11,12 +16,12 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
+import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import { normalizeNostrRelayUrl } from "@bitcaster/client-sdk/nostrRelays";
 import {
-  effectiveRelayUrls,
-  isAllowedNostrRelayUrl,
-  isKnownPublicNostrRelayUrl,
-} from "@/lib/relayDefaults";
-import { validateProductWalletTokenImport } from "@bitcaster/client-sdk/tokenImportValidation";
+  decodeTokenImportLocally,
+  validateProductWalletTokenImport,
+} from "@bitcaster/client-sdk/tokenImportValidation";
 import { resolveTokenImportKeysets } from "@/lib/tokenImportKeysetResolver";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 
@@ -74,24 +79,7 @@ export function userRemoveMint(url: string): void {
 }
 
 export function normalizeRelayUrl(wssUrl: string): string {
-  const trimmed = wssUrl.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error("Relay URL must start with wss://");
-  }
-  if (parsed.protocol !== "wss:" && parsed.protocol !== "ws:") {
-    throw new Error("Relay URL must start with wss:// or local ws://");
-  }
-  const normalized = trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
-  if (isKnownPublicNostrRelayUrl(normalized)) {
-    throw new Error("Public Nostr relays are not supported. Use a bitCaster-owned relay.");
-  }
-  if (!isAllowedNostrRelayUrl(normalized)) {
-    throw new Error("Relay URL must be the configured bitCaster relay or a local relay.");
-  }
-  return normalized;
+  return normalizeNostrRelayUrl(wssUrl);
 }
 
 export function getRelayUrlValidationError(wssUrl: string): string | null {
@@ -135,13 +123,14 @@ export async function ingressReceiveCashuToken(
   source: WalletIngressSource,
   options?: { mintUrl?: string },
 ): Promise<IngressReceiveCashuTokenResult> {
+  const context = captureBrowserMintPersistenceContext();
   const validated = await validateProductWalletTokenImport({
     encodedToken: token,
-    decode: decodeToken,
     resolveKeysets: resolveTokenImportKeysets,
     bounds: { maxProofs: BROWSER_TOKEN_IMPORT_MAX_PROOFS },
     allowInsecureLoopbackHttp: isLocalDevelopmentOrigin(),
   });
+  context.requireCapturedProfile();
   if (validated.canonicalMintUrls.length !== 1) {
     throw new Error("Wallet receive supports exactly one mint per Cashu token");
   }
@@ -151,14 +140,32 @@ export async function ingressReceiveCashuToken(
   if (mintUrl !== validatedMintUrl) throw new Error("Cashu token mint does not match the request");
   const unit = validated.unit;
   const baseAsset = COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
+  context.requireCapturedProfile();
   const registration = await ingressRegisterMint(mintUrl, source);
-  const proofs = await receiveAndStoreTokenRecoverably(
-    validated.encodedToken,
-    mintUrl,
-    baseAsset,
-    unit,
-    validated.context,
-  );
+  context.requireCapturedProfile();
+  let proofs: Proof[];
+  if (validated.context === "ctf-position-msat") {
+    proofs = await receiveAndStoreTokenRecoverably(
+      validated.encodedToken,
+      mintUrl,
+      baseAsset,
+      unit,
+      validated.context,
+      context,
+      validated,
+    );
+  } else if (validated.context === "ctf-collateral-msat") {
+    proofs = await receiveAndStoreTokenRecoverably(
+      validated.encodedToken,
+      mintUrl,
+      baseAsset,
+      unit,
+      validated.context,
+      context,
+    );
+  } else {
+    throw new Error("Wallet receive supports msat product tokens only");
+  }
   return {
     ...registration,
     proofs,
@@ -177,7 +184,7 @@ function isLocalDevelopmentOrigin(): boolean {
 }
 
 export async function decodeWalletIngressToken(token: string) {
-  return decodeToken(token);
+  return decodeTokenImportLocally(token);
 }
 
 function sumProofSubunits(proofs: Proof[], unit: CashuProofUnit): number {
@@ -206,37 +213,19 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
   if (!mnemonic) {
     throw new Error("Wallet not set up");
   }
+  const walletScopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (walletScopeId === null) throw new Error("Wallet not set up");
 
   const keyPair = deriveNostrKeyPair(mnemonic);
   const configuredRelays = effectiveRelayUrls(useSettingsStore.getState().relays);
-  const nprofile = getNostrNprofile(
-    keyPair.publicKey,
-    configuredRelays.length > 0 ? configuredRelays : undefined,
-  );
+  const nprofile = getNostrNprofile(keyPair.publicKey, configuredRelays);
 
   // cashu-ts leaves the id undefined unless we provide one; the NIP-17 inbox
   // needs it echoed back by the payer to correlate the received token.
   const id = crypto.randomUUID().split("-")[0];
-  const canonicalMintUrl = normalizeUrl(mintUrl);
-  const request = new PaymentRequest(
-    [
-      {
-        type: PaymentRequestTransportType.NOSTR,
-        target: nprofile,
-        tags: [["n", "17"]],
-      },
-    ],
-    id,
-    undefined,
-    "sat",
-    [canonicalMintUrl],
-    undefined,
-  );
-  usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl);
+  const canonicalMintUrl = normalizePaymentRequestMintUrl(mintUrl);
+  const created = createAmountlessCashuPaymentRequest({ id, mintUrl: canonicalMintUrl, nprofile });
+  usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl, walletScopeId);
 
-  return {
-    encoded: request.toEncodedRequest(),
-    id,
-    request,
-  };
+  return created;
 }

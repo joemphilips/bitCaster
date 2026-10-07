@@ -1,3 +1,10 @@
+import {
+  bindRegisteredDlcConditionAuthority,
+  type ConditionOracleResolutionContext,
+} from '@bitcaster-market/client-sdk/conditionOracleEvidence'
+import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { resolveDaemonConditionOracleEvidence } from './nativeConditionOracleEvidence.ts'
+import { readNativePositionClaimInputKeyset } from './nativePositionClaim.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -5,12 +12,12 @@ import {
   prepareDlcConditionResolutionEvidence,
   verifyDlcConditionResolution,
   type ManagedConditionInventoryBinding,
-  type PersistedRegisteredDlcConditionAuthority,
 } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import {
   canonicalProofOperationMintIdentity,
   redeemOutcomeLegWithOperation,
   UneconomicCtfRedeemError,
+  getActiveRegularKeyset,
   type AuthenticatedCtfRedeemTerminalEvidence,
   type RedeemWallet,
 } from '@bitcaster-market/client-sdk/ctfRedeem'
@@ -22,7 +29,7 @@ import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/du
 import type { ConditionAttestationResponse } from '@bitcaster-market/client-sdk/engineClient'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { DaemonProfile } from './profile.ts'
@@ -54,7 +61,10 @@ import {
 const RETIREMENT_PAGE_PROOF_MAX = 64
 
 export interface ManagedConditionRetirementEngine {
-  getConditionAttestation(conditionId: string): Promise<ConditionAttestationResponse | null>
+  getConditionAttestation(
+    conditionId: string,
+    signal?: AbortSignal,
+  ): Promise<ConditionAttestationResponse | null>
 }
 
 export async function retireResolvedDaemonConditions(input: {
@@ -193,6 +203,7 @@ export async function retireDaemonConditionInventory(input: {
 }
 
 async function resumePreparedRetirementOperations(input: {
+  readonly engine?: ManagedConditionRetirementEngine
   readonly conditionId: string
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
@@ -223,6 +234,7 @@ async function resumePreparedRetirementOperations(input: {
 }
 
 async function redeemRetirementPage(input: {
+  readonly engine?: ManagedConditionRetirementEngine
   readonly conditionId: string
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
@@ -259,9 +271,45 @@ async function redeemRetirementPage(input: {
     reservationId,
     asset,
     persisted: input.persisted,
+    wallet,
   })
+  const existing = await getProofOperation(operationId)
+  let context = existing?.metadata.oracleResolutionContext as
+    | ConditionOracleResolutionContext
+    | undefined
+  let inputKeysets = existing?.metadata.oracleInputKeysets as
+    | readonly DurableCustodyMintKeysetAuthority[]
+    | undefined
+  if (existing === null) {
+    const optional = await resolveDaemonConditionOracleEvidence({
+      profile: input.profile,
+      fence: input.fence,
+      conditionId: input.conditionId,
+      engine: input.engine ?? { getConditionAttestation: async () => null },
+      wallet,
+    })
+    if (optional.evidence.status === 'verified') {
+      const candidate = optional.evidence.context
+      const verified = verifyDlcConditionResolution(
+        candidate.registered,
+        candidate.registered,
+        candidate.evidence,
+      )
+      if (verified.evidenceFingerprint !== resolution.evidenceFingerprint)
+        throw new Error('retirement current evidence differs from frozen inventory resolution')
+      context = candidate
+      inputKeysets = [
+        await readNativePositionClaimInputKeyset(
+          input.profile.mintUrl,
+          asset,
+          input.page.keysetId,
+          wallet,
+        ),
+      ]
+    }
+  }
   try {
-    await redeemOutcomeLegWithOperation({
+    const result = await redeemOutcomeLegWithOperation({
       mintUrl: input.profile.mintUrl,
       operationId,
       wallet,
@@ -271,10 +319,18 @@ async function redeemRetirementPage(input: {
       outcomeSetId: input.page.outcomeSetId,
       outcomeKeysetId: input.page.keysetId,
       unit: 'msat',
-      oracleWitness: input.persisted.oracleWitness,
+      oracleWitness:
+        existing === null
+          ? context === undefined
+            ? ''
+            : input.persisted.oracleWitness
+          : (existing.metadata.oracleWitness as string),
+      oracleResolutionContext: context,
+      oracleInputKeysets: inputKeysets,
       proofs: input.page.proofs,
       restoreOutputGroups,
     })
+    if (result.refused) throw new Error('condition retirement mint refusal remains pending')
   } catch (error) {
     if (!(error instanceof UneconomicCtfRedeemError)) throw error
     await retainUneconomicConditionProofsFenced({
@@ -288,6 +344,7 @@ async function redeemRetirementPage(input: {
 }
 
 function retirementOperationStore(input: {
+  readonly wallet: RedeemWallet
   readonly fence: CustodyScopeFence
   readonly reservationId: string
   readonly asset: Extract<StoredProofRecord['asset'], { kind: 'Outcome' }>
@@ -306,21 +363,35 @@ function retirementOperationStore(input: {
   return {
     getProofOperation: async (operationId) =>
       (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-    prepareProofOperation: async (operation) =>
-      (await prepareProofOperationWithExactReservation(
+    prepareProofOperation: async (operation) => {
+      const keyset = await getActiveRegularKeyset(input.wallet, 'msat')
+      if (keyset.id !== operation.metadata?.regularKeysetId)
+        throw new Error('retirement exact regular keyset is foreign')
+      const regularOutputKeysetAuthority: DurableCustodyMintKeysetAuthority = {
+        canonicalMintUrl: operation.mintUrl,
+        id: keyset.id,
+        unit: 'msat',
+        keys: keyset.keys,
+        inputFeePpk: keyset.input_fee_ppk ?? 0,
+        finalExpiry: keyset.final_expiry ?? null,
+        identity: { kind: 'regular' },
+      }
+      return (await prepareProofOperationWithExactReservation(
         {
           ...operation,
           reservationId: input.reservationId,
           asset: input.asset,
           metadata: {
             ...operation.metadata,
+            regularOutputKeysetAuthority,
             purpose: 'managed-condition-retirement',
             reservationId: input.reservationId,
             managedConditionOperationAuthority,
           },
         },
         { fence: input.fence, observedAtMs: Date.now() },
-      )) as CtfProofOperationRecord,
+      )) as CtfProofOperationRecord
+    },
     markProofOperationCompleted: async (operationId, completion) =>
       (await completeManagedConditionRedeemFenced(operationId, completion, {
         fence: input.fence,
@@ -396,7 +467,7 @@ async function buildRetirementPreview(
       const count =
         remaining > RETIREMENT_PAGE_PROOF_MAX ? RETIREMENT_PAGE_PROOF_MAX - 1 : remaining
       const page = group.slice(offset, offset + count)
-      fee += computeInputFeeSatsForProofs(page, feePpk)
+      fee += computeInputFeeSubunitsForProofs(page, feePpk)
       offset += count
     }
   }
@@ -419,6 +490,18 @@ function proofMatchesOutcome(record: StoredProofRecord, outcome: string): boolea
   return record.asset.kind === 'Outcome' && record.asset.outcomeSetId.split('|').includes(outcome)
 }
 
+export function verifyDaemonConditionAttestation(
+  fence: CustodyScopeFence,
+  profile: DaemonProfile,
+  conditionId: string,
+  response: ConditionAttestationResponse,
+): { resolution: ReturnType<typeof verifyDlcConditionResolution>; oracleWitness: string } {
+  return verifyAttestation(
+    inventoryBinding(fence, profile, canonicalConditionId(conditionId)),
+    response,
+  )
+}
+
 function verifyAttestation(
   binding: ManagedConditionInventoryBinding,
   response: ConditionAttestationResponse,
@@ -430,25 +513,10 @@ function verifyAttestation(
     response.attestedOutcome,
     response.oracleWitness,
   )
-  const registered = registeredAuthority(binding, response.registeredAuthority)
+  const registered = bindRegisteredDlcConditionAuthority(binding, response.registeredAuthority)
   return {
     resolution: verifyDlcConditionResolution(binding, registered, prepared.evidence),
     oracleWitness: prepared.canonicalOracleWitness,
-  }
-}
-
-function registeredAuthority(
-  binding: ManagedConditionInventoryBinding,
-  value: unknown,
-): PersistedRegisteredDlcConditionAuthority {
-  if (!record(value)) throw new Error('registered condition authority is invalid')
-  return {
-    schemaVersion: 1,
-    ...binding,
-    eventId: value.eventId as string,
-    outcomes: value.outcomes as string[],
-    threshold: value.threshold as number,
-    oracles: value.oracles as PersistedRegisteredDlcConditionAuthority['oracles'],
   }
 }
 
@@ -540,10 +608,6 @@ function canonicalConditionId(value: string): string {
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} is invalid`)
   return value
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 interface RetirementPage {

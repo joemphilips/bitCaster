@@ -7,6 +7,58 @@
     "node": ">=22"
   },
   "exports": {
+    "./outgoingCashuActivity": {
+      "types": "./dist/outgoingCashuActivity.d.ts",
+      "import": "./dist/outgoingCashuActivity.js"
+    },
+    "./privateNip78": {
+      "types": "./dist/privateNip78.d.ts",
+      "import": "./dist/privateNip78.js"
+    },
+    "./activityLog": {
+      "types": "./dist/activityLog.d.ts",
+      "import": "./dist/activityLog.js"
+    },
+    "./oracleAnnouncementEncoding": {
+      "types": "./dist/oracleAnnouncementEncoding.d.ts",
+      "import": "./dist/oracleAnnouncementEncoding.js"
+    },
+    "./oraclePublication": {
+      "types": "./dist/oraclePublication.d.ts",
+      "import": "./dist/oraclePublication.js"
+    },
+    "./oracleBackupDelivery": {
+      "types": "./dist/oracleBackupDelivery.d.ts",
+      "import": "./dist/oracleBackupDelivery.js"
+    },
+    "./oracleBackup": {
+      "types": "./dist/oracleBackup.d.ts",
+      "import": "./dist/oracleBackup.js"
+    },
+    "./oracleResolutionExplanation": {
+      "types": "./dist/oracleResolutionExplanation.d.ts",
+      "import": "./dist/oracleResolutionExplanation.js"
+    },
+    "./likedMarketClose": {
+      "types": "./dist/likedMarketClose.d.ts",
+      "import": "./dist/likedMarketClose.js"
+    },
+    "./bookmarks": {
+      "types": "./dist/bookmarks.d.ts",
+      "import": "./dist/bookmarks.js"
+    },
+    "./nip17PaymentRequest": {
+      "types": "./dist/nip17PaymentRequest.d.ts",
+      "import": "./dist/nip17PaymentRequest.js"
+    },
+    "./nostrRelays": {
+      "types": "./dist/nostrRelays.d.ts",
+      "import": "./dist/nostrRelays.js"
+    },
+    "./paymentRequest": {
+      "types": "./dist/paymentRequest.d.ts",
+      "import": "./dist/paymentRequest.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -167,6 +219,10 @@
       "types": "./dist/ctfRangeOrderPreparation.d.ts",
       "import": "./dist/ctfRangeOrderPreparation.js"
     },
+    "./ctfRangeOrderFeeComposition": {
+      "types": "./dist/ctfRangeOrderFeeComposition.d.ts",
+      "import": "./dist/ctfRangeOrderFeeComposition.js"
+    },
     "./ctfRangeOrderProtocol": {
       "types": "./dist/ctfRangeOrderProtocol.d.ts",
       "import": "./dist/ctfRangeOrderProtocol.js"
@@ -191,6 +247,10 @@
       "types": "./dist/durableWalletOperation.d.ts",
       "import": "./dist/durableWalletOperation.js"
     },
+    "./deterministicOutgoingCashuPreparation": {
+      "types": "./dist/deterministicOutgoingCashuPreparation.d.ts",
+      "import": "./dist/deterministicOutgoingCashuPreparation.js"
+    },
     "./durableOutgoingCashuTransfer": {
       "types": "./dist/durableOutgoingCashuTransfer.d.ts",
       "import": "./dist/durableOutgoingCashuTransfer.js"
@@ -211,6 +271,14 @@
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"
     },
+    "./durableWalletMelt": {
+      "types": "./dist/durableWalletMelt.d.ts",
+      "import": "./dist/durableWalletMelt.js"
+    },
+    "./walletPaymentQuote": {
+      "types": "./dist/walletPaymentQuote.d.ts",
+      "import": "./dist/walletPaymentQuote.js"
+    },
     "./durableWalletProofTransition": {
       "types": "./dist/durableWalletProofTransition.d.ts",
       "import": "./dist/durableWalletProofTransition.js"
@@ -227,7 +295,14 @@
       "types": "./dist/ctfRedeem.d.ts",
       "import": "./dist/ctfRedeem.js"
     },
-    "./ctfRegistration": "./src/ctfRegistration.ts",
+    "./ctfRegistration": {
+      "types": "./dist/ctfRegistration.d.ts",
+      "import": "./dist/ctfRegistration.js"
+    },
+    "./ctfListing": {
+      "types": "./dist/ctfListing.d.ts",
+      "import": "./dist/ctfListing.js"
+    },
     "./conditionalKeysets": {
       "types": "./dist/conditionalKeysets.d.ts",
       "import": "./dist/conditionalKeysets.js"
@@ -239,6 +314,10 @@
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
+    },
+    "./fokOrderPreview": {
+      "types": "./dist/fokOrderPreview.d.ts",
+      "import": "./dist/fokOrderPreview.js"
     },
     "./marketUnits": {
       "types": "./dist/marketUnits.d.ts",
@@ -332,6 +411,10 @@
       "types": "./dist/tradeTicket.d.ts",
       "import": "./dist/tradeTicket.js"
     },
+    "./tradeComment": {
+      "types": "./dist/tradeComment.d.ts",
+      "import": "./dist/tradeComment.js"
+    },
     "./tradingClient": "./src/tradingClient.ts",
     "./nut16Qr": {
       "types": "./dist/nut16Qr.d.ts",
@@ -340,6 +423,14 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
+    },
+    "./conditionOracleEvidence": {
+      "types": "./dist/conditionOracleEvidence.d.ts",
+      "import": "./dist/conditionOracleEvidence.js"
+    },
+    "./oracleBackupAccess": {
+      "types": "./dist/oracleBackupAccess.d.ts",
+      "import": "./dist/oracleBackupAccess.js"
     }
   },
   "scripts": {
@@ -363,7 +454,8 @@
     "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "cborg": "5.1.7"
+    "cborg": "5.1.7",
+    "nostr-tools": "2.23.9"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

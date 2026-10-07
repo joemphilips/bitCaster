@@ -24,7 +24,7 @@ import {
   type CustodyProofSqliteRow,
 } from '../src/durableCustodySqliteStore.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
-import { RECOVERY_COUNTER_BINDING, withDaemonHome } from './seedRecoveryTestSupport.ts'
+import { withDaemonHome } from './seedRecoveryTestSupport.ts'
 import {
   advanceDaemonKeysetCounter,
   readDaemonStateFromDatabase,
@@ -35,6 +35,10 @@ import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const KEYSET_ID = canonicalTestKeysetId('seed-recovery:one')
 const SECOND_KEYSET_ID = canonicalTestKeysetId('seed-recovery:two')
+const MSAT_RECOVERY_COUNTER_BINDING = {
+  normalizedMint: 'https://mint.example',
+  unit: 'msat' as const,
+}
 
 test('explicit ordinary recovery co-commits selectable and spent proofs with cursor and job', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-'))
@@ -81,7 +85,7 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
     await withDaemonHome(directory, async () => {
       const available = await readAvailableWalletProofsFenced({
         mintUrl: 'https://mint.example',
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
         mutation: { fence: fixture.fence, observedAtMs: 4 },
       })
       assert.deepEqual(
@@ -96,10 +100,148 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
             fence: fixture.fence,
             observedAtMs: 4,
           },
-          RECOVERY_COUNTER_BINDING,
+          MSAT_RECOVERY_COUNTER_BINDING,
         ),
         { start: 3, count: 1 },
       )
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('empty recovery batches advance the scan cursor without reserving native counters', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-empty-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a1'.repeat(64),
+      nostrSecretKeyHex: 'b2'.repeat(32),
+      incarnationId: 'recovery-empty-counter-range',
+      invocationId: 'recovery-empty-counter-range',
+    })
+    await setRecoveryCounter(fixture, 4)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-empty-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 300,
+            lastCounterWithSignature: null,
+            scanThroughCounter: 4,
+          },
+          proofs: [],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 300)
+    assert.equal(cursor.state, 'completed')
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-empty-counter-range'), 300)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 4,
+        custody: 4,
+      })
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery keeps a higher retained counter after spent-only signatures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-spent-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a2'.repeat(64),
+      nostrSecretKeyHex: 'b3'.repeat(32),
+      incarnationId: 'recovery-spent-counter-range',
+      invocationId: 'recovery-spent-counter-range',
+    })
+    await setRecoveryCounter(fixture, 10)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-spent-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 300,
+            lastCounterWithSignature: 2,
+            scanThroughCounter: 10,
+          },
+          proofs: [observed(fixture.profile.walletScopeId, 'spent-only', 'SPENT', 'spent')],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 300)
+    assert.equal(cursor.state, 'active')
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-spent-counter-range'), 300)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 10,
+        custody: 10,
+      })
+      assert.deepEqual(readRecoveryJob(database, 'recovery-spent-counter-range'), {
+        importedProofs: 0,
+        ignoredSpentProofs: 1,
+        revision: 1,
+        state: 'active',
+      })
+      assert.equal(readRowCount(database, 'custody_proofs'), 0)
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery advances paired counters past the retained mark through the last signature', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-new-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a3'.repeat(64),
+      nostrSecretKeyHex: 'b4'.repeat(32),
+      incarnationId: 'recovery-new-counter-range',
+      invocationId: 'recovery-new-counter-range',
+    })
+    await setRecoveryCounter(fixture, 4)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-new-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 7,
+            lastCounterWithSignature: 6,
+            scanThroughCounter: 4,
+          },
+          proofs: [
+            observed(fixture.profile.walletScopeId, 'above-retained', 'UNSPENT', 'selectable'),
+            observed(fixture.profile.walletScopeId, 'above-retained-spent', 'SPENT', 'spent'),
+          ],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 7)
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-new-counter-range'), 7)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 7,
+        custody: 7,
+      })
+      assert.deepEqual(readRecoveryJob(database, 'recovery-new-counter-range'), {
+        importedProofs: 1,
+        ignoredSpentProofs: 1,
+        revision: 1,
+        state: 'active',
+      })
     })
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -161,7 +303,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
       recoveryId: 'recovery-continuation',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       keysetId: KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -179,7 +321,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
   }
 })
 
-test('recovery rejects a resumed job with a changed mint or unit', async () => {
+test('recovery rejects a resumed job with a changed mint or sat unit', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-binding-'))
   try {
     const fixture = await createRecoveryFixture({
@@ -195,12 +337,12 @@ test('recovery rejects a resumed job with a changed mint or unit', async () => {
       batches: [signedBatch(0)],
     })
     await assert.rejects(
-      runRecoveryWithContext(fixture, 'recovery-binding', 'https://other.example', 'sat'),
+      runRecoveryWithContext(fixture, 'recovery-binding', 'https://other.example', 'msat'),
       /binding/,
     )
     await assert.rejects(
-      runRecoveryWithContext(fixture, 'recovery-binding', 'https://mint.example', 'msat'),
-      /binding/,
+      runRecoveryWithContext(fixture, 'recovery-binding', 'https://mint.example', 'sat'),
+      /msat/,
     )
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -231,7 +373,7 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
       recoveryId: 'recovery-multikeyset',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       keysetId: SECOND_KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -295,7 +437,7 @@ test('completed children remain extensible until the orchestrator finalizes disc
       recoveryId: 'recovery-discovery-finalize',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat' as const,
+      unit: 'msat' as const,
     }
     await runRecovery(fixture, {
       recoveryId: binding.recoveryId,
@@ -344,7 +486,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
       recoveryId: 'recovery-child-binding',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat' as const,
+      unit: 'msat' as const,
       keysetId: KEYSET_ID,
     }
     await fixture.store.readRecoveryStart(input)
@@ -369,7 +511,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
       /binding/,
     )
     await assert.rejects(
-      () => fixture.store.readRecoveryStart({ ...input, unit: 'msat' }),
+      () => fixture.store.readRecoveryStart({ ...input, unit: 'sat' }),
       /binding/,
     )
   } finally {
@@ -391,7 +533,7 @@ test('fenced finalization requires completed children and explicit empty discove
       recoveryId: 'recovery-finalization',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat' as const,
+      unit: 'msat' as const,
     }
     await runRecovery(fixture, {
       recoveryId: binding.recoveryId,
@@ -547,7 +689,7 @@ test('direct staged recovery rejects a target reservation added after its initia
       recoveryId,
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       keysetId: KEYSET_ID,
     })
     const recovered = observed(fixture.profile.walletScopeId, 'post-read', 'UNSPENT', 'selectable')
@@ -664,7 +806,7 @@ test('recovery replay preserves stronger proof state and rejects a foreign bindi
         recoveryId: `recovery-proof-${stronger.label}`,
         walletScopeId: fixture.profile.walletScopeId,
         mintUrl: 'https://mint.example',
-        unit: 'sat',
+        unit: 'msat',
         keysetId: KEYSET_ID,
         disclosureAcknowledged: true,
         authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -744,7 +886,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           recoveryId: 'recovery-before-commit',
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
-          unit: 'sat',
+          unit: 'msat',
           keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -774,7 +916,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           recoveryId: 'recovery-after-commit',
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
-          unit: 'sat',
+          unit: 'msat',
           keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -803,7 +945,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           recoveryId: 'recovery-after-commit',
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
-          unit: 'sat',
+          unit: 'msat',
           keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -853,7 +995,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       recoveryId: 'recovery-after-commit',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       keysetId: KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -910,7 +1052,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
       recoveryId: 'recovery-refusal',
       walletScopeId: profile.walletScopeId,
       mintUrl: 'https://mint.example',
-      unit: 'sat' as const,
+      unit: 'msat' as const,
       keysetId: KEYSET_ID,
       authority: {
         walletScopeId: profile.walletScopeId,
@@ -1057,7 +1199,7 @@ function replayRecoveryFromZero(
     recoveryId,
     walletScopeId: fixture.profile.walletScopeId,
     mintUrl: 'https://mint.example',
-    unit: 'sat',
+    unit: 'msat',
     keysetId: KEYSET_ID,
     disclosureAcknowledged: true,
     authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
@@ -1119,11 +1261,22 @@ function runRecovery(
     ...input,
     walletScopeId: fixture.profile.walletScopeId,
     mintUrl: 'https://mint.example',
-    unit: 'sat',
+    unit: 'msat',
     keysetId: KEYSET_ID,
     authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
     store: fixture.store,
   })
+}
+
+async function setRecoveryCounter(fixture: RecoveryFixture, nextCounter: number): Promise<void> {
+  await withDaemonHome(fixture.directory, () =>
+    advanceDaemonKeysetCounter(
+      KEYSET_ID,
+      nextCounter,
+      { fence: fixture.fence, observedAtMs: 3 },
+      MSAT_RECOVERY_COUNTER_BINDING,
+    ),
+  )
 }
 
 function runRecoveryWithContext(
@@ -1142,12 +1295,7 @@ function runRecoveryWithContext(
       keysetId,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
-      store: new SeedRecoverySqliteStore({
-        directory: fixture.directory,
-        fence: fixture.fence,
-        invocationId: `recovery-context-${mintUrl}-${unit}`,
-        observedAtMs: 3,
-      }),
+      store: fixture.store,
       batches: [emptyBatch(0)],
     })
 }
@@ -1179,7 +1327,7 @@ async function assertRecoveryFenceChange(
       {
         recoveryId: `recovery-${label}`,
         mintUrl: 'https://mint.example',
-        unit: 'sat',
+        unit: 'msat',
         walletSeedHex,
         disclosureAcknowledged: true,
       },
@@ -1210,9 +1358,9 @@ function recoveryDependencies(
       wallet: {
         async loadMint() {},
         keyChain: {
-          getKeyset: () => ({ id: `01${'a'.repeat(64)}`, unit: 'sat', keys: {} }),
+          getKeyset: () => ({ id: `01${'a'.repeat(64)}`, unit: 'msat', keys: {} }),
           async ensureKeysetKeys() {
-            return { id: `01${'a'.repeat(64)}`, unit: 'sat', keys: {} }
+            return { id: `01${'a'.repeat(64)}`, unit: 'msat', keys: {} }
           },
         },
         async checkProofsStates() {
@@ -1220,7 +1368,7 @@ function recoveryDependencies(
         },
       },
       async listRegularKeysets() {
-        return { keysets: [{ id: `01${'a'.repeat(64)}`, unit: 'sat' }] }
+        return { keysets: [{ id: `01${'a'.repeat(64)}`, unit: 'msat' }] }
       },
       async listConditionalKeysets() {
         return { keysets: [] }
@@ -1287,6 +1435,32 @@ function readRowCount(
     .count
 }
 
+function readRecoveryCursor(database: DatabaseSync, recoveryId: string): number {
+  return (
+    database
+      .prepare(
+        `SELECT next_counter AS nextCounter FROM seed_recovery_keysets
+         WHERE recovery_id = ? AND keyset_id = ?`,
+      )
+      .get(recoveryId, KEYSET_ID) as { nextCounter: number }
+  ).nextCounter
+}
+
+function readRecoveryCounters(database: DatabaseSync, scopeId: string) {
+  const read = (table: 'target_keyset_counters' | 'custody_keyset_counters') =>
+    (
+      database
+        .prepare(
+          `SELECT next_counter AS nextCounter FROM ${table}
+           WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+        )
+        .get(scopeId, MSAT_RECOVERY_COUNTER_BINDING.normalizedMint, 'msat', KEYSET_ID) as
+        | { nextCounter: number }
+        | undefined
+    )?.nextCounter ?? null
+  return { target: read('target_keyset_counters'), custody: read('custody_keyset_counters') }
+}
+
 function observed(
   scopeId: string,
   id: string,
@@ -1302,7 +1476,7 @@ function observed(
     proof: createCustodyProofSqliteRow({
       scopeId,
       normalizedMint: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       proof: {
         id: keysetId,
         amount: '1',

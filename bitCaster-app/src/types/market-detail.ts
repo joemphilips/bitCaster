@@ -3,8 +3,18 @@
 // =============================================================================
 
 // Import shared types from market discovery
-import type { CurrentOdds, Outcome, CategoryTag, ProductMarketDivisibility } from "./market";
+import type {
+  CurrentOdds,
+  Outcome,
+  CategoryTag,
+  ProductMarketDivisibility,
+  LatestConfirmedTrade,
+} from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
+import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
+import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
+import type { CtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
+import type { components } from "@/generated/api";
 
 // =============================================================================
 // Resolution Types
@@ -15,10 +25,11 @@ export type ResolutionStatus = "open" | "pending_resolution" | "resolved" | "dis
 export type ResolutionSource = "oracle" | "manual" | "community" | "smart_contract";
 
 export interface ResolutionDetails {
+  conditionId?: string;
   criteria: string;
   source: ResolutionSource;
   sourceDescription?: string;
-  resolutionDate: string;
+  resolutionDate: string | null;
   status: ResolutionStatus;
   finalOutcome?: string; // Only set when resolved
   disputeDeadline?: string; // For disputed markets
@@ -64,15 +75,20 @@ export interface OrderBook {
 // =============================================================================
 
 export interface PricePoint {
+  eventOrder: string;
   timestamp: string;
   price: number; // 0-100
   volume?: number;
-  source?: "initial" | "fill";
+  source?: "fill";
 }
 
 export interface PriceHistory {
   data: PricePoint[];
   timeframe: ChartTimeframe;
+  asOf?: string;
+  snapshotEventOrder?: string | null;
+  /** Monotonic receipt time for the server evaluation time. */
+  receivedAt?: number;
 }
 
 export type ChartTimeframe = "1h" | "24h" | "7d" | "30d" | "all";
@@ -99,6 +115,7 @@ export interface Comment {
   userAvatarUrl?: string;
   content: string;
   timestamp: string;
+  trade: components["schemas"]["MarketComment"]["trade"];
   likeCount: number;
   isLiked: boolean;
 }
@@ -112,6 +129,11 @@ export interface RelatedMarket {
   title: string;
   imageUrl?: string;
   currentOdds?: CurrentOdds;
+  divisibility?: ProductMarketDivisibility;
+  /** Exact bounded confirmed-trade snapshot used for compact prices. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False or missing means compact prices are unavailable. */
+  latestConfirmedTradesValid?: boolean;
   volume: number;
   baseAsset: "sat";
   closingDate: string;
@@ -130,6 +152,8 @@ interface BaseMarketDetail {
   liquidity: number;
   liquiditySubunits: number;
   ammBotBudgetSubunits: number;
+  /** Revision paired with the confirmed funding total; absent only on local placeholders. */
+  fundingRevision?: string | null;
   volumeLifetimeSubunits: number;
   closingDate: string | null;
   createdDate: string;
@@ -137,6 +161,12 @@ interface BaseMarketDetail {
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   baseUnit: string; // e.g. "sats", "USD"
+  /** Exact primitive outcome IDs from the REST registration snapshot. */
+  registeredPrimitiveOutcomeIds?: string[];
+  /** Exact bounded REST/live confirmed-trade records used for price authority. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False means the source price authority was malformed and is unavailable. */
+  latestConfirmedTradesValid?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];
@@ -155,7 +185,6 @@ interface BaseMarketDetail {
   recentTrades: Trade[];
   comments: Comment[];
   relatedMarkets: RelatedMarket[];
-  initialProbabilities?: Record<string, number>;
 }
 
 export interface YesNoMarketDetail extends BaseMarketDetail {
@@ -179,7 +208,7 @@ export interface NumericMarketDetail extends BaseMarketDetail {
   hiBound: number; // Upper bound of the outcome range
   precision: number; // Decimal places for display
   unit: string; // Display unit (e.g. "USD", "BTC")
-  currentPrice: number; // Implied price: loBound + (hiPrice / 100) * (hiBound - loBound)
+  currentPrice: number | null; // Implied price: loBound + (hiPrice / D) * (hiBound - loBound)
   attestedValue?: number; // Set when resolved — the oracle-attested value
 }
 
@@ -190,22 +219,56 @@ export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | Numeric
 // =============================================================================
 
 export type TradeSide = "Buy" | "Sell";
+export type TradeTab = TradeSide | "Liquidity";
 export type OrderType = "market" | "limit";
 
+/**
+ * Why the wallet cannot back the selected trade. `preparation-fee-cash` means
+ * the offered holding is enough, but ordinary sats for the preparation fee
+ * are missing. `mint-limits` means the wallet has the funds, but the order
+ * needs more proofs than one mint request accepts.
+ */
+export type TradeFeasibilityReason =
+  | "funds"
+  | "outcome-tokens"
+  | "preparation-fee-cash"
+  | "mint-limits"
+  | "unavailable";
+
+/** Read-only server preview state. The response remains generated SDK data. */
+export type FokOrderPreviewState = UseFokOrderPreviewResult;
+
+/** Legacy local quote shape kept for the isolated arithmetic helper tests. */
 export interface LimitOrderPreview {
-  limitPrice: number; // price numerator 1..divisibility-1
-  amount: number; // display shares
+  limitPrice: number;
+  amount: number;
   sharesIfFilled?: number;
-  quoteSubunits: number; // whole shares × price, the pre-fee quote
+  quoteSubunits: number;
   creatorFee: number;
-  mintFee: number; // read from the CTF keyset input_fee_ppk (0 in the first release)
-  engineScoreFeeSats: number | null; // sat-denominated Score fee; null means auth-gated until confirmation
-  potentialPayout: number; // display shares × market divisibility
-  // Display-only spend estimate used for the balance check. NEVER sent as the
-  // wire amountSubunits (which is `amount * divisibility`). Reactive:
-  //   limitPrice * amount + creatorFee + mintFee
+  mintFee: number;
+  engineScoreFeeSats: number | null;
+  potentialPayout: number;
   totalCost: number;
 }
+
+/** Legacy local quote shape. New UI props use FokOrderPreviewState. */
+export interface TradePreview {
+  amount: number;
+  predictedOdds: number;
+  priceImpact: number;
+  averageExecutionPrice?: number;
+  executableShares?: number;
+  hasExecutableLiquidity?: boolean;
+  quoteSubunits: number;
+  mintFee: number;
+  potentialPayout: number;
+  creatorFee: number;
+  engineScoreFeeSats: number | null;
+  totalCost: number;
+}
+
+/** Exact wallet preparation and settlement facts shown beside the quote. */
+export type TradeFeeFacts = CtfRangeOrderFeeFacts;
 
 // =============================================================================
 // Trade State Types
@@ -219,20 +282,18 @@ export interface TradeSelection {
   limitPrice?: number;
 }
 
-export interface TradePreview {
-  amount: number;
-  predictedOdds: number; // Odds after trade
-  priceImpact: number; // Change in odds
-  averageExecutionPrice?: number;
-  executableShares?: number;
-  hasExecutableLiquidity?: boolean;
-  quoteSubunits: number;
-  mintFee: number;
-  potentialPayout: number;
-  creatorFee: number;
-  engineScoreFeeSats: number | null;
-  totalCost: number;
+export interface SellOutcomeHolding {
+  selectableSubunits: number;
+  reservedSubunits: number;
 }
+
+export type SellHoldingsState =
+  | { status: "loading" }
+  | { status: "unavailable" }
+  | {
+      status: "ready";
+      byOutcomeSetId: ReadonlyMap<string, SellOutcomeHolding>;
+    };
 
 // =============================================================================
 // Component Props
@@ -252,7 +313,13 @@ export interface MarketDetailProps {
   tradeAmount: number;
 
   /** Preview of trade outcome (null if no valid selection) */
-  tradePreview: TradePreview | null;
+  tradePreview: FokOrderPreviewState | null;
+
+  /** Exact wallet preparation and settlement facts for the current ticket. */
+  tradeFeeFacts?: TradeFeeFacts | null;
+
+  /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
+  feeConsentCurrent?: boolean;
 
   /** Called when user changes chart timeframe */
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
@@ -281,9 +348,11 @@ export interface MarketDetailProps {
   /** UX-only wallet feasibility gate for local wallet backing checks. */
   tradeFeasibility?: {
     canBack: boolean;
-    reason?: "funds" | "outcome-tokens";
+    reason?: TradeFeasibilityReason;
     message?: string;
   } | null;
+
+  onTradeFeasibilityRetry?: () => void;
 
   /** True while an order submit is in flight. Disables duplicate confirms. */
   isTradeSubmitting?: boolean;
@@ -293,9 +362,6 @@ export interface MarketDetailProps {
 
   /** Called when user posts a comment */
   onCommentPost?: (content: string) => void;
-
-  /** Called when user likes a comment */
-  onCommentLike?: (commentId: string) => void;
 
   /** Called when user scrolls to load more trades */
   onLoadMoreTrades?: () => void;
@@ -312,23 +378,18 @@ export interface MarketDetailProps {
   /** Called when user toggles between buy and sell */
   onTradeSideChange?: (side: TradeSide) => void;
 
-  /** Current order type (market or limit) */
-  orderType: OrderType;
+  /** Current trade pane tab. */
+  tradeTab?: TradeTab;
 
-  /** Called when user toggles between market and limit order */
-  onOrderTypeChange?: (type: OrderType) => void;
+  /** Called when the trade pane tab changes. */
+  onTradeTabChange?: (tab: TradeTab) => void;
 
-  /** Preview for limit orders (null if not applicable) */
-  limitOrderPreview?: LimitOrderPreview | null;
+  /** Read-only capacity across the full legal discovery range. */
+  tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
+  isFullyEmptyBook?: boolean;
 
-  /** Current limit price (in market's base unit) */
-  limitPrice?: number;
-
-  /** Called when user changes limit price */
-  onLimitPriceChange?: (price: number) => void;
-
-  /** Number of shares the user currently holds (for sell percentage calculation) */
-  userHoldings?: number;
+  /** Canonical selectable and reserved conditional holdings for each outcome set. */
+  sellHoldings?: SellHoldingsState;
 
   /** Whether the user has a wallet configured (gates trade confirmation) */
   walletReady?: boolean;
@@ -338,4 +399,7 @@ export interface MarketDetailProps {
 
   /** Called when the trade UI should open the wallet top-up flow. */
   onTopUpRequired?: () => void;
+
+  /** Refresh live market snapshots after a funding credit completes in this session. */
+  onFundingCredited?: () => void;
 }

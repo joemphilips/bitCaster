@@ -4,6 +4,7 @@
 
 export type OutcomeType = "yesno" | "categorical" | "numeric";
 export type MarketBaseAsset = "sat";
+export type MarketDivisibility = 1_000 | 1_000_000;
 
 export interface WizardStepGetStarted {
   outcomeType: OutcomeType | null;
@@ -28,8 +29,8 @@ export interface WizardOutcome {
   id: string;
   label: string;
   description: string;
+  color?: string;
   imageUrl?: string;
-  probability?: number; // 0-100
 }
 
 export interface WizardStepOutcomes {
@@ -57,6 +58,8 @@ export interface WizardStepReviewAndCreate {
 export type WizardStep = 1 | 2 | 3 | 4;
 
 export interface WizardDraft {
+  /** References one immutable local preparation. It carries no proof or oracle secret. */
+  creation?: import("@/lib/browserMarketCreation").BrowserMarketCreationPointer;
   currentStep: WizardStep;
   lastModified: string;
   stepGetStarted: WizardStepGetStarted | null;
@@ -70,6 +73,10 @@ export interface WizardDraft {
 // =============================================================================
 
 export interface MarketCreationWizardProps {
+  retainedCreation?: { title: string; mintConfirmed: boolean } | null;
+  isLoadingCreation?: boolean;
+  onResumeCreation?: () => void;
+  onDismissCreationError?: () => void;
   /** Current wizard draft state */
   draft: WizardDraft;
 
@@ -108,6 +115,12 @@ export interface MarketCreationWizardProps {
 
   /** Base collateral unit of the created market, used by post-create funding. */
   createdMarketBaseAsset: MarketBaseAsset | null;
+
+  /** Registered market denominator returned by the successful create response. */
+  createdMarketDivisibility: MarketDivisibility | null;
+
+  /** Open the wallet setup chooser before a wallet-owned action. */
+  onRequireWallet?: () => void;
 
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean;
@@ -160,11 +173,8 @@ export interface MarketCreationWizardProps {
   /** Called when user updates an outcome label */
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void;
 
-  /** Called when user updates an outcome probability */
-  onOutcomeProbabilityChange?: (outcomeId: string, probability: number) => void;
-
-  /** Called when user normalizes probabilities to sum to 100 */
-  onNormalizeProbabilities?: () => void;
+  /** Called when user changes a categorical outcome color. Null means automatic. */
+  onOutcomeColorChange?: (outcomeId: string, color: string | null) => void;
 
   /** Called when user updates numeric low bound */
   onLoBoundChange?: (value: number) => void;

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MintSelector } from "../MintSelector";
@@ -51,5 +51,29 @@ describe("MintSelector — P5.2 add-mint integration", () => {
     // canonical form; here the input had no trailing slash so the value
     // matches verbatim.
     expect(onMintChange).toHaveBeenCalledWith("https://new-mint.example.com");
+  });
+
+  it("closes only the mint sheet on native cancel", async () => {
+    const user = userEvent.setup();
+    render(<MintSelector mints={[MINT_A]} selectedMintId={MINT_A.id} />);
+
+    await user.click(screen.getByText("Mint A"));
+    fireEvent(
+      screen.getByRole("dialog", { name: "Select Mint" }),
+      new Event("cancel", { cancelable: true }),
+    );
+
+    expect(screen.getByText("Mint A")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-mint-trigger")).not.toBeInTheDocument();
+  });
+
+  it("closes the mint sheet from its outside-click wrapper", async () => {
+    const user = userEvent.setup();
+    render(<MintSelector mints={[MINT_A]} selectedMintId={MINT_A.id} />);
+
+    await user.click(screen.getByText("Mint A"));
+    fireEvent.click(screen.getByTestId("mint-selector-backdrop"));
+
+    expect(screen.queryByTestId("add-mint-trigger")).not.toBeInTheDocument();
   });
 });

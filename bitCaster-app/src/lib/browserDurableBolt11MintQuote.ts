@@ -32,6 +32,8 @@ import {
   type StoredOutputData,
 } from "@/stores/proof-db";
 import { normalizeUrl } from "@/lib/url";
+import { requireBrowserWalletNewWritePermission } from "@/lib/browserWalletNewWritePermission";
+import { withWalletProfileLock } from "@/lib/walletProfileLock";
 import {
   browserDurableWalletMintStore,
   captureBrowserMintPersistenceContext,
@@ -63,26 +65,37 @@ export interface ActiveBrowserDurableBolt11MintQuoteSubscription {
 
 interface CoordinatorContext extends BrowserMintPersistenceContext {
   readonly mnemonic: string;
+  readonly lockManager?: Pick<LockManager, "request">;
 }
 
 /** Create the invoice authority before any caller can expose its invoice. */
 export async function createBrowserDurableBolt11MintQuote(
   input: CreateBrowserDurableBolt11MintQuoteInput,
 ): Promise<BrowserDurableBolt11MintQuoteResult> {
-  const context = captureBrowserMintPersistenceContext();
+  const context: CoordinatorContext = captureBrowserMintPersistenceContext();
   const unit = requireUnit(input.unit);
   const amount = requireAmount(input.amount);
   const mintUrl = normalizeUrl(input.mintUrl ?? context.activeMintUrl);
   const wallet = await getWalletForMnemonicUnit(mintUrl, unit, context.mnemonic);
-  context.requireCapturedProfile();
-  const mintQuote = await wallet.createMintQuote(amount);
-  context.requireCapturedProfile();
-  const quote = quoteFromMintResponse(mintUrl, unit, amount, mintQuote);
-  const prepared = await prepareExactMintOperation({ context, wallet, quote, mintQuote, unit });
-  context.requireCapturedProfile();
-  const persisted = await persistQuoteAndOperation({ context, quote, ...prepared, unit });
-  context.requireCapturedProfile();
-  return { quote: persisted, invoiceRequest: persisted.invoiceRequest };
+  return withWalletProfileLock(
+    context.scopeId,
+    async () => {
+      context.requireCapturedProfile();
+      await requireBrowserWalletNewWritePermission({
+        database: context.database,
+        scopeId: context.scopeId,
+      });
+      const mintQuote = await wallet.createMintQuote(amount);
+      context.requireCapturedProfile();
+      const quote = quoteFromMintResponse(mintUrl, unit, amount, mintQuote);
+      const prepared = await prepareExactMintOperation({ context, wallet, quote, mintQuote, unit });
+      context.requireCapturedProfile();
+      const persisted = await persistQuoteAndOperation({ context, quote, ...prepared, unit });
+      context.requireCapturedProfile();
+      return { quote: persisted, invoiceRequest: persisted.invoiceRequest };
+    },
+    context.lockManager,
+  );
 }
 
 /** Hide only the invoice presentation. The durable recovery authority remains. */

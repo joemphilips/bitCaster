@@ -1,8 +1,11 @@
+import { proofOperationAuthorityDigest } from './ctfProofOperationAuthority.ts'
+import { requireCtfVerifiedLosingAuthority } from './conditionOracleEvidence.ts'
 import { Keyset, isBlsKeyset, verifyProofsForReceive, type Proof } from '@cashu/cashu-ts'
 import {
   assertDurableCustodyArtifactMatchesReference,
   assertDurableCustodyImmutableAuthorityMatches,
   canonicalDurableCustodyKeysetIdentity,
+  deriveDurableCustodyProofId,
   createDurableProofOperationFacts,
   prepareDurableCustodyExactArtifact,
   readPreparedDurableCustodyArtifactBytes,
@@ -31,6 +34,10 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import { amountToNumber } from './proofSelection.ts'
+import {
+  assertDurableWalletProofResultMatchesPlan,
+  requireDurableWalletProofTransition,
+} from './durableWalletProofTransition.ts'
 
 export interface DurableCustodyMintKeysetAuthority {
   readonly canonicalMintUrl: string
@@ -151,10 +158,11 @@ export function prepareDurableCustodyAuthenticatedTerminalMintRejection(input: {
   readonly exactAuthority: DurableCustodyExactArtifact
   readonly evidence: AuthenticatedCtfRedeemTerminalEvidence
 }): DurableCustodyPreparedAuthenticatedTerminalMintRejection {
-  const operation = assertDurableCustodyMintOperationAuthority(
+  const mintAuthority = assertDurableCustodyMintOperationAuthority(
     input.record,
     input.exactAuthority,
-  ).operation
+  )
+  const operation = mintAuthority.operation
   if (operation.kind !== 'ctf-redeem' || input.record.operation.semanticKind !== 'ctf-redeem') {
     throw new Error('custody terminal mint rejection is only valid for CTF redeem')
   }
@@ -165,6 +173,13 @@ export function prepareDurableCustodyAuthenticatedTerminalMintRejection(input: {
   ) {
     throw new Error('custody terminal mint rejection transport authority is foreign')
   }
+  if (evidence.losingAuthority === undefined)
+    throw new Error('CTF refusal has no verified losing authority')
+  const losingAuthority = assertDurableCustodyVerifiedLosingAuthority(
+    input.record,
+    input.exactAuthority,
+    evidence.losingAuthority,
+  )
   const authority: DurableCustodyAuthenticatedTerminalMintRejectionAuthority = {
     schemaVersion: 1,
     kind: 'authenticated-terminal-mint-rejection',
@@ -178,6 +193,7 @@ export function prepareDurableCustodyAuthenticatedTerminalMintRejection(input: {
     rejectionBody: evidence.rejectionBody,
     predecessorDisposition: 'retain',
     selectedSuccessorProofIds: [],
+    losingAuthority,
   }
   const exactRejection = prepareDurableCustodyExactArtifact(authority)
   return {
@@ -255,6 +271,74 @@ export function readDurableCustodyAuthenticatedTerminalMintRejection(input: {
     throw new Error('custody terminal mint rejection authority is foreign')
   }
   return authority
+}
+
+export function readDurableCustodyVerifiedLosingMintRejection(input: {
+  readonly record: DurableCustodyRecord
+  readonly exactAuthority: DurableCustodyExactArtifact
+  readonly exactRejection: DurableCustodyExactArtifact
+}): DurableCustodyAuthenticatedTerminalMintRejectionAuthority & {
+  losingAuthority: import('./conditionOracleEvidence.ts').CtfVerifiedLosingAuthority
+} {
+  const authority = readDurableCustodyAuthenticatedTerminalMintRejection(input)
+  if (authority.losingAuthority === undefined)
+    throw new Error('CTF refusal has no verified losing authority')
+  const losingAuthority = assertDurableCustodyVerifiedLosingAuthority(
+    input.record,
+    input.exactAuthority,
+    authority.losingAuthority,
+  )
+  const inputIds = losingAuthority.inputs
+    .map((proof) =>
+      deriveDurableCustodyProofId({
+        scopeId: input.record.scope.scopeId,
+        normalizedMint: losingAuthority.normalizedMint,
+        unit: losingAuthority.resolution.registered.unit,
+        keysetId: proof.id as string,
+        secret: proof.secret as string,
+      }),
+    )
+    .sort()
+  if (
+    JSON.stringify(inputIds) !==
+      JSON.stringify([...input.record.operation.exactRequest.inputProofIds].sort()) ||
+    losingAuthority.resolution.registered.unit !== input.record.operation.custodyContext.unit ||
+    losingAuthority.operationId !== authority.transportOperationId ||
+    losingAuthority.normalizedMint !== authority.normalizedMint
+  )
+    throw new Error('verified losing rejection binding is foreign')
+  return { ...authority, losingAuthority }
+}
+
+export function assertDurableCustodyVerifiedLosingAuthority(
+  record: DurableCustodyRecord,
+  exactAuthority: DurableCustodyExactArtifact,
+  losing: import('./conditionOracleEvidence.ts').CtfVerifiedLosingAuthority,
+): import('./conditionOracleEvidence.ts').CtfVerifiedLosingAuthority {
+  const mintAuthority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
+  const operation = mintAuthority.operation
+  if (operation.kind !== 'ctf-redeem')
+    throw new Error('verified losing authority requires CTF redeem')
+  const bound = requireCtfVerifiedLosingAuthority(losing, {
+    operationId: operation.operationId,
+    mintUrl: operation.mintUrl,
+    conditionId: operation.metadata?.conditionId as string,
+    outcomeCollection: (operation.metadata?.outcomeCollection ??
+      operation.metadata?.outcomeSetId ??
+      operation.metadata?.outcome) as string,
+    inputs: operation.inputs as Proof[],
+    inputKeysets: mintAuthority.keysets.filter((keyset) =>
+      operation.inputs.some((proof) => proof.id === keyset.id),
+    ),
+  })
+  if (
+    operation.metadata?.oracleResolutionContext === undefined ||
+    proofOperationAuthorityDigest(bound.resolution) !==
+      proofOperationAuthorityDigest(operation.metadata.oracleResolutionContext) ||
+    bound.resolution.registered.unit !== record.operation.custodyContext.unit
+  )
+    throw new Error('verified losing resolution differs from frozen intended registration')
+  return bound
 }
 
 export function assertDurableCustodyMintOperationAuthority(
@@ -356,12 +440,32 @@ function verifyAndMapMintProofs(
   result: Readonly<Record<string, readonly Proof[]>>,
 ): DurableCustodyVerifiedMintProof[] {
   assertExactGroups(authority.operation.outputs, result)
+  const walletMeltTransition =
+    authority.operation.kind === 'wallet-melt'
+      ? requireDurableWalletProofTransition(
+          authority.operation.metadata ?? {},
+          Object.keys(authority.operation.outputs),
+        )
+      : null
+  if (walletMeltTransition !== null) {
+    assertDurableWalletProofResultMatchesPlan(
+      walletMeltTransition,
+      authority.operation.outputs,
+      result,
+      { allowDynamicAmounts: true },
+    )
+  }
   const keysets = new Map(authority.keysets.map((keyset) => [keyset.id, keyset]))
   const mapped = Object.entries(authority.operation.outputs).flatMap(([group, outputs]) => {
     const proofs = result[group]!
-    if (proofs.length !== outputs.length) throw new Error('custody mint proof count is invalid')
-    return outputs.map((output, index) =>
-      mapMintProof(record, authority, group, output, proofs[index]!, keysets),
+    if (walletMeltTransition === null && proofs.length !== outputs.length) {
+      throw new Error('custody mint proof count is invalid')
+    }
+    if (walletMeltTransition !== null && proofs.length > outputs.length) {
+      throw new Error('custody wallet melt proof count exceeds its output plan')
+    }
+    return proofs.map((proof, index) =>
+      mapMintProof(record, authority, group, outputs[index]!, proof, keysets),
     )
   })
   verifyProofsForReceive(
@@ -371,11 +475,15 @@ function verifyAndMapMintProofs(
   )
   const byId = new Map(mapped.map((proof) => [proof.material.proofId, proof]))
   if (byId.size !== mapped.length) throw new Error('custody mint result proof set is duplicated')
-  return record.operation.proofStorage.lineage.successorProofIds.map((proofId) => {
-    const proof = byId.get(proofId)
-    if (proof === undefined) throw new Error('custody mint result proof set is incomplete')
-    return proof
-  })
+  const selectedProofs =
+    authority.operation.kind === 'wallet-melt'
+      ? mapped
+      : record.operation.proofStorage.lineage.successorProofIds.map((proofId) => {
+          const proof = byId.get(proofId)
+          if (proof === undefined) throw new Error('custody mint result proof set is incomplete')
+          return proof
+        })
+  return selectedProofs
 }
 
 function mapMintProof(
@@ -389,18 +497,7 @@ function mapMintProof(
   const proof = deserializeDurableCustodyProofArtifact(
     serializeDurableCustodyProofArtifact(proofValue),
   )
-  const expectedAmount = amountToNumber(output.blindedMessage.amount)
-  const expectedR = scalarHex(output.blindingFactor)
-  if (
-    proof.id !== output.blindedMessage.id ||
-    amountToNumber(proof.amount) !== expectedAmount ||
-    proof.secret !== output.secret ||
-    (proof.p2pk_e ?? null) !== (output.ephemeralE ?? null) ||
-    proof.witness !== undefined ||
-    (!isBlsKeyset(proof.id) && proof.dleq?.r !== expectedR)
-  ) {
-    throw new Error('custody mint proof differs from its persisted output')
-  }
+  assertExactMintOutputProof(output, proof, authority.operation.kind === 'wallet-melt')
   const material = createDurableCustodyProofMaterialRecord({
     scopeId: record.scope.scopeId,
     normalizedMint: authority.operation.mintUrl,
@@ -450,7 +547,7 @@ function factsForAuthority(
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: outputIds.size > 0,
-    inputKeysetRequirement: 'required',
+    inputKeysetRequirement: operation.kind === 'wallet-mint' ? 'none' : 'required',
     keysets: authority.keysets.map((keyset) => ({
       keysetId: keyset.id,
       unit: keyset.unit,
@@ -599,6 +696,9 @@ function assertPreparedTerminalMintRejection(
     throw new Error('custody prepared terminal mint rejection is inconsistent')
   }
   const authority = decodeAuthenticatedTerminalMintRejection(prepared.exactRejection.artifact)
+  if (authority.losingAuthority === undefined)
+    throw new Error('CTF refusal has no verified losing authority')
+  requireCtfVerifiedLosingAuthority(authority.losingAuthority)
   if (JSON.stringify(authority) !== JSON.stringify(prepared.authority)) {
     throw new Error('custody prepared terminal mint rejection authority is foreign')
   }
@@ -621,6 +721,7 @@ function decodeAuthenticatedTerminalMintRejection(
     'rejectionBody',
     'predecessorDisposition',
     'selectedSuccessorProofIds',
+    ...(value.losingAuthority === undefined ? [] : ['losingAuthority']),
   ])
   if (
     value.schemaVersion !== 1 ||
@@ -681,6 +782,8 @@ function assertExactGroups(
 function assertSupportedOperation(operation: DurableCustodyProofOperationInput): void {
   if (
     (operation.kind !== 'wallet-send' &&
+      operation.kind !== 'wallet-mint' &&
+      operation.kind !== 'wallet-melt' &&
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
       operation.kind !== 'ctf-split' &&
@@ -691,8 +794,11 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
       operation.kind !== 'proof-consolidation' &&
       operation.kind !== 'ctf-redeem' &&
       operation.kind !== 'ctf-range-refund') ||
-    operation.inputs.length === 0 ||
-    Object.values(operation.outputs).every((outputs) => outputs.length === 0)
+    (operation.kind === 'wallet-mint'
+      ? operation.inputs.length !== 0
+      : operation.inputs.length === 0) ||
+    (operation.kind !== 'wallet-melt' &&
+      Object.values(operation.outputs).every((outputs) => outputs.length === 0))
   ) {
     throw new Error('custody mint result operation kind is unsupported')
   }
@@ -783,4 +889,55 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 
 function omitUndefined(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined))
+}
+
+/** Validate received proofs against an existing exact output owner and canonical keysets. */
+export function verifyDurableCustodyExactMintProofResult(input: {
+  readonly outputs: DurableCustodyProofOperationInput['outputs']
+  readonly result: Readonly<Record<string, readonly Proof[]>>
+  readonly keysets: readonly DurableCustodyMintKeysetAuthority[]
+}): void {
+  assertExactGroups(input.outputs, input.result)
+  const keysets = new Map(
+    input.keysets.map((value) => {
+      const keyset = decodeKeyset(value)
+      return [keyset.id, keyset] as const
+    }),
+  )
+  const seen = new Set<string>()
+  const proofs = Object.entries(input.outputs).flatMap(([group, outputs]) => {
+    const result = input.result[group]!
+    if (result.length !== outputs.length) throw new Error('custody mint proof count is invalid')
+    return result.map((value, index) => {
+      const proof = deserializeDurableCustodyProofArtifact(
+        serializeDurableCustodyProofArtifact(value),
+      )
+      assertExactMintOutputProof(outputs[index]!, proof, false)
+      if (!keysets.has(proof.id) || seen.has(proof.secret))
+        throw new Error('custody mint result proof set is foreign or duplicated')
+      seen.add(proof.secret)
+      return proof
+    })
+  })
+  verifyProofsForReceive(proofs, (id) => keysets.get(id)!, { requireDleq: true })
+}
+
+function assertExactMintOutputProof(
+  output: DurableCustodyProofOperationInput['outputs'][string][number],
+  proof: Proof,
+  allowDynamicAmount: boolean,
+): void {
+  const expectedAmount = amountToNumber(output.blindedMessage.amount)
+  const expectedR = scalarHex(output.blindingFactor)
+  if (
+    proof.id !== output.blindedMessage.id ||
+    ((!allowDynamicAmount || expectedAmount !== 0) &&
+      amountToNumber(proof.amount) !== expectedAmount) ||
+    proof.secret !== output.secret ||
+    (proof.p2pk_e ?? null) !== (output.ephemeralE ?? null) ||
+    proof.witness !== undefined ||
+    (!isBlsKeyset(proof.id) && proof.dleq?.r !== expectedR)
+  ) {
+    throw new Error('custody mint proof differs from its persisted output')
+  }
 }

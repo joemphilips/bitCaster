@@ -51,6 +51,19 @@ describe("browser CTF range order journal", () => {
     );
   });
 
+  it("reads a prior browser preparation without native fee consent authority", async () => {
+    const database = createDatabase();
+    const input = identity("range-legacy-consent", "client-legacy-consent", 11);
+    const inserted = await insertCtfRangePreparation(input, database);
+    const { feeConsentBytes: _, ...legacy } = inserted;
+    await database.ctfRangePreparations.put(legacy as typeof inserted);
+
+    expect(await readCtfRangePreparation(input.scopeId, input.rangeOperationId, database)).toEqual(
+      inserted,
+    );
+    expect(await insertCtfRangePreparation(input, database)).toEqual(inserted);
+  });
+
   it("binds capability and advances lifecycle with revision CAS", async () => {
     const database = createDatabase();
     const input = identity("range-bind", "client-bind", 20);
@@ -249,8 +262,6 @@ function identity(
     scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
     rangeOperationId,
     sourceOperationId: `${rangeOperationId}:source`,
-    sourceKind: "wallet-prepared",
-    predecessorRangeOperationId: null,
     authorizationId: `${rangeOperationId}:authorization`,
     clientOrderId,
     orderRouteId: "condition-a-YES",
@@ -259,14 +270,13 @@ function identity(
     unit: "msat",
     tokenSide: "Outcome",
     side: "Buy",
-    priceSubunits: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    continueAfterPartialFill: false,
-    continuation: null,
-    divisibility: 10_000,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
+    feeConsentBytes: null,
     createdAtMs,
   };
 }

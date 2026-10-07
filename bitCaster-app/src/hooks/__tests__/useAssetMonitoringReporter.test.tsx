@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
       readonly input: {
         isCurrent: () => boolean;
         buildHoldings: () => Promise<unknown>;
+        onAccepted?: () => void;
       },
     ) {
       state.reporters.push(this);
@@ -53,6 +54,7 @@ const mocks = vi.hoisted(() => {
     buildAssetMonitoringHoldings: vi.fn(),
     createAuthenticatedBrowserEngineClient: vi.fn(),
     hasSubmittedCtfRangeOrder: vi.fn(),
+    publishPortfolioInvalidation: vi.fn(),
     reset: () => {
       walletState.mnemonic = "wallet-a";
       state.activeScopeId = "scope-wallet-a";
@@ -67,6 +69,7 @@ const mocks = vi.hoisted(() => {
       mocks.buildAssetMonitoringHoldings.mockReset();
       mocks.createAuthenticatedBrowserEngineClient.mockReset().mockReturnValue({});
       mocks.hasSubmittedCtfRangeOrder.mockReset().mockResolvedValue(false);
+      mocks.publishPortfolioInvalidation.mockReset();
     },
     replaceSigner: () => {
       state.signer = {};
@@ -113,7 +116,12 @@ vi.mock("@/stores/proof-db", () => ({
     return mocks.state.database;
   },
   isCtfProof: () => false,
+  storedProofFromCustodyRow: (row: unknown) => row,
   storedProofFromRow: (row: unknown) => row,
+}));
+
+vi.mock("@/stores/durable-custody-types", () => ({
+  decodeBrowserCustodyProofRow: (row: unknown) => row,
 }));
 
 vi.mock("@/stores/wallet", () => ({
@@ -121,6 +129,10 @@ vi.mock("@/stores/wallet", () => ({
     vi.fn((selector: (state: typeof mocks.walletState) => unknown) => selector(mocks.walletState)),
     { getState: () => mocks.walletState },
   ),
+}));
+
+vi.mock("@/lib/portfolioInvalidation", () => ({
+  publishPortfolioInvalidation: mocks.publishPortfolioInvalidation,
 }));
 
 const { subscribeToCommittedProofChanges, useAssetMonitoringReporter } =
@@ -149,17 +161,18 @@ describe("useAssetMonitoringReporter", () => {
     expect(mocks.state.reporters[0]!.request).toHaveBeenCalledOnce();
   });
 
-  it("builds each snapshot on demand from the current proof read", async () => {
+  it("does not report when canonical custody authority is unavailable", async () => {
     mocks.fetchAssetMonitoringCatalogue.mockResolvedValue([]);
     mocks.buildAssetMonitoringHoldings.mockReturnValue([]);
+    const unavailableDatabase = database("scope-wallet-a") as Record<string, unknown>;
+    delete unavailableDatabase.custodyProofs;
+    delete unavailableDatabase.custodyProofBackupAuthorities;
+    mocks.state.database = unavailableDatabase;
     renderHook(() => useAssetMonitoringReporter(true));
 
-    await expect(mocks.state.reporters[0]!.input.buildHoldings()).resolves.toEqual([]);
-    expect(proofs(mocks.state.database).toArray).toHaveBeenCalledOnce();
-    expect(mocks.fetchAssetMonitoringCatalogue).toHaveBeenCalledWith(
-      [],
-      expect.objectContaining({ engineBaseUrl: window.location.origin, fetchImpl: fetch }),
-    );
+    expect(mocks.state.reporters).toHaveLength(0);
+    expect(mocks.fetchAssetMonitoringCatalogue).not.toHaveBeenCalled();
+    expect(mocks.buildAssetMonitoringHoldings).not.toHaveBeenCalled();
   });
 
   it("requests once for each committed proof transaction and coalesces its writes", () => {
@@ -224,7 +237,7 @@ describe("useAssetMonitoringReporter", () => {
   });
 
   it("keeps an A snapshot bound to A across an A-to-B-to-A profile race", async () => {
-    const databaseA1 = database("scope-wallet-a", [{ marker: "A1" }]);
+    const databaseA1 = database("scope-wallet-a", [{ scopeId: "scope-wallet-a", marker: "A1" }]);
     mocks.state.database = databaseA1;
     mocks.fetchAssetMonitoringCatalogue.mockResolvedValue([]);
     mocks.buildAssetMonitoringHoldings.mockReturnValue([]);
@@ -241,11 +254,31 @@ describe("useAssetMonitoringReporter", () => {
     mounted.rerender();
 
     await reporterA1.input.buildHoldings();
-    expect(proofs(databaseA1).toArray).toHaveBeenCalledOnce();
-    expect(mocks.buildAssetMonitoringHoldings).toHaveBeenCalledWith({
-      catalogue: [],
-      proofs: [{ marker: "A1" }],
+    expect(proofs(databaseA1).toArray).not.toHaveBeenCalled();
+    expect(mocks.buildAssetMonitoringHoldings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        catalogue: [],
+        proofs: [{ scopeId: "scope-wallet-a", marker: "A1" }],
+      }),
+    );
+  });
+
+  it("publishes one wallet-scoped invalidation for a current accepted report", () => {
+    const hook = renderHook(() => useAssetMonitoringReporter(true));
+    const first = mocks.state.reporters[0]!;
+
+    first.input.onAccepted?.();
+    expect(mocks.publishPortfolioInvalidation).toHaveBeenCalledWith({
+      walletId: "id-wallet-a",
     });
+
+    mocks.walletState.mnemonic = "wallet-b";
+    mocks.state.activeScopeId = "scope-wallet-b";
+    mocks.state.database = database("scope-wallet-b");
+    hook.rerender();
+    first.input.onAccepted?.();
+
+    expect(mocks.publishPortfolioInvalidation).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -267,6 +300,26 @@ describe("subscribeToCommittedProofChanges", () => {
     unsubscribe();
     expect([...mocks.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
     complete(aborted);
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it("requests for committed canonical custody proof changes and unsubscribes", () => {
+    const custodyProofs = hookTable();
+    const custodyAuthorities = hookTable();
+    const databaseWithCustody = database("scope-wallet-a") as Record<string, unknown>;
+    databaseWithCustody.custodyProofs = custodyProofs;
+    databaseWithCustody.custodyProofBackupAuthorities = custodyAuthorities;
+    const callback = vi.fn();
+    const unsubscribe = subscribeToCommittedProofChanges(databaseWithCustody as never, callback);
+    const committed = transaction();
+    custodyProofs.trigger("creating", committed);
+    complete(committed);
+    expect(callback).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    const afterUnsubscribe = transaction();
+    custodyProofs.trigger("updating", afterUnsubscribe);
+    complete(afterUnsubscribe);
     expect(callback).toHaveBeenCalledOnce();
   });
 });
@@ -295,6 +348,39 @@ function complete(currentTransaction: Transaction & { complete?: () => void }): 
   currentTransaction.complete?.();
 }
 
+function hookTable(rows: unknown[] = []) {
+  const listeners = new Map<HookEvent, Set<HookListener>>([
+    ["creating", new Set()],
+    ["updating", new Set()],
+    ["deleting", new Set()],
+  ]);
+  return {
+    hook(event: HookEvent, listener?: HookListener) {
+      const subscribers = listeners.get(event)!;
+      if (listener) {
+        subscribers.add(listener);
+        return undefined;
+      }
+      return { unsubscribe: (candidate: HookListener) => subscribers.delete(candidate) };
+    },
+    trigger(event: HookEvent, currentTransaction: Transaction) {
+      for (const listener of listeners.get(event) ?? []) {
+        if (event === "creating") listener("proof", {}, currentTransaction);
+        if (event === "updating") listener({}, "proof", {}, currentTransaction);
+        if (event === "deleting") listener("proof", {}, currentTransaction);
+      }
+    },
+    where() {
+      return {
+        equals: (key: unknown) => ({
+          toArray: vi.fn().mockResolvedValue(Array.isArray(key) && key[1] === "locked" ? [] : rows),
+        }),
+        between: () => ({ toArray: vi.fn().mockResolvedValue(rows) }),
+      };
+    },
+  };
+}
+
 function database(scopeId: string, rows: unknown[] = []) {
   return {
     name: `wallet-db-${scopeId}`,
@@ -302,6 +388,10 @@ function database(scopeId: string, rows: unknown[] = []) {
       hook: mocks.hook,
       toArray: vi.fn().mockResolvedValue(rows),
     },
+    custodyProofs: hookTable(rows),
+    custodyProofBackupAuthorities: hookTable(),
+    transaction: async (_mode: unknown, _tables: unknown, callback: () => Promise<unknown>) =>
+      callback(),
   };
 }
 

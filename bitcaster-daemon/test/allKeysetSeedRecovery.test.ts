@@ -18,20 +18,21 @@ import {
 } from '@cashu/cashu-ts'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { advanceDaemonKeysetCounter, readAvailableWalletProofsFenced } from '../src/state.ts'
+import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
 } from '../src/emergencySeedRecovery.ts'
-import {
-  createSeedRecoveryProfile,
-  RECOVERY_COUNTER_BINDING,
-  withDaemonHome,
-} from './seedRecoveryTestSupport.ts'
+import { createSeedRecoveryProfile, withDaemonHome } from './seedRecoveryTestSupport.ts'
 
 const V2_ID = `01${'a'.repeat(64)}`
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const CONDITION_ID = 'ab'.repeat(32)
+const MSAT_RECOVERY_COUNTER_BINDING = {
+  normalizedMint: 'https://mint.example',
+  unit: 'msat' as const,
+}
 
 test('all-keyset recovery finalizes only after complete empty listings', async () => {
   const fixture = await recoveryFixture('empty')
@@ -47,6 +48,7 @@ test('all-keyset recovery finalizes only after complete empty listings', async (
       completedChildCount: 0,
       batchesProcessed: 0,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
@@ -57,7 +59,7 @@ test('all-keyset recovery rejects non-V2 regular authority before wallet restore
   const fixture = await recoveryFixture('v2x')
   try {
     let loaded = false
-    const transport = emptyTransport({ keysets: [{ id: `02${'b'.repeat(64)}`, unit: 'sat' }] })
+    const transport = emptyTransport({ keysets: [{ id: `02${'b'.repeat(64)}`, unit: 'msat' }] })
     transport.wallet.loadMint = async () => {
       loaded = true
     }
@@ -75,7 +77,7 @@ test('all-keyset recovery fails closed when a local high-water keyset is absent'
   const fixture = await recoveryFixture('high-water')
   try {
     await withDaemonHome(fixture.directory, () =>
-      advanceDaemonKeysetCounter(V2_ID, 1, fixture.mutation, RECOVERY_COUNTER_BINDING),
+      advanceDaemonKeysetCounter(V2_ID, 1, fixture.mutation, MSAT_RECOVERY_COUNTER_BINDING),
     )
     await assert.rejects(
       () =>
@@ -91,10 +93,10 @@ test('all-keyset recovery spends its four-batch budget on one continuing child',
   const fixture = await recoveryFixture('continuation')
   try {
     await withDaemonHome(fixture.directory, () =>
-      advanceDaemonKeysetCounter(V2_ID, 1_500, fixture.mutation, RECOVERY_COUNTER_BINDING),
+      advanceDaemonKeysetCounter(V2_ID, 1_500, fixture.mutation, MSAT_RECOVERY_COUNTER_BINDING),
     )
     const starts: number[] = []
-    const transport = emptyTransport({ keysets: [{ id: V2_ID, unit: 'sat' }] })
+    const transport = emptyTransport({ keysets: [{ id: V2_ID, unit: 'msat' }] })
     let start = 0
     transport.restoreCandidates = async () => {
       starts.push(start)
@@ -191,6 +193,7 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
       completedChildCount: 2,
       batchesProcessed: 3,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
     await withDaemonHome(fixture.directory, async () => {
       const available = await readAvailableWalletProofsFenced({
@@ -250,6 +253,80 @@ test('conditional discovery skips expired and unmatched keysets without fetching
     assert.equal(fetchCount, 0)
     assert.equal(result.selectedKeysetCount, 0)
     assert.equal(result.state, 'completed')
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('regular recovery refuses a keyset counter alias before scan or roster writes', async () => {
+  const fixture = await recoveryFixture('regular-counter-alias')
+  const regular = regularKeyset({ '1': MINT_PUBLIC_KEY })
+  let restoreCalls = 0
+  let loadedMint = false
+  const transport = recoveryTransport({
+    regular: [{ id: regular.id, unit: regular.unit }],
+    regularKeys: [regular],
+    onRestoreCandidates() {
+      restoreCalls += 1
+      return { outputs: [], signatures: [] }
+    },
+  })
+  transport.wallet.loadMint = async () => {
+    loadedMint = true
+  }
+  try {
+    await insertCounterAlias(fixture, 'target_keyset_counters', regular.id)
+    const before = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    await assert.rejects(
+      () => recoverAllDaemonWalletFromSeed(request(fixture), dependencies(fixture, transport)),
+      /another mint URL/,
+    )
+    assert.equal(restoreCalls, 0)
+    assert.equal(loadedMint, false)
+    assert.deepEqual(
+      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
+      before,
+    )
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('conditional recovery refuses an alias before unmatched discovery or roster writes', async () => {
+  const fixture = await recoveryFixture('conditional-counter-alias')
+  const conditional = conditionalAuthority()
+  let restoreCalls = 0
+  let fetchedKeys = 0
+  let loadedMint = false
+  const transport = recoveryTransport({
+    conditional: [conditionalDescriptor(conditional)],
+    onRestoreCandidates() {
+      restoreCalls += 1
+      return { outputs: [], signatures: [] }
+    },
+    onConditionalFetch() {
+      fetchedKeys += 1
+      throw new Error('unmatched conditional keysets must not fetch keys')
+    },
+  })
+  transport.wallet.loadMint = async () => {
+    loadedMint = true
+  }
+  try {
+    await insertCounterAlias(fixture, 'custody_keyset_counters', conditional.id)
+    const before = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    await assert.rejects(
+      () =>
+        recoverAllDaemonWalletFromSeed(request(fixture, 'msat'), dependencies(fixture, transport)),
+      /another mint URL/,
+    )
+    assert.equal(restoreCalls, 0)
+    assert.equal(fetchedKeys, 0)
+    assert.equal(loadedMint, false)
+    assert.deepEqual(
+      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
+      before,
+    )
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -316,6 +393,7 @@ test('a pending child consumes one attempt while another child completes', async
       completedChildCount: 1,
       batchesProcessed: 2,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
@@ -485,9 +563,72 @@ async function recoveryFixture(label: string) {
   return { directory, walletSeedHex, fence, mutation: { fence, observedAtMs: 3 } }
 }
 
+async function insertCounterAlias(
+  fixture: Awaited<ReturnType<typeof recoveryFixture>>,
+  table: 'target_keyset_counters' | 'custody_keyset_counters',
+  keysetId: string,
+): Promise<void> {
+  const database = await openDaemonStateSqlite(fixture.directory)
+  try {
+    if (table === 'target_keyset_counters') {
+      database
+        .prepare(
+          `INSERT INTO target_keyset_counters (
+             scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+           ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 9, 2)`,
+        )
+        .run(fixture.fence.scopeId, keysetId)
+      return
+    }
+    database
+      .prepare(
+        `INSERT INTO custody_keyset_counters (
+           scope_id, normalized_mint, unit, keyset_id,
+           next_counter, revision, updated_at_ms
+         ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 9, 0, 2)`,
+      )
+      .run(fixture.fence.scopeId, keysetId)
+  } finally {
+    database.close()
+  }
+}
+
+async function readRecoveryAuthoritySnapshot(directory: string, scopeId: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return {
+      targetCounters: database
+        .prepare(
+          `SELECT * FROM target_keyset_counters WHERE scope_id = ?
+           ORDER BY normalized_mint, unit, keyset_id`,
+        )
+        .all(scopeId),
+      custodyCounters: database
+        .prepare(
+          `SELECT * FROM custody_keyset_counters WHERE scope_id = ?
+           ORDER BY normalized_mint, unit, keyset_id`,
+        )
+        .all(scopeId),
+      recoveryJobs: database
+        .prepare('SELECT * FROM seed_recovery_jobs WHERE scope_id = ? ORDER BY recovery_id')
+        .all(scopeId),
+      recoveryKeysets: database
+        .prepare(
+          `SELECT * FROM seed_recovery_keysets
+           WHERE recovery_id IN (
+             SELECT recovery_id FROM seed_recovery_jobs WHERE scope_id = ?
+           ) ORDER BY recovery_id, keyset_id`,
+        )
+        .all(scopeId),
+    }
+  } finally {
+    database.close()
+  }
+}
+
 function request(
   fixture: Awaited<ReturnType<typeof recoveryFixture>>,
-  unit: 'sat' | 'msat' = 'sat',
+  unit: 'sat' | 'msat' = 'msat',
 ) {
   return {
     recoveryId: 'all-empty',
@@ -512,7 +653,7 @@ function dependencies(
   }
 }
 
-function regularKeyset(keys: Record<string, string>, unit = 'sat'): MintKeys {
+function regularKeyset(keys: Record<string, string>, unit = 'msat'): MintKeys {
   return { id: deriveKeysetId(keys, { unit, versionByte: 1 }), unit, keys }
 }
 
@@ -638,12 +779,12 @@ function emptyTransport(regular: unknown = { keysets: [] }): AllKeysetSeedRecove
       async loadMint() {},
       keyChain: {
         getKeysets: () => [],
-        getKeyset: () => ({ id: V2_ID, unit: 'sat', keys: {} }),
+        getKeyset: () => ({ id: V2_ID, unit: 'msat', keys: {} }),
         async ensureKeysetKeys() {
-          return { id: V2_ID, unit: 'sat', keys: {} }
+          return { id: V2_ID, unit: 'msat', keys: {} }
         },
       },
-      getKeyset: () => ({ id: V2_ID, unit: 'sat', keys: {} }),
+      getKeyset: () => ({ id: V2_ID, unit: 'msat', keys: {} }),
       async checkProofsStates() {
         throw new Error('empty recovery must not query NUT-07')
       },

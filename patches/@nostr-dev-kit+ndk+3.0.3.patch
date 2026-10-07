@@ -1,0 +1,1985 @@
+diff --git a/node_modules/@nostr-dev-kit/ndk/dist/index.d.mts b/node_modules/@nostr-dev-kit/ndk/dist/index.d.mts
+index aac4a5e..1328c29 100644
+--- a/node_modules/@nostr-dev-kit/ndk/dist/index.d.mts
++++ b/node_modules/@nostr-dev-kit/ndk/dist/index.d.mts
+@@ -560,6 +560,8 @@ declare class NDKPool extends EventEmitter<{
+     private temporaryRelayTimers;
+     private flappingRelays;
+     private backoffTimes;
++    private flappingTimers;
++    private delayedAddTimers;
+     private ndk;
+     private disconnectionTimes;
+     private systemEventDetector?;
+@@ -841,6 +843,8 @@ declare class NDKRelayConnectivity {
+     netDebug?: NDKNetDebug;
+     private connectTimeout;
+     private reconnectTimeout;
++    private disposed;
++    private readonly disposal;
+     private ndk?;
+     openSubs: Map<string, NDKRelaySubscription>;
+     private openCountRequests;
+@@ -894,6 +898,8 @@ declare class NDKRelayConnectivity {
+      * `NDKRelayStatus.DISCONNECTED` if the disconnect operation fails.
+      */
+     disconnect(): void;
++    get isDisposed(): boolean;
++    dispose(): void;
+     /**
+      * Handles the error that occurred when attempting to connect to the NDK relay.
+      * If `reconnect` is `true`, this method will initiate a reconnection attempt.
+@@ -1307,6 +1313,7 @@ declare class NDKRelay extends EventEmitter<{
+      */
+     trusted: boolean;
+     complaining: boolean;
++    private validationTimer?;
+     readonly debug: debug$1.Debugger;
+     static defaultValidationRatioUpdateFn: (relay: NDKRelay, validatedCount: number, _nonValidatedCount: number) => number;
+     constructor(url: WebSocket["url"], authPolicy: NDKAuthPolicy | undefined, ndk: NDK);
+@@ -1321,6 +1328,7 @@ declare class NDKRelay extends EventEmitter<{
+      * Disconnects from the relay.
+      */
+     disconnect(): void;
++    dispose(): void;
+     /**
+      * Queues or executes the subscription of a specific set of filters
+      * within this relay.
+@@ -7208,8 +7216,8 @@ declare function getRelayListForUsers(pubkeys: Hexpubkey[], ndk: NDK, skipCache?
+ 
+ declare function tryNormalizeRelayUrl(url: string): string | undefined;
+ /**
+- * Normalizes a relay URL by removing authentication, www, and hash,
+- * and ensures that it ends with a slash.
++ * Uses URL authority normalization and keeps exact path and query identity.
++ * Removes an empty root slash only.
+  *
+  * @param url - The URL to be normalized.
+  * @returns The normalized URL.
+diff --git a/node_modules/@nostr-dev-kit/ndk/dist/index.d.ts b/node_modules/@nostr-dev-kit/ndk/dist/index.d.ts
+index aac4a5e..1328c29 100644
+--- a/node_modules/@nostr-dev-kit/ndk/dist/index.d.ts
++++ b/node_modules/@nostr-dev-kit/ndk/dist/index.d.ts
+@@ -560,6 +560,8 @@ declare class NDKPool extends EventEmitter<{
+     private temporaryRelayTimers;
+     private flappingRelays;
+     private backoffTimes;
++    private flappingTimers;
++    private delayedAddTimers;
+     private ndk;
+     private disconnectionTimes;
+     private systemEventDetector?;
+@@ -841,6 +843,8 @@ declare class NDKRelayConnectivity {
+     netDebug?: NDKNetDebug;
+     private connectTimeout;
+     private reconnectTimeout;
++    private disposed;
++    private readonly disposal;
+     private ndk?;
+     openSubs: Map<string, NDKRelaySubscription>;
+     private openCountRequests;
+@@ -894,6 +898,8 @@ declare class NDKRelayConnectivity {
+      * `NDKRelayStatus.DISCONNECTED` if the disconnect operation fails.
+      */
+     disconnect(): void;
++    get isDisposed(): boolean;
++    dispose(): void;
+     /**
+      * Handles the error that occurred when attempting to connect to the NDK relay.
+      * If `reconnect` is `true`, this method will initiate a reconnection attempt.
+@@ -1307,6 +1313,7 @@ declare class NDKRelay extends EventEmitter<{
+      */
+     trusted: boolean;
+     complaining: boolean;
++    private validationTimer?;
+     readonly debug: debug$1.Debugger;
+     static defaultValidationRatioUpdateFn: (relay: NDKRelay, validatedCount: number, _nonValidatedCount: number) => number;
+     constructor(url: WebSocket["url"], authPolicy: NDKAuthPolicy | undefined, ndk: NDK);
+@@ -1321,6 +1328,7 @@ declare class NDKRelay extends EventEmitter<{
+      * Disconnects from the relay.
+      */
+     disconnect(): void;
++    dispose(): void;
+     /**
+      * Queues or executes the subscription of a specific set of filters
+      * within this relay.
+@@ -7208,8 +7216,8 @@ declare function getRelayListForUsers(pubkeys: Hexpubkey[], ndk: NDK, skipCache?
+ 
+ declare function tryNormalizeRelayUrl(url: string): string | undefined;
+ /**
+- * Normalizes a relay URL by removing authentication, www, and hash,
+- * and ensures that it ends with a slash.
++ * Uses URL authority normalization and keeps exact path and query identity.
++ * Removes an empty root slash only.
+  *
+  * @param url - The URL to be normalized.
+  * @returns The normalized URL.
+diff --git a/node_modules/@nostr-dev-kit/ndk/dist/index.js b/node_modules/@nostr-dev-kit/ndk/dist/index.js
+index c827f17..58bd933 100644
+--- a/node_modules/@nostr-dev-kit/ndk/dist/index.js
++++ b/node_modules/@nostr-dev-kit/ndk/dist/index.js
+@@ -490,15 +490,9 @@ function tryNormalizeRelayUrl(url) {
+   }
+ }
+ function normalizeRelayUrl(url) {
+-  let r = normalizeUrl(url, {
+-    stripAuthentication: false,
+-    stripWWW: false,
+-    stripHash: true
+-  });
+-  if (!r.endsWith("/")) {
+-    r += "/";
+-  }
+-  return r;
++  const parsed = new URL(url.trim());
++  const normalized = parsed.toString();
++  return parsed.pathname === "/" && parsed.search === "" && parsed.hash === "" ? normalized.replace(/\/$/, "") : normalized;
+ }
+ function normalize(urls) {
+   const normalized = /* @__PURE__ */ new Set();
+@@ -879,26 +873,35 @@ var NDKRelayKeepalive = class {
+     }, this.timeout);
+   }
+ };
+-async function probeRelayConnection(relay) {
++async function probeRelayConnection(relay, signal) {
++  if (signal?.aborted) return false;
+   const probeId = `probe-${Math.random().toString(36).substring(7)}`;
+   return new Promise((resolve) => {
+     let responded = false;
++    let removeMessage;
++    const finish = (alive) => {
++      if (responded) return;
++      responded = true;
++      clearTimeout(timeout);
++      signal?.removeEventListener("abort", aborted);
++      removeMessage?.();
++      if (!signal?.aborted) relay.send(["CLOSE", probeId]);
++      resolve(alive);
++    };
++    const aborted = () => finish(false);
+     const timeout = setTimeout(() => {
+-      if (!responded) {
+-        responded = true;
+-        relay.send(["CLOSE", probeId]);
+-        resolve(false);
+-      }
++      finish(false);
+     }, 5e3);
+     const handler = () => {
+-      if (!responded) {
+-        responded = true;
+-        clearTimeout(timeout);
+-        relay.send(["CLOSE", probeId]);
+-        resolve(true);
+-      }
++      finish(true);
+     };
+-    relay.once("message", handler);
++    signal?.addEventListener("abort", aborted, { once: true });
++    const removal = relay.once("message", handler);
++    if (typeof removal === "function") removeMessage = removal;
++    if (responded) {
++      removeMessage?.();
++      return;
++    }
+     relay.send([
+       "REQ",
+       probeId,
+@@ -913,6 +916,7 @@ async function probeRelayConnection(relay) {
+ // src/relay/connectivity.ts
+ var FLAPPING_THRESHOLD_MS = 1e3;
+ var NDKRelayConnectivity = class {
++  disposal = new AbortController();
+   ndkRelay;
+   ws;
+   _status;
+@@ -958,26 +962,28 @@ var NDKRelayConnectivity = class {
+       const isAlive = await probeRelayConnection({
+         send: (msg) => this.send(JSON.stringify(msg)),
+         once: (event, handler) => {
++          const socket = this.ws;
+           const messageHandler = (e) => {
+             try {
+               const data = JSON.parse(e.data);
+               if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                 handler();
+-                this.ws?.removeEventListener("message", messageHandler);
++                socket?.removeEventListener("message", messageHandler);
+               }
+             } catch {
+             }
+           };
+-          this.ws?.addEventListener("message", messageHandler);
++          socket?.addEventListener("message", messageHandler);
++          return () => socket?.removeEventListener("message", messageHandler);
+         }
+-      });
++      }, this.disposal.signal);
+       if (!isAlive) {
+         this.debug("Probe failed, connection is stale");
+         this.handleStaleConnection();
+       }
+     });
+     this.wsStateMonitor = setInterval(() => {
+-      if (this._status === 5 /* CONNECTED */) {
++      if (this._status === NDKRelayStatus.CONNECTED) {
+         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+           this.debug("WebSocket died silently, reconnecting");
+           this.handleStaleConnection();
+@@ -998,6 +1004,7 @@ var NDKRelayConnectivity = class {
+    * Handles detection of a stale connection by cleaning up and triggering reconnection.
+    */
+   handleStaleConnection() {
++    if (this.disposed) return;
+     this.wasIdle = true;
+     this.keepalive?.stop();
+     if (this.ws) {
+@@ -1007,7 +1014,7 @@ var NDKRelayConnectivity = class {
+       }
+       this.ws = void 0;
+     }
+-    this._status = 1 /* DISCONNECTED */;
++    this._status = NDKRelayStatus.DISCONNECTED;
+     this.ndkRelay.emit("disconnect");
+     this.handleReconnection();
+   }
+@@ -1015,28 +1022,31 @@ var NDKRelayConnectivity = class {
+    * Handles possible system wake event
+    */
+   handlePossibleWake() {
++    if (this.disposed) return;
+     this.debug("System wake detected, checking all connections");
+     this.wasIdle = true;
+-    if (this._status >= 5 /* CONNECTED */) {
++    if (this._status >= NDKRelayStatus.CONNECTED) {
+       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+         this.handleStaleConnection();
+       } else {
+         probeRelayConnection({
+           send: (msg) => this.send(JSON.stringify(msg)),
+           once: (event, handler) => {
++            const socket = this.ws;
+             const messageHandler = (e) => {
+               try {
+                 const data = JSON.parse(e.data);
+                 if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                   handler();
+-                  this.ws?.removeEventListener("message", messageHandler);
++                  socket?.removeEventListener("message", messageHandler);
+                 }
+               } catch {
+               }
+             };
+-            this.ws?.addEventListener("message", messageHandler);
++            socket?.addEventListener("message", messageHandler);
++            return () => socket?.removeEventListener("message", messageHandler);
+           }
+-        }).then((isAlive) => {
++        }, this.disposal.signal).then((isAlive) => {
+           if (!isAlive) {
+             this.handleStaleConnection();
+           }
+@@ -1070,6 +1080,7 @@ var NDKRelayConnectivity = class {
+    * @returns A Promise that resolves when the connection is established, or rejects if the connection fails.
+    */
+   async connect(timeoutMs, reconnect = true) {
++    if (this.disposed) return;
+     if (this.ws && this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING) {
+       this.debug("Cleaning up stale WebSocket connection");
+       try {
+@@ -1077,9 +1088,9 @@ var NDKRelayConnectivity = class {
+       } catch (e) {
+       }
+       this.ws = void 0;
+-      this._status = 1 /* DISCONNECTED */;
++      this._status = NDKRelayStatus.DISCONNECTED;
+     }
+-    if (this._status !== 2 /* RECONNECTING */ && this._status !== 1 /* DISCONNECTED */ || this.reconnectTimeout) {
++    if (this._status !== NDKRelayStatus.RECONNECTING && this._status !== NDKRelayStatus.DISCONNECTED || this.reconnectTimeout) {
+       this.debug(
+         "Relay requested to be connected but was in state %s or it had a reconnect timeout",
+         this._status
+@@ -1099,8 +1110,8 @@ var NDKRelayConnectivity = class {
+     if (this.timeoutMs) this.connectTimeout = setTimeout(() => this.onConnectionError(reconnect), this.timeoutMs);
+     try {
+       this.updateConnectionStats.attempt();
+-      if (this._status === 1 /* DISCONNECTED */) this._status = 4 /* CONNECTING */;
+-      else this._status = 2 /* RECONNECTING */;
++      if (this._status === NDKRelayStatus.DISCONNECTED) this._status = NDKRelayStatus.CONNECTING;
++      else this._status = NDKRelayStatus.RECONNECTING;
+       this.ws = new WebSocket(this.ndkRelay.url);
+       this.ws.onopen = this.onConnect.bind(this);
+       this.ws.onclose = this.onDisconnect.bind(this);
+@@ -1108,7 +1119,7 @@ var NDKRelayConnectivity = class {
+       this.ws.onerror = this.onError.bind(this);
+     } catch (e) {
+       this.debug(`Failed to connect to ${this.ndkRelay.url}`, e);
+-      this._status = 1 /* DISCONNECTED */;
++      this._status = NDKRelayStatus.DISCONNECTED;
+       if (reconnect) this.handleReconnection();
+       else this.ndkRelay.emit("delayed-connect", 2 * 24 * 60 * 60 * 1e3);
+       throw e;
+@@ -1147,6 +1158,7 @@ var NDKRelayConnectivity = class {
+    * @param reconnect - Indicates whether a reconnection should be attempted.
+    */
+   onConnectionError(reconnect) {
++    if (this.disposed) return;
+     this.debug(`Error connecting to ${this.ndkRelay.url}`, this.timeoutMs);
+     if (reconnect && !this.reconnectTimeout) {
+       this.handleReconnection();
+@@ -1159,6 +1171,7 @@ var NDKRelayConnectivity = class {
+    * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+    */
+   onConnect() {
++    if (this.disposed) return;
+     this.netDebug?.("connected", this.ndkRelay);
+     if (this.reconnectTimeout) {
+       clearTimeout(this.reconnectTimeout);
+@@ -1169,7 +1182,7 @@ var NDKRelayConnectivity = class {
+       this.connectTimeout = void 0;
+     }
+     this.updateConnectionStats.connected();
+-    this._status = 5 /* CONNECTED */;
++    this._status = NDKRelayStatus.CONNECTED;
+     this.keepalive?.start();
+     this.wasIdle = false;
+     this.ndkRelay.emit("connect");
+@@ -1183,14 +1196,15 @@ var NDKRelayConnectivity = class {
+    * and emits a `disconnect` event on the `ndkRelay` object.
+    */
+   onDisconnect() {
++    if (this.disposed) return;
+     this.netDebug?.("disconnected", this.ndkRelay);
+     this.updateConnectionStats.disconnected();
+     this.keepalive?.stop();
+     this.clearPendingPublishes(new Error(`Relay ${this.ndkRelay.url} disconnected`));
+-    if (this._status === 5 /* CONNECTED */) {
++    if (this._status === NDKRelayStatus.CONNECTED) {
+       this.handleReconnection();
+     }
+-    this._status = 1 /* DISCONNECTED */;
++    this._status = NDKRelayStatus.DISCONNECTED;
+     this.ndkRelay.emit("disconnect");
+   }
+   /**
+@@ -1201,6 +1215,7 @@ var NDKRelayConnectivity = class {
+    * @param event - The MessageEvent containing the received message data.
+    */
+   onMessage(event) {
++    if (this.disposed) return;
+     this.netDebug?.(event.data, this.ndkRelay, "recv");
+     this.keepalive?.recordActivity();
+     try {
+@@ -1312,14 +1327,14 @@ var NDKRelayConnectivity = class {
+     this.debug("Relay requested authentication", {
+       havePolicy: !!authPolicy
+     });
+-    if (this._status === 7 /* AUTHENTICATING */) {
++    if (this._status === NDKRelayStatus.AUTHENTICATING) {
+       this.debug("Already authenticating, ignoring");
+       return;
+     }
+-    this._status = 6 /* AUTH_REQUESTED */;
++    this._status = NDKRelayStatus.AUTH_REQUESTED;
+     if (authPolicy) {
+-      if (this._status >= 5 /* CONNECTED */) {
+-        this._status = 7 /* AUTHENTICATING */;
++      if (this._status >= NDKRelayStatus.CONNECTED) {
++        this._status = NDKRelayStatus.AUTHENTICATING;
+         let res;
+         try {
+           res = await authPolicy(this.ndkRelay, challenge);
+@@ -1328,26 +1343,30 @@ var NDKRelayConnectivity = class {
+           res = false;
+         }
+         this.debug("Authentication policy returned", !!res);
++        if (this.disposed) return;
+         if (res instanceof NDKEvent || res === true) {
+           if (res instanceof NDKEvent) {
+             await this.auth(res);
+           }
+           const authenticate = async () => {
+-            if (this._status >= 5 /* CONNECTED */ && this._status < 8 /* AUTHENTICATED */) {
++            if (this._status >= NDKRelayStatus.CONNECTED && this._status < NDKRelayStatus.AUTHENTICATED) {
+               const event = new NDKEvent(this.ndk);
+-              event.kind = 22242 /* ClientAuth */;
++              event.kind = NDKKind.ClientAuth;
+               event.tags = [
+                 ["relay", this.ndkRelay.url],
+                 ["challenge", challenge]
+               ];
+               await event.sign();
++              if (this.disposed) return;
+               this.auth(event).then(() => {
+-                this._status = 8 /* AUTHENTICATED */;
++                if (this.disposed) return;
++                this._status = NDKRelayStatus.AUTHENTICATED;
+                 this.ndkRelay.emit("authed");
+                 this.debug("Authentication successful");
+                 this.retryPendingAuthPublishes();
+               }).catch((e) => {
+-                this._status = 6 /* AUTH_REQUESTED */;
++                if (this.disposed) return;
++                this._status = NDKRelayStatus.AUTH_REQUESTED;
+                 this.ndkRelay.emit("auth:failed", e);
+                 this.debug("Authentication failed", e);
+                 this.rejectPendingAuthPublishes(e);
+@@ -1366,7 +1385,7 @@ var NDKRelayConnectivity = class {
+               });
+             }
+           }
+-          this._status = 5 /* CONNECTED */;
++          this._status = NDKRelayStatus.CONNECTED;
+           this.ndkRelay.emit("authed");
+         }
+       }
+@@ -1379,6 +1398,7 @@ var NDKRelayConnectivity = class {
+    * @param error - The error or event that occurred.
+    */
+   onError(error) {
++    if (this.disposed) return;
+     this.debug(`WebSocket error on ${this.ndkRelay.url}:`, error);
+   }
+   /**
+@@ -1436,10 +1456,11 @@ var NDKRelayConnectivity = class {
+    * @param attempt - The current attempt number (default is 0).
+    */
+   handleReconnection(attempt = 0) {
++    if (this.disposed) return;
+     if (this.reconnectTimeout) return;
+     if (this.isFlapping()) {
+       this.ndkRelay.emit("flapping", this._connectionStats);
+-      this._status = 3 /* FLAPPING */;
++      this._status = NDKRelayStatus.FLAPPING;
+       return;
+     }
+     let reconnectDelay;
+@@ -1455,7 +1476,7 @@ var NDKRelayConnectivity = class {
+     }
+     this.reconnectTimeout = setTimeout(() => {
+       this.reconnectTimeout = void 0;
+-      this._status = 2 /* RECONNECTING */;
++      this._status = NDKRelayStatus.RECONNECTING;
+       this.connect().catch(() => {
+         this.handleReconnection(attempt + 1);
+       });
+@@ -1495,6 +1516,7 @@ var NDKRelayConnectivity = class {
+    * @returns A promise that resolves with the authentication result.
+    */
+   async auth(event) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     const ret = new Promise((resolve, reject) => {
+       const val = this.openEventPublishes.get(event.id) ?? [];
+       val.push({ resolve, reject });
+@@ -1563,6 +1585,7 @@ var NDKRelayConnectivity = class {
+    * @throws {Error} If attempting to publish on a closed relay connection.
+    */
+   async publish(event) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     const ret = new Promise((resolve, reject) => {
+       const val = this.openEventPublishes.get(event.id) ?? [];
+       if (val.length > 0) {
+@@ -1584,6 +1607,7 @@ var NDKRelayConnectivity = class {
+    * @throws {Error} If attempting to send the count request on a closed relay connection.
+    */
+   async count(filters, params) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     this.serial++;
+     const id = params?.id || `count:${this.serial}`;
+     const ret = new Promise((resolve, reject) => {
+@@ -1642,6 +1666,40 @@ var NDKRelayConnectivity = class {
+   get connected() {
+     return this._status >= 5 /* CONNECTED */ && this.ws?.readyState === WebSocket.OPEN;
+   }
++  disposed = false;
++  get isDisposed() {
++    return this.disposed;
++  }
++  dispose() {
++    if (this.disposed) return;
++    this.disposed = true;
++    this.disposal.abort();
++    clearTimeout(this.connectTimeout);
++    clearTimeout(this.reconnectTimeout);
++    this.connectTimeout = void 0;
++    this.reconnectTimeout = void 0;
++    this.keepalive?.stop();
++    clearInterval(this.wsStateMonitor);
++    clearInterval(this.sleepDetector);
++    this.wsStateMonitor = void 0;
++    this.sleepDetector = void 0;
++    const socket = this.ws;
++    this.ws = void 0;
++    if (socket) {
++      socket.onopen = socket.onclose = socket.onmessage = socket.onerror = null;
++      try {
++        socket.close();
++      } catch {
++      }
++    }
++    const error = new Error("Relay was disposed");
++    this.clearPendingPublishes(error);
++    for (const pending of this.openCountRequests.values()) pending.reject(error);
++    this.openCountRequests.clear();
++    this.openSubs.clear();
++    this._status = NDKRelayStatus.DISCONNECTED;
++    this.ndkRelay.emit("disconnect");
++  }
+ };
+ 
+ // src/relay/nip11.ts
+@@ -2384,11 +2442,12 @@ var NDKRelay = class _NDKRelay extends import_tseep.EventEmitter {
+     }
+   }
+   updateValidationRatio() {
++    if (this.connectivity.isDisposed) return;
+     if (this.validationRatioFn && this.validatedEventCount > 0) {
+       const newRatio = this.validationRatioFn(this, this.validatedEventCount, this.nonValidatedEventCount);
+       this.targetValidationRatio = newRatio;
+     }
+-    setTimeout(() => {
++    this.validationTimer = setTimeout(() => {
+       this.updateValidationRatio();
+     }, 3e4);
+   }
+@@ -2552,6 +2611,12 @@ var NDKRelay = class _NDKRelay extends import_tseep.EventEmitter {
+   get info() {
+     return this._relayInfo;
+   }
++  validationTimer;
++  dispose() {
++    clearTimeout(this.validationTimer);
++    this.validationTimer = void 0;
++    this.connectivity.dispose();
++  }
+ };
+ 
+ // src/relay/sets/index.ts
+@@ -4501,8 +4566,12 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     return this._relays;
+   }
+   set relayUrls(urls) {
+-    this._relays.clear();
+-    for (const relayUrl of urls) {
++    const desired = new Set(urls.map(normalizeRelayUrl));
++    for (const relayUrl of [...this._relays.keys(), ...this.delayedAddTimers.keys()]) {
++      if (!desired.has(relayUrl)) this.removeRelay(relayUrl);
++    }
++    for (const relayUrl of desired) {
++      if (this._relays.has(relayUrl) || this.delayedAddTimers.has(relayUrl)) continue;
+       const relay = new NDKRelay(relayUrl, void 0, this.ndk);
+       relay.connectivity.netDebug = this.ndk.netDebug;
+       this.addRelay(relay);
+@@ -4533,6 +4602,7 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     }
+     if (!relayAlreadyInPool || existingTimer) {
+       const timer = setTimeout(() => {
++        if (this.relays.get(relay.url) !== relay) return;
+         if (this.ndk.explicitRelayUrls?.includes(relay.url)) return;
+         this.removeRelay(relay.url);
+       }, removeIfUnusedAfter);
+@@ -4546,17 +4616,16 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+    * @param connect - Whether or not to connect to the relay.
+    */
+   addRelay(relay, connect = true) {
++    if (relay.connectivity.isDisposed) return;
+     const isAlreadyInPool = this.relays.has(relay.url);
+-    const isCustomRelayUrl = relay.url.includes("/npub1");
+     let reconnect = true;
+     const relayUrl = relay.url;
+-    if (isAlreadyInPool) return;
+-    if (this.ndk.relayConnectionFilter && !this.ndk.relayConnectionFilter(relayUrl)) {
+-      this.debug(`Refusing to add relay ${relayUrl}: blocked by relayConnectionFilter`);
++    if (isAlreadyInPool) {
++      if (this.relays.get(relay.url) !== relay) relay.dispose();
+       return;
+     }
+-    if (isCustomRelayUrl) {
+-      this.debug(`Refusing to add relay ${relayUrl}: is a filter relay`);
++    if (this.ndk.relayConnectionFilter && !this.ndk.relayConnectionFilter(relayUrl)) {
++      this.debug(`Refusing to add relay ${relayUrl}: blocked by relayConnectionFilter`);
+       return;
+     }
+     if (this.ndk.cacheAdapter?.getRelayStatus) {
+@@ -4566,9 +4635,17 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+         if (info.dontConnectBefore > Date.now()) {
+           const delay = info.dontConnectBefore - Date.now();
+           this.debug(`Refusing to add relay ${relayUrl}: delayed connect for ${delay}ms`);
+-          setTimeout(() => {
++          const previous = this.delayedAddTimers.get(relayUrl);
++          if (previous) {
++            clearTimeout(previous.timer);
++            if (previous.relay !== relay) previous.relay.dispose();
++          }
++          const timer = setTimeout(() => {
++            if (this.delayedAddTimers.get(relayUrl)?.relay !== relay) return;
++            this.delayedAddTimers.delete(relayUrl);
+             this.addRelay(relay, connect);
+           }, delay);
++          this.delayedAddTimers.set(relayUrl, { relay, timer });
+           return;
+         }
+         reconnect = false;
+@@ -4578,6 +4655,7 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     const connectHandler = () => this.handleRelayConnect(relayUrl);
+     const readyHandler = () => this.handleRelayReady(relay);
+     const disconnectHandler = () => {
++      if (this.relays.get(relayUrl) !== relay) return;
+       this.recordDisconnection(relay);
+       this.emit("relay:disconnect", relay);
+     };
+@@ -4620,20 +4698,33 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+    * @returns {boolean} True if the relay was removed, false if it was not found.
+    */
+   removeRelay(relayUrl) {
++    relayUrl = normalizeRelayUrl(relayUrl);
++    const delayed = this.delayedAddTimers.get(relayUrl);
++    if (delayed) {
++      clearTimeout(delayed.timer);
++      this.delayedAddTimers.delete(relayUrl);
++      delayed.relay.dispose();
++    }
++    clearTimeout(this.temporaryRelayTimers.get(relayUrl));
++    this.temporaryRelayTimers.delete(relayUrl);
++    clearTimeout(this.flappingTimers.get(relayUrl));
++    this.flappingTimers.delete(relayUrl);
++    this.flappingRelays.delete(relayUrl);
++    this.backoffTimes.delete(relayUrl);
++    this.disconnectionTimes.delete(relayUrl);
+     const relay = this.relays.get(relayUrl);
+     if (relay) {
+-      relay.disconnect();
+       this.relays.delete(relayUrl);
+       this.autoConnectRelays.delete(relayUrl);
++      relay.dispose();
++      if (this.relays.size === 0) {
++        clearTimeout(this.systemEventDetector);
++        this.systemEventDetector = void 0;
++      }
+       this.emit("relay:disconnect", relay);
+       return true;
+     }
+-    const existingTimer = this.temporaryRelayTimers.get(relayUrl);
+-    if (existingTimer) {
+-      clearTimeout(existingTimer);
+-      this.temporaryRelayTimers.delete(relayUrl);
+-    }
+-    return false;
++    return !!delayed;
+   }
+   /**
+    * Checks whether a relay is already connected in the pool.
+@@ -4689,36 +4780,34 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     this.debug(`Connecting to ${this.relays.size} relays${timeoutMs ? `, timeout ${timeoutMs}ms` : ""}...`);
+     const relaysToConnect = Array.from(this.autoConnectRelays.keys()).map((url) => this.relays.get(url)).filter((relay) => !!relay);
+     for (const relay of relaysToConnect) {
+-      if (relay.status !== 5 /* CONNECTED */ && relay.status !== 4 /* CONNECTING */) {
++      if (relay.status !== NDKRelayStatus.CONNECTED && relay.status !== NDKRelayStatus.CONNECTING) {
+         this.emit("relay:connecting", relay);
+         relay.connect().catch((e) => {
+           this.debug(`Failed to connect to relay ${relay.url}: ${e ?? "No reason specified"}`);
+         });
+       }
+     }
+-    const allConnected = () => relaysToConnect.every((r) => r.status === 5 /* CONNECTED */);
+-    const allConnectedPromise = new Promise((resolve) => {
+-      if (allConnected()) {
++    const allConnected = () => relaysToConnect.every((r) => r.connectivity.isDisposed || r.status === NDKRelayStatus.CONNECTED);
++    await new Promise((resolve) => {
++      let timer;
++      const finish = () => {
++        clearTimeout(timer);
++        for (const relay of relaysToConnect) {
++          relay.off("connect", check);
++          relay.off("disconnect", check);
++        }
+         resolve();
+-        return;
+-      }
+-      const listeners = [];
++      };
++      const check = () => {
++        if (allConnected()) finish();
++      };
+       for (const relay of relaysToConnect) {
+-        const handler = () => {
+-          if (allConnected()) {
+-            for (let i = 0; i < relaysToConnect.length; i++) {
+-              relaysToConnect[i].off("connect", listeners[i]);
+-            }
+-            resolve();
+-          }
+-        };
+-        listeners.push(handler);
+-        relay.on("connect", handler);
++        relay.on("connect", check);
++        relay.on("disconnect", check);
+       }
++      if (typeof timeoutMs === "number") timer = setTimeout(finish, timeoutMs);
++      check();
+     });
+-    const timeoutPromise = typeof timeoutMs === "number" ? new Promise((resolve) => setTimeout(resolve, timeoutMs)) : new Promise(() => {
+-    });
+-    await Promise.race([allConnectedPromise, timeoutPromise]);
+   }
+   checkOnFlappingRelays() {
+     const flappingRelaysCount = this.flappingRelays.size;
+@@ -4785,17 +4874,22 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     this.disconnectionTimes.clear();
+   }
+   handleFlapping(relay) {
++    if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+     this.debug(`Relay ${relay.url} is flapping`);
+     let currentBackoff = this.backoffTimes.get(relay.url) || 5e3;
+     currentBackoff = currentBackoff * 2;
+     this.backoffTimes.set(relay.url, currentBackoff);
+     this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+-    setTimeout(() => {
++    clearTimeout(this.flappingTimers.get(relay.url));
++    const timer = setTimeout(() => {
++      this.flappingTimers.delete(relay.url);
++      if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+       this.debug(`Attempting to reconnect to ${relay.url}`);
+       this.emit("relay:connecting", relay);
+       relay.connect();
+       this.checkOnFlappingRelays();
+     }, currentBackoff);
++    this.flappingTimers.set(relay.url, timer);
+     relay.disconnect();
+     this.emit("flapping", relay);
+   }
+@@ -4839,6 +4933,8 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+   urls() {
+     return Array.from(this.relays.keys());
+   }
++  flappingTimers = /* @__PURE__ */ new Map();
++  delayedAddTimers = /* @__PURE__ */ new Map();
+ };
+ 
+ // src/app-settings/index.ts
+diff --git a/node_modules/@nostr-dev-kit/ndk/dist/index.mjs b/node_modules/@nostr-dev-kit/ndk/dist/index.mjs
+index 9ca50ce..72cd6d4 100644
+--- a/node_modules/@nostr-dev-kit/ndk/dist/index.mjs
++++ b/node_modules/@nostr-dev-kit/ndk/dist/index.mjs
+@@ -312,15 +312,9 @@ function tryNormalizeRelayUrl(url) {
+   }
+ }
+ function normalizeRelayUrl(url) {
+-  let r = normalizeUrl(url, {
+-    stripAuthentication: false,
+-    stripWWW: false,
+-    stripHash: true
+-  });
+-  if (!r.endsWith("/")) {
+-    r += "/";
+-  }
+-  return r;
++  const parsed = new URL(url.trim());
++  const normalized = parsed.toString();
++  return parsed.pathname === "/" && parsed.search === "" && parsed.hash === "" ? normalized.replace(/\/$/, "") : normalized;
+ }
+ function normalize(urls) {
+   const normalized = /* @__PURE__ */ new Set();
+@@ -701,26 +695,35 @@ var NDKRelayKeepalive = class {
+     }, this.timeout);
+   }
+ };
+-async function probeRelayConnection(relay) {
++async function probeRelayConnection(relay, signal) {
++  if (signal?.aborted) return false;
+   const probeId = `probe-${Math.random().toString(36).substring(7)}`;
+   return new Promise((resolve) => {
+     let responded = false;
++    let removeMessage;
++    const finish = (alive) => {
++      if (responded) return;
++      responded = true;
++      clearTimeout(timeout);
++      signal?.removeEventListener("abort", aborted);
++      removeMessage?.();
++      if (!signal?.aborted) relay.send(["CLOSE", probeId]);
++      resolve(alive);
++    };
++    const aborted = () => finish(false);
+     const timeout = setTimeout(() => {
+-      if (!responded) {
+-        responded = true;
+-        relay.send(["CLOSE", probeId]);
+-        resolve(false);
+-      }
++      finish(false);
+     }, 5e3);
+     const handler = () => {
+-      if (!responded) {
+-        responded = true;
+-        clearTimeout(timeout);
+-        relay.send(["CLOSE", probeId]);
+-        resolve(true);
+-      }
++      finish(true);
+     };
+-    relay.once("message", handler);
++    signal?.addEventListener("abort", aborted, { once: true });
++    const removal = relay.once("message", handler);
++    if (typeof removal === "function") removeMessage = removal;
++    if (responded) {
++      removeMessage?.();
++      return;
++    }
+     relay.send([
+       "REQ",
+       probeId,
+@@ -735,6 +738,7 @@ async function probeRelayConnection(relay) {
+ // src/relay/connectivity.ts
+ var FLAPPING_THRESHOLD_MS = 1e3;
+ var NDKRelayConnectivity = class {
++  disposal = new AbortController();
+   ndkRelay;
+   ws;
+   _status;
+@@ -780,26 +784,28 @@ var NDKRelayConnectivity = class {
+       const isAlive = await probeRelayConnection({
+         send: (msg) => this.send(JSON.stringify(msg)),
+         once: (event, handler) => {
++          const socket = this.ws;
+           const messageHandler = (e) => {
+             try {
+               const data = JSON.parse(e.data);
+               if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                 handler();
+-                this.ws?.removeEventListener("message", messageHandler);
++                socket?.removeEventListener("message", messageHandler);
+               }
+             } catch {
+             }
+           };
+-          this.ws?.addEventListener("message", messageHandler);
++          socket?.addEventListener("message", messageHandler);
++          return () => socket?.removeEventListener("message", messageHandler);
+         }
+-      });
++      }, this.disposal.signal);
+       if (!isAlive) {
+         this.debug("Probe failed, connection is stale");
+         this.handleStaleConnection();
+       }
+     });
+     this.wsStateMonitor = setInterval(() => {
+-      if (this._status === 5 /* CONNECTED */) {
++      if (this._status === NDKRelayStatus.CONNECTED) {
+         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+           this.debug("WebSocket died silently, reconnecting");
+           this.handleStaleConnection();
+@@ -820,6 +826,7 @@ var NDKRelayConnectivity = class {
+    * Handles detection of a stale connection by cleaning up and triggering reconnection.
+    */
+   handleStaleConnection() {
++    if (this.disposed) return;
+     this.wasIdle = true;
+     this.keepalive?.stop();
+     if (this.ws) {
+@@ -829,7 +836,7 @@ var NDKRelayConnectivity = class {
+       }
+       this.ws = void 0;
+     }
+-    this._status = 1 /* DISCONNECTED */;
++    this._status = NDKRelayStatus.DISCONNECTED;
+     this.ndkRelay.emit("disconnect");
+     this.handleReconnection();
+   }
+@@ -837,28 +844,31 @@ var NDKRelayConnectivity = class {
+    * Handles possible system wake event
+    */
+   handlePossibleWake() {
++    if (this.disposed) return;
+     this.debug("System wake detected, checking all connections");
+     this.wasIdle = true;
+-    if (this._status >= 5 /* CONNECTED */) {
++    if (this._status >= NDKRelayStatus.CONNECTED) {
+       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+         this.handleStaleConnection();
+       } else {
+         probeRelayConnection({
+           send: (msg) => this.send(JSON.stringify(msg)),
+           once: (event, handler) => {
++            const socket = this.ws;
+             const messageHandler = (e) => {
+               try {
+                 const data = JSON.parse(e.data);
+                 if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                   handler();
+-                  this.ws?.removeEventListener("message", messageHandler);
++                  socket?.removeEventListener("message", messageHandler);
+                 }
+               } catch {
+               }
+             };
+-            this.ws?.addEventListener("message", messageHandler);
++            socket?.addEventListener("message", messageHandler);
++            return () => socket?.removeEventListener("message", messageHandler);
+           }
+-        }).then((isAlive) => {
++        }, this.disposal.signal).then((isAlive) => {
+           if (!isAlive) {
+             this.handleStaleConnection();
+           }
+@@ -892,6 +902,7 @@ var NDKRelayConnectivity = class {
+    * @returns A Promise that resolves when the connection is established, or rejects if the connection fails.
+    */
+   async connect(timeoutMs, reconnect = true) {
++    if (this.disposed) return;
+     if (this.ws && this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING) {
+       this.debug("Cleaning up stale WebSocket connection");
+       try {
+@@ -899,9 +910,9 @@ var NDKRelayConnectivity = class {
+       } catch (e) {
+       }
+       this.ws = void 0;
+-      this._status = 1 /* DISCONNECTED */;
++      this._status = NDKRelayStatus.DISCONNECTED;
+     }
+-    if (this._status !== 2 /* RECONNECTING */ && this._status !== 1 /* DISCONNECTED */ || this.reconnectTimeout) {
++    if (this._status !== NDKRelayStatus.RECONNECTING && this._status !== NDKRelayStatus.DISCONNECTED || this.reconnectTimeout) {
+       this.debug(
+         "Relay requested to be connected but was in state %s or it had a reconnect timeout",
+         this._status
+@@ -921,8 +932,8 @@ var NDKRelayConnectivity = class {
+     if (this.timeoutMs) this.connectTimeout = setTimeout(() => this.onConnectionError(reconnect), this.timeoutMs);
+     try {
+       this.updateConnectionStats.attempt();
+-      if (this._status === 1 /* DISCONNECTED */) this._status = 4 /* CONNECTING */;
+-      else this._status = 2 /* RECONNECTING */;
++      if (this._status === NDKRelayStatus.DISCONNECTED) this._status = NDKRelayStatus.CONNECTING;
++      else this._status = NDKRelayStatus.RECONNECTING;
+       this.ws = new WebSocket(this.ndkRelay.url);
+       this.ws.onopen = this.onConnect.bind(this);
+       this.ws.onclose = this.onDisconnect.bind(this);
+@@ -930,7 +941,7 @@ var NDKRelayConnectivity = class {
+       this.ws.onerror = this.onError.bind(this);
+     } catch (e) {
+       this.debug(`Failed to connect to ${this.ndkRelay.url}`, e);
+-      this._status = 1 /* DISCONNECTED */;
++      this._status = NDKRelayStatus.DISCONNECTED;
+       if (reconnect) this.handleReconnection();
+       else this.ndkRelay.emit("delayed-connect", 2 * 24 * 60 * 60 * 1e3);
+       throw e;
+@@ -969,6 +980,7 @@ var NDKRelayConnectivity = class {
+    * @param reconnect - Indicates whether a reconnection should be attempted.
+    */
+   onConnectionError(reconnect) {
++    if (this.disposed) return;
+     this.debug(`Error connecting to ${this.ndkRelay.url}`, this.timeoutMs);
+     if (reconnect && !this.reconnectTimeout) {
+       this.handleReconnection();
+@@ -981,6 +993,7 @@ var NDKRelayConnectivity = class {
+    * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+    */
+   onConnect() {
++    if (this.disposed) return;
+     this.netDebug?.("connected", this.ndkRelay);
+     if (this.reconnectTimeout) {
+       clearTimeout(this.reconnectTimeout);
+@@ -991,7 +1004,7 @@ var NDKRelayConnectivity = class {
+       this.connectTimeout = void 0;
+     }
+     this.updateConnectionStats.connected();
+-    this._status = 5 /* CONNECTED */;
++    this._status = NDKRelayStatus.CONNECTED;
+     this.keepalive?.start();
+     this.wasIdle = false;
+     this.ndkRelay.emit("connect");
+@@ -1005,14 +1018,15 @@ var NDKRelayConnectivity = class {
+    * and emits a `disconnect` event on the `ndkRelay` object.
+    */
+   onDisconnect() {
++    if (this.disposed) return;
+     this.netDebug?.("disconnected", this.ndkRelay);
+     this.updateConnectionStats.disconnected();
+     this.keepalive?.stop();
+     this.clearPendingPublishes(new Error(`Relay ${this.ndkRelay.url} disconnected`));
+-    if (this._status === 5 /* CONNECTED */) {
++    if (this._status === NDKRelayStatus.CONNECTED) {
+       this.handleReconnection();
+     }
+-    this._status = 1 /* DISCONNECTED */;
++    this._status = NDKRelayStatus.DISCONNECTED;
+     this.ndkRelay.emit("disconnect");
+   }
+   /**
+@@ -1023,6 +1037,7 @@ var NDKRelayConnectivity = class {
+    * @param event - The MessageEvent containing the received message data.
+    */
+   onMessage(event) {
++    if (this.disposed) return;
+     this.netDebug?.(event.data, this.ndkRelay, "recv");
+     this.keepalive?.recordActivity();
+     try {
+@@ -1134,14 +1149,14 @@ var NDKRelayConnectivity = class {
+     this.debug("Relay requested authentication", {
+       havePolicy: !!authPolicy
+     });
+-    if (this._status === 7 /* AUTHENTICATING */) {
++    if (this._status === NDKRelayStatus.AUTHENTICATING) {
+       this.debug("Already authenticating, ignoring");
+       return;
+     }
+-    this._status = 6 /* AUTH_REQUESTED */;
++    this._status = NDKRelayStatus.AUTH_REQUESTED;
+     if (authPolicy) {
+-      if (this._status >= 5 /* CONNECTED */) {
+-        this._status = 7 /* AUTHENTICATING */;
++      if (this._status >= NDKRelayStatus.CONNECTED) {
++        this._status = NDKRelayStatus.AUTHENTICATING;
+         let res;
+         try {
+           res = await authPolicy(this.ndkRelay, challenge);
+@@ -1150,26 +1165,30 @@ var NDKRelayConnectivity = class {
+           res = false;
+         }
+         this.debug("Authentication policy returned", !!res);
++        if (this.disposed) return;
+         if (res instanceof NDKEvent || res === true) {
+           if (res instanceof NDKEvent) {
+             await this.auth(res);
+           }
+           const authenticate = async () => {
+-            if (this._status >= 5 /* CONNECTED */ && this._status < 8 /* AUTHENTICATED */) {
++            if (this._status >= NDKRelayStatus.CONNECTED && this._status < NDKRelayStatus.AUTHENTICATED) {
+               const event = new NDKEvent(this.ndk);
+-              event.kind = 22242 /* ClientAuth */;
++              event.kind = NDKKind.ClientAuth;
+               event.tags = [
+                 ["relay", this.ndkRelay.url],
+                 ["challenge", challenge]
+               ];
+               await event.sign();
++              if (this.disposed) return;
+               this.auth(event).then(() => {
+-                this._status = 8 /* AUTHENTICATED */;
++                if (this.disposed) return;
++                this._status = NDKRelayStatus.AUTHENTICATED;
+                 this.ndkRelay.emit("authed");
+                 this.debug("Authentication successful");
+                 this.retryPendingAuthPublishes();
+               }).catch((e) => {
+-                this._status = 6 /* AUTH_REQUESTED */;
++                if (this.disposed) return;
++                this._status = NDKRelayStatus.AUTH_REQUESTED;
+                 this.ndkRelay.emit("auth:failed", e);
+                 this.debug("Authentication failed", e);
+                 this.rejectPendingAuthPublishes(e);
+@@ -1188,7 +1207,7 @@ var NDKRelayConnectivity = class {
+               });
+             }
+           }
+-          this._status = 5 /* CONNECTED */;
++          this._status = NDKRelayStatus.CONNECTED;
+           this.ndkRelay.emit("authed");
+         }
+       }
+@@ -1201,6 +1220,7 @@ var NDKRelayConnectivity = class {
+    * @param error - The error or event that occurred.
+    */
+   onError(error) {
++    if (this.disposed) return;
+     this.debug(`WebSocket error on ${this.ndkRelay.url}:`, error);
+   }
+   /**
+@@ -1258,10 +1278,11 @@ var NDKRelayConnectivity = class {
+    * @param attempt - The current attempt number (default is 0).
+    */
+   handleReconnection(attempt = 0) {
++    if (this.disposed) return;
+     if (this.reconnectTimeout) return;
+     if (this.isFlapping()) {
+       this.ndkRelay.emit("flapping", this._connectionStats);
+-      this._status = 3 /* FLAPPING */;
++      this._status = NDKRelayStatus.FLAPPING;
+       return;
+     }
+     let reconnectDelay;
+@@ -1277,7 +1298,7 @@ var NDKRelayConnectivity = class {
+     }
+     this.reconnectTimeout = setTimeout(() => {
+       this.reconnectTimeout = void 0;
+-      this._status = 2 /* RECONNECTING */;
++      this._status = NDKRelayStatus.RECONNECTING;
+       this.connect().catch(() => {
+         this.handleReconnection(attempt + 1);
+       });
+@@ -1317,6 +1338,7 @@ var NDKRelayConnectivity = class {
+    * @returns A promise that resolves with the authentication result.
+    */
+   async auth(event) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     const ret = new Promise((resolve, reject) => {
+       const val = this.openEventPublishes.get(event.id) ?? [];
+       val.push({ resolve, reject });
+@@ -1385,6 +1407,7 @@ var NDKRelayConnectivity = class {
+    * @throws {Error} If attempting to publish on a closed relay connection.
+    */
+   async publish(event) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     const ret = new Promise((resolve, reject) => {
+       const val = this.openEventPublishes.get(event.id) ?? [];
+       if (val.length > 0) {
+@@ -1406,6 +1429,7 @@ var NDKRelayConnectivity = class {
+    * @throws {Error} If attempting to send the count request on a closed relay connection.
+    */
+   async count(filters, params) {
++    if (this.disposed) throw new Error("Relay was disposed");
+     this.serial++;
+     const id = params?.id || `count:${this.serial}`;
+     const ret = new Promise((resolve, reject) => {
+@@ -1464,6 +1488,40 @@ var NDKRelayConnectivity = class {
+   get connected() {
+     return this._status >= 5 /* CONNECTED */ && this.ws?.readyState === WebSocket.OPEN;
+   }
++  disposed = false;
++  get isDisposed() {
++    return this.disposed;
++  }
++  dispose() {
++    if (this.disposed) return;
++    this.disposed = true;
++    this.disposal.abort();
++    clearTimeout(this.connectTimeout);
++    clearTimeout(this.reconnectTimeout);
++    this.connectTimeout = void 0;
++    this.reconnectTimeout = void 0;
++    this.keepalive?.stop();
++    clearInterval(this.wsStateMonitor);
++    clearInterval(this.sleepDetector);
++    this.wsStateMonitor = void 0;
++    this.sleepDetector = void 0;
++    const socket = this.ws;
++    this.ws = void 0;
++    if (socket) {
++      socket.onopen = socket.onclose = socket.onmessage = socket.onerror = null;
++      try {
++        socket.close();
++      } catch {
++      }
++    }
++    const error = new Error("Relay was disposed");
++    this.clearPendingPublishes(error);
++    for (const pending of this.openCountRequests.values()) pending.reject(error);
++    this.openCountRequests.clear();
++    this.openSubs.clear();
++    this._status = NDKRelayStatus.DISCONNECTED;
++    this.ndkRelay.emit("disconnect");
++  }
+ };
+ 
+ // src/relay/nip11.ts
+@@ -2206,11 +2264,12 @@ var NDKRelay = class _NDKRelay extends EventEmitter {
+     }
+   }
+   updateValidationRatio() {
++    if (this.connectivity.isDisposed) return;
+     if (this.validationRatioFn && this.validatedEventCount > 0) {
+       const newRatio = this.validationRatioFn(this, this.validatedEventCount, this.nonValidatedEventCount);
+       this.targetValidationRatio = newRatio;
+     }
+-    setTimeout(() => {
++    this.validationTimer = setTimeout(() => {
+       this.updateValidationRatio();
+     }, 3e4);
+   }
+@@ -2374,6 +2433,12 @@ var NDKRelay = class _NDKRelay extends EventEmitter {
+   get info() {
+     return this._relayInfo;
+   }
++  validationTimer;
++  dispose() {
++    clearTimeout(this.validationTimer);
++    this.validationTimer = void 0;
++    this.connectivity.dispose();
++  }
+ };
+ 
+ // src/relay/sets/index.ts
+@@ -4323,8 +4388,12 @@ var NDKPool = class extends EventEmitter3 {
+     return this._relays;
+   }
+   set relayUrls(urls) {
+-    this._relays.clear();
+-    for (const relayUrl of urls) {
++    const desired = new Set(urls.map(normalizeRelayUrl));
++    for (const relayUrl of [...this._relays.keys(), ...this.delayedAddTimers.keys()]) {
++      if (!desired.has(relayUrl)) this.removeRelay(relayUrl);
++    }
++    for (const relayUrl of desired) {
++      if (this._relays.has(relayUrl) || this.delayedAddTimers.has(relayUrl)) continue;
+       const relay = new NDKRelay(relayUrl, void 0, this.ndk);
+       relay.connectivity.netDebug = this.ndk.netDebug;
+       this.addRelay(relay);
+@@ -4355,6 +4424,7 @@ var NDKPool = class extends EventEmitter3 {
+     }
+     if (!relayAlreadyInPool || existingTimer) {
+       const timer = setTimeout(() => {
++        if (this.relays.get(relay.url) !== relay) return;
+         if (this.ndk.explicitRelayUrls?.includes(relay.url)) return;
+         this.removeRelay(relay.url);
+       }, removeIfUnusedAfter);
+@@ -4368,17 +4438,16 @@ var NDKPool = class extends EventEmitter3 {
+    * @param connect - Whether or not to connect to the relay.
+    */
+   addRelay(relay, connect = true) {
++    if (relay.connectivity.isDisposed) return;
+     const isAlreadyInPool = this.relays.has(relay.url);
+-    const isCustomRelayUrl = relay.url.includes("/npub1");
+     let reconnect = true;
+     const relayUrl = relay.url;
+-    if (isAlreadyInPool) return;
+-    if (this.ndk.relayConnectionFilter && !this.ndk.relayConnectionFilter(relayUrl)) {
+-      this.debug(`Refusing to add relay ${relayUrl}: blocked by relayConnectionFilter`);
++    if (isAlreadyInPool) {
++      if (this.relays.get(relay.url) !== relay) relay.dispose();
+       return;
+     }
+-    if (isCustomRelayUrl) {
+-      this.debug(`Refusing to add relay ${relayUrl}: is a filter relay`);
++    if (this.ndk.relayConnectionFilter && !this.ndk.relayConnectionFilter(relayUrl)) {
++      this.debug(`Refusing to add relay ${relayUrl}: blocked by relayConnectionFilter`);
+       return;
+     }
+     if (this.ndk.cacheAdapter?.getRelayStatus) {
+@@ -4388,9 +4457,17 @@ var NDKPool = class extends EventEmitter3 {
+         if (info.dontConnectBefore > Date.now()) {
+           const delay = info.dontConnectBefore - Date.now();
+           this.debug(`Refusing to add relay ${relayUrl}: delayed connect for ${delay}ms`);
+-          setTimeout(() => {
++          const previous = this.delayedAddTimers.get(relayUrl);
++          if (previous) {
++            clearTimeout(previous.timer);
++            if (previous.relay !== relay) previous.relay.dispose();
++          }
++          const timer = setTimeout(() => {
++            if (this.delayedAddTimers.get(relayUrl)?.relay !== relay) return;
++            this.delayedAddTimers.delete(relayUrl);
+             this.addRelay(relay, connect);
+           }, delay);
++          this.delayedAddTimers.set(relayUrl, { relay, timer });
+           return;
+         }
+         reconnect = false;
+@@ -4400,6 +4477,7 @@ var NDKPool = class extends EventEmitter3 {
+     const connectHandler = () => this.handleRelayConnect(relayUrl);
+     const readyHandler = () => this.handleRelayReady(relay);
+     const disconnectHandler = () => {
++      if (this.relays.get(relayUrl) !== relay) return;
+       this.recordDisconnection(relay);
+       this.emit("relay:disconnect", relay);
+     };
+@@ -4442,20 +4520,33 @@ var NDKPool = class extends EventEmitter3 {
+    * @returns {boolean} True if the relay was removed, false if it was not found.
+    */
+   removeRelay(relayUrl) {
++    relayUrl = normalizeRelayUrl(relayUrl);
++    const delayed = this.delayedAddTimers.get(relayUrl);
++    if (delayed) {
++      clearTimeout(delayed.timer);
++      this.delayedAddTimers.delete(relayUrl);
++      delayed.relay.dispose();
++    }
++    clearTimeout(this.temporaryRelayTimers.get(relayUrl));
++    this.temporaryRelayTimers.delete(relayUrl);
++    clearTimeout(this.flappingTimers.get(relayUrl));
++    this.flappingTimers.delete(relayUrl);
++    this.flappingRelays.delete(relayUrl);
++    this.backoffTimes.delete(relayUrl);
++    this.disconnectionTimes.delete(relayUrl);
+     const relay = this.relays.get(relayUrl);
+     if (relay) {
+-      relay.disconnect();
+       this.relays.delete(relayUrl);
+       this.autoConnectRelays.delete(relayUrl);
++      relay.dispose();
++      if (this.relays.size === 0) {
++        clearTimeout(this.systemEventDetector);
++        this.systemEventDetector = void 0;
++      }
+       this.emit("relay:disconnect", relay);
+       return true;
+     }
+-    const existingTimer = this.temporaryRelayTimers.get(relayUrl);
+-    if (existingTimer) {
+-      clearTimeout(existingTimer);
+-      this.temporaryRelayTimers.delete(relayUrl);
+-    }
+-    return false;
++    return !!delayed;
+   }
+   /**
+    * Checks whether a relay is already connected in the pool.
+@@ -4511,36 +4602,34 @@ var NDKPool = class extends EventEmitter3 {
+     this.debug(`Connecting to ${this.relays.size} relays${timeoutMs ? `, timeout ${timeoutMs}ms` : ""}...`);
+     const relaysToConnect = Array.from(this.autoConnectRelays.keys()).map((url) => this.relays.get(url)).filter((relay) => !!relay);
+     for (const relay of relaysToConnect) {
+-      if (relay.status !== 5 /* CONNECTED */ && relay.status !== 4 /* CONNECTING */) {
++      if (relay.status !== NDKRelayStatus.CONNECTED && relay.status !== NDKRelayStatus.CONNECTING) {
+         this.emit("relay:connecting", relay);
+         relay.connect().catch((e) => {
+           this.debug(`Failed to connect to relay ${relay.url}: ${e ?? "No reason specified"}`);
+         });
+       }
+     }
+-    const allConnected = () => relaysToConnect.every((r) => r.status === 5 /* CONNECTED */);
+-    const allConnectedPromise = new Promise((resolve) => {
+-      if (allConnected()) {
++    const allConnected = () => relaysToConnect.every((r) => r.connectivity.isDisposed || r.status === NDKRelayStatus.CONNECTED);
++    await new Promise((resolve) => {
++      let timer;
++      const finish = () => {
++        clearTimeout(timer);
++        for (const relay of relaysToConnect) {
++          relay.off("connect", check);
++          relay.off("disconnect", check);
++        }
+         resolve();
+-        return;
+-      }
+-      const listeners = [];
++      };
++      const check = () => {
++        if (allConnected()) finish();
++      };
+       for (const relay of relaysToConnect) {
+-        const handler = () => {
+-          if (allConnected()) {
+-            for (let i = 0; i < relaysToConnect.length; i++) {
+-              relaysToConnect[i].off("connect", listeners[i]);
+-            }
+-            resolve();
+-          }
+-        };
+-        listeners.push(handler);
+-        relay.on("connect", handler);
++        relay.on("connect", check);
++        relay.on("disconnect", check);
+       }
++      if (typeof timeoutMs === "number") timer = setTimeout(finish, timeoutMs);
++      check();
+     });
+-    const timeoutPromise = typeof timeoutMs === "number" ? new Promise((resolve) => setTimeout(resolve, timeoutMs)) : new Promise(() => {
+-    });
+-    await Promise.race([allConnectedPromise, timeoutPromise]);
+   }
+   checkOnFlappingRelays() {
+     const flappingRelaysCount = this.flappingRelays.size;
+@@ -4607,17 +4696,22 @@ var NDKPool = class extends EventEmitter3 {
+     this.disconnectionTimes.clear();
+   }
+   handleFlapping(relay) {
++    if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+     this.debug(`Relay ${relay.url} is flapping`);
+     let currentBackoff = this.backoffTimes.get(relay.url) || 5e3;
+     currentBackoff = currentBackoff * 2;
+     this.backoffTimes.set(relay.url, currentBackoff);
+     this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+-    setTimeout(() => {
++    clearTimeout(this.flappingTimers.get(relay.url));
++    const timer = setTimeout(() => {
++      this.flappingTimers.delete(relay.url);
++      if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+       this.debug(`Attempting to reconnect to ${relay.url}`);
+       this.emit("relay:connecting", relay);
+       relay.connect();
+       this.checkOnFlappingRelays();
+     }, currentBackoff);
++    this.flappingTimers.set(relay.url, timer);
+     relay.disconnect();
+     this.emit("flapping", relay);
+   }
+@@ -4661,6 +4755,8 @@ var NDKPool = class extends EventEmitter3 {
+   urls() {
+     return Array.from(this.relays.keys());
+   }
++  flappingTimers = /* @__PURE__ */ new Map();
++  delayedAddTimers = /* @__PURE__ */ new Map();
+ };
+ 
+ // src/app-settings/index.ts
+diff --git a/node_modules/@nostr-dev-kit/ndk/src/relay/connectivity.ts b/node_modules/@nostr-dev-kit/ndk/src/relay/connectivity.ts
+index 1b965b5..326b941 100644
+--- a/node_modules/@nostr-dev-kit/ndk/src/relay/connectivity.ts
++++ b/node_modules/@nostr-dev-kit/ndk/src/relay/connectivity.ts
+@@ -40,6 +40,8 @@ export class NDKRelayConnectivity {
+     public netDebug?: NDKNetDebug;
+     private connectTimeout: ReturnType<typeof setTimeout> | undefined;
+     private reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
++    private disposed = false;
++    private readonly disposal = new AbortController();
+     private ndk?: NDK;
+     public openSubs: Map<string, NDKRelaySubscription> = new Map();
+     private openCountRequests = new Map<string, CountResolver>();
+@@ -75,18 +77,20 @@ export class NDKRelayConnectivity {
+             const isAlive = await probeRelayConnection({
+                 send: (msg: any[]) => this.send(JSON.stringify(msg)),
+                 once: (event: string, handler: () => void) => {
++                    const socket = this.ws;
+                     const messageHandler = (e: MessageEvent) => {
+                         try {
+                             const data = JSON.parse(e.data);
+                             if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                                 handler();
+-                                this.ws?.removeEventListener("message", messageHandler);
++                                socket?.removeEventListener("message", messageHandler);
+                             }
+                         } catch {}
+                     };
+-                    this.ws?.addEventListener("message", messageHandler);
++                    socket?.addEventListener("message", messageHandler);
++                    return () => socket?.removeEventListener("message", messageHandler);
+                 },
+-            });
++            }, this.disposal.signal);
+ 
+             if (!isAlive) {
+                 this.debug("Probe failed, connection is stale");
+@@ -123,6 +127,7 @@ export class NDKRelayConnectivity {
+      * Handles detection of a stale connection by cleaning up and triggering reconnection.
+      */
+     private handleStaleConnection(): void {
++        if (this.disposed) return;
+         this.wasIdle = true; // Mark as idle to reset backoff
+ 
+         // Stop keepalive
+@@ -149,6 +154,7 @@ export class NDKRelayConnectivity {
+      * Handles possible system wake event
+      */
+     private handlePossibleWake(): void {
++        if (this.disposed) return;
+         this.debug("System wake detected, checking all connections");
+         this.wasIdle = true; // Reset backoff for wake scenario
+ 
+@@ -161,18 +167,20 @@ export class NDKRelayConnectivity {
+                 probeRelayConnection({
+                     send: (msg: any[]) => this.send(JSON.stringify(msg)),
+                     once: (event: string, handler: () => void) => {
++                        const socket = this.ws;
+                         const messageHandler = (e: MessageEvent) => {
+                             try {
+                                 const data = JSON.parse(e.data);
+                                 if (data[0] === "EOSE" || data[0] === "EVENT" || data[0] === "NOTICE") {
+                                     handler();
+-                                    this.ws?.removeEventListener("message", messageHandler);
++                                    socket?.removeEventListener("message", messageHandler);
+                                 }
+                             } catch {}
+                         };
+-                        this.ws?.addEventListener("message", messageHandler);
++                        socket?.addEventListener("message", messageHandler);
++                        return () => socket?.removeEventListener("message", messageHandler);
+                     },
+-                }).then((isAlive) => {
++                }, this.disposal.signal).then((isAlive) => {
+                     if (!isAlive) {
+                         this.handleStaleConnection();
+                     }
+@@ -208,6 +216,7 @@ export class NDKRelayConnectivity {
+      * @returns A Promise that resolves when the connection is established, or rejects if the connection fails.
+      */
+     async connect(timeoutMs?: number, reconnect = true): Promise<void> {
++        if (this.disposed) return;
+         // Check if WebSocket exists but is not open (stale connection)
+         if (this.ws && this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING) {
+             this.debug("Cleaning up stale WebSocket connection");
+@@ -293,6 +302,39 @@ export class NDKRelayConnectivity {
+         }
+     }
+ 
++    public get isDisposed(): boolean {
++        return this.disposed;
++    }
++
++    /** Terminal cleanup. Unlike disconnect, this object can never reconnect. */
++    public dispose(): void {
++        if (this.disposed) return;
++        this.disposed = true;
++        this.disposal.abort();
++        clearTimeout(this.connectTimeout);
++        clearTimeout(this.reconnectTimeout);
++        this.connectTimeout = undefined;
++        this.reconnectTimeout = undefined;
++        this.keepalive?.stop();
++        clearInterval(this.wsStateMonitor);
++        clearInterval(this.sleepDetector);
++        this.wsStateMonitor = undefined;
++        this.sleepDetector = undefined;
++        const socket = this.ws;
++        this.ws = undefined;
++        if (socket) {
++            socket.onopen = socket.onclose = socket.onmessage = socket.onerror = null;
++            try { socket.close(); } catch {}
++        }
++        const error = new Error("Relay was disposed");
++        this.clearPendingPublishes(error);
++        for (const pending of this.openCountRequests.values()) pending.reject(error);
++        this.openCountRequests.clear();
++        this.openSubs.clear();
++        this._status = NDKRelayStatus.DISCONNECTED;
++        this.ndkRelay.emit("disconnect");
++    }
++
+     /**
+      * Handles the error that occurred when attempting to connect to the NDK relay.
+      * If `reconnect` is `true`, this method will initiate a reconnection attempt.
+@@ -302,6 +344,7 @@ export class NDKRelayConnectivity {
+      * @param reconnect - Indicates whether a reconnection should be attempted.
+      */
+     onConnectionError(reconnect: boolean): void {
++        if (this.disposed) return;
+         this.debug(`Error connecting to ${this.ndkRelay.url}`, this.timeoutMs);
+         if (reconnect && !this.reconnectTimeout) {
+             this.handleReconnection();
+@@ -315,6 +358,7 @@ export class NDKRelayConnectivity {
+      * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+      */
+     private onConnect() {
++        if (this.disposed) return;
+         this.netDebug?.("connected", this.ndkRelay);
+         if (this.reconnectTimeout) {
+             clearTimeout(this.reconnectTimeout);
+@@ -343,6 +387,7 @@ export class NDKRelayConnectivity {
+      * and emits a `disconnect` event on the `ndkRelay` object.
+      */
+     private onDisconnect() {
++        if (this.disposed) return;
+         this.netDebug?.("disconnected", this.ndkRelay);
+         this.updateConnectionStats.disconnected();
+ 
+@@ -367,6 +412,7 @@ export class NDKRelayConnectivity {
+      * @param event - The MessageEvent containing the received message data.
+      */
+     private onMessage(event: MessageEvent): void {
++        if (this.disposed) return;
+         this.netDebug?.(event.data, this.ndkRelay, "recv");
+ 
+         // Record any activity from relay
+@@ -546,6 +592,7 @@ export class NDKRelayConnectivity {
+                     res = false;
+                 }
+                 this.debug("Authentication policy returned", !!res);
++                if (this.disposed) return;
+ 
+                 if (res instanceof NDKEvent || res === true) {
+                     if (res instanceof NDKEvent) {
+@@ -561,14 +608,17 @@ export class NDKRelayConnectivity {
+                                 ["challenge", challenge],
+                             ];
+                             await event.sign();
++                            if (this.disposed) return;
+                             this.auth(event)
+                                 .then(() => {
++                                    if (this.disposed) return;
+                                     this._status = NDKRelayStatus.AUTHENTICATED;
+                                     this.ndkRelay.emit("authed");
+                                     this.debug("Authentication successful");
+                                     this.retryPendingAuthPublishes();
+                                 })
+                                 .catch((e) => {
++                                    if (this.disposed) return;
+                                     this._status = NDKRelayStatus.AUTH_REQUESTED;
+                                     this.ndkRelay.emit("auth:failed", e);
+                                     this.debug("Authentication failed", e);
+@@ -604,6 +654,7 @@ export class NDKRelayConnectivity {
+      * @param error - The error or event that occurred.
+      */
+     private onError(error: Error | Event): void {
++        if (this.disposed) return;
+         this.debug(`WebSocket error on ${this.ndkRelay.url}:`, error);
+     }
+ 
+@@ -668,6 +719,7 @@ export class NDKRelayConnectivity {
+      * @param attempt - The current attempt number (default is 0).
+      */
+     private handleReconnection(attempt = 0): void {
++        if (this.disposed) return;
+         if (this.reconnectTimeout) return;
+ 
+         if (this.isFlapping()) {
+@@ -746,6 +798,7 @@ export class NDKRelayConnectivity {
+      * @returns A promise that resolves with the authentication result.
+      */
+     private async auth(event: NDKEvent): Promise<string> {
++        if (this.disposed) throw new Error("Relay was disposed");
+         const ret = new Promise<string>((resolve, reject) => {
+             const val = this.openEventPublishes.get(event.id) ?? [];
+             val.push({ resolve, reject });
+@@ -831,6 +884,7 @@ export class NDKRelayConnectivity {
+      * @throws {Error} If attempting to publish on a closed relay connection.
+      */
+     async publish(event: NostrEvent): Promise<string> {
++        if (this.disposed) throw new Error("Relay was disposed");
+         const ret = new Promise<string>((resolve, reject) => {
+             const val = this.openEventPublishes.get(event.id!) ?? [];
+             if (val.length > 0) {
+@@ -857,6 +911,7 @@ export class NDKRelayConnectivity {
+      * @throws {Error} If attempting to send the count request on a closed relay connection.
+      */
+     async count(filters: NDKFilter[], params: { id?: string | null }): Promise<NDKCountResult> {
++        if (this.disposed) throw new Error("Relay was disposed");
+         this.serial++;
+         const id = params?.id || `count:${this.serial}`;
+         const ret = new Promise<NDKCountResult>((resolve, reject) => {
+diff --git a/node_modules/@nostr-dev-kit/ndk/src/relay/index.ts b/node_modules/@nostr-dev-kit/ndk/src/relay/index.ts
+index 88a136a..f55f612 100644
+--- a/node_modules/@nostr-dev-kit/ndk/src/relay/index.ts
++++ b/node_modules/@nostr-dev-kit/ndk/src/relay/index.ts
+@@ -154,6 +154,7 @@ export class NDKRelay extends EventEmitter<{
+     public trusted = false;
+ 
+     public complaining = false;
++    private validationTimer?: ReturnType<typeof setTimeout>;
+     readonly debug: debug.Debugger;
+ 
+     static defaultValidationRatioUpdateFn = (
+@@ -201,6 +202,7 @@ export class NDKRelay extends EventEmitter<{
+     }
+ 
+     private updateValidationRatio(): void {
++        if (this.connectivity.isDisposed) return;
+         if (this.validationRatioFn && this.validatedEventCount > 0) {
+             const newRatio = this.validationRatioFn(this, this.validatedEventCount, this.nonValidatedEventCount);
+ 
+@@ -208,7 +210,7 @@ export class NDKRelay extends EventEmitter<{
+         }
+ 
+         // Schedule the next update
+-        setTimeout(() => {
++        this.validationTimer = setTimeout(() => {
+             this.updateValidationRatio();
+         }, 30000);
+     }
+@@ -239,6 +241,13 @@ export class NDKRelay extends EventEmitter<{
+         this.connectivity.disconnect();
+     }
+ 
++    /** Permanently release this relay object and all of its timers. */
++    public dispose(): void {
++        clearTimeout(this.validationTimer);
++        this.validationTimer = undefined;
++        this.connectivity.dispose();
++    }
++
+     /**
+      * Queues or executes the subscription of a specific set of filters
+      * within this relay.
+diff --git a/node_modules/@nostr-dev-kit/ndk/src/relay/keepalive.ts b/node_modules/@nostr-dev-kit/ndk/src/relay/keepalive.ts
+index 88df4bf..1581003 100644
+--- a/node_modules/@nostr-dev-kit/ndk/src/relay/keepalive.ts
++++ b/node_modules/@nostr-dev-kit/ndk/src/relay/keepalive.ts
+@@ -78,31 +78,37 @@ export class NDKRelayKeepalive {
+  */
+ export async function probeRelayConnection(relay: {
+     send: (msg: any[]) => void;
+-    once: (event: string, handler: () => void) => void;
+-}): Promise<boolean> {
++    once: (event: string, handler: () => void) => void | (() => void);
++}, signal?: AbortSignal): Promise<boolean> {
++    if (signal?.aborted) return false;
+     const probeId = `probe-${Math.random().toString(36).substring(7)}`;
+ 
+     return new Promise((resolve) => {
+         let responded = false;
++        let removeMessage: (() => void) | undefined;
++        const finish = (alive: boolean) => {
++            if (responded) return;
++            responded = true;
++            clearTimeout(timeout);
++            signal?.removeEventListener("abort", aborted);
++            removeMessage?.();
++            if (!signal?.aborted) relay.send(["CLOSE", probeId]);
++            resolve(alive);
++        };
++        const aborted = () => finish(false);
+ 
+         const timeout = setTimeout(() => {
+-            if (!responded) {
+-                responded = true;
+-                relay.send(["CLOSE", probeId]);
+-                resolve(false);
+-            }
++            finish(false);
+         }, 5000);
+ 
+         const handler = () => {
+-            if (!responded) {
+-                responded = true;
+-                clearTimeout(timeout);
+-                relay.send(["CLOSE", probeId]);
+-                resolve(true);
+-            }
++            finish(true);
+         };
+ 
+-        relay.once("message", handler);
++        signal?.addEventListener("abort", aborted, { once: true });
++        const removal = relay.once("message", handler);
++        if (typeof removal === "function") removeMessage = removal;
++        if (responded) { removeMessage?.(); return; }
+ 
+         // Send minimal REQ that should trigger immediate EOSE
+         // Using a non-existent kind and limit 0 for minimal overhead
+diff --git a/node_modules/@nostr-dev-kit/ndk/src/relay/pool/index.ts b/node_modules/@nostr-dev-kit/ndk/src/relay/pool/index.ts
+index 68366bf..5ff73a9 100644
+--- a/node_modules/@nostr-dev-kit/ndk/src/relay/pool/index.ts
++++ b/node_modules/@nostr-dev-kit/ndk/src/relay/pool/index.ts
+@@ -50,6 +50,8 @@ export class NDKPool extends EventEmitter<{
+     private flappingRelays: Set<WebSocket["url"]> = new Set();
+     // A map to store timeouts for each flapping relay.
+     private backoffTimes: Map<string, number> = new Map();
++    private flappingTimers = new Map<string, ReturnType<typeof setTimeout>>();
++    private delayedAddTimers = new Map<string, { relay: NDKRelay; timer: ReturnType<typeof setTimeout> }>();
+     private ndk: NDK;
+ 
+     // System-wide disconnection detection
+@@ -88,8 +90,12 @@ export class NDKPool extends EventEmitter<{
+     }
+ 
+     set relayUrls(urls: WebSocket["url"][]) {
+-        this._relays.clear();
+-        for (const relayUrl of urls) {
++        const desired = new Set(urls.map(normalizeRelayUrl));
++        for (const relayUrl of [...this._relays.keys(), ...this.delayedAddTimers.keys()]) {
++            if (!desired.has(relayUrl)) this.removeRelay(relayUrl);
++        }
++        for (const relayUrl of desired) {
++            if (this._relays.has(relayUrl) || this.delayedAddTimers.has(relayUrl)) continue;
+             const relay = new NDKRelay(relayUrl, undefined, this.ndk);
+             relay.connectivity.netDebug = this.ndk.netDebug;
+             this.addRelay(relay);
+@@ -133,6 +139,7 @@ export class NDKPool extends EventEmitter<{
+         if (!relayAlreadyInPool || existingTimer) {
+             // set a timer to remove the relay from the pool if it is not used within the specified time
+             const timer = setTimeout(() => {
++                if (this.relays.get(relay.url) !== relay) return;
+                 // check if this relay is in the explicit relays list, if it is, it was connected temporary first
+                 // and then made explicit, so we shouldn't disconnect
+                 if (this.ndk.explicitRelayUrls?.includes(relay.url)) return;
+@@ -151,23 +158,22 @@ export class NDKPool extends EventEmitter<{
+      * @param connect - Whether or not to connect to the relay.
+      */
+     public addRelay(relay: NDKRelay, connect = true) {
++        if (relay.connectivity.isDisposed) return;
+         const isAlreadyInPool = this.relays.has(relay.url);
+-        const isCustomRelayUrl = relay.url.includes("/npub1");
+         let reconnect = true;
+ 
+         const relayUrl = relay.url;
+ 
+-        if (isAlreadyInPool) return;
++        if (isAlreadyInPool) {
++            if (this.relays.get(relay.url) !== relay) relay.dispose();
++            return;
++        }
+ 
+         // Check if relay connection is allowed using the filter
+         if (this.ndk.relayConnectionFilter && !this.ndk.relayConnectionFilter(relayUrl)) {
+             this.debug(`Refusing to add relay ${relayUrl}: blocked by relayConnectionFilter`);
+             return;
+         }
+-        if (isCustomRelayUrl) {
+-            this.debug(`Refusing to add relay ${relayUrl}: is a filter relay`);
+-            return;
+-        }
+ 
+         if (this.ndk.cacheAdapter?.getRelayStatus) {
+             const infoOrPromise = this.ndk.cacheAdapter.getRelayStatus(relayUrl);
+@@ -178,9 +184,17 @@ export class NDKPool extends EventEmitter<{
+                 if (info.dontConnectBefore > Date.now()) {
+                     const delay = info.dontConnectBefore - Date.now();
+                     this.debug(`Refusing to add relay ${relayUrl}: delayed connect for ${delay}ms`);
+-                    setTimeout(() => {
++                    const previous = this.delayedAddTimers.get(relayUrl);
++                    if (previous) {
++                        clearTimeout(previous.timer);
++                        if (previous.relay !== relay) previous.relay.dispose();
++                    }
++                    const timer = setTimeout(() => {
++                        if (this.delayedAddTimers.get(relayUrl)?.relay !== relay) return;
++                        this.delayedAddTimers.delete(relayUrl);
+                         this.addRelay(relay, connect);
+                     }, delay);
++                    this.delayedAddTimers.set(relayUrl, { relay, timer });
+                     return;
+                 }
+                 reconnect = false;
+@@ -191,6 +205,7 @@ export class NDKPool extends EventEmitter<{
+         const connectHandler = () => this.handleRelayConnect(relayUrl);
+         const readyHandler = () => this.handleRelayReady(relay);
+         const disconnectHandler = () => {
++            if (this.relays.get(relayUrl) !== relay) return;
+             this.recordDisconnection(relay);
+             this.emit("relay:disconnect", relay);
+         };
+@@ -242,23 +257,34 @@ export class NDKPool extends EventEmitter<{
+      * @returns {boolean} True if the relay was removed, false if it was not found.
+      */
+     public removeRelay(relayUrl: string): boolean {
++        relayUrl = normalizeRelayUrl(relayUrl);
++        const delayed = this.delayedAddTimers.get(relayUrl);
++        if (delayed) {
++            clearTimeout(delayed.timer);
++            this.delayedAddTimers.delete(relayUrl);
++            delayed.relay.dispose();
++        }
++        clearTimeout(this.temporaryRelayTimers.get(relayUrl));
++        this.temporaryRelayTimers.delete(relayUrl);
++        clearTimeout(this.flappingTimers.get(relayUrl));
++        this.flappingTimers.delete(relayUrl);
++        this.flappingRelays.delete(relayUrl);
++        this.backoffTimes.delete(relayUrl);
++        this.disconnectionTimes.delete(relayUrl);
+         const relay = this.relays.get(relayUrl);
+         if (relay) {
+-            relay.disconnect();
+             this.relays.delete(relayUrl);
+             this.autoConnectRelays.delete(relayUrl);
++            relay.dispose();
++            if (this.relays.size === 0) {
++                clearTimeout(this.systemEventDetector);
++                this.systemEventDetector = undefined;
++            }
+             this.emit("relay:disconnect", relay);
+             return true;
+         }
+ 
+-        // remove the relay from the temporary relay timers
+-        const existingTimer = this.temporaryRelayTimers.get(relayUrl);
+-        if (existingTimer) {
+-            clearTimeout(existingTimer);
+-            this.temporaryRelayTimers.delete(relayUrl);
+-        }
+-
+-        return false;
++        return !!delayed;
+     }
+ 
+     /**
+@@ -338,41 +364,29 @@ export class NDKPool extends EventEmitter<{
+         }
+ 
+         // Helper to check if all relays are connected
+-        const allConnected = () => relaysToConnect.every((r) => r.status === NDKRelayStatus.CONNECTED);
+-
+-        // Promise that resolves when all relays are connected
+-        const allConnectedPromise = new Promise<void>((resolve) => {
+-            if (allConnected()) {
++        const allConnected = () => relaysToConnect.every((r) =>
++            r.connectivity.isDisposed || r.status === NDKRelayStatus.CONNECTED);
++
++        // Removal settles pending setup and removes readiness listeners and timers.
++        await new Promise<void>((resolve) => {
++            let timer: ReturnType<typeof setTimeout> | undefined;
++            const finish = () => {
++                clearTimeout(timer);
++                for (const relay of relaysToConnect) {
++                    relay.off("connect", check);
++                    relay.off("disconnect", check);
++                }
+                 resolve();
+-                return;
+-            }
+-            const listeners: Array<() => void> = [];
++            };
++            const check = () => { if (allConnected()) finish(); };
+             for (const relay of relaysToConnect) {
+-                const handler = () => {
+-                    if (allConnected()) {
+-                        // Remove all listeners
+-                        for (let i = 0; i < relaysToConnect.length; i++) {
+-                            relaysToConnect[i].off("connect", listeners[i]);
+-                        }
+-                        resolve();
+-                    }
+-                };
+-                listeners.push(handler);
+-                relay.on("connect", handler);
++                relay.on("connect", check);
++                relay.on("disconnect", check);
+             }
++            if (typeof timeoutMs === "number") timer = setTimeout(finish, timeoutMs);
++            check();
+         });
+ 
+-        // Promise that resolves after the timeout
+-        const timeoutPromise =
+-            typeof timeoutMs === "number"
+-                ? new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+-                : new Promise<void>(() => {
+-                      /* never resolves if no timeout */
+-                  });
+-
+-        // Wait for either all relays to connect, or the timeout
+-        await Promise.race([allConnectedPromise, timeoutPromise]);
+-
+         // Done: at this point, some relays may still be connecting, but we've waited up to the timeout
+         // (or less if all relays connected early)
+     }
+@@ -467,6 +481,7 @@ export class NDKPool extends EventEmitter<{
+     }
+ 
+     private handleFlapping(relay: NDKRelay) {
++        if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+         this.debug(`Relay ${relay.url} is flapping`);
+ 
+         // Increment the backoff time for this relay, starting with 5 seconds.
+@@ -476,12 +491,16 @@ export class NDKPool extends EventEmitter<{
+ 
+         this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+ 
+-        setTimeout(() => {
++        clearTimeout(this.flappingTimers.get(relay.url));
++        const timer = setTimeout(() => {
++            this.flappingTimers.delete(relay.url);
++            if (this.relays.get(relay.url) !== relay || relay.connectivity.isDisposed) return;
+             this.debug(`Attempting to reconnect to ${relay.url}`);
+             this.emit("relay:connecting", relay);
+             relay.connect();
+             this.checkOnFlappingRelays();
+         }, currentBackoff);
++        this.flappingTimers.set(relay.url, timer);
+ 
+         relay.disconnect();
+ 
+diff --git a/node_modules/@nostr-dev-kit/ndk/src/utils/normalize-url.ts b/node_modules/@nostr-dev-kit/ndk/src/utils/normalize-url.ts
+index 127551e..e562b1c 100644
+--- a/node_modules/@nostr-dev-kit/ndk/src/utils/normalize-url.ts
++++ b/node_modules/@nostr-dev-kit/ndk/src/utils/normalize-url.ts
+@@ -11,25 +11,18 @@ export function tryNormalizeRelayUrl(url: string): string | undefined {
+ }
+ 
+ /**
+- * Normalizes a relay URL by removing authentication, www, and hash,
+- * and ensures that it ends with a slash.
++ * Uses URL authority normalization and keeps exact path and query identity.
++ * Removes an empty root slash only.
+  *
+  * @param url - The URL to be normalized.
+  * @returns The normalized URL.
+  */
+ export function normalizeRelayUrl(url: string): string {
+-    let r = normalizeUrl(url, {
+-        stripAuthentication: false,
+-        stripWWW: false,
+-        stripHash: true,
+-    });
+-
+-    // if it doesn't end with a slash, add it
+-    if (!r.endsWith("/")) {
+-        r += "/";
+-    }
+-
+-    return r;
++    const parsed = new URL(url.trim());
++    const normalized = parsed.toString();
++    return parsed.pathname === "/" && parsed.search === "" && parsed.hash === ""
++        ? normalized.replace(/\/$/, "")
++        : normalized;
+ }
+ 
+ /**

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
+import { getEncodedTokenV4, type Proof, type SwapPreview } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
   deriveDurableCustodyArtifactFingerprint,
@@ -21,6 +21,10 @@ import {
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
+  prepareDeterministicOutgoingCashuSend,
+  type DeterministicOutgoingCashuWallet,
+} from '@bitcaster-market/client-sdk/deterministicOutgoingCashuPreparation'
+import {
   admitDurableOutgoingCashuToken,
   acknowledgeDurableOutgoingCashuRecipient,
   classifyDurableOutgoingBearerProofStates,
@@ -30,6 +34,7 @@ import {
   planDurableOutgoingCashuRecoveryPage,
   markDurableOutgoingCashuReclaimRecipientSpent,
   prepareDurableOutgoingCashuReclaim,
+  redactedTransferMetadata,
   runDurableOutgoingCashuTransfer,
   scheduleDurableOutgoingCashuRecoveryRetry,
   DURABLE_OUTGOING_CASHU_PROOF_STATE_CALL_LIMIT_MAX,
@@ -37,6 +42,7 @@ import {
   DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX,
   type DurableOutgoingCashuCoordinatorInput,
   type DurableOutgoingCashuDeliveryIntent,
+  type DurableOutgoingCashuProofState,
   type DurableOutgoingCashuRecipientAcknowledgement,
   type DurableOutgoingCashuTransfer,
 } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
@@ -59,12 +65,21 @@ import {
   type DurableWalletProof,
   type DurableWalletReceiveOperation,
   type DurableWalletSendOperation,
+  verifyDurableWalletSendResult,
 } from '@bitcaster-market/client-sdk/durableWalletOperation'
-import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import {
+  amountToNumber,
+  computeInputFeeSubunitsFromPpk,
+} from '@bitcaster-market/client-sdk/proofSelection'
+import { requireMarketFundingActivationAmount } from '@bitcaster-market/client-sdk/marketFundingDelivery'
 import { createCustodyProofSqliteRowFromMaterial } from './custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import { DurableCustodyTransactionSqlite } from './durableCustodyTransactionSqlite.ts'
-import { DurableOutgoingCashuSqliteStore } from './durableOutgoingCashuSqlite.ts'
+import {
+  DurableOutgoingCashuSqliteStore,
+  type MarketFundingHead,
+  type MarketFundingProduct,
+} from './durableOutgoingCashuSqlite.ts'
 import {
   withDurableCustodyFencedRead,
   withDurableCustodyUnitOfWork,
@@ -116,55 +131,279 @@ export class DaemonDurableOutgoingCashuCoordinator {
     )
   }
 
-  /** Reserve one Score delivery against the engine's observed purchase epoch. */
-  async preflightParticipationScoreDelivery(input: {
-    readonly transferId: string
-    readonly amountSats: number
-    readonly purchasedTotal: number
-    readonly accountSubject: string
-    readonly mintUrl: string
-  }): Promise<{
-    readonly transferId: string
-    readonly amountSats: number
-    readonly purchasedTotalEpoch: number
-  }> {
+  async readMarketFundingHead(product: MarketFundingProduct): Promise<MarketFundingHead | null> {
     const fence = this.#getFence()
-    const nowMs = this.#now()
-    return await withDurableCustodyUnitOfWork(this.#storage, fence, nowMs, (database) =>
-      new DurableOutgoingCashuSqliteStore(database).preflightParticipationScoreDelivery({
+    return withDurableCustodyFencedRead(this.#storage, fence, this.#now(), (database) =>
+      new DurableOutgoingCashuSqliteStore(database).readMarketFundingHead({
         scopeId: fence.scopeId,
-        transferId: input.transferId,
-        amountSats: input.amountSats,
-        purchasedTotal: input.purchasedTotal,
-        accountSubject: input.accountSubject,
-        mintUrl: input.mintUrl,
-        nowMs,
+        product,
       }),
     )
   }
 
-  async execute(input: {
-    readonly transferId: string
-    readonly amountSats: number
+  /** Registration fees do not incur a recipient swap or fund bot inventory. */
+  async quoteSend(input: {
+    readonly amountMsat: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
-    readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
+  }) {
+    const { preview } = await this.#previewSend(input)
+    return sendDebitQuote(preview, input.amountMsat)
+  }
+
+  async quoteMarketFunding(input: {
+    readonly amountMsat: number
+    readonly mintUrl: string
+    readonly wallet: CashuWalletLike
+    readonly outcomeCount: number
+  }): Promise<{
+    grossFundingMsat: number
+    sendPreparationFeeMsat: number
+    estimatedRecipientReceiveFeeMsat: number
+    totalWalletDebitMsat: number
+    netFundingMsat: number
+  }> {
+    const prepared = await this.#previewSend(input)
+    if (prepared.quote === null) throw new Error('market funding quote is unavailable')
+    return prepared.quote
+  }
+
+  async findMarketFundingSuccessor(
+    product: MarketFundingProduct,
+    predecessorTransferId: string | null,
+  ): Promise<DurableOutgoingCashuTransfer | null> {
+    const fence = this.#getFence()
+    return withDurableCustodyFencedRead(this.#storage, fence, this.#now(), (database) =>
+      new DurableOutgoingCashuSqliteStore(database).findMarketFundingSuccessor({
+        scopeId: fence.scopeId,
+        product,
+        predecessorTransferId,
+      }),
+    )
+  }
+
+  async readMarketFundingProductForTransfer(
+    transferId: string,
+  ): Promise<MarketFundingProduct | null> {
+    const fence = this.#getFence()
+    return withDurableCustodyFencedRead(this.#storage, fence, this.#now(), (database) =>
+      new DurableOutgoingCashuSqliteStore(database).readMarketFundingProductForTransfer({
+        scopeId: fence.scopeId,
+        transferId,
+      }),
+    )
+  }
+
+  /** Check predecessor credit before reserving proofs; the head CAS remains in the custody UoW. */
+  async executeMarketFundingTransfer(input: {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly mintUrl: string
+    readonly wallet: CashuWalletLike
+    readonly seed: Uint8Array
+    readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
+    readonly product: MarketFundingProduct
+    readonly expectedPreviousTransferId: string | null
+    readonly outcomeCount: number
+    readonly maxWalletDebitMsat: number
+    readonly requireCredited: (predecessor: DurableOutgoingCashuTransfer) => Promise<void>
   }): Promise<DurableOutgoingCashuTransfer> {
-    const prepared = await this.#prepare(input)
+    const existing = await this.loadTransfer(input.transferId)
+    if (existing !== null) {
+      const existingProduct = await this.readMarketFundingProductForTransfer(input.transferId)
+      if (
+        existingProduct === null ||
+        !sameMarketFundingProduct(existingProduct, input.product) ||
+        existing.recipientSequence?.predecessorTransferId !== input.expectedPreviousTransferId
+      ) {
+        throw new Error('durable market funding transfer conflicts with the caller request')
+      }
+      return this.recover({
+        transfer: existing,
+        amountMsat: input.amountMsat,
+        mintUrl: input.mintUrl,
+        wallet: input.wallet,
+        deliveryIntent: input.deliveryIntent,
+      })
+    }
+    if (input.expectedPreviousTransferId !== null) {
+      const fence = this.#getFence()
+      const predecessor = await withDurableCustodyFencedRead(
+        this.#storage,
+        fence,
+        this.#now(),
+        (database) => {
+          const store = new DurableOutgoingCashuSqliteStore(database)
+          const head = store.readMarketFundingHead({
+            scopeId: fence.scopeId,
+            product: input.product,
+          })
+          if (head?.transferId !== input.expectedPreviousTransferId) {
+            throw new Error('market funding head changed')
+          }
+          const previous = store.get(fence.scopeId, head.transferId)?.transfer
+          if (previous === undefined) throw new Error('market funding predecessor is missing')
+          return previous
+        },
+      )
+      await input.requireCredited(predecessor)
+    }
+    const prepared = await this.#prepare({
+      ...input,
+      marketFunding: {
+        product: input.product,
+        expectedPreviousTransferId: input.expectedPreviousTransferId,
+        outcomeCount: input.outcomeCount,
+        maxWalletDebitMsat: input.maxWalletDebitMsat,
+      },
+    })
+    return prepared.deliveryState === 'prepared'
+      ? this.#run(prepared, input.wallet, 'execute')
+      : prepared
+  }
+
+  /** Persist only a checked recipient receipt; callers return a redacted product result. */
+  async acknowledgeRecipientReceipt(input: {
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly receipt: DurableOutgoingCashuRecipientAcknowledgement
+  }): Promise<DurableOutgoingCashuTransfer> {
+    const transfer = await this.#requireExactTransfer(input.transfer)
+    return acknowledgeDurableOutgoingCashuRecipient({
+      transfer,
+      receiptAdapter: {
+        readAndPersistReceipt: async ({ transfer: current }) =>
+          this.#persistRecipientReceipt(current, input.receipt),
+      },
+    })
+  }
+
+  /** Reserve one Score delivery against the engine's observed purchase epoch. */
+  async preflightParticipationScoreDelivery(input: {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotal: number
+    readonly accountSubject: string
+    readonly mintUrl: string
+    /** Require the pointer to match a caller-approved standalone purchase. */
+    readonly requireExactRequest?: boolean
+  }): Promise<{
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotalEpoch: number
+  }> {
+    const fence = this.#getFence()
+    const nowMs = this.#now()
+    const pointer = await withDurableCustodyUnitOfWork(this.#storage, fence, nowMs, (database) =>
+      new DurableOutgoingCashuSqliteStore(database).preflightParticipationScoreDelivery({
+        scopeId: fence.scopeId,
+        transferId: input.transferId,
+        amountMsat: input.amountMsat,
+        purchasedTotal: input.purchasedTotal,
+        accountSubject: input.accountSubject,
+        mintUrl: input.mintUrl,
+        nowMs,
+        requireExactRequest: input.requireExactRequest,
+      }),
+    )
+    if (
+      input.requireExactRequest === true &&
+      (pointer.transferId !== input.transferId ||
+        pointer.amountMsat !== input.amountMsat ||
+        pointer.purchasedTotalEpoch !== input.purchasedTotal)
+    ) {
+      throw new Error('Participation Score purchase conflicts with the active delivery')
+    }
+    return pointer
+  }
+
+  async execute(input: {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly mintUrl: string
+    readonly wallet: CashuWalletLike
+    readonly seed: Uint8Array
+    readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
+    readonly maxWalletDebitMsat?: number
+  }): Promise<DurableOutgoingCashuTransfer> {
+    const existing = await this.loadTransfer(input.transferId)
+    if (existing !== null) {
+      return this.recover({
+        transfer: existing,
+        amountMsat: input.amountMsat,
+        mintUrl: input.mintUrl,
+        wallet: input.wallet,
+        deliveryIntent: input.deliveryIntent,
+      })
+    }
+    const prepared = await this.#prepare({
+      transferId: input.transferId,
+      amountMsat: input.amountMsat,
+      mintUrl: input.mintUrl,
+      wallet: input.wallet,
+      seed: input.seed,
+      deliveryIntent: input.deliveryIntent,
+      maxWalletDebitMsat: input.maxWalletDebitMsat,
+    })
+    return this.#run(prepared, input.wallet, 'execute')
+  }
+
+  /** Prepare a standalone Score send and its pointer in one custody transaction. */
+  async executeParticipationScore(input: {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotalEpoch: number
+    readonly accountSubject: string
+    readonly mintUrl: string
+    readonly wallet: CashuWalletLike
+    readonly seed: Uint8Array
+    readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
+    readonly maxWalletDebitMsat: number
+  }): Promise<DurableOutgoingCashuTransfer> {
+    const existing = await this.loadTransfer(input.transferId)
+    if (existing !== null) {
+      await this.preflightParticipationScoreDelivery({
+        transferId: input.transferId,
+        amountMsat: input.amountMsat,
+        purchasedTotal: input.purchasedTotalEpoch,
+        accountSubject: input.accountSubject,
+        mintUrl: input.mintUrl,
+        requireExactRequest: true,
+      })
+      return this.recover({
+        transfer: existing,
+        amountMsat: input.amountMsat,
+        mintUrl: input.mintUrl,
+        wallet: input.wallet,
+        deliveryIntent: input.deliveryIntent,
+      })
+    }
+    const prepared = await this.#prepare({
+      transferId: input.transferId,
+      amountMsat: input.amountMsat,
+      mintUrl: input.mintUrl,
+      wallet: input.wallet,
+      seed: input.seed,
+      deliveryIntent: input.deliveryIntent,
+      maxWalletDebitMsat: input.maxWalletDebitMsat,
+      scorePurchase: {
+        purchasedTotalEpoch: input.purchasedTotalEpoch,
+        accountSubject: input.accountSubject,
+      },
+    })
     return this.#run(prepared, input.wallet, 'execute')
   }
 
   async recover(input: {
     readonly transfer: DurableOutgoingCashuTransfer
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
     readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
   }): Promise<DurableOutgoingCashuTransfer> {
     if (
       input.transfer.mintUrl !== input.mintUrl ||
-      input.transfer.unit !== 'sat' ||
-      input.transfer.requestedAmount !== String(input.amountSats)
+      input.transfer.unit !== 'msat' ||
+      input.transfer.requestedAmount !== String(input.amountMsat)
     ) {
       throw new Error('durable outgoing Cashu transfer conflicts with the caller request')
     }
@@ -225,11 +464,11 @@ export class DaemonDurableOutgoingCashuCoordinator {
    * classifies persisted bearer proofs. It never creates a token or selects inputs.
    */
   async recoverDue(input: {
-    readonly walletFor: (mintUrl: string, unit: 'sat' | 'msat') => Promise<CashuWalletLike>
+    readonly walletFor: (mintUrl: string, unit: 'msat') => Promise<CashuWalletLike>
     readonly recipientClient?: DurableRecipientDeliveryClient
     readonly recipientSubmission?: (
       transfer: DurableOutgoingCashuTransfer,
-    ) => DurableRecipientDeliverySubmission
+    ) => Promise<DurableRecipientDeliverySubmission> | DurableRecipientDeliverySubmission
     readonly acknowledgeRecipientStatus?: (status: DurableRecipientDeliveryStatus) => boolean
   }): Promise<{
     readonly recovered: string[]
@@ -256,7 +495,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
       maximumBytes: DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX,
     })
     const wallets = new Map<string, Promise<CashuWalletLike>>()
-    const walletFor = (mintUrl: string, unit: 'sat' | 'msat') => {
+    const walletFor = (mintUrl: string, unit: 'msat') => {
       const key = `${mintUrl}\u0000${unit}`
       let wallet = wallets.get(key)
       if (wallet === undefined) {
@@ -274,6 +513,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
     for (const transfers of groups.values()) {
       for (const transfer of transfers) {
         try {
+          requireMsatUnit(transfer.unit)
           if (transfer.deliveryIntent.policy === 'durable-recipient-ack') {
             if (
               input.recipientClient === undefined ||
@@ -290,9 +530,9 @@ export class DaemonDurableOutgoingCashuCoordinator {
               transfer.deliveryState === 'prepared'
                 ? await this.recover({
                     transfer,
-                    amountSats: Number(transfer.requestedAmount),
+                    amountMsat: Number(transfer.requestedAmount),
                     mintUrl: transfer.mintUrl,
-                    wallet: await walletFor(transfer.mintUrl, receiveUnit(transfer.unit)),
+                    wallet: await walletFor(transfer.mintUrl, requireMsatUnit(transfer.unit)),
                     deliveryIntent: transfer.deliveryIntent,
                   })
                 : transfer
@@ -301,7 +541,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
             }
             const reconciled = await this.reconcileRecipientDelivery({
               transfer: minted,
-              submission: input.recipientSubmission(minted),
+              submission: await input.recipientSubmission(minted),
               client: input.recipientClient,
               acknowledge: input.acknowledgeRecipientStatus,
             })
@@ -318,9 +558,9 @@ export class DaemonDurableOutgoingCashuCoordinator {
           if (transfer.deliveryState === 'prepared') {
             const result = await this.recover({
               transfer,
-              amountSats: Number(transfer.requestedAmount),
+              amountMsat: Number(transfer.requestedAmount),
               mintUrl: transfer.mintUrl,
-              wallet: await walletFor(transfer.mintUrl, receiveUnit(transfer.unit)),
+              wallet: await walletFor(transfer.mintUrl, requireMsatUnit(transfer.unit)),
             })
             if (result.deliveryState !== 'prepared') recovered.push(transfer.transferId)
             continue
@@ -335,7 +575,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
           if (transfer.deliveryState === 'reclaim-prepared') {
             const result = await this.#runReclaim(
               transfer,
-              await walletFor(transfer.mintUrl, receiveUnit(transfer.unit)),
+              await walletFor(transfer.mintUrl, requireMsatUnit(transfer.unit)),
             )
             if (result.deliveryState === 'reclaimed' || result.deliveryState === 'bearer-spent') {
               recovered.push(transfer.transferId)
@@ -362,7 +602,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
     })
     for (const chunk of chunks) {
       try {
-        const wallet = await walletFor(chunk.mintUrl, 'sat')
+        const wallet = await walletFor(chunk.mintUrl, 'msat')
         if (!wallet.checkProofsStates)
           throw new Error('cashu wallet does not support proof-state recovery')
         const response = await wallet.checkProofsStates(
@@ -439,6 +679,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
   }): Promise<DurableOutgoingCashuTransfer> {
     const transfer = await this.loadTransfer(input.transferId)
     if (transfer === null) throw new Error('durable outgoing Cashu transfer is missing')
+    requireMsatUnit(transfer.unit)
     if (transfer.deliveryState === 'reclaim-prepared') {
       return this.#runReclaim(transfer, input.wallet)
     }
@@ -455,21 +696,13 @@ export class DaemonDurableOutgoingCashuCoordinator {
     ) {
       throw new Error('durable outgoing Cashu reclaim is not authorized')
     }
-    if (!input.wallet.checkProofsStates || !input.wallet.prepareSwapToReceive) {
+    if (!input.wallet.prepareSwapToReceive) {
       throw new Error('cashu wallet does not support durable outgoing Cashu reclaim')
     }
-    const proofStates = await input.wallet.checkProofsStates(
-      transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
-    )
-    const classified = classifyDurableOutgoingBearerProofStates({
+    const { transfer: classified, proofStates } = await this.#classifyBearerTransfer(
       transfer,
-      states: proofStates.map(({ Y, state }) => ({
-        Y,
-        state: String(state) as 'UNSPENT' | 'PENDING' | 'SPENT',
-      })),
-      dueAtMs: this.#now(),
-    }).transfer
-    await this.#persistTransfer(classified)
+      input.wallet,
+    )
     if (classified.deliveryState === 'bearer-spent') return classified
     if (
       classified.token?.unspentProofs === null ||
@@ -507,16 +740,74 @@ export class DaemonDurableOutgoingCashuCoordinator {
     const prepared = prepareDurableOutgoingCashuReclaim({
       transfer: classified,
       reclaimId,
-      states: proofStates.map(({ Y, state }) => ({
-        Y,
-        state: String(state) as 'UNSPENT' | 'PENDING' | 'SPENT',
-      })),
+      states: proofStates,
       dueAtMs: classified.recovery.dueAtMs,
       walletReceiveOperation: operation,
     })
     // The receive bind and the reclaim-prepared row must share one custody transaction.
     await this.#bindReclaim(classified, prepared, input.wallet)
     return this.#runReclaim(prepared, input.wallet)
+  }
+
+  /** Classify one persisted bearer transfer without returning its token or preparing a reclaim. */
+  async classifyBearerTransfer(input: {
+    readonly transferId: string
+    readonly wallet: CashuWalletLike
+  }): Promise<ReturnType<typeof redactedTransferMetadata>> {
+    const transfer = await this.loadTransfer(input.transferId)
+    if (transfer === null) throw new Error('durable outgoing Cashu transfer is missing')
+    requireMsatUnit(transfer.unit)
+    if (
+      transfer.deliveryIntent.policy !== 'bearer-spend-classification' ||
+      transfer.token === null
+    ) {
+      throw new Error('durable outgoing Cashu bearer classification is not authorized')
+    }
+    if (transfer.deliveryState === 'bearer-spent') {
+      return redactedTransferMetadata(transfer)
+    }
+    if (
+      transfer.deliveryState !== 'delivery-pending' &&
+      transfer.deliveryState !== 'bearer-partial'
+    ) {
+      throw new Error('durable outgoing Cashu bearer classification is not authorized')
+    }
+
+    const { transfer: classified } = await this.#classifyBearerTransfer(transfer, input.wallet)
+    return redactedTransferMetadata(classified)
+  }
+
+  async #classifyBearerTransfer(
+    transfer: DurableOutgoingCashuTransfer,
+    wallet: CashuWalletLike,
+  ): Promise<{
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly proofStates: readonly DurableOutgoingCashuProofState[]
+  }> {
+    if (
+      transfer.deliveryIntent.policy !== 'bearer-spend-classification' ||
+      transfer.token === null ||
+      (transfer.deliveryState !== 'delivery-pending' && transfer.deliveryState !== 'bearer-partial')
+    ) {
+      throw new Error('durable outgoing Cashu bearer classification is not authorized')
+    }
+    if (!wallet.checkProofsStates) {
+      throw new Error('cashu wallet does not support durable outgoing Cashu classification')
+    }
+    const response = await wallet.checkProofsStates(
+      transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
+    )
+    const proofStates = response.map(({ Y, state }) => ({
+      Y,
+      state: String(state) as DurableOutgoingCashuProofState['state'],
+    }))
+    const classified = classifyDurableOutgoingBearerProofStates({
+      transfer,
+      states: proofStates,
+      dueAtMs: this.#now(),
+    }).transfer
+    await this.#persistTransfer(classified)
+    return { transfer: classified, proofStates }
   }
 
   async #persistTransfer(transfer: DurableOutgoingCashuTransfer): Promise<void> {
@@ -826,7 +1117,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
         proof: createCustodyProofSqliteRowFromMaterial({
           scopeId: fence.scopeId,
           normalizedMint: stored.transfer.mintUrl,
-          unit: receiveUnit(stored.transfer.unit),
+          unit: requireMsatUnit(stored.transfer.unit),
           material,
           baseAsset: 'sat',
           conditionId: null,
@@ -879,7 +1170,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
         admitExactAvailableWalletProofsFromDatabase(database, {
           mintUrl: stored.transfer.mintUrl,
           proofs: [proof],
-          asset: { kind: 'sats', baseAsset: 'sat', unit: receiveUnit(stored.transfer.unit) },
+          asset: { kind: 'sats', baseAsset: 'sat', unit: requireMsatUnit(stored.transfer.unit) },
           nowMs,
         })
       }
@@ -971,48 +1262,102 @@ export class DaemonDurableOutgoingCashuCoordinator {
 
   async #prepare(input: {
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
+    readonly seed: Uint8Array
     readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
+    readonly maxWalletDebitMsat?: number
+    readonly scorePurchase?: {
+      readonly purchasedTotalEpoch: number
+      readonly accountSubject: string
+    }
+    readonly marketFunding?: {
+      readonly product: MarketFundingProduct
+      readonly expectedPreviousTransferId: string | null
+      readonly outcomeCount: number
+      readonly maxWalletDebitMsat: number
+    }
   }): Promise<DurableOutgoingCashuTransfer> {
-    if (!input.wallet.prepareSwapToSend || !input.wallet.completeSwap) {
-      throw new Error('cashu wallet does not support durable send preparation')
+    if (!input.wallet.prepareSwapToSend || !input.wallet.completeSwap || !input.wallet.getKeyset) {
+      throw new Error('cashu wallet does not support deterministic durable send preparation')
     }
     const fence = this.#getFence()
     const observedAtMs = this.#now()
     const available = await readAvailableWalletProofsFenced({
       mintUrl: input.mintUrl,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       mutation: { fence, observedAtMs },
     })
-    assertV2OutgoingProofs(available.map(({ proof }) => proof))
-    const preview = await input.wallet.prepareSwapToSend(
-      input.amountSats,
-      available.map(({ proof }) => proof as Proof),
-      undefined,
-      {
-        send: { type: 'random' },
-        keep: { type: 'random' },
+    const proofs = available.map(({ proof }) => proof as Proof)
+    assertV2OutgoingProofs(proofs)
+    const deterministicWallet: DeterministicOutgoingCashuWallet = {
+      prepareSwapToSend: input.wallet.prepareSwapToSend.bind(input.wallet),
+      getKeyset: (keysetId) => {
+        const keyset = input.wallet.getKeyset?.(keysetId)
+        if (keyset === undefined) throw new Error('durable send keyset is unavailable')
+        return { id: keyset.id }
       },
-    )
+    }
+    const preparation = await prepareDeterministicOutgoingCashuSend({
+      amount: input.amountMsat,
+      proofs,
+      seed: input.seed,
+      wallet: deterministicWallet,
+      diagnosticLabel: 'durable outgoing Cashu send',
+    })
+    const { preview } = preparation
+    const quote =
+      input.marketFunding === undefined
+        ? null
+        : marketFundingQuoteFromPreview(
+            preview,
+            input.wallet,
+            input.amountMsat,
+            input.marketFunding.outcomeCount,
+          )
+    if (input.maxWalletDebitMsat !== undefined) {
+      const debit = sendDebitQuote(preview, input.amountMsat)
+      if (
+        !Number.isSafeInteger(input.maxWalletDebitMsat) ||
+        input.maxWalletDebitMsat < 1 ||
+        debit.totalWalletDebitMsat > input.maxWalletDebitMsat
+      ) {
+        throw new Error('outgoing wallet debit exceeds the approved maximum')
+      }
+    }
+    if (input.marketFunding !== undefined) {
+      if (
+        quote === null ||
+        !Number.isSafeInteger(input.marketFunding.maxWalletDebitMsat) ||
+        input.marketFunding.maxWalletDebitMsat < 1 ||
+        quote.totalWalletDebitMsat > input.marketFunding.maxWalletDebitMsat
+      ) {
+        throw new Error('market funding wallet debit exceeds the approved maximum')
+      }
+    }
     const operation = serializeDurableWalletSendOperation({
       operationId: input.transferId,
       mintUrl: input.mintUrl,
-      unit: 'sat',
+      unit: 'msat',
       preview,
     })
     const transfer = createDurableOutgoingCashuTransfer({
       transferId: input.transferId,
       walletScopeId: fence.scopeId,
-      requestedAmount: String(input.amountSats),
+      requestedAmount: String(input.amountMsat),
       walletSendOperation: operation,
-      keepProofDerivationLocators: operation.preview.keepOutputs.map(() => null),
+      keepProofDerivationLocators: preparation.keepProofDerivationLocators,
+      recipientSequence:
+        input.marketFunding === undefined
+          ? null
+          : { predecessorTransferId: input.marketFunding.expectedPreviousTransferId },
       deliveryIntent: input.deliveryIntent ?? bearerDeliveryIntent(),
       dueAtMs: observedAtMs,
     })
-    const binding = outgoingBinding(walletScope(fence), operation, input.wallet)
     const reservationId = `wallet-send:${input.transferId}`
+    const binding = outgoingBinding(walletScope(fence), operation, input.wallet, reservationId)
+    let selectedTransfer = transfer
     await prepareProofOperationWithExactReservation(
       {
         operationId: input.transferId,
@@ -1026,16 +1371,16 @@ export class DaemonDurableOutgoingCashuCoordinator {
         metadata: {
           purpose: 'durable-outgoing-cashu',
           reservationId,
-          inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-          successorAssets: { keep: { kind: 'sats', baseAsset: 'sat', unit: 'sat' } },
+          inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+          successorAssets: { keep: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
           amount: amountToNumber(preview.amount),
           fees: amountToNumber(preview.fees),
           keysetId: preview.keysetId,
           unselectedProofs: preview.unselectedProofs ?? [],
-          unit: 'sat',
+          unit: 'msat',
         },
         reservationId,
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       },
       { fence, observedAtMs },
       (database) => {
@@ -1051,15 +1396,91 @@ export class DaemonDurableOutgoingCashuCoordinator {
         } else {
           assertDurableCustodyMintOperationAuthority(existing, binding.artifacts.privateMaterial)
         }
-        new DurableOutgoingCashuSqliteStore(database).put({
-          scopeId: fence.scopeId,
-          custodyOperationId: binding.record.operation.operationId,
-          transfer,
-          nowMs: observedAtMs,
-        })
+        const outgoing = new DurableOutgoingCashuSqliteStore(database)
+        if (input.marketFunding === undefined) {
+          outgoing.put({
+            scopeId: fence.scopeId,
+            custodyOperationId: binding.record.operation.operationId,
+            transfer,
+            nowMs: observedAtMs,
+          })
+        } else {
+          selectedTransfer = outgoing.putMarketFunding({
+            scopeId: fence.scopeId,
+            custodyOperationId: binding.record.operation.operationId,
+            transfer,
+            product: input.marketFunding.product,
+            expectedPreviousTransferId: input.marketFunding.expectedPreviousTransferId,
+            nowMs: observedAtMs,
+          })
+        }
       },
+      input.scorePurchase === undefined
+        ? undefined
+        : (database) => {
+            const pointer = new DurableOutgoingCashuSqliteStore(
+              database,
+            ).preflightParticipationScoreDelivery({
+              scopeId: fence.scopeId,
+              transferId: input.transferId,
+              amountMsat: input.amountMsat,
+              purchasedTotal: input.scorePurchase!.purchasedTotalEpoch,
+              accountSubject: input.scorePurchase!.accountSubject,
+              mintUrl: input.mintUrl,
+              nowMs: observedAtMs,
+              requireExactRequest: true,
+            })
+            if (
+              pointer.transferId !== input.transferId ||
+              pointer.amountMsat !== input.amountMsat ||
+              pointer.purchasedTotalEpoch !== input.scorePurchase!.purchasedTotalEpoch
+            ) {
+              throw new Error('Participation Score purchase conflicts with the active delivery')
+            }
+          },
     )
-    return transfer
+    return selectedTransfer
+  }
+
+  async #previewSend(input: {
+    readonly amountMsat: number
+    readonly mintUrl: string
+    readonly wallet: CashuWalletLike
+    readonly outcomeCount?: number
+  }): Promise<{
+    fence: CustodyScopeFence
+    observedAtMs: number
+    preview: SwapPreview
+    quote: {
+      grossFundingMsat: number
+      sendPreparationFeeMsat: number
+      estimatedRecipientReceiveFeeMsat: number
+      totalWalletDebitMsat: number
+      netFundingMsat: number
+    } | null
+  }> {
+    if (!input.wallet.prepareSwapToSend || !input.wallet.completeSwap) {
+      throw new Error('cashu wallet does not support durable send preparation')
+    }
+    const fence = this.#getFence()
+    const observedAtMs = this.#now()
+    const available = await readAvailableWalletProofsFenced({
+      mintUrl: input.mintUrl,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      mutation: { fence, observedAtMs },
+    })
+    assertV2OutgoingProofs(available.map(({ proof }) => proof))
+    const preview = await input.wallet.prepareSwapToSend(
+      input.amountMsat,
+      available.map(({ proof }) => proof as Proof),
+      undefined,
+      { send: { type: 'random' }, keep: { type: 'random' } },
+    )
+    const quote =
+      input.outcomeCount === undefined
+        ? null
+        : marketFundingQuoteFromPreview(preview, input.wallet, input.amountMsat, input.outcomeCount)
+    return { fence, observedAtMs, preview, quote }
   }
 
   async #run(
@@ -1116,17 +1537,25 @@ export class DaemonDurableOutgoingCashuCoordinator {
       const record = store.getOperation(stored.custodyOperationId)
       if (record === null) throw new Error('durable outgoing custody operation is missing')
       const authority = exactAuthority(record, store)
-      const keepProofs = input.keepProofs as Proof[]
-      const mintedKeepProofs = keepProofs.slice(
+      const fullResult = verifyDurableWalletSendResult(currentTransfer.walletSendOperation, {
+        keep: input.keepProofs.map((proof) =>
+          hydrateDurableWalletProof(proof as Parameters<typeof hydrateDurableWalletProof>[0]),
+        ),
+        send: input.sendProofs.map((proof) =>
+          hydrateDurableWalletProof(proof as Parameters<typeof hydrateDurableWalletProof>[0]),
+        ),
+      })
+      const mintedKeepProofs = fullResult.keep.slice(
         0,
         currentTransfer.walletSendOperation.preview.keepOutputs.length,
       )
+      const mintedSendProofs = fullResult.send
       const prepared = prepareDurableCustodyVerifiedMintResult({
         record,
         exactAuthority: authority,
         result: {
           keep: mintedKeepProofs,
-          send: input.sendProofs as Proof[],
+          send: mintedSendProofs,
         },
       })
       const revisions = custodyRevisions(database, record, currentTransfer, prepared.proofs)
@@ -1152,7 +1581,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
         proof: createCustodyProofSqliteRowFromMaterial({
           scopeId: staged.scope.scopeId,
           normalizedMint: staged.operation.custodyContext.normalizedMint,
-          unit: 'sat',
+          unit: requireMsatUnit(currentTransfer.unit),
           material,
           baseAsset: 'sat',
           conditionId: null,
@@ -1200,8 +1629,9 @@ export class DaemonDurableOutgoingCashuCoordinator {
       completeDurableOutgoingWalletSendFromDatabase(database, {
         operationId: currentTransfer.walletSendOperation.operationId,
         reservationId: `wallet-send:${currentTransfer.walletSendOperation.operationId}`,
-        keepProofs: input.keepProofs as Proof[],
-        sendProofs: input.sendProofs as Proof[],
+        unit: requireMsatUnit(currentTransfer.unit),
+        keepProofs: mintedKeepProofs,
+        sendProofs: mintedSendProofs,
         nowMs: observedAtMs,
       })
       outgoing.put({
@@ -1309,6 +1739,7 @@ function outgoingBinding(
   scope: DurableCustodyScope,
   operation: DurableWalletSendOperation,
   wallet: CashuWalletLike,
+  reservationId: string,
 ) {
   const custody = toDurableCustodyProofOperationInput(operation)
   const authority = prepareDurableCustodyMintOperationAuthority({
@@ -1321,6 +1752,7 @@ function outgoingBinding(
       operation: custody,
       facts: authority.facts,
       inventoryAccountId: null,
+      reservationId,
       exactBoundary: {
         method: 'POST',
         path: '/v1/swap',
@@ -1368,8 +1800,9 @@ function outgoingKeysets(
       keyset.unit !== operation.metadata?.unit ||
       keyset.verify?.() !== true ||
       keyset.conditional !== undefined
-    )
+    ) {
       throw new Error('durable outgoing Cashu send keyset is invalid')
+    }
     const unit = keyset.unit
     if (unit === undefined) throw new Error('durable outgoing Cashu send keyset unit is missing')
     return {
@@ -1552,15 +1985,15 @@ function assertReclaimCounterRange(
   if (range === null) throw new Error('daemon wallet reclaim derivation range is missing')
   const next = readExactBoundCounter(database, scopeId, range.keysetId, {
     normalizedMint: operation.mintUrl,
-    unit: receiveUnit(operation.unit),
+    unit: requireMsatUnit(operation.unit),
   })
   if (next < range.counterStart + range.counterCount) {
     throw new Error('daemon wallet reclaim counter authority is incomplete')
   }
 }
 
-function receiveUnit(unit: string): 'sat' | 'msat' {
-  if (unit !== 'sat' && unit !== 'msat') throw new Error('daemon wallet reclaim unit is invalid')
+function requireMsatUnit(unit: string): 'msat' {
+  if (unit !== 'msat') throw new Error('durable outgoing Cashu transfers require msat')
   return unit
 }
 
@@ -1605,6 +2038,83 @@ function walletScope(fence: CustodyScopeFence): DurableCustodyScope {
   }
 }
 
+function sendDebitQuote(preview: SwapPreview, requestedAmountMsat: number) {
+  const amountMsat = amountToNumber(preview.amount)
+  const sendPreparationFeeMsat = amountToNumber(preview.fees)
+  const totalWalletDebitMsat = amountMsat + sendPreparationFeeMsat
+  if (
+    !Number.isSafeInteger(amountMsat) ||
+    amountMsat < 1 ||
+    amountMsat !== requestedAmountMsat ||
+    !Number.isSafeInteger(sendPreparationFeeMsat) ||
+    sendPreparationFeeMsat < 0 ||
+    !Number.isSafeInteger(totalWalletDebitMsat)
+  ) {
+    throw new Error('outgoing send preview is invalid')
+  }
+  return { amountMsat, sendPreparationFeeMsat, totalWalletDebitMsat }
+}
+
+function marketFundingQuoteFromPreview(
+  preview: SwapPreview,
+  wallet: CashuWalletLike,
+  requestedAmountMsat: number,
+  outcomeCount: number,
+) {
+  const sendOutputs = preview.sendOutputs
+  const keyset = wallet.getKeyset?.(preview.keysetId)
+  if (
+    keyset === undefined ||
+    keyset.id !== preview.keysetId ||
+    keyset.unit !== 'msat' ||
+    keyset.conditional !== undefined ||
+    keyset.verify?.() !== true ||
+    sendOutputs === undefined ||
+    sendOutputs.some((output) => output.blindedMessage.id !== keyset.id) ||
+    !Number.isSafeInteger(keyset.fee) ||
+    keyset.fee! < 0
+  ) {
+    throw new Error('Market funding receive-fee keyset is invalid')
+  }
+  const grossFundingMsat = amountToNumber(preview.amount)
+  const sendPreparationFeeMsat = amountToNumber(preview.fees)
+  if (grossFundingMsat !== requestedAmountMsat || sendOutputs.length === 0) {
+    throw new Error('market funding preview is invalid')
+  }
+  const estimatedRecipientReceiveFeeMsat = computeInputFeeSubunitsFromPpk(
+    sendOutputs.length * keyset.fee!,
+  )
+  const netFundingMsat = requireMarketFundingActivationAmount({
+    grossMsat: grossFundingMsat,
+    receiveFeeMsat: estimatedRecipientReceiveFeeMsat,
+    outcomeCount,
+  })
+  const totalWalletDebitMsat = grossFundingMsat + sendPreparationFeeMsat
+  if (!Number.isSafeInteger(totalWalletDebitMsat) || sendPreparationFeeMsat < 0) {
+    throw new Error('market funding preview is invalid')
+  }
+  return {
+    grossFundingMsat,
+    sendPreparationFeeMsat,
+    estimatedRecipientReceiveFeeMsat,
+    totalWalletDebitMsat,
+    netFundingMsat,
+  }
+}
+
+function sameMarketFundingProduct(
+  left: MarketFundingProduct,
+  right: MarketFundingProduct,
+): boolean {
+  return (
+    left.accountSubject === right.accountSubject &&
+    left.conditionId === right.conditionId &&
+    left.divisibility === right.divisibility &&
+    left.mintUrl === right.mintUrl &&
+    left.unit === right.unit
+  )
+}
+
 function bearerDeliveryIntent(): DurableOutgoingCashuDeliveryIntent {
   return {
     policy: 'bearer-spend-classification',
@@ -1647,6 +2157,7 @@ function transferRequest(
     mintUrl: transfer.mintUrl,
     unit: transfer.unit,
     requestedAmount: transfer.requestedAmount,
+    recipientSequence: transfer.recipientSequence,
     deliveryIntent: transfer.deliveryIntent,
   }
 }

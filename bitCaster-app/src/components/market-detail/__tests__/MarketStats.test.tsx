@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { MarketStats } from "../MarketStats";
 import type { YesNoMarketDetail } from "@/types/market-detail";
 
@@ -19,7 +20,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-02T00:00:00Z",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -44,20 +45,34 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
 }
 
 describe("MarketStats bot budget", () => {
+  it.each([
+    ["Volume", "Total traded volume so far"],
+    ["Total funding", "Total funds contributed to this market's bot"],
+  ])("explains %s across its icon and amount", async (label, description) => {
+    const user = userEvent.setup();
+    render(<MarketStats market={makeMarket()} />);
+    const control = screen.getByRole("button", { name: new RegExp(label) });
+    await user.hover(control.querySelector("svg")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(description);
+    await user.hover(within(control).getByRole("group"));
+    expect(control).toHaveAccessibleDescription(description);
+    expect(control.querySelector("[title]")).toBeNull();
+  });
+
   it("shows non-zero funded sat bot budget", () => {
     render(
       <MarketStats
         market={makeMarket({
           baseAsset: "sat",
           baseUnit: "sats",
-          divisibility: 10_000,
+          divisibility: 1_000,
           ammBotBudgetSubunits: 1_234,
         })}
       />,
     );
 
     const budget = screen.getByTestId("market-bot-budget");
-    expect(within(budget).getByText("1.234 sats")).toBeInTheDocument();
+    expect(within(budget).getByRole("group", { name: "1.234 sats" })).toBeInTheDocument();
     expect(budget).not.toHaveTextContent("0 sats");
   });
 

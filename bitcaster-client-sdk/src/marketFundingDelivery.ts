@@ -3,11 +3,17 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   DURABLE_OUTGOING_CASHU_TOKEN_PROOF_LIMIT_MAX,
   type DurableOutgoingCashuDeliveryIntent,
+  type DurableOutgoingCashuRecipientAcknowledgement,
+  type DurableOutgoingCashuTransfer,
 } from './durableOutgoingCashuTransfer.ts'
 import {
   DURABLE_RECIPIENT_TOKEN_BYTES_MAX,
+  assertDurableRecipientDeliveryStatusAuthority,
   decodeDurableRecipientDeliverySubmission,
+  deriveDurableRecipientDeliveryResultFingerprint,
   deriveDurableRecipientTokenAllowance,
+  reconcileDurableRecipientDelivery,
+  type DurableRecipientDeliveryClient,
   type DurableRecipientDeliveryMetadata,
   type DurableRecipientDeliverySubmission,
 } from './durableRecipientDelivery.ts'
@@ -15,6 +21,43 @@ import { decodeCanonicalMintOrigin } from './durableCustody.ts'
 import { parseMarketDivisibility } from './marketUnits.ts'
 
 const MARKET_FUNDING_DELIVERY_DOMAIN = 'bitcaster/market-funding-delivery/v1'
+const MINIMUM_ACTIVATION_NET_MSAT = new Map([
+  [2, 1],
+  [3, 2],
+  [4, 2],
+  [5, 2],
+  [6, 2],
+  [7, 2],
+  [8, 3],
+])
+
+export function requireMarketFundingActivationAmount(input: {
+  readonly grossMsat: number
+  readonly receiveFeeMsat: number
+  readonly outcomeCount: number
+}): number {
+  const { grossMsat, receiveFeeMsat, outcomeCount } = input
+  if (
+    !Number.isSafeInteger(grossMsat) ||
+    grossMsat < 1 ||
+    !Number.isSafeInteger(receiveFeeMsat) ||
+    receiveFeeMsat < 0 ||
+    !Number.isInteger(outcomeCount) ||
+    outcomeCount < 2 ||
+    outcomeCount > 8
+  ) {
+    throw new Error('market funding preview is invalid')
+  }
+  const netMsat = grossMsat - receiveFeeMsat
+  // An unconfirmed activation cannot justify the smaller subsequent-payment bound.
+  // These integer minima cover the conservative first-activation loss bound.
+  const minimumNetMsat = MINIMUM_ACTIVATION_NET_MSAT.get(outcomeCount)
+  if (minimumNetMsat === undefined) throw new Error('market funding outcome count is invalid')
+  if (netMsat < minimumNetMsat) {
+    throw new Error('market funding amount is too small after the receive fee')
+  }
+  return netMsat
+}
 
 export interface MarketFundingDeliveryInput {
   readonly deliveryId: string
@@ -24,6 +67,206 @@ export interface MarketFundingDeliveryInput {
   readonly unit: 'msat'
   readonly requestedAmount: string
   readonly divisibility: number
+}
+
+export type MarketFundingDeliveryAttempt =
+  | {
+      readonly kind: 'begin'
+      readonly expectedPreviousTransferId: string | null
+      readonly newAttemptId: string
+      readonly requestedAmount: string
+    }
+  | { readonly kind: 'resume'; readonly transferId: string }
+
+export type MarketFundingDeliveryProgress = 'pending' | 'received' | 'credited'
+
+export interface MarketFundingDeliveryResult {
+  readonly transfer: DurableOutgoingCashuTransfer
+  readonly progress: MarketFundingDeliveryProgress
+}
+
+export interface MarketFundingDeliveryPorts extends DurableRecipientDeliveryClient {
+  readTransfer(transferId: string): Promise<DurableOutgoingCashuTransfer | null>
+  findSuccessor(input: {
+    readonly productBindingSha256: string
+    readonly predecessorTransferId: string | null
+  }): Promise<DurableOutgoingCashuTransfer | null>
+  /** Check remote predecessor credit before the atomic head and custody transaction. */
+  prepareTransfer(input: {
+    readonly metadata: DurableRecipientDeliveryMetadata
+    readonly attempt: Extract<MarketFundingDeliveryAttempt, { kind: 'begin' }>
+    readonly requireCredited: (predecessor: DurableOutgoingCashuTransfer) => Promise<void>
+  }): Promise<DurableOutgoingCashuTransfer>
+  recoverTransfer(
+    transfer: DurableOutgoingCashuTransfer,
+  ): Promise<DurableOutgoingCashuTransfer | null>
+  acknowledgeRecipient(input: {
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly receipt: DurableOutgoingCashuRecipientAcknowledgement
+  }): Promise<DurableOutgoingCashuTransfer>
+}
+
+/** Coordinate one explicit funding payment without owning the wallet or its storage transaction. */
+export async function executeMarketFundingDelivery(input: {
+  readonly funding: Omit<MarketFundingDeliveryInput, 'deliveryId' | 'requestedAmount'>
+  readonly attempt: MarketFundingDeliveryAttempt
+  readonly ports: MarketFundingDeliveryPorts
+}): Promise<MarketFundingDeliveryResult> {
+  const { funding, attempt, ports } = input
+  if (attempt.kind === 'resume') {
+    const persisted = await ports.readTransfer(attempt.transferId)
+    if (persisted === null) throw new Error('market funding transfer is not persisted')
+    return reconcileOrRecoverMarketFunding({ funding, transfer: persisted, ports })
+  }
+  const productBindingSha256 = deriveMarketFundingProductBinding(funding)
+  const successor = await ports.findSuccessor({
+    productBindingSha256,
+    predecessorTransferId: attempt.expectedPreviousTransferId,
+  })
+  if (successor !== null) {
+    if (
+      successor.deliveryIntent.policy !== 'durable-recipient-ack' ||
+      successor.recipientSequence === null ||
+      successor.recipientSequence.predecessorTransferId !== attempt.expectedPreviousTransferId
+    ) {
+      throw new Error('market funding successor sequence conflicts')
+    }
+    return reconcileOrRecoverMarketFunding({ funding, transfer: successor, ports })
+  }
+  const metadata = createMarketFundingDeliveryMetadata({
+    ...funding,
+    deliveryId: attempt.newAttemptId,
+    requestedAmount: attempt.requestedAmount,
+  })
+  const transfer = await ports.prepareTransfer({
+    metadata,
+    attempt,
+    requireCredited: (predecessor) =>
+      requireCreditedMarketFundingPredecessor({ funding, transfer: predecessor, ports }),
+  })
+  return reconcileMarketFundingDelivery({
+    metadata: persistedMarketFundingMetadata(funding, transfer),
+    transfer,
+    ports,
+  })
+}
+
+async function reconcileOrRecoverMarketFunding(input: {
+  readonly funding: Omit<MarketFundingDeliveryInput, 'deliveryId' | 'requestedAmount'>
+  readonly transfer: DurableOutgoingCashuTransfer
+  readonly ports: MarketFundingDeliveryPorts
+}): Promise<MarketFundingDeliveryResult> {
+  marketFundingMetadata(
+    input.transfer,
+    persistedMarketFundingMetadata(input.funding, input.transfer),
+  )
+  if (input.transfer.token !== null) {
+    return reconcileMarketFundingDelivery({
+      metadata: persistedMarketFundingMetadata(input.funding, input.transfer),
+      transfer: input.transfer,
+      ports: input.ports,
+    })
+  }
+  const recovered = await input.ports.recoverTransfer(input.transfer)
+  if (recovered === null) throw new Error('market funding transfer disappeared during recovery')
+  return reconcileMarketFundingDelivery({
+    metadata: persistedMarketFundingMetadata(input.funding, recovered),
+    transfer: recovered,
+    ports: input.ports,
+  })
+}
+
+async function requireCreditedMarketFundingPredecessor(input: {
+  readonly funding: Omit<MarketFundingDeliveryInput, 'deliveryId' | 'requestedAmount'>
+  readonly transfer: DurableOutgoingCashuTransfer
+  readonly ports: MarketFundingDeliveryPorts
+}): Promise<void> {
+  if (input.transfer.token === null)
+    throw new Error('market funding predecessor has no stored token')
+  const metadata = marketFundingMetadata(
+    input.transfer,
+    persistedMarketFundingMetadata(input.funding, input.transfer),
+  )
+  const submission = createMarketFundingDeliverySubmission({
+    metadata,
+    token: input.transfer.token.encodedToken,
+  })
+  const status = await input.ports.getDurableRecipientDeliveryStatus(input.transfer.transferId)
+  if (status === null) throw new Error('market funding predecessor status is unavailable')
+  assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status })
+  if (status.state !== 'credited') throw new Error('market funding predecessor is not credited')
+}
+
+/** Reconcile only the exact stored bearer token and persist the recipient acknowledgement. */
+export async function reconcileMarketFundingDelivery(input: {
+  readonly metadata: MarketFundingDeliveryInput
+  readonly transfer: DurableOutgoingCashuTransfer
+  readonly ports: Pick<
+    MarketFundingDeliveryPorts,
+    'getDurableRecipientDeliveryStatus' | 'submitDurableRecipientDelivery' | 'acknowledgeRecipient'
+  >
+}): Promise<MarketFundingDeliveryResult> {
+  const { transfer, ports } = input
+  if (transfer.token === null) throw new Error('market funding transfer has no stored token')
+  const metadata = marketFundingMetadata(transfer, input.metadata)
+  const submission = createMarketFundingDeliverySubmission({
+    metadata,
+    token: transfer.token.encodedToken,
+  })
+  const status = await reconcileDurableRecipientDelivery({ client: ports, submission })
+  if (status === null || status.state === 'pending') return { transfer, progress: 'pending' }
+  assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status })
+  if (transfer.deliveryIntent.policy !== 'durable-recipient-ack') {
+    throw new Error('market funding transfer is missing recipient delivery authority')
+  }
+  const acknowledged = await ports.acknowledgeRecipient({
+    transfer,
+    receipt: {
+      transferId: transfer.transferId,
+      expectedSubject: transfer.deliveryIntent.expectedSubject,
+      opaqueProductBinding: transfer.deliveryIntent.opaqueProductBinding,
+      mintUrl: transfer.mintUrl,
+      unit: transfer.unit,
+      requestedAmount: transfer.requestedAmount,
+      tokenSha256: transfer.token.sha256,
+      tokenLength: transfer.token.encodedLength,
+      receiveOperationId: status.result.receiveOperationId,
+      durableResultFingerprint: deriveDurableRecipientDeliveryResultFingerprint(status),
+    },
+  })
+  return { transfer: acknowledged, progress: status.state }
+}
+
+function persistedMarketFundingMetadata(
+  funding: Omit<MarketFundingDeliveryInput, 'deliveryId' | 'requestedAmount'>,
+  transfer: DurableOutgoingCashuTransfer,
+): MarketFundingDeliveryInput {
+  return { ...funding, deliveryId: transfer.transferId, requestedAmount: transfer.requestedAmount }
+}
+
+function marketFundingMetadata(
+  transfer: DurableOutgoingCashuTransfer,
+  metadata: MarketFundingDeliveryInput,
+): DurableRecipientDeliveryMetadata {
+  if (transfer.deliveryIntent.policy !== 'durable-recipient-ack') {
+    throw new Error('market funding transfer is missing recipient delivery authority')
+  }
+  if (metadata.deliveryId !== transfer.transferId) {
+    throw new Error('market funding delivery id conflicts with the stored transfer')
+  }
+  if (
+    metadata.accountSubject !== transfer.deliveryIntent.expectedSubject ||
+    metadata.mintUrl !== transfer.mintUrl ||
+    metadata.unit !== transfer.unit ||
+    metadata.requestedAmount !== transfer.requestedAmount
+  ) {
+    throw new Error('market funding delivery metadata conflicts with the stored transfer')
+  }
+  const durableMetadata = createMarketFundingDeliveryMetadata(metadata)
+  if (durableMetadata.productBindingSha256 !== transfer.deliveryIntent.opaqueProductBinding) {
+    throw new Error('market funding product binding conflicts with the stored transfer')
+  }
+  return durableMetadata
 }
 
 /** Build the immutable durable-recipient metadata for AMM market funding. */

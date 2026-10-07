@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   prepareReclaim: vi.fn(),
   completeReclaim: vi.fn(),
   capture: vi.fn(),
+  getWalletForUnit: vi.fn(),
   execute: vi.fn(),
   wallet: { checkProofsStates: vi.fn(), getKeyset: vi.fn() },
 }));
@@ -21,7 +22,7 @@ vi.mock("@bitcaster/client-sdk/durableOutgoingCashuTransfer", async (importOrigi
 
 vi.mock("@/lib/cashu", () => ({
   captureBrowserMintPersistenceContext: mocks.capture,
-  getWalletForUnit: vi.fn(async () => mocks.wallet),
+  getWalletForUnit: (...args: unknown[]) => mocks.getWalletForUnit(...args),
   restoreExactMintOutputs: vi.fn(),
 }));
 vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
@@ -37,7 +38,7 @@ vi.mock("@/lib/browserDurableWalletReceive", () => ({
   prepareBrowserDurableWalletReceiveOperation: mocks.prepareReceive,
   receiveBrowserDurableWalletToken: mocks.receive,
 }));
-vi.mock("@/stores/proof-db", () => ({ getBoundedCanonicalSatProofs: vi.fn() }));
+vi.mock("@/stores/proof-db", () => ({ getBoundedCanonicalRegularProofs: vi.fn() }));
 vi.mock("@/stores/wallet", () => ({ useWalletStore: { getState: () => ({ mints: [] }) } }));
 
 import {
@@ -48,6 +49,7 @@ import {
 describe("browser bearer withdrawal reclaim", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getWalletForUnit.mockResolvedValue(mocks.wallet);
     mocks.capture.mockReturnValue({
       scopeId: "scope",
       mnemonic: "test mnemonic",
@@ -84,14 +86,25 @@ describe("browser bearer withdrawal reclaim", () => {
     expect(mocks.receive).not.toHaveBeenCalled();
   });
 
-  it("passes bearer withdrawal through the required funded preflight seam", async () => {
+  it("passes an msat bearer withdrawal through the required funded preflight seam", async () => {
     mocks.execute.mockResolvedValue({ transferId: "withdrawal" });
 
-    await executeBrowserBearerWithdrawal({ amount: 1, mintUrl: "https://mint.example" });
+    await executeBrowserBearerWithdrawal({ amountMsat: 1_000, mintUrl: "https://mint.example" });
 
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith("https://mint.example", "msat");
     expect(mocks.execute).toHaveBeenCalledWith(
-      expect.objectContaining({ preflightFundedAsset: expect.any(Function) }),
+      expect.objectContaining({
+        preflightFundedAsset: expect.any(Function),
+        transfer: expect.objectContaining({ unit: "msat", requestedAmount: "1000" }),
+      }),
     );
+  });
+
+  it("rejects a legacy sat bearer transfer before proof-state I/O", async () => {
+    await expect(
+      reclaimBrowserBearerWithdrawal({ transfer: { ...transfer(), unit: "sat" } as never }),
+    ).rejects.toThrow("Bearer withdrawal requires an msat transfer");
+    expect(mocks.wallet.checkProofsStates).not.toHaveBeenCalled();
   });
 
   it.each(["PENDING", "UNKNOWN", "MALFORMED"])(
@@ -135,7 +148,13 @@ describe("browser bearer withdrawal reclaim", () => {
     expect(mocks.prepareReclaim).toHaveBeenCalledWith(
       expect.objectContaining({ walletReceiveOperation: operation }),
     );
-    expect(mocks.bindReceive).toHaveBeenCalledWith(expect.objectContaining({ operation }));
+    expect(mocks.bindReceive).toHaveBeenCalledWith(
+      expect.objectContaining({ operation, outgoingTransfer: expect.anything() }),
+    );
+    expect(mocks.prepareReceive).toHaveBeenCalledWith(
+      expect.objectContaining({ unit: "msat" }),
+      expect.any(Function),
+    );
     expect(mocks.receive).not.toHaveBeenCalled();
   });
 
@@ -166,7 +185,9 @@ describe("browser bearer withdrawal reclaim", () => {
     mocks.read.mockResolvedValue({ ...prepared, deliveryState: "reclaimed" });
     await reclaimBrowserBearerWithdrawal({ transfer: prepared as never });
     expect(mocks.wallet.checkProofsStates).not.toHaveBeenCalled();
-    expect(mocks.receive).toHaveBeenCalledWith(expect.objectContaining({ skipBind: true }));
+    expect(mocks.receive).toHaveBeenCalledWith(
+      expect.objectContaining({ skipBind: true, unit: "msat" }),
+    );
   });
 });
 
@@ -178,14 +199,14 @@ function transfer(): Record<string, any> {
   return {
     transferId: "withdrawal",
     mintUrl: "https://mint.example",
-    unit: "sat",
+    unit: "msat",
     deliveryState: "delivery-pending",
     token: {
       encodedToken: "cashuB-original",
       proofs: [
         {
           id: `01${"11".repeat(32)}`,
-          amount: "1",
+          amount: "1000",
           secret: "one",
           C: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
           dleq: null,
@@ -223,7 +244,7 @@ function reclaimPreparedTransfer(): Record<string, any> {
       proofs: [
         {
           id: `01${"11".repeat(32)}`,
-          amount: "1",
+          amount: "1000",
           secret: "one",
           C: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
           dleq: null,

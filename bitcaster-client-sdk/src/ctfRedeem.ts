@@ -1,9 +1,25 @@
+import type { DurableCustodyMintKeysetAuthority } from './durableCustodyMintResult.ts'
+import {
+  prepareCtfVerifiedLosingAuthority,
+  requireCtfVerifiedLosingAuthority,
+  requireVerifiedConditionOracleEvidence,
+  type ConditionOracleResolutionContext,
+  type CtfVerifiedLosingAuthority,
+} from './conditionOracleEvidence.ts'
 import {
   Amount,
   CheckStateEnum,
+  Keyset,
   MintOperationError,
   OutputData,
+  hashToCurve,
+  hashToCurveBls,
+  isBlsKeyset,
+  splitAmount,
+  type CounterSource,
   type MintKeys,
+  type Mint,
+  type MintKeyset,
   type OutputDataLike,
   type Proof,
   type ProofState,
@@ -22,9 +38,10 @@ import {
 } from './ctfSplit.ts'
 import {
   DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX,
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
 } from './durableCustody.ts'
-import { amountToNumber, computeInputFeeSatsForProofs, sumProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs, sumProofs } from './proofSelection.ts'
 import {
   canonicalProofOperationMintIdentity,
   proofAuthority,
@@ -32,16 +49,22 @@ import {
   requireProofArray,
   requireSameOperationAuthority,
 } from './ctfProofOperationAuthority.ts'
+import { isCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
+import {
+  reserveAndConstructDurableSeedDerivedOutputs,
+  reconstructDurableSeedDerivedOutputs,
+  type DurableSeedDerivedOutputPlan,
+} from './durableSeedDerivedOutputs.ts'
+import {
+  decodeDurableCustodyProofOperationInput,
+  serializeDurableCustodyOutput,
+  serializeDurableCustodyProofInput,
+  type DurableCustodyProofOperationInput,
+} from './durableCustodyProofOperation.ts'
 
 export { canonicalProofOperationMintIdentity } from './ctfProofOperationAuthority.ts'
 
-/**
- * Shared NUT-CTF redeem helpers.
- *
- * The mint is the sole authority that can condemn an outcome-token leg. The
- * terminal CDK error code below means the keyset's outcome collection does not
- * include the oracle-attested outcome.
- */
+/** Authenticated refusal is history. Exact verified oracle evidence establishes losing authority. */
 export const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015
 
 const authenticatedCtfRedeemTerminalEvidence = new WeakSet<object>()
@@ -51,6 +74,7 @@ export interface AuthenticatedCtfRedeemTerminalEvidence {
   readonly operationId: string
   readonly normalizedMint: string
   readonly rejectionBody: { readonly code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+  readonly losingAuthority?: CtfVerifiedLosingAuthority
 }
 
 export function readAuthenticatedCtfRedeemTerminalEvidence(
@@ -60,6 +84,7 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
   operationId: string
   normalizedMint: string
   rejectionBody: { code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+  losingAuthority?: CtfVerifiedLosingAuthority
 } {
   if (
     !authenticatedCtfRedeemTerminalEvidence.has(evidence) ||
@@ -68,7 +93,7 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
     evidence.operationId.length === 0 ||
     evidence.normalizedMint !== canonicalProofOperationMintIdentity(evidence.normalizedMint) ||
     evidence.rejectionBody?.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
-    Object.keys(evidence).length !== 4 ||
+    Object.keys(evidence).length !== (evidence.losingAuthority === undefined ? 4 : 5) ||
     Object.keys(evidence.rejectionBody).length !== 1
   ) {
     throw new Error('authenticated CTF redeem terminal evidence is invalid')
@@ -78,6 +103,9 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
     operationId: evidence.operationId,
     normalizedMint: evidence.normalizedMint,
     rejectionBody: { code: evidence.rejectionBody.code },
+    ...(evidence.losingAuthority === undefined
+      ? {}
+      : { losingAuthority: requireCtfVerifiedLosingAuthority(evidence.losingAuthority) }),
   }
 }
 
@@ -109,7 +137,14 @@ export async function readVerifiedCtfLosingOutcomeEvidence(input: {
       ) {
         throw new Error('CTF losing outcome evidence is invalid')
       }
-      issued = issueAuthenticatedCtfRedeemTerminalEvidence(operation.operationId, operation.mintUrl)
+      const losingAuthority = losingAuthorityForOperation(operation)
+      if (losingAuthority === undefined)
+        throw new Error('CTF refusal has no verified losing authority')
+      issued = issueAuthenticatedCtfRedeemTerminalEvidence(
+        operation.operationId,
+        operation.mintUrl,
+        losingAuthority,
+      )
       return issued
     })
   } finally {
@@ -124,7 +159,9 @@ export async function readVerifiedCtfLosingOutcomeEvidence(input: {
 export interface RedeemWallet {
   loadMint(): Promise<void>
   mint?: {
+    getKeySets(): Promise<{ keysets: MintKeyset[] }>
     getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
+    getCtfCondition?: Mint['getCtfCondition']
   }
   redeemOutcomeProofs(options: { inputs: Proof[]; outputs: OutputDataLike[] }): Promise<Proof[]>
   checkProofsStates?(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
@@ -133,12 +170,318 @@ export interface RedeemWallet {
 export interface RedeemOutcomeLegResult {
   proofs: Proof[]
   losing: boolean
+  refused?: boolean
 }
 
 export interface CtfRedeemInputKeysetAuthority {
   readonly id: string
   readonly unit: string
   readonly input_fee_ppk?: number
+}
+
+export interface PrepareDurableCtfRedeemInput {
+  readonly operationId: string
+  readonly mintUrl: string
+  readonly conditionId: string
+  readonly outcomeCollection: string
+  readonly inputKeyset: CtfRedeemInputKeysetAuthority
+  readonly regularKeyset: MintKeys
+  readonly inputs: readonly Proof[]
+  readonly oracleWitness: string
+  readonly oracleResolutionContext?: ConditionOracleResolutionContext
+  readonly oracleInputKeysets?: readonly DurableCustodyMintKeysetAuthority[]
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+}
+
+export interface PreparedDurableCtfRedeem {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly outputPlan: DurableSeedDerivedOutputPlan
+  readonly outputData: readonly OutputData[]
+}
+
+export async function prepareDurableCtfRedeemOperation(
+  input: PrepareDurableCtfRedeemInput,
+): Promise<PreparedDurableCtfRedeem> {
+  const mintUrl = canonicalProofOperationMintIdentity(input.mintUrl)
+  const witness = requireBoundedOracleWitness(input.oracleWitness)
+  if (!/^[0-9a-f]{64}$/.test(input.conditionId) || !input.outcomeCollection) {
+    throw new Error('CTF redeem condition authority is invalid')
+  }
+  if (
+    input.inputKeyset.unit !== 'msat' ||
+    input.regularKeyset.unit !== 'msat' ||
+    input.regularKeyset.active === false ||
+    input.regularKeyset.conditional !== undefined ||
+    !isCanonicalNut02V2KeysetId(input.inputKeyset.id) ||
+    !isCanonicalNut02V2KeysetId(input.regularKeyset.id)
+  ) {
+    throw new Error('CTF redeem keyset authority is invalid')
+  }
+  if (input.inputs.length === 0 || input.inputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
+    throw new Error('CTF redeem input proof count is invalid')
+  }
+  const inputs = normalizeProofArray([...input.inputs])
+  if (inputs.some(({ id }) => id !== input.inputKeyset.id)) {
+    throw new Error('CTF redeem inputs must share the exact conditional keyset')
+  }
+  const expectedOperationId = buildKeysetRedeemOperationId({
+    mintUrl,
+    unit: 'msat',
+    conditionId: input.conditionId,
+    keysetId: input.inputKeyset.id,
+    proofs: inputs,
+  })
+  if (input.operationId !== expectedOperationId) {
+    throw new Error('CTF redeem operation identity does not match exact inputs')
+  }
+  const grossInputSubunits = sumProofs(inputs)
+  const outcomeInputFeePpk = requireInputFeePpk(input.inputKeyset, 'CTF redeem outcome keyset')
+  const inputFeeSubunits = computeInputFeeSubunitsForProofs(inputs, {
+    [input.inputKeyset.id]: outcomeInputFeePpk,
+  })
+  const netOutputSubunits = grossInputSubunits - inputFeeSubunits
+  if (!Number.isSafeInteger(grossInputSubunits) || grossInputSubunits <= 0) {
+    throw new Error('CTF redeem input total is invalid')
+  }
+  if (netOutputSubunits <= 0) {
+    throw new UneconomicCtfRedeemError(grossInputSubunits, inputFeeSubunits)
+  }
+  const amounts = splitAmount(BigInt(netOutputSubunits), { ...input.regularKeyset.keys }).map(
+    amountToNumber,
+  )
+  if (amounts.length === 0 || amounts.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+    throw new Error('CTF redeem output count is invalid')
+  }
+  const planned = await reserveAndConstructDurableSeedDerivedOutputs({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    keyset: input.regularKeyset,
+    amounts,
+  })
+  return {
+    operation: {
+      operationId: expectedOperationId,
+      kind: 'ctf-redeem',
+      mintUrl,
+      inputs: inputs.map((proof) => ({
+        ...serializeDurableCustodyProofInput(proof),
+        conditionId: input.conditionId,
+        outcomeCollection: input.outcomeCollection,
+      })),
+      outputs: { regular: planned.outputData.map(serializeDurableCustodyOutput) },
+      metadata: {
+        unit: 'msat',
+        conditionId: input.conditionId,
+        outcomeCollection: input.outcomeCollection,
+        outcomeKeysetId: input.inputKeyset.id,
+        regularKeysetId: input.regularKeyset.id,
+        grossInputSubunits,
+        inputFeeSubunits,
+        netOutputSubunits,
+        outcomeInputFeePpk,
+        oracleWitness: witness,
+        ...(input.oracleResolutionContext === undefined
+          ? {}
+          : { oracleResolutionContext: input.oracleResolutionContext }),
+        ...(input.oracleInputKeysets === undefined
+          ? {}
+          : { oracleInputKeysets: input.oracleInputKeysets }),
+        seedOutputPlan: planned.plan,
+      },
+    },
+    outputPlan: planned.plan,
+    outputData: planned.outputData,
+  }
+}
+
+export function readPreparedDurableCtfRedeemRequest(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly seed: Uint8Array
+  readonly regularKeyset: MintKeys
+}): {
+  readonly inputs: Proof[]
+  readonly outputs: readonly OutputData[]
+  readonly oracleWitness: string
+} {
+  const operation = decodeDurableCustodyProofOperationInput(input.operation)
+  const metadata = operation.metadata
+  if (
+    operation.kind !== 'ctf-redeem' ||
+    metadata?.unit !== 'msat' ||
+    metadata.regularKeysetId !== input.regularKeyset.id ||
+    input.regularKeyset.unit !== 'msat' ||
+    Object.keys(operation.outputs).length !== 1 ||
+    !Array.isArray(operation.outputs.regular) ||
+    operation.outputs.regular.length === 0
+  ) {
+    throw new Error('prepared CTF redeem authority is invalid')
+  }
+  const inputs = requirePreparedDurableCtfRedeemInputs(operation)
+  const outputs = reconstructDurableSeedDerivedOutputs({
+    seed: input.seed,
+    keyset: input.regularKeyset,
+    amounts: operation.outputs.regular.map(({ blindedMessage }) =>
+      amountToNumber(blindedMessage.amount),
+    ),
+    plan: metadata.seedOutputPlan,
+  }).outputData
+  if (
+    outputs.length !== operation.outputs.regular.length ||
+    outputs.some((output, index) => {
+      const expected = serializeDurableCustodyOutput(output)
+      const persisted = operation.outputs.regular[index]!
+      return (
+        amountToNumber(expected.blindedMessage.amount) !==
+          amountToNumber(persisted.blindedMessage.amount) ||
+        expected.blindedMessage.id !== persisted.blindedMessage.id ||
+        expected.blindedMessage.B_ !== persisted.blindedMessage.B_ ||
+        expected.blindingFactor !== persisted.blindingFactor ||
+        expected.secret !== persisted.secret ||
+        (expected.ephemeralE ?? null) !== (persisted.ephemeralE ?? null)
+      )
+    })
+  ) {
+    throw new Error('prepared CTF redeem outputs conflict with seed authority')
+  }
+  const oracleWitness = requireBoundedOracleWitness(metadata.oracleWitness)
+  return { inputs, outputs, oracleWitness }
+}
+
+function requirePreparedDurableCtfRedeemInputs(
+  operation: DurableCustodyProofOperationInput,
+): Proof[] {
+  const metadata = operation.metadata
+  if (
+    operation.kind !== 'ctf-redeem' ||
+    metadata?.unit !== 'msat' ||
+    typeof metadata.conditionId !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(metadata.conditionId) ||
+    typeof metadata.outcomeCollection !== 'string' ||
+    metadata.outcomeCollection.length === 0 ||
+    typeof metadata.outcomeKeysetId !== 'string' ||
+    !isCanonicalNut02V2KeysetId(metadata.outcomeKeysetId) ||
+    operation.inputs.length === 0 ||
+    operation.inputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX ||
+    operation.inputs.some(
+      (proof) =>
+        proof.id !== metadata.outcomeKeysetId ||
+        proof.conditionId !== metadata.conditionId ||
+        proof.outcomeCollection !== metadata.outcomeCollection,
+    )
+  ) {
+    throw new Error('prepared CTF redeem inputs conflict with operation authority')
+  }
+  const inputs = normalizeProofArray(operation.inputs as Proof[])
+  if (
+    operation.operationId !==
+    buildKeysetRedeemOperationId({
+      mintUrl: operation.mintUrl,
+      unit: 'msat',
+      conditionId: metadata.conditionId,
+      keysetId: metadata.outcomeKeysetId,
+      proofs: inputs,
+    })
+  ) {
+    throw new Error('prepared CTF redeem identity conflicts with exact inputs')
+  }
+  const feePpk = metadata.outcomeInputFeePpk
+  if (typeof feePpk !== 'number' || !Number.isSafeInteger(feePpk) || feePpk < 0) {
+    throw new Error('prepared CTF redeem input fee authority is invalid')
+  }
+  const gross = sumProofs(inputs)
+  const fee = computeInputFeeSubunitsForProofs(inputs, { [metadata.outcomeKeysetId]: feePpk })
+  const net = gross - fee
+  const outputAmount = operation.outputs.regular?.reduce(
+    (sum, output) => sum + amountToNumber(output.blindedMessage.amount),
+    0,
+  )
+  if (
+    !Number.isSafeInteger(gross) ||
+    gross <= 0 ||
+    net <= 0 ||
+    metadata.grossInputSubunits !== gross ||
+    metadata.inputFeeSubunits !== fee ||
+    metadata.netOutputSubunits !== net ||
+    outputAmount !== net
+  ) {
+    throw new Error('prepared CTF redeem amounts conflict with exact inputs')
+  }
+  return inputs
+}
+
+export async function executePreparedDurableCtfRedeem(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly seed: Uint8Array
+  readonly regularKeyset: MintKeys
+  readonly wallet: RedeemWallet
+}): Promise<
+  | { readonly kind: 'redeemed'; readonly proofs: Proof[] }
+  | { readonly kind: 'losing'; readonly evidence: AuthenticatedCtfRedeemTerminalEvidence }
+  | { readonly kind: 'refused'; readonly evidence: AuthenticatedCtfRedeemTerminalEvidence }
+> {
+  const request = readPreparedDurableCtfRedeemRequest(input)
+  await input.wallet.loadMint()
+  try {
+    return {
+      kind: 'redeemed',
+      proofs: await input.wallet.redeemOutcomeProofs({
+        inputs: withOracleWitness(
+          request.inputs,
+          verifiedWitness(input.operation, request.oracleWitness),
+        ),
+        outputs: [...request.outputs],
+      }),
+    }
+  } catch (error) {
+    if (!isLosingLegError(error)) throw error
+    const losingAuthority = losingAuthorityForOperation(input.operation)
+    return {
+      kind: losingAuthority === undefined ? 'refused' : 'losing',
+      evidence: captureAuthenticatedCtfRedeemTerminalEvidence(
+        error,
+        input.operation.operationId,
+        input.operation.mintUrl,
+        losingAuthority,
+      ),
+    }
+  }
+}
+
+export async function classifyPreparedDurableCtfRedeemInputs(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly wallet: RedeemWallet
+}): Promise<'spent' | 'unspent' | 'pending'> {
+  const operation = decodeDurableCustodyProofOperationInput(input.operation)
+  const inputs = requirePreparedDurableCtfRedeemInputs(operation)
+  if (!input.wallet.checkProofsStates) {
+    throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
+  }
+  await input.wallet.loadMint()
+  const states = await input.wallet.checkProofsStates(
+    inputs.map(({ id, secret }) => ({ id, secret })),
+  )
+  if (!exactRedeemInputStates(inputs, states)) return 'pending'
+  if (allStates(states, CheckStateEnum.SPENT)) return 'spent'
+  if (allStates(states, CheckStateEnum.UNSPENT)) return 'unspent'
+  return 'pending'
+}
+
+export async function restorePreparedDurableCtfRedeemOutputs(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly seed: Uint8Array
+  readonly regularKeyset: MintKeys
+  readonly restoreOutputGroups: RestoreOutputGroups
+}): Promise<Proof[]> {
+  const request = readPreparedDurableCtfRedeemRequest(input)
+  const restored = await input.restoreOutputGroups(input.operation.mintUrl, {
+    regular: serializeOutputDataArray([...request.outputs]),
+  })
+  return requireExactCtfRedeemProofs(
+    restored.regular,
+    request.outputs,
+    `restored CTF redeem ${input.operation.operationId}`,
+  )
 }
 
 interface RedeemOutcomeLegWithOperationParams {
@@ -152,6 +495,8 @@ interface RedeemOutcomeLegWithOperationParams {
   outcomeKeysetId?: string
   unit: string
   oracleWitness: string
+  oracleResolutionContext?: ConditionOracleResolutionContext
+  oracleInputKeysets?: readonly DurableCustodyMintKeysetAuthority[]
   proofs: Proof[]
   outcomeKeyset?: CtfRedeemInputKeysetAuthority
   regularKeyset?: MintKeys
@@ -249,7 +594,7 @@ async function prepareAndExecuteCtfRedeem(
   ) {
     throw new Error('CTF redeem outcome keyset authority is foreign')
   }
-  const inputFeeSubunits = computeInputFeeSatsForProofs(inputs, {
+  const inputFeeSubunits = computeInputFeeSubunitsForProofs(inputs, {
     [outcomeKeyset.id]: outcomeInputFeePpk,
   })
   const netOutputSubunits = grossInputSubunits - inputFeeSubunits
@@ -276,6 +621,12 @@ async function prepareAndExecuteCtfRedeem(
       regularKeysetId: regularKeyset.id,
       unit: params.unit,
       oracleWitness: params.oracleWitness,
+      ...(params.oracleResolutionContext === undefined
+        ? {}
+        : { oracleResolutionContext: params.oracleResolutionContext }),
+      ...(params.oracleInputKeysets === undefined
+        ? {}
+        : { oracleInputKeysets: params.oracleInputKeysets }),
     },
   })
 
@@ -332,15 +683,53 @@ export async function getActiveRegularKeyset(
   wallet: Pick<RedeemWallet, 'mint'>,
   unit: string,
 ): Promise<MintKeys> {
-  if (!wallet.mint?.getKeys) {
+  if (!wallet.mint?.getKeySets || !wallet.mint.getKeys) {
     throw new Error('Cashu wallet adapter does not expose mint keyset lookup')
   }
-  const response = await wallet.mint.getKeys()
-  const keyset = response.keysets.find(
-    (candidate) => candidate.unit === unit && candidate.active !== false,
+  const metadataResponse = await wallet.mint.getKeySets()
+  const regularMetadata = metadataResponse.keysets.find(
+    (candidate) =>
+      candidate.unit === unit &&
+      candidate.active === true &&
+      candidate.conditional === undefined &&
+      isCanonicalNut02V2KeysetId(candidate.id),
   )
-  if (!keyset) throw new Error(`Mint did not return an active regular ${unit} keyset`)
-  return keyset
+  if (!regularMetadata) {
+    const nonCanonical = metadataResponse.keysets.find(
+      (candidate) =>
+        candidate.unit === unit && candidate.active === true && candidate.conditional === undefined,
+    )
+    if (nonCanonical) {
+      throw new Error('Mint did not return a canonical NUT-02 V2 active regular keyset')
+    }
+    throw new Error(`Mint did not return an active regular ${unit} keyset`)
+  }
+
+  const response = await wallet.mint.getKeys(regularMetadata.id)
+  const keyset = response.keysets.find((candidate) => candidate.id === regularMetadata.id)
+  const metadataFee = regularMetadata.input_fee_ppk ?? 0
+  const metadataExpiry = regularMetadata.final_expiry ?? null
+  if (
+    !keyset ||
+    keyset.id !== regularMetadata.id ||
+    keyset.unit !== unit ||
+    keyset.active === false ||
+    keyset.conditional !== undefined ||
+    !isCanonicalNut02V2KeysetId(keyset.id) ||
+    (keyset.input_fee_ppk !== undefined && keyset.input_fee_ppk !== metadataFee) ||
+    (keyset.final_expiry !== undefined && keyset.final_expiry !== metadataExpiry)
+  ) {
+    throw new Error(`Mint did not return exact active regular ${unit} keyset ${regularMetadata.id}`)
+  }
+  const authoritative = {
+    ...keyset,
+    input_fee_ppk: metadataFee,
+    ...(metadataExpiry === null ? {} : { final_expiry: metadataExpiry }),
+  }
+  if (!Keyset.verifyKeysetId(authoritative)) {
+    throw new Error(`Mint returned invalid regular ${unit} keyset material`)
+  }
+  return authoritative
 }
 
 function requireMatchingCtfRedeemOperation(
@@ -396,7 +785,7 @@ function requireMatchingCtfRedeemOperation(
   )
   if (
     storedFee !==
-    computeInputFeeSatsForProofs(entry.inputs, { [storedOutcomeKeysetId]: storedFeePpk })
+    computeInputFeeSubunitsForProofs(entry.inputs, { [storedOutcomeKeysetId]: storedFeePpk })
   ) {
     throw new Error(`proof operation ${entry.operationId} has invalid persisted CTF redeem fee`)
   }
@@ -485,6 +874,7 @@ function requirePositiveSafeInteger(value: unknown, context: string): number {
 }
 
 function requireBoundedOracleWitness(value: unknown): string {
+  if (value === '') return ''
   const witness = requireText(value, 'CTF redeem oracle witness')
   if (new TextEncoder().encode(witness).length > DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX) {
     throw new Error('CTF redeem oracle witness record byte limit exceeded')
@@ -516,12 +906,12 @@ async function resumeCtfRedeem(params: {
     }
   }
   if (entry.state === 'Failed') {
-    if (entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
-      return { proofs: [], losing: true }
+    if (entry.failureCode !== ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
+      throw new Error(`CTF redeem ${entry.operationId} has a non-refusal failure`)
     }
-    throw new Error(
-      `CTF redeem ${entry.operationId} failed with non-losing failure code ${entry.failureCode ?? 'unknown'}; refusing to condemn proofs`,
-    )
+    const losingAuthority = losingAuthorityForOperation(entry)
+    if (losingAuthority !== undefined) return { proofs: [], losing: true }
+    // Historical code-only failures still need exact input/output recovery.
   }
   await params.wallet.loadMint()
   if (!params.wallet.checkProofsStates) {
@@ -531,7 +921,8 @@ async function resumeCtfRedeem(params: {
   const states = await params.wallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  if (allStates(states, CheckStateEnum.SPENT)) {
+  const hasExactInputStates = exactRedeemInputStates(entry.inputs, states)
+  if (hasExactInputStates && allStates(states, CheckStateEnum.SPENT)) {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
     const final = requireExactCtfRedeemProofs(
       restored.regular,
@@ -544,7 +935,7 @@ async function resumeCtfRedeem(params: {
     )
     return { proofs: final, losing: false }
   }
-  if (allStates(states, CheckStateEnum.UNSPENT)) {
+  if (hasExactInputStates && allStates(states, CheckStateEnum.UNSPENT)) {
     const outputData = deserializeOutputGroups(entry.outputs).regular ?? []
     if (outputData.length === 0) {
       throw new Error(`proof operation ${entry.operationId} has no redeem outputs`)
@@ -562,6 +953,19 @@ async function resumeCtfRedeem(params: {
   }
 
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
+}
+
+function exactRedeemInputStates(inputs: readonly Proof[], states: readonly ProofState[]): boolean {
+  if (states.length !== inputs.length) return false
+  const expectedYs = new Set(
+    inputs.map(({ id, secret }) => {
+      const bytes = new TextEncoder().encode(secret)
+      return isBlsKeyset(id) ? hashToCurveBls(bytes).toHex(true) : hashToCurve(bytes).toHex(true)
+    }),
+  )
+  if (expectedYs.size !== inputs.length) return false
+  const observedYs = new Set(states.map(({ Y }) => Y))
+  return observedYs.size === states.length && [...observedYs].every((Y) => expectedYs.has(Y))
 }
 
 function requireCompletedCtfRedeemProofs(entry: CtfProofOperationRecord): Proof[] {
@@ -627,10 +1031,13 @@ async function executeCtfRedeem(params: {
   oracleWitness: string
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
 }): Promise<RedeemOutcomeLegResult> {
+  const operation = await params.proofOperationStore.getProofOperation(params.operationId)
+  if (operation === null || operation === undefined)
+    throw new Error('CTF redeem authority is absent')
   let settled: Proof[]
   try {
     settled = await params.wallet.redeemOutcomeProofs({
-      inputs: withOracleWitness(params.inputs, params.oracleWitness),
+      inputs: withOracleWitness(params.inputs, verifiedWitness(operation, params.oracleWitness)),
       outputs: params.outputData,
     })
   } catch (error) {
@@ -638,13 +1045,24 @@ async function executeCtfRedeem(params: {
       if (!params.proofOperationStore.markProofOperationFailed) {
         throw new Error('proof operation store does not support terminal redeem failures')
       }
-      await params.onLosingLeg?.(params.inputs)
-      await params.proofOperationStore.markProofOperationFailed(
-        params.operationId,
-        'losing leg: mint returned OracleNotAttestedOutcome (13015)',
-        captureAuthenticatedCtfRedeemTerminalEvidence(error, params.operationId, params.mintUrl),
-      )
-      return { proofs: [], losing: true }
+      const losingAuthority = losingAuthorityForOperation(operation)
+      if (losingAuthority !== undefined) await params.onLosingLeg?.(params.inputs)
+      if (losingAuthority !== undefined)
+        await params.proofOperationStore.markProofOperationFailed(
+          params.operationId,
+          'losing leg: mint returned OracleNotAttestedOutcome (13015)',
+          captureAuthenticatedCtfRedeemTerminalEvidence(
+            error,
+            params.operationId,
+            params.mintUrl,
+            losingAuthority,
+          ),
+        )
+      return {
+        proofs: [],
+        losing: losingAuthority !== undefined,
+        ...(losingAuthority === undefined ? { refused: true } : {}),
+      }
     }
     throw error
   }
@@ -664,27 +1082,83 @@ function captureAuthenticatedCtfRedeemTerminalEvidence(
   error: unknown,
   operationId: string,
   mintUrl: string,
+  losingAuthority?: CtfVerifiedLosingAuthority,
 ): AuthenticatedCtfRedeemTerminalEvidence {
   if (!isLosingLegError(error)) {
     throw new Error('CTF redeem error is not an authenticated terminal rejection')
   }
-  return issueAuthenticatedCtfRedeemTerminalEvidence(operationId, mintUrl)
+  return issueAuthenticatedCtfRedeemTerminalEvidence(operationId, mintUrl, losingAuthority)
 }
 
 function issueAuthenticatedCtfRedeemTerminalEvidence(
   operationId: string,
   mintUrl: string,
+  losingAuthority?: CtfVerifiedLosingAuthority,
 ): AuthenticatedCtfRedeemTerminalEvidence {
   const evidence = Object.freeze({
     transportProvenance: 'authenticated-mint-transport' as const,
     operationId,
     normalizedMint: canonicalProofOperationMintIdentity(mintUrl),
     rejectionBody: Object.freeze({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE }),
+    ...(losingAuthority === undefined
+      ? {}
+      : { losingAuthority: requireCtfVerifiedLosingAuthority(losingAuthority) }),
   })
   authenticatedCtfRedeemTerminalEvidence.add(evidence)
   return evidence
 }
 
 function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
-  return proofs.map((proof) => ({ ...proof, witness: witnessJson }))
+  return proofs.map(({ witness: _oldWitness, ...proof }) =>
+    witnessJson === '' ? proof : { ...proof, witness: witnessJson },
+  )
+}
+
+function verifiedWitness(
+  operation: { mintUrl: string; metadata?: Record<string, unknown> },
+  witness: string,
+): string {
+  try {
+    const metadata = operation.metadata
+    const context = metadata?.oracleResolutionContext as
+      | ConditionOracleResolutionContext
+      | undefined
+    if (context === undefined) return ''
+    const verified = requireVerifiedConditionOracleEvidence(context)
+    if (
+      verified.context.registered.normalizedMint !==
+        canonicalProofOperationMintIdentity(operation.mintUrl) ||
+      verified.context.registered.conditionId !== metadata?.conditionId ||
+      verified.context.registered.unit !== metadata?.unit
+    )
+      return ''
+    return verified.canonicalOracleWitness === witness ? witness : ''
+  } catch {
+    return ''
+  }
+}
+
+function losingAuthorityForOperation(operation: {
+  operationId: string
+  mintUrl: string
+  inputs: readonly unknown[]
+  metadata?: Record<string, unknown>
+}): CtfVerifiedLosingAuthority | undefined {
+  try {
+    const metadata = operation.metadata
+    if (metadata?.oracleResolutionContext === undefined) return undefined
+    return prepareCtfVerifiedLosingAuthority({
+      resolution: metadata.oracleResolutionContext as ConditionOracleResolutionContext,
+      operationId: operation.operationId,
+      mintUrl: operation.mintUrl,
+      conditionId: metadata.conditionId as string,
+      outcomeCollection: (metadata.outcomeCollection ??
+        metadata.outcomeSetId ??
+        metadata.outcome) as string,
+      inputs: operation.inputs as Proof[],
+      inputKeysets: metadata.oracleInputKeysets as readonly DurableCustodyMintKeysetAuthority[],
+    })
+  } catch {
+    return undefined
+  }
 }

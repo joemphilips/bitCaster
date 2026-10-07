@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 // =============================================================================
 // Deposit / Withdraw Types
 // =============================================================================
@@ -43,6 +45,12 @@ export interface DepositWithdrawProps {
   /** Current view in the flow */
   currentView: DepositWithdrawView;
 
+  /** Non-blocking reminder shown only by deposit entry views. */
+  depositReminder?: ReactNode;
+
+  /** Status shown in normal flow above the active entry controls. */
+  statusMessage?: ReactNode;
+
   /** Available mints to select from */
   mints: MintInfo[];
 
@@ -52,15 +60,6 @@ export interface DepositWithdrawProps {
   /** Current amount entered (in sats) */
   amountSats: number;
   amountLabel?: string;
-
-  /** Fiat equivalent of the entered amount */
-  amountFiat: string;
-
-  /** Fiat currency symbol (e.g., "$", "\u00a5") */
-  fiatSymbol: string;
-
-  /** Whether to show fiat or sats as the primary display */
-  showFiatPrimary: boolean;
 
   /** Lightning address or invoice text entered by user */
   lightningInput: string;
@@ -73,9 +72,6 @@ export interface DepositWithdrawProps {
 
   /** Called when user changes the selected mint */
   onMintChange?: (mintId: string) => void;
-
-  /** Called when user toggles between fiat and sats display */
-  onToggleCurrency?: () => void;
 
   /** Called when user taps "CREATE INVOICE" (deposit lightning) */
   onCreateInvoice?: () => void;

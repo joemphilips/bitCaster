@@ -1,10 +1,22 @@
 import type { DaemonCommand, DaemonResponse } from '@bitcaster-market/daemon/protocol'
-import { readRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
+import {
+  DAEMON_WATCH_FRAME_BYTES_MAX,
+  DAEMON_WATCH_MEDIA_TYPE,
+  DAEMON_WATCH_REQUEST_BYTES_MAX,
+  decodeDaemonWatchFrame,
+  validateDaemonWatchCommand,
+  type DaemonWatchCommand,
+  type DaemonWatchFrame,
+} from '@bitcaster-market/daemon/protocol'
+import { once } from 'node:events'
+import type { Writable } from 'node:stream'
+import { awaitAbortable } from '@bitcaster-market/client-sdk/engineClient'
+import { readLiveRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
 import { dataDir } from '@bitcaster-market/daemon/dataDir'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, constants, openSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { request } from 'node:http'
+import { request, type IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -45,19 +57,255 @@ export function daemonSocketPath(): string | null {
   return rpcSocketPath()
 }
 
-export async function callDaemon<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
+export async function callDaemon<T = unknown>(
+  command: DaemonCommand,
+  options: { signal?: AbortSignal } = {},
+): Promise<DaemonResponse<T>> {
+  const signal = options.signal
+  signal?.throwIfAborted()
   const address = daemonAttemptAddress()
   try {
-    return await sendDaemonCommand(command)
+    return await sendDaemonCommand(command, signal)
   } catch (err) {
+    if (signal?.aborted) throw signal.reason ?? err
     if (!shouldAutoStartDaemon(err)) throwDaemonConnectionError(err, address)
   }
   try {
+    signal?.throwIfAborted()
     await startDaemonProcess()
-    await waitForDaemon()
-    return await sendDaemonCommand(command)
+    await waitForDaemon(signal)
+    return await sendDaemonCommand(command, signal)
   } catch (err) {
+    if (signal?.aborted) throw signal.reason ?? err
     throwDaemonConnectionError(err, address)
+  }
+}
+
+/** No reconnect replay is implied. Product watches must refresh their snapshot. */
+export async function* watchDaemon(
+  command: DaemonWatchCommand,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<DaemonWatchFrame> {
+  const controller = new AbortController()
+  const signal =
+    options.signal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, options.signal])
+  signal.throwIfAborted()
+  const exact = validateDaemonWatchCommand(command)
+  const body = JSON.stringify(exact)
+  if (Buffer.byteLength(body) > DAEMON_WATCH_REQUEST_BYTES_MAX)
+    throw new Error('daemon watch request exceeds byte limit')
+  let stream: WatchResponse | undefined
+  try {
+    try {
+      stream = await openDaemonWatch(body, signal)
+    } catch (error) {
+      if (signal.aborted) throw signal.reason ?? error
+      if (!shouldAutoStartDaemon(error)) throwDaemonConnectionError(error, daemonAttemptAddress())
+      await startDaemonProcess()
+      await waitForDaemon(signal)
+      stream = await openDaemonWatch(body, signal)
+    }
+    yield* readDaemonWatchFrames(stream.chunks)
+  } finally {
+    controller.abort()
+    await stream?.close()
+  }
+}
+
+export async function writeDaemonWatchFrames(
+  frames: AsyncIterable<DaemonWatchFrame>,
+  output: Writable = process.stdout,
+  options: { signal?: AbortSignal } = {},
+): Promise<'complete' | 'error'> {
+  const controller = new AbortController()
+  const signal =
+    options.signal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, options.signal])
+  const close = () => controller.abort()
+  output.once('close', close)
+  output.once('error', close)
+  const iterator = frames[Symbol.asyncIterator]()
+  let result: 'complete' | 'error' = 'complete'
+  try {
+    while (true) {
+      signal.throwIfAborted()
+      const next = await awaitAbortable(Promise.resolve(iterator.next()), signal)
+      if (next.done) return result
+      const frame = next.value
+      if (output.destroyed) throw new Error('daemon watch output is closed')
+      const line = JSON.stringify(frame) + '\n'
+      if (Buffer.byteLength(line) > DAEMON_WATCH_FRAME_BYTES_MAX)
+        throw new Error('daemon watch frame exceeds byte limit')
+      if (!output.write(line)) await once(output, 'drain', { signal })
+      if (frame.type === 'error') result = 'error'
+    }
+  } finally {
+    const cancelled = signal.aborted
+    controller.abort()
+    output.removeListener('close', close)
+    output.removeListener('error', close)
+    try {
+      const returned = iterator.return?.()
+      if (cancelled) void returned?.catch(() => undefined)
+      else await returned
+    } catch {
+      /* Cleanup errors must not replace the original transport result. */
+    }
+  }
+}
+
+export async function watchDaemonToOutput(
+  command: DaemonWatchCommand,
+  output: Writable = process.stdout,
+  options: { signal?: AbortSignal } = {},
+): Promise<'complete' | 'error'> {
+  const controller = new AbortController()
+  const signal =
+    options.signal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, options.signal])
+  const close = () => controller.abort()
+  output.once('close', close)
+  output.once('error', close)
+  try {
+    return await writeDaemonWatchFrames(watchDaemon(command, { signal }), output, { signal })
+  } finally {
+    controller.abort()
+    output.removeListener('close', close)
+    output.removeListener('error', close)
+  }
+}
+
+interface WatchResponse {
+  chunks: AsyncIterable<Uint8Array>
+  close(): Promise<void>
+}
+
+async function openDaemonWatch(body: string, signal: AbortSignal): Promise<WatchResponse> {
+  signal.throwIfAborted()
+  const token = await readDaemonRpcToken()
+  signal.throwIfAborted()
+  const socketPath = daemonSocketPath()
+  const headers = {
+    'content-type': 'application/json',
+    accept: DAEMON_WATCH_MEDIA_TYPE,
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  }
+  if (socketPath !== null) return openDaemonWatchOverSocket(body, socketPath, headers, signal)
+  const response = await fetch(daemonUrl(), { method: 'POST', headers, body, signal })
+  if (
+    !response.ok ||
+    response.headers.get('content-type')?.split(';')[0] !== DAEMON_WATCH_MEDIA_TYPE ||
+    response.body === null
+  ) {
+    await response.body?.cancel()
+    throw new Error('daemon watch response was refused')
+  }
+  const reader = response.body.getReader()
+  return {
+    chunks: {
+      async *[Symbol.asyncIterator]() {
+        while (true) {
+          const next = await awaitAbortable(reader.read(), signal)
+          if (next.done) return
+          yield next.value
+        }
+      },
+    },
+    close: async () => {
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    },
+  }
+}
+
+function openDaemonWatchOverSocket(
+  body: string,
+  socketPath: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<WatchResponse> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath,
+        path: '/rpc',
+        method: 'POST',
+        signal,
+        headers: { ...headers, 'content-length': Buffer.byteLength(body) },
+      },
+      (response) => {
+        if (
+          response.statusCode !== 200 ||
+          response.headers['content-type']?.split(';')[0] !== DAEMON_WATCH_MEDIA_TYPE
+        ) {
+          response.destroy()
+          req.destroy()
+          reject(new Error('daemon watch response was refused'))
+          return
+        }
+        resolve({
+          chunks: response,
+          close: async () => {
+            response.destroy()
+            req.destroy()
+          },
+        })
+      },
+    )
+    req.on('error', reject)
+    req.end(body)
+  })
+}
+
+/** Accumulate one bounded byte line, not decoded chunks or an event queue. */
+export async function* readDaemonWatchFrames(
+  chunks: AsyncIterable<Uint8Array>,
+): AsyncGenerator<DaemonWatchFrame> {
+  let line = Buffer.alloc(0)
+  let bytes = 0
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  const append = (segment: Uint8Array) => {
+    const required = bytes + segment.byteLength
+    if (required >= DAEMON_WATCH_FRAME_BYTES_MAX)
+      throw new Error('daemon watch frame exceeds byte limit')
+    if (required > line.byteLength) {
+      const grown = Buffer.allocUnsafe(
+        Math.min(DAEMON_WATCH_FRAME_BYTES_MAX - 1, Math.max(required, line.byteLength * 2, 8192)),
+      )
+      line.copy(grown, 0, 0, bytes)
+      line = grown
+    }
+    line.set(segment, bytes)
+    bytes = required
+  }
+  try {
+    for await (const chunk of chunks) {
+      if (!(chunk instanceof Uint8Array)) throw new Error('invalid daemon watch bytes')
+      let start = 0
+      let end = chunk.indexOf(10, start)
+      while (end !== -1) {
+        append(chunk.subarray(start, end))
+        let frame: DaemonWatchFrame
+        try {
+          frame = decodeDaemonWatchFrame(JSON.parse(decoder.decode(line.subarray(0, bytes))))
+        } catch {
+          throw new Error('invalid daemon watch frame')
+        }
+        bytes = 0
+        yield frame
+        if (frame.type === 'complete' || frame.type === 'error') return
+        start = end + 1
+        end = chunk.indexOf(10, start)
+      }
+      append(chunk.subarray(start))
+    }
+    throw new Error('daemon watch ended without a terminal frame')
+  } finally {
+    line = Buffer.alloc(0)
   }
 }
 
@@ -78,11 +326,16 @@ function injectedDaemonBaseUrl(): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-async function sendDaemonCommand<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
+async function sendDaemonCommand<T = unknown>(
+  command: DaemonCommand,
+  signal?: AbortSignal,
+): Promise<DaemonResponse<T>> {
+  signal?.throwIfAborted()
   const token = await readDaemonRpcToken()
+  signal?.throwIfAborted()
   const socketPath = daemonSocketPath()
   if (socketPath) {
-    return sendDaemonCommandOverSocket(command, socketPath, token)
+    return sendDaemonCommandOverSocket(command, socketPath, token, signal)
   }
   const response = await fetch(daemonUrl(), {
     method: 'POST',
@@ -91,12 +344,13 @@ async function sendDaemonCommand<T = unknown>(command: DaemonCommand): Promise<D
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(command),
+    ...(signal === undefined ? {} : { signal }),
   })
   return (await response.json()) as DaemonResponse<T>
 }
 
 function readDaemonRpcToken(): Promise<string | null> {
-  rpcTokenPromise ??= readRpcToken()
+  rpcTokenPromise ??= readLiveRpcToken()
   return rpcTokenPromise
 }
 
@@ -104,7 +358,9 @@ function sendDaemonCommandOverSocket<T = unknown>(
   command: DaemonCommand,
   socketPath: string,
   token: string | null,
+  signal?: AbortSignal,
 ): Promise<DaemonResponse<T>> {
+  signal?.throwIfAborted()
   const body = JSON.stringify(command)
   return new Promise((resolve, reject) => {
     const req = request(
@@ -117,23 +373,32 @@ function sendDaemonCommandOverSocket<T = unknown>(
           'content-length': Buffer.byteLength(body),
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
+        ...(signal === undefined ? {} : { signal }),
       },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on('data', (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-        })
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>)
-          } catch (err) {
-            reject(err)
-          }
-        })
-      },
+      (res) => void readDaemonRpcResponse<T>(res).then(resolve, reject),
     )
     req.on('error', reject)
     req.end(body)
+  })
+}
+
+export function readDaemonRpcResponse<T = unknown>(
+  response: IncomingMessage,
+): Promise<DaemonResponse<T>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    response.on('data', (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+    response.on('aborted', () => reject(new Error('daemon RPC response was aborted')))
+    response.on('error', reject)
+    response.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>)
+      } catch (err) {
+        reject(err)
+      }
+    })
   })
 }
 
@@ -226,16 +491,21 @@ export function daemonLogPath(): string {
   return join(cliHomeDir(), 'daemon.log')
 }
 
-export async function waitForDaemon(): Promise<void> {
+export async function waitForDaemon(signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS
   let lastErr: unknown
   while (Date.now() < deadline) {
+    signal?.throwIfAborted()
     try {
-      await sendDaemonCommand({ method: 'health' })
+      await sendDaemonCommand({ method: 'health' }, signal)
       return
     } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err
       lastErr = err
-      await sleep(DAEMON_STARTUP_POLL_MS)
+      await sleepWithSignal(
+        Math.min(DAEMON_STARTUP_POLL_MS, Math.max(0, deadline - Date.now())),
+        signal,
+      )
     }
   }
   throw lastErr instanceof Error
@@ -420,4 +690,22 @@ async function removePidFile(): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined) return sleep(ms)
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason ?? new Error('daemon wait aborted'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
 }

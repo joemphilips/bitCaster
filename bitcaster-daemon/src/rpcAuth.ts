@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { isMissingDaemonProfileError, profileDatabasePath, profileDir } from './profile.ts'
-import { readBootstrappedRpcToken } from './profileBootstrap.ts'
+import { readBootstrappedRpcToken, readLiveBootstrappedRpcToken } from './profileBootstrap.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
 export function rpcSocketPath(): string {
@@ -20,6 +20,18 @@ export async function readRpcToken(): Promise<string | null> {
   return withProfileStorageAccess(async () => {
     try {
       return await readBootstrappedRpcToken(profileDir())
+    } catch (error) {
+      if (await isMissingDaemonProfileError(error)) return null
+      throw error
+    }
+  })
+}
+
+export async function readLiveRpcToken(): Promise<string | null> {
+  return withProfileStorageAccess(async () => {
+    try {
+      // Immutable inspection can read mixed main-file pages during a live checkpoint.
+      return await readLiveBootstrappedRpcToken(profileDir())
     } catch (error) {
       if (await isMissingDaemonProfileError(error)) return null
       throw error

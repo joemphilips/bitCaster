@@ -1,8 +1,32 @@
+import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { measureOrderPhase, type OrderTimelineObserver } from './orderTimeline.ts'
 import { createConnection } from 'node:net'
-import { chmod, readFile, unlink } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { chmod, unlink } from 'node:fs/promises'
+import { readMarketThumbnail } from './marketThumbnail.ts'
+import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
+import { activeNativeConfig } from './nativeConfig.ts'
+import { dispatchNativeMarketCreation } from './nativeMarketCreationRpc.ts'
+import {
+  dispatchNativeOracleAccess,
+  type NativeOracleAccessRpcPorts,
+} from './nativeOracleBackupRpc.ts'
+import { publishNativeOracleBackup } from './nativeOracleBackup.ts'
+import { publishNativeOracleBackupEvent } from './nativeOracleBackupRelay.ts'
+import {
+  createNativeOracleCreationStore,
+  nativeOracleDestinations,
+} from './nativeOracleCreationStore.ts'
+import { createNativeOracleHelperAdapter, type NativeOracleHelper } from './nativeOracleHelper.ts'
+import {
+  publishNativeMarketOutcome,
+  retryNativeMarketPublication,
+  nativeOraclePublicationRpcResult,
+  type NativeOraclePublicationPorts,
+} from './nativeOraclePublicationCoordinator.ts'
+import { publishNativeOracleEvent } from './nativeOraclePublication.ts'
 import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
@@ -27,6 +51,12 @@ import type {
   DurableRecipientDeliverySubmission,
 } from '@bitcaster-market/client-sdk/durableRecipientDelivery'
 import {
+  type AssetMonitoringAssetsQuery,
+  type AssetMonitoringAssetsResponse,
+  type AssetMonitoringPortfolioQuery,
+  type AssetMonitoringPortfolioResponse,
+  decodeAssetMonitoringAssetsQuery,
+  decodeAssetMonitoringPortfolioQuery,
   createMarketViaEngine,
   conditionIdFromMarketId,
   isKind89NostrEvent,
@@ -34,8 +64,11 @@ import {
   validateMarketCreateEngineUrl,
   submitOracleAttestationViaEngine,
   type CreateMarketOutcome,
-  type MarketThumbnailBytes,
 } from '@bitcaster-market/client-sdk'
+import {
+  isWalletPaymentOperationId,
+  isWalletPaymentQuote,
+} from '@bitcaster-market/client-sdk/walletPaymentQuote'
 import {
   planParticipationScoreTopUp,
   type ParticipationScoreTopUpPlan,
@@ -46,6 +79,21 @@ import {
 } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
+  buildProtectedTradeTicket,
+  decodeOrderQuotePaymentBounds,
+} from '@bitcaster-market/client-sdk/tradeTicket'
+import {
+  decodeCtfRangeOrderFeeFacts,
+  type CtfRangeOrderFeeFacts,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
+import { createTradeCommentTemplate } from '@bitcaster-market/client-sdk/tradeComment'
+import type {
+  PreviewFokOrderRequest,
+  PreviewFokOrderResponse,
+  PreviewFokOrderCapacityRequest,
+  PreviewFokOrderCapacityResponse,
+} from '@bitcaster-market/client-sdk/fokOrderPreview'
+import {
   COLLATERAL_COLLECTION,
   planCtfConsolidation,
   type CtfConsolidationStrategy,
@@ -53,18 +101,31 @@ import {
 import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
-  quotePaymentSubunits,
+  parseMarketDivisibility,
   type MarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
-import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
-import { signNip98 } from './nostrAuth.ts'
+import { signNativeTradeComment } from './nostrAuth.ts'
 import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetConversion.ts'
 import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
-import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
+import type { NativeLightningOps } from './nativeLightningOps.ts'
+import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
+import type {
+  DaemonCommand,
+  DaemonHealth,
+  DaemonResponse,
+  OrderDraftParams,
+  OrderFeeConsent,
+  ProtectedOrderConsentRequest,
+  ScorePurchaseConsent,
+  SubmitOrderParams,
+  WalletPaymentQuote,
+} from './protocol.ts'
+import type { NativeWalletPaymentOps } from './nativeWalletPaymentOps.ts'
+import type { NativeWalletPaymentRecoveryScan } from './nativeWalletPaymentRecovery.ts'
 import { profileDir, readProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
-import { readSecrets } from './secrets.ts'
+import { readSecrets, readSelectedDaemonSigner, hasUnfinishedDaemonAccountWork } from './secrets.ts'
 import {
   ensureState,
   listProofOperations,
@@ -75,9 +136,16 @@ import {
 import {
   recoverPreparedWalletSends,
   recoverDurableWalletReceives,
+  recoverDurableWalletProofImports,
   recoverDurableOutgoingCashuTransfers,
   reclaimDurableOutgoingCashuTransfer,
   deliverParticipationScoreCashu,
+  ParticipationScoreRetryUnavailableError,
+  quoteParticipationScoreCashu,
+  readParticipationScoreDeliveryStatus,
+  deliverMarketFundingCashu,
+  quoteMarketFundingCashu,
+  readMarketFundingHeadCashu,
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
@@ -86,8 +154,12 @@ import {
   resolveMintKeysByKeyset,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonAvailableRegularMsatBalance } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
+import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
+import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import { validateWalletActivityParams, validateWalletActivitySyncParams } from './protocol.ts'
+import { deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk/durableCustody'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
   consolidateWalletProofs,
@@ -97,13 +169,26 @@ import {
   resumeDaemonConditionRetirements,
   retireDaemonConditionInventory,
 } from './managedConditionRetirement.ts'
+import { claimDaemonPosition, recoverDaemonPositionClaims } from './nativePositionClaim.ts'
+import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePositionRemove.ts'
+import { streamDaemonWatch, type DaemonWatchProvider } from './watchTransport.ts'
+import {
+  DAEMON_WATCH_MEDIA_TYPE,
+  DAEMON_WATCH_REQUEST_BYTES_MAX,
+  isDaemonWatchCommand,
+  validateDaemonWatchCommand,
+} from './protocol.ts'
 
 export interface DaemonServerOptions {
+  observeOrderTimeline?: OrderTimelineObserver
+  nativePaymentRequests?: NativePaymentRequestService
+  watch?: DaemonWatchProvider
   host?: string
   port?: number
   socketPath?: string
   trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   prepareSettlementCapability?: PrepareSettlementCapability
+  previewSettlementCapabilityFees?: PreviewSettlementCapabilityFees
   triggerSettlementRecovery?: () => void
   triggerCustodyRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
@@ -111,6 +196,8 @@ export interface DaemonServerOptions {
   markCustodyReady?: () => void
   onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
+  nativeLightningOps?: NativeLightningOps
+  nativeWalletPaymentOps?: DispatchDependencies['nativeWalletPaymentOps']
 }
 
 export interface EngineClientLike {
@@ -118,6 +205,10 @@ export interface EngineClientLike {
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
+  getAssetMonitoringAssets?(
+    query: AssetMonitoringAssetsQuery,
+  ): Promise<AssetMonitoringAssetsResponse>
+  getPortfolio?(query: AssetMonitoringPortfolioQuery): Promise<AssetMonitoringPortfolioResponse>
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
   getParticipationScore(): Promise<ParticipationScoreResponse>
   getDurableRecipientDeliveryStatus?(
@@ -139,11 +230,10 @@ export interface EngineClientLike {
     resultId: string,
     request: AcknowledgeSettlementCapabilityResultRequest,
   ): Promise<SettlementCapabilityResultResponse | null>
-  declineOrderContinuation?(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void>
+  previewFokOrder?(request: PreviewFokOrderRequest): Promise<PreviewFokOrderResponse>
+  previewFokOrderCapacity?(
+    request: PreviewFokOrderCapacityRequest,
+  ): Promise<PreviewFokOrderCapacityResponse>
 }
 
 export interface PrepareSettlementCapabilityInput {
@@ -154,14 +244,15 @@ export interface PrepareSettlementCapabilityInput {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
+  maxQuotePaymentSubunits: number | null
+  minQuotePaymentSubunits: number | null
   amountSubunits: number
   minimumFillAmountSubunits: number
-  continueAfterPartialFill: boolean
   consolidateProofs: boolean
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  timeInForce: 'FOK'
   expiresAt: string | null
   mintUrl: string
   walletSeedHex: string
@@ -178,10 +269,19 @@ export interface PreparedSettlementCapability {
   }
 }
 
+export type BeforeCreateSettlementCapability = (requiredScore: number) => Promise<void>
+
 export type PrepareSettlementCapability = (
   input: PrepareSettlementCapabilityInput,
   client: EngineClientLike,
+  beforeCreateCapability?: BeforeCreateSettlementCapability,
+  consentedFeeFacts?: CtfRangeOrderFeeFacts,
 ) => Promise<PreparedSettlementCapability>
+
+export type PreviewSettlementCapabilityFees = (
+  input: PrepareSettlementCapabilityInput,
+  client: EngineClientLike,
+) => Promise<CtfRangeOrderFeeFacts>
 
 type DaemonParticipationScorePreflightResult =
   | { kind: 'disabled' | 'sufficient'; score: ParticipationScoreResponse }
@@ -193,9 +293,39 @@ type DaemonParticipationScorePreflightResult =
       operationId: string
     }
 
+class InsufficientParticipationScoreBackingError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InsufficientParticipationScoreBackingError'
+  }
+}
+
 export interface DispatchDependencies extends WalletOpsDependencies {
+  nativeActivitySyncOptions?: NativeActivitySyncOptions
+  nativeOracleAccessPorts?: NativeOracleAccessRpcPorts
+  nativeOraclePublicationPorts?: NativeOraclePublicationPorts
+  nativeOracleHelper?: NativeOracleHelper
+  observeOrderTimeline?: OrderTimelineObserver
+  nativePaymentRequests?: NativePaymentRequestService
+  watch?: DaemonWatchProvider
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
+  /** Test seam for the native portfolio privacy setting. */
+  isAssetMonitoringEnabled?: () => boolean
+  /** Test seam for the three existing native funding operations. */
+  marketFundingOps?: {
+    quote: typeof quoteMarketFundingCashu
+    head: typeof readMarketFundingHeadCashu
+    deliver: typeof deliverMarketFundingCashu
+  }
+  participationScoreOps?: {
+    quote: typeof quoteParticipationScoreCashu
+    deliver: typeof deliverParticipationScoreCashu
+  }
+  nativeWalletPaymentOps?: Pick<NativeWalletPaymentOps, 'quote' | 'pay' | 'status'> & {
+    recoverPage(): Promise<NativeWalletPaymentRecoveryScan>
+  }
   prepareSettlementCapability?: PrepareSettlementCapability
+  previewSettlementCapabilityFees?: PreviewSettlementCapabilityFees
   trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   triggerSettlementRecovery?: () => void
   triggerCustodyRecovery?: () => void
@@ -204,7 +334,12 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   markCustodyReady?: () => void
   onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
+  nativeLightningOps?: NativeLightningOps
+  waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
 }
+
+const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
+const PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS = 8_000
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
   const socketPath =
@@ -219,8 +354,12 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
   const expectedToken = await readRpcToken()
   const server = createServer((req, res) => {
     void handleRequest(req, res, expectedToken, {
+      observeOrderTimeline: options.observeOrderTimeline,
+      watch: options.watch,
+      nativePaymentRequests: options.nativePaymentRequests,
       trackOwnedOrder: options.trackOwnedOrder,
       prepareSettlementCapability: options.prepareSettlementCapability,
+      previewSettlementCapabilityFees: options.previewSettlementCapabilityFees,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
       triggerCustodyRecovery: options.triggerCustodyRecovery,
       getCustodyFence: options.getCustodyFence,
@@ -228,6 +367,8 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       markCustodyReady: options.markCustodyReady,
       onManualCustodyRecoveryStatus: options.onManualCustodyRecoveryStatus,
       onOutcomeProofsReceived: options.onOutcomeProofsReceived,
+      nativeLightningOps: options.nativeLightningOps,
+      nativeWalletPaymentOps: options.nativeWalletPaymentOps,
     })
   })
   if (socketPath) {
@@ -255,7 +396,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
   return server
 }
 
-async function handleRequest(
+export async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   expectedToken: string | null,
@@ -269,18 +410,84 @@ async function handleRequest(
     return writeJson(res, 404, { ok: false, error: 'not found' })
   }
 
-  let command: DaemonCommand
-  try {
-    command = JSON.parse(await readBody(req)) as DaemonCommand
-  } catch {
-    return writeJson(res, 400, { ok: false, error: 'invalid JSON command' })
-  }
-
+  // Authenticate before body consumption, not after an unbounded JSON decode.
   if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
+  const wantsWatch = req.headers.accept === DAEMON_WATCH_MEDIA_TYPE
+  let command: DaemonCommand
+  try {
+    command = JSON.parse(
+      await readBody(
+        req,
+        wantsWatch || !expectedToken ? DAEMON_WATCH_REQUEST_BYTES_MAX : undefined,
+      ),
+    ) as DaemonCommand
+  } catch {
+    return writeJson(res, 400, { ok: false, error: 'invalid JSON command' })
+  }
+  if (command === null || typeof command !== 'object' || typeof command.method !== 'string') {
+    return writeJson(res, 400, { ok: false, error: 'invalid JSON command' })
+  }
+
   if (!expectedToken && command.method !== 'health') {
     return writeJson(res, 401, { ok: false, error: 'daemon RPC token is not initialized' })
+  }
+  if (isDaemonWatchCommand(command)) {
+    if (!wantsWatch)
+      return writeJson(res, 406, { ok: false, error: 'daemon watch requires NDJSON acceptance' })
+    try {
+      const selected = validateDaemonWatchCommand(command)
+      const provider =
+        selected.method === 'wallet.request.watch'
+          ? deps.nativePaymentRequests === undefined
+            ? undefined
+            : (_command: unknown, signal: AbortSignal) =>
+                deps.nativePaymentRequests!.watch(selected.params.requestId, signal)
+          : deps.watch
+      return await streamDaemonWatch(req, res, selected, provider)
+    } catch {
+      return writeJson(res, 400, { ok: false, error: 'invalid daemon watch command' })
+    }
+  }
+  if (wantsWatch)
+    return writeJson(res, 400, { ok: false, error: 'explicit daemon watch command required' })
+
+  if (command.method === 'wallet.activity-sync') {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    const close = () => {
+      if (!res.writableEnded) abort()
+    }
+    req.once('aborted', abort)
+    res.once('close', close)
+    if (req.aborted || res.destroyed) controller.abort()
+    try {
+      const response = await dispatch(command, {
+        ...deps,
+        nativeActivitySyncOptions: {
+          ...deps.nativeActivitySyncOptions,
+          signal:
+            deps.nativeActivitySyncOptions?.signal === undefined
+              ? controller.signal
+              : AbortSignal.any([controller.signal, deps.nativeActivitySyncOptions.signal]),
+        },
+      })
+      if (!controller.signal.aborted) return writeJson(res, 200, response)
+      return
+    } catch {
+      if (!controller.signal.aborted)
+        return writeJson(res, 500, {
+          ok: false,
+          code: 'wallet-activity-sync-failed',
+          error:
+            'Wallet Activity sync failed. Check the current signer, wallet, and relay selection.',
+        })
+      return
+    } finally {
+      req.off('aborted', abort)
+      res.off('close', close)
+    }
   }
 
   try {
@@ -316,6 +523,8 @@ export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
+  const unsupportedPublicOrder = rejectUnsupportedPublicOrder(command)
+  if (unsupportedPublicOrder !== null) return unsupportedPublicOrder
   if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
     return {
       ok: false,
@@ -323,7 +532,18 @@ export async function dispatch(
       error: 'wallet recovery must complete before this command can use funds',
     }
   }
+  if (
+    requiresApplicationSigner(command.method) &&
+    (await readProfile()) !== null &&
+    !(await readSelectedDaemonSigner()).enabled
+  )
+    return { ok: false, code: 'signer-disconnected', error: 'Application signer is disconnected.' }
   switch (command.method) {
+    case 'wallet.request.create':
+    case 'wallet.request.status':
+    case 'wallet.request.list':
+    case 'wallet.request.recover':
+      return dispatchNativePaymentRequest(command, deps)
     case 'health':
       return {
         ok: true,
@@ -357,6 +577,17 @@ export async function dispatch(
         },
       }
     }
+    case 'market.oracle-backup-list':
+    case 'market.oracle-backup-restore':
+    case 'market.oracle-backup-status':
+    case 'market.oracle-backup-retry':
+    case 'market.announcement-republish':
+      return dispatchNativeOracleAccess(command, deps.nativeOracleAccessPorts)
+    case 'market.create-native':
+    case 'market.creation-resume':
+    case 'market.creation-status':
+    case 'market.creation-quote':
+      return dispatchNativeMarketCreation(command, deps)
     case 'market.create': {
       const profile = await readProfile()
       if (!profile) {
@@ -389,16 +620,152 @@ export async function dispatch(
           title: command.params.title,
           description: command.params.description,
           outcomes: createMarketOutcomes(command.params.outcomes),
-          ...(command.params.liquiditySats !== undefined
-            ? { liquiditySats: command.params.liquiditySats }
-            : {}),
           ...(command.params.tags !== undefined ? { categoryTags: command.params.tags } : {}),
         },
         thumbnailBytes,
       )
       return { ok: true, result: response }
     }
+    case 'market.resolution-status': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const saved = await createNativeOracleCreationStore(profileDir()).readAuthorityByConditionId(
+        command.params.conditionId,
+      )
+      if (!saved)
+        return { ok: false, error: 'This profile did not create the oracle announcement.' }
+      return {
+        ok: true,
+        result: {
+          conditionId: command.params.conditionId,
+          chosenOutcome: saved.chosenOutcome,
+          attestationPrepared: saved.attestation !== null,
+          relayPublished: saved.relayPublished,
+          engineSynchronized: saved.engineEvidence !== null,
+          explanationPrepared: saved.explanationEventJson !== null,
+          explanationDraftSaved: saved.explanationDraft !== null,
+          explanationRelayPublished: saved.explanationRelayPublished,
+          attestationEventId:
+            saved.attestation === null
+              ? null
+              : JSON.parse(saved.attestation.attestationNostrEventJson).id,
+          explanationEventId:
+            saved.explanationEventJson === null ? null : JSON.parse(saved.explanationEventJson).id,
+        },
+      }
+    }
+    case 'market.attest':
+    case 'market.attestation-retry': {
+      try {
+        if (command.method === 'market.attest' && 'republish' in command.params) throw new Error()
+        if (command.params.relayOnly !== undefined && typeof command.params.relayOnly !== 'boolean')
+          throw new Error()
+        if (
+          command.method === 'market.attestation-retry' &&
+          command.params.republish !== undefined &&
+          typeof command.params.republish !== 'boolean'
+        )
+          throw new Error()
+        const profile = await readProfile()
+        if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+        const store =
+          deps.nativeOraclePublicationPorts?.store ?? createNativeOracleCreationStore(profileDir())
+        const creation = await store.readAuthorityByConditionId(command.params.conditionId)
+        if (creation?.announcement == null)
+          return { ok: false, error: 'Local oracle authority is unavailable.' }
+        const destination = nativeOracleDestinations(creation)
+        const relayOnly = command.params.relayOnly === true
+        if (!relayOnly) {
+          const validation = validateMarketCreateEngineUrl(destination.engineUrl, true)
+          if (!validation.ok) return { ok: false, error: validation.error, code: validation.code }
+        }
+        // Constructing this adapter makes no request. Relay-only execution never calls it.
+        const client = new BitcasterEngineClient({
+          baseUrl: destination.engineUrl,
+          fetchImpl: (input, init) =>
+            fetch(input, { ...init, signal: AbortSignal.timeout(10_000) }),
+        })
+        const ports: NativeOraclePublicationPorts = deps.nativeOraclePublicationPorts ?? {
+          store,
+          helper: deps.nativeOracleHelper ?? createNativeOracleHelperAdapter(),
+          async readSigner() {
+            const secrets = await readSecrets()
+            if (!secrets) throw new Error('Native oracle signer is unavailable.')
+            return {
+              secretKeyHex:
+                creation.kind === 'created'
+                  ? (await store.readCreationSigner(creation.creationId)).secretKeyHex
+                  : secrets.nostrSecretKeyHex,
+              nonceSeedHex: secrets.nativeOracleNonceSeedHex,
+            }
+          },
+          async publishRelay(eventJson) {
+            const saved = await store.readAuthorityByConditionId(command.params.conditionId)
+            if (saved?.announcement == null || saved.attestation === null) throw new Error()
+            return publishNativeOracleEvent(destination.relayUrls, eventJson, undefined, {
+              oraclePubkey: saved.creatorPublicKeyHex,
+              announcementEventJson: saved.announcement.announcementNostrEventJson,
+              attestationEventJson: saved.attestation.attestationNostrEventJson,
+            })
+          },
+          async submitEvent(conditionId, eventJson) {
+            const { created_at, ...event } = JSON.parse(eventJson)
+            const wireEvent = { ...event, createdAt: created_at }
+            if (!isKind89NostrEvent(wireEvent)) throw new Error()
+            return submitOracleAttestationViaEngine(client, conditionId, wireEvent)
+          },
+          readResolution: (conditionId) => client.getConditionAttestation(conditionId),
+        }
+        const options = {
+          engineDelivery: relayOnly ? ('relay-only' as const) : ('synchronize' as const),
+          ...(command.method === 'market.attestation-retry' && command.params.republish === true
+            ? { republishAttestation: true }
+            : {}),
+        }
+        const result =
+          command.method === 'market.attestation-retry'
+            ? await retryNativeMarketPublication(ports, command.params.conditionId, options)
+            : await publishNativeMarketOutcome(
+                ports,
+                command.params.conditionId,
+                command.params.outcome,
+                command.params.explanation,
+                options,
+              )
+        if (result.record.relayPublished) {
+          // Backup failure cannot undo the durable resolution. Status reconstructs pending work.
+          try {
+            await publishNativeOracleBackup(
+              {
+                store,
+                helper: ports.helper,
+                nowSeconds: () => Math.floor(Date.now() / 1000),
+                publishRelay:
+                  deps.nativeOracleAccessPorts?.publishBackup ?? publishNativeOracleBackupEvent,
+              },
+              command.params.conditionId,
+            )
+          } catch {
+            /* The primary result remains successful. */
+          }
+        }
+        return { ok: true, result: nativeOraclePublicationRpcResult(result) }
+      } catch {
+        return {
+          ok: false,
+          code: 'oracle-publication-incomplete',
+          error:
+            'Oracle publication did not complete. Check resolution-status and retry the exact saved operation.',
+        }
+      }
+    }
     case 'market.close': {
+      if ('relayOnly' in command.params || 'republish' in command.params)
+        return {
+          ok: false,
+          code: 'invalid-oracle-publication-options',
+          error: 'Supplied wire attestations do not accept native publication options.',
+        }
       const profile = await readProfile()
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
@@ -431,6 +798,27 @@ export async function dispatch(
         ok: true,
         result: await readDaemonWalletBalance(profileDir()),
       }
+    case 'wallet.positions': {
+      if (!(await readProfile())) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      await ensureState()
+      const balance = await readDaemonWalletBalance(profileDir())
+      return { ok: true, result: { positions: balance.outcomePositions } }
+    }
+    case 'wallet.portfolio':
+      return dispatchWalletPortfolio(command.params, deps)
+    case 'wallet.assets':
+      return dispatchWalletAssets(command.params, deps)
+    case 'wallet.pay.quote':
+    case 'wallet.pay.execute':
+    case 'wallet.pay.status':
+      return dispatchNativeWalletPayment(command, deps)
+    case 'wallet.invoice.create':
+    case 'wallet.invoice.show':
+    case 'wallet.invoice.hide':
+    case 'wallet.invoice.replace':
+      return dispatchNativeLightningInvoice(command, deps)
     case 'wallet.receive': {
       const profile = await readProfile()
       if (!profile) {
@@ -468,7 +856,7 @@ export async function dispatch(
         return {
           ok: true,
           result: await sendWalletToken(
-            command.params.amountSats,
+            command.params.amountMsat,
             profile,
             secrets,
             deps,
@@ -512,7 +900,7 @@ export async function dispatch(
         result: await splitWalletCompleteSet({
           mintUrl: command.params.mintUrl ?? profile.mintUrl,
           conditionId: command.params.conditionId,
-          amountSats: command.params.amountSats,
+          amountMsat: command.params.amountMsat,
           operationId:
             command.params.operationId ??
             `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
@@ -530,7 +918,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -565,6 +953,72 @@ export async function dispatch(
         }),
       }
     }
+    case 'wallet.removePreview':
+    case 'wallet.removePosition': {
+      const profile = await readProfile()
+      if (!profile || !deps.getCustodyFence)
+        return { ok: false, error: 'position removal requires initialized custody authority' }
+      try {
+        const context = {
+          profile,
+          fence: deps.getCustodyFence(),
+          isCustodyReady: () => deps.isCustodyReady?.() !== false,
+        }
+        return {
+          ok: true,
+          result:
+            command.method === 'wallet.removePreview'
+              ? await previewDaemonPositionRemove({
+                  ...context,
+                  conditionId: command.params.conditionId,
+                  outcomeCollection: command.params.outcomeCollection,
+                })
+              : await removeDaemonPosition({
+                  ...context,
+                  preview: command.params.preview,
+                  acknowledge: command.params.acknowledge,
+                }),
+        }
+      } catch {
+        return {
+          ok: false,
+          code: 'position-remove-refused',
+          error: 'position removal could not use the acknowledged exact losing batch',
+        }
+      }
+    }
+    case 'wallet.claimPosition': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const secrets = await readSecrets()
+      if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+      if (!deps.getCustodyFence)
+        return { ok: false, error: 'position claim requires custody authority' }
+      const client = await createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      if (!client.getConditionAttestation)
+        return { ok: false, error: 'engine client does not support condition attestation' }
+      try {
+        const result = await claimDaemonPosition({
+          ...command.params,
+          profile,
+          secrets,
+          fence: deps.getCustodyFence(),
+          walletDependencies: deps,
+          engine: { getConditionAttestation: (id) => client.getConditionAttestation!(id) },
+        })
+        if (result.legs.some((leg) => leg.state === 'pending')) deps.triggerCustodyRecovery?.()
+        return { ok: true, result }
+      } catch {
+        return {
+          ok: false,
+          code: 'position-claim-refused',
+          error: 'position claim could not use the exact custody target',
+        }
+      }
+    }
     case 'wallet.retireCondition': {
       const profile = await readProfile()
       if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
@@ -573,7 +1027,7 @@ export async function dispatch(
       if (!deps.getCustodyFence) {
         return { ok: false, error: 'condition retirement requires custody authority' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -607,27 +1061,40 @@ export async function dispatch(
       if (!deps.getCustodyFence) return { ok: true, result: wallet }
       const getCustodyFence = deps.getCustodyFence
       const receives = await recoverDurableWalletReceives(secrets, deps)
-      const client = createEngineClient(deps, {
+      const imports = await recoverDurableWalletProofImports(secrets, deps)
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
-      const outgoing = await recoverDurableOutgoingCashuTransfers(secrets, deps, {
-        client: {
-          getDurableRecipientDeliveryStatus: async (deliveryId) => {
-            if (!client.getDurableRecipientDeliveryStatus) {
-              throw new Error('daemon engine client does not support durable Cashu deliveries')
+      const signerEnabled = (await readSelectedDaemonSigner()).enabled
+      const accountRecoveryPending = !signerEnabled && (await hasUnfinishedDaemonAccountWork())
+      const outgoing = await recoverDurableOutgoingCashuTransfers(
+        secrets,
+        deps,
+        signerEnabled
+          ? {
+              client: {
+                getDurableRecipientDeliveryStatus: async (deliveryId) => {
+                  if (!client.getDurableRecipientDeliveryStatus) {
+                    throw new Error(
+                      'daemon engine client does not support durable Cashu deliveries',
+                    )
+                  }
+                  return client.getDurableRecipientDeliveryStatus(deliveryId)
+                },
+                submitDurableRecipientDelivery: async (submission) => {
+                  if (!client.submitDurableRecipientDelivery) {
+                    throw new Error(
+                      'daemon engine client does not support durable Cashu deliveries',
+                    )
+                  }
+                  return client.submitDurableRecipientDelivery(submission)
+                },
+              },
+              accountSubject: secrets.nostrPublicKeyHex,
             }
-            return client.getDurableRecipientDeliveryStatus(deliveryId)
-          },
-          submitDurableRecipientDelivery: async (submission) => {
-            if (!client.submitDurableRecipientDelivery) {
-              throw new Error('daemon engine client does not support durable Cashu deliveries')
-            }
-            return client.submitDurableRecipientDelivery(submission)
-          },
-        },
-        accountSubject: secrets.nostrPublicKeyHex,
-      })
+          : undefined,
+      )
       const outgoingStatus = outgoingCashuRecoveryStatus(outgoing)
       const consolidation = await recoverWalletProofConsolidations({
         secrets,
@@ -635,6 +1102,14 @@ export async function dispatch(
         dependencies: deps,
       })
       const completeSets = await recoverCompleteSetSplits({ secrets, deps })
+      const positionClaims = await recoverDaemonPositionClaims({
+        profile,
+        secrets,
+        fence: getCustodyFence(),
+        walletDependencies: deps,
+      })
+      const invoiceRecovery = await deps.nativeLightningOps?.recoverPage()
+      const paymentRecovery = await deps.nativeWalletPaymentOps?.recoverPage()
       const retirements = await resumeDaemonConditionRetirements({
         profile,
         secrets,
@@ -647,39 +1122,76 @@ export async function dispatch(
       const result = composeStartupCustodyRecovery([
         wallet,
         receives,
+        imports,
         outgoing,
         consolidation,
         completeSets,
+        positionClaims,
+        ...(invoiceRecovery === undefined ? [] : [invoiceRecovery.recovery]),
+        ...(paymentRecovery === undefined ? [] : [paymentRecovery.recovery]),
         { recovered: retired, pending: retirementPending(retirements) },
+        ...(accountRecoveryPending
+          ? [
+              {
+                recovered: [],
+                pending: [
+                  {
+                    operationId: 'application-account-recovery',
+                    error: 'Application signer is disconnected.',
+                  },
+                ],
+              },
+            ]
+          : []),
       ])
       deps.onManualCustodyRecoveryStatus?.({
         nonRetirementPending:
+          accountRecoveryPending ||
           wallet.pending.length > 0 ||
           receives.pending.length > 0 ||
           receives.pendingCount > 0 ||
           receives.hasMore ||
+          imports.pendingCount > 0 ||
+          imports.hasMore ||
           outgoingStatus.blockingPending ||
           consolidation.pending.length > 0 ||
-          completeSets.pending.length > 0,
+          completeSets.pending.length > 0 ||
+          positionClaims.pending.length > 0 ||
+          (invoiceRecovery?.blockingPending ?? false) ||
+          (paymentRecovery?.blockingPending ?? false),
         retryPending:
+          accountRecoveryPending ||
           wallet.pending.length > 0 ||
           receives.pending.length > 0 ||
           receives.pendingCount > 0 ||
           receives.hasMore ||
+          imports.pendingCount > 0 ||
+          imports.hasMore ||
           outgoingStatus.retryPending ||
           consolidation.pending.length > 0 ||
-          completeSets.pending.length > 0,
+          completeSets.pending.length > 0 ||
+          positionClaims.pending.length > 0 ||
+          (invoiceRecovery?.retryPending ?? false) ||
+          (paymentRecovery?.retryPending ?? false),
         retirementPending: retirements.some((entry) => entry.error !== null),
       })
+      if (imports.hasMore || invoiceRecovery?.hasMore || paymentRecovery?.hasMore) {
+        deps.triggerCustodyRecovery?.()
+      }
       if (
         !deps.onManualCustodyRecoveryStatus &&
         result.pending.length === 0 &&
         receives.pendingCount === 0 &&
         !receives.hasMore &&
-        !outgoingStatus.blockingPending
+        imports.pendingCount === 0 &&
+        !imports.hasMore &&
+        !outgoingStatus.blockingPending &&
+        !(invoiceRecovery?.blockingPending ?? false) &&
+        !(paymentRecovery?.blockingPending ?? false)
       ) {
         deps.markCustodyReady?.()
       }
+      await deps.nativePaymentRequests?.resumeReceiving().catch(() => false)
       return {
         ok: true,
         result,
@@ -694,6 +1206,10 @@ export async function dispatch(
         result: await listProofOperations(command.params ?? {}),
       }
     }
+    case 'wallet.activity':
+      return dispatchWalletActivity(command.params)
+    case 'wallet.activity-sync':
+      return dispatchWalletActivitySync(command.params, deps)
     case 'markets.query': {
       const profile = await readProfile()
       if (!profile) {
@@ -703,7 +1219,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -721,7 +1237,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -740,243 +1256,19 @@ export async function dispatch(
         result: market,
       }
     }
-    case 'order.submit': {
-      const orderParams = {
-        tokenSide: 'Outcome' as const,
-        ...command.params,
-      }
-      const amountSubunits = orderParams.amountSubunits
-      const orderIntent = {
-        ...orderParams,
-        amountSubunits,
-      }
-      const shapeValidation = validateOrderRoutingIdentity(orderIntent)
-      if (!shapeValidation.valid) {
-        return { ok: false, error: shapeValidation.message }
-      }
-      let profile: Awaited<ReturnType<typeof readProfile>> | null = null
-      let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
-      let client: EngineClientLike | null = null
-      const ensureOrderContext = async (): Promise<
-        | {
-            ok: true
-            profile: NonNullable<typeof profile>
-            secrets: NonNullable<typeof secrets>
-            client: EngineClientLike
-          }
-        | { ok: false; error: string }
-      > => {
-        profile ??= await readProfile()
-        if (!profile) {
-          return { ok: false, error: 'daemon profile is not initialized' }
-        }
-        secrets ??= await readSecrets()
-        if (!secrets) {
-          return { ok: false, error: 'daemon secrets are not initialized' }
-        }
-        client ??= createEngineClient(deps, {
-          baseUrl: profile.engineBaseUrl,
-          nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-        })
-        return { ok: true, profile, secrets, client }
-      }
-
-      const context = await ensureOrderContext()
-      if (!context.ok) return context
-      const conditionId = conditionIdFromMarketId(orderParams.marketId)
-      const marketUnit = await loadMarketUnit(context.client, conditionId)
-      const minimumFillAmountSubunits =
-        orderParams.minimumFillAmountSubunits === undefined
-          ? marketUnit.divisibility
-          : orderParams.minimumFillAmountSubunits
-      const requestValidation = validateOrderIntent({
-        ...orderIntent,
-        baseAsset: marketUnit.baseAsset,
-        divisibility: marketUnit.divisibility,
-      })
-      if (!requestValidation.valid) {
-        return { ok: false, error: requestValidation.message }
-      }
-      if (
-        !Number.isSafeInteger(minimumFillAmountSubunits) ||
-        minimumFillAmountSubunits <= 0 ||
-        minimumFillAmountSubunits > amountSubunits ||
-        minimumFillAmountSubunits % marketUnit.divisibility !== 0
-      ) {
-        return {
-          ok: false,
-          error: `Order rejected: minimum fill must be a positive multiple of ${marketUnit.divisibility} and no larger than the order amount`,
-        }
-      }
-      if (
-        orderParams.continueAfterPartialFill !== undefined &&
-        typeof orderParams.continueAfterPartialFill !== 'boolean'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
-      }
-      if (
-        orderParams.consolidateProofs !== undefined &&
-        typeof orderParams.consolidateProofs !== 'boolean'
-      ) {
-        return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
-      }
-      if (
-        orderParams.continueAfterPartialFill === true &&
-        orderParams.timeInForce !== 'GTC' &&
-        orderParams.timeInForce !== 'GTD'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation requires a resting order' }
-      }
-      const expiresAt = orderParams.expiresAt ?? null
-      if (
-        (orderParams.timeInForce === 'GTD' &&
-          (typeof expiresAt !== 'string' ||
-            !Number.isFinite(Date.parse(expiresAt)) ||
-            new Date(expiresAt).toISOString() !== expiresAt)) ||
-        (orderParams.timeInForce !== 'GTD' && expiresAt !== null)
-      ) {
-        return { ok: false, error: 'Order rejected: GTD requires one canonical UTC expiry' }
-      }
-      const settlementSupport = checkOrderSettlementSupport({
-        request: { side: orderParams.side },
-      })
-      if (!settlementSupport.supported) {
-        return { ok: false, error: settlementSupport.message }
-      }
-      const holdings = await readDaemonTokenHoldings(profileDir(), {
-        mintUrl: context.profile.mintUrl,
-        conditionId,
-        baseAsset: marketUnit.baseAsset,
-      })
-      const participationScoreSnapshot = await context.client.getParticipationScore()
-      const participationScorePlan = planParticipationScoreTopUp(participationScoreSnapshot)
-      const backingError =
-        orderBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-        }) ??
-        participationScoreBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-          plan: participationScorePlan,
-        })
-      if (backingError) {
-        return { ok: false, error: backingError }
-      }
-      const clientOrderId = randomUUID()
-      let participationScore: DaemonParticipationScorePreflightResult
-      try {
-        participationScore = await ensureDaemonParticipationScoreForNextMatch({
-          client: context.client,
-          profile: context.profile,
-          secrets: context.secrets,
-          deps,
-          score: participationScoreSnapshot,
-          plan: participationScorePlan,
-        })
-      } catch (err) {
-        throw err
-      }
-      if (!deps.prepareSettlementCapability) {
-        return { ok: false, error: 'daemon settlement capability coordinator is unavailable' }
-      }
-      let prepared: PreparedSettlementCapability
-      try {
-        prepared = await deps.prepareSettlementCapability(
-          {
-            clientOrderId,
-            marketId: orderParams.marketId,
-            conditionId,
-            outcomeId: orderParams.outcomeId,
-            tokenSide: orderParams.tokenSide,
-            side: orderParams.side,
-            price: orderParams.price,
-            amountSubunits,
-            minimumFillAmountSubunits,
-            continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
-            consolidateProofs: orderParams.consolidateProofs === true,
-            baseAsset: marketUnit.baseAsset,
-            collateralUnit: 'msat',
-            divisibility: marketUnit.divisibility,
-            timeInForce: orderParams.timeInForce,
-            expiresAt,
-            mintUrl: context.profile.mintUrl,
-            walletSeedHex: context.secrets.walletSeedHex,
-          },
-          context.client,
-        )
-        assertPreparedSettlementCapability(prepared, {
-          clientOrderId,
-          marketId: orderParams.marketId,
-        })
-      } catch (err) {
-        if (err instanceof EngineClientError) {
-          return {
-            ok: false,
-            error: err.problemDetail ?? err.message,
-            code: err.code,
-          }
-        }
-        throw err
-      }
-      let submitted: SubmitOrderResponse
-      try {
-        submitted = await context.client.submitOrder(orderParams.marketId, {
-          settlementCapability: prepared.capability.reference,
-          comment: null,
-        })
-      } catch (err) {
-        if (err instanceof EngineClientError) {
-          if (isDefinitiveOrderSubmissionError(err)) {
-            await prepared.markRejected()
-          } else {
-            deps.triggerSettlementRecovery?.()
-          }
-          return {
-            ok: false,
-            error: err.problemDetail ?? err.message,
-            code: err.code,
-          }
-        }
-        deps.triggerSettlementRecovery?.()
-        throw err
-      }
-      if (submitted.orderId !== prepared.capability.orderId) {
-        deps.triggerSettlementRecovery?.()
-        throw new Error('engine order response does not match its settlement capability')
-      }
-      const local = await recordSubmittedOrder(
-        orderParams.marketId,
-        clientOrderId,
-        submitted,
-        null,
-        orderParams.tokenSide,
-        orderParams.side,
-        orderParams.price,
-        amountSubunits,
-        marketUnit.baseAsset,
-        marketUnit.divisibility,
-      )
-      await prepared.markSubmitted()
-      await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
-      return {
-        ok: true,
-        result: {
-          engine: submitted,
-          local,
-          participationScore,
-          settlementCapability: prepared.capability,
-          operationId: prepared.operationId,
-          consolidation: prepared.consolidation,
-        },
-      }
-    }
+    case 'market.funding.quote':
+    case 'market.funding.head':
+    case 'market.fund':
+      return dispatchMarketFunding(command, deps)
+    case 'score.show':
+    case 'score.quote':
+    case 'score.buy':
+    case 'score.status':
+      return dispatchParticipationScore(command, deps)
+    case 'order.fee-preview':
+      return dispatchOrderFeePreview(command.params, deps)
+    case 'order.submit':
+      return dispatchProtectedOrderSubmit(command.params, deps)
     case 'order.status': {
       const profile = await readProfile()
       if (!profile) {
@@ -986,7 +1278,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -1030,7 +1322,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -1065,7 +1357,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = createEngineClient(deps, {
+      const client = await createEngineClient(deps, {
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
@@ -1077,17 +1369,1631 @@ export async function dispatch(
   }
 }
 
+async function dispatchWalletPortfolio(
+  rawQuery: unknown,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const query = decodeDaemonPortfolioOptions(rawQuery)
+  if (query === null) {
+    return {
+      ok: false,
+      code: 'invalid-portfolio-query',
+      error: 'wallet portfolio accepts only a bounded timeframe and page size',
+    }
+  }
+  const context = await readWalletMonitoringContext(deps)
+  if (context === null) return { ok: false, error: 'daemon profile is not initialized' }
+  const { profile, localHoldings } = context
+  if (!context.monitoringEnabled) {
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'disabled' } },
+    }
+  }
+
+  try {
+    const { client, walletId } = await createWalletMonitoringClient(profile, deps)
+    if (client.getPortfolio === undefined) throw new Error('portfolio query is unavailable')
+    const portfolioQuery: AssetMonitoringPortfolioQuery = {
+      walletId,
+      ...(query.timeframe === undefined ? {} : { timeframe: query.timeframe }),
+      ...(query.pageSize === undefined ? {} : { pageSize: query.pageSize }),
+    }
+    const portfolio = await client.getPortfolio(portfolioQuery)
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'available', portfolio } },
+    }
+  } catch {
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'unavailable' } },
+    }
+  }
+}
+
+async function dispatchWalletAssets(
+  rawQuery: unknown,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const query = decodeDaemonAssetsOptions(rawQuery)
+  if (query === null) {
+    return {
+      ok: false,
+      code: 'invalid-asset-query',
+      error: 'wallet assets accepts only a bounded cursor and page size',
+    }
+  }
+  const context = await readWalletMonitoringContext(deps)
+  if (context === null) return { ok: false, error: 'daemon profile is not initialized' }
+  const { profile, localHoldings } = context
+  if (!context.monitoringEnabled) {
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'disabled' } },
+    }
+  }
+
+  try {
+    const { client, walletId } = await createWalletMonitoringClient(profile, deps)
+    if (client.getAssetMonitoringAssets === undefined) {
+      throw new Error('asset page query is unavailable')
+    }
+    const assetsQuery: AssetMonitoringAssetsQuery = {
+      walletId,
+      ...(query.pageSize === undefined ? {} : { pageSize: query.pageSize }),
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+    }
+    const assets = await client.getAssetMonitoringAssets(assetsQuery)
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'available', assets } },
+    }
+  } catch {
+    return {
+      ok: true,
+      result: { localHoldings, monitoring: { status: 'unavailable' } },
+    }
+  }
+}
+
+async function readWalletMonitoringContext(deps: DispatchDependencies): Promise<{
+  profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
+  localHoldings: Awaited<ReturnType<typeof readDaemonWalletBalance>>
+  monitoringEnabled: boolean
+} | null> {
+  const profile = await readProfile()
+  if (!profile) return null
+  await ensureState()
+  const localHoldings = await readDaemonWalletBalance(profileDir())
+  const monitoringEnabled =
+    (await readSelectedDaemonSigner()).enabled &&
+    (deps.isAssetMonitoringEnabled?.() ?? activeNativeConfig().config.daemon.assetMonitoringEnabled)
+  return { profile, localHoldings, monitoringEnabled }
+}
+
+async function createWalletMonitoringClient(
+  profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>,
+  deps: DispatchDependencies,
+): Promise<{ client: EngineClientLike; walletId: string }> {
+  const secrets = await readSecrets()
+  if (!secrets) throw new Error('daemon secrets are not initialized')
+  const client = await createEngineClient(deps, {
+    baseUrl: profile.engineBaseUrl,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+  })
+  return {
+    client,
+    walletId: deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex')),
+  }
+}
+
+function decodeDaemonPortfolioOptions(
+  value: unknown,
+): Omit<AssetMonitoringPortfolioQuery, 'walletId'> | null {
+  const options = value ?? {}
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) return null
+  const record = options as Record<string, unknown>
+  if (Object.keys(record).some((key) => key !== 'timeframe' && key !== 'pageSize')) return null
+  try {
+    const decoded = decodeAssetMonitoringPortfolioQuery({
+      walletId: '00'.repeat(32),
+      ...(record.timeframe === undefined ? {} : { timeframe: record.timeframe }),
+      ...(record.pageSize === undefined ? {} : { pageSize: record.pageSize }),
+    })
+    return {
+      ...(decoded.timeframe === undefined ? {} : { timeframe: decoded.timeframe }),
+      ...(decoded.pageSize === undefined ? {} : { pageSize: decoded.pageSize }),
+    }
+  } catch {
+    return null
+  }
+}
+
+function decodeDaemonAssetsOptions(
+  value: unknown,
+): Omit<AssetMonitoringAssetsQuery, 'walletId'> | null {
+  const options = value ?? {}
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) return null
+  const record = options as Record<string, unknown>
+  if (Object.keys(record).some((key) => key !== 'cursor' && key !== 'pageSize')) return null
+  try {
+    const decoded = decodeAssetMonitoringAssetsQuery({
+      walletId: '00'.repeat(32),
+      ...(record.pageSize === undefined ? {} : { pageSize: record.pageSize }),
+      ...(record.cursor === undefined ? {} : { cursor: record.cursor }),
+    })
+    return {
+      ...(decoded.pageSize === undefined ? {} : { pageSize: decoded.pageSize }),
+      ...(decoded.cursor === undefined ? {} : { cursor: decoded.cursor }),
+    }
+  } catch {
+    return null
+  }
+}
+
+type ResolvedProtectedOrder = {
+  request: ProtectedOrderConsentRequest
+  conditionId: string
+  marketUnit: { baseAsset: MarketBaseAsset; divisibility: number }
+  profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
+  secrets: NonNullable<Awaited<ReturnType<typeof readSecrets>>>
+  client: EngineClientLike
+}
+
+async function resolveProtectedOrderDraft(
+  params: OrderDraftParams,
+  deps: DispatchDependencies,
+  acceptedRequest?: ProtectedOrderConsentRequest,
+): Promise<
+  { ok: true; value: ResolvedProtectedOrder } | { ok: false; error: string; code?: string }
+> {
+  const draft = { tokenSide: 'Outcome' as const, ...params }
+  const shape = validateOrderRoutingIdentity(draft)
+  if (!shape.valid) return { ok: false, error: shape.message }
+  if (draft.price !== undefined && (!Number.isSafeInteger(draft.price) || draft.price <= 0)) {
+    return { ok: false, error: 'Order rejected: price must be a positive integer.' }
+  }
+  if (draft.consolidateProofs !== undefined && typeof draft.consolidateProofs !== 'boolean') {
+    return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
+  }
+  if (draft.expiresAt !== undefined && draft.expiresAt !== null) {
+    return { ok: false, error: 'Order rejected: public FOK orders cannot expire' }
+  }
+  const support = checkOrderSettlementSupport({ request: { side: draft.side } })
+  if (!support.supported) return { ok: false, error: support.message }
+  const profile = await readProfile()
+  if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+  const secrets = await readSecrets()
+  if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+  const client = await createEngineClient(deps, {
+    baseUrl: profile.engineBaseUrl,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+  })
+  const conditionId = conditionIdFromMarketId(draft.marketId)
+  const marketUnit = await loadMarketUnit(client, conditionId)
+  const minimumFillAmountSubunits =
+    draft.minimumFillAmountSubunits === undefined
+      ? marketUnit.divisibility
+      : draft.minimumFillAmountSubunits
+  if (
+    !Number.isSafeInteger(minimumFillAmountSubunits) ||
+    minimumFillAmountSubunits <= 0 ||
+    minimumFillAmountSubunits > draft.amountSubunits ||
+    minimumFillAmountSubunits % marketUnit.divisibility !== 0
+  ) {
+    return {
+      ok: false,
+      error: `Order rejected: minimum fill must be a positive multiple of ${marketUnit.divisibility} and no larger than the order amount`,
+    }
+  }
+  if (acceptedRequest !== undefined) {
+    const expected = {
+      marketId: draft.marketId,
+      outcomeId: draft.outcomeId,
+      tokenSide: draft.tokenSide,
+      side: draft.side,
+      price: draft.price ?? acceptedRequest.price,
+      maxQuotePaymentSubunits:
+        draft.maxQuotePaymentSubunits === undefined
+          ? acceptedRequest.maxQuotePaymentSubunits
+          : draft.maxQuotePaymentSubunits,
+      minQuotePaymentSubunits:
+        draft.minQuotePaymentSubunits === undefined
+          ? acceptedRequest.minQuotePaymentSubunits
+          : draft.minQuotePaymentSubunits,
+      amountSubunits: draft.amountSubunits,
+      minimumFillAmountSubunits,
+      consolidateProofs: draft.consolidateProofs === true,
+      timeInForce: draft.timeInForce,
+    }
+    const intent = validateOrderIntent({
+      ...expected,
+      baseAsset: marketUnit.baseAsset,
+      divisibility: marketUnit.divisibility,
+    })
+    if (!intent.valid) return { ok: false, error: intent.message }
+    if (!isDeepStrictEqual(acceptedRequest, expected)) {
+      return {
+        ok: false,
+        code: 'fee-consent-mismatch',
+        error: 'Order fee consent does not match the current order',
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        request: structuredClone(acceptedRequest),
+        conditionId,
+        marketUnit,
+        profile,
+        secrets,
+        client,
+      },
+    }
+  }
+  let limitPrice = draft.price
+  if (limitPrice === undefined) {
+    if (!client.previewFokOrderCapacity) {
+      return { ok: false, error: 'daemon order capacity preview is unavailable' }
+    }
+    const capacity = await client.previewFokOrderCapacity({
+      marketId: draft.marketId,
+      side: draft.side,
+      tokenSide: draft.tokenSide,
+    })
+    if (capacity.status !== 'ready' || !Number.isSafeInteger(capacity.effectiveLimitPrice)) {
+      return { ok: false, error: 'Order rejected: Auto price is unavailable' }
+    }
+    limitPrice = capacity.effectiveLimitPrice!
+  }
+  const intent = validateOrderIntent({
+    ...draft,
+    price: limitPrice,
+    baseAsset: marketUnit.baseAsset,
+    divisibility: marketUnit.divisibility,
+  })
+  if (!intent.valid) return { ok: false, error: intent.message }
+  if (!client.previewFokOrder) return { ok: false, error: 'daemon order preview is unavailable' }
+  const previewRequest: PreviewFokOrderRequest = {
+    marketId: draft.marketId,
+    side: draft.side,
+    tokenSide: draft.tokenSide,
+    price: limitPrice,
+    faceAmountSubunits: draft.amountSubunits,
+  }
+  const previewResponse = await client.previewFokOrder(previewRequest)
+  let protectedRequest: ReturnType<typeof buildProtectedTradeTicket>['request']
+  try {
+    protectedRequest = buildProtectedTradeTicket({
+      ticket: {
+        marketId: draft.marketId,
+        request: {
+          outcomeId: draft.outcomeId,
+          tokenSide: draft.tokenSide,
+          side: draft.side,
+          price: limitPrice,
+          amountSubunits: draft.amountSubunits,
+          timeInForce: 'FOK',
+        },
+      },
+      previewRequest,
+      previewResponse,
+      priceOverride: draft.price ?? null,
+    }).request
+    if (
+      draft.maxQuotePaymentSubunits !== undefined ||
+      draft.minQuotePaymentSubunits !== undefined
+    ) {
+      const bounds = decodeOrderQuotePaymentBounds(draft.side, draft)
+      if (
+        bounds.maxQuotePaymentSubunits !== protectedRequest.maxQuotePaymentSubunits ||
+        bounds.minQuotePaymentSubunits !== protectedRequest.minQuotePaymentSubunits
+      ) {
+        throw new Error('accepted quote payment conflicts with preview')
+      }
+    }
+  } catch {
+    return {
+      ok: false,
+      code: 'order-not-executable',
+      error: 'Order rejected: protected FOK preview is not executable',
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      request: {
+        marketId: draft.marketId,
+        outcomeId: draft.outcomeId,
+        tokenSide: draft.tokenSide,
+        side: draft.side,
+        price: protectedRequest.price,
+        ...decodeOrderQuotePaymentBounds(draft.side, protectedRequest),
+        amountSubunits: draft.amountSubunits,
+        minimumFillAmountSubunits,
+        consolidateProofs: draft.consolidateProofs === true,
+        timeInForce: 'FOK',
+      },
+      conditionId,
+      marketUnit,
+      profile,
+      secrets,
+      client,
+    },
+  }
+}
+
+function preparationInput(
+  resolved: ResolvedProtectedOrder,
+  clientOrderId: string,
+): PrepareSettlementCapabilityInput {
+  const { request, conditionId, marketUnit, profile, secrets } = resolved
+  return {
+    clientOrderId,
+    marketId: request.marketId,
+    conditionId,
+    outcomeId: request.outcomeId,
+    tokenSide: request.tokenSide,
+    side: request.side,
+    price: request.price,
+    maxQuotePaymentSubunits: request.maxQuotePaymentSubunits,
+    minQuotePaymentSubunits: request.minQuotePaymentSubunits,
+    amountSubunits: request.amountSubunits,
+    minimumFillAmountSubunits: request.minimumFillAmountSubunits,
+    consolidateProofs: request.consolidateProofs,
+    baseAsset: marketUnit.baseAsset,
+    collateralUnit: 'msat',
+    divisibility: marketUnit.divisibility,
+    timeInForce: 'FOK',
+    expiresAt: null,
+    mintUrl: profile.mintUrl,
+    walletSeedHex: secrets.walletSeedHex,
+  }
+}
+
+async function dispatchOrderFeePreview(
+  params: OrderDraftParams,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  let resolved: Awaited<ReturnType<typeof resolveProtectedOrderDraft>>
+  try {
+    resolved = await resolveProtectedOrderDraft(params, deps)
+  } catch {
+    return { ok: false, code: 'order-preview-unavailable', error: 'Order preview is unavailable' }
+  }
+  if (!resolved.ok) return resolved
+  if (!deps.previewSettlementCapabilityFees) {
+    return { ok: false, error: 'daemon fee preview is unavailable' }
+  }
+  let feeFacts: CtfRangeOrderFeeFacts
+  try {
+    feeFacts = decodeCtfRangeOrderFeeFacts(
+      await deps.previewSettlementCapabilityFees(
+        preparationInput(resolved.value, randomUUID()),
+        resolved.value.client,
+      ),
+    )
+  } catch {
+    return { ok: false, code: 'fee-preview-unavailable', error: 'Order fee preview is unavailable' }
+  }
+  return { ok: true, result: { request: resolved.value.request, feeFacts } }
+}
+
+function decodeOrderFeeConsent(value: unknown): OrderFeeConsent | null {
+  if (!isRpcRecord(value) || Object.keys(value).length !== 2 || !('request' in value)) {
+    return null
+  }
+  try {
+    const feeFacts = decodeCtfRangeOrderFeeFacts(value.feeFacts)
+    if (!isDeepStrictEqual(value.feeFacts, feeFacts)) return null
+    const request = value.request
+    const keys = [
+      'marketId',
+      'outcomeId',
+      'tokenSide',
+      'side',
+      'price',
+      'maxQuotePaymentSubunits',
+      'minQuotePaymentSubunits',
+      'amountSubunits',
+      'minimumFillAmountSubunits',
+      'consolidateProofs',
+      'timeInForce',
+    ]
+    if (
+      !isRpcRecord(request) ||
+      Object.keys(request).length !== keys.length ||
+      Object.keys(request).some((key) => !keys.includes(key)) ||
+      typeof request.marketId !== 'string' ||
+      typeof request.outcomeId !== 'string' ||
+      (request.tokenSide !== 'Outcome' && request.tokenSide !== 'Complement') ||
+      (request.side !== 'Buy' && request.side !== 'Sell') ||
+      typeof request.price !== 'number' ||
+      !Number.isSafeInteger(request.price) ||
+      request.price <= 0 ||
+      typeof request.amountSubunits !== 'number' ||
+      !Number.isSafeInteger(request.amountSubunits) ||
+      request.amountSubunits <= 0 ||
+      typeof request.minimumFillAmountSubunits !== 'number' ||
+      !Number.isSafeInteger(request.minimumFillAmountSubunits) ||
+      request.minimumFillAmountSubunits <= 0 ||
+      typeof request.consolidateProofs !== 'boolean' ||
+      request.timeInForce !== 'FOK'
+    )
+      return null
+    const bounds = decodeOrderQuotePaymentBounds(request.side, request)
+    if (
+      !isDeepStrictEqual(bounds, {
+        maxQuotePaymentSubunits: request.maxQuotePaymentSubunits,
+        minQuotePaymentSubunits: request.minQuotePaymentSubunits,
+      })
+    )
+      return null
+    return {
+      request: structuredClone(request) as unknown as ProtectedOrderConsentRequest,
+      feeFacts,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function dispatchProtectedOrderSubmit(
+  params: SubmitOrderParams,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const feeConsent = decodeOrderFeeConsent(isRpcRecord(params) ? params.feeConsent : undefined)
+  if (!feeConsent) {
+    return { ok: false, code: 'fee-consent-required', error: 'Order fee consent is required' }
+  }
+  let resolved: Awaited<ReturnType<typeof resolveProtectedOrderDraft>>
+  try {
+    resolved = await resolveProtectedOrderDraft(params, deps, feeConsent.request)
+  } catch {
+    return { ok: false, code: 'order-preview-unavailable', error: 'Order preview is unavailable' }
+  }
+  if (!resolved.ok) return resolved
+  const { request, profile, secrets, client, marketUnit, conditionId } = resolved.value
+  if (!isDeepStrictEqual(feeConsent.request, request)) {
+    return {
+      ok: false,
+      code: 'fee-consent-mismatch',
+      error: 'Order fee consent does not match the current order',
+    }
+  }
+  const comment = (params as { comment?: unknown }).comment
+  if (comment !== undefined) {
+    if (
+      !isRpcRecord(comment) ||
+      Object.keys(comment).length !== 2 ||
+      typeof comment.content !== 'string' ||
+      typeof comment.marketUrl !== 'string'
+    ) {
+      return { ok: false, error: 'Order comment is invalid' }
+    }
+    try {
+      createTradeCommentTemplate({
+        conditionId,
+        content: comment.content,
+        marketUrl: comment.marketUrl,
+        createdAt: Math.floor(Date.now() / 1_000),
+      })
+    } catch {
+      return { ok: false, error: 'Order comment is invalid' }
+    }
+  }
+  if (!deps.prepareSettlementCapability) {
+    return { ok: false, error: 'daemon settlement capability coordinator is unavailable' }
+  }
+  const clientOrderId = randomUUID()
+  let operationId: string | undefined
+  let orderId: string | undefined
+  let participationScore: DaemonParticipationScorePreflightResult | undefined
+  let prepared: PreparedSettlementCapability
+  try {
+    prepared = await deps.prepareSettlementCapability(
+      preparationInput(resolved.value, clientOrderId),
+      client,
+      async (requiredScore) => {
+        const score = await client.getParticipationScore()
+        const plan = planParticipationScoreTopUp(score, requiredScore)
+        const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
+          mintUrl: profile.mintUrl,
+        })
+        const backingError = participationScoreBackingError({ availableScoreMsat, plan })
+        if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+        participationScore = await ensureDaemonParticipationScoreForNextMatch({
+          client,
+          profile,
+          secrets,
+          deps,
+          score,
+          plan,
+          requiredScore,
+        })
+      },
+      feeConsent.feeFacts,
+    )
+    operationId = prepared.operationId
+    orderId = prepared.capability.orderId
+    assertPreparedSettlementCapability(prepared, { clientOrderId, marketId: request.marketId })
+    if (!participationScore)
+      throw new Error('daemon settlement capability coordinator skipped Score admission')
+  } catch (error) {
+    if (error instanceof InsufficientParticipationScoreBackingError) {
+      return { ok: false, error: error.message, clientOrderId, operationId, orderId }
+    }
+    deps.triggerSettlementRecovery?.()
+    return {
+      ok: false,
+      error: 'Order preparation is uncertain; check order status before retrying',
+      clientOrderId,
+      operationId,
+      orderId,
+    }
+  }
+  let submitted: SubmitOrderResponse
+  try {
+    const signedComment =
+      comment === undefined
+        ? null
+        : signNativeTradeComment(
+            { privateKeyHex: secrets.nostrSecretKeyHex },
+            {
+              conditionId,
+              content: (comment as { content: string }).content,
+              marketUrl: (comment as { marketUrl: string }).marketUrl,
+              createdAt: Math.floor(Date.now() / 1_000),
+            },
+          )
+    submitted = await measureOrderPhase(
+      deps.observeOrderTimeline,
+      'order-submit',
+      {
+        clientOrderId,
+        operationId,
+        orderId,
+      },
+      () =>
+        client.submitOrder(request.marketId, {
+          settlementCapability: prepared.capability.reference,
+          comment: signedComment,
+        }),
+    )
+  } catch (error) {
+    if (error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error)) {
+      try {
+        await prepared.markRejected()
+      } catch {
+        deps.triggerSettlementRecovery?.()
+      }
+      return {
+        ok: false,
+        code: error.code,
+        error: 'Order submission was rejected',
+        clientOrderId,
+        operationId,
+        orderId,
+      }
+    }
+    deps.triggerSettlementRecovery?.()
+    return {
+      ok: false,
+      error: 'Order submission is uncertain; check order status before retrying',
+      clientOrderId,
+      operationId,
+      orderId,
+    }
+  }
+  if (submitted.orderId !== orderId) {
+    deps.triggerSettlementRecovery?.()
+    return {
+      ok: false,
+      error: 'Order submission is uncertain; check order status before retrying',
+      clientOrderId,
+      operationId,
+      orderId,
+    }
+  }
+  try {
+    const local = await measureOrderPhase(
+      deps.observeOrderTimeline,
+      'submitted-record',
+      {
+        clientOrderId,
+        operationId,
+        orderId,
+      },
+      async () => {
+        const recorded = await recordSubmittedOrder(
+          request.marketId,
+          clientOrderId,
+          submitted,
+          null,
+          request.tokenSide,
+          request.side,
+          request.price,
+          request.amountSubunits,
+          marketUnit.baseAsset,
+          marketUnit.divisibility,
+        )
+        await prepared.markSubmitted()
+        return recorded
+      },
+    )
+    await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
+    return {
+      ok: true,
+      result: {
+        engine: submitted,
+        local,
+        participationScore,
+        settlementCapability: prepared.capability,
+        operationId,
+        consolidation: prepared.consolidation,
+      },
+    }
+  } catch {
+    deps.triggerSettlementRecovery?.()
+    return {
+      ok: false,
+      error: 'Order submission is uncertain; check order status before retrying',
+      clientOrderId,
+      operationId,
+      orderId,
+    }
+  }
+}
+
+async function dispatchWalletActivitySync(
+  params: unknown,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  let request: ReturnType<typeof validateWalletActivitySyncParams>
+  try {
+    request = validateWalletActivitySyncParams(params)
+  } catch {
+    return {
+      ok: false,
+      code: 'invalid-wallet-activity-sync-request',
+      error: 'Wallet Activity sync request is invalid',
+    }
+  }
+  try {
+    if (!(await readProfile())) return { ok: false, error: 'daemon profile is not initialized' }
+    if (!deps.getCustodyFence)
+      return {
+        ok: false,
+        code: 'activity-sync-unavailable',
+        error: 'Wallet Activity sync requires the current profile owner',
+      }
+    if (!(await readSelectedDaemonSigner()).enabled)
+      return {
+        ok: false,
+        code: 'signer-disconnected',
+        error: 'Application signer is disconnected.',
+      }
+    return {
+      ok: true,
+      result: await syncNativeActivity(
+        profileDir(),
+        deps.getCustodyFence,
+        request,
+        deps.nativeActivitySyncOptions,
+      ),
+    }
+  } catch {
+    return {
+      ok: false,
+      code: 'wallet-activity-sync-failed',
+      error: 'Wallet Activity sync failed. Check the current signer, wallet, and relay selection.',
+    }
+  }
+}
+
+async function dispatchWalletActivity(params: unknown): Promise<DaemonResponse> {
+  let request: ReturnType<typeof validateWalletActivityParams>
+  try {
+    request = validateWalletActivityParams(params)
+  } catch {
+    return {
+      ok: false,
+      code: 'invalid-wallet-activity-request',
+      error: 'Wallet Activity request is invalid',
+    }
+  }
+  if (!(await readProfile())) {
+    return { ok: false, error: 'daemon profile is not initialized' }
+  }
+  const secrets = await readSecrets()
+  if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+  const walletId = deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex'))
+  if (request.walletId !== undefined && request.walletId !== walletId) {
+    return {
+      ok: false,
+      code: 'wallet-activity-wallet-mismatch',
+      error: 'Wallet Activity wallet ID does not match the selected wallet',
+    }
+  }
+  const session = createDaemonStateSqliteSession(profileDir())
+  const page = await session.read((database) =>
+    new NativeActivitySqlite(database).page({ ...request, walletId }),
+  )
+  return { ok: true, result: page }
+}
+
 function requiresReadyCustody(method: DaemonCommand['method']): boolean {
   return (
     method === 'market.create' ||
+    method === 'market.create-native' ||
+    method === 'market.creation-resume' ||
+    method === 'market.creation-quote' ||
+    method === 'market.funding.quote' ||
+    method === 'market.funding.head' ||
+    method === 'market.fund' ||
+    method === 'score.quote' ||
+    method === 'score.buy' ||
+    method === 'score.status' ||
     method === 'wallet.receive' ||
+    method === 'wallet.request.create' ||
     method === 'wallet.send' ||
+    method === 'wallet.pay.quote' ||
+    method === 'wallet.pay.execute' ||
+    method === 'wallet.invoice.create' ||
+    method === 'wallet.invoice.replace' ||
     method === 'wallet.splitCompleteSet' ||
     method === 'wallet.consolidateMarket' ||
     method === 'wallet.consolidateProofs' ||
     method === 'wallet.retireCondition' ||
-    method === 'order.submit'
+    method === 'wallet.claimPosition' ||
+    method === 'wallet.removePreview' ||
+    method === 'wallet.removePosition' ||
+    method === 'order.submit' ||
+    method === 'order.fee-preview'
   )
+}
+
+async function dispatchNativePaymentRequest(
+  command: Extract<
+    DaemonCommand,
+    {
+      method:
+        | 'wallet.request.create'
+        | 'wallet.request.status'
+        | 'wallet.request.list'
+        | 'wallet.request.recover'
+    }
+  >,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const params: unknown = command.params
+  if (
+    params !== undefined &&
+    (typeof params !== 'object' || params === null || Array.isArray(params))
+  )
+    return {
+      ok: false,
+      code: 'invalid-payment-request',
+      error: 'invalid native payment request command',
+    }
+  const row = (params ?? {}) as Record<string, unknown>
+  const validId = (value: unknown) =>
+    typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 256
+  let valid: boolean
+  switch (command.method) {
+    case 'wallet.request.create':
+      valid =
+        Object.keys(row).every((key) => key === 'requestId') &&
+        (row.requestId === undefined || validId(row.requestId))
+      break
+    case 'wallet.request.status':
+    case 'wallet.request.recover':
+      valid = Object.keys(row).length === 1 && validId(row.requestId)
+      break
+    case 'wallet.request.list':
+      valid =
+        Object.keys(row).every((key) => key === 'cursor' || key === 'pageSize') &&
+        (row.cursor === undefined ||
+          row.cursor === null ||
+          (typeof row.cursor === 'string' && Buffer.byteLength(row.cursor) <= 4096)) &&
+        (row.pageSize === undefined ||
+          (Number.isSafeInteger(row.pageSize) &&
+            Number(row.pageSize) >= 1 &&
+            Number(row.pageSize) <= 256))
+      break
+  }
+  if (!valid)
+    return {
+      ok: false,
+      code: 'invalid-payment-request',
+      error: 'invalid native payment request command',
+    }
+  if (deps.nativePaymentRequests === undefined)
+    return {
+      ok: false,
+      code: 'payment-request-unavailable',
+      error: 'native payment request service is unavailable',
+    }
+  try {
+    switch (command.method) {
+      case 'wallet.request.create':
+        return { ok: true, result: await deps.nativePaymentRequests.create(command.params) }
+      case 'wallet.request.status':
+        return { ok: true, result: await deps.nativePaymentRequests.status(command.params) }
+      case 'wallet.request.recover':
+        return { ok: true, result: await deps.nativePaymentRequests.recover(command.params) }
+      case 'wallet.request.list':
+        return {
+          ok: true,
+          result: await deps.nativePaymentRequests.list({
+            cursor: command.params?.cursor ?? null,
+            limit: command.params?.pageSize,
+          }),
+        }
+    }
+  } catch {
+    return {
+      ok: false,
+      code: 'payment-request-failed',
+      error: 'native payment request command failed',
+    }
+  }
+}
+
+type NativeLightningInvoiceCommand = Extract<
+  DaemonCommand,
+  {
+    method:
+      | 'wallet.invoice.create'
+      | 'wallet.invoice.show'
+      | 'wallet.invoice.hide'
+      | 'wallet.invoice.replace'
+  }
+>
+
+async function dispatchNativeLightningInvoice(
+  command: NativeLightningInvoiceCommand,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  if (!isValidNativeLightningInvoiceParams(command.method, command.params as unknown)) {
+    return invalidNativeLightningInvoiceRequest()
+  }
+
+  if (!(await readProfile())) {
+    return { ok: false, error: 'daemon profile is not initialized' }
+  }
+  const ops = deps.nativeLightningOps
+  if (!ops) return { ok: false, error: 'native Lightning invoice operations are unavailable' }
+
+  try {
+    switch (command.method) {
+      case 'wallet.invoice.create': {
+        const invoice = await ops.createInvoice(command.params.amountMsat)
+        deps.triggerCustodyRecovery?.()
+        return { ok: true, result: invoice }
+      }
+      case 'wallet.invoice.show': {
+        const invoice = await ops.showInvoice(command.params.quoteRecordId)
+        return invoice === null
+          ? { ok: false, code: 'invoice-not-found', error: 'invoice was not found' }
+          : { ok: true, result: invoice }
+      }
+      case 'wallet.invoice.hide':
+        return { ok: true, result: await ops.hideInvoice(command.params.quoteRecordId) }
+      case 'wallet.invoice.replace': {
+        const replacement = await ops.replaceInvoice(
+          command.params.quoteRecordId,
+          command.params.amountMsat,
+        )
+        deps.triggerCustodyRecovery?.()
+        return { ok: true, result: replacement }
+      }
+    }
+  } catch {
+    return {
+      ok: false,
+      code: 'invoice-operation-failed',
+      error: 'Invoice operation failed. Inspect saved invoices before retrying.',
+    }
+  }
+}
+
+function isValidNativeLightningInvoiceParams(
+  method: NativeLightningInvoiceCommand['method'],
+  value: unknown,
+): boolean {
+  if (!isRpcRecord(value)) return false
+  switch (method) {
+    case 'wallet.invoice.create':
+      return isPositiveSafeMsat(value.amountMsat)
+    case 'wallet.invoice.show':
+    case 'wallet.invoice.hide':
+      return isNativeInvoiceRecordId(value.quoteRecordId)
+    case 'wallet.invoice.replace':
+      return isNativeInvoiceRecordId(value.quoteRecordId) && isPositiveSafeMsat(value.amountMsat)
+  }
+  return false
+}
+
+function invalidNativeLightningInvoiceRequest(): DaemonResponse {
+  return {
+    ok: false,
+    code: 'invalid-invoice-request',
+    error: 'Invoice request is invalid',
+  }
+}
+
+function isNativeInvoiceRecordId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+type NativeWalletPaymentCommand = Extract<
+  DaemonCommand,
+  { method: 'wallet.pay.quote' | 'wallet.pay.execute' | 'wallet.pay.status' }
+>
+
+async function dispatchNativeWalletPayment(
+  command: NativeWalletPaymentCommand,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const params = command.params as unknown
+  if (!isRpcRecord(params)) return invalidNativeWalletPaymentRequest()
+  if (command.method === 'wallet.pay.quote') {
+    if (
+      typeof params.invoice !== 'string' ||
+      params.invoice.length === 0 ||
+      params.invoice.length > 10_000 ||
+      params.invoice.trim() !== params.invoice
+    ) {
+      return invalidNativeWalletPaymentRequest()
+    }
+  } else if (command.method === 'wallet.pay.execute') {
+    if (!isWalletPaymentQuote(params.consent)) return invalidNativeWalletPaymentRequest()
+  } else if (!isWalletPaymentOperationId(params.operationId)) {
+    return invalidNativeWalletPaymentRequest()
+  }
+
+  if (!(await readProfile())) {
+    return { ok: false, error: 'daemon profile is not initialized' }
+  }
+  const ops = deps.nativeWalletPaymentOps
+  if (!ops) {
+    return { ok: false, code: 'wallet-payment-unavailable', error: 'Wallet payment is unavailable' }
+  }
+
+  switch (command.method) {
+    case 'wallet.pay.quote':
+      try {
+        return { ok: true, result: await ops.quote({ invoice: params.invoice as string }) }
+      } catch {
+        return {
+          ok: false,
+          code: 'wallet-payment-quote-unavailable',
+          error: 'Invoice payment quote is unavailable; no payment was started',
+        }
+      }
+    case 'wallet.pay.execute': {
+      const consent = params.consent as WalletPaymentQuote
+      try {
+        return {
+          ok: true,
+          result: await ops.pay({
+            ...consent,
+            approvedMaxDebitMsat: consent.totalWalletDebitMsat,
+          }),
+        }
+      } catch {
+        return {
+          ok: false,
+          code: 'wallet-payment-unconfirmed',
+          error: 'Wallet payment could not be confirmed; inspect status before retrying',
+          result: { operationId: consent.operationId },
+        }
+      } finally {
+        deps.triggerCustodyRecovery?.()
+      }
+    }
+    case 'wallet.pay.status':
+      try {
+        return {
+          ok: true,
+          result: await ops.status({ operationId: params.operationId as string }),
+        }
+      } catch {
+        return {
+          ok: false,
+          code: 'wallet-payment-status-unavailable',
+          error: 'Wallet payment status is unavailable',
+        }
+      }
+  }
+  return invalidNativeWalletPaymentRequest()
+}
+
+function invalidNativeWalletPaymentRequest(): DaemonResponse {
+  return {
+    ok: false,
+    code: 'invalid-wallet-payment-request',
+    error: 'Wallet payment request is invalid',
+  }
+}
+
+type ParticipationScoreCommand = Extract<
+  DaemonCommand,
+  { method: 'score.show' | 'score.quote' | 'score.buy' | 'score.status' }
+>
+
+interface ParticipationScoreContext {
+  readonly engineBaseUrl: string
+  readonly accountSubject: string
+  readonly walletId: string
+  readonly mintUrl: string
+}
+
+/** Handle native Score reads and explicitly approved Score purchases. */
+async function dispatchParticipationScore(
+  command: ParticipationScoreCommand,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const profile = await readProfile()
+  if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+  const secrets = await readSecrets()
+  if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+  const client = await createEngineClient(deps, {
+    baseUrl: profile.engineBaseUrl,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+  })
+  if (command.method === 'score.show') {
+    try {
+      return { ok: true, result: await client.getParticipationScore() }
+    } catch {
+      return {
+        ok: false,
+        code: 'score-unavailable',
+        error: 'Participation Score is unavailable',
+      }
+    }
+  }
+
+  const context = readParticipationScoreContext(
+    profile.engineBaseUrl,
+    profile.mintUrl,
+    secrets.nostrPublicKeyHex,
+    deps,
+  )
+  if (context === null) {
+    return {
+      ok: false,
+      code: 'score-wallet-unavailable',
+      error: 'Participation Score requires the configured wallet custody profile',
+    }
+  }
+
+  if (command.method === 'score.quote') {
+    const params = command.params as unknown
+    if (
+      !isRpcRecord(params) ||
+      !isTransferId(params.deliveryId) ||
+      !isPositiveSafeScore(params.scorePoints)
+    ) {
+      return {
+        ok: false,
+        code: 'invalid-score-purchase',
+        error: 'Score purchase request is invalid',
+      }
+    }
+    const amountMsat = scorePointsToMsat(params.scorePoints)
+    if (amountMsat === null) {
+      return {
+        ok: false,
+        code: 'invalid-score-purchase',
+        error: 'Score purchase amount is invalid',
+      }
+    }
+    try {
+      const score = await client.getParticipationScore()
+      if (!isParticipationScoreForAccount(score, context.accountSubject)) {
+        return { ok: false, code: 'score-account-mismatch', error: 'Score account context changed' }
+      }
+      const cost = await (deps.participationScoreOps?.quote ?? quoteParticipationScoreCashu)({
+        amountMsat,
+        profile,
+        secrets,
+        deps,
+      })
+      if (!isScorePurchaseCost(cost, amountMsat)) {
+        return {
+          ok: false,
+          code: 'score-quote-invalid',
+          error: 'The wallet returned an invalid Score purchase quote',
+        }
+      }
+      return {
+        ok: true,
+        result: {
+          request: {
+            deliveryId: params.deliveryId,
+            scorePoints: params.scorePoints,
+            amountMsat,
+            purchasedTotalEpoch: score.purchasedTotal,
+            ...context,
+          },
+          cost,
+        },
+      }
+    } catch {
+      return {
+        ok: false,
+        code: 'score-quote-unavailable',
+        error: 'Participation Score purchase cost is unavailable',
+      }
+    }
+  }
+
+  const consent = decodeScorePurchaseConsent(command.params?.consent)
+  if (consent === null) {
+    return { ok: false, code: 'invalid-score-purchase', error: 'Score purchase consent is invalid' }
+  }
+  if (!scoreConsentMatchesContext(consent, context)) {
+    return {
+      ok: false,
+      code: 'score-consent-context-mismatch',
+      error: 'Score purchase consent belongs to a different engine, account, wallet, or mint',
+    }
+  }
+  const { request, cost } = consent
+  const recipientClient = {
+    getDurableRecipientDeliveryStatus: (deliveryId: string) => {
+      if (client.getDurableRecipientDeliveryStatus === undefined) {
+        throw new Error('engine does not support durable recipient delivery status')
+      }
+      return client.getDurableRecipientDeliveryStatus(deliveryId)
+    },
+    submitDurableRecipientDelivery: (submission: DurableRecipientDeliverySubmission) => {
+      if (client.submitDurableRecipientDelivery === undefined) {
+        throw new Error('engine does not support durable recipient delivery submission')
+      }
+      return client.submitDurableRecipientDelivery(submission)
+    },
+  }
+
+  let remoteStatus: DurableRecipientDeliveryStatus | null
+  try {
+    remoteStatus = await readParticipationScoreDeliveryStatus({
+      deliveryId: request.deliveryId,
+      accountSubject: context.accountSubject,
+      amountMsat: request.amountMsat,
+      mintUrl: context.mintUrl,
+      client: recipientClient,
+    })
+  } catch {
+    return {
+      ok: false,
+      code: 'score-status-unavailable',
+      error: 'Participation Score delivery status is unavailable; no new payment was started',
+    }
+  }
+  if (
+    remoteStatus !== null &&
+    (remoteStatus.state === 'credited' || command.method === 'score.status')
+  ) {
+    return {
+      ok: true,
+      result: scoreDeliveryStatusResult(consent, remoteStatus.state, remoteStatus.result),
+    }
+  }
+  if (command.method === 'score.status') {
+    return {
+      ok: true,
+      result: scoreDeliveryStatusResult(consent, 'not-found', null),
+    }
+  }
+
+  if (remoteStatus === null) {
+    let score: ParticipationScoreResponse
+    try {
+      score = await client.getParticipationScore()
+    } catch {
+      return {
+        ok: false,
+        code: 'score-unavailable',
+        error: 'Current Participation Score is unavailable; no new payment was started',
+      }
+    }
+    if (
+      !isParticipationScoreForAccount(score, context.accountSubject) ||
+      score.purchasedTotal !== request.purchasedTotalEpoch
+    ) {
+      return {
+        ok: false,
+        code: 'score-consent-stale',
+        error: 'Participation Score changed after this quote; create a new quote before payment',
+      }
+    }
+  }
+  try {
+    const delivery = await (deps.participationScoreOps?.deliver ?? deliverParticipationScoreCashu)({
+      deliveryId: request.deliveryId,
+      accountSubject: context.accountSubject,
+      amountMsat: request.amountMsat,
+      purchasedTotalEpoch: request.purchasedTotalEpoch,
+      maxWalletDebitMsat: cost.totalWalletDebitMsat,
+      requireExactRequest: true,
+      retryOnly: remoteStatus !== null,
+      profile,
+      secrets,
+      client: recipientClient,
+      deps,
+    })
+    return {
+      ok: true,
+      result: {
+        deliveryId: delivery.deliveryId,
+        transferId: delivery.transferId,
+        scorePoints: request.scorePoints,
+        amountMsat: request.amountMsat,
+        totalWalletDebitMsat: cost.totalWalletDebitMsat,
+        state: delivery.state,
+      },
+    }
+  } catch (error) {
+    if (error instanceof ParticipationScoreRetryUnavailableError && remoteStatus !== null) {
+      return {
+        ok: true,
+        result: scoreDeliveryStatusResult(consent, remoteStatus.state, remoteStatus.result),
+      }
+    }
+    const message =
+      error instanceof Error &&
+      (error.message === 'outgoing wallet debit exceeds the approved maximum' ||
+        error.message === 'Participation Score purchase conflicts with the active delivery')
+        ? error.message
+        : 'Participation Score purchase could not be confirmed; reuse the same quote to check status'
+    return { ok: false, code: 'score-purchase-unconfirmed', error: message }
+  } finally {
+    deps.triggerCustodyRecovery?.()
+  }
+}
+
+function readParticipationScoreContext(
+  engineBaseUrl: string,
+  mintUrl: string,
+  accountSubject: string,
+  deps: DispatchDependencies,
+): ParticipationScoreContext | null {
+  const fence = deps.getCustodyFence?.()
+  const prefix = 'custody:wallet:'
+  if (fence === undefined || !fence.scopeId.startsWith(prefix)) return null
+  const walletId = fence.scopeId.slice(prefix.length)
+  if (!/^[0-9a-f]{64}$/.test(walletId)) return null
+  return { engineBaseUrl, accountSubject, walletId, mintUrl }
+}
+
+function decodeScorePurchaseConsent(value: unknown): ScorePurchaseConsent | null {
+  if (!isRpcRecord(value) || !isRpcRecord(value.request) || !isRpcRecord(value.cost)) return null
+  const request = value.request
+  const cost = value.cost
+  if (
+    !isTransferId(request.deliveryId) ||
+    !isPositiveSafeScore(request.scorePoints) ||
+    !isPositiveSafeMsat(request.amountMsat) ||
+    !Number.isSafeInteger(request.purchasedTotalEpoch) ||
+    (request.purchasedTotalEpoch as number) < 0 ||
+    typeof request.engineBaseUrl !== 'string' ||
+    typeof request.accountSubject !== 'string' ||
+    typeof request.walletId !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(request.walletId) ||
+    typeof request.mintUrl !== 'string' ||
+    !isNonNegativeSafeInteger(cost.sendPreparationFeeMsat) ||
+    !isPositiveSafeMsat(cost.totalWalletDebitMsat)
+  ) {
+    return null
+  }
+  const amountMsat = scorePointsToMsat(request.scorePoints)
+  if (
+    amountMsat === null ||
+    amountMsat !== request.amountMsat ||
+    cost.amountMsat !== request.amountMsat ||
+    cost.totalWalletDebitMsat !== request.amountMsat + cost.sendPreparationFeeMsat
+  ) {
+    return null
+  }
+  return value as unknown as ScorePurchaseConsent
+}
+
+function scoreConsentMatchesContext(
+  consent: ScorePurchaseConsent,
+  context: ParticipationScoreContext,
+): boolean {
+  return (
+    consent.request.engineBaseUrl === context.engineBaseUrl &&
+    consent.request.accountSubject === context.accountSubject &&
+    consent.request.walletId === context.walletId &&
+    consent.request.mintUrl === context.mintUrl
+  )
+}
+
+function isScorePurchaseCost(
+  value: { amountMsat: number; sendPreparationFeeMsat: number; totalWalletDebitMsat: number },
+  amountMsat: number,
+): boolean {
+  return (
+    value.amountMsat === amountMsat &&
+    isNonNegativeSafeInteger(value.sendPreparationFeeMsat) &&
+    isPositiveSafeMsat(value.totalWalletDebitMsat) &&
+    Number.isSafeInteger(amountMsat + value.sendPreparationFeeMsat) &&
+    value.totalWalletDebitMsat === amountMsat + value.sendPreparationFeeMsat
+  )
+}
+
+function isParticipationScoreForAccount(
+  score: ParticipationScoreResponse,
+  accountSubject: string,
+): boolean {
+  return (
+    score.pubkey === accountSubject &&
+    Number.isSafeInteger(score.purchasedTotal) &&
+    score.purchasedTotal >= 0
+  )
+}
+
+function isPositiveSafeScore(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function scorePointsToMsat(scorePoints: number): number | null {
+  const amountMsat = scorePoints * 1_000
+  return Number.isSafeInteger(amountMsat) ? amountMsat : null
+}
+
+function scoreDeliveryStatusResult(
+  consent: ScorePurchaseConsent,
+  state: DurableRecipientDeliveryStatus['state'] | 'not-found',
+  recipientResult: DurableRecipientDeliveryStatus['result'] | null,
+) {
+  return {
+    deliveryId: consent.request.deliveryId,
+    transferId: consent.request.deliveryId,
+    scorePoints: consent.request.scorePoints,
+    amountMsat: consent.request.amountMsat,
+    totalWalletDebitMsat: consent.cost.totalWalletDebitMsat,
+    state,
+    ...(recipientResult === null
+      ? {}
+      : {
+          creditedAmountMsat: recipientResult.creditedAmount,
+          receiveFeeMsat: recipientResult.receiveFee,
+        }),
+  }
+}
+
+type MarketFundingCommand = Extract<
+  DaemonCommand,
+  { method: 'market.funding.quote' | 'market.funding.head' | 'market.fund' }
+>
+
+/** Resolve product authority at the daemon boundary. The caller cannot choose the subject. */
+async function dispatchMarketFunding(
+  command: MarketFundingCommand,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  const params = command.params as unknown
+  if (!isRpcRecord(params) || !isCanonicalConditionId(params.conditionId)) {
+    return { ok: false, code: 'invalid-market-funding', error: 'conditionId is invalid' }
+  }
+  const conditionId = params.conditionId
+  if (command.method === 'market.funding.quote') {
+    if (!isPositiveSafeMsat(params.requestedAmountMsat)) {
+      return { ok: false, code: 'invalid-market-funding', error: 'requestedAmountMsat is invalid' }
+    }
+  }
+  if (command.method === 'market.fund') {
+    const attempt = params.attempt
+    if (
+      !isRpcRecord(attempt) ||
+      (attempt.kind === 'begin'
+        ? !isTransferId(attempt.newAttemptId) ||
+          (attempt.expectedPreviousTransferId !== null &&
+            !isTransferId(attempt.expectedPreviousTransferId)) ||
+          typeof attempt.requestedAmount !== 'string' ||
+          !/^[1-9][0-9]*$/.test(attempt.requestedAmount) ||
+          !isPositiveSafeMsat(Number(attempt.requestedAmount))
+        : attempt.kind !== 'resume' || !isTransferId(attempt.transferId))
+    ) {
+      return { ok: false, code: 'invalid-market-funding', error: 'funding attempt is invalid' }
+    }
+    if (params.maxWalletDebitMsat !== undefined && !isPositiveSafeMsat(params.maxWalletDebitMsat)) {
+      return { ok: false, code: 'invalid-market-funding', error: 'maxWalletDebitMsat is invalid' }
+    }
+  }
+
+  const profile = await readProfile()
+  if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+  if (!(await readSelectedDaemonSigner()).enabled)
+    return { ok: false, code: 'signer-disconnected', error: 'Application signer is disconnected.' }
+  const secrets = await readSecrets()
+  if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+  if (!deps.getCustodyFence) {
+    return { ok: false, error: 'market funding requires custody authority' }
+  }
+  const client = await createEngineClient(deps, {
+    baseUrl: profile.engineBaseUrl,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+  })
+  let market: unknown
+  try {
+    market = await loadMarket(client, conditionId)
+  } catch {
+    return {
+      ok: false,
+      code: 'market-funding-unavailable',
+      error: 'market funding metadata is unavailable',
+    }
+  }
+  if (market === null) {
+    return { ok: false, code: 'market-not-found', error: 'market was not found' }
+  }
+  let divisibility: number
+  let outcomeCount: number
+  try {
+    if (!isRpcRecord(market) || market.baseAsset !== 'sat') {
+      throw new Error('unsupported market')
+    }
+    if (market.conditionId !== conditionId) {
+      throw new Error('market condition mismatch')
+    }
+    if (parseMarketDivisibility(market.divisibility) === null) {
+      throw new Error('market divisibility is invalid')
+    }
+    divisibility = normalizeMarketDivisibility(market.divisibility, 'sat')
+    outcomeCount = parseMarketOutcomes(market).length
+  } catch {
+    return { ok: false, code: 'invalid-market', error: 'market funding metadata is invalid' }
+  }
+  const product = {
+    accountSubject: secrets.nostrPublicKeyHex,
+    conditionId,
+    divisibility,
+    outcomeCount,
+    profile,
+    deps,
+  }
+  if (command.method === 'market.funding.head') {
+    try {
+      const head = await (deps.marketFundingOps?.head ?? readMarketFundingHeadCashu)(product)
+      return {
+        ok: true,
+        result: head === null ? null : { transferId: head.transferId, revision: head.revision },
+      }
+    } catch {
+      return {
+        ok: false,
+        code: 'market-funding-unavailable',
+        error: 'market funding head is unavailable',
+      }
+    }
+  }
+  if (command.method === 'market.funding.quote') {
+    try {
+      const quote = await (deps.marketFundingOps?.quote ?? quoteMarketFundingCashu)({
+        requestedAmountMsat: params.requestedAmountMsat as number,
+        outcomeCount,
+        profile,
+        secrets,
+        deps,
+      })
+      return {
+        ok: true,
+        result: {
+          grossFundingMsat: quote.grossFundingMsat,
+          sendPreparationFeeMsat: quote.sendPreparationFeeMsat,
+          estimatedRecipientReceiveFeeMsat: quote.estimatedRecipientReceiveFeeMsat,
+          totalWalletDebitMsat: quote.totalWalletDebitMsat,
+          netFundingMsat: quote.netFundingMsat,
+        },
+      }
+    } catch (error) {
+      const refusal = safeMarketFundingRefusal(error)
+      if (refusal !== null) {
+        return { ok: false, code: 'market-funding-refused', error: refusal }
+      }
+      return {
+        ok: false,
+        code: 'market-funding-unavailable',
+        error: 'market funding quote is unavailable',
+      }
+    }
+  }
+  if (
+    client.getDurableRecipientDeliveryStatus === undefined ||
+    client.submitDurableRecipientDelivery === undefined
+  ) {
+    return {
+      ok: false,
+      code: 'market-funding-unavailable',
+      error: 'engine does not support durable funding delivery',
+    }
+  }
+  const attempt = command.params.attempt
+  try {
+    const delivery = await (deps.marketFundingOps?.deliver ?? deliverMarketFundingCashu)({
+      ...product,
+      attempt,
+      maxWalletDebitMsat: command.params.maxWalletDebitMsat,
+      secrets,
+      client: {
+        getDurableRecipientDeliveryStatus: (id) => client.getDurableRecipientDeliveryStatus!(id),
+        submitDurableRecipientDelivery: (submission) =>
+          client.submitDurableRecipientDelivery!(submission),
+      },
+    })
+    return {
+      ok: true,
+      result: {
+        deliveryId: delivery.deliveryId,
+        transferId: delivery.transferId,
+        state: delivery.state,
+      },
+    }
+  } catch (error) {
+    const attemptId = attempt.kind === 'begin' ? attempt.newAttemptId : attempt.transferId
+    const refusal = safeMarketFundingRefusal(error)
+    return {
+      ok: false,
+      code: refusal === null ? 'market-funding-unconfirmed' : 'market-funding-refused',
+      error: refusal ?? 'Market funding could not be confirmed. Retry the same attempt.',
+      result: { attemptId },
+    }
+  }
+}
+
+function isRpcRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isCanonicalConditionId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function isTransferId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value)
+}
+
+function isPositiveSafeMsat(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+function safeMarketFundingRefusal(error: unknown): string | null {
+  if (error instanceof Error) {
+    if (error.message === 'market funding predecessor is not credited') return error.message
+    if (error.message === 'market funding wallet debit exceeds the approved maximum')
+      return error.message
+    if (error.message === 'market funding requires an approved maximum wallet debit')
+      return error.message
+    if (error.message === 'market funding amount is too small after the receive fee')
+      return error.message
+    if (error.message === 'market funding head changed') return error.message
+  }
+  return null
+}
+
+function rejectUnsupportedPublicOrder(command: DaemonCommand): DaemonResponse | null {
+  if (command.method !== 'order.submit' && command.method !== 'order.fee-preview') return null
+  const timeInForce =
+    command.params !== null && typeof command.params === 'object'
+      ? (command.params as { timeInForce?: unknown }).timeInForce
+      : undefined
+  if (timeInForce === 'FOK') return null
+  return {
+    ok: false,
+    code: 'invalid-order-type',
+    error: 'Order rejected: public orders require FOK',
+  }
 }
 
 async function ensureDaemonParticipationScoreForNextMatch(input: {
@@ -1097,8 +3003,9 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   deps: DispatchDependencies
   score: ParticipationScoreResponse
   plan: ParticipationScoreTopUpPlan
+  requiredScore: number
 }): Promise<DaemonParticipationScorePreflightResult> {
-  const { score, plan } = input
+  const { score, plan, requiredScore } = input
   if (plan.kind === 'disabled') return { kind: 'disabled', score }
   if (plan.kind === 'sufficient') return { kind: 'sufficient', score }
 
@@ -1108,11 +3015,11 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   ) {
     throw new Error('daemon engine client does not support durable Cashu deliveries')
   }
-  const deliver = (deliveryId: string, amountSats: number, purchasedTotalEpoch: number) =>
+  const deliver = (deliveryId: string, amountMsat: number, purchasedTotalEpoch: number) =>
     deliverParticipationScoreCashu({
       deliveryId,
       accountSubject: input.secrets.nostrPublicKeyHex,
-      amountSats,
+      amountMsat,
       purchasedTotalEpoch,
       profile: input.profile,
       secrets: input.secrets,
@@ -1124,35 +3031,54 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
       },
       deps: input.deps,
     })
+  const waitForDeliveryRetry =
+    input.deps.waitForParticipationScoreDeliveryRetry ??
+    (() =>
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS),
+      ))
+  const deliverUntilCredited = async (
+    deliveryId: string,
+    amountMsat: number,
+    purchasedTotalEpoch: number,
+  ) => {
+    let lastState: 'pending' | 'received' = 'pending'
+    for (let attempt = 0; attempt < PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS; attempt += 1) {
+      if (attempt > 0)
+        await waitForDeliveryRetry(attempt, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS)
+      const delivery = await deliver(deliveryId, amountMsat, purchasedTotalEpoch)
+      if (delivery.state === 'credited') return delivery
+      lastState = delivery.state
+    }
+    throw new Error(`Participation Score delivery remains ${lastState}`)
+  }
   const deliveryId = randomUUID()
   try {
-    let delivery = await deliver(deliveryId, plan.deficitScore, score.purchasedTotal)
-    if (delivery.state !== 'credited') {
-      throw new Error(`Participation Score delivery remains ${delivery.state}`)
-    }
+    let delivery = await deliverUntilCredited(
+      deliveryId,
+      participationScoreToMsat(plan.deficitScore),
+      score.purchasedTotal,
+    )
     let refreshedScore = await input.client.getParticipationScore()
     if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
-    let refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    let refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     if (refreshedPlan.kind === 'needs-top-up') {
       const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
-      delivery = await deliver(
+      delivery = await deliverUntilCredited(
         randomUUID(),
-        refreshedPlan.deficitScore,
+        participationScoreToMsat(refreshedPlan.deficitScore),
         purchasedBeforeSecondDelivery,
       )
-      if (delivery.state !== 'credited') {
-        throw new Error(`Participation Score delivery remains ${delivery.state}`)
-      }
       refreshedScore = await input.client.getParticipationScore()
       if (refreshedScore.purchasedTotal <= purchasedBeforeSecondDelivery) {
-        throw new Error('Participation Score credit is not available for this order')
+        throw new Error('Participation Score credit is not available for this capability')
       }
-      refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+      refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     }
     if (refreshedPlan.kind === 'needs-top-up') {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
     return {
       kind: 'paid',
@@ -1257,8 +3183,8 @@ async function consolidateMarket(input: {
         type: input.type,
         status: 'skipped',
         reason: plan.reason,
-        convertFeeSats: plan.feeSats ?? 0,
-        collateralReturnedSats: 0,
+        convertFeeMsat: plan.feeSubunits ?? 0,
+        collateralReturnedMsat: 0,
         spentInputs: [],
         outputs: [],
       },
@@ -1396,66 +3322,28 @@ function assertPreparedSettlementCapability(
   }
 }
 
-export function orderBackingError(input: {
-  side: 'Buy' | 'Sell'
-  price: number
-  amountSubunits: number
-  divisibility: number
-  holdings: TokenHoldings
-}): string | null {
-  if (input.side === 'Buy') {
-    const requiredCollateral = requiredBuyCollateral(input)
-    if (input.holdings.baseUnitProofs >= requiredCollateral) return null
-    return `insufficient backing: have ${input.holdings.baseUnitProofs} base subunits, need ${requiredCollateral}`
-  }
-
-  const backing = canBackOrder(
-    {
-      side: 'ask',
-      sizeSubunits: input.amountSubunits,
-      shareFaceSubunits: input.divisibility,
-    },
-    input.holdings,
-    {},
-    input.divisibility,
-  )
-  if (backing.canBack) return null
-  const requiredShares = Math.ceil(input.amountSubunits / input.divisibility)
-  return `insufficient backing: have ${backing.maxShares} outcome token shares, need ${requiredShares} shares`
-}
-
 function participationScoreBackingError(input: {
-  side: 'Buy' | 'Sell'
-  price: number
-  amountSubunits: number
-  divisibility: number
-  holdings: TokenHoldings
+  availableScoreMsat: number
   plan: ParticipationScoreTopUpPlan
 }): string | null {
   if (input.plan.kind !== 'needs-top-up') return null
-  const scoreSubunits = input.plan.deficitScore * 1_000
-  const orderSubunits = input.side === 'Buy' ? requiredBuyCollateral(input) : 0
-  const required = scoreSubunits + orderSubunits
-  if (!Number.isSafeInteger(required)) {
-    throw new Error('combined order and Participation Score backing exceeds safe range')
+  if (!Number.isSafeInteger(input.availableScoreMsat) || input.availableScoreMsat < 0) {
+    throw new Error('Participation Score backing exceeds safe range')
   }
-  if (input.holdings.baseUnitProofs >= required) return null
-  return `insufficient combined backing: have ${input.holdings.baseUnitProofs} base subunits, need ${required} for the order and Participation Score`
+  const requiredMsat = participationScoreToMsat(input.plan.deficitScore)
+  if (input.availableScoreMsat >= requiredMsat) return null
+  return `insufficient Participation Score backing: have ${input.availableScoreMsat} msat, need ${requiredMsat} msat`
 }
 
-function requiredBuyCollateral(input: {
-  price: number
-  amountSubunits: number
-  divisibility: number
-}): number {
-  return input.amountSubunits % input.divisibility === 0
-    ? quotePaymentSubunits({
-        faceAmountSubunits: input.amountSubunits,
-        priceNumerator: input.price,
-        divisibility: input.divisibility,
-      })
-    : // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
-      Math.ceil((input.amountSubunits * input.price) / input.divisibility)
+function participationScoreToMsat(score: number): number {
+  if (!Number.isSafeInteger(score) || score <= 0) {
+    throw new Error('Participation Score amount is invalid')
+  }
+  const amountMsat = score * 1_000
+  if (!Number.isSafeInteger(amountMsat)) {
+    throw new Error('Participation Score amount exceeds safe range')
+  }
+  return amountMsat
 }
 
 async function trackOwnedOrderBestEffort(
@@ -1472,46 +3360,101 @@ async function trackOwnedOrderBestEffort(
   }
 }
 
-function createEngineClient(
+async function createEngineClient(
   deps: DispatchDependencies,
   options: { baseUrl: string; nostrSecretKeyHex: string },
-): EngineClientLike {
+): Promise<EngineClientLike> {
+  if (!(await readSelectedDaemonSigner()).enabled)
+    return new BitcasterEngineClient({ baseUrl: options.baseUrl })
   if (deps.createEngineClient) return deps.createEngineClient(options)
-  return new BitcasterEngineClient({
-    baseUrl: options.baseUrl,
-    authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
-  })
+  return createAuthenticatedBitcasterEngineClient(options)
 }
 
-function createAuthenticatedBitcasterEngineClient(options: {
-  baseUrl: string
-  nostrSecretKeyHex: string
-}): BitcasterEngineClient {
-  return new BitcasterEngineClient({
-    baseUrl: options.baseUrl,
-    authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
-  })
-}
-
-function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
-  const probability = outcomes.length > 0 ? 1 / outcomes.length : 0
-  return outcomes.map((name) => ({ name, probability }))
-}
-
-async function readMarketThumbnail(path: string): Promise<MarketThumbnailBytes> {
-  const bytes = await readFile(path)
-  return {
-    data: bytes,
-    filename: basename(path),
+function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
+  switch (method) {
+    case 'market.create':
+    case 'market.create-native':
+    case 'score.show':
+    case 'score.quote':
+    case 'score.buy':
+    case 'score.status':
+    case 'order.fee-preview':
+    case 'order.submit':
+    case 'order.status':
+    case 'order.cancel':
+      return true
+    case 'health':
+    case 'daemon.status':
+    case 'market.creation-resume':
+    // The funding dispatcher validates its request before checking the signer.
+    case 'market.funding.quote':
+    case 'market.funding.head':
+    case 'market.fund':
+    case 'market.oracle-backup-list':
+    case 'market.oracle-backup-restore':
+    case 'market.oracle-backup-status':
+    case 'market.oracle-backup-retry':
+    case 'market.announcement-republish':
+    case 'market.creation-status':
+    case 'market.creation-quote':
+    case 'market.close':
+    case 'market.attest':
+    case 'market.attestation-retry':
+    case 'market.resolution-status':
+    case 'markets.query':
+    case 'markets.show':
+    case 'wallet.balance':
+    case 'wallet.positions':
+    case 'wallet.portfolio':
+    case 'wallet.assets':
+    case 'wallet.pay.quote':
+    case 'wallet.pay.execute':
+    case 'wallet.pay.status':
+    case 'wallet.receive':
+    case 'wallet.request.create':
+    case 'wallet.request.status':
+    case 'wallet.request.list':
+    case 'wallet.request.recover':
+    case 'wallet.send':
+    case 'wallet.invoice.create':
+    case 'wallet.invoice.show':
+    case 'wallet.invoice.hide':
+    case 'wallet.invoice.replace':
+    case 'wallet.reclaim':
+    case 'wallet.splitCompleteSet':
+    case 'wallet.consolidateMarket':
+    case 'wallet.consolidateProofs':
+    case 'wallet.retireCondition':
+    case 'wallet.claimPosition':
+    case 'wallet.removePreview':
+    case 'wallet.removePosition':
+    case 'wallet.operations':
+    case 'wallet.activity':
+    case 'wallet.activity-sync':
+    case 'wallet.recover':
+    case 'order.list':
+    case 'order.book':
+      return false
+    default: {
+      const unsupported: never = method
+      throw new Error(`Unknown daemon command: ${unsupported}`)
+    }
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
+  return outcomes.map((name) => ({ name }))
+}
+
+async function readBody(req: IncomingMessage, maxBytes?: number): Promise<string> {
   const chunks: Buffer[] = []
+  let bytes = 0
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const body = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    bytes += body.byteLength
+    if (maxBytes !== undefined && bytes > maxBytes)
+      throw new Error('daemon request exceeds byte limit')
+    chunks.push(body)
   }
   return Buffer.concat(chunks).toString('utf8')
 }

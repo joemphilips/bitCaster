@@ -1,0 +1,7 @@
+{
+  "producerPath": "artifacts/d2/http-condition-info.json",
+  "sha256": "941830cf8af43623452e9d08eb5d5953e64f481b753502413c50579ec7eadfcf",
+  "producerCommit": "9574e4b6680e1b908cabf8af4a2053bd1adbe598",
+  "producerTest": "crates/cdk-axum/src/router_handlers.rs real SQLite reopen condition info HTTP evidence test",
+  "registrationFacts": "Read from original serialized announcement TLV. Identity is SHA256 of complete announcement bytes. Scope and mint URL are explicit consumer test bindings; producer test creates the mint router without a public origin."
+}

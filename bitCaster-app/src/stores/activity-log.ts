@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { ActivityItem, ActivityType, ActivityStatus } from "@/types/portfolio";
+import type { ActivityItem, ActivityStatus, ActivityType } from "@/types/portfolio";
 
 interface ActivityLogState {
   items: ActivityItem[];
   addActivity: (entry: {
+    walletId: string;
     type: ActivityType;
-    amountSats: number;
+    amountSubunits: number;
     baseAsset: ActivityItem["baseAsset"];
     status: ActivityStatus;
     txId?: string | null;
@@ -14,51 +15,37 @@ interface ActivityLogState {
     marketId?: string;
     marketTitle?: string;
   }) => void;
+  upsertConfirmedTrade: (item: ActivityItem) => void;
   replace: (items: ActivityItem[]) => void;
   clear: () => void;
 }
 
-function activityItemEqual(a: ActivityItem, b: ActivityItem): boolean {
-  return (
-    a.id === b.id &&
-    a.type === b.type &&
-    a.amountSats === b.amountSats &&
-    a.baseAsset === b.baseAsset &&
-    a.date === b.date &&
-    a.status === b.status &&
-    a.txId === b.txId &&
-    a.lightningInvoice === b.lightningInvoice &&
-    a.failureReason === b.failureReason &&
-    a.marketId === b.marketId &&
-    a.marketTitle === b.marketTitle &&
-    a.positionId === b.positionId
-  );
-}
-
-export function activityLogsEqual(a: readonly ActivityItem[], b: readonly ActivityItem[]): boolean {
-  if (a.length !== b.length) return false;
-  const byId = new Map(a.map((item) => [item.id, item] as const));
-  for (const item of b) {
-    const other = byId.get(item.id);
-    if (!other || !activityItemEqual(other, item)) return false;
-  }
-  return true;
-}
-
-function activityLogsEqualInOrder(a: readonly ActivityItem[], b: readonly ActivityItem[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((item, index) => activityItemEqual(item, b[index]));
-}
+import {
+  activityItemIdentityKey,
+  activityLogsEqualInOrder,
+  decodeActivityItem,
+  decodeActivityItems,
+  isCanonicalActivityWalletId,
+} from "@bitcaster/client-sdk/activityLog";
+export {
+  activityItemIdentityKey,
+  activityLogsEqual,
+  decodeActivityItem,
+} from "@bitcaster/client-sdk/activityLog";
 
 export const useActivityLogStore = create<ActivityLogState>()(
   persist(
     (set, get) => ({
       items: [],
       addActivity: (entry) => {
+        if (!isCanonicalActivityWalletId(entry.walletId)) {
+          throw new Error("Activity wallet id is invalid.");
+        }
         const item: ActivityItem = {
           id: crypto.randomUUID(),
+          walletId: entry.walletId,
           type: entry.type,
-          amountSats: entry.amountSats,
+          amountSubunits: entry.amountSubunits,
           baseAsset: entry.baseAsset,
           date: new Date().toISOString(),
           status: entry.status,
@@ -68,6 +55,30 @@ export const useActivityLogStore = create<ActivityLogState>()(
           marketTitle: entry.marketTitle,
         };
         set((s) => ({ items: [item, ...s.items].slice(0, 500) }));
+      },
+      upsertConfirmedTrade: (item) => {
+        const decoded = decodeActivityItem(item);
+        if (
+          decoded === null ||
+          decoded.walletId === undefined ||
+          decoded.marketId === undefined ||
+          decoded.tradeDetails === undefined ||
+          (decoded.type !== "Buy" && decoded.type !== "Sell") ||
+          decoded.status !== "completed"
+        ) {
+          throw new Error("Confirmed trade activity is invalid.");
+        }
+        const identity = activityItemIdentityKey(decoded);
+        set((s) => {
+          const next = [
+            decoded,
+            ...s.items.filter((current) => activityItemIdentityKey(current) !== identity),
+          ]
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+            .slice(0, 500);
+          if (activityLogsEqualInOrder(s.items, next)) return s;
+          return { items: next };
+        });
       },
       replace: (items) => {
         const next = [...items]
@@ -81,6 +92,14 @@ export const useActivityLogStore = create<ActivityLogState>()(
     {
       name: "bitcaster-activity-log",
       partialize: (s) => ({ items: s.items }),
+      merge: (persistedState, currentState) => {
+        const stored = persistedState as { items?: unknown } | undefined;
+        return {
+          ...currentState,
+          items:
+            stored?.items === undefined ? currentState.items : decodeActivityItems(stored.items),
+        };
+      },
     },
   ),
 );

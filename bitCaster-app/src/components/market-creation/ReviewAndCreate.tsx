@@ -2,6 +2,7 @@ import { FileText, Tag, Calendar, BarChart3, Loader2 } from "lucide-react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
+import { categoricalOutcomeColors, normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
 
 interface ReviewAndCreateProps {
   description: string;
@@ -24,6 +25,10 @@ export function ReviewAndCreate({
 }: ReviewAndCreateProps) {
   const { t } = useTranslation();
   const canCreate = description.trim().length > 0 && !isSubmitting;
+  const colors =
+    outcomes?.outcomeType === "categorical"
+      ? categoricalOutcomeColors(outcomes.outcomes ?? [])
+      : null;
 
   return (
     <div className="w-full max-w-xl">
@@ -128,19 +133,33 @@ export function ReviewAndCreate({
                     </p>
                     {outcomes.outcomes && (
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {outcomes.outcomes.map((o) => (
-                          <span
-                            key={o.id}
-                            className="px-2 py-0.5 rounded-full bg-slate-800 text-xs text-slate-300"
-                          >
-                            {o.probability !== undefined
-                              ? t("marketCreation.outcomeWithProbability", {
-                                  label: o.label || t("common.unnamed"),
-                                  probability: o.probability,
-                                })
-                              : o.label || t("common.unnamed")}
-                          </span>
-                        ))}
+                        {outcomes.outcomes.map((o, index) => {
+                          const color = colors
+                            ? normalizeOutcomeColor(colors[index])
+                            : o.color
+                              ? normalizeOutcomeColor(o.color)
+                              : null;
+                          return (
+                            <span
+                              key={o.id}
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800 text-xs text-slate-300"
+                            >
+                              {outcomes.outcomeType === "categorical" && color && (
+                                <span
+                                  aria-hidden="true"
+                                  className="h-2.5 w-2.5 rounded-full border border-white/20"
+                                  style={{ backgroundColor: color }}
+                                />
+                              )}
+                              <span>{o.label || t("common.unnamed")}</span>
+                              {outcomes.outcomeType === "categorical" && (
+                                <span className="text-slate-500">
+                                  {color ?? t("marketCreation.outcomeColorAutomatic")}
+                                </span>
+                              )}
+                            </span>
+                          );
+                        })}
                       </div>
                     )}
                   </>

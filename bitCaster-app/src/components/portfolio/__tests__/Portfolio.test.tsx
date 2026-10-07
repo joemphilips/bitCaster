@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Portfolio } from "../Portfolio";
+import { PositionRow } from "../PositionRow";
 import type {
   PortfolioProps,
   UserProfile,
@@ -42,7 +43,6 @@ const mockPLData: PLChartData = {
 const mockStats: PortfolioStats = {
   positionsValueSats: 445750,
   totalValueSats: 618750,
-  biggestWinSats: 86400,
   predictionsCount: 8,
 };
 
@@ -53,15 +53,11 @@ const mockPositions: Position[] = [
     marketTitle: "Will Bitcoin reach $100K?",
     marketImageUrl: "/images/markets/bitcoin-100k.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 150,
-    avgBuyPrice: 620,
-    currentPrice: 675,
     currentValueSats: 101250,
-    profitLossSats: 8250,
-    profitLossPercent: 8.87,
     status: "active",
     isWinner: false,
     isLoser: false,
@@ -74,15 +70,11 @@ const mockPositions: Position[] = [
     marketTitle: "Will Ethereum merge complete?",
     marketImageUrl: "/images/markets/eth-merge.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 100,
-    avgBuyPrice: 450,
-    currentPrice: 1000,
     currentValueSats: 100000,
-    profitLossSats: 55000,
-    profitLossPercent: 122.22,
     status: "closed",
     isWinner: true,
     isLoser: false,
@@ -96,15 +88,11 @@ const mockPositions: Position[] = [
     marketTitle: "Will the Fed raise rates?",
     marketImageUrl: "/images/markets/fed-rates.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 250,
-    avgBuyPrice: 380,
-    currentPrice: 0,
     currentValueSats: 0,
-    profitLossSats: -95000,
-    profitLossPercent: -100,
     status: "closed",
     isWinner: false,
     isLoser: true,
@@ -122,9 +110,10 @@ const mockFunds: Fund[] = [
 const mockActivity: ActivityItem[] = [
   {
     id: "act-001",
+    walletId: "a".repeat(64),
     type: "deposit",
     baseAsset: "sat",
-    amountSats: 500000,
+    amountSubunits: 500000,
     date: "2025-08-15T09:35:00Z",
     status: "completed",
     txId: "a1b2c3d4e5f6789012345678901234567890abcd",
@@ -132,9 +121,10 @@ const mockActivity: ActivityItem[] = [
   },
   {
     id: "act-002",
+    walletId: "a".repeat(64),
     type: "Buy",
     baseAsset: "sat",
-    amountSats: 93600,
+    amountSubunits: 93600,
     date: "2025-09-20T10:30:00Z",
     status: "completed",
     txId: null,
@@ -151,7 +141,7 @@ const mockCreatedMarkets: CreatedMarket[] = [
     title: "Will Lightning reach 100K channels?",
     imageUrl: "/images/markets/lightning-channels.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     status: "active",
     createdDate: "2025-11-20T14:00:00Z",
     volume: 456200,
@@ -163,7 +153,7 @@ const mockCreatedMarkets: CreatedMarket[] = [
     title: "Will Nostr reach 10M users?",
     imageUrl: "/images/markets/nostr-users.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     status: "resolved",
     createdDate: "2025-06-10T08:30:00Z",
     resolvedDate: "2025-12-31T23:59:59Z",
@@ -190,6 +180,143 @@ function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
   };
   return render(<Portfolio {...defaultProps} />);
 }
+
+describe("PositionRow", () => {
+  it("shows the retained unverified amount without wallet action buttons", () => {
+    render(
+      <PositionRow
+        position={{
+          ...mockPositions[1],
+          retainedUnverifiedAmountSubunits: 1000,
+          canClaimPayout: false,
+          canDiscard: false,
+          canSell: false,
+          isWinner: false,
+          isLoser: false,
+          isPending: false,
+          valueKnown: false,
+        }}
+        onClaim={vi.fn()}
+        onDiscard={vi.fn()}
+        onSell={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("1,000 msat");
+    expect(screen.getByRole("status")).toHaveTextContent(/outcome is unverified/);
+    expect(screen.queryByRole("button", { name: /claim|remove|sell/i })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { side: "yes", label: "Yes Alpha", color: "text-emerald-700" },
+    { side: "no", label: "No Alpha", color: "text-rose-700" },
+    { side: "Outcome", label: "Alpha or Gamma", color: "text-slate-700" },
+  ] as const)("uses identity color for an active $side label", ({ side, label, color }) => {
+    render(<PositionRow position={{ ...mockPositions[0], side, outcomeLabel: label }} />);
+    expect(screen.getByText(label)).toHaveClass(color);
+  });
+
+  it("shows a categorical outcome swatch without changing Sell availability", () => {
+    const position = {
+      ...mockPositions[0],
+      side: "Outcome" as const,
+      outcomeId: "Alpha",
+      outcomeLabel: "Alpha",
+      outcomeColor: "#123ABC",
+      canSell: true,
+    };
+
+    render(<PositionRow position={position} onSell={vi.fn()} />);
+
+    expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
+      backgroundColor: "#123ABC",
+    });
+    expect(screen.getByRole("button", { name: /sell.*bitcoin/i })).toBeInTheDocument();
+  });
+
+  it("keeps a closed status neutral beside its categorical outcome swatch", () => {
+    const position = {
+      ...mockPositions[1],
+      side: "Outcome" as const,
+      outcomeId: "Alpha",
+      outcomeLabel: "Alpha",
+      outcomeColor: "#123ABC",
+    };
+
+    render(<PositionRow position={position} onClaim={vi.fn()} />);
+
+    expect(screen.getByText(/Won/)).toHaveClass("bg-slate-100");
+    expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
+      backgroundColor: "#123ABC",
+    });
+    expect(screen.getByLabelText(/claim payout.*ethereum/i)).toBeInTheDocument();
+  });
+
+  it("shows a winning payout value and Claim action without reporting profit", () => {
+    const { container } = render(<PositionRow position={mockPositions[1]} onClaim={vi.fn()} />);
+
+    expect(screen.getByText(/Won/)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/claim payout.*ethereum/i)).toBeInTheDocument();
+    expect(container.querySelector(".text-xs.font-mono")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/%/);
+  });
+
+  const actionScenarios = [
+    {
+      action: "Sell",
+      kind: "sell",
+      position: mockPositions[0],
+      buttonName: /sell.*bitcoin/i,
+    },
+    {
+      action: "Claim",
+      kind: "claim",
+      position: mockPositions[1],
+      buttonName: /claim payout.*ethereum/i,
+    },
+    {
+      action: "Remove",
+      kind: "discard",
+      position: mockPositions[2],
+      buttonName: /remove losing position.*fed/i,
+    },
+  ] as const;
+
+  const actionInteractions = actionScenarios.flatMap((scenario) => [
+    { ...scenario, interaction: "click" as const },
+    { ...scenario, interaction: "Enter" as const },
+    { ...scenario, interaction: "Space" as const },
+  ]);
+
+  it.each(actionInteractions)(
+    "$action $interaction activates without navigating the parent row",
+    async ({ kind, position, buttonName, interaction }) => {
+      const onView = vi.fn();
+      const onAction = vi.fn();
+      const actionProps =
+        kind === "sell"
+          ? { onSell: onAction }
+          : kind === "claim"
+            ? { onClaim: onAction }
+            : { onDiscard: onAction };
+      const user = userEvent.setup();
+
+      render(<PositionRow position={position} onView={onView} {...actionProps} />);
+      const button = screen.getByRole("button", { name: buttonName });
+
+      if (interaction === "click") {
+        await user.click(button);
+      } else {
+        button.focus();
+        await user.keyboard(interaction === "Enter" ? "{Enter}" : " ");
+      }
+
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onAction).toHaveBeenCalledWith(position.id);
+      expect(onView).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("Portfolio", () => {
   describe("No Wallet State", () => {
@@ -245,6 +372,16 @@ describe("Portfolio", () => {
       expect(screen.getAllByText("Sats")).toHaveLength(2);
     });
 
+    it("renders funds as non-interactive list rows", async () => {
+      renderPortfolio();
+      await userEvent.click(screen.getByRole("tab", { name: /funds/i }));
+
+      expect(screen.getByRole("list", { name: "Funds" })).toBeInTheDocument();
+      const rows = screen.getAllByRole("listitem");
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.querySelector("button") === null)).toBe(true);
+    });
+
     it("switches to activity tab", async () => {
       renderPortfolio();
       await userEvent.click(screen.getByRole("tab", { name: /activity/i }));
@@ -253,7 +390,159 @@ describe("Portfolio", () => {
     });
   });
 
+  describe("Monitoring status", () => {
+    it.each([null, "unavailable"] as const)(
+      "labels retained estimates and progress without claiming current local balances: %s",
+      (error) => {
+        renderPortfolio({
+          stats: { ...mockStats, totalValueLoading: true },
+          monitoring: {
+            retainingDisplay: true,
+            stale: true,
+            incomplete: false,
+            building: true,
+            unvaluedAssetCount: 0,
+            hasPendingOutgoing: false,
+            pendingOutgoingValueMsat: null,
+            error,
+            assetPageError: null,
+            hasMoreAssets: false,
+            loadingMoreAssets: false,
+            liveUpdateCoverageLimited: false,
+          },
+        });
+        const notice = screen
+          .getAllByRole("status")
+          .find((element) => element.textContent?.includes("last successful"));
+        expect(notice).toHaveTextContent("Showing the last successful portfolio estimate.");
+        expect(notice).toHaveTextContent("It is not a spendable balance.");
+        expect(notice).toHaveTextContent("Loading...");
+        expect(notice).not.toHaveTextContent("Local wallet data is shown.");
+        if (error) expect(notice).toHaveTextContent("Portfolio monitoring is unavailable.");
+      },
+    );
+    it.each([true, false])("shows value-level loading only during a request: %s", (loading) => {
+      renderPortfolio({
+        stats: {
+          ...mockStats,
+          totalValueKnown: false,
+          positionsValueKnown: false,
+          totalValueLoading: loading,
+          positionsValueLoading: loading,
+        },
+      });
+      expect(screen.queryAllByRole("status", { name: /Total Value: Loading/ })).toHaveLength(
+        loading ? 2 : 0,
+      );
+      expect(screen.queryAllByRole("status", { name: /Positions Value: Loading/ })).toHaveLength(
+        loading ? 1 : 0,
+      );
+      expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    });
+    it.each([null, 1_000])("does not add a banner for pending outgoing value %s", (value) => {
+      renderPortfolio({
+        monitoring: {
+          stale: false,
+          incomplete: false,
+          building: false,
+          unvaluedAssetCount: 0,
+          hasPendingOutgoing: true,
+          pendingOutgoingValueMsat: value,
+          error: null,
+          assetPageError: null,
+          hasMoreAssets: false,
+          loadingMoreAssets: false,
+          liveUpdateCoverageLimited: false,
+        },
+      });
+
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.getByText("Total Value")).toBeInTheDocument();
+    });
+
+    it.each([
+      ["complete", false, false, false, null],
+      ["building", true, false, false, null],
+      ["stale", false, true, false, "Portfolio data may be out of date."],
+      ["incomplete", false, false, true, "Some portfolio records are missing."],
+    ] as const)(
+      "distinguishes %s data from missing price estimates",
+      (_state, building, stale, incomplete, notice) => {
+        renderPortfolio({
+          positions: [
+            ...mockPositions,
+            {
+              ...mockPositions[0],
+              id: "unpriced-position",
+              marketTitle: "Unpriced position",
+              valueKnown: false,
+            },
+          ],
+          monitoring: {
+            stale,
+            incomplete,
+            building,
+            unvaluedAssetCount: 1,
+            hasPendingOutgoing: false,
+            pendingOutgoingValueMsat: null,
+            error: null,
+            assetPageError: null,
+            hasMoreAssets: false,
+            loadingMoreAssets: false,
+            liveUpdateCoverageLimited: false,
+          },
+        });
+
+        const status = screen.getByRole("status");
+        expect(status).toHaveTextContent("One position has no price estimate yet.");
+        if (notice) expect(status).toHaveTextContent(notice);
+        expect(status).not.toHaveTextContent("Updating");
+        expect(screen.getByText("Unpriced position")).toBeInTheDocument();
+        expect(
+          screen.getByText("A current price is not available for this position."),
+        ).toBeInTheDocument();
+      },
+    );
+  });
+
   describe("Positions", () => {
+    it("keeps pending removal visible after a remount", () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: true,
+        removalPending: true,
+      };
+      const props = { positions: [position], positionsTab: "closed" as const };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      expect(screen.getByText(position.marketTitle)).toBeInTheDocument();
+    });
+
+    it("keeps pending Claim visible and retryable after a remount", async () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: false,
+        isPending: true,
+        canClaimPayout: true,
+        claimRecoveryPending: true,
+      };
+      const onClaimPayout = vi.fn();
+      const props = { positions: [position], positionsTab: "closed" as const, onClaimPayout };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /claim payout/i }));
+      expect(onClaimPayout).toHaveBeenCalledWith(position.id);
+    });
     it("shows active positions by default", () => {
       renderPortfolio();
       expect(screen.getByText("Will Bitcoin reach $100K?")).toBeInTheDocument();
@@ -268,17 +557,13 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "A",
             outcomeLabel: "A",
             shares: 10,
-            avgBuyPrice: 0,
-            currentPrice: 0,
             currentValueSats: 10,
-            profitLossSats: 0,
-            profitLossPercent: 0,
             status: "active",
             isWinner: false,
             isLoser: false,
@@ -291,17 +576,13 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
             outcomeLabel: "Not A",
             shares: 25,
-            avgBuyPrice: 0,
-            currentPrice: 0,
             currentValueSats: 25,
-            profitLossSats: 0,
-            profitLossPercent: 0,
             status: "active",
             isWinner: false,
             isLoser: false,
@@ -328,17 +609,13 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
             outcomeLabel: "Not A",
             shares: 10,
-            avgBuyPrice: 0,
-            currentPrice: 0,
             currentValueSats: 10,
-            profitLossSats: 0,
-            profitLossPercent: 0,
             status: "closed",
             isWinner: false,
             isLoser: false,
@@ -363,16 +640,12 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
             shares: 10,
-            avgBuyPrice: 0,
-            currentPrice: 0,
             currentValueSats: 10,
-            profitLossSats: 0,
-            profitLossPercent: 0,
             status: "active",
             isWinner: false,
             isLoser: false,
@@ -385,15 +658,11 @@ describe("Portfolio", () => {
             marketTitle: "Unknown position",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             shares: 1,
-            avgBuyPrice: 0,
-            currentPrice: 0,
             currentValueSats: 1,
-            profitLossSats: 0,
-            profitLossPercent: 0,
             status: "active",
             isWinner: false,
             isLoser: false,
@@ -433,14 +702,14 @@ describe("Portfolio", () => {
     it("shows Claim button on winning closed positions", async () => {
       const onClaimPayout = vi.fn();
       renderPortfolio({ positionsTab: "closed", onClaimPayout });
-      // Winning closed position (pos-005, profitLossSats > 0)
+      // Winner classification authorizes Claim independently of displayed value.
       expect(screen.getByLabelText(/claim.*ethereum/i)).toBeInTheDocument();
     });
 
     it("does not show Claim button on losing closed positions", () => {
       const onClaimPayout = vi.fn();
       renderPortfolio({ positionsTab: "closed", onClaimPayout });
-      // Losing closed position (pos-006, profitLossSats < 0)
+      // Loser classification does not authorize Claim.
       expect(screen.queryByLabelText(/claim.*fed/i)).not.toBeInTheDocument();
     });
 
@@ -456,11 +725,15 @@ describe("Portfolio", () => {
       expect(screen.getByText("No active positions")).toBeInTheDocument();
     });
 
-    // P22 F1 — closed winner vs loser are visually distinct (Won ☺ / Lost 😭).
-    it("shows distinct Won and Lost badges on closed positions", () => {
-      renderPortfolio({ positionsTab: "closed" });
-      expect(screen.getByText(/Won/)).toBeInTheDocument();
-      expect(screen.getByText(/Lost/)).toBeInTheDocument();
+    it("uses explicit Won and Lost text with neutral closed-position colors", () => {
+      renderPortfolio({ positionsTab: "closed", onViewPosition: vi.fn() });
+      for (const label of [/Won/, /Lost/]) {
+        const badge = screen.getByText(label);
+        expect(badge).toHaveClass("bg-slate-100", "text-slate-700");
+        const row = badge.closest('[role="button"]');
+        expect(row).not.toBeNull();
+        expect(row?.className).not.toMatch(/bg-(emerald|rose|amber)-/);
+      }
     });
 
     // P22 F2 — Remove is offered for LOST positions only.
@@ -577,6 +850,7 @@ describe("Portfolio", () => {
           assetPageError: null,
           hasMoreAssets: true,
           loadingMoreAssets: false,
+          liveUpdateCoverageLimited: false,
         },
         onLoadMoreAssets,
       });
@@ -584,6 +858,34 @@ describe("Portfolio", () => {
       await userEvent.click(screen.getByRole("button", { name: "Load more" }));
 
       expect(onLoadMoreAssets).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the quiet coverage note visible after the final page", async () => {
+      const user = userEvent.setup();
+      renderPortfolio({
+        monitoring: {
+          stale: false,
+          incomplete: false,
+          building: false,
+          unvaluedAssetCount: 0,
+          hasPendingOutgoing: false,
+          pendingOutgoingValueMsat: null,
+          error: null,
+          assetPageError: null,
+          hasMoreAssets: false,
+          loadingMoreAssets: false,
+          liveUpdateCoverageLimited: true,
+        },
+      });
+
+      expect(screen.getByRole("note")).toHaveTextContent(
+        "Live updates cover the first page. Reload Portfolio and load later pages again to update their values.",
+      );
+      expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("tab", { name: "Funds" }));
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
     });
 
     it("calls onDeposit when Deposit is clicked", async () => {

@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Blob as NativeBlob, File as NativeFile } from "node:buffer";
+import { webcrypto } from "node:crypto";
+import { FormData as NativeFormData } from "undici";
+import { prepareMarketCreationRequest } from "@bitcaster/client-sdk";
 import {
   registerCondition,
   requiredMarketCreationOutcomeCollections,
   createMarket,
+  createPreparedMarket,
   MintError,
 } from "../markets";
 
@@ -10,10 +15,15 @@ const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   globalThis.fetch = vi.fn();
+  vi.stubGlobal("Blob", NativeBlob);
+  vi.stubGlobal("File", NativeFile);
+  vi.stubGlobal("FormData", NativeFormData);
+  vi.stubGlobal("crypto", webcrypto);
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  vi.unstubAllGlobals();
 });
 
 function mockFetchSuccess(body: unknown) {
@@ -27,7 +37,10 @@ function mockFetchSuccess(body: unknown) {
 
 function mockFetchError(status: number, body: { code: number; detail: string }) {
   vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }),
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }),
   );
 }
 
@@ -35,9 +48,19 @@ function mockFetchErrorNoBody(status: number) {
   vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response("not json", { status }));
 }
 
-const conditionParams = { tags: [["description", "test"]], announcementHex: "abc123" };
+const conditionParams = {
+  tags: [["description", "test"]],
+  announcementHex: "abc123",
+};
 
 describe("registerCondition", () => {
+  it("sends the retained fee request to the explicit saved mint destination", async () => {
+    mockFetchSuccess({ condition_id: "cond-123", keysets: {} });
+    await registerCondition(conditionParams, {
+      mintUrl: "https://saved-mint.example/",
+    });
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://saved-mint.example/v1/conditions");
+  });
   it("returns condition_id on success", async () => {
     mockFetchSuccess({ condition_id: "cond-123", keysets: {} });
     const result = await registerCondition(conditionParams);
@@ -45,7 +68,10 @@ describe("registerCondition", () => {
   });
 
   it("throws MintError with CDK code 13011 on oracle announcement verification failure", async () => {
-    mockFetchError(400, { code: 13011, detail: "Oracle announcement verification failed" });
+    mockFetchError(400, {
+      code: 13011,
+      detail: "Oracle announcement verification failed",
+    });
     await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError);
       expect(e.code).toBe(13011);
@@ -98,7 +124,11 @@ describe("registerCondition", () => {
     await expect(registerCondition(conditionParams)).rejects.toThrow("Failed to fetch");
   });
   it("sends collateral and requested outcome collections when provided", async () => {
-    mockFetchSuccess({ condition_id: "cond-123", keysets: { Yes: "ks1", No: "ks2" }, change: [] });
+    mockFetchSuccess({
+      condition_id: "cond-123",
+      keysets: { Yes: "ks1", No: "ks2" },
+      change: [],
+    });
     const stringifyingAmount = {
       toNumber: () => 2,
       toJSON: () => "2",
@@ -148,13 +178,9 @@ describe("requiredMarketCreationOutcomeCollections", () => {
 const createMarketParams = {
   title: "Test Market",
   description: "Test description",
-  outcomes: [
-    { name: "Yes", probability: 50 },
-    { name: "No", probability: 50 },
-  ],
-  liquiditySats: 10000,
+  outcomes: [{ name: "Yes" }, { name: "No" }],
   baseAsset: "sat" as const,
-  divisibility: 10_000,
+  divisibility: 1_000,
   categoryTags: ["crypto"],
 };
 
@@ -197,18 +223,63 @@ vi.mock("@nostr-dev-kit/ndk", async (importOriginal) => {
 });
 
 describe("createMarket", () => {
+  it("reauthorizes and delivers the exact prepared multipart bytes after binding checks", async () => {
+    const prepared = await prepareMarketCreationRequest(createMarketParams, {
+      data: new Uint8Array([1, 2, 3]),
+      filename: "original.png",
+      contentType: "image/png",
+    });
+    const check = vi.fn();
+    mockFetchSuccess({
+      conditionId: "cond-123",
+      marketsCreated: ["cond-123-Yes", "cond-123-No"],
+      baseAsset: "sat",
+      divisibility: 1_000,
+      thumbnailUrl: null,
+    });
+    await createPreparedMarket("cond-123", prepared, check);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[1]?.body).toEqual(prepared.bodyBytes);
+    expect(check).toHaveBeenCalledTimes(3);
+    const headers = call[1]?.headers as Record<string, string>;
+    const event = JSON.parse(atob(headers.Authorization.replace(/^Nostr /, ""))) as {
+      tags: string[][];
+    };
+    const digest = await crypto.subtle.digest("SHA-256", prepared.bodyBytes);
+    const hex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    expect(event.tags).toContainEqual(["payload", hex]);
+    expect(event.tags).toContainEqual(["u", `${window.location.origin}/api/v1/markets/cond-123`]);
+  });
+
+  it("refuses changed binding after asynchronous authorization before transport", async () => {
+    const prepared = await prepareMarketCreationRequest(createMarketParams);
+    const check = vi
+      .fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error("binding changed");
+      });
+    await expect(createPreparedMarket("cond-123", prepared, check)).rejects.toThrow(
+      "binding changed",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("returns response on success", async () => {
     const body = {
       conditionId: "cond-123",
       marketsCreated: ["cond-123-Yes", "cond-123-No"],
+      outcomeDetails: [{ name: "Yes" }, { name: "No" }],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     };
     mockFetchSuccess(body);
     const result = await createMarket("cond-123", createMarketParams);
     expect(result.conditionId).toBe("cond-123");
     expect(result.marketsCreated).toEqual(["cond-123-Yes", "cond-123-No"]);
+    expect(result.outcomeDetails).toEqual([{ name: "Yes" }, { name: "No" }]);
   });
 
   it("sends metadata as multipart form data", async () => {
@@ -217,7 +288,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 
@@ -239,7 +310,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 

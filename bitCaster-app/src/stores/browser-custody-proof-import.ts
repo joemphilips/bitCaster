@@ -11,7 +11,7 @@ import type {
   DurableCustodySuccessorAdmissionEvidence,
 } from "@bitcaster/client-sdk/durableCustody";
 import { BrowserDurableCustodyAdapter, type StagedBrowserCustodyProof } from "./durable-custody-db";
-import { db, type BitcasterDB } from "./proof-db";
+import { db, type BitcasterDB, type StoredProof } from "./proof-db";
 
 export interface BrowserCustodyProofImportInput {
   readonly scope: DurableCustodyScope;
@@ -25,6 +25,10 @@ export interface BrowserCustodyProofImportInput {
 export interface BrowserCustodyProofImportAtomicAuthority {
   readonly beforePersist?: () => void | Promise<void>;
   readonly afterPersist: () => void | Promise<void>;
+  readonly legacyProofCache?: {
+    readonly spentSecrets: readonly string[];
+    readonly freshProofs: readonly StoredProof[];
+  };
 }
 
 /** Commit several already-verified import pages in one physical custody transaction. */
@@ -86,6 +90,9 @@ export async function commitBrowserCustodyProofImportsAtomic(
               beforePersist: authority.beforePersist,
               afterPersist: authority.afterPersist,
             },
+            ...(authority.legacyProofCache === undefined
+              ? {}
+              : { legacyProofCache: authority.legacyProofCache }),
           }),
     },
   );

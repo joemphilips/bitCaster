@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -14,6 +14,7 @@ import {
   DAEMON_PROFILE_DATABASE,
   inventoryDaemonProfile,
   validateDaemonProfileSchema,
+  withValidatedDaemonProfileReadSnapshot,
 } from './profileSchema.ts'
 import {
   FINAL_PROFILE_APPLICATION_ID,
@@ -21,6 +22,7 @@ import {
   FINAL_PROFILE_SCHEMA_VERSION,
   getFinalProfileSchemaManifest,
 } from './profileSchemaManifest.ts'
+import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
 import {
   normalizeInitialProfileSecrets,
   ProfileSecretProtectionError,
@@ -52,6 +54,7 @@ export interface FreshDaemonProfileBootstrapInput {
   readonly walletSeedHex: string
   readonly nostrSecretKeyHex: string
   readonly nostrPublicKeyHex?: string
+  readonly nativeOracleNonceSeedHex?: string
   readonly rpcToken?: string
   readonly passphrase?: string
   readonly initializedAtMs?: number
@@ -77,7 +80,10 @@ export async function bootstrapFreshDaemonProfile(
   const initialInventory = await inventoryDaemonProfile(input.directory)
   assertFreshDaemonProfileInventory(initialInventory)
 
-  const secrets = normalizeInitialProfileSecrets(input)
+  const secrets = normalizeInitialProfileSecrets({
+    ...input,
+    nativeOracleNonceSeedHex: input.nativeOracleNonceSeedHex ?? randomBytes(32).toString('hex'),
+  })
   const initializedAtMs = exactTimestamp(input.initializedAtMs ?? Date.now())
   const engineBaseUrl = normalizeEndpointUrl(input.engineBaseUrl, 'engine URL')
   const mintUrl = normalizeEndpointUrl(input.mintUrl, 'mint URL')
@@ -221,7 +227,7 @@ function prepareBootstrapConfig(
   const result = ensureNativeConfig(
     {
       ...defaults,
-      daemon: { ...defaults.daemon, engineUrl, mintUrl },
+      daemon: { ...defaults.daemon, engineUrl, mintUrl, mintUrls: [mintUrl] },
     },
     directory,
   )
@@ -235,9 +241,20 @@ export async function readBootstrappedProfileSecrets(
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   const database = openImmutableProfileDatabase(directory)
   try {
-    const row = database
-      .prepare(
-        `SELECT secrets.wallet_scope_id AS walletScopeId,
+    return readProfileSecretAuthority(database, passphrase)
+  } finally {
+    database.close()
+  }
+}
+
+/** Reads and validates the secret/public binding inside an existing transaction. */
+export function readProfileSecretAuthority(
+  database: DatabaseSync,
+  passphrase?: string,
+): InitialProfileSecrets {
+  const row = database
+    .prepare(
+      `SELECT secrets.wallet_scope_id AS walletScopeId,
           secrets.nostr_public_key_hex AS nostrPublicKeyHex,
           secrets.protection, secrets.kdf, secrets.salt, secrets.iv,
           secrets.auth_tag AS authTag, secrets.secret_body AS body,
@@ -250,45 +267,54 @@ export async function readBootstrappedProfileSecrets(
          JOIN custody_scopes AS scope
            ON scope.scope_id = profile.wallet_scope_id
          WHERE secrets.singleton = 1`,
-      )
-      .get() as SecretAuthorityRow | undefined
-    if (row === undefined) throw new Error('daemon secret authority is missing')
-    const secrets = unlockInitialProfileSecrets(
-      protectedBodyFromRow(row),
-      row.walletScopeId,
-      row.nostrPublicKeyHex,
-      passphrase,
     )
-    const derived = deriveWalletIdentity(secrets.walletSeedHex)
-    if (
-      row.walletScopeId !== row.profileWalletScopeId ||
-      row.nostrPublicKeyHex !== row.profileNostrPublicKeyHex ||
-      row.walletScopeId !== derived.walletScopeId ||
-      row.walletId !== derived.walletId ||
-      row.walletSeedDigest !== derived.walletSeedDigest
-    ) {
-      throw new ProfileSecretProtectionError('secret-binding-mismatch')
-    }
-    return secrets
-  } finally {
-    database.close()
+    .get() as SecretAuthorityRow | undefined
+  if (row === undefined) throw new Error('daemon secret authority is missing')
+  const secrets = unlockInitialProfileSecrets(
+    protectedBodyFromRow(row),
+    row.walletScopeId,
+    row.nostrPublicKeyHex,
+    passphrase,
+  )
+  const derived = deriveWalletIdentity(secrets.walletSeedHex)
+  if (
+    row.walletScopeId !== row.profileWalletScopeId ||
+    row.nostrPublicKeyHex !== row.profileNostrPublicKeyHex ||
+    row.walletScopeId !== derived.walletScopeId ||
+    row.walletId !== derived.walletId ||
+    row.walletSeedDigest !== derived.walletSeedDigest
+  ) {
+    throw new ProfileSecretProtectionError('secret-binding-mismatch')
   }
+  return secrets
 }
 
 export async function readBootstrappedRpcToken(directory: string): Promise<string> {
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   const database = openImmutableProfileDatabase(directory)
   try {
-    const row = database.prepare('SELECT token FROM daemon_rpc_token WHERE singleton = 1').get() as
-      | { token: string }
-      | undefined
-    if (row === undefined || !/^[A-Za-z0-9_-]{43}$/.test(row.token)) {
-      throw new Error('daemon RPC token is invalid')
-    }
-    return row.token
+    return readProfileRpcTokenAuthority(database)
   } finally {
     database.close()
   }
+}
+
+export function readLiveBootstrappedRpcToken(directory: string): Promise<string> {
+  return withValidatedDaemonProfileReadSnapshot(
+    directory,
+    getFinalProfileSchemaManifest(),
+    readProfileRpcTokenAuthority,
+  )
+}
+
+function readProfileRpcTokenAuthority(database: DatabaseSync): string {
+  const row = database.prepare('SELECT token FROM daemon_rpc_token WHERE singleton = 1').get() as
+    | { token: string }
+    | undefined
+  if (row === undefined || !/^[A-Za-z0-9_-]{43}$/.test(row.token)) {
+    throw new Error('daemon RPC token is invalid')
+  }
+  return row.token
 }
 
 function configureWritableProfileConnection(database: DatabaseSync): void {
@@ -375,6 +401,13 @@ function writeAuthorityRows(
        VALUES (1, ?, ?)`,
     )
     .run(input.rpcToken, input.initializedAtMs)
+  database
+    .prepare(
+      `INSERT INTO daemon_oracle_nonce_allocator (singleton, next_nonce_index)
+       VALUES (1, 0)`,
+    )
+    .run()
+  new NativeActivitySqlite(database).initialize(randomUUID())
   database
     .prepare(
       `INSERT INTO profile_schema_marker

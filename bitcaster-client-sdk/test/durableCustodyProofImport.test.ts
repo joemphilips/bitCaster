@@ -53,11 +53,15 @@ describe('durable custody completed proof import', () => {
       }),
     )
     adapter.run((transaction) => stageImport(transaction, prepared, 20))
+    assert.deepEqual(adapter.readOperation()!.operation.proofStorage.pinReasons, [
+      'active-reservation',
+    ])
     adapter.run((transaction) => applyImport(transaction, prepared, 20))
     const applied = adapter.readOperation()!
 
     assert.equal(indexedOperationId, prepared.record.operation.operationId)
     assert.equal(applied.operation.result.state, 'applied')
+    assert.deepEqual(applied.operation.proofStorage.pinReasons, [])
     assert.deepEqual(adapter.readAdmittedProofIds(), prepared.successorProofIds)
   })
 
@@ -73,6 +77,7 @@ describe('durable custody completed proof import', () => {
     const second = restarted.readOperation()!
 
     assert.equal(second.revision, first.revision)
+    assert.deepEqual(second.operation.proofStorage.pinReasons, [])
     assert.equal(second.operation.result.resultFingerprint, prepared.artifacts.result.fingerprint)
     assert.throws(
       () =>

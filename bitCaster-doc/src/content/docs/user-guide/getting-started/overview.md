@@ -1,63 +1,125 @@
 ---
-title: "bitCaster 101"
-description: "What is bitCaster and what can you do with it?"
+title: 'bitCaster 101'
+description: 'What is bitCaster and what can you do with it?'
 sidebar:
   order: 1
 ---
 
 ## What is bitCaster?
 
-bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, the price of your tokens rises; if not, it falls.
+bitCaster is in development. There is no production deployment.
+Do not use real funds with development or test instances.
+
+bitCaster lets you buy and sell shares in the possible outcomes of an event.
+For example, a market can ask whether Alpha, Beta, or Gamma will win an election.
+In an ordinary market, each share in the winning outcome pays 1 sat.
+Shares in losing outcomes pay nothing. Before the result is known, trade
+prices can rise or fall. A correct prediction does not guarantee that you can
+sell at a profit before the market resolves.
 
 The browser serves casual participants and market creators. Professional and
 automated traders can use the CLI, daemon, and SDK. Every client uses the same
-CLOB and settlement protocol.
+order book and settlement protocol.
 
-At its core, it is fully open-spec and open-source. Your live wallet and tokens
-stay local to your browser. The web app can store an encrypted recovery copy
-that the server cannot decrypt; see [Encrypted wallet backup](./wallet-backup/)
-for its privacy boundary.
+The command-line interface (CLI) is also intended for your own graphical
+interface (GUI), terminal interface (TUI), scripts, or trading AI agents.
+It is an application interface, not just a debugging tool.
+The design goal is to expose every web-app operation and its required data
+through the CLI. Command coverage is still incomplete during development.
+Use `bitcaster-cli --help` to check the available commands.
+
+The browser app and protocol specifications are public. The matching engine
+is closed source. Your wallet stores Cashu ecash tokens in your browser.
+The web app can store an encrypted recovery copy that the server cannot
+decrypt. See [Encrypted wallet backup](/user-guide/getting-started/wallet-backup/)
+for its limits.
 
 For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
 
 ## What you can do
 
-### Trade anything, any way you wish
+### Buy and sell market shares
 
-Browse existing markets or place limit orders at any price. Markets can be binary
-(Yes/No) or categorical (multiple outcomes). The product
-uses sat ecash for ordinary wallet funding and msat conditional ecash for market
-positions. You can top up through a Lightning invoice or by pasting an existing
-sat Cashu token.
+Choose a market, an outcome, and how many shares to buy or sell.
+Review the quoted cost or sale proceeds and the separate fees before confirming.
+The order cannot buy for more, or sell for less, than the trade value you accept.
+Equal or better execution is allowed. If the current orders give a worse deal,
+the whole order is refused. Review a fresh quote before confirming a new order.
+The estimated last fill price describes the last match in your proposed order.
+It is not a promise of the next orderbook midpoint.
+The form checks your entered quantity and its fees. It warns when the current
+orders cannot fill that quantity within your price limit. A preview does not
+reserve liquidity. Your order fills in full
+within the limit or does not fill. It does not stay on the order book for later.
+Markets can have two outcomes, such as Yes and No, or up to eight named
+outcomes. You can fund your wallet through a Lightning invoice or with an
+existing Cashu token from the supported mint. The app shows amounts in sats.
+Small amounts can have decimal places. Compact balance and market summaries
+show these digits in smaller text. The amount stays exact.
 
-Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B`, and `C / Not C`. Under the hood, settlement can still lock complementary multi-outcome legs such as `B|C`, but users trade through the primitive book labels. The first release supports markets with up to 8 outcomes.
+Check the selected outcome before confirming. In the example above, Alpha
+means that Alpha wins. Not Alpha means that Beta or Gamma wins.
+
+After settlement, Activity shows each confirmed fill for the active wallet.
+When the order is known, Activity groups its recorded fills in one expandable
+row. Expand the row to see each fill's outcome, shares, and trade value before
+fees. This value is not the net change in your wallet balance. A group does not
+mean that the whole order has completed. Fills without a known order stay
+separate. A pending or failed order does not appear as a completed trade.
 
 ### Create your own market
 
-Anyone can freely create a new market. Define the question, the possible outcomes, and the resolution criteria.
-There is no gatekeeper deciding which markets are allowed.
+Define the question, the possible outcomes, and how the result will be decided.
+Market creation does not require a funding payment or an opening probability.
+It does not set a market price.
+
+You can fund the market-making bot after creation. You can add funding more
+than once. This funding is a non-refundable subsidy, not an investment that
+gives you shares, fees, or a right to withdraw. Keep it separate from funding
+your own trading wallet. If there is no available liquidity, the trade form
+directs you to the Liquidity tab. When all outcome books are empty, Buy and
+Sell show that message instead of an order form. A missing or failed book
+request is not treated as an empty market.
 
 ### Become an oracle
 
 In prediction markets, the value of a token depends on what actually happens in the real world. An oracle is the referee that determines that real-world outcome — which can sometimes be ambiguous.
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
-bitCaster's protocol is designed to make oracle fraud as difficult as possible. See [Resolution](../../core-concepts/resolution/) for details.
+A valid oracle signature identifies who signed the result. It does not prove that the result is true. bitCaster does not provide an oracle trust score. See [Resolution](../../core-concepts/resolution/) for details.
 
 When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
 
 ### Use the supported mint
 
-The first release supports one Cashu mint operated by bitCaster. The app does
-not support selecting or using another mint. The mint software and protocol
-specification remain public.
+The first release supports one Cashu mint operated by bitCaster.
+Native CLI settings can save and select mint endpoints.
+These settings do not extend trading support to another mint.
+Changing the selected endpoint does not move or convert existing funds.
+Keep access to the original mint for its funds and unfinished operations.
+The mint software and protocol specification remain public.
 
 ## How it works
 
-Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
+Every market outcome has a corresponding token. A public market price comes
+from the latest confirmed trade. Before the first confirmed trade, the market
+has no price, so the app shows **No trades yet** or an em dash. Prices from
+confirmed trades are shown as probabilities with one decimal place, such as
+**53.3%**. A bid/ask midpoint is an order-entry reference only.
 
-The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
+Enter a whole number of shares. Review the quote payment, itemized fees, and
+total payment or net proceeds before you submit. For example, buying 50 shares at 30.0%
+costs 15 sats before settlement fees. Those shares pay 50 sats if they win.
+The displayed percentage is a trade price, not a guarantee about the event.
 
-When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many. The mint cannot selectively freeze an identified user's ecash. It can stop service for everyone, so users must still assess the mint before they participate.
+When the event resolves, winning tokens can be redeemed. Losing tokens have
+no payout. You rely on the oracle to report the result correctly and on the
+mint to honor redemptions. If the mint stops service, trading or redemption
+can be delayed. Holding your wallet keys does not remove this mint risk.
+
+Cashu protects token ownership from the mint at the protocol level. It does
+not make all app activity anonymous. The matching engine can associate your
+authenticated activity with your account. Encrypted backup protects wallet
+contents; it does not hide all account or activity metadata.
 
 ## Your assets, your responsibility[^1]
 
@@ -72,18 +134,106 @@ cannot decrypt or spend your funds.
 Like any other cryptocurrency wallet, you are responsible for managing your own
 keys. Back up your 12-word mnemonic and keep it safe.
 
-When you first open the portfolio page or try to trade, bitCaster asks you to set up a wallet. You can create a new wallet (auto-generated locally in your browser) or import an existing wallet using your 12-word recovery phrase. A Nostr signing key is also created or connected at this point. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
+Before your first wallet action, choose Create wallet or Restore wallet.
+A new wallet is generated locally in your browser. To restore a wallet, enter
+a valid 12-word recovery phrase. Setup does not submit a payment automatically.
+Recovery-phrase and backup controls are available only when a wallet exists.
+
+To use another wallet, open the wallet section in Settings and import its
+recovery phrase. This replaces the active wallet; it does not add a second
+named profile. Save the current recovery phrase first. Unfinished wallet work
+or an incomplete backup can block replacement. Your Nostr account does not
+change. Activity stays associated with the wallet that performed it.
+
+Your Nostr signing key is a separate secret. Back up both the wallet recovery
+phrase and any Nostr secret key shown in the app. If you already use a Nostr
+account, connect it instead of generating a new one.
+
+Settings also shows the connected Nostr profile and a refresh control.
+Profile names are display information, not proof of identity.
+Use only your saved relay destinations. An empty relay list is an explicit
+opt-out from Nostr relay traffic, not a request to use fallback relays.
+Liked markets and other preferences are not a backup of wallet funds.
+
+The native CLI uses separate wallet profiles instead of replacing one in place.
+Select a profile with `--datadir`. Import seed and signer files only into a fresh
+profile. Keep the old profile while it has funds or unfinished work.
+Initialization imports keys; it does not recover funds.
+`wallet recover-seed` requires explicit acknowledgment of seed-candidate disclosure
+to the mint. See [CLI wallet and signer commands](/technical/#select-and-import-a-native-wallet-profile).
+
+### When wallet backup pauses an action
+
+Wait while **Preparing wallet backup** is shown. Do not keep pressing Continue.
+Top-up and other new wallet changes stay paused until backup preparation or recovery completes.
+If **Wallet backup stopped** is shown, use **Retry wallet backup**.
+If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
+Close an unused second wallet tab when the message asks you to do so.
+Sign in or reload when the message says the backup driver is unavailable.
+Keep the page open while a retry is pending.
+Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
+The local wallet keeps its funds and unfinished work while recovery is incomplete.
+Do not delete wallet data or start another payment to bypass the pause.
+
+## Find a market
+
+Use search, tags, and filters on the market list. The controls stay available
+while results load, when loading fails, and when no markets match. Use
+**Clear all** to remove the search text, selected tags, and filters.
+
+Tag counts and advanced filters apply to the loaded results, not the whole
+catalogue. Load more results when you need to look further.
+
+Save a market as liked to find it again. The CLI provides `market liked`,
+`market like`, and `market unlike`. Use `market liked --local` to read saved IDs
+without relay or catalogue requests. These preferences can be public on relays.
+See [Liked markets and live watches](/technical/#keep-liked-markets) for command details.
 
 ## Market detail pages
 
-The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
+The market chart shows recorded trades for each primitive outcome. If only one
+outcome has traded, only that line is shown; bitCaster does not invent prices
+for outcomes that have not traded. Before any confirmed trade, the market
+shows **No trades yet** or an em dash.
 
-The order book shows asks (sell orders) above the spread and bids (buy orders) below it, with the best prices closest to the spread. Each row combines price, cumulative depth, and visual thickness. Longer bars mean more cumulative liquidity available at that price or better, normalized across both sides so you can compare bid and ask depth at a glance. Market cards and detail pages show **Bot Budget** for creator-funded AMM markets; this is the static budget deposited for the bot, not a live order-book liquidity number.
+When you point at a historical date, the price is the last confirmed trade at
+or before that date. Pointer height does not set the price.
+An outcome with no confirmed trade at or before that date has no available price.
+Categorical lines connect confirmed points across alignment gaps.
+Those connections do not add trades or invent prices for untraded outcomes.
+
+If the service cannot read confirmed-trade prices, market details are
+temporarily unavailable. Try again later. This error does not mean that the
+market is missing or has no trades.
+
+The order book shows asks (sell orders) above the spread and bids (buy orders)
+below it, with the best prices closest to the spread. Each row combines price,
+cumulative depth, and visual thickness. Longer bars mean more cumulative
+liquidity available at that price or better, normalized across both sides so
+you can compare bid and ask depth at a glance. Market cards and detail pages
+show **Total funding** after receive fees for funded markets. New confirmed
+payments increase it. Trades do not reduce it. It is not current order-book
+liquidity.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 
+Chart comment bubbles point to the time and price of the associated confirmed
+trade. Hover over, focus, or tap a bubble to read the comment. A comment stays
+in the comment list when its trade point is unavailable or outside the chart
+view. The list shows when the comment was written.
+
+Each chart comment shows its public author, text, and written date. The author
+is the public key that signed the comment. If a public Nostr profile is
+available, the app shows its display name. Otherwise, it shows a shortened
+public key. Profile lookup does not block the market page. A profile name is
+display information, not proof of identity.
+
 ## Getting started
 
-Ready to try it? Head to the [bitCaster app](https://frontend-bitcaster-staging.azurewebsites.net/) to start trading.
+Before you fund a wallet, read
+[Encrypted wallet backup](/user-guide/getting-started/wallet-backup/).
+Keep your recovery phrase safe. Then review the market's question, oracle,
+and resolution rules before your first trade. Optional market creation and
+bot funding can wait until you understand the trading flow.
 
 [^1]: Note that ecash tokens are not strictly self-custodial. See https://iscashucustodial.com/ or https://bitcoin.design/guide/how-it-works/ecash/introduction/, https://stacker.news/items/793450 for details.

@@ -73,6 +73,18 @@ test('plans one bounded manual sweep round from at most 64 proof bodies', () => 
   )
 })
 
+test('manual sweep refuses when the fee consumes the complete input value', () => {
+  assert.deepEqual(
+    planProofConsolidationRound({
+      inventory: [{ amount: '1', count: 2 }],
+      inputFeePpk: 1_000,
+      maxInputs: 2,
+      keysetKeys: KEYS,
+    }),
+    { kind: 'fee-exhausted' },
+  )
+})
+
 test('manual sweep reports groups that are already compact or cannot be reduced', () => {
   assert.equal(
     planProofConsolidationRound({

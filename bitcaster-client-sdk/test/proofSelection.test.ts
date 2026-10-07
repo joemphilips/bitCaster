@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   computeInputFeeSubunitsFromPpk,
   sumProofs,
   takeProofsForLock,
@@ -9,7 +9,21 @@ import {
 } from '../src/proofSelection.ts'
 
 test('computeInputFeeSubunitsFromPpk returns NUT-02 proof-count fee in keyset subunits', () => {
-  assert.equal(computeInputFeeSubunitsFromPpk(10 * 1), 1)
+  for (const [totalPpk, expectedSubunits] of [
+    [0, 0],
+    [10, 1],
+    [1_000, 1],
+    [2_000, 2],
+    [2_001, 3],
+  ] as const) {
+    assert.equal(computeInputFeeSubunitsFromPpk(totalPpk), expectedSubunits)
+  }
+})
+
+test('computeInputFeeSubunitsForProofs retains current and historical keyset fees', () => {
+  const proof = (id: string, secret: string) => ({ amount: 8, id, secret, C: secret })
+  const inputs = [proof('current', 'a'), proof('current', 'b'), proof('historical', 'c')]
+  assert.equal(computeInputFeeSubunitsForProofs(inputs, { current: 1_000, historical: 1 }), 3)
 })
 
 test('sumProofs rejects an unsafe amount sum', () => {
@@ -19,11 +33,11 @@ test('sumProofs rejects an unsafe amount sum', () => {
   )
 })
 
-test('computeInputFeeSatsForProofs rejects an unsafe fee sum', () => {
+test('computeInputFeeSubunitsForProofs rejects an unsafe fee sum', () => {
   const proof = (secret: string) => ({ amount: 1, id: 'keyset', secret, C: secret })
   assert.throws(
     () =>
-      computeInputFeeSatsForProofs([proof('a'), proof('b')], {
+      computeInputFeeSubunitsForProofs([proof('a'), proof('b')], {
         keyset: Number.MAX_SAFE_INTEGER,
       }),
     /safe integer range/i,

@@ -531,6 +531,10 @@ const RECOVERY_BOUNDARIES = new Map<string, ManagedConditionRecoveryOperationKin
     'capability-preparation',
   ],
   [
+    'ctf-range-conditional-source\0capability-preparation\0POST\0/v1/ctf/convert',
+    'capability-preparation',
+  ],
+  [
     'ctf-range-collateral-convert\0capability-preparation\0POST\0/v1/ctf/convert',
     'capability-preparation',
   ],

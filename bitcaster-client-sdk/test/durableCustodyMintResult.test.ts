@@ -1,3 +1,4 @@
+import { d4OracleContext, d4ConditionalKeyset, D4_CONDITION } from './support/d4OracleFixture.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
@@ -19,6 +20,8 @@ import {
   applyDurableCustodyTransaction,
   isDurableCustodyProofReservationActive,
   deriveDurableCustodyScopeId,
+  prepareDurableCustodyExactArtifact,
+  createDurableCustodyArtifactReference,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyScopeState,
 } from '../src/durableCustody.ts'
@@ -26,7 +29,10 @@ import {
   prepareDurableCustodyAuthenticatedTerminalMintRejection,
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
+  verifyDurableCustodyExactMintProofResult,
   readDurableCustodyVerifiedMintResult,
+  readDurableCustodyAuthenticatedTerminalMintRejection,
+  readDurableCustodyVerifiedLosingMintRejection,
   reconcileDurableCustodyAuthenticatedTerminalMintRejection,
   stageDurableCustodyPreparedMintResult,
 } from '../src/durableCustodyMintResult.ts'
@@ -55,6 +61,7 @@ const MINT_URL = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const KEYSET_ID = deriveKeysetId(KEYS)
+const MSAT_KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
 const BLS_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
 const BLS_KEYS = {
   '1': bytesToHex(bls12_381.G2.Point.BASE.multiply(2n).toBytes(true)),
@@ -68,6 +75,8 @@ const scopeInput = {
   unit: 'sat' as const,
 }
 const SCOPE = { ...scopeInput, scopeId: deriveDurableCustodyScopeId(scopeInput) }
+const MELT_SCOPE_INPUT = { ...scopeInput, unit: 'msat' as const }
+const MELT_SCOPE = { ...MELT_SCOPE_INPUT, scopeId: deriveDurableCustodyScopeId(MELT_SCOPE_INPUT) }
 const OWNER: DurableCustodyOwnerAuthorization = {
   incarnationId: 'wallet-service-1',
   fencingEpoch: 1,
@@ -184,6 +193,76 @@ test('requires the exact input and output keyset authority', () => {
   )
 })
 
+test('wallet mint verifies and restores exact msat outputs without predecessor proofs', () => {
+  const prepared = preparedMint('mint:1')
+  const adapter = new FaultInjectingDurableCustodyAdapter({ ...scopeState(), scope: MELT_SCOPE })
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const record = adapter.readOperation()!
+  const verified = prepareDurableCustodyVerifiedMintResult({
+    record,
+    exactAuthority: prepared.exactAuthority,
+    result: { receive: [proofForOutput(prepared.output, MSAT_KEYSET_ID)] },
+  })
+  adapter.run((transaction) =>
+    stageDurableCustodyPreparedMintResult({
+      transaction,
+      record,
+      prepared: verified,
+      authorization: OWNER,
+    }),
+  )
+  const restored = readDurableCustodyVerifiedMintResult({
+    record: adapter.readOperation()!,
+    exactAuthority: prepared.exactAuthority,
+    exactResult: verified.exactResult,
+  })
+  assert.equal(restored.proofs.length, 1)
+  assert.equal(restored.proofs[0]!.dleqState, 'verified')
+  assert.equal(restored.proofs[0]!.group, 'receive')
+  assert.equal(restored.resultFingerprint, verified.resultFingerprint)
+})
+
+test('wallet mint rejects foreign outputs and missing or invalid DLEQ', () => {
+  const prepared = preparedMint('mint:invalid-result')
+  const proof = proofForOutput(prepared.output, MSAT_KEYSET_ID)
+  for (const invalid of [
+    proofForOutput(OutputData.createSingleData(1, MSAT_KEYSET_ID, 'foreign', 13n), MSAT_KEYSET_ID),
+    { ...proof, dleq: undefined },
+    { ...proof, dleq: { ...proof.dleq!, e: '0'.repeat(64) } },
+  ]) {
+    assert.throws(() =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: { receive: [invalid] },
+      }),
+    )
+  }
+})
+
+test('wallet mint input exemption does not permit empty swaps or input-bearing mints', () => {
+  const prepared = preparedMint('mint:invalid-authority')
+  const proof = proofForOutput(prepared.output, MSAT_KEYSET_ID)
+  for (const operation of [
+    { ...prepared.operation, inputs: [proof] },
+    { ...prepared.operation, outputs: { receive: [] } },
+    { ...prepared.operation, kind: 'wallet-send' as const },
+    { ...prepared.operation, kind: 'wallet-receive' as const },
+    { ...prepared.operation, kind: 'wallet-melt' as const },
+  ]) {
+    assert.throws(
+      () =>
+        prepareDurableCustodyMintOperationAuthority({
+          operation,
+          keysets: prepared.authority.keysets,
+        }),
+      /operation kind is unsupported/,
+    )
+  }
+})
+
 test('accepts an exact CTF range refund as a mint-verified operation', () => {
   const prepared = preparedSend('refund:1')
   const authority = prepareDurableCustodyMintOperationAuthority({
@@ -280,6 +359,108 @@ test('reconciles exact authenticated CTF redeem rejection without successors', a
     }),
   )
   assert.equal(adapter.readOperation()?.revision, revision)
+})
+
+test('raw terminal admission cannot replace the frozen intended registration', async () => {
+  const prepared = preparedCtfRedeem('redeem:frozen-authority')
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState())
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const record = adapter.readOperation()!
+  const rejection = prepareDurableCustodyAuthenticatedTerminalMintRejection({
+    record,
+    exactAuthority: prepared.exactAuthority,
+    evidence: await captureTerminalRedeemEvidence(prepared.operation.operationId, MINT_URL),
+  })
+  const changed = JSON.parse(JSON.stringify(rejection.authority))
+  changed.losingAuthority.resolution.registered.oracles[0].announcementIdentity = '11'.repeat(32)
+  const exactRejection = prepareDurableCustodyExactArtifact(changed)
+  assert.throws(
+    () =>
+      adapter.run((transaction) =>
+        applyDurableCustodyTransaction(
+          transaction,
+          {
+            scope: SCOPE,
+            owner: OWNER,
+            operationRows: [
+              { operationId: record.operation.operationId, expectedRevision: record.revision },
+            ],
+          },
+          (selected) =>
+            selected.reconcileAuthenticatedTerminalMintRejection!({
+              operationId: record.operation.operationId,
+              expectedRevision: record.revision,
+              authorization: OWNER,
+              rejectionHandle: 'foreign-context',
+              rejectionFingerprint: exactRejection.fingerprint,
+              exactRejection,
+              code: 13015,
+              predecessorDisposition: 'retain',
+            }),
+        ),
+      ),
+    /frozen intended registration/,
+  )
+  assert.equal(adapter.readOperation()!.operation.state, 'dispatch-intent')
+  assert.equal(isDurableCustodyProofReservationActive(adapter.readOperation()!), true)
+})
+
+test('persisted code-only refusal remains history and full losing context reverifies after reload', async () => {
+  const prepared = preparedCtfRedeem('redeem:historical-reload')
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState())
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const rejection = prepareDurableCustodyAuthenticatedTerminalMintRejection({
+    record: adapter.readOperation()!,
+    exactAuthority: prepared.exactAuthority,
+    evidence: await captureTerminalRedeemEvidence(prepared.operation.operationId, MINT_URL),
+  })
+  adapter.run((transaction) =>
+    reconcileDurableCustodyAuthenticatedTerminalMintRejection({
+      transaction,
+      record: adapter.readOperation()!,
+      prepared: rejection,
+      authorization: OWNER,
+    }),
+  )
+  const record = JSON.parse(JSON.stringify(adapter.readOperation()))
+  const exactRejection = prepareDurableCustodyExactArtifact(
+    JSON.parse(JSON.stringify(rejection.authority)),
+  )
+  assert.equal(
+    readDurableCustodyVerifiedLosingMintRejection({
+      record,
+      exactRejection,
+      exactAuthority: prepared.exactAuthority,
+    }).losingAuthority.resolution.evidence.resolvedOutcome,
+    'YES',
+  )
+  const { losingAuthority: _losing, ...history } = rejection.authority
+  const historical = prepareDurableCustodyExactArtifact(history)
+  const terminal = record.operation.terminalMintRejection
+  terminal.rejectionFingerprint = historical.fingerprint
+  terminal.exactRejection = createDurableCustodyArtifactReference(
+    terminal.exactRejection.artifactId,
+    historical,
+  )
+  assert.equal(
+    readDurableCustodyAuthenticatedTerminalMintRejection({ record, exactRejection: historical })
+      .code,
+    13015,
+  )
+  assert.throws(
+    () =>
+      readDurableCustodyVerifiedLosingMintRejection({
+        record,
+        exactRejection: historical,
+        exactAuthority: prepared.exactAuthority,
+      }),
+    /no verified losing authority/,
+  )
+  assert.equal(record.operation.exactRequest.inputProofIds.length, 1)
 })
 
 test('rejects foreign terminal mint rejections and leaves unknown failures active', async () => {
@@ -388,6 +569,63 @@ test('accepts and verifies an exact wallet receive operation', () => {
   assert.equal(result.proofs.length, 1)
 })
 
+test('accepts wallet-melt change as an ordered prefix and rejects foreign or excess change', () => {
+  const prepared = preparedMelt('melt:prefix', 2)
+  const first = proofForMeltChange('melt:prefix', 0)
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record: prepared.record,
+    exactAuthority: prepared.exactAuthority,
+    result: { change: [first] },
+  })
+
+  assert.equal(prepared.authority.operation.kind, 'wallet-melt')
+  assert.equal(prepared.facts.binding.stage, 'send')
+  assert.equal(prepared.record.operation.proofStorage.lineage.successorAdmissionMode, 'subset')
+  assert.equal(result.proofs.length, 1)
+  assert.deepEqual(result.selectedSuccessorProofIds, [result.proofs[0]!.material.proofId])
+
+  assert.throws(
+    () =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: {
+          change: [
+            first,
+            proofForMeltChange('melt:prefix', 1),
+            proofForMeltChange('melt:prefix', 2),
+          ],
+        },
+      }),
+    /custody mint proof count is invalid|exceeds its planned prefix/,
+  )
+  const foreign = proofForOutput(
+    OutputData.createSingleData(1, KEYSET_ID, 'foreign-melt-change', 19n),
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: { change: [foreign] },
+      }),
+    /wallet proof result does not match a planned output/,
+  )
+})
+
+test('accepts a wallet-melt with no planned or returned change', () => {
+  const prepared = preparedMelt('melt:no-change', 0)
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record: prepared.record,
+    exactAuthority: prepared.exactAuthority,
+    result: { change: [] },
+  })
+
+  assert.equal(prepared.facts.verification.hasOutputs, false)
+  assert.deepEqual(result.proofs, [])
+  assert.deepEqual(result.selectedSuccessorProofIds, [])
+})
+
 test('rejects a full-length V3 output before durable custody result admission', () => {
   const prepared = preparedSend('send:bls', {
     id: BLS_KEYSET_ID,
@@ -458,12 +696,130 @@ function preparedSend(
   return { ...authority, artifacts, record, operation, output }
 }
 
-function preparedCtfRedeem(operationId: string) {
-  const send = preparedSend(operationId)
-  const operation = { ...send.operation, kind: 'ctf-redeem' as const }
+function preparedMint(operationId: string) {
+  const output = OutputData.createSingleData(1, MSAT_KEYSET_ID, `mint:${operationId}`, 11n)
+  const operation = {
+    operationId,
+    kind: 'wallet-mint' as const,
+    mintUrl: MINT_URL,
+    inputs: [],
+    outputs: { receive: [serializeDurableCustodyOutput(output)] },
+    metadata: { unit: 'msat' },
+  }
   const authority = prepareDurableCustodyMintOperationAuthority({
     operation,
-    keysets: send.authority.keysets,
+    keysets: [
+      {
+        canonicalMintUrl: MINT_URL,
+        id: MSAT_KEYSET_ID,
+        unit: 'msat',
+        keys: KEYS,
+        inputFeePpk: 0,
+        finalExpiry: null,
+        identity: { kind: 'regular' },
+      },
+    ],
+  })
+  const artifacts = {
+    requestBody: authority.exactRequest,
+    output: authority.exactOutput,
+    privateMaterial: authority.exactAuthority,
+  }
+  const record = createDurableCustodyProofOperation({
+    scope: MELT_SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: MELT_SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/mint/bolt11',
+      idempotencyKey: operationId,
+      ...artifacts,
+    },
+  })
+  return { ...authority, operation, record, artifacts, output }
+}
+
+function preparedMelt(operationId: string, outputCount: number) {
+  const input = OutputData.createSingleData(1, MSAT_KEYSET_ID, `melt-input:${operationId}`, 7n)
+  const outputs = Array.from({ length: outputCount }, (_, index) =>
+    OutputData.createSingleData(
+      0,
+      MSAT_KEYSET_ID,
+      `melt-output:${operationId}:${index}`,
+      11n + BigInt(index),
+    ),
+  )
+  const operation = {
+    operationId,
+    kind: 'wallet-melt' as const,
+    mintUrl: MINT_URL,
+    inputs: [proofForOutput(input, MSAT_KEYSET_ID)],
+    outputs: { change: outputs.map(serializeDurableCustodyOutput) },
+    metadata: addDurableWalletProofTransitionMetadata(
+      { unit: 'msat' },
+      createDurableWalletProofTransition({
+        inputSource: 'wallet',
+        plannedOutputLabels: ['change'],
+        resultGroups: { change: { kind: 'wallet', asset: 'regular', reservedBy: null } },
+        resultCardinality: { change: 'prefix' },
+      }),
+    ),
+  }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: [
+      {
+        canonicalMintUrl: MINT_URL,
+        id: MSAT_KEYSET_ID,
+        unit: 'msat',
+        keys: KEYS,
+        inputFeePpk: 0,
+        finalExpiry: null,
+        identity: { kind: 'regular' },
+      },
+    ],
+  })
+  const artifacts = {
+    requestBody: authority.exactRequest,
+    output: authority.exactOutput,
+    privateMaterial: authority.exactAuthority,
+  }
+  const record = createDurableCustodyProofOperation({
+    scope: MELT_SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: MELT_SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/melt/bolt11',
+      idempotencyKey: operationId,
+      ...artifacts,
+    },
+  })
+  return { ...authority, artifacts, record, operation, outputs }
+}
+
+function preparedCtfRedeem(operationId: string) {
+  const send = preparedSend(operationId)
+  const conditional = d4ConditionalKeyset(KEYS)
+  const operation = {
+    ...send.operation,
+    kind: 'ctf-redeem' as const,
+    inputs: send.operation.inputs.map((proof) => ({ ...proof, id: conditional.id })),
+    metadata: {
+      unit: 'sat',
+      conditionId: D4_CONDITION,
+      outcome: 'NO',
+      outcomeSetId: 'NO',
+      oracleWitness: '',
+      oracleResolutionContext: d4OracleContext(),
+      oracleInputKeysets: [conditional],
+    },
+  }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: [...send.authority.keysets, conditional],
   })
   const artifacts = {
     requestBody: authority.exactRequest,
@@ -477,7 +833,7 @@ function preparedCtfRedeem(operationId: string) {
     inventoryAccountId: SCOPE.inventoryAccountId,
     exactBoundary: {
       method: 'POST',
-      path: '/v1/ctf/redeem',
+      path: '/v1/redeem_outcome',
       idempotencyKey: operationId,
       ...artifacts,
     },
@@ -526,12 +882,15 @@ async function captureTerminalRedeemEvidence(
       },
     },
     proofOperationStore: store,
-    conditionId: 'condition-1',
-    outcome: 'losing-outcome',
+    conditionId: D4_CONDITION,
+    outcome: 'NO',
+    outcomeSetId: 'NO',
+    oracleResolutionContext: d4OracleContext('sat', mintUrl),
+    oracleInputKeysets: [d4ConditionalKeyset(KEYS, 'sat', mintUrl)],
     unit: 'sat',
-    oracleWitness: '{}',
-    proofs: [proofForOutput(OutputData.createSingleData(1, KEYSET_ID, 'capture-input', 17n))],
-    outcomeKeyset: regularKeyset,
+    oracleWitness: '',
+    proofs: preparedCtfRedeem(operationId).operation.inputs,
+    outcomeKeyset: { ...regularKeyset, id: d4ConditionalKeyset(KEYS).id },
     regularKeyset,
   })
   if (evidence === null) throw new Error('terminal redeem evidence was not captured')
@@ -554,7 +913,7 @@ function proofForBlsOutput(output: OutputData): Proof {
   )
 }
 
-function proofForOutput(output: OutputData): Proof {
+function proofForOutput(output: OutputData, keysetId = KEYSET_ID): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     PRIVATE_KEY,
@@ -563,12 +922,24 @@ function proofForOutput(output: OutputData): Proof {
   const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY)
   return output.toProof(
     {
-      id: KEYSET_ID,
+      id: keysetId,
       amount: output.blindedMessage.amount,
       C_: signature.C_.toHex(true),
       dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
     },
-    { id: KEYSET_ID, keys: KEYS },
+    { id: keysetId, keys: KEYS },
+  )
+}
+
+function proofForMeltChange(operationId: string, index: number): Proof {
+  return proofForOutput(
+    OutputData.createSingleData(
+      1,
+      MSAT_KEYSET_ID,
+      `melt-output:${operationId}:${index}`,
+      11n + BigInt(index),
+    ),
+    MSAT_KEYSET_ID,
   )
 }
 
@@ -581,3 +952,23 @@ function scopeState(): DurableCustodyScopeState {
     effectiveClock: { highWaterMarkMs: 0 },
   }
 }
+
+test('existing exact output owners verify received amount, keyset, secret, signature and DLEQ', () => {
+  const prepared = preparedSend('pure-output-guard')
+  const proof = proofForOutput(prepared.output)
+  const base = { outputs: prepared.operation.outputs, keysets: prepared.authority.keysets }
+  verifyDurableCustodyExactMintProofResult({ ...base, result: { keep: [proof] } })
+  for (const altered of [
+    { ...proof, amount: 2 },
+    { ...proof, id: MSAT_KEYSET_ID },
+    { ...proof, secret: 'foreign' },
+    {
+      ...proof,
+      C: bytesToHex(secp256k1.getPublicKey(Uint8Array.from([...new Uint8Array(31), 2]), true)),
+    },
+    { ...proof, dleq: undefined },
+  ])
+    assert.throws(() =>
+      verifyDurableCustodyExactMintProofResult({ ...base, result: { keep: [altered as Proof] } }),
+    )
+})

@@ -30,6 +30,7 @@ import {
   inventoryDaemonProfile,
   normalizeSqliteSchemaSql,
   validateDaemonProfileSchema,
+  withValidatedDaemonProfileReadSnapshot,
   type ProfileSchemaManifest,
 } from '../src/profileSchema.ts'
 
@@ -359,6 +360,107 @@ test('validates a complete exact schema through an immutable read-only connectio
   await assertDirectoryUnchanged(directory, before)
 })
 
+test('live profile reads keep one WAL snapshot across an independent committed write', async (t) => {
+  const directory = await temporaryProfile(t)
+  await createFixtureDatabase(directory, { walMode: true })
+  const writer = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
+  try {
+    writer.exec(
+      'PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA wal_autocheckpoint = 0',
+    )
+    writer.prepare('INSERT INTO wallet_scope VALUES (1, ?, 1, 0)').run('a'.repeat(64))
+    const epoch = await withValidatedDaemonProfileReadSnapshot(
+      directory,
+      fixtureManifest,
+      (reader) => {
+        const before = reader.prepare('SELECT epoch FROM wallet_scope WHERE row_id = 1').get()
+        writer.exec('UPDATE wallet_scope SET epoch = 1 WHERE row_id = 1')
+        const after = reader.prepare('SELECT epoch FROM wallet_scope WHERE row_id = 1').get()
+        assert.equal(before?.epoch, 0)
+        assert.equal(after?.epoch, 0)
+        assert.throws(
+          () => reader.exec('UPDATE wallet_scope SET epoch = 2 WHERE row_id = 1'),
+          (error: unknown) => error instanceof Error && 'errcode' in error && error.errcode === 8,
+        )
+        return after?.epoch
+      },
+    )
+    assert.equal(epoch, 0)
+    const next = await withValidatedDaemonProfileReadSnapshot(
+      directory,
+      fixtureManifest,
+      (reader) => reader.prepare('SELECT epoch FROM wallet_scope WHERE row_id = 1').get(),
+    )
+    assert.equal(next?.epoch, 1)
+  } finally {
+    writer.close()
+  }
+})
+
+test('live profile reads refuse corrupt, foreign-key, schema, marker, and symlink drift', async (t) => {
+  for (const drift of [
+    'corrupt',
+    'foreign-key',
+    'schema',
+    'marker',
+    'symlink',
+    'permission',
+  ] as const) {
+    await t.test(drift, async (subtest) => {
+      const directory = await temporaryProfile(subtest)
+      await createFixtureDatabase(directory, {
+        omitMarker: drift === 'marker',
+      })
+      const path = join(directory, DAEMON_PROFILE_DATABASE)
+      if (drift === 'permission') await chmod(path, 0o644)
+      if (drift === 'corrupt') await writeFile(path, 'not a SQLite database', { mode: 0o600 })
+      if (drift === 'symlink') {
+        const target = await temporaryProfile(subtest)
+        await createFixtureDatabase(target)
+        await unlink(path)
+        await symlink(join(target, DAEMON_PROFILE_DATABASE), path)
+      }
+      if (drift === 'schema' || drift === 'foreign-key') {
+        const writer = new DatabaseSync(path, {
+          enableForeignKeyConstraints: false,
+        })
+        try {
+          if (drift === 'schema') writer.exec('CREATE TABLE unexpected (value INTEGER) STRICT')
+          if (drift === 'foreign-key') {
+            writer.exec('DROP TRIGGER profile_schema_marker_no_delete')
+            writer.prepare('INSERT INTO wallet_scope VALUES (1, ?, 1, 0)').run('a'.repeat(64))
+            writer.exec('DELETE FROM profile_schema_marker')
+          }
+        } finally {
+          writer.close()
+        }
+      }
+      let read = false
+      await assert.rejects(
+        withValidatedDaemonProfileReadSnapshot(directory, fixtureManifest, () => {
+          read = true
+        }),
+        (error: unknown) => {
+          if (!(error instanceof ProfileSchemaRefusalError)) return false
+          switch (drift) {
+            case 'corrupt':
+            case 'foreign-key':
+              return error.reason === 'sqlite-corrupt'
+            case 'schema':
+            case 'marker':
+              return error.reason === 'sqlite-schema-mismatch'
+            case 'symlink':
+              return error.reason === 'sqlite-database-not-plain'
+            case 'permission':
+              return error.reason === 'profile-permission-invalid'
+          }
+        },
+      )
+      assert.equal(read, false, 'profile reader ran before schema admission')
+    })
+  }
+})
+
 test('classifies safe run-lock and RPC-socket lifecycle artifacts without cleanup', async (t) => {
   const directory = await temporaryProfile(t)
   await createFixtureDatabase(directory)
@@ -403,19 +505,20 @@ test('fails closed on win32 before reading a profile path', async () => {
   }
 })
 
-test('refuses a dev/inode/realpath identity replacement during inspection', async (t) => {
-  const directory = await temporaryProfile(t)
-  const replacementDirectory = await temporaryProfile(t)
-  await createFixtureDatabase(directory)
-  await createFixtureDatabase(replacementDirectory)
-  const replacementPath = join(replacementDirectory, DAEMON_PROFILE_DATABASE)
-  const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
-  const child = spawn(
-    process.execPath,
-    [
-      '--input-type=module',
-      '--eval',
-      `
+for (const mode of ['immutable', 'snapshot'] as const) {
+  test(`refuses a dev/inode/realpath identity replacement during ${mode} inspection`, async (t) => {
+    const directory = await temporaryProfile(t)
+    const replacementDirectory = await temporaryProfile(t)
+    await createFixtureDatabase(directory)
+    await createFixtureDatabase(replacementDirectory)
+    const replacementPath = join(replacementDirectory, DAEMON_PROFILE_DATABASE)
+    const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
+    const child = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
         import { renameSync } from 'node:fs'
         process.stdout.write('ready\\n')
         setTimeout(
@@ -426,28 +529,32 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
           25
         )
       `,
-    ],
-    {
-      env: {
-        ...process.env,
-        DAEMON_TEST_REPLACEMENT: replacementPath,
-        DAEMON_TEST_DATABASE: databasePath,
+      ],
+      {
+        env: {
+          ...process.env,
+          DAEMON_TEST_REPLACEMENT: replacementPath,
+          DAEMON_TEST_DATABASE: databasePath,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  )
-  await waitForChildReady(child)
-  const slowManifest = manifestWithInspectionDelay()
+    )
+    await waitForChildReady(child)
+    const slowManifest = manifestWithInspectionDelay()
 
-  await assert.rejects(
-    () => validateDaemonProfileSchema(directory, slowManifest),
-    (error) =>
-      error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
-  )
-  if (child.exitCode === null) {
-    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-  }
-})
+    await assert.rejects(
+      () =>
+        mode === 'immutable'
+          ? validateDaemonProfileSchema(directory, slowManifest)
+          : withValidatedDaemonProfileReadSnapshot(directory, slowManifest, () => undefined),
+      (error) =>
+        error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+    )
+    if (child.exitCode === null) {
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
+  })
+}
 
 test('allows a live daemon SQLite WAL commit during immutable profile inspection', async (t) => {
   const directory = await temporaryProfile(t)
@@ -545,9 +652,11 @@ test('refuses unsafe owner-visible permission modes without chmod repair', async
         await createFixtureDatabase(directory)
       }
       if (profilePart === 'lock') {
-        await writeFile(join(directory, DAEMON_RUN_LOCK), 'lock', {
+        const lockPath = join(directory, DAEMON_RUN_LOCK)
+        await writeFile(lockPath, 'lock', {
           mode: 0o640,
         })
+        await chmod(lockPath, 0o640)
       } else {
         const path =
           profilePart === 'directory'

@@ -12,28 +12,36 @@ const REGULAR_KEYSET_ID = `01${'11'.repeat(32)}`
 const CONDITIONAL_KEYSET_ID = `01${'22'.repeat(32)}`
 const PUBLIC_KEY = `02${'11'.repeat(32)}`
 
-test('loads one bounded exact range-settlement authority for every client', async () => {
-  const metadata = await loadCtfRangeMintMetadata({
-    mint: mint(),
-    mintUrl: MINT_URL,
-    conditionId: CONDITION_ID,
-    observedAt: 1_000,
-    allowInsecureLoopbackHttp: false,
-  })
+for (const [regularFee, conditionalFee] of [
+  [100, 100],
+  [1000, 1000],
+  [1000, 1],
+] as const) {
+  test(`loads exact range authority with regular/conditional fees ${regularFee}/${conditionalFee} PPK`, async () => {
+    const metadata = await loadCtfRangeMintMetadata({
+      mint: mint(regularFee, conditionalFee),
+      mintUrl: MINT_URL,
+      conditionId: CONDITION_ID,
+      observedAt: 1_000,
+      allowInsecureLoopbackHttp: false,
+    })
 
-  assert.equal(metadata.regular[0]?.id, REGULAR_KEYSET_ID)
-  assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
-  assert.equal(metadata.conditional[0]?.conditionId, CONDITION_ID)
-  assert.equal(metadata.conditional[0]?.outcomeCollection, 'YES')
-  assert.equal(metadata.conditional[0]?.registeredAt, 0)
-  assert.equal(metadata.maxInputs, 64)
-  assert.equal(metadata.maxOutputs, 256)
-  assert.equal(metadata.maxRequestBytes, 2_097_152)
-  assert.equal(metadata.maxPoolEntries, 128)
-  assert.deepEqual(metadata.observation.conditionKeysetIds, [CONDITIONAL_KEYSET_ID])
-  assert.equal(metadata.observation.conditionalKeysets[0]?.outcomeCollection, 'YES')
-  assert.equal(metadata.observation.conditionalKeysets[0]?.registeredAt, 0)
-})
+    assert.equal(metadata.regular[0]?.id, REGULAR_KEYSET_ID)
+    assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
+    assert.equal(metadata.conditional[0]?.conditionId, CONDITION_ID)
+    assert.equal(metadata.conditional[0]?.outcomeCollection, 'YES')
+    assert.equal(metadata.conditional[0]?.registeredAt, 0)
+    assert.equal(metadata.regular[0]?.inputFeePpk, regularFee)
+    assert.equal(metadata.conditional[0]?.inputFeePpk, conditionalFee)
+    assert.equal(metadata.maxInputs, 64)
+    assert.equal(metadata.maxOutputs, 256)
+    assert.equal(metadata.maxRequestBytes, 2_097_152)
+    assert.equal(metadata.maxPoolEntries, 128)
+    assert.deepEqual(metadata.observation.conditionKeysetIds, [CONDITIONAL_KEYSET_ID])
+    assert.equal(metadata.observation.conditionalKeysets[0]?.outcomeCollection, 'YES')
+    assert.equal(metadata.observation.conditionalKeysets[0]?.registeredAt, 0)
+  })
+}
 
 test('clamps mint limits to durable output and artifact authority bounds', async () => {
   const client = mint()
@@ -137,7 +145,7 @@ test('ignores an advertised V3 regular keyset when exact V2 authority is availab
 
 test('starts conditional keyset discovery at the condition registration time', async () => {
   const client = mint()
-  const queries: Array<{ since?: number; limit?: number; active?: boolean }> = []
+  const queries: Array<{ since?: number; limit?: number; active?: boolean; cursor?: string }> = []
   const older = Array.from({ length: 100 }, (_, index) => ({
     id: index.toString(16).padStart(16, '0'),
     unit: 'msat',
@@ -166,6 +174,7 @@ test('starts conditional keyset discovery at the condition registration time', a
   client.getConditionalKeysets = async (query = {}) => {
     queries.push(query)
     return {
+      next_cursor: null,
       keysets: [...older, target]
         .filter(({ registered_at }) => registered_at >= (query.since ?? 0))
         .slice(0, 100),
@@ -180,8 +189,62 @@ test('starts conditional keyset discovery at the condition registration time', a
     allowInsecureLoopbackHttp: false,
   })
 
-  assert.deepEqual(queries, [{ since: 100, limit: 256 }])
+  assert.deepEqual(queries, [{ since: 100, limit: 100, cursor: undefined }])
   assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
+})
+
+test('finds target keysets after a full same-second page while keeping since fixed', async () => {
+  const client = mint()
+  const queries: Array<{ since?: number; limit?: number; cursor?: string }> = []
+  client.getCtfCondition = async () => ({
+    condition_id: CONDITION_ID,
+    registered_at: 100,
+    keysets: { YES: CONDITIONAL_KEYSET_ID },
+  })
+  client.getConditionalKeysets = async (query = {}) => {
+    queries.push(query)
+    if (query.cursor === undefined)
+      return {
+        next_cursor: 'next+?/=',
+        keysets: Array.from({ length: 100 }, (_, index) => ({
+          id: `01${index.toString(16).padStart(64, '0')}`,
+          unit: 'msat',
+          active: true,
+          input_fee_ppk: 100,
+          registered_at: 100,
+          condition_id: 'other',
+          outcome_collection: 'YES',
+          outcome_collection_id: 'other-collection',
+        })),
+      }
+    return {
+      next_cursor: null,
+      keysets: [
+        {
+          id: CONDITIONAL_KEYSET_ID,
+          unit: 'msat',
+          active: true,
+          input_fee_ppk: 100,
+          registered_at: 100,
+          condition_id: CONDITION_ID,
+          outcome_collection: 'YES',
+          outcome_collection_id: 'collection-yes',
+        },
+      ],
+    }
+  }
+  const metadata = await loadCtfRangeMintMetadata({
+    mint: client,
+    mintUrl: MINT_URL,
+    conditionId: CONDITION_ID,
+    observedAt: 1_000,
+    allowInsecureLoopbackHttp: false,
+  })
+  assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
+  assert.deepEqual(queries, [
+    { since: 100, limit: 100, cursor: undefined },
+    { since: 100, limit: 100, cursor: 'next+?/=' },
+  ])
 })
 
 test('rejects missing or unsafe authenticated settlement limits', async () => {
@@ -218,6 +281,7 @@ test('rejects missing or invalid conditional keyset registration times', async (
   for (const registeredAt of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
     const invalid = mint()
     invalid.getConditionalKeysets = async () => ({
+      next_cursor: null,
       keysets: [
         {
           id: CONDITIONAL_KEYSET_ID,
@@ -244,7 +308,7 @@ test('rejects missing or invalid conditional keyset registration times', async (
   }
 })
 
-function mint(): CtfRangeMintMetadataClient {
+function mint(regularFee = 100, conditionalFee = regularFee): CtfRangeMintMetadataClient {
   return {
     getInfo: async () =>
       ({
@@ -266,17 +330,18 @@ function mint(): CtfRangeMintMetadataClient {
           id: REGULAR_KEYSET_ID,
           unit: 'msat',
           active: true,
-          input_fee_ppk: 100,
+          input_fee_ppk: regularFee,
         },
       ],
     }),
     getConditionalKeysets: async () => ({
+      next_cursor: null,
       keysets: [
         {
           id: CONDITIONAL_KEYSET_ID,
           unit: 'msat',
           active: true,
-          input_fee_ppk: 100,
+          input_fee_ppk: conditionalFee,
           registered_at: 0,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',

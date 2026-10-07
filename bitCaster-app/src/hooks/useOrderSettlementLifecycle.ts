@@ -4,17 +4,22 @@ import type {
   SettlementGroupStatus,
 } from "@bitcaster/client-sdk/engineClient";
 import { recoverBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
-import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
+import { browserWalletIdFromMnemonic, isActiveBrowserWalletId } from "@/lib/browserWalletProfile";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import { publishSettlementProgressHint } from "@/lib/settlementProgressHints";
 import {
   buildOrderLifecycleNotifications,
   buildOrderStatusNotifications,
   fetchOrderStatus,
+  mapConfirmedTradeActivities,
+  type OrderStatusResponse,
 } from "@/lib/orderStatus";
 import { useOrderHub } from "@/hooks/useOrderHub";
-import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useActivityLogStore } from "@/stores/activity-log";
+import { usePendingTradesStore, type PendingTrade } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useToastStore } from "@/stores/toast";
+import { useWalletStore } from "@/stores/wallet";
 
 const JOIN_RETRY_MS = 1_000;
 const RECOVERY_RETRY_MS = 15_000;
@@ -33,21 +38,97 @@ export function useOrderSettlementLifecycle(
   recoveryInput: OrderSettlementRecoveryInput,
 ): void {
   const pendingOrdersById = usePendingTradesStore((state) => state.byOrderId);
-  const pendingOrders = useMemo(() => Object.values(pendingOrdersById), [pendingOrdersById]);
+  const activeWalletId = useMemo(
+    () =>
+      recoveryInput.mnemonic === null ? null : browserWalletIdFromMnemonic(recoveryInput.mnemonic),
+    [recoveryInput.mnemonic],
+  );
+  const pendingOrders = useMemo(
+    () =>
+      Object.values(pendingOrdersById).filter(
+        (order) => activeWalletId !== null && order.walletId === activeWalletId,
+      ),
+    [activeWalletId, pendingOrdersById],
+  );
+  const unscopedPendingOrders = useMemo(
+    () => Object.values(pendingOrdersById).filter((order) => order.walletId === undefined),
+    [pendingOrdersById],
+  );
   const recoveryInputRef = useRef(recoveryInput);
   const recoveringOrderIdsRef = useRef(new Set<string>());
   const recoveryRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const invalidationQueuedRef = useRef(false);
+  const invalidationQueuedRef = useRef(new Set<string>());
   const joinRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const legacyReconciliationRunningRef = useRef(false);
+  const legacyReadRevisionByTradeRef = useRef(new WeakMap<PendingTrade, number>());
+  const orderStatusQueueRef = useRef(new Map<string, { walletId: string; trade: PendingTrade }>());
+  const orderStatusQueueRunningRef = useRef(false);
+  const orderStatusReadRevisionByTradeRef = useRef(new WeakMap<PendingTrade, number>());
   const [connectionRevision, setConnectionRevision] = useState(0);
+  const [legacyReconciliationRevision, setLegacyReconciliationRevision] = useState(0);
   recoveryInputRef.current = recoveryInput;
 
-  const enabled = canAuthenticateOrderHub && pendingOrders.length > 0;
+  const drainOrderStatusQueue = () => {
+    if (orderStatusQueueRunningRef.current) return;
+    orderStatusQueueRunningRef.current = true;
+    void (async () => {
+      while (true) {
+        const next = orderStatusQueueRef.current.values().next().value;
+        if (!next) return;
+        const key = `${next.walletId}:${next.trade.orderId}`;
+        orderStatusQueueRef.current.delete(key);
+        const response = await reconcileOrderStatus(next.trade, next.walletId);
+        if (response && hasCommittedFillForOrder(response, next.trade.orderId)) {
+          recoverConfirmedOrder(
+            next.trade.orderId,
+            next.walletId,
+            recoveryInputRef,
+            recoveringOrderIdsRef,
+            recoveryRetryTimersRef,
+          );
+        }
+      }
+    })()
+      .catch(() => {})
+      .finally(() => {
+        orderStatusQueueRunningRef.current = false;
+        if (orderStatusQueueRef.current.size > 0) drainOrderStatusQueue();
+      });
+  };
+
+  const enqueueOrderStatusRead = (trade: PendingTrade, walletId: string): boolean => {
+    if (
+      !canAuthenticateOrderHub ||
+      trade.walletId !== walletId ||
+      currentActiveWalletId() !== walletId
+    ) {
+      return false;
+    }
+    const key = `${walletId}:${trade.orderId}`;
+    orderStatusQueueRef.current.set(key, { walletId, trade });
+    drainOrderStatusQueue();
+    return true;
+  };
+
+  const enabled =
+    canAuthenticateOrderHub && (pendingOrders.length > 0 || unscopedPendingOrders.length > 0);
   const { joinOrder } = useOrderHub(enabled, {
-    onReconnected: () => setConnectionRevision((revision) => revision + 1),
+    onReconnected: () => {
+      setConnectionRevision((revision) => revision + 1);
+      publishSettlementProgressHint(null);
+    },
     onOrderLifecycleChanged: (delta) => {
       const order = usePendingTradesStore.getState().byOrderId[delta.orderId];
-      if (!order) return;
+      if (
+        !order ||
+        activeWalletId === null ||
+        order.walletId !== activeWalletId ||
+        currentActiveWalletId() !== activeWalletId
+      ) {
+        return;
+      }
+      enqueueOrderStatusRead(order, activeWalletId);
+      publishSettlementProgressHint({ orderId: delta.orderId, marketId: delta.marketId });
       const notifications = buildOrderLifecycleNotifications(
         delta.status,
         delta.remainingAmountSubunits,
@@ -62,22 +143,23 @@ export function useOrderSettlementLifecycle(
           message: `All your amount for order ${shortOrderId(delta.orderId)} has been filled.`,
         });
       }
-      if (isDiscardableTerminalStatus(delta.status)) {
-        usePendingTradesStore.getState().remove(delta.orderId);
-      }
     },
     onSettlementGroupStateChanged: (delta) => {
+      const order = usePendingTradesStore.getState().byOrderId[delta.orderId];
+      if (
+        !order ||
+        activeWalletId === null ||
+        order.walletId !== activeWalletId ||
+        currentActiveWalletId() !== activeWalletId
+      ) {
+        return;
+      }
+      publishSettlementProgressHint({ orderId: delta.orderId, marketId: delta.marketId });
       if (requiresStatusReconciliation(delta.settlementGroup.status)) {
-        void reconcileOrderStatus(delta.orderId);
+        enqueueOrderStatusRead(order, activeWalletId);
       }
       if (isConfirmed(delta.settlementGroup.status)) {
-        recoverConfirmedOrder(
-          delta.orderId,
-          recoveryInputRef,
-          recoveringOrderIdsRef,
-          recoveryRetryTimersRef,
-        );
-        queuePortfolioInvalidation(recoveryInputRef, invalidationQueuedRef);
+        queuePortfolioInvalidation(activeWalletId, invalidationQueuedRef);
       }
     },
   });
@@ -85,22 +167,33 @@ export function useOrderSettlementLifecycle(
   useEffect(() => {
     const joinedOrderKeys = new Set<string>();
     let cancelled = false;
-    const join = (marketId: string, orderId: string) => {
-      const key = `${marketId}:${orderId}`;
-      if (cancelled || joinedOrderKeys.has(key) || joinRetryTimersRef.current.has(key)) return;
+    const join = (walletId: string, marketId: string, orderId: string) => {
+      const key = `${walletId}:${marketId}:${orderId}`;
+      if (
+        cancelled ||
+        currentActiveWalletId() !== walletId ||
+        joinedOrderKeys.has(key) ||
+        joinRetryTimersRef.current.has(key)
+      ) {
+        return;
+      }
       joinedOrderKeys.add(key);
       void joinOrder(marketId, orderId).catch(() => {
         joinedOrderKeys.delete(key);
-        if (cancelled) return;
+        if (cancelled || currentActiveWalletId() !== walletId) return;
         const timer = setTimeout(() => {
           joinRetryTimersRef.current.delete(key);
-          join(marketId, orderId);
+          if (currentActiveWalletId() === walletId) {
+            join(walletId, marketId, orderId);
+          }
         }, JOIN_RETRY_MS);
         joinRetryTimersRef.current.set(key, timer);
       });
     };
 
-    for (const order of pendingOrders) join(order.marketId, order.orderId);
+    for (const order of pendingOrders) {
+      if (order.walletId) join(order.walletId, order.marketId, order.orderId);
+    }
 
     return () => {
       cancelled = true;
@@ -108,6 +201,46 @@ export function useOrderSettlementLifecycle(
       joinRetryTimersRef.current.clear();
     };
   }, [connectionRevision, joinOrder, pendingOrders]);
+
+  useEffect(() => {
+    orderStatusReadRevisionByTradeRef.current = new WeakMap<PendingTrade, number>();
+  }, [activeWalletId]);
+
+  useEffect(() => {
+    if (!canAuthenticateOrderHub) return;
+    for (const order of pendingOrders) {
+      if (order.walletId === undefined) continue;
+      if (orderStatusReadRevisionByTradeRef.current.get(order) === connectionRevision) continue;
+      if (enqueueOrderStatusRead(order, order.walletId)) {
+        orderStatusReadRevisionByTradeRef.current.set(order, connectionRevision);
+      }
+    }
+  }, [activeWalletId, canAuthenticateOrderHub, connectionRevision, pendingOrders]);
+
+  useEffect(() => {
+    if (!canAuthenticateOrderHub || legacyReconciliationRunningRef.current) return;
+    const candidates = unscopedPendingOrders.filter(
+      (order) => legacyReadRevisionByTradeRef.current.get(order) !== connectionRevision,
+    );
+    if (candidates.length === 0) return;
+
+    for (const order of candidates) {
+      legacyReadRevisionByTradeRef.current.set(order, connectionRevision);
+    }
+    legacyReconciliationRunningRef.current = true;
+    void (async () => {
+      // Read one order at a time. Legacy stores have no owner key for safe batching.
+      for (const order of candidates) await reconcileUnscopedPendingOrder(order);
+    })().finally(() => {
+      legacyReconciliationRunningRef.current = false;
+      setLegacyReconciliationRevision((revision) => revision + 1);
+    });
+  }, [
+    canAuthenticateOrderHub,
+    connectionRevision,
+    legacyReconciliationRevision,
+    unscopedPendingOrders,
+  ]);
 
   useEffect(
     () => () => {
@@ -129,7 +262,6 @@ function isDiscardableTerminalStatus(status: OrderLifecycleStatus): boolean {
     case "resting":
     case "matched":
     case "partially_filled":
-    case "awaiting_authorization":
     case "filled":
       return false;
     default:
@@ -143,6 +275,7 @@ function requiresStatusReconciliation(status: SettlementGroupStatus): boolean {
     case "DefinitivelyRejected":
     case "Refundable":
     case "ExpiredBeforeSubmission":
+    case "RejectedBeforeSubmission":
       return true;
     case "Prepared":
     case "SubmissionPending":
@@ -153,21 +286,93 @@ function requiresStatusReconciliation(status: SettlementGroupStatus): boolean {
   }
 }
 
-async function reconcileOrderStatus(orderId: string): Promise<void> {
-  const trade = usePendingTradesStore.getState().byOrderId[orderId];
-  if (!trade) return;
+async function reconcileOrderStatus(
+  trade: PendingTrade,
+  walletId: string,
+): Promise<OrderStatusResponse | null> {
+  if (
+    trade.walletId !== walletId ||
+    !CANONICAL_WALLET_ID.test(walletId) ||
+    currentActiveWalletId() !== walletId
+  ) {
+    return null;
+  }
   try {
-    const status = await fetchOrderStatus(trade.marketId, orderId);
-    if (!status) return;
-    for (const notification of buildOrderStatusNotifications(status, trade)) {
+    const status = await fetchOrderStatus(trade.marketId, trade.orderId);
+    if (!status || status.orderId !== trade.orderId || status.marketId !== trade.marketId) {
+      return null;
+    }
+
+    // Persist authenticated committed fills under the captured wallet before
+    // checking whether that wallet is still active for presentation.
+    const activities = mapConfirmedTradeActivities(status, {
+      walletId,
+      orderId: trade.orderId,
+      marketId: trade.marketId,
+    });
+    for (const activity of activities) {
+      useActivityLogStore.getState().upsertConfirmedTrade(activity);
+    }
+
+    const latest = usePendingTradesStore.getState().byOrderId[trade.orderId];
+    if (
+      !latest ||
+      latest.walletId !== walletId ||
+      latest.marketId !== trade.marketId ||
+      currentActiveWalletId() !== walletId
+    ) {
+      return status;
+    }
+
+    for (const notification of buildOrderStatusNotifications(status, latest)) {
       useNotificationsStore.getState().add(notification);
     }
-    if (isDiscardableTerminalStatus(status.status)) {
-      usePendingTradesStore.getState().remove(orderId);
+    if (
+      isDiscardableTerminalStatus(status.status) &&
+      !hasCommittedFillForOrder(status, trade.orderId)
+    ) {
+      usePendingTradesStore.getState().remove(trade.orderId, walletId);
     }
+    return status;
   } catch {
     // The next authoritative callback or application reload retries the read.
+    return null;
   }
+}
+
+const CANONICAL_WALLET_ID = /^[0-9a-f]{64}$/;
+
+function hasCommittedFillForOrder(status: OrderStatusResponse, orderId: string): boolean {
+  return status.fills.some(
+    (fill) =>
+      fill.status === "Filled" && (fill.takerOrderId === orderId || fill.makerOrderId === orderId),
+  );
+}
+
+async function reconcileUnscopedPendingOrder(order: PendingTrade): Promise<void> {
+  try {
+    const status = await fetchOrderStatus(order.marketId, order.orderId);
+    if (!isSafelyResolvedUnscopedOrder(order, status)) return;
+    if (usePendingTradesStore.getState().byOrderId[order.orderId] !== order) return;
+    usePendingTradesStore.getState().removeReconciledUnscoped(order);
+  } catch {
+    // Keep the legacy order as a switch blocker until an authenticated read succeeds.
+  }
+}
+
+function isSafelyResolvedUnscopedOrder(
+  order: PendingTrade,
+  status: OrderStatusResponse | null,
+): status is OrderStatusResponse {
+  return (
+    status !== null &&
+    status.orderId === order.orderId &&
+    status.marketId === order.marketId &&
+    isDiscardableTerminalStatus(status.status) &&
+    status.filledAmountSubunits === 0 &&
+    status.fills.length === 0 &&
+    status.activeSettlementGroup === null
+  );
 }
 
 function assertNever(value: never): never {
@@ -180,23 +385,33 @@ function shortOrderId(orderId: string): string {
 
 function recoverConfirmedOrder(
   orderId: string,
+  walletId: string,
   recoveryInputRef: RefObject<OrderSettlementRecoveryInput>,
   recoveringOrderIdsRef: RefObject<Set<string>>,
   recoveryRetryTimersRef: RefObject<Map<string, ReturnType<typeof setTimeout>>>,
 ): void {
   const order = usePendingTradesStore.getState().byOrderId[orderId];
   const recoveryInput = recoveryInputRef.current;
-  if (!order?.clientOrderId || !recoveryInput.mnemonic || recoveryInput.mintUrls.length === 0)
+  if (
+    !order?.clientOrderId ||
+    order.walletId !== walletId ||
+    currentWalletId(recoveryInput) !== walletId ||
+    currentActiveWalletId() !== walletId ||
+    !recoveryInput.mnemonic ||
+    recoveryInput.mintUrls.length === 0
+  ) {
     return;
-  if (recoveringOrderIdsRef.current.has(orderId)) return;
+  }
+  const recoveryKey = `${walletId}:${orderId}`;
+  if (recoveringOrderIdsRef.current.has(recoveryKey)) return;
 
-  const priorRetry = recoveryRetryTimersRef.current.get(orderId);
+  const priorRetry = recoveryRetryTimersRef.current.get(recoveryKey);
   if (priorRetry !== undefined) {
     clearTimeout(priorRetry);
-    recoveryRetryTimersRef.current.delete(orderId);
+    recoveryRetryTimersRef.current.delete(recoveryKey);
   }
 
-  recoveringOrderIdsRef.current.add(orderId);
+  recoveringOrderIdsRef.current.add(recoveryKey);
   let retryRequired = false;
   void recoverBrowserCtfRangeOrder({
     mnemonic: recoveryInput.mnemonic,
@@ -204,40 +419,61 @@ function recoverConfirmedOrder(
     clientOrderId: order.clientOrderId,
   })
     .then((result) => {
-      if (result.pending.length === 0) usePendingTradesStore.getState().remove(orderId);
-      else retryRequired = true;
+      const latest = usePendingTradesStore.getState().byOrderId[orderId];
+      if (
+        latest?.walletId === walletId &&
+        currentActiveWalletId() === walletId &&
+        result.pending.length === 0
+      ) {
+        usePendingTradesStore.getState().remove(orderId, walletId);
+      } else {
+        retryRequired = true;
+      }
     })
     .catch(() => {
       retryRequired = true;
     })
     .finally(() => {
-      recoveringOrderIdsRef.current.delete(orderId);
-      if (!retryRequired || !usePendingTradesStore.getState().byOrderId[orderId]) return;
+      recoveringOrderIdsRef.current.delete(recoveryKey);
+      const latest = usePendingTradesStore.getState().byOrderId[orderId];
+      if (!retryRequired || latest?.walletId !== walletId || currentActiveWalletId() !== walletId) {
+        return;
+      }
       const timer = setTimeout(() => {
-        recoveryRetryTimersRef.current.delete(orderId);
+        recoveryRetryTimersRef.current.delete(recoveryKey);
         recoverConfirmedOrder(
           orderId,
+          walletId,
           recoveryInputRef,
           recoveringOrderIdsRef,
           recoveryRetryTimersRef,
         );
       }, RECOVERY_RETRY_MS);
-      recoveryRetryTimersRef.current.set(orderId, timer);
+      recoveryRetryTimersRef.current.set(recoveryKey, timer);
     });
 }
 
 function queuePortfolioInvalidation(
-  recoveryInputRef: RefObject<OrderSettlementRecoveryInput>,
-  invalidationQueuedRef: RefObject<boolean>,
+  walletId: string,
+  invalidationQueuedRef: RefObject<Set<string>>,
 ): void {
-  if (invalidationQueuedRef.current) return;
-  const mnemonic = recoveryInputRef.current.mnemonic;
-  const walletId = mnemonic ? browserWalletIdFromMnemonic(mnemonic) : null;
-  if (walletId === null) return;
+  if (invalidationQueuedRef.current.has(walletId)) return;
 
-  invalidationQueuedRef.current = true;
+  invalidationQueuedRef.current.add(walletId);
   queueMicrotask(() => {
-    invalidationQueuedRef.current = false;
-    publishPortfolioInvalidation({ walletId });
+    invalidationQueuedRef.current.delete(walletId);
+    if (currentActiveWalletId() === walletId) {
+      publishPortfolioInvalidation({ walletId });
+    }
   });
+}
+
+function currentWalletId(input: OrderSettlementRecoveryInput): string | null {
+  return input.mnemonic === null ? null : browserWalletIdFromMnemonic(input.mnemonic);
+}
+
+function currentActiveWalletId(): string | null {
+  const mnemonic = useWalletStore.getState().mnemonic;
+  const walletId = browserWalletIdFromMnemonic(mnemonic);
+  return walletId !== null && isActiveBrowserWalletId(walletId, mnemonic) ? walletId : null;
 }

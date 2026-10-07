@@ -1,8 +1,20 @@
 import { renderHook, act } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
+import type { EncryptedWalletBackupDriverState } from "@/hooks/useEncryptedWalletBackupDriver";
+import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
+import i18n from "@/i18n";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useDepositWithdrawState } from "../useDepositWithdrawState";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
+import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
+import { useToastStore } from "@/stores/toast";
+import {
+  browserWalletScopeIdFromMnemonic,
+  browserWalletIdFromMnemonic,
+  setActiveBrowserWalletProfile,
+} from "@/lib/browserWalletProfile";
 
 // Mock cashu.ts — we don't want real mint calls
 vi.mock("@/lib/cashu", () => ({
@@ -45,7 +57,7 @@ vi.mock("@/lib/walletOps", () => ({
     added: false,
     mintUrl: "http://localhost:8085",
     source: "paste",
-    unit: "sat",
+    unit: "msat",
     amountSubunits: 0,
     baseAsset: "sat",
     proofs: [],
@@ -66,12 +78,7 @@ vi.mock("@/stores/proof-db", () => ({
       equals: vi.fn().mockReturnThis(),
     },
   },
-  getProofs: vi
-    .fn()
-    .mockResolvedValue([
-      { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
-    ]),
-  getUnitProofs: vi
+  getCanonicalSelectableProofs: vi
     .fn()
     .mockResolvedValue([
       { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
@@ -121,10 +128,70 @@ beforeEach(() => {
     activeMintUrl: "http://localhost:8085",
     mintConnectionStatuses: {},
   });
+  setActiveBrowserWalletProfile(useWalletStore.getState().mnemonic);
+  useToastStore.setState({ toasts: [] });
 });
 
 describe("useDepositWithdrawState", () => {
   const onDismiss = vi.fn();
+
+  it("keeps the amount while the app backup retries and never auto-submits or bypasses the quote guard", async () => {
+    let value: EncryptedWalletBackupDriverState = {
+      recoveryStatus: { kind: "failed" },
+      retryRecovery: vi.fn(),
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(WalletBackupPresentationProvider, { value, children });
+    const { result, rerender } = renderHook(() => useDepositWithdrawState("deposit", onDismiss), {
+      wrapper,
+    });
+    act(() => result.current.onNumpadPress("2"));
+    act(() => result.current.onNumpadPress("3"));
+    await act(async () => result.current.onCreateInvoice());
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    value = { ...value, recoveryStatus: { kind: "preparing", reason: "authentication" } };
+    rerender();
+    await act(async () => result.current.onCreateInvoice());
+    expect(result.current.amountSats).toBe(23);
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    value = { ...value, recoveryStatus: { kind: "ready" } };
+    rerender();
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    createBrowserDurableBolt11MintQuote.mockRejectedValue(
+      new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+    );
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+      amount: 23_000,
+      mintUrl: "http://localhost:8085",
+      unit: "msat",
+    });
+    expect(result.current.error).toBe(
+      "Wallet backup is not ready. Wait for it to finish, or use Retry wallet backup if it has stopped.",
+    );
+    expect(result.current.amountSats).toBe(23);
+    expect(result.current.bolt11).toBeNull();
+    expect(subscribeActiveBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+  });
+
+  it("uses Japanese wallet language for a startup refusal instead of the internal message", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      createBrowserDurableBolt11MintQuote.mockRejectedValue(
+        new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+      );
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      act(() => result.current.onNumpadPress("1"));
+      await act(async () => result.current.onCreateInvoice());
+      expect(result.current.error).toBe(
+        "ウォレットバックアップの準備が完了していません。完了を待つか、停止している場合は「バックアップを再試行」を選んでください。",
+      );
+      expect(result.current.bolt11).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
 
   describe("initial state", () => {
     it("starts with chooser view for deposit mode", () => {
@@ -211,16 +278,37 @@ describe("useDepositWithdrawState", () => {
       act(() => result.current.onNumpadPress("0"));
       expect(result.current.amountSats).toBe(0);
     });
-  });
 
-  describe("onToggleCurrency", () => {
-    it("toggles showFiatPrimary", () => {
+    it("accepts up to three fractional sat digits and ignores further digits", () => {
       const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
-      expect(result.current.showFiatPrimary).toBe(false);
-      act(() => result.current.onToggleCurrency());
-      expect(result.current.showFiatPrimary).toBe(true);
-      act(() => result.current.onToggleCurrency());
-      expect(result.current.showFiatPrimary).toBe(false);
+      for (const key of ["1", ".", "0", "0", "1", "9"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(1.001);
+    });
+
+    it("accepts a leading decimal as zero point zero zero one sat", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of [".", "0", "0", "1"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(0.001);
+    });
+
+    it("ignores a repeated decimal key", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of ["1", ".", ".", "0"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(1);
+    });
+
+    it("does not expose an incomplete decimal as a sendable amount", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of ["1", "."]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(0);
     });
   });
 
@@ -306,15 +394,35 @@ describe("useDepositWithdrawState", () => {
   });
 
   describe("request feature", () => {
-    it("onRequest creates payment request and shows display", async () => {
-      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
-      await act(async () => {
-        await result.current.onRequest();
-      });
-      expect(result.current.currentView).toBe("payment-request-display");
-      expect(result.current.paymentRequestEncoded).toBeTruthy();
-      expect(result.current.paymentRequestStatus).toBe("waiting");
-    });
+    it.each([true, false])(
+      "shows confirmed request receipt only for the active wallet: %s",
+      async (sameWallet) => {
+        const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+        await act(async () => {
+          await result.current.onRequest();
+        });
+        expect(result.current.currentView).toBe("payment-request-display");
+        expect(result.current.paymentRequestEncoded).toBeTruthy();
+        expect(result.current.paymentRequestStatus).toBe("waiting");
+        const scope = browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic)!;
+        const receivedScope = sameWallet
+          ? scope
+          : browserWalletScopeIdFromMnemonic(
+              "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            )!;
+        usePaymentRequestInbox
+          .getState()
+          .registerPending("req1", "http://localhost:8085", receivedScope);
+        act(() =>
+          usePaymentRequestInbox.getState().markReceived("req1", 1_001, "sat", receivedScope),
+        );
+        expect(result.current.currentView).toBe(sameWallet ? "success" : "payment-request-display");
+        expect(result.current.successAmountMsat).toBe(sameWallet ? 1_001 : 0);
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(usePaymentRequestInbox.getState().entries.req1 !== undefined).toBe(!sameWallet);
+        usePaymentRequestInbox.getState().clear("req1");
+      },
+    );
   });
 
   describe("onMintChange", () => {
@@ -378,7 +486,8 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("success");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
         type: "deposit",
-        amountSats: 10_000,
+        amountSubunits: 10_000,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     });
 
@@ -421,13 +530,13 @@ describe("useDepositWithdrawState", () => {
         added: true,
         mintUrl: "https://testnut.cashu.space",
         source: "paste",
-        unit: "sat",
+        unit: "msat",
         amountSubunits: 50_000,
         baseAsset: "sat",
         proofs: [
           {
             secret: "s-new",
-            amount: 50,
+            amount: 50_000,
             id: "kid-B",
             C: "C",
             conditionId: "condition-1",
@@ -455,13 +564,68 @@ describe("useDepositWithdrawState", () => {
         "paste",
       );
       expect(result.current.currentView).toBe("success");
-      expect(result.current.successAmount).toBe(50_000);
+      expect(result.current.successAmountMsat).toBe(50_000);
       expect(result.current.error).toBeNull();
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        amountSats: 50_000,
+        amountSubunits: 50_000,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
         baseAsset: "sat",
       });
     });
+
+    it.each(["paste", "scan"] as const)(
+      "retains a completed %s receive under its captured wallet but suppresses stale presentation",
+      async (source) => {
+        const walletOps = await import("@/lib/walletOps");
+        let finishIngress!: (value: never) => void;
+        vi.mocked(walletOps.ingressReceiveCashuToken).mockImplementationOnce(
+          () => new Promise((resolve) => (finishIngress = resolve)) as never,
+        );
+        const capturedWalletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
+        const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+        act(() => result.current.onSelectMethod("ecash"));
+        let paste!: Promise<void>;
+        await act(async () => {
+          if (source === "paste") {
+            Object.defineProperty(navigator, "clipboard", {
+              configurable: true,
+              value: { readText: vi.fn().mockResolvedValue("cashuB-token") },
+            });
+            paste = result.current.onPaste() as unknown as Promise<void>;
+          } else {
+            paste = result.current.onScanResult("cashuB-token") as unknown as Promise<void>;
+          }
+          await Promise.resolve();
+        });
+        const newMnemonic =
+          "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        act(() => useWalletStore.setState({ mnemonic: newMnemonic }));
+        setActiveBrowserWalletProfile(newMnemonic);
+        await act(async () => {
+          finishIngress({
+            added: true,
+            mintUrl: "http://localhost:8085",
+            source,
+            unit: "msat",
+            amountSubunits: 42_000,
+            baseAsset: "sat",
+            proofs: [],
+          } as never);
+          await paste;
+        });
+
+        expect(useActivityLogStore.getState().items).toEqual([
+          expect.objectContaining({ walletId: capturedWalletId, amountSubunits: 42_000 }),
+        ]);
+        expect(
+          useToastStore
+            .getState()
+            .toasts.some((toast) => toast.message.startsWith("Added new mint:")),
+        ).toBe(false);
+        expect(result.current.currentView).toBe("deposit-ecash");
+        expect(result.current.isLoading).toBe(false);
+      },
+    );
 
     it("reports the durable receiver unit in the success state", async () => {
       const walletOps = await import("@/lib/walletOps");
@@ -485,9 +649,10 @@ describe("useDepositWithdrawState", () => {
         await result.current.onPaste();
       });
 
-      expect(result.current.successUnit).toBe("sat");
+      expect(result.current.successBaseAsset).toBe("sat");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        amountSats: 23,
+        amountSubunits: 23,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
         baseAsset: "sat",
       });
     });
@@ -547,27 +712,34 @@ describe("useDepositWithdrawState", () => {
     });
   });
 
-  describe("sat-only withdraw paths", () => {
-    it("creates a durable bearer token only after Send", async () => {
+  describe("msat withdrawal with sats display", () => {
+    it.each([
+      ["50", 50_000],
+      ["1.001", 1_001],
+    ])("sends %s sats as exactly %s msat only after Send", async (input, amountMsat) => {
       const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
       act(() => result.current.onSelectMethod("ecash"));
-      act(() => result.current.onNumpadPress("5"));
-      act(() => result.current.onNumpadPress("0"));
+      act(() => {
+        for (const key of input) result.current.onNumpadPress(key);
+      });
 
       await act(async () => {
         await result.current.onSendEcash();
       });
 
       expect(executeBrowserBearerWithdrawal).toHaveBeenCalledWith({
-        amount: 50,
+        amountMsat,
         mintUrl: "http://localhost:8085",
       });
       expect(result.current.ecashToken).toBe("cashuAtoken123");
       expect(result.current.currentView).toBe("token-display");
     });
 
-    it("resumes an explicitly reopened persisted token without a new send", async () => {
-      const transfer = bearerTransfer();
+    it.each([
+      ["50000", 50],
+      ["1001", 1.001],
+    ])("resumes %s msat as %s sats without a new send", async (requestedAmount, amountSats) => {
+      const transfer = { ...bearerTransfer(), requestedAmount };
       resumeBrowserBearerWithdrawal.mockResolvedValueOnce(transfer);
       classifyBrowserBearerWithdrawal.mockResolvedValueOnce({
         ...transfer,
@@ -577,7 +749,16 @@ describe("useDepositWithdrawState", () => {
       act(() => result.current.onSelectMethod("ecash"));
       await act(async () => undefined);
       expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(result.current.amountSats).toBe(amountSats);
       expect(executeBrowserBearerWithdrawal).not.toHaveBeenCalled();
+      expect(result.current.currentView).toBe("token-display");
+      const pendingTransfer = result.current.bearerWithdrawal;
+      act(() => result.current.onAcknowledgeEcashHandoff());
+      expect(result.current.currentView).toBe("success");
+      expect(result.current.successAmountMsat).toBe(Number(requestedAmount));
+      expect(result.current.bearerWithdrawal).toBe(pendingTransfer);
+      expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(reclaimBrowserBearerWithdrawal).not.toHaveBeenCalled();
     });
 
     it("does not present a stale resumed token after the mint changes", async () => {
@@ -613,36 +794,60 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("send-ecash");
     });
 
-    it("selects sat base proofs when paying lightning", async () => {
-      const proofDb = await import("@/stores/proof-db");
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(proofDb.getUnitProofs).mockClear();
-      vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
-        quote: "q1",
-        amount: 1000,
-        fee_reserve: 10,
-        state: "UNPAID",
-        expiry: 0,
-        payment_preimage: null,
-      } as never);
-      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({ paid: true, change: [] } as never);
+    it.each(["paid", "unpaid", "error"] as const)(
+      "shows melt success only for confirmed payment: %s",
+      async (outcome) => {
+        const proofDb = await import("@/stores/proof-db");
+        const cashu = await import("@/lib/cashu");
+        vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
+          quote: "q1",
+          amount: 1000,
+          fee_reserve: 10,
+          state: "UNPAID",
+          expiry: 0,
+          payment_preimage: null,
+        } as never);
+        if (outcome === "error") {
+          vi.mocked(cashu.meltProofs).mockRejectedValueOnce(
+            new Error("Payment status unavailable"),
+          );
+        } else {
+          vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
+            paid: outcome === "paid",
+            change: [],
+          } as never);
+        }
 
-      const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
-      act(() => result.current.onSelectMethod("lightning"));
-      await act(async () => {
-        await result.current.onLightningInputChange("lnbc100n1pexample");
-      });
-      await act(async () => {
-        await result.current.onConfirmMelt();
-      });
+        const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
+        act(() => result.current.onSelectMethod("lightning"));
+        await act(async () => {
+          await result.current.onLightningInputChange("lnbc100n1pexample");
+        });
+        await act(async () => {
+          await result.current.onConfirmMelt();
+        });
 
-      expect(proofDb.getUnitProofs).toHaveBeenCalledWith("http://localhost:8085", { unit: "sat" });
-      expect(cashu.meltProofs).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.any(Array),
-        "http://localhost:8085",
-      );
-    });
+        expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
+        expect(proofDb.addProofs).not.toHaveBeenCalled();
+        expect(proofDb.removeProofs).not.toHaveBeenCalled();
+        expect(result.current.currentView).toBe(outcome === "paid" ? "success" : "melt-confirm");
+        expect(result.current.successAmountMsat).toBe(outcome === "paid" ? 1_000 : 0);
+        expect(result.current.successBaseAsset).toBe("sat");
+        expect(useActivityLogStore.getState().items).toEqual(
+          outcome === "paid"
+            ? [
+                expect.objectContaining({
+                  type: "withdrawal",
+                  amountSubunits: 1_000,
+                  walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
+                  baseAsset: "sat",
+                }),
+              ]
+            : [],
+        );
+        expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
+      },
+    );
   });
 });
 
@@ -651,9 +856,10 @@ function bearerTransfer(): {
 } & Record<string, unknown> {
   return {
     transferId: "bearer-withdrawal:test",
+    walletScopeId: browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic),
     mintUrl: "http://localhost:8085",
-    unit: "sat",
-    requestedAmount: "50",
+    unit: "msat",
+    requestedAmount: "50000",
     deliveryState: "delivery-pending",
     token: { encodedToken: "cashuAtoken123", unspentProofs: null, proofs: [] },
   };

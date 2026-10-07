@@ -53,6 +53,55 @@ const SECP256K1_GENERATOR = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d95
 const SAT_ASSET: StoredProofAsset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
 const COUNTER_BINDING = { normalizedMint: MINT_URL, unit: 'msat' as const }
 
+test('rejects invalid complete-set msat amounts before custody or mint access', async () => {
+  let custodyCalls = 0
+  let transportCalls = 0
+  for (const amountMsat of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN]) {
+    await assert.rejects(
+      () =>
+        splitWalletCompleteSet({
+          mintUrl: MINT_URL,
+          conditionId: CONDITION_ID,
+          amountMsat,
+          operationId: `invalid-${String(amountMsat)}`,
+          secrets: null,
+          deps: {
+            getCustodyFence: () => {
+              custodyCalls += 1
+              throw new Error('custody must not be read')
+            },
+            createCtfSplitTransport: () => {
+              transportCalls += 1
+              throw new Error('mint must not be accessed')
+            },
+          },
+        }),
+      /amountMsat must be a positive safe integer/,
+    )
+  }
+  assert.equal(custodyCalls, 0)
+  assert.equal(transportCalls, 0)
+
+  await assert.rejects(
+    () =>
+      splitWalletCompleteSet({
+        mintUrl: MINT_URL,
+        conditionId: CONDITION_ID,
+        amountSats: 1,
+        operationId: 'invalid-legacy-amount-field',
+        secrets: null,
+        deps: {
+          getCustodyFence: () => {
+            custodyCalls += 1
+            throw new Error('custody must not be read')
+          },
+        },
+      } as never),
+    /amountMsat must be a positive safe integer/,
+  )
+  assert.equal(custodyCalls, 0)
+})
+
 test('recovers a regular-prepared complete-set split from persisted collateral amount', async () => {
   await withProfile(async ({ mutation, fence }) => {
     const root = rootFor('regular-prepared')
@@ -197,7 +246,7 @@ test('recovers a CTF-prepared complete-set split with its exact deterministic ou
           conditionId: CONDITION_ID,
           collateralProofs: [handoff],
           outcomeCollectionKeysets: outcomeKeysets(),
-          amountSubunits: root.amountSats,
+          amountSubunits: root.amountMsat,
           proofOperationStore: createCtfStore(root, mutation),
           outputMode: createDaemonCompleteSetOutputMode({
             walletSeedHex: '11'.repeat(64),
@@ -258,7 +307,7 @@ test('rejects a completed CTF replay from a different mint before recovery I/O',
         splitWalletCompleteSet({
           mintUrl: MINT_URL,
           conditionId: CONDITION_ID,
-          amountSats: root.amountSats,
+          amountMsat: root.amountMsat,
           operationId: root.rootOperationId,
           secrets,
           deps: {
@@ -301,7 +350,7 @@ test('rejects cross-root, cross-condition, cross-amount, and cross-mint recovery
     const invalidRoots = [
       { ...reference.root, rootOperationId: 'other-root' },
       { ...reference.root, conditionId: 'b'.repeat(64) },
-      { ...reference.root, amountSats: root.amountSats + 1 },
+      { ...reference.root, amountMsat: root.amountMsat + 1 },
       { ...reference.root, mintUrl: 'https://other-mint.example' },
     ]
     const secrets = (await readSecrets())!
@@ -313,7 +362,7 @@ test('rejects cross-root, cross-condition, cross-amount, and cross-mint recovery
           splitWalletCompleteSet({
             mintUrl: root.mintUrl,
             conditionId: root.conditionId,
-            amountSats: root.amountSats,
+            amountMsat: root.amountMsat,
             operationId: root.rootOperationId,
             secrets,
             deps: {
@@ -369,7 +418,7 @@ function rootFor(suffix: string): CompleteSetRecoveryRoot {
     rootOperationId,
     mintUrl: MINT_URL,
     conditionId: CONDITION_ID,
-    amountSats: 100,
+    amountMsat: 100,
     regularOperationId: `${rootOperationId}:regular-split`,
     ctfOperationId: null,
   }
@@ -439,7 +488,7 @@ function regularPreparation(root: CompleteSetRecoveryRoot, source: Proof) {
       successorAssets: authority.successorAssets,
       rootOperationId: root.rootOperationId,
       conditionId: root.conditionId,
-      amountSats: root.amountSats,
+      amountMsat: root.amountMsat,
     },
     reservationId: authority.reservationId,
     asset: SAT_ASSET,
@@ -489,8 +538,8 @@ function completedCtfOperation(
   mintUrl: string,
 ): CtfProofOperationRecord {
   const resultProofs = {
-    A: [proof(OUTCOME_A_KEYSET, root.amountSats, `${root.rootOperationId}-outcome-A`)],
-    B: [proof(OUTCOME_B_KEYSET, root.amountSats, `${root.rootOperationId}-outcome-B`)],
+    A: [proof(OUTCOME_A_KEYSET, root.amountMsat, `${root.rootOperationId}-outcome-A`)],
+    B: [proof(OUTCOME_B_KEYSET, root.amountMsat, `${root.rootOperationId}-outcome-B`)],
   }
   return {
     operationId: ctfOperationId(root),
@@ -499,8 +548,8 @@ function completedCtfOperation(
     mintUrl,
     inputs: [proof(HANDOFF_KEYSET, 101, `${root.rootOperationId}-handoff`)],
     outputs: {
-      A: [storedOutput(`${root.rootOperationId}-output-A`, root.amountSats, OUTCOME_A_KEYSET)],
-      B: [storedOutput(`${root.rootOperationId}-output-B`, root.amountSats, OUTCOME_B_KEYSET)],
+      A: [storedOutput(`${root.rootOperationId}-output-A`, root.amountMsat, OUTCOME_A_KEYSET)],
+      B: [storedOutput(`${root.rootOperationId}-output-B`, root.amountMsat, OUTCOME_B_KEYSET)],
     },
     metadata: {
       purpose: 'daemon-complete-set-ctf-split',
@@ -509,8 +558,8 @@ function completedCtfOperation(
       successorAssets: ctfAuthority(root).successorAssets,
       rootOperationId: root.rootOperationId,
       conditionId: root.conditionId,
-      amountSats: root.amountSats,
-      amountSubunits: root.amountSats,
+      amountMsat: root.amountMsat,
+      amountSubunits: root.amountMsat,
       baseAsset: 'sat',
       unit: 'msat',
       parentCollectionId: null,
@@ -571,7 +620,7 @@ function ctfPreparation(
       successorAssets: authority.successorAssets,
       rootOperationId: root.rootOperationId,
       conditionId: root.conditionId,
-      amountSats: root.amountSats,
+      amountMsat: root.amountMsat,
     },
     reservationId: authority.reservationId,
     asset: SAT_ASSET,

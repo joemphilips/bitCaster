@@ -1,9 +1,12 @@
-import Dexie from "dexie";
+import Dexie, { type Table } from "dexie";
 import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import {
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
   decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire,
+  createEncryptedWalletBackupV2CurrentHead,
+  digestEncryptedWalletBackupV2BundleDescriptor,
+  digestEncryptedWalletBackupV2BundleSupersessionReceipt,
   decodeEncryptedWalletBackupV2UploadGroup,
   encodeEncryptedWalletBackupV2BundleDescriptor,
   encodeEncryptedWalletBackupV2BundleSupersessionReceipt,
@@ -23,7 +26,11 @@ import type {
   EncryptedWalletBackupV2AssetReceiptRow,
 } from "./proof-db";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
-import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  decodeEncryptedWalletBackupV2DesiredAssetRow,
+  type EncryptedWalletBackupV2RemovalExclusionEvidence,
+  type EncryptedWalletBackupV2RemovalIntent,
+} from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
 export interface EncryptedWalletBackupV2DexieAuthorityProfile {
   readonly database: BitcasterDB;
@@ -63,6 +70,26 @@ export interface EncryptedWalletBackupV2AssetReceiptBinding extends EncryptedWal
   readonly bundleId: string | null;
   readonly bundleDescriptorDigest: string | null;
 }
+
+export type EncryptedWalletBackupV2LocalRecoveryStatus = Pick<
+  EncryptedWalletBackupV2AcceptedHeadRow,
+  "localRecoveryStatus" | "localRecoveryReason" | "localRecoveryVersion"
+>;
+
+export interface EncryptedWalletBackupV2NewWritePermission extends EncryptedWalletBackupV2LocalRecoveryStatus {
+  readonly canWrite: boolean;
+}
+
+export interface EncryptedWalletBackupV2LocalRecoveryRecheckContext {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly currentAcceptedHead: EncryptedWalletBackupV2AcceptedHeadRow;
+  readonly recoveredAcceptedHead: EncryptedWalletBackupV2AcceptedHeadRow;
+}
+
+export type EncryptedWalletBackupV2LocalRecoveryRecheck = (
+  context: EncryptedWalletBackupV2LocalRecoveryRecheckContext,
+) => boolean | void | Promise<boolean | void>;
 
 /** Strict V2-only Dexie primitives. This class never performs service I/O. */
 export class EncryptedWalletBackupV2DexieAuthorityStore {
@@ -106,7 +133,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
   async insertPreparedMutationForDesired(input: {
     readonly prepared: EncryptedWalletBackupV2PreparedMutationInput;
     readonly desired: EncryptedWalletBackupV2PreparedDesiredBinding;
-  }): Promise<"inserted" | "existing"> {
+  }): Promise<"inserted" | "existing" | "stale-desired"> {
     this.#requireDatabaseBinding();
     const next = this.#preparedRow(input.prepared);
     const desired = requireDesiredBinding(input.desired);
@@ -120,8 +147,19 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
           this.#scopeId,
           desired.localAssetKey,
         ]);
-        if (rawDesired === undefined || !sameDesiredBinding(rawDesired, desired))
+        if (rawDesired === undefined)
           throw new Error("encrypted wallet backup v2 desired asset is stale");
+        const currentDesired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+        if (currentDesired.scopeId !== this.#scopeId)
+          throw new Error("encrypted wallet backup v2 desired asset is stale");
+        if (
+          currentDesired.syncState !== "pending" ||
+          currentDesired.localAssetKey !== desired.localAssetKey ||
+          currentDesired.custodyRevision !== desired.custodyRevision ||
+          currentDesired.desiredAction !== desired.desiredAction ||
+          currentDesired.activeProofCount !== desired.activeProofCount
+        )
+          return "stale-desired";
         await this.#requirePreparedMatchesAcceptedHead(input.prepared);
         const current = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
           this.#authorityKey(),
@@ -145,7 +183,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     );
   }
 
-  /** Atomically accepts a competing head, active descriptors, and stale prepared deletion. */
+  /** Atomically accepts an ordinary reconciled head and applies its stale-work correction. */
   async acceptCompetingHead(input: {
     readonly collectedHeadEvidence: unknown;
     readonly stalePreparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
@@ -159,8 +197,9 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       this.#database.encryptedWalletBackupV2PreparedMutations,
       this.#database.encryptedWalletBackupV2DesiredAssets,
       async () => {
-        if (await this.#mayReplaceAcceptedAuthority(authority)) {
-          await this.#database.encryptedWalletBackupV2AcceptedHeads.put(authority.head);
+        const next = await this.#preserveLocalRecoveryStatus(authority.head);
+        if (await this.#mayReplaceAcceptedAuthority({ ...authority, head: next })) {
+          await this.#database.encryptedWalletBackupV2AcceptedHeads.put(next);
           await this.#replaceDescriptorRows(authority.descriptors);
         }
         await this.#requeueAcknowledgedDesiredAssets();
@@ -171,6 +210,106 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
         });
       },
     );
+  }
+
+  /**
+   * Accepts an authenticated competing head and durably refuses new writes.
+   * This path retains desired rows and any uncertain prepared request.
+   */
+  async markCompetingHeadRecoveryRequired(input: {
+    readonly collectedHeadEvidence: unknown;
+  }): Promise<EncryptedWalletBackupV2LocalRecoveryStatus> {
+    this.#requireDatabaseBinding();
+    const authority = this.#headAuthorityRows(input.collectedHeadEvidence);
+    return this.#database.transaction(
+      "rw",
+      this.#database.encryptedWalletBackupV2AcceptedHeads,
+      this.#database.encryptedWalletBackupV2ActiveDescriptors,
+      this.#database.encryptedWalletBackupV2PreparedMutations,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      async () => {
+        const currentRaw = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(
+          this.#authorityKey(),
+        );
+        const current = currentRaw === undefined ? null : this.#decodeHeadRow(currentRaw);
+        const currentStatus = current === null ? readyRecoveryStatus() : current;
+        const nextStatus = recoveryRequiredStatus(currentStatus);
+        if (current === null) {
+          await this.#database.encryptedWalletBackupV2AcceptedHeads.put({
+            ...authority.head,
+            ...nextStatus,
+          });
+          await this.#replaceDescriptorRows(authority.descriptors);
+        } else if (
+          current.localRecoveryStatus !== nextStatus.localRecoveryStatus ||
+          current.localRecoveryReason !== nextStatus.localRecoveryReason ||
+          current.localRecoveryVersion !== nextStatus.localRecoveryVersion
+        ) {
+          await this.#database.encryptedWalletBackupV2AcceptedHeads.put({
+            ...current!,
+            ...nextStatus,
+          });
+        }
+        return nextStatus;
+      },
+    );
+  }
+
+  /** Reads the durable local refusal state. A missing head has no local refusal. */
+  async readLocalRecoveryStatus(): Promise<EncryptedWalletBackupV2LocalRecoveryStatus | null> {
+    const head = await this.readAcceptedHead();
+    return head === null ? null : recoveryStatus(head);
+  }
+
+  /** Reads the permission gate used before a new wallet or backup write. */
+  async readNewWritePermission(): Promise<EncryptedWalletBackupV2NewWritePermission> {
+    const status = (await this.readLocalRecoveryStatus()) ?? readyRecoveryStatus();
+    const canWrite = status.localRecoveryStatus === "ready";
+    return Object.freeze({ ...status, canWrite });
+  }
+
+  /**
+   * Accepts one authenticated recovery result with its local readiness checks.
+   * `recheckLocalState` must use only the declared local tables because remote I/O cannot share
+   * the IndexedDB transaction lifetime.
+   */
+  async acceptRecoveredHead(input: {
+    readonly collectedHeadEvidence: unknown;
+    readonly expectedRecoveryVersion: number;
+    readonly recheckLocalState: EncryptedWalletBackupV2LocalRecoveryRecheck;
+  }): Promise<EncryptedWalletBackupV2LocalRecoveryStatus> {
+    this.#requireDatabaseBinding();
+    if (!isNonnegativeSafeInteger(input.expectedRecoveryVersion)) {
+      throw new Error("encrypted wallet backup v2 recovery version is invalid");
+    }
+    const recovered = this.#headAuthorityRows(input.collectedHeadEvidence);
+    return this.#database.transaction("rw", this.#recoveryAcceptanceTables(), async () => {
+      const current = await this.#requireCurrentRecoveryHead(input.expectedRecoveryVersion);
+      await this.#requireNoPreparedRecoveryMutation();
+      await this.#requireRecoveredAuthorityCanReplace(current, recovered);
+      const permitted = await input.recheckLocalState(
+        Object.freeze({
+          database: this.#database,
+          scopeId: this.#scopeId,
+          currentAcceptedHead: current,
+          recoveredAcceptedHead: recovered.head,
+        }),
+      );
+      if (permitted === false) {
+        throw new Error("encrypted wallet backup v2 recovery is incomplete");
+      }
+      const latest = await this.#requireCurrentRecoveryHead(input.expectedRecoveryVersion);
+      if (!sameAcceptedHead(latest, current)) {
+        throw new Error("encrypted wallet backup v2 recovery status is stale");
+      }
+      await this.#requireNoPreparedRecoveryMutation();
+      await this.#database.encryptedWalletBackupV2AcceptedHeads.put({
+        ...recovered.head,
+        ...readyRecoveryStatus(input.expectedRecoveryVersion + 1),
+      });
+      await this.#replaceDescriptorRows(recovered.descriptors);
+      return readyRecoveryStatus(input.expectedRecoveryVersion + 1);
+    });
   }
 
   async readAcceptedHead(): Promise<EncryptedWalletBackupV2AcceptedHeadRow | null> {
@@ -195,35 +334,6 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     return row === undefined ? null : this.#decodeAssetReceiptRow(row);
   }
 
-  async acknowledgeAbsentRemoval(
-    binding: EncryptedWalletBackupV2PreparedDesiredBinding,
-  ): Promise<void> {
-    const desired = requireDesiredBinding(binding);
-    if (desired.desiredAction !== "remove" || desired.activeProofCount !== 0)
-      throw new Error("encrypted wallet backup v2 removal intent is invalid");
-    return this.#database.transaction(
-      "rw",
-      this.#database.encryptedWalletBackupV2DesiredAssets,
-      this.#database.encryptedWalletBackupV2AssetReceipts,
-      async () => {
-        const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
-          this.#scopeId,
-          desired.localAssetKey,
-        ]);
-        if (raw === undefined || !sameDesiredBinding(raw, desired))
-          throw new Error("encrypted wallet backup v2 desired asset is stale");
-        await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
-          ...this.#authorityKey(),
-          desired.localAssetKey,
-        ]);
-        await this.#database.encryptedWalletBackupV2DesiredAssets.delete([
-          this.#scopeId,
-          desired.localAssetKey,
-        ]);
-      },
-    );
-  }
-
   /** Commits the exact receipt artifact for one asset with the receipt-result head. */
   async commitVerifiedAssetReceipt(input: {
     readonly binding: EncryptedWalletBackupV2AssetReceiptBinding;
@@ -232,6 +342,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     readonly verifiedReceipt: unknown;
     readonly collectedHeadEvidence: unknown;
     readonly preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
+    readonly acknowledgedAtMs?: number;
   }): Promise<void> {
     this.#requireDatabaseBinding();
     const binding = requireAssetReceiptBinding(input.binding);
@@ -263,6 +374,14 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       verified.requestDigest !== input.preparedMutation.requestDigest
     )
       throw new Error("encrypted wallet backup v2 receipt mutation binding is invalid");
+    if (
+      !sameBytes(
+        input.canonicalSignedReceipt,
+        encodeEncryptedWalletBackupV2BundleSupersessionReceipt(verified),
+      )
+    ) {
+      throw new Error("encrypted wallet backup v2 signed receipt is invalid");
+    }
     const assetReceipt =
       verified.bundleId === null
         ? null
@@ -280,6 +399,20 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       this.#database.encryptedWalletBackupV2PreparedMutations,
       this.#database.encryptedWalletBackupV2DesiredAssets,
       async () => {
+        const prepared = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
+          this.#authorityKey(),
+        );
+        if (prepared === undefined) {
+          await this.#requireExactReceiptReplay(
+            authority,
+            binding,
+            mutation.mutation,
+            verified,
+            input.canonicalSignedReceipt,
+            input.acknowledgedAtMs ?? Date.now(),
+          );
+          return;
+        }
         await this.#requirePreparedReceiptBinding(input.preparedMutation, binding);
         if (assetReceipt === null)
           await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
@@ -289,9 +422,177 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
         else await this.#database.encryptedWalletBackupV2AssetReceipts.put(assetReceipt);
         await this.#commitReceiptAuthority(authority, mutation.mutation);
         await this.#database.encryptedWalletBackupV2PreparedMutations.delete(this.#authorityKey());
-        await this.#acknowledgeExactDesiredAsset(binding);
+        await this.#acknowledgeExactDesiredAsset(
+          binding,
+          mutation.mutation,
+          verified,
+          input.canonicalSignedReceipt,
+          input.acknowledgedAtMs ?? Date.now(),
+        );
       },
     );
+  }
+
+  /** Commits an authenticated exact result while retaining the prepared bytes until acknowledgement. */
+  async commitExactPreparedRemovalHead(input: {
+    readonly binding: EncryptedWalletBackupV2AssetReceiptBinding;
+    readonly collectedHeadEvidence: unknown;
+    readonly preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
+    readonly acknowledgedAtMs: number;
+  }): Promise<"acknowledged"> {
+    this.#requireDatabaseBinding();
+    const binding = requireAssetReceiptBinding(input.binding);
+    const authority = this.#headAuthorityRows(input.collectedHeadEvidence);
+    if (!isNonnegativeSafeInteger(input.acknowledgedAtMs)) {
+      throw new Error("encrypted wallet backup v2 removal acknowledgement time is invalid");
+    }
+    return this.#database.transaction(
+      "rw",
+      [
+        ...this.#removalAcknowledgementTables(),
+        this.#database.encryptedWalletBackupV2PreparedMutations,
+      ],
+      async () => {
+        await this.#requirePreparedReceiptBinding(input.preparedMutation, binding);
+        const rawPrepared = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
+          this.#authorityKey(),
+        );
+        if (rawPrepared === undefined) {
+          throw new Error("encrypted wallet backup v2 prepared mutation is absent");
+        }
+        const prepared = this.#decodePreparedRow(rawPrepared);
+        const mutation = decodeEncryptedWalletBackupV2UploadGroup({
+          bytes: prepared.canonicalUploadGroup,
+          expectedRequestAuthPublicKey: this.#requestAuthPublicKey,
+          expectedContext: this.#context(),
+        }).mutationEvidence.envelope.mutation;
+        const rawDesired = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+          this.#scopeId,
+          binding.localAssetKey,
+        ]);
+        if (rawDesired === undefined || !sameDesiredBinding(rawDesired, binding)) {
+          throw new Error("encrypted wallet backup v2 desired asset is stale");
+        }
+        const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+        const intent = desired.removalIntent;
+        if (intent === null || intent.state !== "pending") {
+          throw new Error("encrypted wallet backup v2 removal intent is stale");
+        }
+        requireRemovalIntentProfile(intent, this.#realm, this.#walletId, this.#enrollmentEpoch);
+        const expected = await this.#exactPreparedResultAuthority(binding, intent, mutation);
+        if (
+          !sameBytes(authority.head.canonicalCurrentHead, expected.head.canonicalCurrentHead) ||
+          !sameDescriptorRows(authority.descriptors, expected.descriptors)
+        ) {
+          throw new Error("encrypted wallet backup v2 exact removal result is invalid");
+        }
+        await this.#database.encryptedWalletBackupV2AcceptedHeads.put(
+          await this.#preserveLocalRecoveryStatus(authority.head),
+        );
+        await this.#replaceDescriptorRows(authority.descriptors);
+        await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
+          ...this.#authorityKey(),
+          binding.localAssetKey,
+        ]);
+        await this.#database.encryptedWalletBackupV2PreparedMutations.delete(this.#authorityKey());
+        await this.#acknowledgeRemovalIntent(desired, intent, {
+          kind: "current-head",
+          headVersion: authority.head.headVersion,
+          activeSetDigest: authority.head.activeSetDigest,
+          bundleId: binding.bundleId,
+          bundleDescriptorDigest: binding.bundleDescriptorDigest,
+          acknowledgedAtMs: input.acknowledgedAtMs,
+        });
+        return "acknowledged" as const;
+      },
+    );
+  }
+
+  /** Records exclusion evidence before local removal can finalize. */
+  async acknowledgeCurrentHeadRemoval(input: {
+    readonly binding: EncryptedWalletBackupV2PreparedDesiredBinding;
+    readonly collectedHeadEvidence: unknown;
+    readonly acknowledgedAtMs: number;
+  }): Promise<"removed" | "acknowledged"> {
+    this.#requireDatabaseBinding();
+    const binding = requireDesiredBinding(input.binding);
+    const authority = this.#headAuthorityRows(input.collectedHeadEvidence);
+    if (authority.descriptors.some(({ assetLocator }) => assetLocator === binding.assetLocator)) {
+      throw new Error("encrypted wallet backup v2 removal head still contains asset");
+    }
+    if (!isNonnegativeSafeInteger(input.acknowledgedAtMs)) {
+      throw new Error("encrypted wallet backup v2 removal acknowledgement time is invalid");
+    }
+    return this.#database.transaction("rw", this.#removalAcknowledgementTables(), async () => {
+      const nextHead = await this.#preserveLocalRecoveryStatus(authority.head);
+      if (await this.#mayReplaceAcceptedAuthority({ ...authority, head: nextHead })) {
+        await this.#database.encryptedWalletBackupV2AcceptedHeads.put(nextHead);
+        await this.#replaceDescriptorRows(authority.descriptors);
+      }
+      const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+        this.#scopeId,
+        binding.localAssetKey,
+      ]);
+      if (raw === undefined) {
+        throw new Error("encrypted wallet backup v2 desired asset is stale");
+      }
+      const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+      const intent = desired.removalIntent;
+      if (intent === null) {
+        if (binding.desiredAction !== "remove" || binding.activeProofCount !== 0) {
+          throw new Error("encrypted wallet backup v2 removal intent is missing");
+        }
+        await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
+          ...this.#authorityKey(),
+          binding.localAssetKey,
+        ]);
+        await this.#database.encryptedWalletBackupV2DesiredAssets.delete([
+          this.#scopeId,
+          binding.localAssetKey,
+        ]);
+        return "removed";
+      }
+      if (binding.activeProofCount !== 0 || binding.desiredAction !== "remove") {
+        throw new Error("encrypted wallet backup v2 removal successor is not absent");
+      }
+      if (intent !== null) {
+        requireRemovalIntentProfile(intent, this.#realm, this.#walletId, this.#enrollmentEpoch);
+        if (authority.head.headVersion <= intent.expectedHeadVersion) {
+          throw new Error("encrypted wallet backup v2 removal head is stale");
+        }
+      }
+      if (!sameDesiredBinding(raw, binding)) {
+        if (
+          intent === null ||
+          desired.syncState !== "acknowledged" ||
+          intent.state !== "exclusion-acknowledged" ||
+          intent.acknowledgedExclusionEvidence === null
+        ) {
+          throw new Error("encrypted wallet backup v2 desired asset is stale");
+        }
+        const replayEvidence: EncryptedWalletBackupV2RemovalExclusionEvidence = {
+          kind: "current-head",
+          headVersion: authority.head.headVersion,
+          activeSetDigest: authority.head.activeSetDigest,
+          bundleId: null,
+          bundleDescriptorDigest: null,
+          acknowledgedAtMs: input.acknowledgedAtMs,
+        };
+        if (!sameRemovalExclusionEvidence(intent.acknowledgedExclusionEvidence, replayEvidence)) {
+          throw new Error("encrypted wallet backup v2 removal exclusion evidence conflicts");
+        }
+        return "acknowledged";
+      }
+      await this.#acknowledgeRemovalIntent(desired, intent, {
+        kind: "current-head",
+        headVersion: authority.head.headVersion,
+        activeSetDigest: authority.head.activeSetDigest,
+        bundleId: null,
+        bundleDescriptorDigest: null,
+        acknowledgedAtMs: input.acknowledgedAtMs,
+      });
+      return "acknowledged";
+    });
   }
 
   async listActiveDescriptors(): Promise<readonly EncryptedWalletBackupV2ActiveDescriptorRow[]> {
@@ -453,8 +754,10 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   #headRow(
     head: EncryptedWalletBackupV2CollectedHeadEvidence["head"],
+    localStatus: EncryptedWalletBackupV2LocalRecoveryStatus = readyRecoveryStatus(),
   ): EncryptedWalletBackupV2AcceptedHeadRow {
     this.#requireContext(head);
+    requireRecoveryStatus(localStatus);
     const canonicalCurrentHead = encodeEncryptedWalletBackupV2CurrentHead(head);
     return {
       ...this.#identity(),
@@ -463,6 +766,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       activeObjectCount: head.activeObjectCount,
       activeSetDigest: head.activeSetDigest,
       canonicalCurrentHead,
+      ...localStatus,
     };
   }
 
@@ -471,16 +775,20 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       throw new Error("encrypted wallet backup v2 accepted head row is invalid");
     const row = value as EncryptedWalletBackupV2AcceptedHeadRow;
     this.#requireIdentity(row);
-    const decoded = this.#headRow({
-      formatVersion: 2,
-      realm: row.realm,
-      walletId: row.walletId,
-      enrollmentEpoch: row.enrollmentEpoch,
-      headVersion: row.headVersion,
-      activeBundleCount: row.activeBundleCount,
-      activeObjectCount: row.activeObjectCount,
-      activeSetDigest: row.activeSetDigest,
-    });
+    const localStatus = recoveryStatus(row);
+    const decoded = this.#headRow(
+      {
+        formatVersion: 2,
+        realm: row.realm,
+        walletId: row.walletId,
+        enrollmentEpoch: row.enrollmentEpoch,
+        headVersion: row.headVersion,
+        activeBundleCount: row.activeBundleCount,
+        activeObjectCount: row.activeObjectCount,
+        activeSetDigest: row.activeSetDigest,
+      },
+      localStatus,
+    );
     if (!sameBytes(decoded.canonicalCurrentHead, row.canonicalCurrentHead)) {
       throw new Error("encrypted wallet backup v2 accepted head wire is invalid");
     }
@@ -555,12 +863,51 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   async #acknowledgeExactDesiredAsset(
     binding: EncryptedWalletBackupV2AssetReceiptBinding,
+    mutation: ReturnType<
+      typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
+    >["mutation"],
+    receipt: ReturnType<
+      typeof requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt
+    >["receipt"],
+    canonicalSignedReceipt: Uint8Array,
+    acknowledgedAtMs: number,
   ): Promise<void> {
     const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
       this.#scopeId,
       binding.localAssetKey,
     ]);
-    if (raw === undefined || !sameDesiredBinding(raw, binding)) return;
+    if (raw === undefined) return;
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+    if (!sameDesiredBinding(raw, binding)) {
+      if (desired.removalIntent !== null) {
+        throw new Error("encrypted wallet backup v2 desired asset is stale");
+      }
+      return;
+    }
+    if (desired.removalIntent !== null) {
+      const intent = desired.removalIntent;
+      requireRemovalIntentProfile(intent, this.#realm, this.#walletId, this.#enrollmentEpoch);
+      requireRemovalReceiptBinding(
+        desired,
+        intent,
+        binding,
+        mutation,
+        receipt,
+        canonicalSignedReceipt,
+      );
+      const evidence: EncryptedWalletBackupV2RemovalExclusionEvidence = {
+        kind: "receipt",
+        headVersion: receipt.resultHead.headVersion,
+        activeSetDigest: receipt.resultHead.activeSetDigest,
+        receiptDigest: digestEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
+        bundleId: receipt.bundleId,
+        bundleDescriptorDigest: receipt.bundleDescriptorDigest,
+        supersededBundleIds: receipt.supersededBundleIds,
+        acknowledgedAtMs,
+      };
+      await this.#acknowledgeRemovalIntent(desired, intent, evidence);
+      return;
+    }
     if (binding.desiredAction === "remove") {
       await this.#database.encryptedWalletBackupV2DesiredAssets.delete([
         this.#scopeId,
@@ -568,11 +915,167 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       ]);
       return;
     }
-    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
     await this.#database.encryptedWalletBackupV2DesiredAssets.put({
       ...desired,
       syncState: "acknowledged",
     });
+  }
+
+  async #requireExactReceiptReplay(
+    authority: {
+      readonly head: EncryptedWalletBackupV2AcceptedHeadRow;
+      readonly descriptors: readonly EncryptedWalletBackupV2ActiveDescriptorRow[];
+    },
+    binding: EncryptedWalletBackupV2AssetReceiptBinding,
+    mutation: ReturnType<
+      typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
+    >["mutation"],
+    receipt: ReturnType<
+      typeof requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt
+    >["receipt"],
+    canonicalSignedReceipt: Uint8Array,
+    acknowledgedAtMs: number,
+  ): Promise<void> {
+    const current = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      binding.localAssetKey,
+    ]);
+    if (current === undefined)
+      throw new Error("encrypted wallet backup v2 prepared mutation is absent");
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(current);
+    const intent = desired.removalIntent;
+    if (
+      desired.syncState !== "acknowledged" ||
+      intent === null ||
+      intent.state !== "exclusion-acknowledged" ||
+      intent.acknowledgedExclusionEvidence === null ||
+      desired.localAssetKey !== binding.localAssetKey ||
+      desired.custodyRevision !== binding.custodyRevision ||
+      desired.desiredAction !== binding.desiredAction ||
+      desired.activeProofCount !== binding.activeProofCount
+    ) {
+      throw new Error("encrypted wallet backup v2 prepared mutation is absent");
+    }
+    requireRemovalIntentProfile(intent, this.#realm, this.#walletId, this.#enrollmentEpoch);
+    requireRemovalReceiptBinding(
+      desired,
+      intent,
+      binding,
+      mutation,
+      receipt,
+      canonicalSignedReceipt,
+    );
+    const evidence: EncryptedWalletBackupV2RemovalExclusionEvidence = {
+      kind: "receipt",
+      headVersion: receipt.resultHead.headVersion,
+      activeSetDigest: receipt.resultHead.activeSetDigest,
+      receiptDigest: digestEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
+      bundleId: receipt.bundleId,
+      bundleDescriptorDigest: receipt.bundleDescriptorDigest,
+      supersededBundleIds: receipt.supersededBundleIds,
+      acknowledgedAtMs,
+    };
+    if (!sameRemovalExclusionEvidence(intent.acknowledgedExclusionEvidence, evidence)) {
+      throw new Error("encrypted wallet backup v2 removal exclusion evidence conflicts");
+    }
+    if (await this.#mayReplaceAcceptedAuthority(authority)) {
+      throw new Error("encrypted wallet backup v2 prepared mutation is absent");
+    }
+  }
+
+  async #acknowledgeRemovalIntent(
+    desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
+    intent: EncryptedWalletBackupV2RemovalIntent,
+    evidence: EncryptedWalletBackupV2RemovalExclusionEvidence,
+  ): Promise<void> {
+    if (desired.removalIntent === null || desired.removalIntent.intentId !== intent.intentId) {
+      throw new Error("encrypted wallet backup v2 removal intent is stale");
+    }
+    await this.#database.encryptedWalletBackupV2DesiredAssets.put({
+      ...desired,
+      syncState: "acknowledged",
+      removalIntent: {
+        ...intent,
+        state: "exclusion-acknowledged",
+        acknowledgedExclusionEvidence: evidence,
+      },
+    });
+  }
+
+  #removalAcknowledgementTables(): readonly Table[] {
+    return [
+      this.#database.encryptedWalletBackupV2AcceptedHeads,
+      this.#database.encryptedWalletBackupV2ActiveDescriptors,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      this.#database.encryptedWalletBackupV2AssetReceipts,
+    ];
+  }
+
+  #recoveryAcceptanceTables(): readonly Table[] {
+    return [
+      this.#database.encryptedWalletBackupV2AcceptedHeads,
+      this.#database.encryptedWalletBackupV2ActiveDescriptors,
+      this.#database.encryptedWalletBackupV2PreparedMutations,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      this.#database.custodyProofs,
+      this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
+      this.#database.custodyReservations,
+      this.#database.custodyOperations,
+      this.#database.custodyArtifacts,
+      this.#database.custodyActiveWork,
+      this.#database.proofOperations,
+      this.#database.mintQuotes,
+      this.#database.outgoingCashuTransfers,
+      this.#database.ctfRangePreparations,
+      this.#database.walletCounterCursors,
+      this.#database.walletCounterAssociations,
+    ];
+  }
+
+  async #requireCurrentRecoveryHead(
+    expectedRecoveryVersion: number,
+  ): Promise<EncryptedWalletBackupV2AcceptedHeadRow> {
+    const raw = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(this.#authorityKey());
+    if (raw === undefined) throw new Error("encrypted wallet backup v2 accepted head is absent");
+    const current = this.#decodeHeadRow(raw);
+    if (
+      current.localRecoveryStatus !== "recovery-required" ||
+      current.localRecoveryVersion !== expectedRecoveryVersion
+    ) {
+      throw new Error("encrypted wallet backup v2 recovery status is stale");
+    }
+    return current;
+  }
+
+  async #requireNoPreparedRecoveryMutation(): Promise<void> {
+    const prepared = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
+      this.#authorityKey(),
+    );
+    if (prepared !== undefined) {
+      this.#decodePreparedRow(prepared);
+      throw new Error("encrypted wallet backup v2 recovery has a prepared mutation");
+    }
+  }
+
+  async #requireRecoveredAuthorityCanReplace(
+    current: EncryptedWalletBackupV2AcceptedHeadRow,
+    recovered: {
+      readonly head: EncryptedWalletBackupV2AcceptedHeadRow;
+      readonly descriptors: readonly EncryptedWalletBackupV2ActiveDescriptorRow[];
+    },
+  ): Promise<void> {
+    if (recovered.head.headVersion < current.headVersion) {
+      throw new Error("encrypted wallet backup v2 recovered head is stale");
+    }
+    if (recovered.head.headVersion > current.headVersion) return;
+    const currentDescriptors = await this.#readCurrentDescriptorRows();
+    if (
+      !sameBytes(recovered.head.canonicalCurrentHead, current.canonicalCurrentHead) ||
+      !sameDescriptorRows(recovered.descriptors, currentDescriptors)
+    ) {
+      throw new Error("encrypted wallet backup v2 recovered head conflicts");
+    }
   }
 
   async #commitReceiptAuthority(
@@ -613,7 +1116,74 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
         this.#descriptorRow(encodeEncryptedWalletBackupV2BundleDescriptor(mutation.addedBundle)),
       );
     }
-    await this.#database.encryptedWalletBackupV2AcceptedHeads.put(authority.head);
+    await this.#database.encryptedWalletBackupV2AcceptedHeads.put(
+      await this.#preserveLocalRecoveryStatus(authority.head),
+    );
+  }
+
+  async #exactPreparedResultAuthority(
+    binding: EncryptedWalletBackupV2AssetReceiptBinding,
+    intent: EncryptedWalletBackupV2RemovalIntent,
+    mutation: ReturnType<
+      typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
+    >["mutation"],
+  ): Promise<{
+    readonly head: EncryptedWalletBackupV2AcceptedHeadRow;
+    readonly descriptors: readonly EncryptedWalletBackupV2ActiveDescriptorRow[];
+  }> {
+    const rawHead = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(
+      this.#authorityKey(),
+    );
+    if (rawHead === undefined)
+      throw new Error("encrypted wallet backup v2 accepted head is absent");
+    const head = this.#decodeHeadRow(rawHead);
+    const currentDescriptors = await this.#readCurrentDescriptorRows();
+    const target = currentDescriptors.filter(
+      ({ assetLocator }) => assetLocator === binding.assetLocator,
+    );
+    const added = mutation.addedBundle;
+    if (
+      intent.targetCustodyRevision !== binding.custodyRevision ||
+      intent.expectedHeadVersion !== head.headVersion ||
+      intent.expectedActiveSetDigest !== head.activeSetDigest ||
+      mutation.expectedHeadVersion !== head.headVersion ||
+      mutation.expectedActiveSetDigest !== head.activeSetDigest ||
+      mutation.supersededBundleIds.length !== 1 ||
+      target.length !== 1 ||
+      mutation.supersededBundleIds[0] !== target[0]!.bundleId ||
+      (binding.desiredAction === "remove" &&
+        (binding.activeProofCount !== 0 || added !== null || binding.bundleId !== null)) ||
+      (binding.desiredAction === "replace" &&
+        (binding.activeProofCount === 0 ||
+          added === null ||
+          added.assetLocator !== binding.assetLocator ||
+          added.custodyRevision.toString() !== binding.custodyRevision ||
+          added.bundleId !== binding.bundleId ||
+          digestEncryptedWalletBackupV2BundleDescriptor(added) !== binding.bundleDescriptorDigest))
+    ) {
+      throw new Error("encrypted wallet backup v2 exact removal mutation is invalid");
+    }
+    const superseded = new Set(mutation.supersededBundleIds);
+    const bundles = currentDescriptors
+      .filter(({ bundleId }) => !superseded.has(bundleId))
+      .map(({ canonicalDescriptor }) =>
+        decodeEncryptedWalletBackupV2BundleDescriptorWire(canonicalDescriptor, this.#context()),
+      );
+    if (added !== null) bundles.push(added);
+    bundles.sort((left, right) => left.bundleId.localeCompare(right.bundleId));
+    const resultHead = createEncryptedWalletBackupV2CurrentHead({
+      realm: this.#realm,
+      walletId: this.#walletId,
+      enrollmentEpoch: this.#enrollmentEpoch,
+      headVersion: head.headVersion + 1,
+      bundles,
+    });
+    return {
+      head: this.#headRow(resultHead, recoveryStatus(head)),
+      descriptors: bundles.map((descriptor) =>
+        this.#descriptorRow(encodeEncryptedWalletBackupV2BundleDescriptor(descriptor)),
+      ),
+    };
   }
 
   async #requeueAcknowledgedDesiredAssets(): Promise<void> {
@@ -673,6 +1243,22 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       throw new Error("encrypted wallet backup v2 accepted head conflicts");
     }
     return false;
+  }
+
+  async #preserveLocalRecoveryStatus(
+    next: EncryptedWalletBackupV2AcceptedHeadRow,
+  ): Promise<EncryptedWalletBackupV2AcceptedHeadRow> {
+    const current = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(
+      this.#authorityKey(),
+    );
+    if (current === undefined) return next;
+    const decoded = this.#decodeHeadRow(current);
+    return {
+      ...next,
+      localRecoveryStatus: decoded.localRecoveryStatus,
+      localRecoveryReason: decoded.localRecoveryReason,
+      localRecoveryVersion: decoded.localRecoveryVersion,
+    };
   }
 
   async #readCurrentDescriptorRows(): Promise<
@@ -780,6 +1366,9 @@ const headFields = [
   "activeObjectCount",
   "activeSetDigest",
   "canonicalCurrentHead",
+  "localRecoveryStatus",
+  "localRecoveryReason",
+  "localRecoveryVersion",
 ] as const;
 const descriptorFields = [
   "scopeId",
@@ -822,6 +1411,65 @@ function requireProfile(profile: EncryptedWalletBackupV2DexieAuthorityProfile): 
     !isHex(profile.requestAuthPublicKey, 32)
   ) {
     throw new Error("encrypted wallet backup v2 authority profile is invalid");
+  }
+}
+
+function recoveryStatus(
+  value: Pick<
+    EncryptedWalletBackupV2AcceptedHeadRow,
+    "localRecoveryStatus" | "localRecoveryReason" | "localRecoveryVersion"
+  >,
+): EncryptedWalletBackupV2LocalRecoveryStatus {
+  requireRecoveryStatus(value);
+  return {
+    localRecoveryStatus: value.localRecoveryStatus,
+    localRecoveryReason: value.localRecoveryReason,
+    localRecoveryVersion: value.localRecoveryVersion,
+  };
+}
+
+function readyRecoveryStatus(version = 0): EncryptedWalletBackupV2LocalRecoveryStatus {
+  if (!isNonnegativeSafeInteger(version))
+    throw new Error("encrypted wallet backup v2 recovery version is invalid");
+  return {
+    localRecoveryStatus: "ready",
+    localRecoveryReason: "none",
+    localRecoveryVersion: version,
+  };
+}
+
+function recoveryRequiredStatus(
+  current: Pick<
+    EncryptedWalletBackupV2AcceptedHeadRow,
+    "localRecoveryStatus" | "localRecoveryReason" | "localRecoveryVersion"
+  >,
+): EncryptedWalletBackupV2LocalRecoveryStatus {
+  const status = recoveryStatus(current);
+  const nextVersion = status.localRecoveryVersion + 1;
+  if (!isNonnegativeSafeInteger(nextVersion))
+    throw new Error("encrypted wallet backup v2 recovery version is invalid");
+  return {
+    localRecoveryStatus: "recovery-required",
+    localRecoveryReason: "genuine-conflict",
+    localRecoveryVersion: nextVersion,
+  };
+}
+
+function requireRecoveryStatus(
+  value: Pick<
+    EncryptedWalletBackupV2AcceptedHeadRow,
+    "localRecoveryStatus" | "localRecoveryReason" | "localRecoveryVersion"
+  >,
+): void {
+  if (
+    (value.localRecoveryStatus === "ready" && value.localRecoveryReason !== "none") ||
+    (value.localRecoveryStatus === "recovery-required" &&
+      value.localRecoveryReason !== "genuine-conflict") ||
+    (value.localRecoveryStatus !== "ready" && value.localRecoveryStatus !== "recovery-required") ||
+    (value.localRecoveryReason !== "none" && value.localRecoveryReason !== "genuine-conflict") ||
+    !isNonnegativeSafeInteger(value.localRecoveryVersion)
+  ) {
+    throw new Error("encrypted wallet backup v2 local recovery status is invalid");
   }
 }
 
@@ -907,6 +1555,18 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   );
 }
 
+function sameAcceptedHead(
+  left: EncryptedWalletBackupV2AcceptedHeadRow,
+  right: EncryptedWalletBackupV2AcceptedHeadRow,
+): boolean {
+  return (
+    sameBytes(left.canonicalCurrentHead, right.canonicalCurrentHead) &&
+    left.localRecoveryStatus === right.localRecoveryStatus &&
+    left.localRecoveryReason === right.localRecoveryReason &&
+    left.localRecoveryVersion === right.localRecoveryVersion
+  );
+}
+
 function sameDescriptorRows(
   left: readonly EncryptedWalletBackupV2ActiveDescriptorRow[],
   right: readonly EncryptedWalletBackupV2ActiveDescriptorRow[],
@@ -967,6 +1627,100 @@ function sameDesiredBinding(
     row.custodyRevision === expected.custodyRevision &&
     row.desiredAction === expected.desiredAction &&
     row.activeProofCount === expected.activeProofCount
+  );
+}
+
+function requireRemovalIntentProfile(
+  intent: EncryptedWalletBackupV2RemovalIntent,
+  realm: string,
+  walletId: string,
+  enrollmentEpoch: number,
+): void {
+  if (
+    intent.realm !== realm ||
+    intent.walletId !== walletId ||
+    intent.enrollmentEpoch !== enrollmentEpoch
+  ) {
+    throw new Error("encrypted wallet backup v2 removal intent is foreign");
+  }
+}
+
+function requireRemovalReceiptBinding(
+  desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
+  intent: EncryptedWalletBackupV2RemovalIntent,
+  binding: EncryptedWalletBackupV2AssetReceiptBinding,
+  mutation: ReturnType<
+    typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
+  >["mutation"],
+  receipt: ReturnType<
+    typeof requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt
+  >["receipt"],
+  canonicalSignedReceipt: Uint8Array,
+): void {
+  if (
+    desired.removalIntent?.intentId !== intent.intentId ||
+    intent.targetCustodyRevision !== binding.custodyRevision ||
+    desired.custodyRevision !== binding.custodyRevision ||
+    intent.expectedHeadVersion !== mutation.expectedHeadVersion ||
+    intent.expectedActiveSetDigest !== mutation.expectedActiveSetDigest ||
+    mutation.realm !== receipt.realm ||
+    mutation.walletId !== receipt.walletId ||
+    mutation.enrollmentEpoch !== receipt.enrollmentEpoch ||
+    receipt.previousHeadVersion !== mutation.expectedHeadVersion ||
+    receipt.previousActiveSetDigest !== mutation.expectedActiveSetDigest ||
+    receipt.bundleId !== binding.bundleId ||
+    receipt.bundleDescriptorDigest !== binding.bundleDescriptorDigest ||
+    !sameStringList(receipt.supersededBundleIds, mutation.supersededBundleIds) ||
+    !sameBytes(
+      canonicalSignedReceipt,
+      encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
+    )
+  ) {
+    throw new Error("encrypted wallet backup v2 removal receipt binding is invalid");
+  }
+  const added = mutation.addedBundle;
+  if (binding.desiredAction === "remove") {
+    if (added !== null || binding.activeProofCount !== 0) {
+      throw new Error("encrypted wallet backup v2 removal receipt action is invalid");
+    }
+    return;
+  }
+  if (
+    added === null ||
+    binding.activeProofCount === 0 ||
+    added.assetLocator !== binding.assetLocator ||
+    added.custodyRevision.toString() !== binding.custodyRevision ||
+    added.bundleId !== binding.bundleId ||
+    added.objects.length !== receipt.finalizedObjects.length
+  ) {
+    throw new Error("encrypted wallet backup v2 removal successor receipt is invalid");
+  }
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameRemovalExclusionEvidence(
+  left: EncryptedWalletBackupV2RemovalExclusionEvidence,
+  right: EncryptedWalletBackupV2RemovalExclusionEvidence,
+): boolean {
+  if (
+    left.kind !== right.kind ||
+    left.headVersion !== right.headVersion ||
+    left.activeSetDigest !== right.activeSetDigest ||
+    left.bundleId !== right.bundleId ||
+    left.bundleDescriptorDigest !== right.bundleDescriptorDigest ||
+    left.acknowledgedAtMs !== right.acknowledgedAtMs
+  )
+    return false;
+  if (left.kind === "current-head" || right.kind === "current-head")
+    return left.kind === right.kind;
+  return (
+    left.receiptDigest === right.receiptDigest &&
+    left.bundleId === right.bundleId &&
+    left.bundleDescriptorDigest === right.bundleDescriptorDigest &&
+    sameStringList(left.supersededBundleIds, right.supersededBundleIds)
   );
 }
 

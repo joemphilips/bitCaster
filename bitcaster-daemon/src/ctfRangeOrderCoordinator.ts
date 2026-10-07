@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import { startOrderPhase, measureOrderPhase, type OrderTimelineObserver } from './orderTimeline.ts'
 import {
   Amount,
+  MintOperationError,
   Mint as CashuMint,
   OutputData,
   Wallet as CashuWallet,
-  type ConditionalSwapPreview,
   type MintKeys,
   type Proof,
   type ProofState,
   type SerializedBlindedSignature,
   type SwapPreview,
   type SwapRequest,
+  type ConditionalSwapPreview,
+  type CtfConvertRequest,
+  type CtfConvertResponse,
 } from '@cashu/cashu-ts'
 import {
   resolveDurableCustodyProofOperationFacts,
@@ -22,6 +26,24 @@ import {
   type DurableCustodyProofOperationInput,
   type DurableCustodyScope,
 } from '@bitcaster-market/client-sdk'
+import {
+  completeCtfRangeSourceOperation,
+  ctfRangeSourceMode,
+  prepareCtfRangeSourceOperation,
+  validateCtfRangeSourceCompletionOperation,
+} from '@bitcaster-market/client-sdk/ctfRangeSourceOperation'
+import {
+  planCtfRangeCapabilitySource,
+  type CtfRangeCapabilitySourcePlan,
+  type CtfRangeSourceShortfall,
+} from '@bitcaster-market/client-sdk/ctfRangeCapabilitySourcePlan'
+import {
+  completeCtfRangeMixedSourceOperation,
+  prepareCtfRangeMixedSourceOperation,
+  validateCtfRangeMixedSourceOperation,
+  type CtfRangeMixedSourceResult,
+} from '@bitcaster-market/client-sdk/ctfRangeCollateralSourceOperation'
+import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
   completeCtfRangeOrderAuthorization,
   prepareCtfRangeOrderAuthorization,
@@ -36,10 +58,9 @@ import {
   createDeterministicDurableCtfRangeRefundOutputs,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
-  deriveDurableCtfResidualDecision,
-  deriveDurableCtfRangeSelectionRemainingAmount,
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeExpiryObservation,
+  type DurableCtfRangeAsset,
   type DurableCtfRangeMintKeyset,
   type DurableCtfRangeKeysetResolver,
   type DurableCtfRangeOperation,
@@ -58,25 +79,34 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
+  planPersistedCtfRangeOrderAuthorization,
+  settlementCapabilityV1WorkFacts,
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
   encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
   exactCtfRangeOrderPreparationMintKeysets,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
+  type CtfRangeConditionalMintKeyset,
   type PersistedCtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import { decodeOrderQuotePaymentBounds } from '@bitcaster-market/client-sdk/tradeTicket'
+import {
+  decodeCtfRangeOrderFeeConsentArtifact,
+  encodeCtfRangeOrderFeeConsentArtifact,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderJournal'
+import {
+  assertCtfRangeOrderFeeConsent,
+  composeCtfRangeOrderFeeFacts,
+  type CtfRangeOrderFeeFacts,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
+import { calculateSettlementCapabilityV1Tariff } from '@bitcaster-market/client-sdk/participationScore'
 import {
   loadCtfRangeMintKeys as loadMintKeys,
   loadCtfRangeMintMetadata,
   type CtfRangeMintMetadata as LoadedMintMetadata,
   type CtfRangeMintMetadataClient,
 } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
-import {
-  amountToNumber,
-  computeInputFeeSatsForProofs,
-  sumProofs,
-  takeProofsForLock,
-} from '@bitcaster-market/client-sdk/proofSelection'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   classifyCtfRangeSourceRecovery,
   type CtfRangeSourceRecoveryDecision,
@@ -97,23 +127,31 @@ import type {
   OrderStatusResponse,
   SettlementCapabilityResultResponse,
   SettlementCapabilityResponse,
-  SettlementOrderContinuationReference,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { DaemonCtfRangeCoordinator } from './ctfRangeCoordinator.ts'
+import {
+  createDaemonRangeSourceBinding,
+  bindDaemonRangeSourceInTransaction,
+  stageDaemonRangeSourceResult,
+  readDaemonRangeSourceResult,
+  createDaemonRangeMixedSourceBinding,
+  bindDaemonRangeMixedSourceInTransaction,
+  stageDaemonRangeMixedSourceResult,
+  readDaemonRangeMixedSourceResult,
+  commitDaemonRangeConsolidation,
+  storedSourceOutputs,
+} from './ctfRangeSourceState.ts'
+import { profileDir } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
   CTF_RANGE_REFUND_PURPOSE,
-  admitExactAvailableWalletProofsFromDatabase,
   getProofOperation,
-  finalizeCompletedProofReservation,
-  markProofOperationCompletedFenced,
+  prepareCtfConsolidationProofOperationWithExactReservation,
   prepareProofOperationWithExactReservation,
   prepareCtfRangeRefundProofOperationFromDatabase,
-  readAvailableWalletProofPage,
+  readAvailableCanonicalWalletProofPageFromDatabase,
   recordDiscoveredOrder,
   recordOrderStatus,
-  recordSubmittedOrder,
-  releasePreparedProofReservationFenced,
   type CashuProofRecord,
   type FencedStateMutation,
   type ProofOperationRecord,
@@ -123,26 +161,26 @@ import {
   appendRangePreparationConsolidation,
   bindRangePreparationCapability,
   insertRangePreparation,
-  insertRangeSuccessorIntent,
   linkRangePreparationSource,
   pageActiveRangePreparations,
   readActiveRangePreparationByClientOrderId,
-  readResidualRangePreparationByPredecessor,
-  readRangeSuccessorIntent,
   readRangePreparation,
   toSdkRangePreparationRecord,
   transitionRangePreparation,
   type RangePreparationCapability,
   type RangePreparationPageCursor,
   type RangePreparationRecord,
-  type RangeSuccessorIntent,
 } from './ctfRangeOrderJournalSqlite.ts'
 import {
   withDurableCustodyFencedRead,
   withDurableCustodyUnitOfWork,
 } from './durableCustodyUnitOfWork.ts'
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
-import { createDaemonStateSqliteSession, type DaemonStateSqliteSession } from './stateSqlite.ts'
+import {
+  createDaemonStateSqliteSession,
+  type DaemonStateSqliteSession,
+  type StateSqliteFaultPhase,
+} from './stateSqlite.ts'
 import {
   createDaemonCounterSource,
   deserializeOutputGroups,
@@ -150,18 +188,21 @@ import {
   serializeOutputDataArray,
 } from './walletOps.ts'
 import type {
+  BeforeCreateSettlementCapability,
   EngineClientLike,
   PreparedSettlementCapability,
   PrepareSettlementCapabilityInput,
 } from './server.ts'
 
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
+const MIXED_SOURCE_ENDPOINT = 'POST /v1/ctf/convert'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const ACTIVE_RANGE_SOURCE_LIMIT = 256
 const MAX_CONSOLIDATION_ROUNDS = 256
 
 interface CtfRangeMintLike extends CtfRangeMintMetadataClient {
   check(payload: { Ys: string[] }, signal?: AbortSignal): Promise<{ states: ProofState[] }>
+  ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
 }
 
 interface CtfRangeWalletLike {
@@ -189,12 +230,15 @@ interface CtfRangeWalletLike {
 }
 
 export interface DaemonCtfRangeOrderCoordinatorDependencies {
+  readonly observeOrderTimeline?: OrderTimelineObserver
   readonly allowInsecureLoopbackHttp?: boolean
+  readonly authorizationLifetimeSeconds?: number
   readonly createMint?: (mintUrl: string) => CtfRangeMintLike
   readonly createWallet?: (mintUrl: string, walletSeedHex: string) => CtfRangeWalletLike
   readonly now?: () => number
   readonly randomId?: () => string
   readonly restoreOutputs?: typeof restoreOutputGroups
+  readonly injectRangeBindFault?: (phase: StateSqliteFaultPhase) => void
   readonly executeRefundSwap?: (
     mintUrl: string,
     request: SwapRequest,
@@ -217,8 +261,20 @@ interface PreparedMintAuthority {
   readonly mintKeysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>
   readonly offerAsset: StoredProofAsset
   readonly mint: CtfRangeMintLike
+  /**
+   * Limits from the metadata loaded for this preparation. They stay in memory:
+   * preparation v2 does not persist the output bound, and a restarted fresh
+   * selection must load current metadata instead of trusting an old bound.
+   */
+  readonly loadedSourceLimits: SourceSelectionLimits | null
   readonly consolidateProofs: boolean
+  readonly storage: DaemonStateSqliteSession
   readonly mutation: () => FencedStateMutation
+}
+
+interface SourceSelectionLimits {
+  readonly maxInputs: number
+  readonly maxOutputs: number
 }
 
 type PersistedPreparationInput = PersistedCtfRangeOrderPreparation
@@ -228,13 +284,6 @@ function preparationFromJournal(
   expectedRequest?: Parameters<typeof decodePreparationFromJournal>[1],
 ): PersistedPreparationInput {
   return decodePreparationFromJournal(toSdkRangePreparationRecord(record), expectedRequest)
-}
-
-class RangeSourceReleasedError extends Error {
-  constructor(operationId: string) {
-    super(`Range source operation ${operationId} expired before mint commitment`)
-    this.name = 'RangeSourceReleasedError'
-  }
 }
 
 class ProofConsolidationRequiredError extends Error {
@@ -275,58 +324,144 @@ export class DaemonCtfRangeOrderCoordinator {
   async prepare(
     request: PrepareSettlementCapabilityInput,
     client: EngineClientLike,
+    beforeCreateCapability?: BeforeCreateSettlementCapability,
+    consentedFeeFacts?: CtfRangeOrderFeeFacts,
   ): Promise<PreparedSettlementCapability> {
-    const authority = await this.#prepareMintAuthority(request, client)
-    const source = await this.#prepareWalletSource(authority, request.walletSeedHex)
-    const operation = completeCtfRangeOrderAuthorization({
-      preparation: authority.preparation,
-      inputs: source.authorization,
-      keysetLookup: authority.lookup,
-      expiryObservation: authority.observation,
-      allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
-    })
-    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
-      authority.preparationInput,
-      operation,
-      null,
+    requireFokOrder(request.timeInForce)
+    decodeOrderQuotePaymentBounds(request.side, request)
+    const finishPreparation = startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'preparation',
+      {
+        clientOrderId: request.clientOrderId,
+      },
     )
-    const binding = await createRangeBinding(
-      request.walletSeedHex,
-      operation,
-      authority.mintKeysets,
-      capabilityRequest,
-    )
-    const nowMs = this.#nowMs()
-    await new DaemonCtfRangeCoordinator(this.#directory, this.#getFence()).bindPreparedSource({
-      binding,
-      proofStateClient: authority.mint,
-      observedAtMs: nowMs,
-    })
-    await this.#markCapabilityRequested(operation.operationId)
-    const exactCapabilityRequest = await this.#exactCapabilityRequest(
-      request.walletSeedHex,
-      operation.operationId,
-      capabilityRequest,
-    )
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
+    try {
+      const authority = await this.#prepareMintAuthority(request, client, consentedFeeFacts)
+      const source = await this.#prepareWalletSource(
+        authority,
+        request.walletSeedHex,
+        consentedFeeFacts,
+      )
+      const operation = completeCtfRangeOrderAuthorization({
+        preparation: authority.preparation,
+        inputs: source.authorization,
+        keysetLookup: authority.lookup,
+        expiryObservation: authority.observation,
+        allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
+      })
+      const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
+        authority.preparationInput,
+        operation,
+      )
+      const binding = await createRangeBinding(
+        request.walletSeedHex,
+        operation,
+        authority.mintKeysets,
+        capabilityRequest,
+      )
+      const nowMs = this.#nowMs()
+      await new DaemonCtfRangeCoordinator(this.#directory, this.#getFence()).bindPreparedSource({
+        binding,
+        proofStateClient: authority.mint,
+        observedAtMs: nowMs,
+        ...(this.#dependencies.injectRangeBindFault === undefined
+          ? {}
+          : { injectFault: this.#dependencies.injectRangeBindFault }),
+      })
+      const exactCapabilityRequest = await this.#exactCapabilityRequest(
+        request.walletSeedHex,
+        operation.operationId,
+        capabilityRequest,
+      )
+      if (this.#nowSeconds() >= operation.expiry) {
+        await this.#recoverUnsubmittedAuthorization(
+          authority.preparationInput,
+          request.walletSeedHex,
+        )
+        throw new Error('range authorization expired before capability admission')
+      }
+      const createCapability = client.createSettlementCapability
+      if (createCapability === undefined) {
+        throw new Error('engine client does not support settlement capability creation')
+      }
+      const identity = {
+        clientOrderId: request.clientOrderId,
+        operationId: operation.operationId,
+        orderId: undefined as string | undefined,
+      }
+      finishPreparation('success', identity)
+      await measureOrderPhase(
+        this.#dependencies.observeOrderTimeline,
+        'score-admission',
+        identity,
+        async () =>
+          beforeCreateCapability?.(
+            calculateSettlementCapabilityV1Tariff(settlementCapabilityV1WorkFacts(operation)),
+          ),
+        beforeCreateCapability === undefined ? 'unverified' : 'success',
+      )
+      const capability = await measureOrderPhase(
+        this.#dependencies.observeOrderTimeline,
+        'capability-admission',
+        identity,
+        async () => {
+          await this.#markCapabilityRequested(operation.operationId)
+          if (this.#nowSeconds() >= operation.expiry) {
+            await this.#recoverUnsubmittedAuthorization(
+              authority.preparationInput,
+              request.walletSeedHex,
+            )
+            throw new Error('range authorization expired before capability admission')
+          }
+          const capability = await createCapability.call(client, exactCapabilityRequest)
+          const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
+            capability,
+            preparation: authority.preparationInput,
+            operation,
+            recovering: false,
+          })
+          await this.#bindCapability(operation.operationId, projectedCapability)
+          identity.orderId = projectedCapability.orderId
+          return capability
+        },
+      )
+      return {
+        operationId: operation.operationId,
+        capability,
+        markSubmitted: () => this.#markOrderSubmitted(operation.operationId),
+        markRejected: () => this.#markOrderSubmissionRejected(operation.operationId),
+        consolidation: await sourceConsolidationSummary(operation.sourceOperationId),
+      }
+    } catch (error) {
+      finishPreparation('failed')
+      throw error
     }
-    const capability = await createCapability.call(client, exactCapabilityRequest)
-    const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability,
-      preparation: authority.preparationInput,
-      operation,
-      recovering: false,
-    })
-    await this.#bindCapability(operation.operationId, projectedCapability)
-    return {
-      operationId: operation.operationId,
-      capability,
-      markSubmitted: () => this.#markOrderSubmitted(operation.operationId),
-      markRejected: () => this.#markOrderSubmissionRejected(operation.operationId),
-      consolidation: await sourceConsolidationSummary(operation.sourceOperationId),
-    }
+  }
+
+  /** Observe current wallet fee facts without binding an order or mint operation. */
+  async previewFeeFacts(
+    request: PrepareSettlementCapabilityInput,
+    client: EngineClientLike,
+  ): Promise<CtfRangeOrderFeeFacts> {
+    requireFokOrder(request.timeInForce)
+    const { preparationInput, metadata, mint } = await this.#buildNewMintAuthority(request, client)
+    const authority = preparedMintAuthority(
+      preparationInput,
+      request.walletSeedHex,
+      metadata,
+      mint,
+      request.consolidateProofs,
+      this.#storage,
+      this.#mutation.bind(this),
+    )
+    return (
+      await planFreshSourceWithFees(
+        authority,
+        await freshSourceLimits(authority, this.#dependencies),
+        0,
+      )
+    ).feeFacts
   }
 
   async recover(
@@ -373,12 +508,7 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
-    if (
-      preparationRecord.sourceKind === 'residual-change' &&
-      preparationRecord.capability !== null
-    ) {
-      await this.#markResidualPredecessorTerminal(preparationInput)
-    }
+    requireFokOrder(preparationInput.request.timeInForce)
     switch (preparationRecord.lifecycleState) {
       case 'order-submitted':
       case 'submission-rejected':
@@ -410,42 +540,19 @@ export class DaemonCtfRangeOrderCoordinator {
       walletSeedHex,
       this.#createMint(preparationInput.mintUrl),
       preparationRecord.consolidateProofs,
+      this.#storage,
       this.#mutation.bind(this),
     )
-    let sourceResult: SourceResult
-    let residualSpentInputs: readonly Proof[] | null = null
-    if (preparationInput.sourceKind === 'residual-change') {
-      const candidates = await this.#loadResidualSource(preparationInput, walletSeedHex)
-      const wallet =
-        this.#dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
-        (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
-          unit: 'msat',
-          bip39seed: walletSeed(walletSeedHex),
-        }) as CtfRangeWalletLike)
-      await wallet.loadMint()
-      const residual = await prepareOrResumeResidualSource(
-        authority,
-        wallet,
-        candidates.authorization,
-        this.#dependencies,
-      )
-      sourceResult = residual
-      residualSpentInputs = residual.spentInputs
-    } else {
-      const wallet =
-        this.#dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
-        (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
-          unit: 'msat',
-          bip39seed: walletSeed(walletSeedHex),
-        }) as CtfRangeWalletLike)
-      await wallet.loadMint()
-      try {
-        sourceResult = await this.#prepareWalletSource(authority, walletSeedHex, wallet)
-      } catch (error) {
-        if (error instanceof RangeSourceReleasedError) return
-        throw error
-      }
-    }
+    const consentedFeeFacts =
+      preparationRecord.feeConsentBytes === null
+        ? undefined
+        : decodeCtfRangeOrderFeeConsentArtifact(preparationRecord.feeConsentBytes)
+    const sourceResult = await this.#prepareWalletSource(
+      authority,
+      walletSeedHex,
+      consentedFeeFacts,
+      consentedFeeFacts !== undefined,
+    )
     const operation = completeCtfRangeOrderAuthorization({
       preparation: authority.preparation,
       inputs: sourceResult.authorization,
@@ -453,11 +560,7 @@ export class DaemonCtfRangeOrderCoordinator {
       expiryObservation: authority.observation,
       allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
-    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
-      preparationInput,
-      operation,
-      preparationRecord.continuation,
-    )
+    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparationInput, operation)
     const binding = await createRangeBinding(
       walletSeedHex,
       operation,
@@ -469,29 +572,16 @@ export class DaemonCtfRangeOrderCoordinator {
       binding,
       proofStateClient: authority.mint,
       observedAtMs: this.#nowMs(),
+      ...(this.#dependencies.injectRangeBindFault === undefined
+        ? {}
+        : { injectFault: this.#dependencies.injectRangeBindFault }),
     }
-    if (preparationInput.sourceKind === 'residual-change') {
-      if (residualSpentInputs === null) {
-        throw new Error('residual range source inputs are missing')
-      }
-      await rangeCoordinator.bindResidualPreparedSource({
-        ...bindInput,
-        spentSourceProofs: residualSpentInputs,
-      })
-    } else {
-      await rangeCoordinator.bindPreparedSource(bindInput)
-    }
-    if (preparationInput.sourceKind === 'residual-change') {
-      await this.#submitRecoveredResidual(
-        preparationInput,
-        operation,
-        capabilityRequest,
-        walletSeedHex,
-        client,
-      )
-      return
-    }
+    await rangeCoordinator.bindPreparedSource(bindInput)
     if (preparationRecord.lifecycleState === 'capability-requested') {
+      if (this.#nowSeconds() >= operation.expiry) {
+        await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
+        return
+      }
       await this.#recoverRequestedCapability(
         preparationInput,
         operation,
@@ -511,15 +601,19 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
-    }
     const exactRequest = await this.#exactCapabilityRequest(
       walletSeedHex,
       operation.operationId,
       request,
     )
+    if (this.#nowSeconds() >= operation.expiry) {
+      await this.#recoverUnsubmittedAuthorization(input, walletSeedHex)
+      return
+    }
+    const createCapability = client.createSettlementCapability
+    if (createCapability === undefined) {
+      throw new Error('engine client does not support settlement capability creation')
+    }
     const response = await createCapability.call(client, exactRequest)
     const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability: response,
@@ -528,46 +622,6 @@ export class DaemonCtfRangeOrderCoordinator {
       recovering: true,
     })
     await this.#bindCapability(operation.operationId, capability)
-  }
-
-  async #submitRecoveredResidual(
-    input: PersistedPreparationInput,
-    operation: DurableCtfRangeOperation,
-    request: CreateSettlementCapabilityRequest,
-    walletSeedHex: string,
-    client: EngineClientLike,
-  ): Promise<void> {
-    await this.#markCapabilityRequested(operation.operationId)
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
-    }
-    const exactRequest = await this.#exactCapabilityRequest(
-      walletSeedHex,
-      operation.operationId,
-      request,
-    )
-    const response = await createCapability.call(client, exactRequest)
-    if (
-      request.continuation === null ||
-      response.orderId === request.continuation.predecessorOrderId
-    ) {
-      throw new Error('engine residual successor order identity is not fresh')
-    }
-    const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability: response,
-      preparation: input,
-      operation,
-      recovering: true,
-    })
-    await this.#bindCapability(operation.operationId, capability)
-    await this.#markResidualPredecessorTerminal(input)
-    await submitRecoveredResidualOrder(client, input.request, capability)
-    await this.#markOrderSubmitted(operation.operationId)
-    throw new RangeRecoveryDeferredError(
-      'recovered residual range order was submitted and remains pending settlement',
-      this.#nowMs() + 30_000,
-    )
   }
 
   async #recoverCapabilityBoundOrder(
@@ -647,6 +701,7 @@ export class DaemonCtfRangeOrderCoordinator {
       custodyOperationId,
       loaded.record,
       new CtfRangeMintRecoveryAdapter(loaded.operation, mint),
+      { clientOrderId: input.request.clientOrderId, operationId: input.operationId },
     )
     switch (decision.kind) {
       case 'confirmed':
@@ -675,73 +730,51 @@ export class DaemonCtfRangeOrderCoordinator {
     }
   }
 
-  async #loadResidualSource(
-    input: PersistedPreparationInput,
-    walletSeedHex: string,
-  ): Promise<SourceResult> {
-    const predecessorOperationId = input.predecessorRangeOperationId
-    if (predecessorOperationId === null) {
-      throw new Error('residual range predecessor authority is missing')
-    }
-    const predecessor = await withDurableCustodyFencedRead(
-      this.#storage,
-      this.#getFence(),
-      this.#nowMs(),
-      (database) => {
-        const record = readRangePreparation(
-          database,
-          this.#getFence().scopeId,
-          predecessorOperationId,
-        )
-        if (record === null) throw new Error('residual range predecessor is missing')
-        return preparationFromJournal(record)
-      },
-    )
-    if (
-      predecessor.operationId !== predecessorOperationId ||
-      predecessor.request.clientOrderId === input.request.clientOrderId ||
-      !sameResidualOrderTerms(predecessor.request, input.request)
-    ) {
-      throw new Error('residual range predecessor identity is foreign')
-    }
-    const rangeCoordinator = new DaemonCtfRangeCoordinator(this.#directory, this.#getFence())
-    const custodyOperationId = rangeCustodyOperationId(walletSeedHex, predecessorOperationId)
-    const loaded = await rangeCoordinator.load(custodyOperationId)
-    if (loaded === null) throw new Error('residual range custody authority is missing')
-    const result = await rangeCoordinator.readAppliedResult({
-      custodyOperationId,
-      resolveKeyset: createCtfRangeOrderPreparationKeysetResolver(predecessor),
-    })
-    const residual = deriveDurableCtfResidualDecision({
-      source: loaded.operation,
-      result,
-      originalOrderAmount: predecessor.request.amountSubunits,
-      remainingOrderAmount: input.amountSubunits,
-      restingOrder: true,
-    })
-    if (
-      residual.kind !== 'awaiting-authorization' ||
-      residual.predecessorOperationId !== predecessorOperationId
-    ) {
-      throw new Error('residual range predecessor has no returned change authority')
-    }
-    return { authorization: residual.sourceProofs, keep: [] }
-  }
-
   async #prepareMintAuthority(
     request: PrepareSettlementCapabilityInput,
     client: EngineClientLike,
+    consentedFeeFacts?: CtfRangeOrderFeeFacts,
   ): Promise<PreparedMintAuthority> {
-    const persisted = await this.#readActivePreparation(request)
+    const consentBytes =
+      consentedFeeFacts === undefined
+        ? null
+        : encodeCtfRangeOrderFeeConsentArtifact(consentedFeeFacts)
+    const persisted = await this.#readActivePreparation(request, consentBytes)
     if (persisted !== null) {
       return persistedMintAuthority(
         persisted,
         request.walletSeedHex,
         this.#createMint(persisted.mintUrl),
         request.consolidateProofs,
+        this.#storage,
         this.#mutation.bind(this),
       )
     }
+    const { preparationInput, metadata, mint } = await this.#buildNewMintAuthority(request, client)
+    const durablePreparation = await this.#persistPreparation(
+      preparationInput,
+      request.consolidateProofs,
+      consentBytes,
+    )
+    return preparedMintAuthority(
+      durablePreparation,
+      request.walletSeedHex,
+      metadata,
+      mint,
+      request.consolidateProofs,
+      this.#storage,
+      this.#mutation.bind(this),
+    )
+  }
+
+  async #buildNewMintAuthority(
+    request: PrepareSettlementCapabilityInput,
+    client: EngineClientLike,
+  ): Promise<{
+    readonly preparationInput: PersistedPreparationInput
+    readonly metadata: LoadedMintMetadata
+    readonly mint: CtfRangeMintLike
+  }> {
     const getPolicy = client.getSettlementCapabilityAdmissionPolicy
     if (getPolicy === undefined) {
       throw new Error('engine client does not expose settlement admission policy')
@@ -758,31 +791,24 @@ export class DaemonCtfRangeOrderCoordinator {
       ),
       loadEngineMarket(client, request.conditionId),
     ])
-    const preparationInput = buildPersistedCtfRangeOrderPreparation({
-      request: persistedOrderRequest(request),
-      coordinatorPublicKey: requireCoordinatorKey(policy),
-      mintFacts: metadata,
-      market,
-      nowUnixSeconds: this.#nowSeconds(),
-      randomId: this.#randomId.bind(this),
-    })
-    const durablePreparation = await this.#persistPreparation(
-      preparationInput,
-      request.continueAfterPartialFill,
-      request.consolidateProofs,
-    )
-    return preparedMintAuthority(
-      durablePreparation,
-      request.walletSeedHex,
+    return {
+      preparationInput: buildPersistedCtfRangeOrderPreparation({
+        request: persistedOrderRequest(request),
+        coordinatorPublicKey: requireCoordinatorKey(policy),
+        mintFacts: metadata,
+        market,
+        nowUnixSeconds: this.#nowSeconds(),
+        randomId: this.#randomId.bind(this),
+        authorizationLifetimeSeconds: this.#dependencies.authorizationLifetimeSeconds,
+      }),
       metadata,
       mint,
-      request.consolidateProofs,
-      this.#mutation.bind(this),
-    )
+    }
   }
 
   async #readActivePreparation(
     request: PrepareSettlementCapabilityInput,
+    consentBytes: Uint8Array | null,
   ): Promise<PersistedPreparationInput | null> {
     const observedAtMs = this.#nowMs()
     return withDurableCustodyFencedRead(
@@ -796,13 +822,10 @@ export class DaemonCtfRangeOrderCoordinator {
           request.clientOrderId,
         )
         if (record === null) return null
-        if (
-          record.continueAfterPartialFill !== request.continueAfterPartialFill ||
-          record.consolidateProofs !== request.consolidateProofs ||
-          record.continuation !== null
-        ) {
+        if (record.consolidateProofs !== request.consolidateProofs) {
           throw new Error('daemon CTF range preparation policy conflicts with its journal')
         }
+        assertSameFeeConsent(record.feeConsentBytes, consentBytes)
         return preparationFromJournal(record, persistedOrderRequest(request))
       },
     )
@@ -810,8 +833,8 @@ export class DaemonCtfRangeOrderCoordinator {
 
   async #persistPreparation(
     input: PersistedPreparationInput,
-    continueAfterPartialFill: boolean,
     consolidateProofs: boolean,
+    consentBytes: Uint8Array | null,
   ): Promise<PersistedPreparationInput> {
     const mutation = this.#mutation()
     return withDurableCustodyUnitOfWork(
@@ -825,13 +848,10 @@ export class DaemonCtfRangeOrderCoordinator {
           input.request.clientOrderId,
         )
         if (existing !== null) {
-          if (
-            existing.continueAfterPartialFill !== continueAfterPartialFill ||
-            existing.consolidateProofs !== consolidateProofs ||
-            existing.continuation !== null
-          ) {
+          if (existing.consolidateProofs !== consolidateProofs) {
             throw new Error('daemon CTF range preparation policy conflicts with its journal')
           }
+          assertSameFeeConsent(existing.feeConsentBytes, consentBytes)
           return preparationFromJournal(existing, input.request)
         }
         return preparationFromJournal(
@@ -839,8 +859,6 @@ export class DaemonCtfRangeOrderCoordinator {
             scopeId: mutation.fence.scopeId,
             rangeOperationId: input.operationId,
             sourceOperationId: input.sourceOperationId,
-            sourceKind: input.sourceKind,
-            predecessorRangeOperationId: input.predecessorRangeOperationId,
             authorizationId: input.authorizationId,
             clientOrderId: input.request.clientOrderId,
             orderRouteId: input.request.marketId,
@@ -852,12 +870,11 @@ export class DaemonCtfRangeOrderCoordinator {
             priceSubunits: input.priceNumerator,
             amountSubunits: input.amountSubunits,
             minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
-            continueAfterPartialFill,
             consolidateProofs,
-            continuation: null,
-            divisibility: input.divisibility as 10_000 | 1_000_000,
+            divisibility: input.divisibility,
             authorizationExpiresAtUnixSeconds: input.expiry,
             preparationBytes: encodeCanonicalRangePreparation(input),
+            feeConsentBytes: consentBytes,
             createdAtMs: mutation.observedAtMs,
           }),
           input.request,
@@ -1011,37 +1028,52 @@ export class DaemonCtfRangeOrderCoordinator {
     )
     if (loaded.record.operation.result.state !== 'none') {
       if ((await this.#persistedResultSource(loaded.record)) === 'mint-recovery') {
+        const identity = {
+          clientOrderId: input.request.clientOrderId,
+          operationId: input.operationId,
+          orderId: capability.orderId,
+          applicationPath: 'persisted-mint-reuse' as const,
+        }
         if (loaded.record.operation.result.state === 'verified-staged') {
-          await coordinator.applyStaged({
-            custodyOperationId,
-            resolveKeyset: preparationResolver,
-            observedAtMs: this.#nowMs(),
-          })
+          await measureOrderPhase(
+            this.#dependencies.observeOrderTimeline,
+            'result-application',
+            identity,
+            () =>
+              coordinator.applyStaged({
+                custodyOperationId,
+                resolveKeyset: preparationResolver,
+                observedAtMs: this.#nowMs(),
+              }),
+          )
         }
         const recovered = await coordinator.readAppliedResult({
           custodyOperationId,
           resolveKeyset: preparationResolver,
         })
-        const status = await this.#loadPartialResultStatus(
-          input,
-          capability,
-          client,
-          loaded.operation,
-          recovered,
-        )
-        await this.#completeSubmittedLifecycle(
-          preparation,
-          input,
-          walletSeedHex,
-          client,
-          loaded.operation,
-          recovered,
-          status,
-          null,
-        )
+        this.#requireExactFokSettlement(input, loaded.operation, recovered)
+        if (loaded.record.operation.result.state === 'applied') {
+          startOrderPhase(
+            this.#dependencies.observeOrderTimeline,
+            'result-application',
+            identity,
+          )('reused')
+        }
+        await this.#markTerminal(input.operationId)
+        startOrderPhase(this.#dependencies.observeOrderTimeline, 'result-reuse', identity)('reused')
+        startOrderPhase(
+          this.#dependencies.observeOrderTimeline,
+          'result-completion',
+          identity,
+        )('reused')
         return
       }
-      const response = await this.#getEngineResult(client, input.operationId)
+      const response = await this.#getEngineResult(client, input.operationId, {
+        clientOrderId: input.request.clientOrderId,
+        operationId: input.operationId,
+        orderId: capability.orderId,
+        applicationPath: 'persisted-engine-reuse',
+      })
       if (response === null) {
         throw new RangeRecoveryDeferredError(
           'persisted engine range result acknowledgement is pending',
@@ -1068,6 +1100,10 @@ export class DaemonCtfRangeOrderCoordinator {
         reference,
         client,
         preparationResolver,
+        input,
+        capability.orderId,
+        loaded.record.operation.result.state === 'applied',
+        true,
       )
       if (decision.kind !== 'confirmed') {
         throw new RangeRecoveryDeferredError(
@@ -1075,34 +1111,29 @@ export class DaemonCtfRangeOrderCoordinator {
           this.#nowMs() + 1_000,
         )
       }
-      const persistedStatus = await this.#loadPartialResultStatus(
-        input,
-        capability,
-        client,
-        loaded.operation,
-        decision.result,
-      )
-      if (persistedStatus?.status === 'awaiting_authorization') {
-        requirePendingContinuation(
-          persistedStatus,
-          preparation,
-          loaded.operation,
-          persistedEngineResult,
-        )
+      await this.#markTerminal(input.operationId)
+      const identity = {
+        clientOrderId: input.request.clientOrderId,
+        operationId: input.operationId,
+        orderId: capability.orderId,
+        groupId: persistedEngineResult.settlementGroupId,
+        groupRevision: persistedEngineResult.settlementGroupRevision,
+        applicationPath: 'persisted-engine-reuse' as const,
       }
-      await this.#completeSubmittedLifecycle(
-        preparation,
-        input,
-        walletSeedHex,
-        client,
-        loaded.operation,
-        decision.result,
-        persistedStatus,
-        persistedEngineResult,
-      )
+      startOrderPhase(this.#dependencies.observeOrderTimeline, 'result-reuse', identity)('reused')
+      startOrderPhase(
+        this.#dependencies.observeOrderTimeline,
+        'result-completion',
+        identity,
+      )('reused')
       return
     }
-    const response = await this.#getEngineResult(client, input.operationId)
+    const response = await this.#getEngineResult(client, input.operationId, {
+      clientOrderId: input.request.clientOrderId,
+      operationId: input.operationId,
+      orderId: capability.orderId,
+      applicationPath: 'engine',
+    })
     let engineResult: CtfRangeEngineResult | null = null
     if (response !== null) {
       try {
@@ -1119,7 +1150,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const existingRefund = engineResult === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
       const status = await this.#loadOrderStatus(input, capability, client)
-      await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
+      this.#requireFokNotActiveBeforeRefund(status)
       await this.#resumeOrCreateRefund(
         coordinator,
         custodyOperationId,
@@ -1134,7 +1165,17 @@ export class DaemonCtfRangeOrderCoordinator {
     const recovery = new CtfRangeMintRecoveryAdapter(loaded.operation, mint)
     let decision =
       engineResult === null
-        ? await this.#classifyMintRecovery(coordinator, custodyOperationId, loaded.record, recovery)
+        ? await this.#classifyMintRecovery(
+            coordinator,
+            custodyOperationId,
+            loaded.record,
+            recovery,
+            {
+              clientOrderId: input.request.clientOrderId,
+              operationId: input.operationId,
+              orderId: capability.orderId,
+            },
+          )
         : await this.#applyEngineResult(
             coordinator,
             custodyOperationId,
@@ -1143,6 +1184,9 @@ export class DaemonCtfRangeOrderCoordinator {
             reference,
             client,
             preparationResolver,
+            input,
+            capability.orderId,
+            false,
           )
     if (decision.kind === 'reconciling' && engineResult !== null) {
       engineResult = null
@@ -1151,30 +1195,29 @@ export class DaemonCtfRangeOrderCoordinator {
         custodyOperationId,
         loaded.record,
         recovery,
+        {
+          clientOrderId: input.request.clientOrderId,
+          operationId: input.operationId,
+          orderId: capability.orderId,
+        },
       )
     }
     switch (decision.kind) {
       case 'confirmed': {
-        const status = await this.#loadPartialResultStatus(
-          input,
-          capability,
-          client,
-          loaded.operation,
-          decision.result,
-        )
-        if (status?.status === 'awaiting_authorization') {
-          requirePendingContinuation(status, preparation, loaded.operation, engineResult)
-        }
-        await this.#completeSubmittedLifecycle(
-          preparation,
-          input,
-          walletSeedHex,
-          client,
-          loaded.operation,
-          decision.result,
-          status,
-          engineResult,
-        )
+        this.#requireExactFokSettlement(input, loaded.operation, decision.result)
+        await this.#markTerminal(input.operationId)
+        startOrderPhase(this.#dependencies.observeOrderTimeline, 'result-completion', {
+          clientOrderId: input.request.clientOrderId,
+          operationId: input.operationId,
+          orderId: capability.orderId,
+          applicationPath: engineResult === null ? 'mint-recovery' : 'engine',
+          ...(engineResult === null
+            ? {}
+            : {
+                groupId: engineResult.settlementGroupId,
+                groupRevision: engineResult.settlementGroupRevision,
+              }),
+        })('success')
         return
       }
       case 'waiting':
@@ -1184,7 +1227,7 @@ export class DaemonCtfRangeOrderCoordinator {
         )
       case 'refundable': {
         const refundableStatus = await this.#loadOrderStatus(input, capability, client)
-        await this.#cancelRestingOrderBeforeRefund(input, capability, refundableStatus, client)
+        this.#requireFokNotActiveBeforeRefund(refundableStatus)
         await this.#resumeOrCreateRefund(
           coordinator,
           custodyOperationId,
@@ -1208,43 +1251,83 @@ export class DaemonCtfRangeOrderCoordinator {
     custodyOperationId: string,
     record: DurableCustodyRecord,
     recovery: CtfRangeMintRecoveryAdapter,
+    identity: import('./orderTimeline.ts').OrderTimelineIdentity = {},
   ): Promise<DurableCtfRangeRecoveryDecision> {
-    const recoveryObservation = await recovery.loadUncertainRecoveryObservation({
-      record,
-      selection: null,
-      now: Math.floor(this.#nowMs() / 1_000),
-    })
+    identity = { ...identity, applicationPath: 'mint-recovery' }
+    const recoveryObservation = await measureOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'mint-observation',
+      identity,
+      () =>
+        recovery.loadUncertainRecoveryObservation({
+          record,
+          selection: null,
+          now: Math.floor(this.#nowMs() / 1_000),
+        }),
+    )
     const observation = recoveryObservation.observation
-    const decision = await coordinator.classifyRecovery({
-      custodyOperationId,
-      observation,
-      resolveKeyset: recoveryObservation.resolveKeyset,
-    })
-    if (decision.kind !== 'confirmed') return decision
-    const staged = await coordinator.stageRecovered({
-      custodyOperationId,
-      observation,
-      resolveKeyset: recoveryObservation.resolveKeyset,
-      observedAtMs: this.#nowMs(),
-    })
+    const finishVerification = startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'recovery-verification-staging',
+      identity,
+    )
+    let staged: DurableCtfRangeRecoveryDecision
+    try {
+      const decision = await coordinator.classifyRecovery({
+        custodyOperationId,
+        observation,
+        resolveKeyset: recoveryObservation.resolveKeyset,
+      })
+      staged =
+        decision.kind === 'confirmed'
+          ? await coordinator.stageRecovered({
+              custodyOperationId,
+              observation,
+              resolveKeyset: recoveryObservation.resolveKeyset,
+              observedAtMs: this.#nowMs(),
+            })
+          : decision
+      finishVerification(staged.kind === 'confirmed' ? 'success' : 'unverified')
+    } catch (error) {
+      finishVerification('failed')
+      throw error
+    }
     if (staged.kind !== 'confirmed') return staged
-    await coordinator.applyStaged({
-      custodyOperationId,
-      resolveKeyset: recoveryObservation.resolveKeyset,
-      observedAtMs: this.#nowMs(),
-    })
+    await measureOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'result-application',
+      identity,
+      () =>
+        coordinator.applyStaged({
+          custodyOperationId,
+          resolveKeyset: recoveryObservation.resolveKeyset,
+          observedAtMs: this.#nowMs(),
+        }),
+    )
     return staged
   }
 
   async #getEngineResult(
     client: EngineClientLike,
     operationId: string,
+    identity: import('./orderTimeline.ts').OrderTimelineIdentity,
   ): Promise<SettlementCapabilityResultResponse | null> {
+    const finish = startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'engine-result-observation',
+      identity,
+    )
     const getResult = client.getSettlementCapabilityResultByOperation
-    if (getResult === undefined) return null
+    if (getResult === undefined) {
+      finish('unverified')
+      return null
+    }
     try {
-      return await getResult.call(client, operationId)
+      const result = await getResult.call(client, operationId)
+      finish(result === null ? 'unverified' : 'success')
+      return result
     } catch {
+      finish('failed')
       return null
     }
   }
@@ -1267,19 +1350,15 @@ export class DaemonCtfRangeOrderCoordinator {
     return status
   }
 
-  async #loadPartialResultStatus(
+  #requireExactFokSettlement(
     input: PersistedPreparationInput,
-    capability: RangePreparationCapability,
-    client: EngineClientLike,
     operation: DurableCtfRangeOperation,
     result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
-  ): Promise<OrderStatusResponse | null> {
+  ): void {
     const settledAmount = deriveDurableCtfRangeSettledFaceAmount(operation, result)
-    if (settledAmount > input.request.amountSubunits) {
-      throw new Error('settled range amount exceeds the submitted order')
+    if (settledAmount !== input.request.amountSubunits) {
+      throw new Error('settled range amount does not satisfy the submitted FOK order')
     }
-    if (settledAmount === input.request.amountSubunits) return null
-    return this.#loadOrderStatus(input, capability, client)
   }
 
   async #persistedResultSource(record: DurableCustodyRecord): Promise<'engine' | 'mint-recovery'> {
@@ -1440,294 +1519,69 @@ export class DaemonCtfRangeOrderCoordinator {
     reference: { readonly artifactId: string; readonly bindingDigest: string },
     client: EngineClientLike,
     resolveKeyset: DurableCtfRangeKeysetResolver,
+    input: PersistedPreparationInput,
+    orderId: string,
+    alreadyApplied: boolean,
+    persisted = false,
   ): Promise<DurableCtfRangeRecoveryDecision> {
-    const decision = await coordinator.stageVerified({
-      custodyOperationId,
-      operation,
-      envelope: engineResult.envelope,
-      resolveKeyset,
-      observedAtMs: this.#nowMs(),
-    })
+    const identity = {
+      applicationPath: persisted ? ('persisted-engine-reuse' as const) : ('engine' as const),
+      clientOrderId: input.request.clientOrderId,
+      operationId: input.operationId,
+      orderId,
+      groupId: engineResult.settlementGroupId,
+      groupRevision: engineResult.settlementGroupRevision,
+    }
+    const finishVerification = startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      persisted ? 'result-verification-recheck' : 'result-verification',
+      identity,
+    )
+    let decision: DurableCtfRangeRecoveryDecision
+    try {
+      decision = await coordinator.stageVerified({
+        custodyOperationId,
+        operation,
+        envelope: engineResult.envelope,
+        resolveKeyset,
+        observedAtMs: this.#nowMs(),
+      })
+      finishVerification(decision.kind === 'confirmed' ? 'success' : 'unverified')
+    } catch (error) {
+      finishVerification('failed')
+      throw error
+    }
     if (decision.kind !== 'confirmed') return decision
-    await coordinator.applyStaged({
-      custodyOperationId,
-      resolveKeyset,
-      observedAtMs: this.#nowMs(),
-    })
-    await this.#acknowledgeResult(client, operation, reference, engineResult)
+    await measureOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'result-application',
+      identity,
+      () =>
+        coordinator.applyStaged({
+          custodyOperationId,
+          resolveKeyset,
+          observedAtMs: this.#nowMs(),
+        }),
+      alreadyApplied ? 'reused' : 'success',
+    )
+    this.#requireExactFokSettlement(input, operation, decision.result)
+    await measureOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'result-acknowledgement',
+      identity,
+      () => this.#acknowledgeResult(client, operation, reference, engineResult),
+      engineResult.acknowledgedAt === null ? 'success' : 'reused',
+    )
     return decision
   }
 
-  async #completeSubmittedLifecycle(
-    preparation: RangePreparationRecord,
-    input: PersistedPreparationInput,
-    walletSeedHex: string,
-    client: EngineClientLike,
-    operation: DurableCtfRangeOperation,
-    result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
-    status: OrderStatusResponse | null,
-    engineResult: CtfRangeEngineResult | null,
-  ): Promise<void> {
-    if (status === null) {
-      await this.#markTerminal(input.operationId)
-      return
+  #requireFokNotActiveBeforeRefund(status: OrderStatusResponse | null): void {
+    switch (status?.status) {
+      case 'resting':
+      case 'matched':
+      case 'partially_filled':
+        throw new Error('public FOK order is unexpectedly active during refund recovery')
     }
-    const residual = deriveDurableCtfResidualDecision({
-      source: operation,
-      result,
-      originalOrderAmount: input.request.amountSubunits,
-      remainingOrderAmount: status.remainingAmountSubunits,
-      restingOrder: status.status === 'awaiting_authorization',
-    })
-    if (residual.kind === 'awaiting-authorization') {
-      const continuation = requirePendingContinuation(status, preparation, operation, engineResult)
-      if (status.continuation?.status === 'declined') {
-        await this.#declineContinuation(input, continuation, client)
-        await this.#markTerminal(input.operationId)
-        return
-      }
-      if (
-        !preparation.continueAfterPartialFill ||
-        BigInt(residual.remainingOrderAmount) < BigInt(preparation.minimumFillAmountSubunits)
-      ) {
-        await this.#declineContinuation(input, continuation, client)
-        await this.#markTerminal(input.operationId)
-        return
-      }
-      await this.#reauthorizeResidual(
-        preparation,
-        input,
-        walletSeedHex,
-        client,
-        Number(residual.remainingOrderAmount),
-        continuation,
-      )
-      return
-    }
-    if (
-      input.request.timeInForce === 'FAK' &&
-      status.status === 'partially_filled' &&
-      residual.kind === 'none'
-    ) {
-      await this.#markTerminal(input.operationId)
-      return
-    }
-    if (
-      status.status === 'resting' ||
-      status.status === 'matched' ||
-      status.status === 'partially_filled' ||
-      status.status === 'awaiting_authorization'
-    ) {
-      throw new Error('range result and order lifecycle disagree')
-    }
-    await this.#markTerminal(input.operationId)
-  }
-
-  async #cancelRestingOrderBeforeRefund(
-    input: PersistedPreparationInput,
-    capability: RangePreparationCapability,
-    status: OrderStatusResponse | null,
-    client: EngineClientLike,
-  ): Promise<void> {
-    if (status?.status !== 'resting') return
-    if (!(await client.cancelOrder(input.request.marketId, capability.orderId))) {
-      throw new Error('expired resting range order cancellation was not acknowledged')
-    }
-    const cancelled = await client.getOrderStatus(input.request.marketId, capability.orderId)
-    if (cancelled === null || cancelled.status === 'resting') {
-      throw new Error('expired resting range order remains matchable')
-    }
-    await recordOrderStatus(
-      input.request.marketId,
-      capability.orderId,
-      cancelled,
-      input.request.baseAsset,
-      input.request.divisibility,
-    )
-  }
-
-  async #declineContinuation(
-    input: PersistedPreparationInput,
-    continuation: SettlementOrderContinuationReference,
-    client: EngineClientLike,
-  ): Promise<void> {
-    const decline = client.declineOrderContinuation
-    if (decline === undefined) {
-      throw new Error('engine client does not support residual continuation decline')
-    }
-    await decline.call(
-      client,
-      input.request.marketId,
-      continuation.predecessorOrderId,
-      continuation.continuationRevision,
-    )
-  }
-
-  async #reauthorizeResidual(
-    predecessor: RangePreparationRecord,
-    predecessorInput: PersistedPreparationInput,
-    walletSeedHex: string,
-    client: EngineClientLike,
-    remainingAmountSubunits: number,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<void> {
-    if (!Number.isSafeInteger(remainingAmountSubunits) || remainingAmountSubunits <= 0) {
-      throw new Error('residual range amount is invalid')
-    }
-    const intent = await this.#persistSuccessorIntent(
-      predecessor,
-      remainingAmountSubunits,
-      continuation,
-    )
-    const getPolicy = client.getSettlementCapabilityAdmissionPolicy
-    if (getPolicy === undefined) {
-      throw new Error('engine client does not expose settlement admission policy')
-    }
-    const mint = this.#createMint(predecessorInput.mintUrl)
-    const [policy, metadata, market] = await Promise.all([
-      getPolicy.call(client),
-      loadMintMetadata(
-        mint,
-        predecessorInput.mintUrl,
-        predecessorInput.conditionId,
-        this.#nowSeconds(),
-        this.#dependencies.allowInsecureLoopbackHttp === true,
-      ),
-      loadEngineMarket(client, predecessorInput.conditionId),
-    ])
-    const proposed = buildPersistedCtfRangeOrderPreparation({
-      request: {
-        ...predecessorInput.request,
-        clientOrderId: intent.successorClientOrderId,
-        amountSubunits: intent.remainingAmountSubunits,
-      },
-      coordinatorPublicKey: requireCoordinatorKey(policy),
-      mintFacts: metadata,
-      market,
-      nowUnixSeconds: this.#nowSeconds(),
-      randomId: sequentialStableIds(
-        intent.successorRangeOperationId,
-        intent.successorAuthorizationId,
-      ),
-      sourceKind: 'residual-change',
-      predecessorRangeOperationId: predecessorInput.operationId,
-    })
-    const successor = await this.#persistResidualPreparation(predecessor, proposed, continuation)
-    await this.#recoverPreparation(successor.record, successor.input, walletSeedHex, client)
-  }
-
-  async #persistSuccessorIntent(
-    predecessor: RangePreparationRecord,
-    remainingAmountSubunits: number,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<RangeSuccessorIntent> {
-    const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const existing = readRangeSuccessorIntent(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (existing !== null) {
-          if (
-            existing.remainingAmountSubunits !== remainingAmountSubunits ||
-            !sameContinuationReference(existing.continuation, continuation)
-          ) {
-            throw new Error('daemon residual successor intent conflicts with its journal')
-          }
-          return existing
-        }
-        return insertRangeSuccessorIntent(database, {
-          scopeId: mutation.fence.scopeId,
-          predecessorRangeOperationId: predecessor.rangeOperationId,
-          successorClientOrderId: this.#randomId(),
-          successorRangeOperationId: this.#randomId(),
-          successorAuthorizationId: this.#randomId(),
-          remainingAmountSubunits,
-          continuation,
-          createdAtMs: mutation.observedAtMs,
-        })
-      },
-    )
-  }
-
-  async #persistResidualPreparation(
-    predecessor: RangePreparationRecord,
-    proposed: PersistedPreparationInput,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<{ record: RangePreparationRecord; input: PersistedPreparationInput }> {
-    const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const active = readResidualRangePreparationByPredecessor(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (active !== null) {
-          const input = preparationFromJournal(active)
-          if (
-            input.sourceKind !== 'residual-change' ||
-            input.predecessorRangeOperationId !== predecessor.rangeOperationId ||
-            !sameContinuationReference(active.continuation, continuation) ||
-            !sameResidualOrderTerms(preparationFromJournal(predecessor).request, input.request) ||
-            input.amountSubunits !== proposed.amountSubunits
-          ) {
-            throw new Error('daemon residual range successor conflicts with active authority')
-          }
-          return { record: active, input }
-        }
-        const current = readRangePreparation(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (current === null) throw new Error('daemon residual range predecessor is missing')
-        if (current.lifecycleState !== 'terminal') {
-          transitionRangePreparation(database, {
-            scopeId: mutation.fence.scopeId,
-            rangeOperationId: current.rangeOperationId,
-            expectedRevision: current.revision,
-            from: current.lifecycleState,
-            to: 'terminal',
-            updatedAtMs: mutation.observedAtMs,
-          })
-        }
-        const record = insertRangePreparation(database, {
-          scopeId: mutation.fence.scopeId,
-          rangeOperationId: proposed.operationId,
-          sourceOperationId: proposed.sourceOperationId,
-          sourceKind: proposed.sourceKind,
-          predecessorRangeOperationId: proposed.predecessorRangeOperationId,
-          authorizationId: proposed.authorizationId,
-          clientOrderId: proposed.request.clientOrderId,
-          orderRouteId: proposed.request.marketId,
-          normalizedMint: proposed.mintUrl,
-          conditionId: proposed.conditionId,
-          unit: 'msat',
-          tokenSide: proposed.request.tokenSide,
-          side: proposed.side,
-          priceSubunits: proposed.priceNumerator,
-          amountSubunits: proposed.amountSubunits,
-          minimumFillAmountSubunits: proposed.request.minimumFillAmountSubunits,
-          continueAfterPartialFill: true,
-          consolidateProofs: false,
-          continuation,
-          divisibility: proposed.divisibility as 10_000 | 1_000_000,
-          authorizationExpiresAtUnixSeconds: proposed.expiry,
-          preparationBytes: encodeCanonicalRangePreparation(proposed),
-          createdAtMs: mutation.observedAtMs,
-        })
-        return { record, input: preparationFromJournal(record, proposed.request) }
-      },
-    )
   }
 
   async #acknowledgeResult(
@@ -1786,23 +1640,25 @@ export class DaemonCtfRangeOrderCoordinator {
   async #prepareWalletSource(
     authority: PreparedMintAuthority,
     walletSeedHex: string,
+    consentedFeeFacts?: CtfRangeOrderFeeFacts,
+    allowFreshSource = true,
     wallet?: CtfRangeWalletLike,
   ): Promise<SourceResult> {
     try {
-      return await prepareOrResumeSource(authority, walletSeedHex, this.#dependencies, wallet)
+      return await prepareOrResumeSource(
+        authority,
+        walletSeedHex,
+        this.#dependencies,
+        consentedFeeFacts,
+        allowFreshSource,
+        wallet,
+      )
     } catch (error) {
       if (error instanceof ProofConsolidationRequiredError) {
         await this.#markTerminal(authority.preparationInput.operationId)
       }
       throw error
     }
-  }
-
-  async #markResidualPredecessorTerminal(input: PersistedPreparationInput): Promise<void> {
-    if (input.sourceKind !== 'residual-change' || input.predecessorRangeOperationId === null) {
-      return
-    }
-    await this.#markTerminal(input.predecessorRangeOperationId)
   }
 
   #createMint(mintUrl: string): CtfRangeMintLike {
@@ -1829,123 +1685,13 @@ export class DaemonCtfRangeOrderCoordinator {
   }
 }
 
-function sameResidualOrderTerms(
-  predecessor: PersistedPreparationInput['request'],
-  successor: PersistedPreparationInput['request'],
-): boolean {
-  return (
-    predecessor.marketId === successor.marketId &&
-    predecessor.conditionId === successor.conditionId &&
-    predecessor.outcomeId === successor.outcomeId &&
-    predecessor.tokenSide === successor.tokenSide &&
-    predecessor.side === successor.side &&
-    predecessor.price === successor.price &&
-    predecessor.minimumFillAmountSubunits === successor.minimumFillAmountSubunits &&
-    predecessor.baseAsset === successor.baseAsset &&
-    predecessor.collateralUnit === successor.collateralUnit &&
-    predecessor.divisibility === successor.divisibility &&
-    predecessor.timeInForce === successor.timeInForce &&
-    predecessor.expiresAt === successor.expiresAt &&
-    successor.amountSubunits < predecessor.amountSubunits
-  )
-}
-
-function sequentialStableIds(first: string, second: string): () => string {
-  let index = 0
-  return () => {
-    index += 1
-    if (index === 1) return first
-    if (index === 2) return second
-    throw new Error('daemon residual successor requested an unexpected identity')
-  }
-}
-
-async function submitRecoveredResidualOrder(
-  client: EngineClientLike,
-  request: PersistedPreparationInput['request'],
-  capability: RangePreparationCapability,
-): Promise<void> {
-  const submitted = await client.submitOrder(request.marketId, {
-    settlementCapability: {
-      artifactId: capability.artifactId,
-      bindingDigest: capability.bindingDigest,
-    },
-    comment: null,
-  })
-  if (submitted.orderId !== capability.orderId) {
-    throw new Error('recovered residual order differs from its settlement capability')
-  }
-  await recordSubmittedOrder(
-    request.marketId,
-    request.clientOrderId,
-    submitted,
-    null,
-    request.tokenSide,
-    request.side,
-    request.price,
-    request.amountSubunits,
-    request.baseAsset,
-    request.divisibility,
-  )
-}
-
-function requirePendingContinuation(
-  status: OrderStatusResponse,
-  predecessor: RangePreparationRecord,
-  operation: DurableCtfRangeOperation,
-  engineResult: CtfRangeEngineResult | null,
-): SettlementOrderContinuationReference {
-  const capability = predecessor.capability
-  const continuation = status.continuation
-  if (
-    capability === null ||
-    status.status !== 'awaiting_authorization' ||
-    continuation === null ||
-    (continuation.status !== 'open' && continuation.status !== 'declined') ||
-    status.orderId !== capability.orderId ||
-    engineResult === null ||
-    continuation.settlementGroupId !== engineResult.settlementGroupId ||
-    continuation.settlementGroupRevision !== engineResult.settlementGroupRevision
-  ) {
-    throw new Error('daemon residual continuation authority is unavailable')
-  }
-  const exactRemaining = Number(
-    deriveDurableCtfRangeSelectionRemainingAmount({
-      source: operation,
-      selection: engineResult.envelope.selection,
-      originalOrderAmount: predecessor.amountSubunits,
-    }),
-  )
-  if (!Number.isSafeInteger(exactRemaining) || status.remainingAmountSubunits !== exactRemaining) {
-    throw new Error('daemon residual continuation amount differs from the exact result')
-  }
-  return {
-    predecessorOrderId: status.orderId,
-    settlementGroupId: continuation.settlementGroupId,
-    settlementGroupRevision: continuation.settlementGroupRevision,
-    continuationRevision: continuation.revision,
-  }
-}
-
-function sameContinuationReference(
-  left: SettlementOrderContinuationReference | null,
-  right: SettlementOrderContinuationReference,
-): boolean {
-  return (
-    left !== null &&
-    left.predecessorOrderId === right.predecessorOrderId &&
-    left.settlementGroupId === right.settlementGroupId &&
-    left.settlementGroupRevision === right.settlementGroupRevision &&
-    left.continuationRevision === right.continuationRevision
-  )
-}
-
 function preparedMintAuthority(
   preparationInput: PersistedPreparationInput,
   walletSeedHex: string,
   metadata: LoadedMintMetadata,
   mint: CtfRangeMintLike,
   consolidateProofs: boolean,
+  storage: DaemonStateSqliteSession,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   return {
@@ -1959,7 +1705,12 @@ function preparedMintAuthority(
     mintKeysets: exactCtfRangeOrderPreparationMintKeysets(preparationInput),
     offerAsset: assetForKeyset(preparationInput.offerKeyset),
     mint,
+    loadedSourceLimits: {
+      maxInputs: preparationInput.maxInputs,
+      maxOutputs: metadata.maxOutputs,
+    },
     consolidateProofs,
+    storage,
     mutation,
   }
 }
@@ -1983,13 +1734,20 @@ async function loadMintMetadata(
 function persistedOrderRequest(
   input: PrepareSettlementCapabilityInput,
 ): PersistedPreparationInput['request'] {
-  const {
-    walletSeedHex: _,
-    continueAfterPartialFill: __,
-    consolidateProofs: ___,
-    ...request
-  } = input
+  const { walletSeedHex: _, consolidateProofs: ___, ...request } = input
   return structuredClone(request) as PersistedPreparationInput['request']
+}
+
+function assertSameFeeConsent(persisted: Uint8Array | null, supplied: Uint8Array | null): void {
+  if (!isDeepStrictEqual(persisted, supplied)) {
+    throw new Error('daemon CTF range fee consent conflicts with its journal')
+  }
+}
+
+function requireFokOrder(timeInForce: unknown): asserts timeInForce is 'FOK' {
+  if (timeInForce !== 'FOK') {
+    throw new Error('public range orders require FOK')
+  }
 }
 
 function withoutRequest(
@@ -2019,6 +1777,7 @@ function persistedMintAuthority(
   walletSeedHex: string,
   mint: CtfRangeMintLike,
   consolidateProofs: boolean,
+  storage: DaemonStateSqliteSession,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   const preparation = prepareCtfRangeOrderAuthorization({
@@ -2033,64 +1792,83 @@ function persistedMintAuthority(
     mintKeysets: exactCtfRangeOrderPreparationMintKeysets(input),
     offerAsset: assetForKeyset(input.offerKeyset),
     mint,
+    loadedSourceLimits: null,
     consolidateProofs,
+    storage,
     mutation,
   }
 }
 
-interface SourceResult {
-  readonly authorization: Proof[]
-  readonly keep: Proof[]
-}
+type SourceResult =
+  | {
+      readonly mode: 'same-keyset-swap'
+      readonly authorization: Proof[]
+      readonly keep: Proof[]
+    }
+  | ({ readonly mode: 'mixed-source-ctf-convert' } & CtfRangeMixedSourceResult)
 
-interface ResidualSourceResult extends SourceResult {
-  readonly spentInputs: Proof[]
-}
+type SourceMode = SourceResult['mode']
 
-function sourceResultRecord(result: SourceResult): Record<string, CashuProofRecord[]> {
-  return {
-    authorization: result.authorization.map((proof) => ({ ...proof, amount: proof.amount })),
-    keep: result.keep.map((proof) => ({ ...proof, amount: proof.amount })),
-  }
-}
+type PreparedSource =
+  | {
+      readonly mode: 'same-keyset-swap'
+      readonly operation: DurableCustodyProofOperationInput
+    }
+  | {
+      readonly mode: 'mixed-source-ctf-convert'
+      readonly operation: DurableCustodyProofOperationInput
+    }
+
+type SourceWallet = () => Promise<CtfRangeWalletLike>
 
 async function prepareOrResumeSource(
   authority: PreparedMintAuthority,
   walletSeedHex: string,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+  consentedFeeFacts?: CtfRangeOrderFeeFacts,
+  allowFreshSource = true,
   providedWallet?: CtfRangeWalletLike,
 ): Promise<SourceResult> {
-  const wallet =
-    providedWallet ??
-    dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
-    (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
-      unit: 'msat',
-      bip39seed: walletSeed(walletSeedHex),
-    }) as CtfRangeWalletLike)
-  if (providedWallet === undefined) await wallet.loadMint()
+  const wallet = lazySourceWallet(authority, walletSeedHex, dependencies, providedWallet)
   const existing = await getProofOperation(authority.preparation.sourceOperationId)
   if (existing !== null) {
-    return resumeSourceOperation(existing, authority, wallet, dependencies)
+    return resumeExistingSource(existing, authority, walletSeedHex, wallet, dependencies)
   }
+  // Exact persisted work finishes before fresh selection. Fresh selection then
+  // needs current mint limits and fee facts, never a bound from an old process.
   let round = await resumeExistingConsolidations(authority, wallet, dependencies)
-  const candidates = await availableSourceProofs(authority)
-  const prepared = await prepareSourceOperation(authority, wallet, candidates.proofs)
-  if (prepared !== null) return completeNewSource(authority, prepared, wallet)
-  if (!candidates.hasMore) throw new Error('daemon has insufficient exact range-order funds')
-  if (!authority.consolidateProofs) {
-    throw new ProofConsolidationRequiredError()
+  if (!allowFreshSource) {
+    throw new Error('fresh range source preparation requires explicit fee consent')
   }
-
-  const plan = await planSourceConsolidation(authority, MAX_CONSOLIDATION_ROUNDS - round)
-  if (plan.kind !== 'ready') throw consolidationPlanError(plan.kind)
-  for (const plannedRound of plan.consolidationRounds) {
+  for (;;) {
+    const limits = await freshSourceLimits(authority, dependencies)
+    const planned = await planFreshSourceWithFees(authority, limits, round)
+    await assertSourceFeeConsent(authority, consentedFeeFacts, planned.feeFacts)
+    if (planned.consolidation === null) {
+      const selected = await completeSelectedSource(
+        authority,
+        walletSeedHex,
+        wallet,
+        planned.selection.plan,
+      )
+      if (selected === null) throw new Error('daemon range source plan is not executable')
+      return selected
+    }
     if (round >= MAX_CONSOLIDATION_ROUNDS) {
       throw new Error('range authorization exceeded the bounded consolidation round limit')
     }
-    const page = await availableSourceProofs(authority)
+    const plannedRound = planned.consolidation.consolidationRounds[0]
+    if (plannedRound === undefined) {
+      throw new Error('range consolidation plan has no executable round')
+    }
+    const page = await availableSourceProofs(
+      authority,
+      'offered',
+      authority.preparationInput.maxInputs,
+    )
     await consolidateSourceProofs(
       authority,
-      wallet,
+      await wallet(),
       walletSeedHex,
       page.proofs,
       round,
@@ -2099,40 +1877,340 @@ async function prepareOrResumeSource(
     )
     round += 1
   }
-  const consolidated = await availableSourceProofs(authority)
-  const source = await prepareSourceOperation(authority, wallet, consolidated.proofs)
-  if (source === null) throw new Error('range consolidation plan did not make the source fundable')
-  return completeNewSource(authority, source, wallet)
 }
 
-async function prepareOrResumeResidualSource(
+async function resumeExistingSource(
+  existing: ProofOperationRecord,
   authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  candidates: readonly Proof[],
+  walletSeedHex: string,
+  wallet: SourceWallet,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
-): Promise<ResidualSourceResult> {
-  const existing = await getProofOperation(authority.preparation.sourceOperationId)
-  if (existing !== null) {
-    const result = await resumeSourceOperation(existing, authority, wallet, dependencies)
-    return { ...result, spentInputs: existing.inputs.map(toProof) }
+): Promise<SourceResult> {
+  assertRangeSourceOperation(existing)
+  const mode = persistedSourceMode(existing)
+  if (mode === 'same-keyset-swap' && existing.state === 'completed') {
+    return completedSourceResult(existing)
   }
-  const source = await prepareSourceOperation(authority, wallet, [...candidates])
-  if (source === null) {
-    throw new Error('returned residual change cannot fund its replacement authorization')
-  }
-  await persistPreparedSource(authority, source, candidates)
-  const result = await completePreparedSource(source, wallet)
-  await markProofOperationCompletedFenced(
-    authority.preparation.sourceOperationId,
-    sourceResultRecord(result),
-    authority.mutation(),
+  const mutation = authority.mutation()
+  const staged = await withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => readStagedSourceResult(database, existing, mode, mutation.fence.scopeId),
   )
-  return { ...result, spentInputs: source.inputs }
+  if (staged !== null) return staged
+  return resumeSourceOperation(existing, mode, authority, walletSeedHex, wallet, dependencies)
+}
+
+function lazySourceWallet(
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+  providedWallet: CtfRangeWalletLike | undefined,
+): SourceWallet {
+  // Loading a swap wallet is mint I/O. The mixed source and exact staged
+  // recovery do not need it, so load it only for same-keyset work.
+  let loaded: Promise<CtfRangeWalletLike> | undefined =
+    providedWallet === undefined ? undefined : Promise.resolve(providedWallet)
+  return () => {
+    loaded ??= loadSourceWallet(authority, walletSeedHex, dependencies)
+    return loaded
+  }
+}
+
+async function loadSourceWallet(
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<CtfRangeWalletLike> {
+  const wallet =
+    dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
+    (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
+      unit: 'msat',
+      bip39seed: walletSeed(walletSeedHex),
+    }) as CtfRangeWalletLike)
+  await wallet.loadMint()
+  return wallet
+}
+
+async function freshSourceLimits(
+  authority: PreparedMintAuthority,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<SourceSelectionLimits> {
+  if (authority.loadedSourceLimits !== null) return authority.loadedSourceLimits
+  const preparation = authority.preparationInput
+  const metadata = await loadMintMetadata(
+    authority.mint,
+    preparation.mintUrl,
+    preparation.conditionId,
+    Math.floor(authority.mutation().observedAtMs / 1_000),
+    dependencies.allowInsecureLoopbackHttp === true,
+  )
+  assertCurrentSourceKeysets(preparation, metadata)
+  return {
+    maxInputs: Math.min(preparation.maxInputs, metadata.maxInputs),
+    maxOutputs: metadata.maxOutputs,
+  }
+}
+
+function assertCurrentSourceKeysets(
+  preparation: PersistedPreparationInput,
+  metadata: LoadedMintMetadata,
+): void {
+  if (metadata.observation.canonicalMintUrl !== preparation.mintUrl) {
+    throw new Error('current mint metadata is for a foreign mint')
+  }
+  const current = new Map<string, ActiveCtfRangeMintKeyset>(
+    [...metadata.regular, ...metadata.conditional].map((keyset) => [keyset.id, keyset]),
+  )
+  for (const expected of [preparation.offerKeyset, preparation.receiveKeyset]) {
+    const actual = current.get(expected.id)
+    if (
+      actual === undefined ||
+      !isDeepStrictEqual(custodyKeysetAuthority(actual), custodyKeysetAuthority(expected))
+    ) {
+      throw new Error('current mint source keyset differs from the range preparation')
+    }
+  }
+}
+
+async function selectFreshSource(
+  authority: PreparedMintAuthority,
+  limits: SourceSelectionLimits,
+): Promise<{ readonly plan: CtfRangeCapabilitySourcePlan; readonly offeredHasMore: boolean }> {
+  const preparation = authority.preparationInput
+  const offered = await availableSourceProofs(authority, 'offered', limits.maxInputs)
+  // A Sell can pay its preparation fee from regular cash. A Buy already offers
+  // regular cash, so it has no separate collateral group.
+  const collateral =
+    preparation.side === 'Sell'
+      ? await availableSourceProofs(authority, 'collateral', limits.maxInputs)
+      : { proofs: [], hasMore: false }
+  const plan = planCtfRangeCapabilitySource({
+    side: preparation.side,
+    authorizationAmounts: authority.preparation.authorizationOutputs.map((output) =>
+      output.blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset:
+      preparation.side === 'Sell' ? preparation.receiveKeyset : preparation.offerKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: offered.proofs,
+    collateralCandidates: collateral.proofs,
+    maxInputs: limits.maxInputs,
+    maxOutputs: limits.maxOutputs,
+  })
+  return { plan, offeredHasMore: offered.hasMore }
+}
+
+type ExecutableSourcePlan = Extract<
+  CtfRangeCapabilitySourcePlan,
+  { readonly kind: 'same-keyset-swap' | 'mixed-source-ctf-convert' }
+>
+
+async function planFreshSourceWithFees(
+  authority: PreparedMintAuthority,
+  limits: SourceSelectionLimits,
+  completedConsolidationRounds: number,
+): Promise<{
+  readonly selection: Awaited<ReturnType<typeof selectFreshSource>>
+  readonly consolidation: Extract<BoundedProofConsolidationPlan, { readonly kind: 'ready' }> | null
+  readonly feeFacts: CtfRangeOrderFeeFacts
+}> {
+  const selection = await selectFreshSource(authority, limits)
+  if (
+    selection.plan.kind === 'same-keyset-swap' ||
+    selection.plan.kind === 'mixed-source-ctf-convert'
+  ) {
+    return {
+      selection,
+      consolidation: null,
+      feeFacts: directSourceFeeFacts(authority.preparationInput, selection.plan),
+    }
+  }
+  assertConsolidationCanHelp(selection.plan, selection.offeredHasMore)
+  if (!selection.offeredHasMore) throw new Error('daemon has insufficient exact range-order funds')
+  if (!authority.consolidateProofs) throw new ProofConsolidationRequiredError()
+
+  // The bounded plan includes both the new consolidation fees and the later
+  // source fee. An offered-asset shortfall refuses before either mint effect.
+  const consolidation = await planSourceConsolidation(
+    authority,
+    MAX_CONSOLIDATION_ROUNDS - completedConsolidationRounds,
+  )
+  if (consolidation.kind !== 'ready') throw consolidationPlanError(consolidation.kind)
+  return {
+    selection,
+    consolidation,
+    feeFacts: boundedConsolidationFeeFacts(authority.preparationInput, consolidation),
+  }
+}
+
+function directSourceFeeFacts(
+  preparation: PersistedPreparationInput,
+  plan: ExecutableSourcePlan,
+): CtfRangeOrderFeeFacts {
+  const sourceMode =
+    plan.kind === 'mixed-source-ctf-convert'
+      ? 'mixed-source-ctf-convert'
+      : preparation.side === 'Buy'
+        ? 'wallet-send'
+        : 'conditional-keyset-swap'
+  const offeredAsset = offeredFeeAsset(preparation)
+  return composeCtfRangeOrderFeeFacts({
+    authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
+    sourcePlan: plan,
+    sourceMode,
+    consolidationFeeSubunits: '0',
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset:
+      sourceMode === 'conditional-keyset-swap' ? offeredAsset : { kind: 'regular', unit: 'msat' },
+    consolidationAsset: offeredAsset,
+  })
+}
+
+function boundedConsolidationFeeFacts(
+  preparation: PersistedPreparationInput,
+  plan: Extract<BoundedProofConsolidationPlan, { readonly kind: 'ready' }>,
+): CtfRangeOrderFeeFacts {
+  const offeredAsset = offeredFeeAsset(preparation)
+  return {
+    settlementInputFeeSubunits:
+      planPersistedCtfRangeOrderAuthorization(preparation).participantFeeAllocationUpperBound,
+    sourcePreparationFeeSubunits: plan.sourceFee,
+    consolidationFeeSubunits: plan.consolidationFee,
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset: offeredAsset,
+    consolidationAsset: offeredAsset,
+    sourceMode: preparation.side === 'Buy' ? 'wallet-send' : 'conditional-keyset-swap',
+  }
+}
+
+function offeredFeeAsset(preparation: PersistedPreparationInput): DurableCtfRangeAsset {
+  const asset = assetForKeyset(preparation.offerKeyset)
+  switch (asset.kind) {
+    case 'sats':
+      return { kind: 'regular', unit: 'msat' }
+    case 'Outcome':
+      return {
+        kind: 'conditional',
+        unit: 'msat',
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeSetId,
+      }
+    default:
+      return assertNeverStoredAsset(asset)
+  }
+}
+
+function assertNeverStoredAsset(value: never): never {
+  throw new Error(`unhandled range source asset: ${String(value)}`)
+}
+
+async function assertSourceFeeConsent(
+  authority: PreparedMintAuthority,
+  consented: CtfRangeOrderFeeFacts | undefined,
+  current: CtfRangeOrderFeeFacts,
+): Promise<void> {
+  if (consented === undefined) return
+  const paid = await sourceConsolidationSummary(authority.preparation.sourceOperationId)
+  assertCtfRangeOrderFeeConsent({
+    consented,
+    current,
+    paidConsolidationFeeSubunits: String(paid.feeSubunits),
+  })
+}
+
+async function completeSelectedSource(
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  wallet: SourceWallet,
+  plan: CtfRangeCapabilitySourcePlan,
+): Promise<SourceResult | null> {
+  switch (plan.kind) {
+    case 'mixed-source-ctf-convert': {
+      const operation = await prepareCtfRangeMixedSourceOperation({
+        preparation: authority.preparationInput,
+        seed: walletSeed(walletSeedHex),
+        counterSource: sourceCounterSource(authority),
+        plan,
+      })
+      return completeNewSource(
+        authority,
+        { mode: 'mixed-source-ctf-convert', operation },
+        walletSeedHex,
+        wallet,
+      )
+    }
+    case 'same-keyset-swap': {
+      const source = await prepareSourceOperation(authority, walletSeedHex, await wallet(), [
+        ...plan.inputs,
+      ])
+      if (source === null) throw new Error('daemon has insufficient exact range-order funds')
+      return completeNewSource(authority, source, walletSeedHex, wallet)
+    }
+    // Collateral-only conversion cannot stand in for held shares, so a Sell
+    // with too few shares is refused rather than split from cash.
+    case 'collateral-ctf-convert':
+    case 'consolidation-required':
+    case 'source-unavailable':
+      return null
+    default:
+      return assertNeverSourcePlan(plan)
+  }
+}
+
+/**
+ * Refuse before consolidation when it cannot fix the shortfall. Consolidating
+ * shares cannot supply missing fee cash, so that refusal is immediate. A mint
+ * input bound can yield to consolidation only when more offered proofs exist
+ * beyond the bounded page; the bounded consolidation plan still refuses
+ * without spending when it cannot fund the source, including its fee.
+ */
+function assertConsolidationCanHelp(
+  plan: CtfRangeCapabilitySourcePlan,
+  offeredHasMore: boolean,
+): void {
+  switch (plan.kind) {
+    case 'source-unavailable':
+      assertShortfallConsolidationCanHelp(plan.shortfall, offeredHasMore)
+      return
+    case 'collateral-ctf-convert':
+    case 'consolidation-required':
+    case 'mixed-source-ctf-convert':
+    case 'same-keyset-swap':
+      return
+    default:
+      return assertNeverSourcePlan(plan)
+  }
+}
+
+function assertShortfallConsolidationCanHelp(
+  shortfall: CtfRangeSourceShortfall,
+  offeredHasMore: boolean,
+): void {
+  switch (shortfall) {
+    case 'offered':
+      return
+    case 'collateral':
+      throw new Error('daemon wallet needs ordinary sats to pay the range source preparation fee')
+    case 'mint-limits':
+      if (offeredHasMore) return
+      throw new Error(
+        'daemon range source needs more proofs than the mint accepts in one request; try a smaller amount',
+      )
+    default:
+      return assertNeverSourcePlan(shortfall)
+  }
+}
+
+function assertNeverSourcePlan(value: never): never {
+  throw new Error(`unhandled range source plan: ${String(value)}`)
 }
 
 async function resumeExistingConsolidations(
   authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
+  wallet: SourceWallet,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<number> {
   for (let round = 0; round < MAX_CONSOLIDATION_ROUNDS; round += 1) {
@@ -2140,7 +2218,7 @@ async function resumeExistingConsolidations(
       sourceConsolidationId(authority.preparation.sourceOperationId, round),
     )
     if (operation === null) return round
-    await resumeConsolidationOperation(operation, authority, wallet, dependencies)
+    await resumeConsolidationOperation(operation, authority, await wallet(), dependencies)
   }
   return MAX_CONSOLIDATION_ROUNDS
 }
@@ -2148,135 +2226,89 @@ async function resumeExistingConsolidations(
 async function completeNewSource(
   authority: PreparedMintAuthority,
   source: PreparedSource,
-  wallet: CtfRangeWalletLike,
+  walletSeedHex: string,
+  wallet: SourceWallet,
 ): Promise<SourceResult> {
   await persistPreparedSource(authority, source)
-  const result = await completePreparedSource(source, wallet)
-  await markProofOperationCompletedFenced(
-    authority.preparation.sourceOperationId,
-    sourceResultRecord(result),
-    authority.mutation(),
-  )
+  const result = await completePreparedSource(source, authority, walletSeedHex, wallet)
+  await stageSourceResult(authority, result)
   return result
 }
 
-type PreparedSource =
-  | {
-      readonly kind: 'wallet-send'
-      readonly preview: SwapPreview
-      readonly inputs: Proof[]
-      readonly authorizationOutputs: OutputData[]
-      readonly keepOutputs: OutputData[]
-      readonly amount: number
-      readonly fees: number
-      readonly keysetId: string
-    }
-  | {
-      readonly kind: 'conditional-keyset-swap'
-      readonly preview: ConditionalSwapPreview
-      readonly inputs: Proof[]
-      readonly authorizationOutputs: OutputData[]
-      readonly keepOutputs: OutputData[]
-      readonly amount: number
-      readonly fees: number
-      readonly keysetId: string
-    }
+async function stageSourceResult(
+  authority: PreparedMintAuthority,
+  result: SourceResult,
+): Promise<void> {
+  const source = await getProofOperation(authority.preparation.sourceOperationId)
+  if (source == null) throw new Error('range source operation is missing')
+  const custodyId = requireText(source.metadata.custodySourceOperationId, 'source custody identity')
+  const mutation = authority.mutation()
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      switch (result.mode) {
+        case 'same-keyset-swap':
+          stageDaemonRangeSourceResult(
+            database,
+            custodyId,
+            { authorization: result.authorization, keep: result.keep },
+            mutation.fence,
+            mutation.observedAtMs,
+          )
+          return
+        case 'mixed-source-ctf-convert':
+          stageDaemonRangeMixedSourceResult(
+            database,
+            custodyId,
+            result,
+            mutation.fence,
+            mutation.observedAtMs,
+          )
+          return
+        default:
+          return assertNeverSourceMode(result)
+      }
+    },
+  )
+}
 
 async function prepareSourceOperation(
   authority: PreparedMintAuthority,
+  walletSeedHex: string,
   wallet: CtfRangeWalletLike,
   candidates: Proof[],
 ): Promise<PreparedSource | null> {
-  const target = amountToNumber(
-    OutputData.sumOutputAmounts(authority.preparation.authorizationOutputs),
-  )
-  const selected = takeProofsForLock(candidates, target, {
-    [authority.preparation.offerKeysetId]: authority.preparationInput.offerKeyset.inputFeePpk,
-  })
-  if (selected === null) return null
-  return authority.preparationInput.side === 'Buy'
-    ? prepareRegularSource(authority, wallet, selected, target)
-    : prepareConditionalSource(authority, wallet, selected, target)
-}
-
-async function prepareRegularSource(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  candidates: Proof[],
-  target: number,
-): Promise<PreparedSource> {
-  const preview = await wallet.prepareSwapToSend(
-    target,
+  const operation = await prepareCtfRangeSourceOperation({
+    preparation: authority.preparationInput,
+    seed: walletSeed(walletSeedHex),
+    counterSource: sourceCounterSource(authority),
+    wallet,
     candidates,
-    { includeFees: false, keysetId: authority.preparation.offerKeysetId },
-    {
-      send: { type: 'custom', data: authority.preparation.authorizationOutputs },
-      keep: { type: 'random' },
-    },
-  )
-  const authorizationOutputs = preview.sendOutputs ?? []
-  assertExactOutputs(authorizationOutputs, authority.preparation.authorizationOutputs)
-  if (preview.inputs.length > authority.preparationInput.maxInputs) {
-    throw new Error('range authorization exceeds the mint input limit')
-  }
-  return {
-    kind: 'wallet-send',
-    preview,
-    inputs: preview.inputs,
-    authorizationOutputs,
-    keepOutputs: preview.keepOutputs ?? [],
-    amount: amountToNumber(preview.amount),
-    fees: amountToNumber(preview.fees),
-    keysetId: preview.keysetId,
-  }
+  })
+  return operation === null ? null : { mode: 'same-keyset-swap', operation }
 }
 
-async function prepareConditionalSource(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  inputs: Proof[],
-  target: number,
-): Promise<PreparedSource> {
-  const fees = computeInputFeeSatsForProofs(inputs, {
-    [authority.preparation.offerKeysetId]: authority.preparationInput.offerKeyset.inputFeePpk,
+function sourceCounterSource(authority: PreparedMintAuthority) {
+  return createDaemonCounterSource(authority.mutation, {
+    normalizedMint: authority.preparation.mintUrl,
+    unit: 'msat',
   })
-  const change = sumProofs(inputs) - fees - target
-  if (change < 0) throw new Error('conditional range authorization is underfunded')
-  const outputGroups: Parameters<CtfRangeWalletLike['prepareConditionalSwap']>[0]['outputs'] = [
-    {
-      label: 'authorization',
-      kind: 'custom',
-      data: authority.preparation.authorizationOutputs,
-    },
-  ]
-  if (change > 0) outputGroups.push({ label: 'keep', kind: 'random', amount: change })
-  const preview = await wallet.prepareConditionalSwap({
-    keysetId: authority.preparation.offerKeysetId,
-    inputs,
-    outputs: outputGroups,
-  })
-  const authorizationOutputs = preview.outputDataByLabel.authorization ?? []
-  assertExactOutputs(authorizationOutputs, authority.preparation.authorizationOutputs)
-  return {
-    kind: 'conditional-keyset-swap',
-    preview,
-    inputs: preview.inputs,
-    authorizationOutputs,
-    keepOutputs: preview.outputDataByLabel.keep ?? [],
-    amount: target,
-    fees,
-    keysetId: preview.keysetId,
-  }
 }
 
 async function availableSourceProofs(
   authority: PreparedMintAuthority,
+  group: 'offered' | 'collateral',
+  limit: number,
 ): Promise<{ readonly proofs: Proof[]; readonly hasMore: boolean }> {
-  const page = await readAvailableWalletProofPage({
+  const preparation = authority.preparationInput
+  const keyset = group === 'offered' ? preparation.offerKeyset : preparation.receiveKeyset
+  const page = await readCanonicalAvailableWalletProofPage(authority, {
     mintUrl: authority.preparation.mintUrl,
-    keysetId: authority.preparation.offerKeysetId,
-    asset: authority.offerAsset,
-    limit: authority.preparationInput.maxInputs,
+    keysetId: keyset.id,
+    asset: assetForKeyset(keyset),
+    limit,
   })
   return {
     proofs: page.proofs.map(({ proof }) => toProof(proof)),
@@ -2284,14 +2316,27 @@ async function availableSourceProofs(
   }
 }
 
+async function readCanonicalAvailableWalletProofPage(
+  authority: PreparedMintAuthority,
+  input: Parameters<typeof readAvailableCanonicalWalletProofPageFromDatabase>[1],
+) {
+  const mutation = authority.mutation()
+  return withDurableCustodyFencedRead(
+    authority.storage,
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => readAvailableCanonicalWalletProofPageFromDatabase(database, input),
+  )
+}
+
 async function planSourceConsolidation(
   authority: PreparedMintAuthority,
   maxRounds: number,
 ): Promise<BoundedProofConsolidationPlan> {
   const counts = new Map<number, number>()
-  let after: Parameters<typeof readAvailableWalletProofPage>[0]['after']
+  let after: Parameters<typeof readAvailableCanonicalWalletProofPageFromDatabase>[1]['after']
   do {
-    const page = await readAvailableWalletProofPage({
+    const page = await readCanonicalAvailableWalletProofPage(authority, {
       mintUrl: authority.preparation.mintUrl,
       keysetId: authority.preparation.offerKeysetId,
       asset: authority.offerAsset,
@@ -2371,7 +2416,8 @@ async function persistAndCompleteConsolidation(
   const operationId = operation.operationId
   const reservationId = sourceConsolidationReservationId(operationId)
   const mutation = authority.mutation()
-  await prepareProofOperationWithExactReservation(
+  const binding = rangePreparationBinding(authority, operation, reservationId, mutation)
+  await prepareCtfConsolidationProofOperationWithExactReservation(
     {
       operationId,
       kind: rangeConsolidationKind(operation.kind),
@@ -2388,34 +2434,67 @@ async function persistAndCompleteConsolidation(
         fees: consolidationMetadataNumber(operation, 'fees'),
         keysetId: consolidationMetadataText(operation, 'keysetId'),
         exactOperation: structuredClone(operation),
+        custodySourceOperationId: binding.record.operation.operationId,
       },
       reservationId,
-      asset: authority.offerAsset,
+      inputAssets: operation.inputs.map(() => authority.offerAsset),
     },
     mutation,
-    (database) =>
+    (database) => {
+      bindDaemonRangeSourceInTransaction(
+        database,
+        binding,
+        operation.inputs.map(toProof),
+        authority.offerAsset,
+        mutation.fence,
+        mutation.observedAtMs,
+      )
       appendRangePreparationConsolidation(database, {
         scopeId: mutation.fence.scopeId,
         rangeOperationId: authority.preparation.operationId,
         round,
         operationId,
         reservationId,
-      }),
+      })
+    },
   )
   const result = await completeCtfRangeConsolidationOperation(validated, wallet)
-  await markProofOperationCompletedFenced(
-    operationId,
-    { consolidated: [...result] },
-    authority.mutation(),
-  )
-  await finalizeCompletedProofReservation(
-    {
-      operationId,
-      reservationId,
-      resultGroup: 'consolidated',
-      asset: authority.offerAsset,
+  await finalizeRangeConsolidation(authority, operationId, [...result])
+}
+
+async function finalizeRangeConsolidation(
+  authority: PreparedMintAuthority,
+  operationId: string,
+  result: Proof[],
+): Promise<void> {
+  const entry = await getProofOperation(operationId)
+  if (entry === null) throw new Error('range consolidation operation is missing')
+  const mutation = authority.mutation()
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const custodyId = readSourceText(entry, 'custodySourceOperationId')
+      const record = new DurableCustodySqliteStore(database).getOperation(custodyId)
+      if (record === null) throw new Error('range consolidation custody operation is missing')
+      if (record.operation.result.state === 'none') {
+        stageDaemonRangeSourceResult(
+          database,
+          custodyId,
+          { consolidated: result },
+          mutation.fence,
+          mutation.observedAtMs,
+        )
+      }
+      commitDaemonRangeConsolidation(
+        database,
+        entry,
+        authority.offerAsset,
+        mutation.fence,
+        mutation.observedAtMs,
+      )
     },
-    authority.mutation(),
   )
 }
 
@@ -2477,7 +2556,11 @@ async function resumeConsolidationOperation(
         break
       }
       case 'replay-exact-persisted-operation':
-        result = [...(await completeCtfRangeConsolidationOperation(operation, wallet))]
+        result = [
+          ...(await replayRangePreparation(entry, () =>
+            completeCtfRangeConsolidationOperation(operation, wallet),
+          )),
+        ]
         break
       case 'remain-pending':
         throw new Error(
@@ -2486,21 +2569,8 @@ async function resumeConsolidationOperation(
       default:
         throw new Error(`Range consolidation ${entry.operationId} has invalid recovery state`)
     }
-    await markProofOperationCompletedFenced(
-      entry.operationId,
-      { consolidated: result },
-      authority.mutation(),
-    )
   }
-  await finalizeCompletedProofReservation(
-    {
-      operationId: entry.operationId,
-      reservationId: readSourceText(entry, 'reservationId'),
-      resultGroup: 'consolidated',
-      asset: authority.offerAsset,
-    },
-    authority.mutation(),
-  )
+  await finalizeRangeConsolidation(authority, entry.operationId, result)
 }
 
 function completedConsolidationResult(entry: ProofOperationRecord): Proof[] {
@@ -2517,94 +2587,236 @@ function completedConsolidationResult(entry: ProofOperationRecord): Proof[] {
   return (groups.consolidated ?? []).map(toProof)
 }
 
+function rangePreparationBinding(
+  authority: PreparedMintAuthority,
+  operation: DurableCustodyProofOperationInput,
+  reservationId: string,
+  mutation: FencedStateMutation,
+) {
+  return createDaemonRangeSourceBinding({
+    scope: rangeSourceScope(mutation),
+    operation,
+    keysets: [custodyKeysetAuthority(authority.preparationInput.offerKeyset)],
+    reservationId,
+  })
+}
+
+function rangeSourceScope(mutation: FencedStateMutation): DurableCustodyScope {
+  return {
+    scopeKind: 'wallet',
+    scopeId: mutation.fence.scopeId,
+    walletId: mutation.fence.scopeId.slice('custody:wallet:'.length),
+  }
+}
+
+function custodyKeysetAuthority(
+  keyset: ActiveCtfRangeMintKeyset | CtfRangeConditionalMintKeyset,
+): DurableCustodyMintKeysetAuthority {
+  return {
+    canonicalMintUrl: keyset.canonicalMintUrl,
+    id: keyset.id,
+    unit: keyset.unit,
+    keys: keyset.keys,
+    inputFeePpk: keyset.inputFeePpk,
+    finalExpiry: keyset.finalExpiry,
+    identity:
+      'conditionId' in keyset
+        ? {
+            kind: 'conditional',
+            conditionId: requireText(keyset.conditionId, 'source condition'),
+            outcomeCollection: requireText(keyset.outcomeCollection, 'source outcome collection'),
+            outcomeCollectionId: requireText(keyset.outcomeCollectionId, 'source collection'),
+          }
+        : { kind: 'regular' },
+  }
+}
+
 async function persistPreparedSource(
   authority: PreparedMintAuthority,
   source: PreparedSource,
-  residualInputs: readonly Proof[] | null = null,
+): Promise<void> {
+  switch (source.mode) {
+    case 'same-keyset-swap':
+      return persistPreparedSameKeysetSource(authority, source.operation)
+    case 'mixed-source-ctf-convert':
+      return persistPreparedMixedSource(authority, source.operation)
+    default:
+      return assertNeverSourceMode(source)
+  }
+}
+
+async function persistPreparedSameKeysetSource(
+  authority: PreparedMintAuthority,
+  operation: DurableCustodyProofOperationInput,
 ): Promise<void> {
   const reservationId = sourceReservationId(authority.preparation.operationId)
   const mutation = authority.mutation()
+  const asset = authority.offerAsset
+  const binding = rangePreparationBinding(authority, operation, reservationId, mutation)
   await prepareProofOperationWithExactReservation(
     {
       operationId: authority.preparation.sourceOperationId,
-      kind: source.kind,
+      kind:
+        operation.kind === 'ctf-range-regular-source' ? 'wallet-send' : 'conditional-keyset-swap',
       mintUrl: authority.preparation.mintUrl,
-      inputs: source.inputs,
-      outputs: {
-        authorization: serializeOutputDataArray(source.authorizationOutputs),
-        keep: serializeOutputDataArray(source.keepOutputs),
-      },
+      inputs: operation.inputs.map(toProof),
+      outputs: storedSourceOutputs(operation),
       metadata: {
-        purpose: SOURCE_PURPOSE,
-        rangeOperationId: authority.preparation.operationId,
+        ...operation.metadata,
         reservationId,
-        unit: 'msat',
-        sourceMode: source.kind,
-        amount: source.amount,
-        fees: source.fees,
-        keysetId: source.keysetId,
+        exactSourceOperation: operation,
+        sourceKeysets: [...authority.mintKeysets.values()],
+        custodySourceOperationId: binding.record.operation.operationId,
       },
       reservationId,
-      asset: authority.offerAsset,
+      asset,
     },
     mutation,
-    (database) =>
+    (database) => {
+      bindDaemonRangeSourceInTransaction(
+        database,
+        binding,
+        operation.inputs.map(toProof),
+        asset,
+        mutation.fence,
+        mutation.observedAtMs,
+      )
       linkRangePreparationSource(database, {
         scopeId: mutation.fence.scopeId,
         rangeOperationId: authority.preparation.operationId,
         sourceOperationId: authority.preparation.sourceOperationId,
         reservationId,
-      }),
-    residualInputs === null
-      ? undefined
-      : (database) =>
-          admitExactAvailableWalletProofsFromDatabase(database, {
-            mintUrl: authority.preparation.mintUrl,
-            proofs: residualInputs,
-            asset: authority.offerAsset,
-            nowMs: mutation.observedAtMs,
-          }),
+      })
+    },
+  )
+}
+
+/**
+ * Reserve both asset groups and bind canonical custody in one transaction
+ * before mint I/O. The legacy target keeps the typed group order of the exact
+ * operation; the validated offered-input count marks where cash starts.
+ */
+async function persistPreparedMixedSource(
+  authority: PreparedMintAuthority,
+  operation: DurableCustodyProofOperationInput,
+): Promise<void> {
+  const preparation = authority.preparationInput
+  const reservationId = sourceReservationId(authority.preparation.operationId)
+  const mutation = authority.mutation()
+  const binding = createDaemonRangeMixedSourceBinding({
+    scope: rangeSourceScope(mutation),
+    operation,
+    preparation,
+    keysets: [preparation.offerKeyset, preparation.receiveKeyset].map(custodyKeysetAuthority),
+    reservationId,
+  })
+  const offeredInputCount = binding.operation.metadata?.offeredInputCount
+  if (!Number.isSafeInteger(offeredInputCount)) {
+    throw new Error('mixed range source offered input count is invalid')
+  }
+  const collateralAsset = assetForKeyset(preparation.receiveKeyset)
+  await prepareCtfConsolidationProofOperationWithExactReservation(
+    {
+      operationId: authority.preparation.sourceOperationId,
+      kind: 'conditional-keyset-swap',
+      mintUrl: authority.preparation.mintUrl,
+      inputs: binding.operation.inputs.map(toProof),
+      outputs: storedSourceOutputs(binding.operation),
+      metadata: {
+        purpose: SOURCE_PURPOSE,
+        sourceMode: 'mixed-source-ctf-convert',
+        endpoint: MIXED_SOURCE_ENDPOINT,
+        rangeOperationId: authority.preparation.operationId,
+        unit: 'msat',
+        reservationId,
+        custodySourceOperationId: binding.record.operation.operationId,
+        exactSourceOperation: binding.operation,
+      },
+      reservationId,
+      inputAssets: binding.operation.inputs.map((_, index) =>
+        index < (offeredInputCount as number) ? authority.offerAsset : collateralAsset,
+      ),
+    },
+    mutation,
+    (database) => {
+      bindDaemonRangeMixedSourceInTransaction(
+        database,
+        binding,
+        mutation.fence,
+        mutation.observedAtMs,
+      )
+      linkRangePreparationSource(database, {
+        scopeId: mutation.fence.scopeId,
+        rangeOperationId: authority.preparation.operationId,
+        sourceOperationId: authority.preparation.sourceOperationId,
+        reservationId,
+      })
+    },
   )
 }
 
 async function completePreparedSource(
   source: PreparedSource,
-  wallet: CtfRangeWalletLike,
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  wallet: SourceWallet,
 ): Promise<SourceResult> {
-  if (source.kind === 'conditional-keyset-swap') {
-    const result = await wallet.completeConditionalSwap(source.preview)
-    return {
-      authorization: result.authorization ?? [],
-      keep: result.keep ?? [],
+  switch (source.mode) {
+    case 'same-keyset-swap': {
+      const result = await completeCtfRangeSourceOperation(source.operation, await wallet())
+      return sameKeysetSourceResult(result)
     }
+    case 'mixed-source-ctf-convert':
+      return completeMixedSource(source.operation, authority, walletSeedHex)
+    default:
+      return assertNeverSourceMode(source)
   }
-  const result = await wallet.completeSwap(source.preview)
-  const unselected = new Set((source.preview.unselectedProofs ?? []).map(({ secret }) => secret))
+}
+
+async function completeMixedSource(
+  operation: DurableCustodyProofOperationInput,
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+): Promise<SourceResult> {
+  const result = await completeCtfRangeMixedSourceOperation({
+    operation,
+    preparation: authority.preparationInput,
+    seed: walletSeed(walletSeedHex),
+    transport: { postConvert: (request) => authority.mint.ctfConvert(request) },
+  })
   return {
-    authorization: result.send,
-    keep: result.keep.filter(({ secret }) => !unselected.has(secret)),
+    mode: 'mixed-source-ctf-convert',
+    authorization: [...result.authorization],
+    offeredChange: [...result.offeredChange],
+    collateralChange: [...result.collateralChange],
   }
 }
 
 async function resumeSourceOperation(
   entry: ProofOperationRecord,
+  mode: SourceMode,
   authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
+  walletSeedHex: string,
+  wallet: SourceWallet,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<SourceResult> {
-  assertRangeSourceOperation(entry)
-  if (entry.state === 'completed') return completedSourceResult(entry)
+  if (entry.state === 'completed') {
+    // A committed mixed target keeps only change; its authorization lives in
+    // canonical custody, which the caller already read.
+    throw new Error(`Range source operation ${entry.operationId} canonical result is unavailable`)
+  }
   if (entry.state === 'Failed') {
     throw new Error(
       `Range source operation ${entry.operationId} failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
-  const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ id, secret }) => ({ id: requireText(id, 'source keyset'), secret })),
-  )
+  const inputs = entry.inputs.map(({ id, secret }) => ({
+    id: requireText(id, 'source keyset'),
+    secret,
+  }))
   const decision = classifyPreparedSourceRecovery({
     journalKind: 'authorization-source',
-    states,
+    states: await sourceInputStates(mode, authority, wallet, inputs),
     nowUnixSeconds: Math.floor(authority.mutation().observedAtMs / 1_000),
     authorizationExpiry: authority.preparation.expiry,
   })
@@ -2615,43 +2827,14 @@ async function resumeSourceOperation(
         entry.mintUrl,
         entry.outputs,
       )
-      result = {
-        authorization: restored.authorization ?? [],
-        keep: restored.keep ?? [],
-      }
+      result = sourceResultFromGroups(mode, restored)
       break
     }
     case 'replay-exact-persisted-operation':
-      result = await completePersistedSource(entry, wallet)
-      break
-    case 'release-exact-unspent-inputs': {
-      const mutation = authority.mutation()
-      await releasePreparedProofReservationFenced(
-        {
-          operationId: entry.operationId,
-          reservationId: readSourceText(entry, 'reservationId'),
-          reason: 'range-authorization-expired-unspent',
-        },
-        mutation,
-        (database) => {
-          const preparation = readRangePreparation(
-            database,
-            mutation.fence.scopeId,
-            authority.preparation.operationId,
-          )
-          if (preparation === null) throw new Error('daemon CTF range preparation is missing')
-          transitionRangePreparation(database, {
-            scopeId: mutation.fence.scopeId,
-            rangeOperationId: authority.preparation.operationId,
-            expectedRevision: preparation.revision,
-            from: preparation.lifecycleState,
-            to: 'terminal',
-            updatedAtMs: mutation.observedAtMs,
-          })
-        },
+      result = await replayRangePreparation(entry, () =>
+        completePersistedSource(entry, mode, authority, walletSeedHex, wallet),
       )
-      throw new RangeSourceReleasedError(entry.operationId)
-    }
+      break
     case 'remain-pending':
       throw new Error(
         `Range source operation ${entry.operationId} remains pending at the mint (${decision.reason})`,
@@ -2659,37 +2842,77 @@ async function resumeSourceOperation(
     default:
       throw new Error(`Range source operation ${entry.operationId} has invalid recovery state`)
   }
-  await markProofOperationCompletedFenced(
-    entry.operationId,
-    sourceResultRecord(result),
-    authority.mutation(),
-  )
+  await stageSourceResult(authority, result)
   return result
+}
+
+async function sourceInputStates(
+  mode: SourceMode,
+  authority: PreparedMintAuthority,
+  wallet: SourceWallet,
+  inputs: Array<Pick<Proof, 'id' | 'secret'>>,
+): Promise<ProofState[]> {
+  switch (mode) {
+    case 'same-keyset-swap':
+      return (await wallet()).checkProofsStates(inputs)
+    case 'mixed-source-ctf-convert':
+      // Both asset groups belong to one request. Check them in one exact NUT-07
+      // observation through the mint client, without loading a swap wallet.
+      return checkCtfRangeInputProofStates(authority.mint, inputs)
+    default:
+      return assertNeverSourceMode(mode)
+  }
+}
+
+async function replayRangePreparation<T>(
+  entry: ProofOperationRecord,
+  replay: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await replay()
+  } catch (error) {
+    if (error instanceof MintOperationError) {
+      throw new Error(`range source replay rejection remains pending (${entry.operationId})`)
+    }
+    throw new Error(`range source replay result is uncertain (${entry.operationId})`)
+  }
 }
 
 async function completePersistedSource(
   entry: ProofOperationRecord,
-  wallet: CtfRangeWalletLike,
+  mode: SourceMode,
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  wallet: SourceWallet,
 ): Promise<SourceResult> {
-  const outputs = deserializeOutputGroups(entry.outputs)
-  if (entry.kind === 'conditional-keyset-swap') {
-    const result = await wallet.completeConditionalSwap({
-      keysetId: readSourceText(entry, 'keysetId'),
-      inputs: entry.inputs.map(toProof),
-      outputDataByLabel: outputs,
-    })
-    return { authorization: result.authorization ?? [], keep: result.keep ?? [] }
+  switch (mode) {
+    case 'same-keyset-swap': {
+      const source = validateCtfRangeSourceCompletionOperation(
+        entry.metadata.exactSourceOperation as DurableCustodyProofOperationInput,
+      ).operation
+      assertPersistedSourceIdentity(entry, source)
+      return sameKeysetSourceResult(await completeCtfRangeSourceOperation(source, await wallet()))
+    }
+    case 'mixed-source-ctf-convert': {
+      const source = validateCtfRangeMixedSourceOperation(
+        entry.metadata.exactSourceOperation,
+        authority.preparationInput,
+      )
+      assertPersistedSourceIdentity(entry, source)
+      return completeMixedSource(source, authority, walletSeedHex)
+    }
+    default:
+      return assertNeverSourceMode(mode)
   }
-  const result = await wallet.completeSwap({
-    amount: Amount.from(readSourceNumber(entry, 'amount')),
-    fees: Amount.from(readSourceNumber(entry, 'fees')),
-    keysetId: readSourceText(entry, 'keysetId'),
-    inputs: entry.inputs.map(toProof),
-    sendOutputs: outputs.authorization ?? [],
-    keepOutputs: outputs.keep ?? [],
-    unselectedProofs: [],
-  })
-  return { authorization: result.send, keep: result.keep }
+}
+
+function assertPersistedSourceIdentity(
+  entry: ProofOperationRecord,
+  source: DurableCustodyProofOperationInput,
+): void {
+  if (source.operationId !== entry.operationId || source.mintUrl !== entry.mintUrl) {
+    throw new Error('persisted range source operation is foreign')
+  }
 }
 
 function completedSourceResult(entry: ProofOperationRecord): SourceResult {
@@ -2698,9 +2921,91 @@ function completedSourceResult(entry: ProofOperationRecord): SourceResult {
     throw new Error(`Range source operation ${entry.operationId} result is incomplete`)
   }
   return {
+    mode: 'same-keyset-swap',
     authorization: (groups.authorization ?? []).map(toProof),
     keep: (groups.keep ?? []).map(toProof),
   }
+}
+
+function sameKeysetSourceResult(result: {
+  readonly authorization: readonly Proof[]
+  readonly keep: readonly Proof[]
+}): SourceResult {
+  return {
+    mode: 'same-keyset-swap',
+    authorization: [...result.authorization],
+    keep: [...result.keep],
+  }
+}
+
+function sourceResultFromGroups(
+  mode: SourceMode,
+  groups: Readonly<Record<string, Proof[]>>,
+): SourceResult {
+  switch (mode) {
+    case 'same-keyset-swap':
+      return sameKeysetSourceResult({
+        authorization: groups.authorization ?? [],
+        keep: groups.keep ?? [],
+      })
+    case 'mixed-source-ctf-convert':
+      return {
+        mode,
+        authorization: groups.authorization ?? [],
+        offeredChange: groups['offered-change'] ?? [],
+        collateralChange: groups['collateral-change'] ?? [],
+      }
+    default:
+      return assertNeverSourceMode(mode)
+  }
+}
+
+function readStagedSourceResult(
+  database: Parameters<typeof readDaemonRangeSourceResult>[0],
+  entry: ProofOperationRecord,
+  mode: SourceMode,
+  scopeId: string,
+): SourceResult | null {
+  const custodyId = readSourceText(entry, 'custodySourceOperationId')
+  switch (mode) {
+    case 'same-keyset-swap': {
+      const result = readDaemonRangeSourceResult(database, custodyId, scopeId)
+      return result === null ? null : sameKeysetSourceResult(result)
+    }
+    case 'mixed-source-ctf-convert': {
+      const result = readDaemonRangeMixedSourceResult(database, custodyId, scopeId)
+      return result === null ? null : { mode, ...result }
+    }
+    default:
+      return assertNeverSourceMode(mode)
+  }
+}
+
+/** Map the closed SDK source mode of the exact operation to its daemon path. */
+function persistedSourceMode(entry: ProofOperationRecord): SourceMode {
+  const exact = entry.metadata.exactSourceOperation
+  if (typeof exact !== 'object' || exact === null) {
+    throw new Error(`Range source operation ${entry.operationId} exact operation is missing`)
+  }
+  const mode = ctfRangeSourceMode(exact as DurableCustodyProofOperationInput)
+  if (entry.metadata.sourceMode !== mode) {
+    throw new Error(`Range source operation ${entry.operationId} source mode is inconsistent`)
+  }
+  switch (mode) {
+    case 'wallet-send':
+    case 'conditional-keyset-swap':
+      return 'same-keyset-swap'
+    case 'mixed-source-ctf-convert':
+      return mode
+    case 'ctf-range-collateral-convert':
+      throw new Error(`Range source operation ${entry.operationId} source mode is unsupported`)
+    default:
+      return assertNeverSourceMode(mode)
+  }
+}
+
+function assertNeverSourceMode(value: never): never {
+  throw new Error(`unhandled range source mode: ${String(value)}`)
 }
 
 function assertRangeSourceOperation(entry: ProofOperationRecord): void {
@@ -2979,14 +3284,6 @@ function assertRangeRefundSourceLocked(
     locked.count !== inputCount
   ) {
     throw new Error('range refund source custody authority is not locked')
-  }
-}
-
-function assertExactOutputs(actual: readonly OutputData[], expected: readonly OutputData[]): void {
-  const serialize = (outputs: readonly OutputData[]) =>
-    outputs.map((output) => OutputData.serialize(output))
-  if (JSON.stringify(serialize(actual)) !== JSON.stringify(serialize(expected))) {
-    throw new Error('cashu wallet substituted exact range authorization outputs')
   }
 }
 

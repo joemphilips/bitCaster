@@ -3,7 +3,8 @@ export type CashuProofUnit = 'sat' | 'msat'
 export type CtfCollateralUnit = 'msat'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
-export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
+/** Ordinary non-numeric sat markets settle one whole share as 1,000 msat. */
+export const DEFAULT_SAT_MARKET_DIVISIBILITY = 1_000
 export const NUMERIC_MARKET_DIVISIBILITY = 1_000_000
 export const CTF_COLLATERAL_UNIT: CtfCollateralUnit = 'msat'
 export type MarketDivisibility =
@@ -12,14 +13,13 @@ export type MarketDivisibility =
 
 /**
  * Default LMSR quote-grid step for a market price denominator D.
- * D > 100 targets approximately 0.1% spacing.
+ * Ordinary markets use one percentage-point spacing. Numeric LMSR remains disabled.
  */
-export function defaultPriceStepSubunits(divisibility: number): number {
-  if (!Number.isInteger(divisibility) || divisibility < 100) {
-    throw new Error(`divisibility must be an integer >= 100, got ${divisibility}`)
+export function defaultPriceStepSubunits(divisibility: unknown): 10 {
+  if (divisibility !== DEFAULT_SAT_MARKET_DIVISIBILITY) {
+    throw new Error('registered ordinary market divisibility is required for LMSR')
   }
-  if (divisibility <= 100) return 1
-  return Math.max(1, Math.floor(divisibility / 1_000))
+  return 10
 }
 
 export interface CollateralUnitInfo {
@@ -145,14 +145,51 @@ export function defaultCollateralUnit(value: unknown): CtfCollateralUnit {
   return CTF_COLLATERAL_UNIT
 }
 
+export function parseSatsToMsat(value: string): number {
+  const match = /^(\d+)(?:\.(\d{1,3}))?$/.exec(value)
+  if (match === null) throw new Error('Amount must be sats with at most three decimal places')
+  // Floating-point multiplication can reject an exact input such as 1.001 sats.
+  const amountMsat = BigInt(match[1]!) * 1_000n + BigInt((match[2] ?? '').padEnd(3, '0'))
+  if (amountMsat > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Amount exceeds the safe msat range')
+  }
+  return Number(amountMsat)
+}
+
 export function formatMarketSubunits(amountSubunits: number, baseAsset: unknown): string {
   requireMarketBaseAsset(baseAsset)
   if (!Number.isFinite(amountSubunits)) return '0 sats'
   const sign = amountSubunits < 0 ? '-' : ''
+  if (Number.isSafeInteger(amountSubunits)) {
+    return `${sign}${formatSafeIntegerMarketSubunits(Math.abs(amountSubunits))} sats`
+  }
   const absoluteAmount = Math.abs(amountSubunits)
   return `${sign}${(absoluteAmount / 1_000).toLocaleString(undefined, {
     maximumFractionDigits: 3,
   })} sats`
+}
+
+/** Keep the whole safe msat value exact before locale formatting. */
+function formatSafeIntegerMarketSubunits(amountSubunits: number): string {
+  const wholeSats = Math.floor(amountSubunits / 1_000)
+  const remainderMsat = amountSubunits % 1_000
+  const wholeText = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  }).format(wholeSats)
+  if (remainderMsat === 0) return wholeText
+
+  const fractionParts = new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+    useGrouping: false,
+  }).formatToParts(remainderMsat / 1_000)
+  const decimalSeparator = fractionParts.find((part) => part.type === 'decimal')?.value
+  const fractionText = fractionParts.find((part) => part.type === 'fraction')?.value
+  if (decimalSeparator === undefined || fractionText === undefined) {
+    throw new Error('locale does not provide a decimal fraction for msat formatting')
+  }
+  const fractionDigits = remainderMsat % 100 === 0 ? 1 : remainderMsat % 10 === 0 ? 2 : 3
+  return `${wholeText}${decimalSeparator}${fractionText.slice(0, fractionDigits)}`
 }
 
 export function formatAmount(amountSubunits: number, baseAsset: unknown): string {
@@ -166,7 +203,8 @@ export function formatWholeShareFaceValue(spec: MarketUnitSpec): string {
 export function formatPricePercentage(priceNumerator: number, divisibility: number): string {
   const parsedDivisibility = requireMarketDivisibility(divisibility)
   const percent = Number.isFinite(priceNumerator) ? (priceNumerator / parsedDivisibility) * 100 : 0
-  return `${percent.toFixed(2)}%`
+  const fractionDigits = parsedDivisibility === DEFAULT_SAT_MARKET_DIVISIBILITY ? 1 : 4
+  return `${percent.toFixed(fractionDigits)}%`
 }
 
 export function formatShareFace(baseAsset: unknown, divisibility: number): string {
@@ -209,18 +247,6 @@ export function quotePaymentSubunits(params: {
     throw new Error('priceNumerator must be between 1 and divisibility - 1')
   }
   return (faceAmountSubunits / divisibility) * priceNumerator
-}
-
-export function normalizeMarketCreationLiquiditySats(params: {
-  baseAsset: MarketBaseAsset
-  liquiditySats?: number | null
-}): number {
-  requireMarketBaseAsset(params.baseAsset)
-  const liquiditySats = params.liquiditySats ?? 0
-  if (!Number.isSafeInteger(liquiditySats) || liquiditySats < 0) {
-    throw new Error('liquiditySats must be a non-negative safe integer')
-  }
-  return liquiditySats
 }
 
 function requireMarketDivisibility(value: unknown): number {

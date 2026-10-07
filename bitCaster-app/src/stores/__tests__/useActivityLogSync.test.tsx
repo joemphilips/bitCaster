@@ -23,11 +23,15 @@ import { useActivityLogStore } from "../activity-log";
 import { useActivityLogSync } from "../useActivityLogSync";
 import { useSettingsStore } from "../settings";
 
+const WALLET_A = "a".repeat(64);
+const WALLET_B = "b".repeat(64);
+
 function activity(overrides: Partial<ActivityItem> = {}): ActivityItem {
   return {
     id: "activity-1",
+    walletId: WALLET_A,
     type: "deposit",
-    amountSats: 1000,
+    amountSubunits: 1000,
     baseAsset: "sat",
     date: "2026-05-09T00:00:00.000Z",
     status: "completed",
@@ -78,7 +82,11 @@ describe("useActivityLogSync", () => {
     });
     await waitFor(
       () => {
-        expect(mockPublishActivityLog).toHaveBeenCalledWith("private-key", [local, remote]);
+        expect(mockPublishActivityLog).toHaveBeenCalledWith(
+          "private-key",
+          [local, remote],
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
       },
       { timeout: 1500 },
     );
@@ -91,13 +99,18 @@ describe("useActivityLogSync", () => {
     renderHook(() => useActivityLogSync());
 
     await waitFor(() => {
-      expect(mockFetchActivityLog).toHaveBeenCalledWith("public-key", "private-key");
+      expect(mockFetchActivityLog).toHaveBeenCalledWith(
+        "public-key",
+        "private-key",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
 
     act(() => {
       useActivityLogStore.getState().addActivity({
+        walletId: WALLET_A,
         type: "Buy",
-        amountSats: 500,
+        amountSubunits: 500,
         baseAsset: "sat",
         status: "completed",
         marketId: "m1",
@@ -115,8 +128,25 @@ describe("useActivityLogSync", () => {
     expect(mockPublishActivityLog.mock.calls[0][1]).toHaveLength(1);
     expect(mockPublishActivityLog.mock.calls[0][1][0]).toMatchObject({
       type: "Buy",
-      amountSats: 500,
+      amountSubunits: 500,
       marketId: "m1",
     });
+  });
+
+  it("keeps same-id activity separate by wallet and preserves unknown legacy entries", async () => {
+    const activeWallet = activity({ id: "shared" });
+    const previousWallet = activity({ id: "shared", walletId: WALLET_B });
+    const legacy = activity({ id: "legacy" });
+    delete (legacy as Partial<ActivityItem>).walletId;
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "nsec1test" });
+    useActivityLogStore.setState({ items: [activeWallet] });
+    mockFetchActivityLog.mockResolvedValue([previousWallet, legacy]);
+
+    renderHook(() => useActivityLogSync());
+
+    await waitFor(() => expect(useActivityLogStore.getState().items).toHaveLength(3));
+    expect(useActivityLogStore.getState().items).toEqual(
+      expect.arrayContaining([activeWallet, previousWallet, legacy]),
+    );
   });
 });

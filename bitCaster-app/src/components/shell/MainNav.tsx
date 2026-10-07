@@ -5,17 +5,16 @@ import { useTranslation } from "react-i18next";
 interface MainNavProps {
   items: Array<{ label: string; href: string; isActive?: boolean }>;
   onNavigate?: (href: string) => void;
+  searchQuery?: string;
   onSearchChange?: (query: string) => void;
 }
 
-export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
+export function MainNav({ items, onNavigate, searchQuery = "", onSearchChange }: MainNavProps) {
   const { t } = useTranslation();
-  const [searchQuery, setSearchQuery] = useState("");
   const [searchExpanded, setSearchExpanded] = useState(false);
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const query = e.target.value;
-    setSearchQuery(query);
     onSearchChange?.(query);
   };
 

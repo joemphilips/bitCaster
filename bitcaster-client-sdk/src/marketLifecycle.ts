@@ -9,18 +9,28 @@ import {
   type MarketBaseAsset,
   type MarketDivisibility,
 } from './marketUnits.ts'
+import {
+  MAX_MARKET_CREATION_REQUEST_BYTES,
+  prepareMarketCreationRequest,
+  type PreparedMarketCreationRequest,
+} from './marketCreationRequest.ts'
 
 export interface CreateMarketOutcome {
   name: string
-  probability: number
+  color?: string
 }
+
+export type MarketOutcomeDetails = CreateMarketOutcome
 
 export interface CreateMarketRequest {
   title: string
   description: string
   outcomes: CreateMarketOutcome[]
+  /**
+   * Use `yesno` or `categorical`. The `numeric` wire value is retained for
+   * compatibility, but numeric market creation and trading are unavailable.
+   */
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
-  liquiditySats?: number
   baseAsset: MarketBaseAsset
   categoryTags?: string[]
   oracleAnnouncementHex?: string | null
@@ -32,6 +42,7 @@ export interface CreateMarketResponse {
   baseAsset: MarketBaseAsset
   thumbnailUrl?: string | null
   divisibility: MarketDivisibility
+  outcomeDetails?: MarketOutcomeDetails[]
 }
 
 export interface OracleNostrEvent {
@@ -80,6 +91,19 @@ export interface MarketThumbnailBytes {
   contentType?: string
 }
 
+/** A create request failed after dispatch or returned an unsuccessful HTTP status. */
+export class CreateMarketError extends Error {
+  readonly status: number | null
+  readonly mayHaveCommitted: boolean
+
+  constructor(message: string, status: number | null, mayHaveCommitted: boolean) {
+    super(message)
+    this.name = 'CreateMarketError'
+    this.status = status
+    this.mayHaveCommitted = mayHaveCommitted
+  }
+}
+
 interface EngineClientInternals {
   baseUrl: string
   fetchImpl: EngineFetch
@@ -92,27 +116,25 @@ export async function createMarketViaEngine(
   metadata: CreateMarketRequest,
   thumbnailBytes?: MarketThumbnailBytes,
 ): Promise<CreateMarketResponse> {
+  return createPreparedMarketViaEngine(
+    client,
+    conditionId,
+    await prepareMarketCreationRequest(metadata, thumbnailBytes),
+  )
+}
+
+export async function createPreparedMarketViaEngine(
+  client: BitcasterEngineClient,
+  conditionId: string,
+  prepared: PreparedMarketCreationRequest,
+): Promise<CreateMarketResponse> {
   const { baseUrl, fetchImpl, authorization } = getEngineClientInternals(client)
   const url = `${baseUrl}/api/v1/markets/${encodeURIComponent(conditionId)}`
-  const formData = new FormData()
-  formData.append('metadata', JSON.stringify(metadata))
-  if (thumbnailBytes) {
-    formData.append(
-      'thumbnail',
-      new Blob([toArrayBuffer(thumbnailBytes.data)], {
-        type: thumbnailBytes.contentType,
-      }),
-      thumbnailBytes.filename,
-    )
-  }
-
-  // Multipart bodies need pre-serialization so the NIP-98 `payload` tag binds
-  // to the exact bytes (including the random multipart boundary) that fetch
-  // will ship. Construct a transient Request to serialize, hash, then send the
-  // same bytes with the same Content-Type so server-side SHA-256 matches.
-  const serialized = new Request(url, { method: 'POST', body: formData })
-  const bodyBytes = await serialized.arrayBuffer()
-  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  if (prepared.bodyBytes.byteLength > MAX_MARKET_CREATION_REQUEST_BYTES)
+    throw new Error('Market creation exceeds the 6 MiB request limit.')
+  // Freeze the exact authorized delivery across an asynchronous signer call.
+  const bodyBytes = prepared.bodyBytes.slice(0)
+  const { contentType } = prepared
   const payloadHash = await sha256Hex(bodyBytes)
   const headers: Record<string, string> = { 'Content-Type': contentType }
   if (authorization) {
@@ -123,15 +145,41 @@ export async function createMarketViaEngine(
     })
   }
 
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers,
-    body: bodyBytes,
-  })
-  if (!response.ok) {
-    throw new Error(`[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`)
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: bodyBytes,
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'request failed'
+    throw new CreateMarketError(`[Matching Engine] Failed to create market: ${detail}`, null, true)
   }
-  return parseCreateMarketResponse(await response.json())
+  if (!response.ok) {
+    let detail: string
+    try {
+      detail = await readErrorDetail(response)
+    } catch {
+      detail = response.statusText || `HTTP ${response.status}`
+    }
+    const mayHaveCommitted = response.status === 409 || response.status >= 500
+    throw new CreateMarketError(
+      `[Matching Engine] Failed to create market: ${detail}`,
+      response.status,
+      mayHaveCommitted,
+    )
+  }
+  try {
+    return parseCreateMarketResponse(await response.json())
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'response could not be read'
+    throw new CreateMarketError(
+      `[Matching Engine] Failed to read create-market response: ${detail}`,
+      response.status,
+      true,
+    )
+  }
 }
 
 export function parseCreateMarketResponse(value: unknown): CreateMarketResponse {
@@ -168,13 +216,109 @@ export function parseCreateMarketResponse(value: unknown): CreateMarketResponse 
   if (response.thumbnailUrl !== undefined && thumbnailUrl === undefined) {
     throw new Error('create-market response had an invalid thumbnail URL')
   }
+  const outcomeDetails = parseMarketOutcomeDetails(
+    response.outcomeDetails,
+    conditionId,
+    marketsCreated,
+  )
   return {
     conditionId,
     marketsCreated,
     baseAsset,
     divisibility,
     ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+    ...(outcomeDetails !== undefined ? { outcomeDetails } : {}),
   }
+}
+
+function parseMarketOutcomeDetails(
+  value: unknown,
+  conditionId: string,
+  marketsCreated: string[],
+): MarketOutcomeDetails[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0 || value.length !== marketsCreated.length) {
+    throw new Error('create-market response had invalid outcome details')
+  }
+
+  const expectedNames = new Set<string>()
+  const marketPrefix = `${conditionId}-`
+  for (const marketId of marketsCreated) {
+    if (!marketId.startsWith(marketPrefix) || marketId.length === marketPrefix.length) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    expectedNames.add(marketId.slice(marketPrefix.length))
+  }
+  if (expectedNames.size !== marketsCreated.length) {
+    throw new Error('create-market response had invalid outcome details')
+  }
+
+  const names = new Set<string>()
+  return value.map((item): MarketOutcomeDetails => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    const detail = item as Record<string, unknown>
+    if (
+      typeof detail.name !== 'string' ||
+      detail.name.length === 0 ||
+      names.has(detail.name) ||
+      !expectedNames.has(detail.name)
+    ) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    names.add(detail.name)
+
+    const color = detail.color
+    if (
+      color !== undefined &&
+      color !== null &&
+      (typeof color !== 'string' || !/^#[0-9A-F]{6}$/.test(color))
+    ) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    return { name: detail.name, ...(typeof color === 'string' ? { color } : {}) }
+  })
+}
+
+export function recoverCreatedMarketResponse(
+  value: unknown,
+  expected: {
+    conditionId: string
+    creatorPubkey: string
+    outcomes: readonly string[]
+    baseAsset: MarketBaseAsset
+    divisibility: number
+  },
+): CreateMarketResponse | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const entry = value as Record<string, unknown>
+  if (
+    entry.conditionId !== expected.conditionId ||
+    entry.creatorPubkey !== expected.creatorPubkey ||
+    entry.baseAsset !== expected.baseAsset ||
+    entry.divisibility !== expected.divisibility ||
+    !Array.isArray(entry.outcomes) ||
+    expected.outcomes.length < 2
+  )
+    return null
+  const actual = new Set(entry.outcomes)
+  const required = new Set(expected.outcomes)
+  if (
+    actual.size !== entry.outcomes.length ||
+    required.size !== expected.outcomes.length ||
+    actual.size !== required.size ||
+    !expected.outcomes.every((outcome) => actual.has(outcome))
+  )
+    return null
+  return parseCreateMarketResponse({
+    conditionId: entry.conditionId,
+    marketsCreated: entry.outcomes.map((outcome) => `${entry.conditionId}-${outcome}`),
+    baseAsset: entry.baseAsset,
+    divisibility: entry.divisibility,
+    thumbnailUrl: entry.thumbnailUrl ?? null,
+    ...(entry.outcomeDetails === undefined ? {} : { outcomeDetails: entry.outcomeDetails }),
+  })
 }
 
 export async function submitOracleAttestationViaEngine(
@@ -231,11 +375,4 @@ function readProblemDetail(body: unknown): unknown {
     message?: unknown
   }
   return problem.detail ?? problem.title ?? problem.message ?? JSON.stringify(body)
-}
-
-function toArrayBuffer(data: ArrayBuffer | ArrayBufferView): ArrayBuffer {
-  if (data instanceof ArrayBuffer) return data
-  const copy = new Uint8Array(data.byteLength)
-  copy.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
-  return copy.buffer
 }

@@ -97,17 +97,15 @@ export interface HeldLeg {
  * Whether a single outcome-collection is a WINNING collection: the final
  * attested outcome is a member of the collection. The mint redeems a
  * collection's proofs iff the collection contains the attested outcome, so this
- * is the exact membership rule (case-insensitive, trimmed).
+ * is the exact membership rule. Normalizing case or whitespace could match a
+ * different registered outcome.
  */
 export function isWinningCollection(
   outcomeCollection: string,
   finalOutcome: string | null | undefined,
 ): boolean {
-  const final = finalOutcome?.trim().toLowerCase();
-  if (!final) return false;
-  return parseOutcomeCollection(outcomeCollection).some(
-    (leg) => leg.trim().toLowerCase() === final,
-  );
+  if (!finalOutcome) return false;
+  return parseOutcomeCollection(outcomeCollection).includes(finalOutcome);
 }
 
 export interface DeriveWinnerInput {
@@ -151,8 +149,8 @@ export interface WinnerResult {
  */
 export function deriveWinner({ isClosed, finalOutcome, legs }: DeriveWinnerInput): WinnerResult {
   if (!isClosed) return { status: "active", claimableValue: 0 };
-  const final = finalOutcome?.trim();
-  if (!final) {
+  const final = finalOutcome;
+  if (!final?.trim()) {
     // Closed but unattested: undecided, never destructive. Value = full held
     // amount across all legs (the outcome is not yet a loss).
     const heldValue = legs.reduce((sum, leg) => sum + leg.amount, 0);

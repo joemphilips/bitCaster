@@ -12,6 +12,7 @@ dist/
 
 # Rust / CDK (built locally)
 target/
+/bitcaster-daemon/native/
 
 # .NET / Aspire
 bin/
@@ -30,3 +31,13 @@ Thumbs.db
 # playwright-cli screenshots, logs, page dumps
 .playwright-cli/
 artifacts/
+
+# Bounded StrykerJS runs
+/reports/mutation/stryker-js/
+/.stryker-tmp/
+/bitCaster-app/.stryker-tmp/
+/stryker-incremental.json
+
+# Machine-local mutation sandboxes and worktrees.
+/.stryker-tmp-app-reuse/
+/.worktrees/

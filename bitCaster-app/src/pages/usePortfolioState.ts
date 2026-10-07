@@ -1,21 +1,33 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { getProofs, isCtfProof } from "@/stores/proof-db";
+import {
+  db,
+  getCanonicalCurrentProofs,
+  isCtfProof,
+  type BitcasterDB,
+  type StoredProof,
+} from "@/stores/proof-db";
+import { readCanonicalPortfolioCustody } from "@/stores/portfolio-custody";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { normalizeUrl, safeHostname } from "@/lib/url";
+import { safeHostname } from "@/lib/url";
+import { canonicalizeOutcomeSet } from "@bitcaster/client-sdk/outcomeSets";
 import {
   createAuthenticatedBrowserEngineClient,
   type MarketCatalogueEntry,
   type MarketCatalogueResponse,
 } from "@/lib/markets";
-import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
   parseCashuProofUnit,
+  parseMarketDivisibility,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { groupAmountsByUnit } from "@/lib/formatAmount";
@@ -34,6 +46,7 @@ import type {
   PortfolioMonitoringState,
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { deriveWinner } from "@/lib/positionWinner";
 import type {
   AssetMonitoringAssetReference,
@@ -41,11 +54,25 @@ import type {
   AssetMonitoringConditionalAssetReference,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
-import { decodeAssetMonitoringWalletId } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  computeAssetMonitoringOutcomeUniverseDigest,
+  decodeAssetMonitoringWalletId,
+} from "@bitcaster/client-sdk/assetMonitoring";
 import {
   listenForPortfolioInvalidation,
   type PortfolioInvalidation,
 } from "@/lib/portfolioInvalidation";
+import { observePortfolioValuations } from "@/lib/marketHub";
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
+
+const automaticPortfolioRefreshDelayMs = 10_000;
+const maximumBuildingPortfolioExtraReads = 3;
+type PortfolioPositionSnapshot = {
+  scopeId: string;
+  positions: Position[];
+  marketCatalogue: Map<string, MarketCatalogueEntry>;
+};
+const EMPTY_MARKET_CATALOGUE = new Map<string, MarketCatalogueEntry>();
 
 interface PortfolioState {
   walletState: WalletState;
@@ -62,46 +89,7 @@ interface PortfolioState {
   monitoring: PortfolioMonitoringState;
 }
 
-const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
-  "1D": 24 * 60 * 60 * 1000,
-  "1W": 7 * 24 * 60 * 60 * 1000,
-  "1M": 30 * 24 * 60 * 60 * 1000,
-  ALL: Infinity,
-};
-
-/** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
-export function buildPLChartData(items: ActivityItem[]): PLChartData {
-  // Sort oldest-first
-  const sorted = [...items]
-    .filter((a) => a.status === "completed")
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  if (sorted.length === 0) {
-    return { "1D": [], "1W": [], "1M": [], ALL: [] };
-  }
-
-  // Build cumulative balance points
-  const points: PLChartDataPoint[] = [];
-  let cumulative = 0;
-  for (const item of sorted) {
-    const deltaSubunits =
-      item.type === "deposit" ||
-      item.type === "payout_claimed" ||
-      item.type === "creator_fee_claimed"
-        ? item.amountSats
-        : -item.amountSats;
-    cumulative += deltaSubunits;
-    points.push({ timestamp: item.date, cumulativePL: cumulative });
-  }
-
-  const now = Date.now();
-  const result: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: points };
-  for (const range of ["1D", "1W", "1M"] as const) {
-    const cutoff = now - TIME_RANGE_MS[range];
-    result[range] = points.filter((p) => new Date(p.timestamp).getTime() >= cutoff);
-  }
-  return result;
-}
+const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
 
 const DEFAULT_PROFILE: UserProfile = {
   userId: "",
@@ -122,8 +110,9 @@ function loadProfile(): UserProfile {
 
 export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === "active");
+  const valuedActivePositions = activePositions.filter((p) => p.valueKnown !== false);
   const positionsValueByUnit = groupAmountsByUnit(
-    activePositions,
+    valuedActivePositions,
     (p) => p.baseAsset,
     (p) => p.currentValueSats,
   );
@@ -140,22 +129,63 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
   const positionsValueSats =
     positionsValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
   const totalValueSats = totalValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
-  const biggestWinSats = positions.reduce((max, p) => Math.max(max, p.profitLossSats), 0);
+  const positionsValueKnown = positions.every((position) => position.valueKnown !== false);
   return {
     positionsValueSats,
     totalValueSats,
+    positionsValueKnown,
+    totalValueKnown: positionsValueKnown,
     positionsValueByUnit,
     totalValueByUnit,
-    biggestWinSats,
     predictionsCount: positions.length,
   };
 }
 
-function positionSide(outcomeCollection: string): Position["side"] {
+function isBinaryYesNoUniverse(outcomes: readonly string[]): boolean {
+  if (outcomes.length !== 2) return false;
+  const normalized = new Set(outcomes.map((outcome) => outcome.toUpperCase()));
+  return normalized.has("YES") && normalized.has("NO");
+}
+
+function positionSide(
+  outcomeCollection: string,
+  market: MarketCatalogueEntry | undefined,
+): Position["side"] {
+  if (!market || !isBinaryYesNoUniverse(market.outcomes)) return "Outcome";
+  if (!market.outcomes.includes(outcomeCollection)) return "Outcome";
   const normalized = outcomeCollection.toUpperCase();
   if (normalized === "YES") return "yes";
   if (normalized === "NO") return "no";
   return "Outcome";
+}
+
+function outcomeDisplayColor(
+  outcomeCollection: string,
+  market: MarketCatalogueEntry | undefined,
+): string | undefined {
+  if (
+    !market ||
+    isBinaryYesNoUniverse(market.outcomes) ||
+    outcomeCollection.includes("|") ||
+    !market.outcomes.includes(outcomeCollection)
+  )
+    return undefined;
+  const color = market.outcomeDetails?.find((detail) => detail.name === outcomeCollection)?.color;
+  return typeof color === "string" ? color : undefined;
+}
+
+export function enrichPositionWithCatalogue(
+  position: Position,
+  market: MarketCatalogueEntry | undefined,
+): Position {
+  const outcomeCollection = position.outcomeId ?? position.outcomeLabel ?? "";
+  return {
+    ...position,
+    marketTitle: market?.title ?? position.marketTitle,
+    marketImageUrl: market?.thumbnailUrl ?? position.marketImageUrl,
+    side: positionSide(outcomeCollection, market),
+    outcomeColor: outcomeDisplayColor(outcomeCollection, market),
+  };
 }
 
 function conditionLabel(conditionId: string): string {
@@ -166,21 +196,30 @@ async function loadMarketCatalogue(
   conditionIds: string[],
 ): Promise<Map<string, MarketCatalogueEntry>> {
   if (conditionIds.length === 0) return new Map();
-  try {
-    const search = new URLSearchParams({
-      ids: conditionIds.join(","),
-      state: "All",
-      page_size: String(Math.min(Math.max(conditionIds.length, 1), 50)),
-    });
-    const response = await fetch(`/api/v1/markets/query?${search}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return new Map();
-    const body = (await response.json()) as MarketCatalogueResponse;
-    return new Map((body.markets ?? []).map((market) => [market.conditionId, market]));
-  } catch {
-    return new Map();
+  const uniqueConditionIds = [...new Set(conditionIds)];
+  const catalogue = new Map<string, MarketCatalogueEntry>();
+  for (let offset = 0; offset < uniqueConditionIds.length; offset += 50) {
+    const batch = uniqueConditionIds.slice(offset, offset + 50);
+    try {
+      const search = new URLSearchParams({
+        ids: batch.join(","),
+        state: "All",
+        page_size: String(batch.length),
+      });
+      const response = await fetch(`/api/v1/markets/query?${search}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) continue;
+      const body = (await response.json()) as MarketCatalogueResponse;
+      const requestedIds = new Set(batch);
+      for (const market of body.markets ?? []) {
+        if (requestedIds.has(market.conditionId)) catalogue.set(market.conditionId, market);
+      }
+    } catch {
+      // Keep successful sibling batches when one catalogue page is unavailable.
+    }
   }
+  return catalogue;
 }
 
 function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
@@ -188,7 +227,19 @@ function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
 }
 
 export function canonicalMonitoringAssetIdentity(asset: AssetMonitoringAssetReference): string {
-  return JSON.stringify(asset);
+  const common = [asset.kind, asset.canonicalMintUrl, asset.cashuUnit, asset.displayBaseAsset];
+  switch (asset.kind) {
+    case "collateral":
+      return JSON.stringify(common);
+    case "conditional":
+      return JSON.stringify([
+        ...common,
+        asset.conditionId,
+        asset.parentConditionId,
+        asset.outcomeUniverseDigest,
+        asset.internalOutcomeSetId,
+      ]);
+  }
 }
 
 function sameMonitoringAsset(
@@ -225,56 +276,41 @@ export function appendMonitoringAssets(
 }
 
 function localMonitoringAssetIdentity(
-  proof: object,
-  conditionId: string,
-  outcomeCollection: string,
+  position: {
+    mintUrl: string;
+    conditionId: string;
+    outcomeCollection: string;
+    baseAsset: MarketBaseAsset;
+    unit: string;
+  },
+  market: MarketCatalogueEntry | undefined,
 ): string | null {
-  const metadata = proof as Record<string, unknown>;
-  const mintUrl = metadata.canonicalMintUrl ?? metadata.mintUrl;
-  if (typeof mintUrl !== "string") return null;
-  let canonicalMintUrl: string;
+  if (!market || position.baseAsset !== "sat" || position.unit !== "msat") return null;
+  const selected = position.outcomeCollection.split("|");
   try {
-    canonicalMintUrl = normalizeUrl(mintUrl);
+    if (
+      selected.length >= market.outcomes.length ||
+      canonicalizeOutcomeSet(selected) !== position.outcomeCollection ||
+      !selected.every((outcome) => market.outcomes.includes(outcome))
+    )
+      return null;
+    const asset: AssetMonitoringConditionalAssetReference = {
+      canonicalMintUrl: position.mintUrl,
+      kind: "conditional",
+      cashuUnit: "msat",
+      displayBaseAsset: position.baseAsset,
+      conditionId: position.conditionId,
+      parentConditionId: "0".repeat(64),
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(
+        [...market.outcomes].sort(),
+      ),
+      internalOutcomeSetId: position.outcomeCollection,
+    };
+    return canonicalMonitoringAssetIdentity(asset);
   } catch {
+    // Missing or invalid display metadata must not hide local custody or its actions.
     return null;
   }
-  const asset = {
-    canonicalMintUrl,
-    kind: "conditional" as const,
-    cashuUnit: metadata.cashuUnit ?? metadata.unit,
-    displayBaseAsset: metadata.displayBaseAsset ?? metadata.baseAsset,
-    conditionId,
-    parentConditionId: metadata.parentConditionId,
-    outcomeUniverseDigest: metadata.outcomeUniverseDigest,
-    internalOutcomeSetId: metadata.internalOutcomeSetId ?? outcomeCollection,
-  };
-  if (
-    (asset.cashuUnit !== "sat" && asset.cashuUnit !== "msat") ||
-    (asset.displayBaseAsset !== "sat" && asset.displayBaseAsset !== "msat") ||
-    typeof asset.parentConditionId !== "string" ||
-    typeof asset.outcomeUniverseDigest !== "string" ||
-    asset.internalOutcomeSetId !== outcomeCollection
-  )
-    return null;
-  const completeAsset: AssetMonitoringConditionalAssetReference = {
-    canonicalMintUrl: asset.canonicalMintUrl,
-    kind: "conditional",
-    cashuUnit: asset.cashuUnit,
-    displayBaseAsset: asset.displayBaseAsset,
-    conditionId: asset.conditionId,
-    parentConditionId: asset.parentConditionId,
-    outcomeUniverseDigest: asset.outcomeUniverseDigest,
-    internalOutcomeSetId: asset.internalOutcomeSetId,
-  };
-  return canonicalMonitoringAssetIdentity(completeAsset);
-}
-
-function mergeLocalMonitoringIdentity(
-  current: string | null | undefined,
-  candidate: string | null,
-): string | null {
-  if (current === undefined) return candidate;
-  return current === candidate ? current : null;
 }
 
 function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | null {
@@ -282,6 +318,9 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
   const value = monitoringAssetValue(asset);
   const conditionId = asset.asset.conditionId;
   const identity = canonicalMonitoringAssetIdentity(asset.asset);
+  const divisibility = parseMarketDivisibility(
+    (asset as AssetMonitoringAssetResponse & { divisibility?: unknown }).divisibility,
+  );
   return {
     id: `monitoring:${identity}`,
     marketId: conditionId,
@@ -295,13 +334,9 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     canDiscard: false,
     monitoringAssetIdentity: identity,
     baseAsset: "sat",
-    divisibility: 10_000,
-    avgBuyPrice: 0,
-    currentPrice: 0,
+    divisibility: divisibility ?? undefined,
     currentValueSats: value,
     valueKnown: asset.valuationStatus === "valued" && asset.estimatedValueMsat != null,
-    profitLossSats: 0,
-    profitLossPercent: 0,
     status: "active",
     isWinner: false,
     isLoser: false,
@@ -309,6 +344,66 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     acquiredDate: "",
     mintUrl: asset.asset.canonicalMintUrl,
   };
+}
+
+type LocalFundMint = { readonly url: string; readonly info?: Record<string, unknown> };
+
+/** Groups canonical, spendable product proofs for the read-only Funds view. */
+export function buildLocalFunds(
+  proofs: readonly StoredProof[],
+  mints: readonly LocalFundMint[],
+): (Fund & { mintName: string })[] {
+  const balanceByMintAndAsset = new Map<
+    string,
+    { mintUrl: string; baseAsset: MarketBaseAsset; unit: "msat"; amount: number }
+  >();
+  for (const proof of proofs) {
+    const unit = parseCashuProofUnit(proof.unit);
+    if (!unit) {
+      throw new Error(`Stored proof has unsupported unit '${String(proof.unit)}'`);
+    }
+    if (
+      isCtfProof(proof) ||
+      proof.reservedBy !== undefined ||
+      proof.terminalOperationId !== undefined ||
+      unit !== "msat"
+    )
+      continue;
+    // Canonical custody rows carry the normalized mint and product asset
+    // metadata before this helper runs. Product regular assets are msat
+    // displayed as sats.
+    if (proof.baseAsset !== "sat") continue;
+    const key = `${proof.mintUrl}:msat:sat`;
+    const current = balanceByMintAndAsset.get(key);
+    balanceByMintAndAsset.set(key, {
+      mintUrl: proof.mintUrl,
+      baseAsset: "sat",
+      unit: "msat",
+      amount:
+        (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(proof.amount), "msat"),
+    });
+  }
+  return [...balanceByMintAndAsset.values()].map(({ mintUrl, baseAsset, unit, amount }) => {
+    const mintInfo = mints.find((mint) => mint.url === mintUrl);
+    const name = mintInfo?.info?.name;
+    return {
+      id: `${mintUrl}:${unit}:${baseAsset}`,
+      unit: "sats" as const,
+      amount,
+      mintUrl,
+      mintName: typeof name === "string" ? name : safeHostname(mintUrl),
+    };
+  });
+}
+
+/** Reads the canonical spendable source used by the local Funds fallback. */
+export async function readCanonicalLocalFunds(
+  scopeId: string,
+  mints: readonly LocalFundMint[],
+  database: BitcasterDB = db,
+): Promise<(Fund & { mintName: string })[] | null> {
+  const proofs = await getCanonicalCurrentProofs(scopeId, database);
+  return proofs === null ? null : buildLocalFunds(proofs, mints);
 }
 
 export function mergeMonitoringPositions(
@@ -344,7 +439,7 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   chart: PLChartDataPoint[];
   monitoring: Omit<
     PortfolioMonitoringState,
-    "error" | "assetPageError" | "hasMoreAssets" | "loadingMoreAssets"
+    "error" | "assetPageError" | "hasMoreAssets" | "loadingMoreAssets" | "retainingDisplay"
   >;
 } {
   const positions = response.assets.assets
@@ -365,12 +460,23 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     );
   const positionsValueKnown =
     response.assets.nextCursor == null &&
+    response.summary.unvaluedAssetCount === 0 &&
+    !response.assets.incomplete &&
+    !response.assets.building &&
     positions.every((position) => position.valueKnown !== false);
-  const positionsValueSats = positions.reduce(
-    (total, position) => total + position.currentValueSats,
-    0,
-  );
-  const totalValueKnown = response.summary.estimatedTotalValueMsat !== null;
+  const positionsValueSats = positions
+    .filter((position) => position.valueKnown !== false)
+    .reduce((total, position) => total + position.currentValueSats, 0);
+  const totalValueKnown =
+    response.summary.estimatedTotalValueMsat !== null &&
+    response.summary.unvaluedAssetCount === 0 &&
+    !response.summary.incomplete &&
+    !response.summary.building;
+  const historyComplete =
+    !response.history.incomplete &&
+    !response.history.building &&
+    response.history.points.every((point) => point.estimatedTotalValueMsat !== null);
+  const chartComplete = totalValueKnown && historyComplete;
   return {
     stats: {
       positionsValueSats,
@@ -383,17 +489,16 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
       totalValueByUnit: totalValueKnown
         ? [{ unit: "sat", amount: response.summary.estimatedTotalValueMsat! }]
         : undefined,
-      biggestWinSats: 0,
       predictionsCount: positions.length,
     },
     positions,
     funds,
-    chart: response.history.points
-      .filter((point) => point.estimatedTotalValueMsat !== null)
-      .map((point) => ({
-        timestamp: point.asOf,
-        cumulativePL: point.estimatedTotalValueMsat!,
-      })),
+    chart: chartComplete
+      ? response.history.points.map((point) => ({
+          timestamp: point.asOf,
+          cumulativePL: point.estimatedTotalValueMsat!,
+        }))
+      : [],
     monitoring: {
       stale: response.summary.stale || response.assets.stale || response.history.stale,
       incomplete:
@@ -405,6 +510,7 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
       unvaluedAssetCount: response.summary.unvaluedAssetCount,
       hasPendingOutgoing: response.assets.assets.some((asset) => asset.pendingOutgoingSubunits > 0),
       pendingOutgoingValueMsat: response.summary.pendingOutgoingValueMsat,
+      liveUpdateCoverageLimited: false,
     },
   };
 }
@@ -426,6 +532,17 @@ export function usePortfolioState(): PortfolioState & {
     value: AssetMonitoringPortfolioResponse;
   } | null>(null);
   const [monitoringError, setMonitoringError] = useState<"unavailable" | null>(null);
+  // One bounded first-page response, for display only. Never retain local actions or proofs.
+  const [lastCompleteDisplay, setLastCompleteDisplay] = useState<{
+    scopeKey: string;
+    value: AssetMonitoringPortfolioResponse;
+  } | null>(null);
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+    getNostrSignerRevision,
+  );
+  const [loadingMonitoringKey, setLoadingMonitoringKey] = useState<string | null>(null);
   const [monitoringAssets, setMonitoringAssets] = useState<{
     key: string;
     generation: number;
@@ -446,9 +563,21 @@ export function usePortfolioState(): PortfolioState & {
   const assetPageInFlight = useRef(false);
   const activePortfolioRead = useRef<{
     monitoringKey: string;
+    requestKey: string;
     requestId: number;
+    controller: AbortController;
   } | null>(null);
-  const portfolioRefreshScheduled = useRef(false);
+  const automaticRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automaticRefreshTimerKind = useRef<"notification" | "building" | null>(null);
+  const automaticRefreshScheduled = useRef(false);
+  const automaticRefreshScheduledKind = useRef<"notification" | "building" | null>(null);
+  const buildingRefreshCycle = useRef<{
+    monitoringKey: string;
+    extraReadsStarted: number;
+  } | null>(null);
+  const portfolioObserver = useRef<ReturnType<typeof observePortfolioValuations> | null>(null);
+  const portfolioObserverRefresh = useRef<() => void>(() => {});
+  const subscribedConditionIds = useRef<string[] | null>(null);
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
@@ -463,16 +592,137 @@ export function usePortfolioState(): PortfolioState & {
     };
   }, [localProfile, nostrProfile]);
 
-  const activity = useActivityLogStore((s) => s.items);
+  const activityItems = useActivityLogStore((s) => s.items);
   const [createdMarkets] = useState<CreatedMarket[]>([]);
   // Positions and funds are both wallet-local. CTF proofs are market
   // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletId = useMemo(() => browserWalletIdFromMnemonic(walletMnemonic), [walletMnemonic]);
-  const monitoringKey =
-    walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
+  const walletScopeId = useMemo(
+    () =>
+      walletId === null ? null : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
+    [walletId],
+  );
+  const displayScopeKey =
+    walletState === "ready" && walletId !== null
+      ? `${walletId}:${signerRevision}:${nostrProfile?.pubkey ?? ""}`
+      : null;
+  const activity = useMemo(
+    () => activityItems.filter((item) => walletId !== null && item.walletId === walletId),
+    [activityItems, walletId],
+  );
+  const monitoringKey = displayScopeKey !== null ? `${displayScopeKey}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
+  useEffect(() => {
+    setLastCompleteDisplay(null);
+    setMonitoringError(null);
+    setMonitoringUnavailable(false);
+    setLoadingMoreAssets(false);
+  }, [displayScopeKey]);
+  const clearAutomaticRefreshTimer = useCallback(() => {
+    if (automaticRefreshTimer.current !== null) {
+      clearTimeout(automaticRefreshTimer.current);
+      automaticRefreshTimer.current = null;
+    }
+    automaticRefreshTimerKind.current = null;
+  }, []);
+
+  const abortActivePortfolioRead = useCallback(() => {
+    const read = activePortfolioRead.current;
+    if (!read) return;
+    activePortfolioRead.current = null;
+    setLoadingMonitoringKey(null);
+    if (requestedMonitoringKey.current === read.requestKey) {
+      requestedMonitoringKey.current = null;
+    }
+    activeMonitoringRequest.current += 1;
+    read.controller.abort();
+  }, []);
+
+  const scheduleAutomaticPortfolioRefresh = useCallback(
+    (kind: "notification" | "building") => {
+      if (monitoringKey === null || walletId === null) return;
+
+      // A timer wake that already became dirty owns the next read. More events
+      // can change its reason, but they must not enqueue or defer another read.
+      if (automaticRefreshScheduled.current) {
+        if (kind === "notification") {
+          automaticRefreshScheduledKind.current = "notification";
+          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+        }
+        return;
+      }
+
+      // Later notifications join the first timer. A notification also turns a
+      // pending building retry into the new bounded cycle's reconciliation read.
+      if (automaticRefreshTimer.current !== null) {
+        if (kind === "notification") automaticRefreshTimerKind.current = "notification";
+        return;
+      }
+
+      automaticRefreshTimerKind.current = kind;
+      automaticRefreshTimer.current = setTimeout(() => {
+        automaticRefreshTimer.current = null;
+        const wakeKind = automaticRefreshTimerKind.current;
+        automaticRefreshTimerKind.current = null;
+        if (activeMonitoringKey.current !== monitoringKey || wakeKind === null) return;
+
+        if (wakeKind === "notification") {
+          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+        } else {
+          const cycle = buildingRefreshCycle.current;
+          if (
+            cycle?.monitoringKey !== monitoringKey ||
+            cycle.extraReadsStarted >= maximumBuildingPortfolioExtraReads
+          )
+            return;
+          cycle.extraReadsStarted += 1;
+        }
+
+        if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+          automaticRefreshScheduled.current = true;
+          automaticRefreshScheduledKind.current = wakeKind;
+          return;
+        }
+        setPortfolioRefreshEpoch((current) => current + 1);
+      }, automaticPortfolioRefreshDelayMs);
+    },
+    [monitoringKey, walletId],
+  );
+
+  portfolioObserverRefresh.current = () => scheduleAutomaticPortfolioRefresh("notification");
+
+  useEffect(() => {
+    const observer = observePortfolioValuations(() => portfolioObserverRefresh.current());
+    portfolioObserver.current = observer;
+    subscribedConditionIds.current = null;
+    return () => {
+      if (portfolioObserver.current === observer) portfolioObserver.current = null;
+      subscribedConditionIds.current = null;
+      observer.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    activeMonitoringKey.current = monitoringKey;
+    clearAutomaticRefreshTimer();
+    automaticRefreshScheduled.current = false;
+    automaticRefreshScheduledKind.current = null;
+    buildingRefreshCycle.current =
+      monitoringKey === null ? null : { monitoringKey, extraReadsStarted: 0 };
+    const activeRead = activePortfolioRead.current;
+    if (activeRead && activeRead.monitoringKey !== monitoringKey) abortActivePortfolioRead();
+    return () => {
+      clearAutomaticRefreshTimer();
+      automaticRefreshScheduled.current = false;
+      automaticRefreshScheduledKind.current = null;
+      if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+        abortActivePortfolioRead();
+      }
+      if (activeMonitoringKey.current === monitoringKey) activeMonitoringKey.current = null;
+    };
+  }, [abortActivePortfolioRead, clearAutomaticRefreshTimer, monitoringKey]);
 
   const invalidatePortfolio = useCallback(
     (invalidation: PortfolioInvalidation) => {
@@ -482,20 +732,9 @@ export function usePortfolioState(): PortfolioState & {
       } catch {
         return;
       }
-      activeMonitoringRequest.current += 1;
-      activeAssetPageRequest.current += 1;
-      assetPageInFlight.current = false;
-      if (
-        activePortfolioRead.current?.monitoringKey === monitoringKey ||
-        portfolioRefreshScheduled.current
-      ) {
-        portfolioRefreshScheduled.current = true;
-        return;
-      }
-      portfolioRefreshScheduled.current = true;
-      setPortfolioRefreshEpoch((current) => current + 1);
+      scheduleAutomaticPortfolioRefresh("notification");
     },
-    [monitoringKey, walletId],
+    [monitoringKey, scheduleAutomaticPortfolioRefresh, walletId],
   );
 
   useEffect(() => {
@@ -512,17 +751,23 @@ export function usePortfolioState(): PortfolioState & {
     if (requestedMonitoringKey.current === requestKey) return;
     requestedMonitoringKey.current = requestKey;
     const requestId = ++activeMonitoringRequest.current;
-    portfolioRefreshScheduled.current = false;
-    activePortfolioRead.current = { monitoringKey, requestId };
+    const controller = new AbortController();
+    const read = { monitoringKey, requestKey, requestId, controller };
+    activePortfolioRead.current = read;
+    setLoadingMonitoringKey(monitoringKey);
     activeAssetPageRequest.current += 1;
     assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
     void createAuthenticatedBrowserEngineClient()
-      .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 })
+      .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 }, controller.signal)
       .then((value) => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
-          activeMonitoringRequest.current !== requestId
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
+          activeMonitoringRequest.current !== requestId ||
+          activePortfolioRead.current !== read ||
+          controller.signal.aborted
         )
           return;
         const initialAssets = appendMonitoringAssets([], value.assets.assets);
@@ -532,6 +777,19 @@ export function usePortfolioState(): PortfolioState & {
           return;
         }
         setMonitoringResponse({ key: monitoringKey, value });
+        if (
+          displayScopeKey !== null &&
+          !value.summary.building &&
+          !value.assets.building &&
+          !value.history.building &&
+          !value.summary.incomplete &&
+          !value.assets.incomplete &&
+          !value.history.incomplete &&
+          value.summary.estimatedTotalValueMsat !== null &&
+          value.summary.unvaluedAssetCount === 0
+        ) {
+          setLastCompleteDisplay({ scopeKey: displayScopeKey, value });
+        }
         setMonitoringAssets({
           key: monitoringKey,
           generation: requestId,
@@ -540,40 +798,142 @@ export function usePortfolioState(): PortfolioState & {
         });
         setLoadingMoreAssets(false);
         setMonitoringError(null);
+        const building = value.summary.building || value.assets.building || value.history.building;
+        const cycle = buildingRefreshCycle.current;
+        if (
+          building &&
+          cycle?.monitoringKey === monitoringKey &&
+          cycle.extraReadsStarted < maximumBuildingPortfolioExtraReads
+        ) {
+          scheduleAutomaticPortfolioRefresh("building");
+        } else if (!building) {
+          const notificationWakePending =
+            automaticRefreshTimerKind.current === "notification" ||
+            (automaticRefreshScheduled.current &&
+              automaticRefreshScheduledKind.current === "notification");
+          if (!notificationWakePending) buildingRefreshCycle.current = null;
+          if (automaticRefreshTimerKind.current === "building") clearAutomaticRefreshTimer();
+        }
       })
       .catch(() => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
-          activeMonitoringRequest.current !== requestId
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
+          activeMonitoringRequest.current !== requestId ||
+          activePortfolioRead.current !== read ||
+          controller.signal.aborted
         )
           return;
+        const notificationWakePending =
+          automaticRefreshTimerKind.current === "notification" ||
+          (automaticRefreshScheduled.current &&
+            automaticRefreshScheduledKind.current === "notification");
+        if (!notificationWakePending) buildingRefreshCycle.current = null;
+        if (automaticRefreshTimerKind.current === "building") clearAutomaticRefreshTimer();
+        if (automaticRefreshScheduledKind.current === "building") {
+          automaticRefreshScheduled.current = false;
+          automaticRefreshScheduledKind.current = null;
+        }
         setMonitoringUnavailable(true);
         setMonitoringError("unavailable");
       })
       .finally(() => {
-        const activeRead = activePortfolioRead.current;
-        if (activeRead?.monitoringKey !== monitoringKey || activeRead.requestId !== requestId) {
-          return;
-        }
-
+        if (activePortfolioRead.current !== read) return;
         activePortfolioRead.current = null;
-        if (!portfolioRefreshScheduled.current) return;
-        portfolioRefreshScheduled.current = false;
-        setPortfolioRefreshEpoch((current) => current + 1);
+        setLoadingMonitoringKey(null);
+        if (automaticRefreshScheduled.current) {
+          automaticRefreshScheduled.current = false;
+          automaticRefreshScheduledKind.current = null;
+          setPortfolioRefreshEpoch((current) => current + 1);
+        }
       });
-  }, [monitoringKey, portfolioRefreshEpoch, selectedTimeRange, walletId]);
+    return () => {
+      if (activePortfolioRead.current !== read) return;
+      abortActivePortfolioRead();
+    };
+  }, [
+    abortActivePortfolioRead,
+    clearAutomaticRefreshTimer,
+    monitoringKey,
+    portfolioRefreshEpoch,
+    scheduleAutomaticPortfolioRefresh,
+    selectedTimeRange,
+    walletId,
+    displayScopeKey,
+    signerRevision,
+    walletScopeId,
+  ]);
 
-  const visibleAssets =
-    monitoringAssets?.key === monitoringKey &&
-    monitoringAssets.generation === activeMonitoringRequest.current
-      ? monitoringAssets
-      : null;
+  const firstPageConditionIds = useMemo(() => {
+    if (monitoringResponse?.key !== monitoringKey) return null;
+    return [
+      ...new Set(
+        monitoringResponse.value.assets.assets.flatMap((asset) =>
+          asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
+        ),
+      ),
+    ].sort();
+  }, [monitoringKey, monitoringResponse]);
+  const firstPageConditionIdSet = useMemo(
+    () => new Set(firstPageConditionIds ?? []),
+    [firstPageConditionIds],
+  );
+
+  useEffect(() => {
+    const observer = portfolioObserver.current;
+    if (!observer || firstPageConditionIds === null) return;
+    const previous = subscribedConditionIds.current;
+    if (
+      previous !== null &&
+      previous.length === firstPageConditionIds.length &&
+      previous.every((conditionId, index) => conditionId === firstPageConditionIds[index])
+    )
+      return;
+
+    const nextConditionIds = firstPageConditionIds;
+    subscribedConditionIds.current = nextConditionIds;
+    const resetFailedReplacement = () => {
+      if (
+        portfolioObserver.current === observer &&
+        subscribedConditionIds.current === nextConditionIds
+      ) {
+        subscribedConditionIds.current = null;
+      }
+    };
+    try {
+      void observer.replaceConditionIds(nextConditionIds).catch(resetFailedReplacement);
+    } catch {
+      resetFailedReplacement();
+    }
+  }, [firstPageConditionIds]);
+
+  const visibleAssets = monitoringAssets?.key === monitoringKey ? monitoringAssets : null;
+  const visibleMonitoringConditionIdsKey = useMemo(() => {
+    const ids = visibleAssets?.assets.flatMap((asset) =>
+      asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
+    );
+    return [...new Set(ids ?? [])].sort().join(",");
+  }, [visibleAssets]);
   const visibleAssetPageError =
     assetPageError?.key === monitoringKey &&
     assetPageError.generation === activeMonitoringRequest.current;
+  const liveUpdateCoverageLimited =
+    visibleAssets !== null &&
+    firstPageConditionIds !== null &&
+    visibleAssets.assets.some(
+      (asset) =>
+        asset.asset.kind === "conditional" && !firstPageConditionIdSet.has(asset.asset.conditionId),
+    );
 
   const loadMoreAssets = useCallback(() => {
-    if (!visibleAssets || walletId === null || loadingMoreAssets || assetPageInFlight.current)
+    if (
+      !visibleAssets ||
+      visibleAssets.generation !== activeMonitoringRequest.current ||
+      walletId === null ||
+      loadingMoreAssets ||
+      assetPageInFlight.current
+    )
       return;
     const cursor = visibleAssets.nextCursor;
     if (cursor === null) return;
@@ -586,6 +946,8 @@ export function usePortfolioState(): PortfolioState & {
       .then((page) => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -606,6 +968,8 @@ export function usePortfolioState(): PortfolioState & {
       .catch(() => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -615,6 +979,8 @@ export function usePortfolioState(): PortfolioState & {
       .finally(() => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -622,121 +988,137 @@ export function usePortfolioState(): PortfolioState & {
         assetPageInFlight.current = false;
         setLoadingMoreAssets(false);
       });
-  }, [loadingMoreAssets, visibleAssets, walletId]);
+  }, [loadingMoreAssets, visibleAssets, walletId, signerRevision, walletScopeId]);
 
   const positionsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const proofs = await readCanonicalPortfolioCustody(scopeId);
+      if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
       const byOutcome = new Map<
         string,
         {
           conditionId: string;
           outcomeCollection: string;
           baseAsset: MarketBaseAsset;
+          unit: string;
           amount: number;
+          retainedUnverifiedAmountSubunits: number;
           mintUrl: string;
           firstReceivedAt: number;
-          monitoringAssetIdentity: string | null;
+          allVerifiedLosing: boolean;
+          claimRecoveryPending: boolean;
+          removalPending: boolean;
         }
       >();
-      for (const proof of proofs.filter(isCtfProof)) {
-        const candidate = proof as typeof proof & {
-          conditionId?: string;
-          condition_id?: string;
-          outcomeCollection?: string;
-          outcome_collection?: string;
-        };
-        const conditionId = candidate.conditionId ?? candidate.condition_id;
-        const outcomeCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
+      for (const proof of proofs) {
+        if (proof.assetKind !== "conditional") continue;
+        const { conditionId, outcomeCollection } = proof;
         if (!conditionId || !outcomeCollection) continue;
         const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
-        const proofMonitoringIdentity = localMonitoringAssetIdentity(
-          proof,
+        const key = JSON.stringify([
+          proof.normalizedMint,
+          proof.unit,
           conditionId,
           outcomeCollection,
-        );
-        const key = `${conditionId}:${outcomeCollection}:${baseAsset}`;
+          baseAsset,
+        ]);
         const current = byOutcome.get(key);
         byOutcome.set(key, {
           conditionId,
           outcomeCollection,
           baseAsset,
-          amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
-          mintUrl: current?.mintUrl ?? proof.mintUrl,
-          monitoringAssetIdentity: mergeLocalMonitoringIdentity(
-            current?.monitoringAssetIdentity,
-            proofMonitoringIdentity,
-          ),
+          amount:
+            (current?.amount ?? 0) +
+            (proof.selectability === "retained-unverified" ? 0 : proof.amount),
+          retainedUnverifiedAmountSubunits:
+            (current?.retainedUnverifiedAmountSubunits ?? 0) +
+            (proof.selectability === "retained-unverified" ? proof.amount : 0),
+          unit: proof.unit,
+          mintUrl: proof.normalizedMint,
+          claimRecoveryPending:
+            (current?.claimRecoveryPending ?? false) || proof.claimRecoveryPending,
+          removalPending:
+            (current?.removalPending ?? false) || proof.selectability === "pending-removal",
+          allVerifiedLosing:
+            (current?.allVerifiedLosing ?? true) &&
+            (proof.selectability === "retained-unverified" ||
+              proof.selectability === "verified-losing" ||
+              proof.selectability === "pending-removal"),
           firstReceivedAt: Math.min(
             current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
-            proof.receivedAt ?? Date.now(),
+            proof.receivedAtMs,
           ),
         });
       }
       const entries = Array.from(byOutcome.values());
+      const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
+        ? visibleMonitoringConditionIdsKey.split(",")
+        : [];
       const catalogue =
         monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue([...new Set(entries.map((entry) => entry.conditionId))])
+          ? await loadMarketCatalogue([
+              ...entries.map((entry) => entry.conditionId),
+              ...visibleMonitoringConditionIds,
+            ])
           : new Map<string, MarketCatalogueEntry>();
-      return entries.map((entry): Position => {
+      if (activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const positions = entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
-        const divisibility = normalizeMarketDivisibility(
-          market?.divisibility ?? 10_000,
-          entry.baseAsset,
-        );
+        const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
-        const isClosed = String(market?.state ?? "").toLowerCase() === "closed";
-        // Single source-of-truth winner/value derivation (P22 Link F HIGH).
-        // A keyset is a WINNING keyset iff the attested final outcome is a member
-        // of that keyset's outcome-collection (the mint redeems a collection's
-        // proofs iff the collection contains the attested outcome). A position is
-        // a WINNER iff it holds >= 1 proof on a winning keyset — the existence
-        // ("some winning leg") rule, NOT "every leg wins". An UNCLAIMED composite
-        // "A|B" position (final "A") therefore correctly counts as a winner and
-        // stays claimable; the old `.every` rule mis-classified it as a loser and
-        // offered only the destructive Remove, destroying the winning A-leg.
-        // Claimable value sums WINNING keysets only (losing-keyset proofs = 0).
-        // Each position group shares one outcome-collection label by construction
-        // (the group key includes it), so it is a single leg here.
-        const { status: winnerStatus, claimableValue } = deriveWinner({
-          isClosed,
-          finalOutcome,
-          legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
-        });
+        const historyOnly = entry.amount === 0 && entry.retainedUnverifiedAmountSubunits > 0;
+        const isClosed =
+          historyOnly ||
+          entry.allVerifiedLosing ||
+          entry.claimRecoveryPending ||
+          String(market?.state ?? "").toLowerCase() === "closed";
+        // Closure alone does not prove a loss. Only mint classification or an
+        // attested outcome can classify this display row.
+        const { status: winnerStatus, claimableValue } = historyOnly
+          ? { status: "pending" as const, claimableValue: 0 }
+          : entry.allVerifiedLosing
+            ? { status: "loser" as const, claimableValue: 0 }
+            : deriveWinner({
+                isClosed,
+                finalOutcome,
+                legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
+              });
         const isWinner = winnerStatus === "winner";
         const isLoser = winnerStatus === "loser";
-        // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
-        // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
-        // is permanent loss) and show an "awaiting resolution" indicator. It stays
-        // visible in the Closed tab (status 'closed'), and its value is the full
-        // held amount — an undecided outcome is not a loss, so it is NOT zeroed.
-        const isPending = winnerStatus === "pending";
+        const isPending = !historyOnly && winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
-        const currentValueSats = isClosed
-          ? isWinner || isPending
-            ? claimableValue
-            : 0
-          : entry.amount;
-        return {
-          id: `${entry.conditionId}-${entry.outcomeCollection}`,
+        const currentValueSats = isClosed && isWinner ? claimableValue : 0;
+        const position: Position = {
+          id: JSON.stringify([
+            entry.mintUrl,
+            entry.conditionId,
+            entry.outcomeCollection,
+            entry.baseAsset,
+          ]),
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
           marketImageUrl: market?.thumbnailUrl ?? "",
-          side: positionSide(entry.outcomeCollection),
+          side: "Outcome",
           outcomeId: entry.outcomeCollection,
           outcomeLabel: entry.outcomeCollection,
-          canClaimPayout: isWinner,
-          canDiscard: isLoser,
-          monitoringAssetIdentity: entry.monitoringAssetIdentity ?? undefined,
+          canClaimPayout: !historyOnly && (isWinner || entry.claimRecoveryPending),
+          canSell: !historyOnly,
+          retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmountSubunits,
+          claimRecoveryPending: entry.claimRecoveryPending,
+          removalPending: entry.removalPending,
+          canDiscard: !historyOnly && isLoser,
+          monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
           baseAsset: entry.baseAsset,
-          divisibility,
-          shares: entry.amount / divisibility,
-          avgBuyPrice: 0,
-          currentPrice: isClosed && isWinner ? divisibility : 0,
+          divisibility: divisibility ?? undefined,
+          shares: divisibility === null ? undefined : entry.amount / divisibility,
           currentValueSats,
-          // Pending (undecided) shows no realised P&L; only attested winners/losers do.
-          profitLossSats: isClosed && !isPending ? currentValueSats : 0,
-          profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,
+          // Local proof rows have no current market valuation until an
+          // authoritative attestation or the exact display-only asset monitor
+          // supplies one. Face amount is not a current value and must not enter
+          // portfolio totals.
+          valueKnown: !historyOnly && divisibility !== null && isClosed && !isPending,
           status,
           isWinner,
           isLoser,
@@ -746,48 +1128,30 @@ export function usePortfolioState(): PortfolioState & {
           acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
           mintUrl: entry.mintUrl,
         };
+        return enrichPositionWithCatalogue(position, market);
       });
+      return { scopeId, positions, marketCatalogue: catalogue };
     },
-    [monitoringReady, monitoringUnavailable, walletMnemonic],
-    [] as Position[],
+    [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
+    undefined as PortfolioPositionSnapshot | undefined,
   );
-  const positions: Position[] = positionsFromDb ?? [];
+  const currentLocalPositions =
+    positionsFromDb?.scopeId === walletScopeId ? positionsFromDb : undefined;
+  const positions: Position[] = currentLocalPositions?.positions ?? [];
+  const localPositionsUnavailable = currentLocalPositions === undefined;
   const fundsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
-      const balanceByMintAndUnit: Record<
-        string,
-        { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }
-      > = {};
-      for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-        const baseAsset = normalizeMarketBaseAsset(p.baseAsset);
-        const unit = parseCashuProofUnit(p.unit);
-        if (!unit) throw new Error(`Stored proof has unsupported unit '${String(p.unit)}'`);
-        const key = `${p.mintUrl}:${baseAsset}`;
-        const current = balanceByMintAndUnit[key];
-        balanceByMintAndUnit[key] = {
-          mintUrl: p.mintUrl,
-          baseAsset,
-          amount:
-            (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit),
-        };
-      }
-      return Object.values(balanceByMintAndUnit).map(({ mintUrl, baseAsset, amount }) => {
-        const mintInfo = storeMints.find((m) => m.url === mintUrl);
-        const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined;
-        return {
-          id: `${mintUrl}:${baseAsset}`,
-          unit: "sats" as const,
-          amount,
-          mintUrl,
-          mintName: name ?? safeHostname(mintUrl),
-        };
-      });
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const funds = await readCanonicalLocalFunds(scopeId, storeMints);
+      return activeBrowserWalletScopeId() === scopeId ? { scopeId, funds } : undefined;
     },
     [storeMints, walletMnemonic],
-    [] as (Fund & { mintName: string })[],
+    undefined as { scopeId: string; funds: (Fund & { mintName: string })[] | null } | undefined,
   );
-  const localFunds: Fund[] = fundsFromDb;
+  const currentLocalFunds = fundsFromDb?.scopeId === walletScopeId ? fundsFromDb.funds : undefined;
+  const localFunds: Fund[] = currentLocalFunds ?? [];
+  const localFundsUnavailable = currentLocalFunds == null;
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
     monitoringResponse?.key === monitoringKey && visibleAssets
@@ -800,25 +1164,82 @@ export function usePortfolioState(): PortfolioState & {
           },
         })
       : null;
-  const funds = visibleMonitoring?.funds ?? localFunds;
-  const stats = visibleMonitoring?.stats ?? localStats;
-  const visiblePositions = visibleMonitoring
-    ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
+  const cachedDisplay =
+    lastCompleteDisplay?.scopeKey === displayScopeKey ? lastCompleteDisplay : null;
+  const claimInProgress = positions.some((position) => position.claimRecoveryPending);
+  const valuesLoading = monitoringKey !== null && loadingMonitoringKey === monitoringKey;
+  const retainingDisplay =
+    cachedDisplay !== null &&
+    (valuesLoading ||
+      monitoringUnavailable ||
+      visibleMonitoring === null ||
+      visibleMonitoring.monitoring.building ||
+      claimInProgress);
+  const displayMonitoring = retainingDisplay
+    ? mapMonitoringPortfolio(cachedDisplay.value)
+    : visibleMonitoring;
+  const funds = displayMonitoring?.funds ?? localFunds;
+  const currentStats = displayMonitoring?.stats
+    ? displayMonitoring.stats
+    : localFundsUnavailable || localPositionsUnavailable
+      ? {
+          ...localStats,
+          totalValueKnown: false,
+          totalValueByUnit: undefined,
+          positionsValueKnown: !localPositionsUnavailable && localStats.positionsValueKnown,
+        }
+      : localStats;
+  const stats = {
+    ...currentStats,
+    totalValueLoading: valuesLoading || claimInProgress,
+    positionsValueLoading: valuesLoading || claimInProgress,
+  };
+  const visiblePositions = displayMonitoring
+    ? mergeMonitoringPositions(
+        displayMonitoring.positions.map((position) =>
+          enrichPositionWithCatalogue(
+            position,
+            (currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(
+              position.marketId,
+            ),
+          ),
+        ),
+        positions,
+      )
     : positions;
   const plChartData = useMemo(() => {
-    if (!visibleMonitoring) return buildPLChartData(activity);
-    return { ...buildPLChartData(activity), [selectedTimeRange]: visibleMonitoring.chart };
-  }, [activity, selectedTimeRange, visibleMonitoring]);
+    if (
+      !displayMonitoring ||
+      stats.totalValueKnown === false ||
+      (retainingDisplay && cachedDisplay?.value.history.timeframe !== selectedTimeRange)
+    )
+      return EMPTY_PL_CHART_DATA;
+    return { ...EMPTY_PL_CHART_DATA, [selectedTimeRange]: displayMonitoring.chart };
+  }, [
+    selectedTimeRange,
+    stats.totalValueKnown,
+    displayMonitoring,
+    retainingDisplay,
+    cachedDisplay,
+  ]);
   const monitoring: PortfolioMonitoringState = {
-    stale: visibleMonitoring?.monitoring.stale ?? false,
+    stale: retainingDisplay || (visibleMonitoring?.monitoring.stale ?? false),
+    retainingDisplay,
     incomplete: visibleMonitoring?.monitoring.incomplete ?? false,
     building: visibleMonitoring?.monitoring.building ?? false,
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
-    error: monitoringError,
+    liveUpdateCoverageLimited,
+    error:
+      monitoringError ??
+      (!visibleMonitoring && (localFundsUnavailable || localPositionsUnavailable)
+        ? "unavailable"
+        : null),
     assetPageError: visibleAssetPageError ? "unavailable" : null,
-    hasMoreAssets: visibleAssets?.nextCursor != null,
+    hasMoreAssets:
+      visibleAssets?.nextCursor != null &&
+      visibleAssets.generation === activeMonitoringRequest.current,
     loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,
   };
   const selectTimeRange = useCallback((range: PLTimeSelector) => {

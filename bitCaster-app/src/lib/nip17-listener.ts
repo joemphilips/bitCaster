@@ -1,11 +1,16 @@
-import type { PaymentRequestPayload } from "@cashu/cashu-ts";
+import { readPendingCashuPaymentRequestMessage } from "@bitcaster/client-sdk/paymentRequest";
+import { normalizeNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
 import { deriveNostrKeyPair, subscribeNip17DMs } from "./nip17";
 import { encodeToken } from "./cashu";
 import { ingressReceiveCashuToken } from "./walletOps";
-import { normalizeUrl } from "./url";
-import { parseCashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
+import { useWalletStore } from "@/stores/wallet";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
 
 /**
  * Continuous NIP-17 listener. Runs for the lifetime of the tab once the
@@ -27,47 +32,73 @@ import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 interface ListenerHandle {
   unsub: () => void;
   mnemonic: string;
+  scopeId: string;
   relayKey: string;
   startedAt: number;
 }
 
+interface ListenerStart {
+  generation: number;
+  mnemonic: string;
+  relayKey: string;
+  promise: Promise<void>;
+  controller: AbortController;
+}
+
 let _current: ListenerHandle | null = null;
+let _starting: ListenerStart | null = null;
+let _generation = 0;
 const _processedEvents = new Set<string>();
 const _processingEvents = new Set<string>();
 const MAX_PROCESSED = 5000;
 
-async function handleIncomingDM(content: string): Promise<void> {
-  let payload: PaymentRequestPayload;
-  try {
-    payload = JSON.parse(content) as PaymentRequestPayload;
-  } catch {
-    // Not a JSON payload — ignore silently (other NIP-17 traffic).
-    return;
-  }
-  if (!payload?.proofs || !payload.mint) return;
-  if (typeof payload.id !== "string" || payload.id.length === 0) return;
+function isCurrentWalletScope(scopeId: string): boolean {
+  const currentMnemonic = useWalletStore.getState().mnemonic;
+  return (
+    browserWalletScopeIdFromMnemonic(currentMnemonic) === scopeId &&
+    activeBrowserWalletScopeId() === scopeId
+  );
+}
 
-  const normalizedMint = normalizeUrl(payload.mint);
-  const pending = usePaymentRequestInbox.getState().pending[payload.id];
-  if (!pending || pending.mintUrl !== normalizedMint) return;
+function isCurrentListenerContext(generation: number, scopeId: string): boolean {
+  return generation === _generation && isCurrentWalletScope(scopeId);
+}
 
-  const dedupKey = `${payload.id}|${payload.proofs[0]?.secret ?? ""}`;
+async function handleIncomingDM(
+  content: string,
+  generation: number,
+  scopeId: string,
+  walletId: string,
+): Promise<void> {
+  if (!isCurrentListenerContext(generation, scopeId)) return;
+
+  const message = readPendingCashuPaymentRequestMessage({
+    content,
+    walletScopeId: scopeId,
+    readPending: (id) => usePaymentRequestInbox.getState().pending[id],
+  });
+  if (message === null) return;
+  const { payload, normalizedMint, unit } = message;
+
+  const dedupKey = `${scopeId}|${payload.id}|${payload.proofs[0]?.secret ?? ""}`;
   if (_processedEvents.has(dedupKey) || _processingEvents.has(dedupKey)) return;
   _processingEvents.add(dedupKey);
 
   try {
-    const unit = parseCashuProofUnit(payload.unit);
-    if (!unit) {
-      throw new Error(`Unsupported Cashu proof unit '${payload.unit ?? ""}'`);
-    }
     const token = encodeToken(payload.proofs, normalizedMint, unit);
+    if (
+      !isCurrentListenerContext(generation, scopeId) ||
+      browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic) !== walletId
+    ) {
+      return;
+    }
     const received = await ingressReceiveCashuToken(token, "nip17", {
       mintUrl: normalizedMint,
     });
-
     useActivityLogStore.getState().addActivity({
+      walletId,
       type: "deposit",
-      amountSats: received.amountSubunits,
+      amountSubunits: received.amountSubunits,
       baseAsset: received.baseAsset,
       status: "completed",
     });
@@ -77,9 +108,25 @@ async function handleIncomingDM(content: string): Promise<void> {
       const first = _processedEvents.values().next().value;
       if (first) _processedEvents.delete(first);
     }
+
+    if (
+      !isCurrentListenerContext(generation, scopeId) ||
+      browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic) !== walletId
+    ) {
+      return;
+    }
+
+    const currentPending = usePaymentRequestInbox.getState().pending[payload.id];
+    if (
+      !currentPending ||
+      currentPending.walletScopeId !== scopeId ||
+      currentPending.mintUrl !== normalizedMint
+    ) {
+      return;
+    }
     usePaymentRequestInbox
       .getState()
-      .markReceived(payload.id, received.amountSubunits, received.baseAsset);
+      .markReceived(payload.id, received.amountSubunits, received.baseAsset, scopeId);
   } catch (e) {
     console.warn("[nip17-listener] failed to redeem payment payload:", (e as Error).message);
   } finally {
@@ -93,29 +140,71 @@ async function handleIncomingDM(content: string): Promise<void> {
  * the previous subscription before starting a new one.
  */
 export async function startNip17Listener(mnemonic: string, relays: string[]): Promise<void> {
-  if (!mnemonic) return;
-  const relayKey = [...relays].sort().join("|");
-  if (_current && _current.mnemonic === mnemonic && _current.relayKey === relayKey) {
+  if (relays.length === 0) {
+    stopNip17Listener();
     return;
   }
+  const selectedRelays = normalizeNostrRelayUrls(relays);
+  if (!mnemonic) return;
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  const walletId = browserWalletIdFromMnemonic(mnemonic);
+  if (scopeId === null || walletId === null || !isCurrentWalletScope(scopeId)) return;
+  const relayKey = JSON.stringify([...selectedRelays].sort());
+  if (
+    _current &&
+    _current.mnemonic === mnemonic &&
+    _current.scopeId === scopeId &&
+    _current.relayKey === relayKey
+  ) {
+    return;
+  }
+
+  if (_starting && _starting.mnemonic === mnemonic && _starting.relayKey === relayKey) {
+    return _starting.promise;
+  }
+
+  const generation = ++_generation;
+  _starting?.controller.abort();
   _current?.unsub();
   _current = null;
+  _starting = null;
 
-  const kp = deriveNostrKeyPair(mnemonic);
-  const unsub = await subscribeNip17DMs(
-    kp.privateKeyHex,
-    kp.publicKey,
-    (content) => {
-      void handleIncomingDM(content);
-    },
-    relays.length > 0 ? relays : undefined,
-  );
-  _current = { unsub, mnemonic, relayKey, startedAt: Date.now() };
+  const pendingStart: ListenerStart = {
+    generation,
+    mnemonic,
+    relayKey,
+    promise: Promise.resolve(),
+    controller: new AbortController(),
+  };
+  _starting = pendingStart;
+  pendingStart.promise = (async () => {
+    const kp = deriveNostrKeyPair(mnemonic);
+    const unsub = await subscribeNip17DMs(
+      kp.privateKeyHex,
+      kp.publicKey,
+      (content) => {
+        void handleIncomingDM(content, generation, scopeId, walletId);
+      },
+      selectedRelays,
+      pendingStart.controller.signal,
+    );
+    if (!isCurrentListenerContext(generation, scopeId)) {
+      unsub();
+      return;
+    }
+    _current = { unsub, mnemonic, scopeId, relayKey, startedAt: Date.now() };
+  })().finally(() => {
+    if (_starting?.generation === generation) _starting = null;
+  });
+  return pendingStart.promise;
 }
 
 export function stopNip17Listener(): void {
+  _generation += 1;
+  _starting?.controller.abort();
   _current?.unsub();
   _current = null;
+  _starting = null;
 }
 
 /** Test helper — exposes the running listener handle. */
@@ -146,5 +235,9 @@ export function __resetProcessedEventsForTests(): void {
  * Mirrors what `subscribeNip17DMs` would deliver on success.
  */
 export function __handleIncomingDMForTests(content: string): Promise<void> {
-  return handleIncomingDM(content);
+  const mnemonic = useWalletStore.getState().mnemonic;
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  const walletId = browserWalletIdFromMnemonic(mnemonic);
+  if (scopeId === null || walletId === null) return Promise.resolve();
+  return handleIncomingDM(content, _generation, scopeId, walletId);
 }

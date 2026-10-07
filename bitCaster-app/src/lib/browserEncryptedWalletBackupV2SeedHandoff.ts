@@ -41,6 +41,22 @@ const CONDITIONAL_KEYSET_MAX = DESIRED_ASSET_MAX * 16;
 const TEXT_KEY_MIN = "";
 const TEXT_KEY_MAX = "\uffff";
 const NUMBER_KEY_MAX = Number.MAX_SAFE_INTEGER;
+const PRODUCT_MSAT_ERROR = "browser V2 product seed handoff requires msat";
+
+export type BrowserEncryptedWalletBackupV2SeedHandoffRefusalCode =
+  | "active-wallet-work"
+  | "backup-not-current"
+  | "browser-lock-unavailable";
+
+export class BrowserEncryptedWalletBackupV2SeedHandoffRefusal extends Error {
+  constructor(
+    readonly code: BrowserEncryptedWalletBackupV2SeedHandoffRefusalCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrowserEncryptedWalletBackupV2SeedHandoffRefusal";
+  }
+}
 
 /** One local asset that has complete, acknowledged V2 backup authority. */
 export interface BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset {
@@ -89,6 +105,7 @@ export async function listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAsse
   const eligible: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset[] = [];
   for (const rawDesired of desiredRows) {
     const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+    requireProductMsatUnit(desired.unit);
     if (!isAcknowledgedReplacement(desired, input.scopeId)) continue;
     try {
       const proofs = await exactLocalProofs(input.database, input.scopeId, desired);
@@ -109,7 +126,7 @@ export async function listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAsse
         }),
       );
     } catch (error) {
-      if (isMissingCoverageError(error)) continue;
+      if (isBackupAuthorityRefusal(error)) continue;
       throw error;
     }
   }
@@ -130,7 +147,11 @@ export async function listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFa
     scope = await readEvictedAssetMonitoringScope(input.database, input.scopeId);
   } catch (error) {
     requireCapturedDatabase(input);
-    if (error instanceof Error && error.message === "browser V2 desired asset limit exceeded") {
+    if (
+      error instanceof Error &&
+      (error.message === "browser V2 desired asset limit exceeded" ||
+        error.message === PRODUCT_MSAT_ERROR)
+    ) {
       throw error;
     }
     return Object.freeze([]);
@@ -174,6 +195,7 @@ async function readEvictedAssetMonitoringScope(
   const desiredRows = (await readDesiredRows(database, scopeId)).map(
     decodeEncryptedWalletBackupV2DesiredAssetRow,
   );
+  desiredRows.forEach(({ unit }) => requireProductMsatUnit(unit));
   const [receipts, heads, conditionalKeysets] = await Promise.all([
     database.encryptedWalletBackupV2AssetReceipts
       .where("[scopeId+realm+walletId+enrollmentEpoch]")
@@ -361,7 +383,7 @@ function resolveMonitoringAsset(
   readonly asset: BrowserEncryptedWalletBackupV2EvictedAssetMonitoringIdentity;
   readonly proofKeys: readonly string[];
 } | null {
-  if (desired.unit !== "sat" && desired.unit !== "msat") return null;
+  requireProductMsatUnit(desired.unit);
   if (desired.assetIdentity === "cashu:ordinary") {
     const asset = { kind: "ordinary", mintUrl: desired.mintUrl, unit: desired.unit } as const;
     return { asset, proofKeys: [monitoringOrdinaryProofKey(desired.scopeId, asset)] };
@@ -405,7 +427,7 @@ function resolveMonitoringAsset(
   const asset = {
     kind: "conditional" as const,
     mintUrl: desired.mintUrl,
-    unit: desired.unit as "sat" | "msat",
+    unit: desired.unit,
     conditionId,
     outcomeCollection: first.outcomeCollection,
   };
@@ -475,41 +497,59 @@ function monitoringKeysetIdentityKey(value: {
 }
 
 /**
- * Delete only the captured old IndexedDB database before activating a new profile.
+ * Activate a new seed before deleting the captured old IndexedDB cache.
  * This primitive never calls a backup service or deletes remote backup authority.
  */
 export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly isCurrentProfile: () => boolean;
+  /** Check app-level unfinished orders after async eligibility checks and before invalidation. */
+  readonly assertNoPendingOrders: () => void;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly invalidateOldProfile: () => void;
   readonly activateNewProfile: () => Promise<void>;
   readonly restoreOldProfile: () => Promise<void>;
 }): Promise<void> {
   requireCapturedDatabase(input);
+  const lockManager = input.lockManager ?? globalThis.navigator?.locks;
+  if (!lockManager) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "browser-lock-unavailable",
+      "This browser cannot safely lock the wallet profile",
+    );
+  }
   await withWalletProfileLock(
     input.scopeId,
     async () => {
       requireCapturedDatabase(input);
       const walletLocks = await readWalletLocks(input.database, input.scopeId);
-      // The profile lock always precedes sorted wallet locks. The backup driver never takes a profile lock.
-      await withWalletLocks(walletLocks, input.lockManager, async () => {
+      // The caller quiesces this profile's driver first because recovery paths also take this lock.
+      // Wallet locks are nonblocking, so work in another tab fails closed.
+      await withWalletLocks(walletLocks, lockManager, async () => {
         requireCapturedDatabase(input);
         await requireWholeWalletSeedHandoffEligibility(input);
         requireCapturedDatabase(input);
+        input.assertNoPendingOrders();
         input.invalidateOldProfile();
         try {
-          input.database.close();
-          await input.database.delete();
           await input.activateNewProfile();
         } catch (error) {
           await input.restoreOldProfile();
           throw error;
         }
+
+        // Persisting the new seed is the commit point. If cache cleanup then
+        // fails, keep the new profile active and leave the old cache recoverable.
+        try {
+          input.database.close();
+          await input.database.delete();
+        } catch {
+          // Do not roll back to the old profile after the new seed is durable.
+        }
       });
     },
-    input.lockManager,
+    lockManager,
   );
 }
 
@@ -542,9 +582,15 @@ async function withWalletLocks<T>(
   if (lockNames.length === 0) return action();
   if (!lockManager) throw new Error("This browser cannot safely lock the wallet profile");
   const [lockName, ...remaining] = lockNames;
-  return lockManager.request(lockName!, { mode: "exclusive" }, () =>
-    withWalletLocks(remaining, lockManager, action),
-  );
+  return lockManager.request(lockName!, { mode: "exclusive", ifAvailable: true }, (lock) => {
+    if (lock === null) {
+      throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+        "active-wallet-work",
+        "browser V2 wallet has active work in another tab",
+      );
+    }
+    return withWalletLocks(remaining, lockManager, action);
+  });
 }
 
 async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string): Promise<void> {
@@ -571,16 +617,33 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
         .limit(1)
         .first(),
     ]);
-  if (activeWork !== undefined) throw new Error("browser V2 seed handoff has active custody work");
+  if (activeWork !== undefined) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has active custody work",
+    );
+  }
   if (preparedOperation !== undefined)
-    throw new Error("browser V2 seed handoff has a prepared proof operation");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has a prepared proof operation",
+    );
   if (activeRanges.preparations.length > 0) {
-    throw new Error("browser V2 seed handoff has active CTF range work");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has active CTF range work",
+    );
   }
   if (preparedMutation !== undefined)
-    throw new Error("browser V2 seed handoff has a prepared backup mutation");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has a prepared backup mutation",
+    );
   if (outgoingAuthority !== undefined) {
-    throw new Error("browser V2 seed handoff has nonterminal outgoing Cashu authority");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has nonterminal outgoing Cashu authority",
+    );
   }
 }
 
@@ -588,15 +651,23 @@ async function requireWholeWalletSeedHandoffEligibility(
   input: BrowserEncryptedWalletBackupV2CacheEligibilityInput,
 ): Promise<void> {
   await requireNoActiveLocalWork(input.database, input.scopeId);
-  const [desiredRows, eligible] = await Promise.all([
-    readDesiredRows(input.database, input.scopeId),
-    listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input),
-  ]);
+  const desiredRows = await readDesiredRows(input.database, input.scopeId);
+  desiredRows
+    .map(decodeEncryptedWalletBackupV2DesiredAssetRow)
+    .forEach(({ unit }) => requireProductMsatUnit(unit));
+  const eligible = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input);
   if (eligible.length !== desiredRows.length) {
-    throw new Error("browser V2 seed handoff has uncovered desired assets");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 seed handoff has uncovered desired assets",
+    );
   }
   await requireExactActiveProofCoverage(input.database, input.scopeId, eligible);
   requireCapturedDatabase(input);
+}
+
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error(PRODUCT_MSAT_ERROR);
 }
 
 async function readDesiredRows(database: BitcasterDB, scopeId: string) {
@@ -651,7 +722,12 @@ async function requireBackupCoverage(
       row.localAssetKey === desired.localAssetKey &&
       row.custodyRevision === desired.custodyRevision,
   );
-  if (matches.length !== 1) throw new Error("browser V2 desired receipt is absent or ambiguous");
+  if (matches.length !== 1) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 desired receipt is absent or ambiguous",
+    );
+  }
   const receipt = matches[0]!;
   const descriptor = requireReceiptDescriptorBinding(receipt, desired);
   const head = await database.encryptedWalletBackupV2AcceptedHeads.get([
@@ -660,7 +736,12 @@ async function requireBackupCoverage(
     receipt.walletId,
     receipt.enrollmentEpoch,
   ]);
-  if (head === undefined) throw new Error("browser V2 accepted head is absent");
+  if (head === undefined) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is absent",
+    );
+  }
   const decodedHead = decodeCurrentHeadForReceipt(head, desired, receipt);
   await requireCurrentDescriptorAuthority(database, desired, decodedHead, descriptor);
   return { receipt, descriptor };
@@ -687,7 +768,10 @@ function requireReceiptDescriptorBinding(
       receipt.canonicalSignedReceipt,
     )
   ) {
-    throw new Error("browser V2 desired receipt is invalid");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 desired receipt is invalid",
+    );
   }
   if (
     mutation.realm !== receipt.realm ||
@@ -708,9 +792,17 @@ function requireReceiptDescriptorBinding(
     signedReceipt.resultHead.walletId !== receipt.walletId ||
     signedReceipt.resultHead.enrollmentEpoch !== receipt.enrollmentEpoch
   ) {
-    throw new Error("browser V2 desired receipt is foreign");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 desired receipt is foreign",
+    );
   }
-  if (mutation.addedBundle === null) throw new Error("browser V2 desired receipt is foreign");
+  if (mutation.addedBundle === null) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 desired receipt is foreign",
+    );
+  }
   const descriptor = mutation.addedBundle;
   if (
     descriptor.bundleId !== receipt.bundleId ||
@@ -718,7 +810,10 @@ function requireReceiptDescriptorBinding(
     descriptor.custodyRevision.toString() !== desired.custodyRevision ||
     digestEncryptedWalletBackupV2BundleDescriptor(descriptor) !== receipt.bundleDescriptorDigest
   ) {
-    throw new Error("browser V2 active descriptor binding is invalid");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 active descriptor binding is invalid",
+    );
   }
   return descriptor;
 }
@@ -734,7 +829,10 @@ function decodeCurrentHeadForReceipt(
     head.walletId !== receipt.walletId ||
     head.enrollmentEpoch !== receipt.enrollmentEpoch
   ) {
-    throw new Error("browser V2 accepted head is foreign");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is foreign",
+    );
   }
   const decodedHead = decodeEncryptedWalletBackupV2CurrentHead({
     formatVersion: 2,
@@ -749,7 +847,10 @@ function decodeCurrentHeadForReceipt(
   if (
     !sameBytes(encodeEncryptedWalletBackupV2CurrentHead(decodedHead), head.canonicalCurrentHead)
   ) {
-    throw new Error("browser V2 accepted head is stale");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is stale",
+    );
   }
   return decodedHead;
 }
@@ -767,7 +868,10 @@ async function requireCurrentDescriptorAuthority(
     .toArray();
   const descriptorDigests = requireCurrentDescriptorAuthorityFromRows(desired, head, rows);
   if (!descriptorDigests.has(monitoringDescriptorKey(receiptDescriptor))) {
-    throw new Error("browser V2 accepted head is stale");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is stale",
+    );
   }
 }
 
@@ -777,7 +881,10 @@ function requireCurrentDescriptorAuthorityFromRows(
   rows: readonly EncryptedWalletBackupV2ActiveDescriptorRow[],
 ): ReadonlySet<string> {
   if (rows.length !== head.activeBundleCount || rows.length > DESIRED_ASSET_MAX) {
-    throw new Error("browser V2 accepted head is stale");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is stale",
+    );
   }
   const descriptors = rows.map((row) => {
     const descriptor = decodeEncryptedWalletBackupV2BundleDescriptorWire(row.canonicalDescriptor, {
@@ -790,7 +897,10 @@ function requireCurrentDescriptorAuthorityFromRows(
       row.custodyRevision !== descriptor.custodyRevision.toString() ||
       !sameBytes(encodeEncryptedWalletBackupV2BundleDescriptor(descriptor), row.canonicalDescriptor)
     ) {
-      throw new Error("browser V2 active descriptor binding is invalid");
+      throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+        "backup-not-current",
+        "browser V2 active descriptor binding is invalid",
+      );
     }
     return descriptor;
   });
@@ -809,7 +919,10 @@ function requireCurrentDescriptorAuthorityFromRows(
       encodeEncryptedWalletBackupV2CurrentHead(head),
     )
   ) {
-    throw new Error("browser V2 accepted head is stale");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "backup-not-current",
+      "browser V2 accepted head is stale",
+    );
   }
   return new Set(descriptors.map(monitoringDescriptorKey));
 }
@@ -824,7 +937,7 @@ async function requireExactActiveProofCoverage(
   eligible: readonly BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset[],
 ): Promise<void> {
   const expected = new Set(eligible.flatMap(({ proofs }) => proofs.map(({ proofId }) => proofId)));
-  const [selectable, locked] = await Promise.all([
+  const [selectable, locked, retained] = await Promise.all([
     database.custodyProofs
       .where("[scopeId+selectability]")
       .equals([scopeId, "selectable"])
@@ -835,12 +948,25 @@ async function requireExactActiveProofCoverage(
       .equals([scopeId, "locked"])
       .limit(ACTIVE_PROOF_MAX + 1)
       .toArray(),
+    database.custodyProofs
+      .where("[scopeId+selectability]")
+      .equals([scopeId, "retained-unverified"])
+      .limit(ACTIVE_PROOF_MAX + 1)
+      .toArray(),
   ]);
-  const rawRows = [...selectable, ...locked];
-  if (rawRows.length > ACTIVE_PROOF_MAX) throw new Error("browser V2 active proof limit exceeded");
+  const rawRows = [...selectable, ...locked, ...retained];
+  if (rawRows.length > ACTIVE_PROOF_MAX) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 active proof limit exceeded",
+    );
+  }
   const actual = rawRows.map(decodeBrowserCustodyProofRow).filter((row) => row.scopeId === scopeId);
   if (actual.length !== expected.size || actual.some((row) => !expected.delete(row.proofId))) {
-    throw new Error("browser V2 seed handoff has untracked active custody rows");
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has untracked active custody rows",
+    );
   }
 }
 
@@ -856,12 +982,10 @@ function isAcknowledgedReplacement(
   );
 }
 
-function isMissingCoverageError(error: unknown): boolean {
+function isBackupAuthorityRefusal(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    /desired receipt is absent or ambiguous|active descriptor is absent|accepted head is absent|custody is incomplete/.test(
-      error.message,
-    )
+    error instanceof BrowserEncryptedWalletBackupV2SeedHandoffRefusal &&
+    error.code === "backup-not-current"
   );
 }
 

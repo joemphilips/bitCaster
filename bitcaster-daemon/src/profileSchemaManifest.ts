@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
+import { NATIVE_ORACLE_SCHEMA_SQL } from './nativeOracleSchema.ts'
+import { WALLET_PROOF_IMPORT_SCHEMA_SQL } from './walletProofImportSqlite.ts'
+import { NATIVE_PAYMENT_REQUEST_RECEIPT_SCHEMA_SQL } from './nativePaymentRequestReceiptSqlite.ts'
+import { NATIVE_BOLT11_MINT_QUOTE_SCHEMA_SQL } from './nativeBolt11MintQuoteSchema.ts'
+import { NATIVE_BOOKMARK_SCHEMA_SQL } from './nativeBookmarkSchema.ts'
+import { NATIVE_ACTIVITY_SCHEMA_SQL } from './nativeActivitySqlite.ts'
 import {
   captureProfileSchemaManifest,
   type ProfileSchemaManifest,
@@ -7,10 +13,11 @@ import {
 } from './profileSchema.ts'
 
 export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
-export const FINAL_PROFILE_SCHEMA_VERSION = 1
+// The unit reset intentionally refuses every pre-release profile authority.
+export const FINAL_PROFILE_SCHEMA_VERSION = 15
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '7aef75c86efcc1f8ca7bf915bc217dfdafc25f79bb94903b5c8967e9bbd26554'
+  'fc13f1764e4b4add56c62e74441fe4d10bd3e53f95ed4ee4c837732e648edd9f'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -20,6 +27,8 @@ const recordBytesMax = 64 * 1_024
  * This custody schema is not deployed, so v1 revisions replace an empty store.
  */
 export const FINAL_PROFILE_SCHEMA_SQL = [
+  ...NATIVE_BOOKMARK_SCHEMA_SQL,
+  ...NATIVE_ORACLE_SCHEMA_SQL,
   `CREATE TABLE profile_schema_marker (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     schema_name TEXT NOT NULL CHECK (schema_name = '${FINAL_PROFILE_SCHEMA_NAME}'),
@@ -38,6 +47,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       AND substr(wallet_scope_id, 16) NOT GLOB '*[^0-9a-f]*'
     ),
     initialized_at_ms INTEGER NOT NULL CHECK (initialized_at_ms >= 0),
+    signer_enabled INTEGER NOT NULL DEFAULT 1 CHECK (signer_enabled IN (0, 1)),
+    signer_revision INTEGER NOT NULL DEFAULT 0 CHECK (signer_revision BETWEEN 0 AND 9007199254740991),
     UNIQUE (wallet_scope_id, nostr_public_key_hex)
   ) STRICT`,
   `CREATE TABLE daemon_secret_authority (
@@ -64,7 +75,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     FOREIGN KEY (wallet_scope_id, nostr_public_key_hex)
       REFERENCES daemon_profile(wallet_scope_id, nostr_public_key_hex)
-      ON DELETE RESTRICT
+      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
   ) STRICT`,
   `CREATE TABLE daemon_rpc_token (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
@@ -182,6 +193,14 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     proof_body BLOB NOT NULL CHECK (length(proof_body) BETWEEN 1 AND ${recordBytesMax}),
     state TEXT NOT NULL CHECK (state IN ('available', 'reserved', 'locked')),
     reserved_by TEXT CHECK (reserved_by IS NULL OR length(reserved_by) BETWEEN 1 AND 16384),
+    retired_by_operation_id TEXT,
+    retired_at_ms INTEGER CHECK (retired_at_ms IS NULL OR retired_at_ms >= 0),
+    retired_custody_proof_id TEXT CHECK (
+      retired_custody_proof_id IS NULL OR (
+        length(retired_custody_proof_id) = 64
+        AND retired_custody_proof_id NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
     asset_kind TEXT NOT NULL CHECK (asset_kind IN ('sats', 'outcome')),
     condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
     outcome_set_id TEXT CHECK (outcome_set_id IS NULL OR length(outcome_set_id) BETWEEN 1 AND 1024),
@@ -189,6 +208,15 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, normalized_mint, secret),
+    FOREIGN KEY (scope_id, retired_by_operation_id)
+      REFERENCES target_proof_operations(scope_id, operation_id)
+      ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+    CHECK (
+      (retired_by_operation_id IS NULL AND retired_at_ms IS NULL AND retired_custody_proof_id IS NULL)
+      OR (retired_by_operation_id IS NOT NULL AND retired_at_ms IS NOT NULL
+        AND retired_custody_proof_id IS NOT NULL AND state = 'locked'
+        AND asset_kind = 'outcome' AND reserved_by = retired_by_operation_id)
+    ),
     CHECK (
       (state IN ('reserved', 'locked') AND reserved_by IS NOT NULL)
       OR (state = 'available' AND reserved_by IS NULL)
@@ -240,6 +268,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     last_error TEXT CHECK (
       last_error IS NULL OR length(last_error) BETWEEN 1 AND 1024
     ),
+    failure_code INTEGER CHECK (
+      failure_code IS NULL OR (kind = 'ctf-redeem' AND state = 'failed' AND failure_code = 13015)
+    ),
     reservation_id TEXT CHECK (
       reservation_id IS NULL OR length(reservation_id) BETWEEN 1 AND 16384
     ),
@@ -279,7 +310,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     root_operation_id TEXT NOT NULL CHECK (length(root_operation_id) BETWEEN 1 AND 16358),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     condition_id TEXT NOT NULL CHECK (length(condition_id) BETWEEN 1 AND 1024),
-    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    amount_msat INTEGER NOT NULL CHECK (amount_msat BETWEEN 1 AND 9007199254740991),
     regular_operation_id TEXT CHECK (length(regular_operation_id) BETWEEN 1 AND 16384),
     regular_reservation_id TEXT CHECK (length(regular_reservation_id) BETWEEN 1 AND 16384),
     regular_purpose TEXT CHECK (
@@ -357,13 +388,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     source_operation_id TEXT NOT NULL CHECK (
       length(source_operation_id) BETWEEN 1 AND 16384
     ),
-    source_kind TEXT NOT NULL CHECK (
-      source_kind IN ('wallet-prepared', 'residual-change')
-    ),
-    predecessor_range_operation_id TEXT CHECK (
-      predecessor_range_operation_id IS NULL
-      OR length(predecessor_range_operation_id) BETWEEN 1 AND 16384
-    ),
     authorization_id TEXT NOT NULL CHECK (
       length(authorization_id) BETWEEN 1 AND 16384
     ),
@@ -389,43 +413,16 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       minimum_fill_amount_subunits BETWEEN 1 AND amount_subunits
       AND minimum_fill_amount_subunits % divisibility = 0
     ),
-    continue_after_partial_fill INTEGER NOT NULL CHECK (
-      continue_after_partial_fill IN (0, 1)
-    ),
     consolidate_proofs INTEGER NOT NULL CHECK (consolidate_proofs IN (0, 1)),
-    continuation_predecessor_order_id TEXT CHECK (
-      continuation_predecessor_order_id IS NULL OR (
-        length(continuation_predecessor_order_id) = 36
-        AND substr(continuation_predecessor_order_id, 9, 1) = '-'
-        AND substr(continuation_predecessor_order_id, 14, 1) = '-'
-        AND substr(continuation_predecessor_order_id, 19, 1) = '-'
-        AND substr(continuation_predecessor_order_id, 24, 1) = '-'
-        AND replace(continuation_predecessor_order_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-      )
-    ),
-    continuation_settlement_group_id TEXT CHECK (
-      continuation_settlement_group_id IS NULL OR (
-        length(continuation_settlement_group_id) = 36
-        AND substr(continuation_settlement_group_id, 9, 1) = '-'
-        AND substr(continuation_settlement_group_id, 14, 1) = '-'
-        AND substr(continuation_settlement_group_id, 19, 1) = '-'
-        AND substr(continuation_settlement_group_id, 24, 1) = '-'
-        AND replace(continuation_settlement_group_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-      )
-    ),
-    continuation_settlement_group_revision INTEGER CHECK (
-      continuation_settlement_group_revision IS NULL
-      OR continuation_settlement_group_revision BETWEEN 1 AND 9007199254740991
-    ),
-    continuation_revision INTEGER CHECK (
-      continuation_revision IS NULL OR continuation_revision BETWEEN 1 AND 9007199254740991
-    ),
-    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (1000, 1000000)),
     authorization_expires_at_unix_seconds INTEGER NOT NULL CHECK (
       authorization_expires_at_unix_seconds BETWEEN 1 AND 9007199254740991
     ),
     preparation_body BLOB NOT NULL CHECK (
       length(preparation_body) BETWEEN 1 AND 262144
+    ),
+    fee_consent_body BLOB CHECK (
+      fee_consent_body IS NULL OR length(fee_consent_body) BETWEEN 1 AND 4096
     ),
     lifecycle_state TEXT NOT NULL CHECK (
       lifecycle_state IN (
@@ -469,13 +466,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     PRIMARY KEY (scope_id, range_operation_id),
-    FOREIGN KEY (scope_id, predecessor_range_operation_id)
-      REFERENCES daemon_ctf_range_preparations(scope_id, range_operation_id)
-      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     UNIQUE (scope_id, source_operation_id),
     UNIQUE (scope_id, authorization_id),
     UNIQUE (scope_id, client_order_id),
-    UNIQUE (scope_id, predecessor_range_operation_id),
     UNIQUE (scope_id, range_operation_id, source_operation_id),
     CHECK (
       trim(order_route_id, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')
@@ -486,23 +479,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       AND length(order_route_id) > length(condition_id) + 1
       AND substr(order_route_id, 1, length(condition_id) + 1) = condition_id || '-'
       AND instr(substr(order_route_id, length(condition_id) + 2), '-') = 0
-    ),
-    CHECK (
-      (source_kind = 'wallet-prepared'
-        AND predecessor_range_operation_id IS NULL
-        AND continuation_predecessor_order_id IS NULL
-        AND continuation_settlement_group_id IS NULL
-        AND continuation_settlement_group_revision IS NULL
-        AND continuation_revision IS NULL)
-      OR
-      (source_kind = 'residual-change'
-        AND predecessor_range_operation_id IS NOT NULL
-        AND predecessor_range_operation_id <> range_operation_id
-        AND continue_after_partial_fill = 1
-        AND continuation_predecessor_order_id IS NOT NULL
-        AND continuation_settlement_group_id IS NOT NULL
-        AND continuation_settlement_group_revision IS NOT NULL
-        AND continuation_revision IS NOT NULL)
     ),
     CHECK (
       (
@@ -527,55 +503,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         AND capability_artifact_id IS NOT NULL)
       OR lifecycle_state = 'terminal'
     )
-  ) STRICT`,
-  `CREATE TABLE daemon_ctf_range_successor_intents (
-    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
-    predecessor_range_operation_id TEXT NOT NULL CHECK (
-      length(predecessor_range_operation_id) BETWEEN 1 AND 16384
-    ),
-    successor_range_operation_id TEXT NOT NULL CHECK (
-      length(successor_range_operation_id) BETWEEN 1 AND 16384
-    ),
-    successor_authorization_id TEXT NOT NULL CHECK (
-      length(successor_authorization_id) BETWEEN 1 AND 16384
-    ),
-    successor_client_order_id TEXT NOT NULL CHECK (
-      length(successor_client_order_id) BETWEEN 1 AND 1024
-    ),
-    remaining_amount_subunits INTEGER NOT NULL CHECK (
-      remaining_amount_subunits BETWEEN 1 AND 9007199254740991
-    ),
-    continuation_predecessor_order_id TEXT NOT NULL CHECK (
-      length(continuation_predecessor_order_id) = 36
-      AND substr(continuation_predecessor_order_id, 9, 1) = '-'
-      AND substr(continuation_predecessor_order_id, 14, 1) = '-'
-      AND substr(continuation_predecessor_order_id, 19, 1) = '-'
-      AND substr(continuation_predecessor_order_id, 24, 1) = '-'
-      AND replace(continuation_predecessor_order_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-    ),
-    continuation_settlement_group_id TEXT NOT NULL CHECK (
-      length(continuation_settlement_group_id) = 36
-      AND substr(continuation_settlement_group_id, 9, 1) = '-'
-      AND substr(continuation_settlement_group_id, 14, 1) = '-'
-      AND substr(continuation_settlement_group_id, 19, 1) = '-'
-      AND substr(continuation_settlement_group_id, 24, 1) = '-'
-      AND replace(continuation_settlement_group_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-    ),
-    continuation_settlement_group_revision INTEGER NOT NULL CHECK (
-      continuation_settlement_group_revision BETWEEN 1 AND 9007199254740991
-    ),
-    continuation_revision INTEGER NOT NULL CHECK (
-      continuation_revision BETWEEN 1 AND 9007199254740991
-    ),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    PRIMARY KEY (scope_id, predecessor_range_operation_id),
-    UNIQUE (scope_id, successor_range_operation_id),
-    UNIQUE (scope_id, successor_authorization_id),
-    UNIQUE (scope_id, successor_client_order_id),
-    FOREIGN KEY (scope_id, predecessor_range_operation_id)
-      REFERENCES daemon_ctf_range_preparations(scope_id, range_operation_id)
-      ON DELETE RESTRICT,
-    CHECK (successor_range_operation_id <> predecessor_range_operation_id)
   ) STRICT`,
   `CREATE TABLE daemon_ctf_range_sources (
     scope_id TEXT NOT NULL,
@@ -700,6 +627,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
           OR artifact_id GLOB 'artifact:custody-operation:?*:private'
           OR artifact_id GLOB 'artifact:custody-operation:?*:result'
           OR artifact_id GLOB 'artifact:custody-operation:?*:delivery'
+          OR artifact_id GLOB 'artifact:custody-operation:?*:terminal-mint-rejection'
         )
         OR (
           length(artifact_id) = 64
@@ -710,7 +638,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
       'exact-request', 'output-plan', 'private-material', 'exact-result',
-      'delivery-payload', 'outgoing-transfer'
+      'delivery-payload', 'outgoing-transfer', 'terminal-mint-rejection'
     )),
     encoding TEXT NOT NULL CHECK (encoding IN ('canonical-json', 'utf8', 'binary')),
     body BLOB NOT NULL CHECK (length(body) BETWEEN 1 AND ${artifactBytesMax}),
@@ -730,6 +658,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     retained_operation_key TEXT NOT NULL CHECK (length(retained_operation_key) BETWEEN 1 AND 1024),
     semantic_kind TEXT NOT NULL CHECK (semantic_kind IN ('swap-refund', 'conditional-keyset-swap',
       'generic-receive', 'generic-send', 'wallet-send',
+      'ctf-range-regular-source', 'ctf-range-conditional-source',
       'ctf-split', 'ctf-merge', 'proof-consolidation', 'ctf-redeem'
     )),
     operation_state TEXT NOT NULL CHECK (
@@ -739,7 +668,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     wallet_stage TEXT NOT NULL CHECK (
       wallet_stage IN (
         'lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge',
-        'proof-consolidation', 'ctf-redeem'
+        'proof-consolidation', 'ctf-redeem', 'capability-preparation'
       )
     ),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
@@ -885,7 +814,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE custody_operation_artifact_links (
     scope_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
-    link_kind TEXT NOT NULL CHECK (link_kind IN ('request', 'output', 'private', 'result')),
+    link_kind TEXT NOT NULL CHECK (link_kind IN ('request', 'output', 'private', 'result', 'terminal-mint-rejection')),
     position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 511),
     artifact_id TEXT NOT NULL,
     PRIMARY KEY (scope_id, operation_id, link_kind, position),
@@ -991,6 +920,64 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       ON DELETE RESTRICT,
     CHECK (admitted_revision = coalesce(expected_revision, 0))
   ) STRICT`,
+  `CREATE TABLE custody_position_claim_links (
+    scope_id TEXT NOT NULL,
+    target_operation_id TEXT NOT NULL,
+    custody_operation_id TEXT NOT NULL,
+    PRIMARY KEY (scope_id, target_operation_id),
+    UNIQUE (scope_id, custody_operation_id),
+    FOREIGN KEY (scope_id, target_operation_id)
+      REFERENCES target_proof_operations(scope_id, operation_id) ON DELETE RESTRICT,
+    FOREIGN KEY (scope_id, custody_operation_id)
+      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+  ) STRICT`,
+  `CREATE TABLE custody_terminal_mint_rejections (
+    scope_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    code INTEGER NOT NULL CHECK (code = 13015),
+    predecessor_disposition TEXT NOT NULL CHECK (predecessor_disposition = 'retain'),
+    rejection_handle TEXT NOT NULL CHECK (length(rejection_handle) BETWEEN 1 AND 16384),
+    rejection_fingerprint TEXT NOT NULL CHECK (
+      length(rejection_fingerprint) = 64 AND rejection_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    rejection_artifact_id TEXT NOT NULL,
+    CHECK (rejection_artifact_id = 'artifact:' || operation_id || ':terminal-mint-rejection'),
+    PRIMARY KEY (scope_id, operation_id),
+    FOREIGN KEY (scope_id, operation_id)
+      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT,
+    FOREIGN KEY (scope_id, rejection_artifact_id)
+      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED
+  ) STRICT`,
+  `CREATE TRIGGER custody_position_claim_links_exact_insert
+    BEFORE INSERT ON custody_position_claim_links
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM target_proof_operations AS target JOIN custody_operations AS custody
+          ON custody.scope_id = target.scope_id
+        WHERE target.scope_id = NEW.scope_id AND target.operation_id = NEW.target_operation_id
+          AND target.kind = 'ctf-redeem' AND target.purpose = 'position-claim'
+          AND custody.operation_id = NEW.custody_operation_id
+          AND custody.semantic_kind = 'ctf-redeem' AND custody.wallet_stage = 'ctf-redeem'
+          AND custody.retained_operation_key = target.operation_id
+          AND custody.reservation_id = target.reservation_id
+          AND custody.normalized_mint = target.normalized_mint AND custody.unit = 'msat'
+      ) THEN RAISE(ABORT, 'position claim mapping is foreign') END;
+    END`,
+  `CREATE TRIGGER custody_position_claim_links_no_update
+    BEFORE UPDATE ON custody_position_claim_links
+    BEGIN SELECT RAISE(ABORT, 'position claim mapping is immutable'); END`,
+  `CREATE TRIGGER custody_terminal_mint_rejections_exact_insert
+    BEFORE INSERT ON custody_terminal_mint_rejections
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM custody_operations WHERE scope_id = NEW.scope_id AND operation_id = NEW.operation_id
+          AND semantic_kind = 'ctf-redeem' AND operation_state = 'aborted' AND result_state = 'none'
+      ) THEN RAISE(ABORT, 'terminal mint rejection operation is foreign') END;
+    END`,
+  `CREATE TRIGGER custody_terminal_mint_rejections_no_update
+    BEFORE UPDATE ON custody_terminal_mint_rejections
+    BEGIN SELECT RAISE(ABORT, 'terminal mint rejection is immutable'); END`,
   `CREATE TABLE custody_operation_tombstones (
     scope_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
@@ -1077,7 +1064,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     preflight_lock_outcome_set_id TEXT,
     preflight_amount_subunits INTEGER CHECK (preflight_amount_subunits > 0),
     base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
-    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (1000, 1000000)),
     engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
     engine_status_body BLOB CHECK (
       engine_status_body IS NULL OR length(engine_status_body) <= ${recordBytesMax}
@@ -1191,6 +1178,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         length(recipient_binding) = 64 AND recipient_binding NOT GLOB '*[^0-9a-f]*'
       )
     ),
+    funding_sequence INTEGER NOT NULL DEFAULT 0 CHECK (funding_sequence IN (0, 1)),
+    funding_predecessor_transfer_id TEXT CHECK (
+      funding_predecessor_transfer_id IS NULL
+      OR length(funding_predecessor_transfer_id) BETWEEN 1 AND 16384
+    ),
     due_at_ms INTEGER NOT NULL CHECK (due_at_ms BETWEEN 0 AND 9007199254740991),
     attempt_count INTEGER NOT NULL CHECK (attempt_count BETWEEN 0 AND 9007199254740991),
     revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 9007199254740991),
@@ -1211,6 +1203,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     FOREIGN KEY (scope_id, transfer_artifact_id)
       REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
       DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (scope_id, funding_predecessor_transfer_id)
+      REFERENCES daemon_outgoing_cashu_transfers(scope_id, transfer_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
     CHECK (
       (delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')
         AND due_at_ms >= 0)
@@ -1228,12 +1223,41 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
           'reclaim-prepared', 'reclaimed'
         )
       )
+    ),
+    CHECK (
+      (funding_sequence = 0 AND funding_predecessor_transfer_id IS NULL)
+      OR (funding_sequence = 1 AND delivery_policy = 'durable-recipient-ack')
     )
+  ) STRICT`,
+  `CREATE TABLE daemon_market_funding_heads (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    recipient_binding TEXT NOT NULL CHECK (
+      length(recipient_binding) = 64 AND recipient_binding NOT GLOB '*[^0-9a-f]*'
+    ),
+    transfer_id TEXT NOT NULL CHECK (length(transfer_id) BETWEEN 1 AND 16384),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991),
+    account_subject TEXT NOT NULL CHECK (
+      length(account_subject) BETWEEN 1 AND 256
+      AND account_subject NOT GLOB '*[^ -~]*'
+    ),
+    condition_id TEXT NOT NULL CHECK (
+      length(condition_id) BETWEEN 1 AND 128 AND condition_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (1000, 1000000)),
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    unit TEXT NOT NULL CHECK (unit = 'msat'),
+    PRIMARY KEY (scope_id, recipient_binding),
+    FOREIGN KEY (scope_id, transfer_id)
+      REFERENCES daemon_outgoing_cashu_transfers(scope_id, transfer_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED
   ) STRICT`,
   `CREATE TABLE daemon_participation_score_delivery_pointers (
     scope_id TEXT PRIMARY KEY REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     transfer_id TEXT NOT NULL CHECK (length(transfer_id) BETWEEN 1 AND 16384),
-    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    amount_msat INTEGER NOT NULL CHECK (
+      amount_msat BETWEEN 1 AND 9007199254740991
+      AND amount_msat % 1000 = 0
+    ),
     purchased_total_epoch INTEGER NOT NULL CHECK (
       purchased_total_epoch BETWEEN 0 AND 9007199254740991
     ),
@@ -1246,11 +1270,24 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     )`,
   `CREATE INDEX custody_proofs_reservation_idx
     ON custody_proofs (scope_id, reservation_operation_id, selectability, proof_id)`,
+  `CREATE INDEX target_keyset_counters_scope_keyset_mint_idx
+    ON target_keyset_counters (scope_id, keyset_id, normalized_mint)`,
+  `CREATE INDEX custody_keyset_counters_scope_keyset_mint_idx
+    ON custody_keyset_counters (scope_id, keyset_id, normalized_mint)`,
   `CREATE INDEX target_wallet_proofs_selection_idx
     ON target_wallet_proofs (
       scope_id, normalized_mint, unit, asset_kind, condition_id, outcome_set_id,
       keyset_id, state, amount DESC, proof_id
     )`,
+  `CREATE INDEX target_wallet_proofs_retired_canonical_idx
+    ON target_wallet_proofs (scope_id, retired_custody_proof_id)
+    WHERE retired_custody_proof_id IS NOT NULL`,
+  `CREATE INDEX target_proof_operations_pending_mint_idx
+    ON target_proof_operations (scope_id, normalized_mint)
+    WHERE state = 'prepared'`,
+  `CREATE INDEX target_wallet_proofs_remove_idx
+    ON target_wallet_proofs (scope_id, normalized_mint, condition_id, outcome_set_id, proof_id)
+    WHERE retired_at_ms IS NULL`,
   `CREATE INDEX target_wallet_proofs_holdings_idx
     ON target_wallet_proofs (
       scope_id, normalized_mint, state, base_asset, asset_kind,
@@ -1309,10 +1346,19 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE INDEX daemon_outgoing_cashu_transfers_all_mints_due_idx
     ON daemon_outgoing_cashu_transfers (scope_id, due_at_ms, transfer_id)
     WHERE delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')`,
+  `CREATE INDEX daemon_outgoing_cashu_account_recovery_idx
+    ON daemon_outgoing_cashu_transfers (scope_id)
+    WHERE delivery_policy = 'durable-recipient-ack'
+      AND delivery_state IN ('prepared', 'delivery-pending')`,
   `CREATE UNIQUE INDEX daemon_outgoing_cashu_recipient_active_binding_idx
     ON daemon_outgoing_cashu_transfers (scope_id, recipient_binding)
     WHERE delivery_policy = 'durable-recipient-ack'
+      AND funding_sequence = 0
       AND delivery_state IN ('prepared', 'delivery-pending', 'recipient-acknowledged')`,
+  `CREATE UNIQUE INDEX daemon_market_funding_successor_idx
+    ON daemon_outgoing_cashu_transfers (
+      scope_id, recipient_binding, COALESCE(funding_predecessor_transfer_id, '')
+    ) WHERE funding_sequence = 1`,
   `CREATE TRIGGER profile_schema_marker_no_update
     BEFORE UPDATE ON profile_schema_marker
     BEGIN
@@ -1358,6 +1404,10 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     BEGIN
       SELECT RAISE(ABORT, 'seed recovery keyset identity is immutable');
     END`,
+  ...NATIVE_BOLT11_MINT_QUOTE_SCHEMA_SQL,
+  ...WALLET_PROOF_IMPORT_SCHEMA_SQL,
+  ...NATIVE_PAYMENT_REQUEST_RECEIPT_SCHEMA_SQL,
+  ...NATIVE_ACTIVITY_SCHEMA_SQL,
 ] as const
 
 export const FINAL_PROFILE_SCHEMA_MARKERS: readonly ProfileSchemaMarker[] = [
@@ -1380,6 +1430,8 @@ export const FINAL_PROFILE_SCHEMA_MARKERS: readonly ProfileSchemaMarker[] = [
       (SELECT count(*) FROM daemon_profile) AS profileCount,
       (SELECT count(*) FROM daemon_secret_authority) AS secretCount,
       (SELECT count(*) FROM daemon_rpc_token) AS rpcTokenCount,
+      (SELECT count(*) FROM daemon_oracle_nonce_allocator) AS oracleAllocatorCount,
+      (SELECT count(*) FROM daemon_activity_feed_meta) AS activityFeedCount,
       (SELECT count(*) FROM custody_scopes) AS scopeCount,
       (SELECT count(*) FROM custody_scope_state) AS scopeStateCount`,
     expectedRows: [
@@ -1387,6 +1439,8 @@ export const FINAL_PROFILE_SCHEMA_MARKERS: readonly ProfileSchemaMarker[] = [
         profileCount: 1,
         secretCount: 1,
         rpcTokenCount: 1,
+        oracleAllocatorCount: 1,
+        activityFeedCount: 1,
         scopeCount: 1,
         scopeStateCount: 1,
       },

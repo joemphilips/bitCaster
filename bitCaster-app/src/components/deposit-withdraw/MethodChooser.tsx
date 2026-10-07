@@ -1,8 +1,11 @@
+import type { ReactNode } from "react";
 import { X, Maximize2, Link, Zap } from "lucide-react";
 import type { DepositWithdrawMode, MethodType } from "@/types/deposit-withdraw";
 
 interface MethodChooserProps {
   mode: DepositWithdrawMode;
+  depositReminder?: ReactNode;
+  statusMessage?: ReactNode;
   onSelectMethod?: (method: MethodType) => void;
   onClose?: () => void;
   onToggleFullscreen?: () => void;
@@ -10,6 +13,8 @@ interface MethodChooserProps {
 
 export function MethodChooser({
   mode,
+  depositReminder,
+  statusMessage,
   onSelectMethod,
   onClose,
   onToggleFullscreen,
@@ -22,7 +27,7 @@ export function MethodChooser({
       <div className="absolute inset-0 bg-black/60" onClick={() => onClose?.()} />
 
       {/* Sheet */}
-      <div className="relative w-full md:max-w-md bg-slate-800 rounded-t-2xl md:rounded-2xl overflow-hidden animate-in slide-in-from-bottom duration-300">
+      <div className="relative max-h-[calc(100vh-2rem)] w-full overflow-y-auto rounded-t-2xl bg-slate-800 animate-in slide-in-from-bottom duration-300 md:max-w-md md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4">
           <button
@@ -39,6 +44,13 @@ export function MethodChooser({
             <Maximize2 className="w-5 h-5" />
           </button>
         </div>
+
+        {(statusMessage || depositReminder) && (
+          <div className="space-y-3 px-5 pb-3">
+            {statusMessage}
+            {depositReminder}
+          </div>
+        )}
 
         {/* Options */}
         <div className="px-5 pb-6 space-y-3">

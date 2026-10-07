@@ -20,7 +20,7 @@ import {
   type DurableSeedDerivedOutputKeyset,
   type DurableSeedDerivedOutputPlan,
 } from './durableSeedDerivedOutputs.ts'
-import { amountToNumber, computeInputFeeSatsForProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
 
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const REGULAR_CONSOLIDATION_TRANSPORT = 'wallet-send'
@@ -81,21 +81,6 @@ interface ExactProofConsolidationPreparationInput {
   readonly seed: Uint8Array
   readonly counterSource: CounterSource
   readonly wallet: ExactProofConsolidationWallet
-}
-
-export type ExactProofConsolidationReplayFailureDisposition =
-  | 'release-exact-unspent-inputs'
-  | 'remain-pending'
-
-export function classifyExactProofConsolidationReplayFailure(input: {
-  readonly definiteMintRejection: boolean
-  readonly inputStates: readonly string[]
-}): ExactProofConsolidationReplayFailureDisposition {
-  return input.definiteMintRejection &&
-    input.inputStates.length > 0 &&
-    input.inputStates.every((state) => state === 'UNSPENT')
-    ? 'release-exact-unspent-inputs'
-    : 'remain-pending'
 }
 
 export async function prepareExactProofConsolidationOperation(
@@ -196,7 +181,7 @@ function validateConsolidationPreparation(input: ExactProofConsolidationPreparat
   }
   assertPlannedInputs(input.inputs, input.plannedRound.inputs)
   assertInputKeyset(input.inputs, input.inputKeysetId)
-  const fees = computeInputFeeSatsForProofs(input.inputs, {
+  const fees = computeInputFeeSubunitsForProofs(input.inputs, {
     [input.inputKeysetId]: input.inputFeePpk,
   })
   if (String(fees) !== input.plannedRound.fee) {

@@ -21,15 +21,42 @@ import {
   marketSubunitLabel,
   marketUnitLabel,
   normalizeMarketBaseAsset,
-  normalizeMarketCreationLiquiditySats,
   normalizeMarketDivisibility,
+  defaultPriceStepSubunits,
   parseCashuProofUnit,
   parseMarketBaseAsset,
   parseMarketDivisibility,
+  parseSatsToMsat,
   quotePaymentSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from '../src/marketUnits.ts'
+
+test('parses sats into exact safe msat without floating-point multiplication', () => {
+  for (const [input, expected] of [
+    ['0', 0],
+    ['0.001', 1],
+    ['0.1', 100],
+    ['0.999', 999],
+    ['1', 1_000],
+    ['1.001', 1_001],
+    ['1.010', 1_010],
+    ['9007199254740.991', Number.MAX_SAFE_INTEGER],
+  ] as const)
+    assert.equal(parseSatsToMsat(input), expected)
+  for (const input of [
+    '',
+    '-1',
+    '1.0001',
+    '1e3',
+    '1,000',
+    'NaN',
+    'Infinity',
+    '9007199254740.992',
+  ]) {
+    assert.throws(() => parseSatsToMsat(input))
+  }
+})
 
 test('accepts only the exact sat product base asset', () => {
   assert.equal(parseMarketBaseAsset('sat'), 'sat')
@@ -75,52 +102,64 @@ test('converts sat and msat proofs into market subunits without unit coercion', 
 
 test('accepts only the two product market divisibilities', () => {
   assert.equal(defaultMarketDivisibility('sat'), DEFAULT_SAT_MARKET_DIVISIBILITY)
-  assert.equal(parseMarketDivisibility(DEFAULT_SAT_MARKET_DIVISIBILITY), 10_000)
+  assert.equal(DEFAULT_SAT_MARKET_DIVISIBILITY, 1_000)
+  assert.equal(parseMarketDivisibility(DEFAULT_SAT_MARKET_DIVISIBILITY), 1_000)
   assert.equal(parseMarketDivisibility(NUMERIC_MARKET_DIVISIBILITY), 1_000_000)
-  assert.equal(normalizeMarketDivisibility(10_000, 'sat'), 10_000)
+  assert.equal(normalizeMarketDivisibility(1_000, 'sat'), 1_000)
   assert.equal(normalizeMarketDivisibility(1_000_000, 'sat'), 1_000_000)
-  for (const value of [undefined, null, 0, 100, 1_000, 1.5, 1_000_001]) {
+  for (const value of [undefined, null, 0, 100, 10_000, 1.5, 1_000_001]) {
     assert.equal(parseMarketDivisibility(value), null)
     assert.throws(
       () => normalizeMarketDivisibility(value, 'sat'),
       /unsupported market divisibility/,
     )
   }
-  assert.throws(() => normalizeMarketDivisibility(10_000, undefined), /unsupported base asset/)
+  assert.throws(() => normalizeMarketDivisibility(1_000, undefined), /unsupported base asset/)
 })
 
 test('formats sat-only product amounts', () => {
   assert.equal(marketUnitLabel('sat'), 'sats')
   assert.equal(marketSubunitLabel('sat'), 'sats')
   assert.equal(formatAmount(50_000, 'sat'), '50 sats')
+  assert.equal(formatMarketSubunits(100, 'sat'), '0.1 sats')
   assert.equal(formatMarketSubunits(-1_234, 'sat'), '-1.234 sats')
-  assert.equal(formatShareFace('sat', 10_000), '10 sats')
+  assert.equal(formatShareFace('sat', 1_000), '1 sats')
   assert.equal(
     formatWholeShareFaceValue({ baseAsset: 'sat', divisibility: 1_000_000 }),
     '1,000 sats',
   )
-  assert.equal(formatPricePercentage(5_000, 10_000), '50.00%')
-  assert.equal(formatPricePercent(1, 10_000), '0.01%')
+  assert.equal(formatPricePercentage(500, 1_000), '50.0%')
+  assert.equal(formatPricePercent(1, 1_000), '0.1%')
+  assert.equal(formatPricePercentage(500_000, 1_000_000), '50.0000%')
   assert.throws(() => formatMarketSubunits(1_000, 'usd'), /unsupported base asset/)
-  assert.throws(() => formatShareFace('sat', 1_000), /unsupported market divisibility/)
+  assert.throws(() => formatShareFace('sat', 10_000), /unsupported market divisibility/)
 })
 
-test('computes sat-only buffer, fee estimate, and creation liquidity', () => {
+test('formats safe integer msat amounts without floating-point loss', () => {
+  const locale = new Intl.NumberFormat().resolvedOptions().locale
+  const separator = locale.startsWith('de') ? ',' : '.'
+  const expected = locale.startsWith('de')
+    ? '9.007.199.254.740,991 sats'
+    : '9,007,199,254,740.991 sats'
+  assert.equal(formatMarketSubunits(1_001, 'sat'), `1${separator}001 sats`)
+  assert.equal(formatMarketSubunits(-1_001, 'sat'), `-1${separator}001 sats`)
+  assert.equal(formatMarketSubunits(Number.MAX_SAFE_INTEGER, 'sat'), expected)
+  assert.equal(formatMarketSubunits(-Number.MAX_SAFE_INTEGER, 'sat'), `-${expected}`)
+})
+
+test('preserves noninteger and nonfinite amount formatting', () => {
+  assert.equal(formatMarketSubunits(1.5, 'sat'), '0.002 sats')
+  assert.equal(formatMarketSubunits(Number.POSITIVE_INFINITY, 'sat'), '0 sats')
+  assert.equal(formatMarketSubunits(Number.NaN, 'sat'), '0 sats')
+})
+
+test('computes sat-only buffer and fee estimate', () => {
   assert.equal(bufferSubunits('sat', 0), 0)
   assert.equal(bufferSubunits('sat', 10_000), 10_000)
   assert.equal(bufferSubunits('sat', 100_000), 20_000)
   assert.equal(estimatedSettlementFeeSubunits('sat'), 10_000)
-  assert.equal(
-    normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 10_000 }),
-    10_000,
-  )
-  assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat' }), 0)
   assert.throws(() => bufferSubunits('usd', 10_000), /unsupported base asset/)
   assert.throws(() => estimatedSettlementFeeSubunits(undefined), /unsupported base asset/)
-  assert.throws(
-    () => normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: -1 }),
-    /non-negative safe integer/,
-  )
 })
 
 test('validates product price and whole-share amounts', () => {
@@ -132,32 +171,47 @@ test('validates product price and whole-share amounts', () => {
 })
 
 test('computes product quote payment in whole shares', () => {
-  assert.equal(
-    quotePaymentSubunits({
-      faceAmountSubunits: 30_000,
-      priceNumerator: 3_333,
-      divisibility: 10_000,
-    }),
-    9_999,
-  )
-  assert.throws(
-    () =>
-      quotePaymentSubunits({
-        faceAmountSubunits: 15_001,
-        priceNumerator: 3_333,
-        divisibility: 10_000,
-      }),
-    /whole-share/,
-  )
-  assert.throws(
-    () =>
+  for (const [priceNumerator, expectedQuotePayment] of [
+    [1, 1],
+    [500, 500],
+    [999, 999],
+  ]) {
+    assert.equal(
       quotePaymentSubunits({
         faceAmountSubunits: 1_000,
+        priceNumerator,
+        divisibility: 1_000,
+      }),
+      expectedQuotePayment,
+    )
+  }
+  assert.throws(
+    () =>
+      quotePaymentSubunits({
+        faceAmountSubunits: 1_001,
         priceNumerator: 333,
         divisibility: 1_000,
       }),
-    /unsupported market divisibility/,
+    /whole-share/,
   )
+  assert.equal(
+    quotePaymentSubunits({
+      faceAmountSubunits: 1_000_000,
+      priceNumerator: 500_000,
+      divisibility: 1_000_000,
+    }),
+    500_000,
+  )
+})
+
+test('uses one percentage-point LMSR price steps for ordinary markets', () => {
+  assert.equal(defaultPriceStepSubunits(1_000), 10)
+  for (const divisibility of [undefined, null, '1000', 10_000, 1_000_000, 100]) {
+    assert.throws(
+      () => defaultPriceStepSubunits(divisibility),
+      /registered ordinary market divisibility is required for LMSR/,
+    )
+  }
 })
 
 test('accepts every sat-only product settlement vector', () => {

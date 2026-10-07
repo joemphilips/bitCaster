@@ -2,12 +2,15 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   decodeDurableCustodyScopeState,
   createDurableCustodyArtifactReference,
+  deriveDurableCustodyProofId,
   reduceDurableCustodyState,
   type DurableCustodyRecord,
   type DurableCustodyScopeState,
   type DurableCustodyTransaction,
   type DurableCustodyTransition,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import { assertDurableCustodyVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import type { CtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
 
@@ -97,6 +100,7 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
   }
 
   reserveExactInputs(input: Parameters<DurableCustodyTransaction['reserveExactInputs']>[0]): void {
+    for (const proofId of input.proofIds) this.#store.assertProofNotRetired(this.#scopeId, proofId)
     const operation = this.#requiredOperation(input.operationId, input.expectedRevision)
     if (
       operation.operation.reservation.reservationId !== input.reservationId ||
@@ -123,13 +127,59 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
        ) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(scope_id, proof_id) DO NOTHING`,
     )
-    const lockProof = this.#database.prepare(
+    const lockSelectableProof = this.#database.prepare(
       `UPDATE custody_proofs SET selectability = 'locked',
          reservation_operation_id = ?, revision = revision + 1,
          updated_at_ms = ?
        WHERE scope_id = ? AND proof_id = ?
          AND selectability = 'selectable'`,
     )
+    const lockRetainedProof = this.#database.prepare(
+      `UPDATE custody_proofs SET selectability = 'locked',
+         reservation_operation_id = ?, revision = revision + 1,
+         updated_at_ms = ?
+       WHERE scope_id = ? AND proof_id = ?
+         AND selectability = 'retained'`,
+    )
+    const reservedTargetProofIds = new Set(
+      (
+        this.#database
+          .prepare(
+            `SELECT normalized_mint AS normalizedMint, unit,
+               keyset_id AS keysetId, secret
+             FROM target_wallet_proofs
+             WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+          )
+          .all(this.#scopeId, input.reservationId) as Array<{
+          normalizedMint: string
+          unit: 'sat' | 'msat'
+          keysetId: string
+          secret: string
+        }>
+      ).map(({ normalizedMint, unit, keysetId, secret }) =>
+        deriveDurableCustodyProofId({
+          scopeId: this.#scopeId,
+          normalizedMint,
+          unit,
+          keysetId,
+          secret,
+        }),
+      ),
+    )
+    const retainedInputProofIds = new Set<string>()
+    for (const proofId of input.proofIds) {
+      const proof = readProofLock.get(this.#scopeId, proofId) as
+        | { selectability: string; reservationOperationId: string | null }
+        | undefined
+      if (proof?.selectability === 'retained') retainedInputProofIds.add(proofId)
+    }
+    if (
+      retainedInputProofIds.size > 0 &&
+      (reservedTargetProofIds.size !== input.proofIds.length ||
+        input.proofIds.some((proofId) => !reservedTargetProofIds.has(proofId)))
+    ) {
+      throw new Error('custody retained proof lacks exact legacy reservation')
+    }
     input.proofIds.forEach((proofId, position) => {
       const existing = readReservation.get(this.#scopeId, proofId) as
         | { operationId: string; reservationId: string; inputPosition: number }
@@ -157,7 +207,9 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         position,
       )
       if (reserved.changes !== 1) throw new Error('custody proof reservation CAS lost')
-      const locked = lockProof.run(input.operationId, this.#nowMs, this.#scopeId, proofId)
+      const locked = (
+        retainedInputProofIds.has(proofId) ? lockRetainedProof : lockSelectableProof
+      ).run(input.operationId, this.#nowMs, this.#scopeId, proofId)
       if (locked.changes !== 1) throw new Error('custody proof lock CAS lost')
     })
   }
@@ -295,6 +347,72 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     } catch (error) {
       this.#database.exec('ROLLBACK TO SAVEPOINT custody_apply_verified_result')
       this.#database.exec('RELEASE SAVEPOINT custody_apply_verified_result')
+      throw error
+    }
+  }
+
+  readonly reconcileAuthenticatedTerminalMintRejection = (
+    input: Parameters<
+      NonNullable<DurableCustodyTransaction['reconcileAuthenticatedTerminalMintRejection']>
+    >[0],
+  ): void => {
+    const current = this.#requiredOperation(input.operationId, input.expectedRevision)
+    const original = this.#store.getArtifact({
+      scopeId: current.scope.scopeId,
+      operationId: current.operation.operationId,
+      expectedOperationRevision: current.revision,
+      reference: current.operation.privateMaterial.exactPrivateMaterial,
+    })
+    const losing = (
+      input.exactRejection.artifact as { losingAuthority?: CtfVerifiedLosingAuthority }
+    ).losingAuthority
+    if (original === null || losing === undefined)
+      throw new Error('custody terminal rejection lacks original losing authority')
+    assertDurableCustodyVerifiedLosingAuthority(current, original.artifact, losing)
+    this.#database.exec('SAVEPOINT custody_terminal_mint_rejection')
+    try {
+      this.#applyTransition(input.operationId, input.expectedRevision, {
+        kind: 'reconcile-authenticated-terminal-mint-rejection',
+        expectedRevision: input.expectedRevision,
+        authorization: input.authorization,
+        rejectionHandle: input.rejectionHandle,
+        rejectionFingerprint: input.rejectionFingerprint,
+        exactRejection: input.exactRejection,
+        code: input.code,
+        predecessorDisposition: input.predecessorDisposition,
+      })
+      this.#store.putArtifact({
+        scopeId: this.#scopeId,
+        operationId: input.operationId,
+        expectedOperationRevision: input.expectedRevision + 1,
+        expectedArtifactRevision: null,
+        reference: createDurableCustodyArtifactReference(
+          `artifact:${input.operationId}:terminal-mint-rejection`,
+          input.exactRejection,
+        ),
+        artifact: input.exactRejection,
+        createdAtMs: this.#nowMs,
+      })
+      const retain = this.#database.prepare(
+        `UPDATE custody_proofs SET selectability = 'retained', reservation_operation_id = NULL,
+           revision = revision + 1, updated_at_ms = ?
+         WHERE scope_id = ? AND proof_id = ? AND nut07_state = 'UNSPENT'
+           AND selectability = 'locked' AND reservation_operation_id = ?`,
+      )
+      for (const { proofId } of current.operation.reservation.inputs) {
+        if (retain.run(this.#nowMs, this.#scopeId, proofId, input.operationId).changes !== 1)
+          throw new Error('custody losing predecessor retention CAS lost')
+      }
+      const released = this.#database
+        .prepare('DELETE FROM custody_proof_reservations WHERE scope_id = ? AND operation_id = ?')
+        .run(this.#scopeId, input.operationId)
+      if (released.changes !== current.operation.reservation.inputs.length)
+        throw new Error('custody losing predecessor release is incomplete')
+      this.#database.exec('RELEASE SAVEPOINT custody_terminal_mint_rejection')
+    } catch (error) {
+      this.#database.exec('ROLLBACK TO SAVEPOINT custody_terminal_mint_rejection')
+      this.#database.exec('RELEASE SAVEPOINT custody_terminal_mint_rejection')
+      this.#pendingOperations.set(input.operationId, current)
       throw error
     }
   }
@@ -614,7 +732,29 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
           Number(record.terminalTombstone.replayCutoffObserved),
         )
     }
-    for (const [kind, reference] of [['result', record.operation.result.exactResult]] as const) {
+    const rejection = record.operation.terminalMintRejection
+    if (rejection !== null) {
+      this.#database
+        .prepare(
+          `INSERT INTO custody_terminal_mint_rejections (
+           scope_id, operation_id, code, predecessor_disposition, rejection_handle,
+           rejection_fingerprint, rejection_artifact_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          this.#scopeId,
+          operationId,
+          rejection.code,
+          rejection.predecessorDisposition,
+          rejection.rejectionHandle,
+          rejection.rejectionFingerprint,
+          rejection.exactRejection.artifactId,
+        )
+    }
+    for (const [kind, reference] of [
+      ['result', record.operation.result.exactResult],
+      ['terminal-mint-rejection', rejection?.exactRejection ?? null],
+    ] as const) {
       this.#database
         .prepare(
           `DELETE FROM custody_operation_artifact_links

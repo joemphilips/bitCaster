@@ -1,5 +1,7 @@
 import type { PLChartData, PLTimeSelector } from "@/types/portfolio";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
+import { useTranslation } from "react-i18next";
+import { LoaderCircle } from "lucide-react";
 
 const TIME_RANGES: PLTimeSelector[] = ["1D", "1W", "1M", "ALL"];
 
@@ -8,6 +10,7 @@ interface PLChartProps {
   selectedTimeRange: PLTimeSelector;
   totalValueSats?: number;
   totalValueKnown?: boolean;
+  totalValueLoading?: boolean;
   onTimeRangeChange?: (range: PLTimeSelector) => void;
 }
 
@@ -16,13 +19,15 @@ export function PLChart({
   selectedTimeRange,
   totalValueSats,
   totalValueKnown,
+  totalValueLoading,
   onTimeRangeChange,
 }: PLChartProps) {
-  const data = chartData[selectedTimeRange];
+  const { t } = useTranslation();
+  const valuationKnown = totalValueKnown !== false;
+  const data = valuationKnown ? chartData[selectedTimeRange] : [];
   const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0;
   const startPL = data.length > 0 ? data[0].cumulativePL : 0;
   const periodChange = currentPL - startPL;
-  const isPositive = currentPL >= 0;
   const periodPositive = periodChange >= 0;
 
   // SVG chart generation
@@ -44,39 +49,47 @@ export function PLChart({
   const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1]?.x ?? width - padding} ${height} L ${points[0]?.x ?? padding} ${height} Z`;
 
-  const lineColor = isPositive ? "rgb(16, 185, 129)" : "rgb(239, 68, 68)";
+  const lineColor = periodPositive ? "rgb(16, 185, 129)" : "rgb(239, 68, 68)";
 
   return (
     <div>
-      {/* Total Value / P/L Amount */}
+      {/* Current portfolio value and selected-range change */}
       <div className="mb-3">
+        {totalValueLoading && (
+          <LoaderCircle
+            role="status"
+            aria-label={`${t("portfolio.totalValue")}: ${t("common.loading")}`}
+            className="size-4 animate-spin motion-reduce:animate-none"
+          />
+        )}
         {totalValueKnown === false ? (
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-300">—</div>
         ) : totalValueSats != null ? (
           <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            {formatMarketSubunits(totalValueSats, "sat")}
+            <InlineAmount amountSubunits={totalValueSats} baseAsset="sat" />
           </div>
         ) : (
-          <div
-            className={`text-2xl font-bold font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
-          >
-            {isPositive ? "+" : ""}
-            {formatMarketSubunits(currentPL, "sat")}
+          <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+            <InlineAmount amountSubunits={currentPL} baseAsset="sat" />
           </div>
         )}
-        {data.length > 0 && (
-          <div
-            className={`text-sm font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}
-          >
-            {periodPositive ? "+" : ""}
-            {formatMarketSubunits(periodChange, "sat")} this period
+        {valuationKnown && data.length > 0 && (
+          <div className="text-sm">
+            <div className={`font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}>
+              {periodPositive ? "+" : ""}
+              <InlineAmount amountSubunits={periodChange} baseAsset="sat" />
+            </div>
           </div>
         )}
       </div>
 
       {/* SVG Chart */}
       <div className="relative h-32 bg-slate-50 dark:bg-slate-900/50 rounded-xl overflow-hidden mb-3">
-        {data.length === 0 ? (
+        {!valuationKnown ? (
+          <div className="absolute inset-0 flex items-center justify-center text-amber-600 dark:text-amber-300 text-sm">
+            —
+          </div>
+        ) : data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
             No data
           </div>

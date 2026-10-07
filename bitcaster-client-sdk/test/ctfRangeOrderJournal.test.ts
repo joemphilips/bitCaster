@@ -9,6 +9,8 @@ import {
   decodeCtfRangeOrderPreparationPageCursor,
   decodeCtfRangeOrderPreparationPageLimit,
   decodeCtfRangeOrderPreparationRecord,
+  decodeCtfRangeOrderFeeConsentArtifact,
+  encodeCtfRangeOrderFeeConsentArtifact,
   encodeCtfRangeOrderPreparationArtifact,
   sameCtfRangeOrderPreparationCapability,
   sameCtfRangeOrderPreparationIdentity,
@@ -44,12 +46,10 @@ test('canonical preparation artifacts are bounded, detached, and byte exact', ()
   assert.throws(() => encodeCtfRangeOrderPreparationArtifact({ invalid: Number.NaN }), /number/)
 })
 
-test('strict identity validation preserves source lineage and exact replay', () => {
+test('strict identity validation preserves exact replay', () => {
   const identity = preparationIdentity()
   const decoded = decodeCtfRangeOrderPreparationIdentity(identity)
 
-  assert.equal(decoded.sourceKind, 'wallet-prepared')
-  assert.equal(decoded.predecessorRangeOperationId, null)
   assert.equal(sameCtfRangeOrderPreparationIdentity(decoded, identity), true)
   for (const minimumFillAmountSubunits of [5_000, 20_000]) {
     assert.throws(
@@ -72,45 +72,6 @@ test('strict identity validation preserves source lineage and exact replay', () 
     () =>
       decodeCtfRangeOrderPreparationIdentity({
         ...identity,
-        sourceKind: 'residual-change',
-        predecessorRangeOperationId: null,
-      }),
-    /predecessor/,
-  )
-  const continuation = {
-    predecessorOrderId: '11111111-1111-4111-8111-111111111111',
-    settlementGroupId: '22222222-2222-4222-8222-222222222222',
-    settlementGroupRevision: 3,
-    continuationRevision: 4,
-  }
-  const residual = decodeCtfRangeOrderPreparationIdentity({
-    ...identity,
-    rangeOperationId: 'range-residual',
-    sourceOperationId: 'source-residual',
-    authorizationId: 'authorization-residual',
-    clientOrderId: 'client-residual',
-    sourceKind: 'residual-change',
-    predecessorRangeOperationId: identity.rangeOperationId,
-    continueAfterPartialFill: true,
-    continuation,
-  })
-  assert.deepEqual(residual.continuation, continuation)
-  assert.throws(
-    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, continuation }),
-    /initial order has continuation authority/,
-  )
-  assert.throws(
-    () =>
-      decodeCtfRangeOrderPreparationIdentity({
-        ...residual,
-        continueAfterPartialFill: false,
-      }),
-    /continuation authority is incomplete/,
-  )
-  assert.throws(
-    () =>
-      decodeCtfRangeOrderPreparationIdentity({
-        ...identity,
         priceSubunits: identity.divisibility,
       }),
     /price/,
@@ -126,6 +87,64 @@ test('strict identity validation preserves source lineage and exact replay', () 
         orderRouteId: 'condition-2-YES',
       }),
     /foreign condition/,
+  )
+})
+
+test('fee consent is bounded canonical preparation identity', () => {
+  const facts = {
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '2',
+    consolidationFeeSubunits: '3',
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset: { kind: 'regular', unit: 'msat' },
+    consolidationAsset: { kind: 'regular', unit: 'msat' },
+    sourceMode: 'wallet-send',
+  }
+  const bytes = encodeCtfRangeOrderFeeConsentArtifact(facts)
+  assert.deepEqual(decodeCtfRangeOrderFeeConsentArtifact(bytes), facts)
+  const identity = preparationIdentity()
+  assert.equal(
+    sameCtfRangeOrderPreparationIdentity(identity, { ...identity, feeConsentBytes: bytes }),
+    false,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderFeeConsentArtifact(Buffer.from('{"sourceMode":"wallet-send"}')),
+    /invalid/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderFeeConsentArtifact(Buffer.from(' '.repeat(4_097))),
+    /byte limit/,
+  )
+  assert.throws(
+    () => encodeCtfRangeOrderFeeConsentArtifact({ ...facts, sourcePreparationFeeSubunits: '-1' }),
+    /invalid/,
+  )
+})
+
+test('absent legacy browser consent reads as null but malformed consent stays invalid', () => {
+  const identity = preparationIdentity()
+  const { feeConsentBytes: _, ...legacy } = identity
+  assert.equal(decodeCtfRangeOrderPreparationIdentity(legacy).feeConsentBytes, null)
+  assert.equal(decodeCtfRangeOrderPreparationIdentity(identity).feeConsentBytes, null)
+  const legacyRecord = {
+    ...legacy,
+    lifecycleState: 'prepared',
+    revision: 0,
+    capability: null,
+    updatedAtMs: identity.createdAtMs,
+  }
+  assert.equal(decodeCtfRangeOrderPreparationRecord(legacyRecord).feeConsentBytes, null)
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, feeConsentBytes: undefined }),
+    /fee consent bytes/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, feeConsentBytes: 'not bytes' }),
+    /fee consent bytes/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...legacy, unrelated: true }),
+    /fields/,
   )
 })
 
@@ -392,8 +411,6 @@ function preparationIdentity() {
     scopeId: `custody:wallet:${'11'.repeat(32)}`,
     rangeOperationId: 'range-1',
     sourceOperationId: 'source-1',
-    sourceKind: 'wallet-prepared' as const,
-    predecessorRangeOperationId: null,
     authorizationId: 'authorization-1',
     clientOrderId: 'client-1',
     orderRouteId: 'condition-1-YES',
@@ -402,17 +419,16 @@ function preparationIdentity() {
     unit: 'msat' as const,
     tokenSide: 'Outcome' as const,
     side: 'Buy' as const,
-    priceSubunits: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    continueAfterPartialFill: false,
-    continuation: null,
-    divisibility: 10_000 as const,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000 as const,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({
       rangeOperationId: 'range-1',
       authorizationId: 'authorization-1',
     }),
+    feeConsentBytes: null,
     createdAtMs: 10,
   }
 }

@@ -1,72 +1,237 @@
 ---
-title: "Market Resolution"
-description: "How bitCaster markets resolve using DLC oracles, and how winning tokens are redeemed."
+title: 'Market Resolution'
+description: 'Who determines the outcome, when winnings can be claimed, and what can delay a claim.'
 sidebar:
   order: 3
 ---
 
-# Resolution
+# Market Resolution
 
-When an event's outcome becomes known, the oracle publishes an **attestation** — an announcement of the result. This attestation lets the mint distinguish winning tokens from losing ones, and winning tokens become redeemable for their full face value.
+A market closing does not always mean that its winning outcome is known.
+Check both its trading status and the oracle's result before you claim winnings.
 
-This entire process is what we call market resolution.
+An **oracle** is the party that signs the event result. Its signed result is
+called an **attestation**. The mint verifies this signature to determine which
+conditional tokens receive the winning payout. This is market resolution.
 
-## The Oracle Model
+## Before you trade
 
-bitCaster reuses existing [DLC (Discreet Log Contract)](https://www.dci.mit.edu/projects/discreet-log-contracts) infrastructure for resolution. A DLC oracle doesn't need to know anything about bitCaster — it simply announces events and later publishes attestations, exactly as it would for any other DLC application.
+Check the question, possible outcomes, oracle identity, and deadline. Check
+the mint's redemption period and policy for a missing result. The oracle is
+fixed when the market is created.
 
-- **No special integration required** — any standard DLC oracle can serve bitCaster markets.
-- **Existing incentive structures carry over** — for example, if an oracle signs contradictory attestations (attesting to two different outcomes for the same event), this mathematically leaks the oracle's private key, destroying its ability to operate.
-- **Transparent responsibility** — users always know exactly which oracle is responsible for each market's outcome. The oracle's public key and the event descriptor are visible before you place a trade.
+A valid signature identifies who signed the result. It does not prove that
+the result is true or that the question was clear. Choose an oracle whose
+evidence and judgment you trust. bitCaster does not replace that judgment
+with a platform trust score.
 
-## Our Approach to the Oracle Problem
+## When trading ends
 
-In the context of prediction markets, the [oracle problem](https://chain.link/education-hub/oracle-problem) refers to the difficulty of determining what counts as the "correct answer."
+The market closes for new orders and funding when it accepts a valid oracle
+result. It can also close at the announced deadline without a result.
+Deadline closure alone does not identify winning tokens.
 
-bitCaster takes a different approach from existing blockchain-based DEXs.
+A verified result can arrive after the deadline closes trading.
+It identifies the outcome without reopening trading or changing the first closure time.
+A closed market with no verified result remains unresolved.
 
-Platforms like Polymarket rely on [UMA's optimistic oracle](https://docs.uma.xyz/protocol-overview/how-does-umas-oracle-work), where outcomes can be disputed and ultimately decided by a token-holder vote. This approach has fundamental problems:
+The oracle can publish its attestation through Nostr. A creator can also
+submit the signed attestation directly to the matching engine. Direct
+submission still requires signature verification. Nostr relays carry
+messages; they do not decide which result is valid.
 
-- **Dispute-and-voting doesn't solve the "Oracle Problem" — it obfuscates it.** Instead of a clearly identified party attesting to reality, you get a multi-layered governance process where responsibility is diffused.
-- **Collusion risk** — if UMA token holders collude, they can steer outcomes. The cost of corruption is just the cost of acquiring enough voting power.
-- **The real oracle is hidden one layer deeper.** Polymarket's markets live on Polygon, a proof-of-stake blockchain. If UMA token holders vote for an outcome that POL stakers disagree with, the stakers can fork the chain. This makes POL token holders the ultimate "oracle" — but users have no direct recourse against them and may not even realize this dependency exists.
-- **Complicated incentive model** — participants must reason about dispute bonds, voting rounds, escalation periods, and token economics just to understand how a market resolves.
+After the mint accepts the result, winning tokens can be redeemed for their
+face value, subject to mint fees and the redemption period. Losing tokens do
+not receive the winning payout. In an ordinary YES/NO market, only tokens
+for the attested outcome win.
 
-bitCaster's DLC approach takes the opposite stance: make it clear who is responsible for the outcome. The oracle is a named entity with a known public key. This is the same trust model used by DLCs.
+Do not assume that winning tokens can be redeemed indefinitely. The redemption
+period is a mint policy shared across its markets. Check the applicable expiry
+before you trade and before you claim.
 
-In bitCaster, the market creator usually acts as the DLC oracle using their [Nostr](https://nostr.com/) private key. This means that **if the oracle lies or returns an incorrect answer, accountability attaches to that Nostr identity**. Reputation information accumulates on the Nostr network, making it easier to audit who made which attestations over time.
+## Report a result as the browser oracle
 
-Publishing through Nostr is useful for public auditability, but it is not required for bitCaster to close a market. The creator can also submit the signed oracle attestation directly to the matching engine. The engine verifies the DLC oracle signature against the market's registered oracle key and then closes the market for trading. Relays are therefore transport, not trust anchors.
+Open Your Markets in the creator page. For a self-oracle market, select the
+registered outcome and choose Close market. The Resolve this market dialog
+shows the chosen outcome. You can add an optional public plain-text explanation.
+The explanation limit is 4096 UTF-8 bytes. Do not include private information.
+Select Confirm and deliver saved resolution to save the choice and start delivery.
 
-## After Resolution
+Once the choice is saved, the outcome and original explanation draft cannot change.
+The browser retains the exact signed kind-89 result before delivery.
+Keep browser storage enabled. If delivery is incomplete, choose Retry saved resolution
+and confirm the dialog. Retry delivers the saved result without signing another
+kind-89 event or creating another announcement.
+Retry sends only the saved signed events. If no signed explanation was saved,
+retry does not create one. The original explanation draft stays saved.
+Delivery of the exact saved result does not require the oracle signing key.
 
-Once the oracle attestation is published or submitted directly, the mint processes the result and the market itself closes. From that moment on, no new orders or deposits are accepted.
+Check engine, relay, and optional explanation progress separately.
+Engine confirmed means that the exact result has verified engine evidence.
+Relay confirmed means that the relay acknowledged the result.
+Neither confirmation guarantees the other or confirms mint redemption.
+An explanation failure does not block resolution delivery.
+Its verified text can appear on the closed market page. It is not a paid trade comment.
 
-For example, in a market with YES/NO outcomes:
+A deadline-closed market with no verified result still permits the creator's
+resolution action. A closed trading status alone does not identify winning tokens
+or guarantee a payout. A later verified result does not reopen trading.
 
-- Winning tokens become redeemable for their full face value.
-- Losing tokens become worthless — they can no longer be swapped or redeemed.
+## Report a result as the native oracle
 
-There is also a second path that closes a market. If the oracle's announced deadline passes without an attestation arriving, the market closes by deadline. The redemption window for winning tokens is set per-mint, not per-market — every market a given mint hosts shares the same window length, which the mint commits to in its vesting period.
+Use the daemon profile that created or restored the oracle announcement.
+Select one registered outcome. You can include a short plain-text explanation:
 
-The first release does not define a predetermined refund rule for a missing
-attestation. The mint operator can choose a refund outcome under the disclosed
-mint policy. Users should inspect that policy before they trade.
+```bash
+bitcaster-cli market close --condition-id <condition-id> --outcome Yes --explanation "The announced event has finished." --trust-engine-url
+bitcaster-cli market resolution-status <condition-id>
+bitcaster-cli market close --condition-id <condition-id> --retry --trust-engine-url
+```
 
-## Redeeming Tokens
+Replace `Yes` with the exact outcome label. Use `--trust-engine-url` only for an
+engine URL you trust. `--explanation @explanation.txt` reads a UTF-8 file.
+The explanation limit is 4096 UTF-8 bytes. The explanation does not change
+the signed result, payout, or paid-trade comment ranking.
+It is a separate signed kind-1111 event. Its root is the original kind-88
+announcement. Its parent is the exact kind-89 attestation.
 
-Redeeming converts your conditional tokens (CTF tokens locked to an outcome) back into regular ecash tokens that you can spend freely.
+The client saves the chosen outcome and signed events before delivery.
+Keep the original daemon profile. Retry the saved result instead of selecting
+another outcome. `--retry` takes no outcome or explanation.
+It reuses saved signed events. If explanation preparation failed, it can finish
+the original saved draft. A restart does not require another market creation or
+registration fee.
 
-- The first release returns sat ecash issued by the supported mint.
-- You can redeem ordinary sat ecash for bitcoin through the mint's supported BOLT11 Lightning withdrawal flow.
+`resolution-status` reports the chosen outcome and both public event IDs.
+`attestationPrepared` and `explanationPrepared` report saved signed events.
+`relayPublished` and `explanationRelayPublished` report relay acknowledgements.
+`engineSynchronized` reports verified matching-engine evidence for the exact result.
+`explanationDraftSaved` reports only whether the original draft exists.
+Relay delivery and engine synchronization are independent.
+Inspect the returned `record` and `failures` even when the command succeeds.
+`Closed` confirms engine evidence. It does not confirm both relay deliveries or mint redemption.
+An explanation failure does not invalidate a valid resolution.
 
-### Native daemon retirement
+The supplied-event form, `market close --condition-id <condition-id> --attestation @attestation.json`,
+remains available. It does not create a native explanation.
 
-The native daemon keeps resolved condition proofs until you authorize retirement. Run `bitcaster-cli wallet retire-condition <condition-id>` to preview the action and mint fee. Add `--acknowledge` to redeem winning proofs. The daemon retains losing or uneconomic proofs as visible audit records.
+## Resolve a restored oracle or publish while the engine is unavailable
 
-You can set `daemon.autoRetireResolvedConditionInventory` to `true` in `~/.bitcaster/config.json`. This setting authorizes the same durable retirement flow when the daemon receives a verified oracle attestation. The default is `false`. A restart is required after a configuration change.
+Settings lists restored oracle records separately from markets created on
+this device. An unresolved restored record can select a registered outcome
+and publish it with the original authority and destinations.
+The first saved outcome on this device cannot change.
+See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
+for restore and incomplete-import recovery.
+
+Ordinary retry skips an attestation with a retained relay acknowledgment.
+Choose **Republish exact resolution** in Settings to send the saved kind-89
+event again. This action uses identical bytes without fresh signing.
+A terminal restore can use this action without the signing key.
+After durable result acknowledgment, the client attempts the terminal backup.
+Backup failure does not undo successful result delivery.
+Check backup, relay, and engine progress separately.
+
+The CLI can sign or retry through the original relays without contacting
+the engine:
+
+```bash
+bitcaster-cli market close --condition-id <condition-id> --outcome Yes --relay-only
+bitcaster-cli market close --condition-id <condition-id> --retry --republish --relay-only
+```
+
+`--relay-only` performs no engine request or engine availability check.
+It applies only to `--outcome` or `--retry`.
+`--republish` requires `--retry`. It sends the exact saved attestation even
+if a relay previously acknowledged it. It does not change saved progress
+or choose another outcome. An exact retry does not require a signing key.
+Fresh signing still requires the matching key and unresolved authority.
+
+When the engine returns, run the ordinary saved retry without `--relay-only`.
+Synchronization uses the original stored engine URL and the same signed event.
+A restart or changed current configuration does not change that destination.
+Relay delivery alone does not confirm engine synchronization or mint redemption.
+
+## If the oracle does not publish a result
+
+The first release has no predetermined refund rule for a missing attestation.
+The mint operator can choose a refund outcome under its disclosed policy.
+A missed deadline does not guarantee an immediate refund or a particular
+refund amount. Read that policy before committing funds.
+
+## Claiming winnings
+
+Redemption exchanges winning conditional tokens for regular ecash from the
+same mint. This is not a Bitcoin withdrawal. The wallet shows the payout in
+sats. To withdraw bitcoin, use the mint's supported BOLT11
+Lightning withdrawal flow.
+
+Keep your wallet records until the redemption result is known. If a request
+loses its connection, check the existing operation rather than assuming that
+the tokens were not spent. See [settlement and recovery](/user-guide/core-concepts/atomic-swap/).
+
+### Using the browser
+
+Claim checks evidence from the intended oracle when that evidence is available.
+The client can reuse verified evidence for the same reported outcome.
+A changed outcome needs new verification or the unverified warning below.
+If the evidence is missing, unavailable, or invalid, the app shows this warning:
+“The mint reports this outcome, but we have not verified evidence from the intended oracle.”
+You can still claim. The wallet must verify each received proof before it records
+the payout. A mint refusal alone does not prove that a holding lost.
+The same warning applies when Remove checks a position through Claim.
+The message stays visible until you close it.
+
+A restored refusal record can lack verified losing evidence. The wallet keeps
+these conditional tokens and shows their retained amount. You cannot claim,
+sell, or remove tokens in this retained, unverified state.
+
+Open Portfolio and select Claim for a winning position. A claim can finish
+in parts. Each completed payout stays in your wallet if another part fails.
+
+If the claim is pending, keep the wallet data and retry Claim. The pending
+status remains visible after a reload. Retrying recovers the unfinished part;
+it does not credit a completed payout again. A lost connection does not mean
+that the mint rejected the payment.
+
+To remove a losing position, select Remove and confirm. The wallet checks
+that the tokens cannot receive a payout before it deletes them. If the result
+is uncertain, it keeps the tokens. If the mint returns a payout instead, the
+wallet keeps that payment and stops removal.
+
+Removal can take time when encrypted backup is enabled. The position stays
+visible while removal is pending. Keep your wallet data until it finishes.
+Removal does not erase copies that you exported or kept in another browser.
+
+If removal fails, keep the removal reference shown in the message. It identifies
+the failed step and the attempt. Include that reference when you report the
+problem. Do not share your recovery phrase, private key, or ecash tokens.
+
+### Using the CLI
+
+`wallet claim <condition-id> <outcome-collection>` returns an `oracleEvidence`
+status for each leg in its JSON output. The status is `verified` or `unverified`.
+An unverified status includes a reason and the same warning as the browser.
+A refused leg stays pending when verified evidence does not prove that its exact
+collection lost. Keep the wallet data and use the existing recovery operation.
+
+The native daemon retains resolved-condition proofs until you authorize
+redemption and inventory cleanup. Preview the action and estimated mint fee with:
+
+```sh
+bitcaster-cli wallet retire-condition <condition-id>
+```
+
+Add `--acknowledge` to authorize the action. Winning proofs are redeemed.
+Losing proofs and proofs that cost too much to redeem remain visible as audit
+records. The command does not silently delete them.
+
+To authorize this flow automatically after a verified oracle attestation, set
+`daemon.autoRetireResolvedConditionInventory` to `true` in
+`~/.bitcaster/config.json`. The default is `false`. Restart the daemon after
+changing the setting.
 
 ## Further reading
 
-- [DLC Oracle Nostr Announcements (Kind 88)](/technical/dlc-oracle/nostr-kind-88/) — how oracles announce events and publish attestations
-- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how conditional tokens settle back to ecash
+Read about [conditional tokens](/user-guide/core-concepts/conditional-tokens/)
+for the assets you hold.

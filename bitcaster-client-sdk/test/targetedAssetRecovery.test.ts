@@ -18,7 +18,7 @@ const scopeId = deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId: '11
 const monitoringAsset = {
   canonicalMintUrl: 'https://mint.example',
   kind: 'collateral' as const,
-  cashuUnit: 'sat' as const,
+  cashuUnit: 'msat' as const,
   displayBaseAsset: 'sat' as const,
 }
 
@@ -42,12 +42,31 @@ function input(overrides: Partial<TargetedAssetRecoveryInput> = {}): TargetedAss
     assetLocator: 'aa'.repeat(32),
     asset: createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: 'https://mint.example',
-      unit: 'sat',
+      unit: 'msat',
       asset: { kind: 'ordinary' },
     }),
     ...overrides,
   }
 }
+
+test('targeted product recovery rejects a sat asset before custody I/O', async () => {
+  const fake = ports()
+  await assert.rejects(
+    () =>
+      recoverTargetedAsset(
+        input({
+          asset: createEncryptedWalletBackupV2AssetIdentity({
+            mintUrl: 'https://mint.example',
+            unit: 'sat',
+            asset: { kind: 'ordinary' },
+          }),
+        }),
+        fake.ports,
+      ),
+    /requires msat/,
+  )
+  assert.equal(fake.calls.local, 0)
+})
 
 function fact(overrides: Record<string, unknown> = {}) {
   return {

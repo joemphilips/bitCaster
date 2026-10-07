@@ -47,6 +47,9 @@ function readLockedCustodyBalance(database: DatabaseSync): LockedCustodyBalanceE
        WHERE scope_id = ?
          AND nut07_state = 'UNSPENT'
          AND selectability = 'locked'
+         AND NOT EXISTS (SELECT 1 FROM target_wallet_proofs AS retired
+           WHERE retired.scope_id = custody_proofs.scope_id
+             AND retired.retired_custody_proof_id = custody_proofs.proof_id)
        GROUP BY normalized_mint, unit, condition_id, outcome_set_id`,
     )
     .all(scopeRows[0].scopeId) as unknown as LockedCustodyBalanceRow[]

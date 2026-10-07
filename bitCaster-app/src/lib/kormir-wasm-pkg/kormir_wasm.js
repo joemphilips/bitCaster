@@ -330,6 +330,19 @@ export class Kormir {
         wasm.__wbg_kormir_free(ptr, 0);
     }
     /**
+     * @param {string} event_id
+     * @param {string} exact_publication_record_json
+     * @returns {Promise<void>}
+     */
+    acknowledge_enum_publication(event_id, exact_publication_record_json) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(exact_publication_record_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_acknowledge_enum_publication(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
      * @param {string} nsec
      * @param {string} announcement_hex
      * @param {string} title
@@ -433,6 +446,22 @@ export class Kormir {
         return ret;
     }
     /**
+     * @param {string} event_id
+     * @param {string} announcement_event_json
+     * @param {string | null} [publication_record_json]
+     * @returns {Promise<string>}
+     */
+    export_enum_authority(event_id, announcement_event_json, publication_record_json) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(announcement_event_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(publication_record_json) ? 0 : passStringToWasm0(publication_record_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_export_enum_authority(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
+    }
+    /**
      * @returns {string}
      */
     get_public_key() {
@@ -448,14 +477,25 @@ export class Kormir {
         }
     }
     /**
+     * @param {string} private_dto_json
+     * @returns {Promise<string>}
+     */
+    import_enum_authority(private_dto_json) {
+        const ptr0 = passStringToWasm0(private_dto_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_import_enum_authority(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
      * Re-imports a previously-created announcement so its outcome can be
      * re-signed on a profile whose local event store was lost (fresh browser
      * profile restored from the oracle nsec alone). The announcement hex
      * (a public protocol artifact, mirrored client-side) carries the committed
      * nonce point(s); because nonce keys are derived deterministically from the
      * signing key, the original index is recovered by a bounded scan and the
-     * announcement is re-saved. After this call `sign_enum_event(event_id, …)`
-     * succeeds and produces the same committed-nonce signature the mint expects.
+     * announcement is re-saved. Use `prepare_enum_attestation` with the retained
+     * signed kind-88 JSON to restore its exact Nostr ID before signing.
+     * This produces the same committed-nonce signature the mint expects.
      *
      * `announcement_tlv_hex` is the TLV-enveloped hex returned by
      * `create_enum_event` (and stored by the client). Returns the event_id.
@@ -486,6 +526,42 @@ export class Kormir {
         return ret;
     }
     /**
+     * @param {string} event_id
+     * @param {string} outcome
+     * @param {string} announcement_event_json
+     * @returns {Promise<PreparedOracleEvent>}
+     */
+    prepare_enum_attestation(event_id, outcome, announcement_event_json) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(outcome, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(announcement_event_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_prepare_enum_attestation(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
+    }
+    /**
+     * @param {string} event_id
+     * @param {string[]} outcomes
+     * @param {number} event_maturity_epoch
+     * @param {string} title
+     * @param {string} description
+     * @returns {Promise<PreparedOracleEvent>}
+     */
+    prepare_enum_event(event_id, outcomes, event_maturity_epoch, title, description) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayJsValueToWasm0(outcomes, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(title, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(description, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_prepare_enum_event(this.__wbg_ptr, ptr0, len0, ptr1, len1, event_maturity_epoch, ptr2, len2, ptr3, len3);
+        return ret;
+    }
+    /**
      * @param {string} str
      * @returns {Promise<void>}
      */
@@ -508,8 +584,96 @@ export class Kormir {
         const ret = wasm.kormir_sign_enum_event(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         return ret;
     }
+    /**
+     * @param {string} event_id
+     * @returns {Promise<string | undefined>}
+     */
+    staged_enum_publication(event_id) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_staged_enum_publication(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Side-effect-free validation. Returns public facts only.
+     * @param {string} private_dto_json
+     * @param {string | null} [expected_oracle_pubkey]
+     * @returns {string}
+     */
+    static validate_enum_authority(private_dto_json, expected_oracle_pubkey) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(private_dto_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            var ptr1 = isLikeNone(expected_oracle_pubkey) ? 0 : passStringToWasm0(expected_oracle_pubkey, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            var len1 = WASM_VECTOR_LEN;
+            const ret = wasm.kormir_validate_enum_authority(ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
 }
 if (Symbol.dispose) Kormir.prototype[Symbol.dispose] = Kormir.prototype.free;
+
+export class PreparedOracleEvent {
+    static __wrap(ptr) {
+        const obj = Object.create(PreparedOracleEvent.prototype);
+        obj.__wbg_ptr = ptr;
+        PreparedOracleEventFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        PreparedOracleEventFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_preparedoracleevent_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get artifact_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.preparedoracleevent_artifact_hex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    get nostr_event_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.preparedoracleevent_nostr_event_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) PreparedOracleEvent.prototype[Symbol.dispose] = PreparedOracleEvent.prototype.free;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -710,7 +874,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__h161a1786752a0847(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -765,6 +929,10 @@ function __wbg_get_imports() {
             const ret = JSON.parse(getStringFromWasm0(arg0, arg1));
             return ret;
         }, arguments); },
+        __wbg_preparedoracleevent_new: function(arg0) {
+            const ret = PreparedOracleEvent.__wrap(arg0);
+            return ret;
+        },
         __wbg_process_44c7a14e11e9f69e: function(arg0) {
             const ret = arg0.process;
             return ret;
@@ -929,28 +1097,28 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 744, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3562bd6c9b3b21b1);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 825, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___wasm_bindgen_22d01eaa64b637c9___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_22d01eaa64b637c9___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 506, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 567, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 216, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2f5ba8bb4de46f76);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 254, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_Event__Event__core_9b3796e30d99ddb7___result__Result_____rexie_6c96cc34a9f1040a___error__Error___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 506, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326_3);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 567, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true__3);
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 536, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h07296c2edf232334);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 575, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke_______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000006: function(arg0) {
@@ -984,34 +1152,34 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h07296c2edf232334(arg0, arg1) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h07296c2edf232334(arg0, arg1);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke_______true_(arg0, arg1) {
+    wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke_______true_(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326(arg0, arg1, arg2);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326_3(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326_3(arg0, arg1, arg2);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true__3(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true__3(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h3562bd6c9b3b21b1(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h3562bd6c9b3b21b1(arg0, arg1, arg2);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___wasm_bindgen_22d01eaa64b637c9___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_22d01eaa64b637c9___JsError___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___wasm_bindgen_22d01eaa64b637c9___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_22d01eaa64b637c9___JsError___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h2f5ba8bb4de46f76(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h2f5ba8bb4de46f76(arg0, arg1, arg2);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_Event__Event__core_9b3796e30d99ddb7___result__Result_____rexie_6c96cc34a9f1040a___error__Error___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_Event__Event__core_9b3796e30d99ddb7___result__Result_____rexie_6c96cc34a9f1040a___error__Error___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h161a1786752a0847(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h161a1786752a0847(arg0, arg1, arg2, arg3);
+function wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
 }
 
 
@@ -1034,6 +1202,9 @@ const EventDataFinalization = (typeof FinalizationRegistry === 'undefined')
 const KormirFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_kormir_free(ptr, 1));
+const PreparedOracleEventFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_preparedoracleevent_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

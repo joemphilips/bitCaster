@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { MarketCard } from "../MarketCard";
@@ -12,7 +12,7 @@ const yesNoMarket: YesNoMarket = {
   imageUrl: "",
   categoryTags: ["crypto"],
   metaTags: ["trending"],
-  currentOdds: { yes: 6_500, no: 3_500 },
+  currentOdds: { yes: 650, no: 350 },
   volume: 100000,
   liquidity: 50000,
   liquiditySubunits: 50_000,
@@ -24,7 +24,7 @@ const yesNoMarket: YesNoMarket = {
   creatorFeePercent: 2,
   baseMarket: "sats",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
 };
 
 const categoricalMarket: CategoricalMarket = {
@@ -37,8 +37,8 @@ const categoricalMarket: CategoricalMarket = {
   metaTags: [],
   outcomes: [
     { id: "a", label: "Team A", odds: 4_000 },
-    { id: "b", label: "Team B", odds: 3_500 },
-    { id: "c", label: "Team C", odds: 2_500 },
+    { id: "b", label: "Team B", odds: 3_500, color: "#1A2B3C" },
+    { id: "c", label: "Team C", odds: 250 },
   ],
   volume: 50000,
   liquidity: 20000,
@@ -51,7 +51,7 @@ const categoricalMarket: CategoricalMarket = {
   creatorFeePercent: 1.5,
   baseMarket: "sats",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
 };
 
 describe("MarketCard", () => {
@@ -63,9 +63,25 @@ describe("MarketCard", () => {
       "href",
       "/markets/mkt-1",
     );
-    expect(screen.getByText("65.00%")).toBeInTheDocument();
+    expect(screen.getByText("65.0%")).toBeInTheDocument();
     expect(screen.getByText("Buy YES")).toBeInTheDocument();
     expect(screen.getByText("Buy NO")).toBeInTheDocument();
+  });
+
+  it("renders an accessible em dash instead of a zero price before the first trade", () => {
+    render(
+      <MarketCard
+        market={{
+          ...yesNoMarket,
+          currentOdds: { yes: null, no: null },
+          latestConfirmedTrades: [],
+          latestConfirmedTradesValid: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("—")).toHaveAttribute("aria-label", "No trades yet");
+    expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
   });
 
   it("renders resolved YES for a closed binary market without Chance or trade buttons", () => {
@@ -74,7 +90,7 @@ describe("MarketCard", () => {
     expect(screen.getByText("Will BTC reach 100K?")).toBeInTheDocument();
     expect(screen.getByText("YES")).toBeInTheDocument();
     expect(screen.queryByText("Chance")).not.toBeInTheDocument();
-    expect(screen.queryByText("65.00%")).not.toBeInTheDocument();
+    expect(screen.queryByText("65.0%")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy YES")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy NO")).not.toBeInTheDocument();
   });
@@ -93,6 +109,9 @@ describe("MarketCard", () => {
     );
 
     expect(screen.getByText("Team B")).toBeInTheDocument();
+    expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
+      backgroundColor: "#1A2B3C",
+    });
     expect(screen.queryByText("Chance")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Yes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "No" })).not.toBeInTheDocument();
@@ -103,6 +122,20 @@ describe("MarketCard", () => {
 
     expect(screen.getByText("100 sats")).toBeInTheDocument();
     expect(screen.getByText("50 sats")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Volume", "Total traded volume so far"],
+    ["Total funding", "Total funds contributed to this market's bot"],
+  ])("explains %s across its icon and amount", async (label, description) => {
+    const user = userEvent.setup();
+    render(<MarketCard market={yesNoMarket} />);
+    const control = screen.getByRole("button", { name: new RegExp(label) });
+    await user.hover(control.querySelector("svg")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(description);
+    await user.hover(within(control).getByRole("group"));
+    expect(control).toHaveAccessibleDescription(description);
+    expect(control.querySelector("[title]")).toBeNull();
   });
 
   it("shows zero bot budget for unfunded markets without inventing liquidity", () => {

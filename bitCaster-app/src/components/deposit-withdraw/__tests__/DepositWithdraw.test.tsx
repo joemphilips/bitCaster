@@ -15,9 +15,6 @@ function renderDepositWithdraw(overrides: Partial<DepositWithdrawProps> = {}) {
     mints: baseMints,
     selectedMintId: "mint-1",
     amountSats: 0,
-    amountFiat: "$0.00",
-    fiatSymbol: "$",
-    showFiatPrimary: false,
     lightningInput: "",
     ...overrides,
   };
@@ -25,6 +22,15 @@ function renderDepositWithdraw(overrides: Partial<DepositWithdrawProps> = {}) {
 }
 
 describe("DepositWithdraw", () => {
+  it.each(["deposit-lightning", "send-ecash"] as const)(
+    "%s displays fractional sats without a fiat toggle",
+    (currentView) => {
+      renderDepositWithdraw({ currentView, amountSats: 1.001 });
+      expect(screen.getByText("1.001 sats")).toBeInTheDocument();
+      expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    },
+  );
+
   describe("MethodChooser view", () => {
     it("shows Deposit title when mode is deposit", () => {
       renderDepositWithdraw({ mode: "deposit", currentView: "chooser" });
@@ -111,11 +117,32 @@ describe("DepositWithdraw", () => {
       expect(screen.getByText(/5 sats available/)).toBeInTheDocument();
     });
 
+    it("keeps deposit messages in the Lightning scrollable flow", () => {
+      renderDepositWithdraw({
+        currentView: "deposit-lightning",
+        depositReminder: <div data-testid="deposit-reminder">Backup reminder</div>,
+        statusMessage: <div data-testid="deposit-status">Mint error</div>,
+      });
+
+      const content = screen.getByTestId("deposit-lightning-content");
+      expect(content).toContainElement(screen.getByTestId("deposit-reminder"));
+      expect(content).toContainElement(screen.getByTestId("deposit-status"));
+      expect(screen.getByTestId("deposit-reminder")).not.toHaveClass("fixed");
+      expect(screen.getByTestId("deposit-status")).not.toHaveClass("fixed");
+    });
+
     it("calls onNumpadPress when numpad keys are clicked", async () => {
       const onNumpadPress = vi.fn();
       renderDepositWithdraw({ currentView: "deposit-lightning", onNumpadPress });
       await userEvent.click(screen.getByRole("button", { name: "5" }));
       expect(onNumpadPress).toHaveBeenCalledWith("5");
+    });
+
+    it("calls onNumpadPress for the decimal key", async () => {
+      const onNumpadPress = vi.fn();
+      renderDepositWithdraw({ currentView: "deposit-lightning", onNumpadPress });
+      await userEvent.click(screen.getByRole("button", { name: "." }));
+      expect(onNumpadPress).toHaveBeenCalledWith(".");
     });
   });
 
@@ -145,6 +172,16 @@ describe("DepositWithdraw", () => {
   });
 
   describe("SendEcash view", () => {
+    it("does not render deposit reminders in withdrawal views", () => {
+      renderDepositWithdraw({
+        mode: "withdraw",
+        currentView: "send-ecash",
+        depositReminder: <div data-testid="deposit-reminder">Backup reminder</div>,
+      });
+
+      expect(screen.queryByTestId("deposit-reminder")).not.toBeInTheDocument();
+    });
+
     it("shows SEND button disabled when amount is 0", () => {
       renderDepositWithdraw({ mode: "withdraw", currentView: "send-ecash", amountSats: 0 });
       const button = screen.getByRole("button", { name: /send/i });

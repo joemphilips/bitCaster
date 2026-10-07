@@ -1,3 +1,4 @@
+import type { components, operations } from './generated/api.ts'
 import {
   parseMarketDivisibility,
   type CtfCollateralUnit,
@@ -31,12 +32,24 @@ import {
   type AssetMonitoringSummaryResponse,
 } from './assetMonitoring.ts'
 import type { WalletId } from './durableCustody.ts'
+import { readSignedOracleEvent } from './oracleResolutionExplanation.ts'
 import {
   decodeDurableRecipientDeliveryStatus,
   decodeDurableRecipientDeliverySubmission,
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
 } from './durableRecipientDelivery.ts'
+import {
+  canonicalizePreviewFokOrderCapacityRequest,
+  canonicalizePreviewFokOrderRequest,
+  decodePreviewFokOrderCapacityResponse,
+  decodePreviewFokOrderResponse,
+  FOK_PREVIEW_RESPONSE_BYTES_MAX,
+  type PreviewFokOrderCapacityRequest,
+  type PreviewFokOrderCapacityResponse,
+  type PreviewFokOrderRequest,
+  type PreviewFokOrderResponse,
+} from './fokOrderPreview.ts'
 
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
@@ -62,39 +75,12 @@ export interface EngineAuthorizationRequest {
   method: string
   bodyText?: string
   payloadHash?: string
+  signal?: AbortSignal
 }
 
 export interface SettlementCapabilityReference {
   artifactId: string
   bindingDigest: string
-}
-
-export interface SettlementOrderContinuationReference {
-  predecessorOrderId: string
-  settlementGroupId: string
-  settlementGroupRevision: number
-  continuationRevision: number
-}
-
-export function decodeSettlementOrderContinuationReference(
-  value: unknown,
-): SettlementOrderContinuationReference {
-  const reference = exactEngineRecord(value, [
-    'predecessorOrderId',
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'continuationRevision',
-  ])
-  requireUuid(reference.predecessorOrderId, 'continuation predecessor order id')
-  requireUuid(reference.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(reference.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(reference.continuationRevision, 'continuation revision')
-  return {
-    predecessorOrderId: reference.predecessorOrderId as string,
-    settlementGroupId: reference.settlementGroupId as string,
-    settlementGroupRevision: reference.settlementGroupRevision as number,
-    continuationRevision: reference.continuationRevision as number,
-  }
 }
 
 export type SettlementCapabilityState =
@@ -110,7 +96,6 @@ export type OrderLifecycleStatus =
   | 'resting'
   | 'matched'
   | 'partially_filled'
-  | 'awaiting_authorization'
   | 'filled'
   | 'cancelled'
   | 'expired'
@@ -119,8 +104,12 @@ export type OrderLifecycleStatus =
   | 'failed'
 
 export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
+export type SettlementCapabilityTimeInForce = 'FOK'
 
-export interface SettlementOrderIntent {
+export interface SettlementOrderIntent extends Pick<
+  components['schemas']['SettlementOrderIntent'],
+  'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'
+> {
   outcomeId: string
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
@@ -129,7 +118,7 @@ export interface SettlementOrderIntent {
   minimumFillAmountSubunits: number
   baseAsset: MarketBaseAsset
   collateralUnit: CtfCollateralUnit
-  timeInForce: OrderTimeInForce
+  timeInForce: SettlementCapabilityTimeInForce
   expiresAt: string | null
 }
 
@@ -138,7 +127,6 @@ export interface CreateSettlementCapabilityRequest {
   clientOrderId: string
   marketId: string
   orderIntent: SettlementOrderIntent
-  continuation: SettlementOrderContinuationReference | null
   artifact: string
 }
 
@@ -164,6 +152,7 @@ export interface ConditionAttestationResponse {
   readonly attestedOutcome: string
   readonly oracleWitness: unknown
   readonly registeredAuthority: unknown
+  readonly attestationEvent: components['schemas']['OracleNostrEvent']
 }
 
 export interface SettlementCapabilityResultResponse {
@@ -216,14 +205,7 @@ export interface Fill {
   outcomeFaceAmountSubunits: number
 }
 
-export type SettlementGroupStatus =
-  | 'Prepared'
-  | 'SubmissionPending'
-  | 'Reconciling'
-  | 'Confirmed'
-  | 'DefinitivelyRejected'
-  | 'Refundable'
-  | 'ExpiredBeforeSubmission'
+export type SettlementGroupStatus = components['schemas']['SettlementGroupStatus']
 
 export interface SettlementGroupSummary {
   groupId: string
@@ -314,7 +296,6 @@ export type BatchSubmitOrderErrorCode =
   | 'capabilityNotCurrent'
   | 'routeMismatch'
   | 'authorityUnavailable'
-  | 'participationScoreRequired'
   | 'marketClosed'
   | 'bookRejected'
 
@@ -343,7 +324,10 @@ export interface EngineProblem {
   detail?: string
 }
 
-export interface OrderStatusResponse {
+export interface OrderStatusResponse extends Pick<
+  components['schemas']['OrderStatusResponse'],
+  'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'
+> {
   orderId: string
   marketId: string
   status: OrderLifecycleStatus
@@ -361,14 +345,6 @@ export interface OrderStatusResponse {
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
-  continuation: OrderContinuationState | null
-}
-
-export interface OrderContinuationState {
-  settlementGroupId: string
-  settlementGroupRevision: number
-  revision: number
-  status: 'open' | 'consumed' | 'declined'
 }
 
 export interface OrderEntry {
@@ -408,9 +384,9 @@ export interface OrderBookSnapshot {
 }
 
 export interface QueryMarketsParams {
-  state?: 'Open' | 'Closed' | 'Resolved' | 'All'
+  state?: NonNullable<NonNullable<operations['queryMarkets']['parameters']['query']>['state']>
   sort?: 'Trending' | 'Popular' | 'New'
-  tag?: string
+  tag?: NonNullable<NonNullable<operations['queryMarkets']['parameters']['query']>['tag']>
   /** @deprecated Use creatorPubkey; OpenAPI wire name is creator_pubkey. */
   creator?: string
   creatorPubkey?: string
@@ -427,53 +403,27 @@ export interface QueryMarketsResponse {
   nextCursor?: string | null
 }
 
-export type PriceHistoryTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
+export type PriceHistoryTimeframe = components['schemas']['MarketPriceHistoryResponse']['timeframe']
 
-export interface MarketPriceHistoryPoint {
-  timestamp: string
-  price: number
-  volumeSubunits: number
-}
+export type MarketPriceHistoryPoint = components['schemas']['MarketPriceHistoryPoint']
 
-export interface MarketOutcomePriceHistory {
-  outcomeId: string
-  data: MarketPriceHistoryPoint[]
-}
+export type MarketOutcomePriceHistory = components['schemas']['MarketOutcomePriceHistory']
 
-export interface MarketPriceHistoryResponse {
-  conditionId: string
-  timeframe: PriceHistoryTimeframe
-  outcomes: MarketOutcomePriceHistory[]
-}
+export type MarketPriceHistoryResponse = components['schemas']['MarketPriceHistoryResponse']
 
-export interface MarketComment {
-  commentId: string
-  content: string
-  createdAt: string
-  authorPubkey: string
-}
+export type MarketSnapshotReadOptions = NonNullable<
+  operations['getMarketComments']['parameters']['query']
+> & { signal?: AbortSignal }
 
-export interface MarketCommentsResponse {
-  conditionId: string
-  comments: MarketComment[]
-}
+export type MarketComment = components['schemas']['MarketComment']
+export type MarketCommentsResponse = components['schemas']['MarketCommentsResponse']
 
 export interface ParticipationScoreResponse {
   pubkey: string
   balance: number
   purchasedTotal: number
   consumedTotal: number
-  penaltyTotal: number
-  matchDebitScore: number
   enabled: boolean
-}
-
-export interface PayParticipationScoreEcashResponse {
-  paymentId: string
-  status: 'credited'
-  amountSats: number
-  creditedScore: number
-  creditedAt: string
 }
 
 export class BitcasterEngineClient {
@@ -540,18 +490,22 @@ export class BitcasterEngineClient {
 
   async getAssetMonitoringAssets(
     queryInput: AssetMonitoringAssetsQuery,
+    signal?: AbortSignal,
   ): Promise<AssetMonitoringAssetsResponse> {
     const query = assetMonitoringAssetsQueryString(decodeAssetMonitoringAssetsQuery(queryInput))
     const response = await this.request(
       `/api/v1/asset-monitoring/assets?${query}`,
-      {},
+      { signal },
       undefined,
       false,
       ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
     )
-    return decodeAssetMonitoringAssetsResponse(
-      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    const body = await readAllocationBoundedJsonResponse(
+      response,
+      ASSET_MONITORING_RESPONSE_BYTES_MAX,
     )
+    signal?.throwIfAborted()
+    return decodeAssetMonitoringAssetsResponse(body)
   }
 
   async getAssetMonitoringHistory(
@@ -572,20 +526,24 @@ export class BitcasterEngineClient {
 
   async getPortfolio(
     queryInput: AssetMonitoringPortfolioQuery,
+    signal?: AbortSignal,
   ): Promise<AssetMonitoringPortfolioResponse> {
     const query = assetMonitoringPortfolioQueryString(
       decodeAssetMonitoringPortfolioQuery(queryInput),
     )
     const response = await this.request(
       `/api/v1/portfolio?${query}`,
-      {},
+      { signal },
       undefined,
       false,
       ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
     )
-    return decodeAssetMonitoringPortfolioResponse(
-      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    const body = await readAllocationBoundedJsonResponse(
+      response,
+      ASSET_MONITORING_RESPONSE_BYTES_MAX,
     )
+    signal?.throwIfAborted()
+    return decodeAssetMonitoringPortfolioResponse(body)
   }
 
   async createSettlementCapability(
@@ -677,36 +635,72 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
+  async previewFokOrder(
+    request: PreviewFokOrderRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewFokOrderResponse> {
+    const bodyText = JSON.stringify(canonicalizePreviewFokOrderRequest(request))
     const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
-      {},
-      undefined,
-      true,
-    )
-    if (response.status === 404) return null
-    return decodeOrderStatusResponse(
-      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
-  }
-
-  async declineOrderContinuation(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void> {
-    requireUuid(orderId, 'continuation order id')
-    requirePositiveSafeInteger(expectedContinuationRevision, 'continuation revision')
-    const bodyText = JSON.stringify({ expectedContinuationRevision })
-    await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/continuation/decline`,
+      '/api/v1/orders/preview',
       {
         method: 'POST',
         body: bodyText,
         headers: { 'content-type': 'application/json' },
+        signal,
       },
       bodyText,
+      false,
+      FOK_PREVIEW_RESPONSE_BYTES_MAX,
     )
+    return decodePreviewFokOrderResponse(
+      await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
+      request,
+    )
+  }
+
+  async previewFokOrderCapacity(
+    request: PreviewFokOrderCapacityRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewFokOrderCapacityResponse> {
+    const canonicalRequest = canonicalizePreviewFokOrderCapacityRequest(request)
+    const bodyText = JSON.stringify(canonicalRequest)
+    const response = await this.request(
+      '/api/v1/orders/capacity-preview',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+        signal,
+      },
+      bodyText,
+      false,
+      FOK_PREVIEW_RESPONSE_BYTES_MAX,
+    )
+    return decodePreviewFokOrderCapacityResponse(
+      await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
+      canonicalRequest,
+    )
+  }
+
+  async getOrderStatus(
+    marketId: string,
+    orderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderStatusResponse | null> {
+    const response = await this.request(
+      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
+      { signal },
+      undefined,
+      true,
+      SUBMIT_ORDER_RESPONSE_BYTES_MAX,
+    )
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const value = await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX)
+    signal?.throwIfAborted()
+    return decodeOrderStatusResponse(value)
   }
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
@@ -757,30 +751,58 @@ export class BitcasterEngineClient {
     return response.status !== 404
   }
 
-  async getOrderBook(marketId: string): Promise<OrderBookSnapshot> {
-    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`)
+  async getOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBookSnapshot> {
+    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
+      signal,
+    })
     return (await response.json()) as OrderBookSnapshot
   }
 
-  async queryMarkets(params: QueryMarketsParams = {}): Promise<QueryMarketsResponse> {
-    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`)
+  async queryMarkets(
+    params: QueryMarketsParams = {},
+    signal?: AbortSignal,
+  ): Promise<QueryMarketsResponse> {
+    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`, {
+      signal,
+    })
     return (await response.json()) as QueryMarketsResponse
+  }
+
+  async getCreatorMarkets(
+    pubkey: string,
+  ): Promise<components['schemas']['CreatorMarketsResponse']> {
+    const response = await this.request(`/api/v1/creators/${encodePathSegment(pubkey)}/markets`)
+    return (await response.json()) as components['schemas']['CreatorMarketsResponse']
   }
 
   async getMarketPriceHistory(
     conditionId: string,
     timeframe: PriceHistoryTimeframe = '7d',
+    options: MarketSnapshotReadOptions = {},
   ): Promise<MarketPriceHistoryResponse> {
     const query = new URLSearchParams({ timeframe })
+    if (options.minimumEventOrder !== undefined)
+      query.set('minimumEventOrder', options.minimumEventOrder)
+    if (options.refresh === true) query.set('refresh', 'true')
     const response = await this.request(
       `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
+      { signal: options.signal },
     )
     return (await response.json()) as MarketPriceHistoryResponse
   }
 
-  async getMarketComments(conditionId: string): Promise<MarketCommentsResponse> {
+  async getMarketComments(
+    conditionId: string,
+    options: MarketSnapshotReadOptions = {},
+  ): Promise<MarketCommentsResponse> {
+    const query = new URLSearchParams()
+    if (options.minimumEventOrder !== undefined)
+      query.set('minimumEventOrder', options.minimumEventOrder)
+    if (options.refresh === true) query.set('refresh', 'true')
+    const suffix = query.size === 0 ? '' : `?${query}`
     const response = await this.request(
-      `/api/v1/markets/${encodePathSegment(conditionId)}/comments`,
+      `/api/v1/markets/${encodePathSegment(conditionId)}/comments${suffix}`,
+      { signal: options.signal },
     )
     return (await response.json()) as MarketCommentsResponse
   }
@@ -790,34 +812,13 @@ export class BitcasterEngineClient {
     return (await response.json()) as ParticipationScoreResponse
   }
 
-  async payParticipationScoreEcash(
-    amountSats: number,
-    proofsToken: string,
-    paymentId?: string,
-  ): Promise<PayParticipationScoreEcashResponse> {
-    const bodyText = JSON.stringify({
-      amountSats,
-      proofsToken,
-      ...(paymentId ? { paymentId } : {}),
-    })
-    const response = await this.request(
-      '/api/v1/participation-score/ecash',
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
-    )
-    return (await response.json()) as PayParticipationScoreEcashResponse
-  }
-
   async getDurableRecipientDeliveryStatus(
     deliveryId: string,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus | null> {
     return this.requestDurableRecipientDelivery(
       `/api/v1/cashu-deliveries/${encodePathSegment(deliveryId)}`,
-      {},
+      { signal },
       undefined,
       true,
       async (response) => {
@@ -834,6 +835,7 @@ export class BitcasterEngineClient {
 
   async submitDurableRecipientDelivery(
     submission: DurableRecipientDeliverySubmission,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus> {
     const exact = decodeDurableRecipientDeliverySubmission(submission)
     const bodyText = JSON.stringify(exact)
@@ -843,6 +845,7 @@ export class BitcasterEngineClient {
         method: 'POST',
         body: bodyText,
         headers: { 'content-type': 'application/json' },
+        signal,
       },
       bodyText,
       false,
@@ -856,28 +859,50 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getMarket(conditionId: string): Promise<unknown | null> {
-    const response = await this.queryMarkets({
-      ids: [conditionId],
-      state: 'All',
-      pageSize: 1,
-    })
+  async getMarket(conditionId: string, signal?: AbortSignal): Promise<unknown | null> {
+    const response = await this.queryMarkets(
+      {
+        ids: [conditionId],
+        state: 'All',
+        pageSize: 1,
+      },
+      signal,
+    )
     return response.markets[0] ?? null
   }
 
-  async getConditionAttestation(conditionId: string): Promise<ConditionAttestationResponse | null> {
+  async getMarketRegistration(
+    conditionId: string,
+    signal?: AbortSignal,
+  ): Promise<components['schemas']['MarketRegistrationResponse'] | null> {
+    return this.getOptional(
+      `/api/v1/markets/${encodePathSegment(conditionId)}/registration`,
+      signal,
+    )
+  }
+
+  async getConditionAttestation(
+    conditionId: string,
+    signal?: AbortSignal,
+  ): Promise<ConditionAttestationResponse | null> {
     const response = await this.request(
       `/api/v1/conditions/${encodePathSegment(conditionId)}/attestation`,
-      {},
+      { signal },
       undefined,
       true,
     )
     if (response.status === 404) return null
     const value = exactEngineRecord(
       await readAllocationBoundedJsonResponse(response, CONDITION_ATTESTATION_RESPONSE_BYTES_MAX),
-      ['conditionId', 'attestedOutcome', 'oracleWitness', 'registeredAuthority'],
+      [
+        'conditionId',
+        'attestedOutcome',
+        'oracleWitness',
+        'registeredAuthority',
+        'attestationEvent',
+      ],
     )
-    if (typeof value.conditionId !== 'string' || typeof value.attestedOutcome !== 'string') {
+    if (value.conditionId !== conditionId || typeof value.attestedOutcome !== 'string') {
       throw new Error('condition attestation response is invalid')
     }
     return {
@@ -885,11 +910,12 @@ export class BitcasterEngineClient {
       attestedOutcome: value.attestedOutcome,
       oracleWitness: value.oracleWitness,
       registeredAuthority: value.registeredAuthority,
+      attestationEvent: decodeConditionAttestationEvent(value.attestationEvent),
     }
   }
 
-  private async getOptional<T>(path: string): Promise<T | null> {
-    const response = await this.request(path, {}, undefined, true)
+  private async getOptional<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+    const response = await this.request(path, { signal }, undefined, true)
     if (response.status === 404) return null
     return (await response.json()) as T
   }
@@ -901,16 +927,30 @@ export class BitcasterEngineClient {
     allowNotFound = false,
     errorResponseBytesMax?: number,
   ): Promise<Response> {
+    init.signal?.throwIfAborted()
     const url = `${this.baseUrl}${path}`
     const headers = await this.authorizedHeaders(url, init, bodyText)
+    init.signal?.throwIfAborted()
     const response = await this.fetchImpl(url, { ...init, headers })
+    if (init.signal?.aborted) {
+      await response.body?.cancel().catch(() => {})
+      init.signal.throwIfAborted()
+    }
     if (!response.ok && !(allowNotFound && response.status === 404)) {
       const detail =
         errorResponseBytesMax === undefined
           ? await response.text().catch(() => '')
           : await readAllocationBoundedTextResponse(response, errorResponseBytesMax).catch(() => '')
       const problem = parseEngineProblem(detail)
-      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+      throw new EngineClientError(
+        response.status,
+        detail,
+        problem?.code,
+        problem?.detail,
+        response.status === 429
+          ? parseRetryAfterHeader(response.headers.get('retry-after'))
+          : undefined,
+      )
     }
     return response
   }
@@ -969,12 +1009,23 @@ export class BitcasterEngineClient {
     read: (response: Response) => Promise<T>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`
-    const headers = await this.authorizedHeaders(url, init, bodyText)
     const lifetime = createBoundedRequestLifetime(
-      undefined,
+      init.signal ?? undefined,
       this.durableRecipientDeliveryRequestTimeoutMs,
     )
     try {
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
+      let headers: Record<string, string>
+      try {
+        headers = await this.authorizedHeaders(url, init, bodyText, lifetime.signal)
+      } catch {
+        throw new Error('durable recipient delivery request failed')
+      }
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
       let response: Response
       try {
         response = await this.fetchImpl(url, {
@@ -1014,17 +1065,49 @@ export class BitcasterEngineClient {
     url: string,
     init: RequestInit,
     bodyText: string | undefined,
+    signal?: AbortSignal,
   ): Promise<Record<string, string>> {
     const headers = normalizeHeaders(init.headers)
     if (this.authorization) {
-      headers.Authorization = await this.authorization({
+      const authorizationRequest: EngineAuthorizationRequest = {
         url,
         method: init.method ?? 'GET',
         bodyText,
-      })
+        ...(signal === undefined ? {} : { signal }),
+      }
+      const authorization = this.authorization(authorizationRequest)
+      headers.Authorization = signal
+        ? await awaitAbortable(Promise.resolve(authorization), signal)
+        : await authorization
     }
     return headers
   }
+}
+
+export async function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    // The caller can already have started this operation before cancellation.
+    void operation.catch(() => undefined)
+    throw new Error('request aborted')
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup()
+      reject(new Error('request aborted'))
+    }
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    signal.addEventListener('abort', onAbort, { once: true })
+    operation.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (error: unknown) => {
+        cleanup()
+        reject(error)
+      },
+    )
+  })
 }
 
 async function readSettlementCapabilityResultResponse(
@@ -1108,9 +1191,8 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
       'baseAsset',
       'divisibility',
       'activeSettlementGroup',
-      'continuation',
     ],
-    ['expiresAt'],
+    ['expiresAt', 'maxQuotePaymentSubunits', 'minQuotePaymentSubunits'],
   )
   requireUuid(response.orderId, 'order id')
   if (typeof response.marketId !== 'string' || response.marketId.length < 1) {
@@ -1131,8 +1213,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     response.activeSettlementGroup === null
       ? null
       : decodeSettlementGroup(response.activeSettlementGroup)
-  const continuation =
-    response.continuation === null ? null : decodeOrderContinuationState(response.continuation)
   return {
     orderId: response.orderId as string,
     marketId: response.marketId,
@@ -1141,12 +1221,26 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     filledAmountSubunits: response.filledAmountSubunits as number,
     fills,
     ...orderFields,
+    ...decodeOrderStatusQuoteBounds(response),
     tokenSide: response.tokenSide,
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
-    continuation,
   }
+}
+
+function decodeOrderStatusQuoteBounds(
+  response: Record<string, unknown>,
+): Pick<OrderStatusResponse, 'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'> {
+  const bounds: Pick<OrderStatusResponse, 'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'> =
+    {}
+  for (const field of ['maxQuotePaymentSubunits', 'minQuotePaymentSubunits'] as const) {
+    if (!Object.hasOwn(response, field)) continue
+    const value = response[field]
+    if (value !== null) requireNonnegativeSafeInteger(value, 'order quote-payment bound')
+    bounds[field] = value
+  }
+  return bounds
 }
 
 function decodeOrderStatusFields(
@@ -1188,27 +1282,6 @@ function decodeOrderStatusFields(
 
 function requireOptionalIsoEngineTime(value: unknown, name: string): void {
   if (value !== undefined && value !== null) requireIsoEngineTime(value, name)
-}
-
-function decodeOrderContinuationState(value: unknown): OrderContinuationState {
-  const state = exactEngineRecord(value, [
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'revision',
-    'status',
-  ])
-  requireUuid(state.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(state.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(state.revision, 'continuation revision')
-  if (state.status !== 'open' && state.status !== 'consumed' && state.status !== 'declined') {
-    throw new Error('order continuation status is invalid')
-  }
-  return {
-    settlementGroupId: state.settlementGroupId as string,
-    settlementGroupRevision: state.settlementGroupRevision as number,
-    revision: state.revision as number,
-    status: state.status,
-  }
 }
 
 function decodeFill(value: unknown): Fill {
@@ -1285,7 +1358,8 @@ function decodeSettlementGroup(value: unknown): SettlementGroupSummary {
     group.status !== 'Confirmed' &&
     group.status !== 'DefinitivelyRejected' &&
     group.status !== 'Refundable' &&
-    group.status !== 'ExpiredBeforeSubmission'
+    group.status !== 'ExpiredBeforeSubmission' &&
+    group.status !== 'RejectedBeforeSubmission'
   ) {
     throw new Error('settlement group status is invalid')
   }
@@ -1415,7 +1489,6 @@ function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStat
     value !== 'resting' &&
     value !== 'matched' &&
     value !== 'partially_filled' &&
-    value !== 'awaiting_authorization' &&
     value !== 'filled' &&
     value !== 'cancelled' &&
     value !== 'expired' &&
@@ -1424,6 +1497,31 @@ function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStat
     value !== 'failed'
   ) {
     throw new Error('order response status is invalid')
+  }
+}
+
+function decodeConditionAttestationEvent(
+  value: unknown,
+): components['schemas']['OracleNostrEvent'] {
+  const wire = exactEngineRecord(value, [
+    'id',
+    'pubkey',
+    'createdAt',
+    'kind',
+    'tags',
+    'content',
+    'sig',
+  ])
+  const { createdAt, ...signed } = wire
+  const event = readSignedOracleEvent(JSON.stringify({ ...signed, created_at: createdAt }), 89)
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.created_at,
+    kind: 89,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
   }
 }
 
@@ -1569,7 +1667,7 @@ function buildMarketsQueryString(params: QueryMarketsParams): string {
   const query = new URLSearchParams()
   if (params.state) query.set('state', params.state)
   if (params.sort) query.set('sort', params.sort)
-  if (params.tag) query.set('tag', params.tag)
+  for (const tag of params.tag ?? []) query.append('tag', tag)
   const creatorPubkey = params.creatorPubkey ?? params.creator
   if (creatorPubkey) query.set('creator_pubkey', creatorPubkey)
   if (params.ids?.length) query.set('ids', params.ids.join(','))
@@ -1586,14 +1684,22 @@ export class EngineClientError extends Error {
   public readonly detail: string
   public readonly code?: string
   public readonly problemDetail?: string
+  public readonly retryAfterSeconds?: number
 
-  constructor(status: number, detail: string, code?: string, problemDetail?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    code?: string,
+    problemDetail?: string,
+    retryAfterSeconds?: number,
+  ) {
     super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status
     this.detail = detail
     this.code = code
     this.problemDetail = problemDetail
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -1613,6 +1719,7 @@ export function isDefinitiveOrderSubmissionError(error: EngineClientError): bool
     return false
   }
   if (error.status !== 409) return true
+  if (error.code !== undefined) return error.code !== 'order-book-conflict'
   return orderSubmissionErrorDetail(error) !== RETRYABLE_ORDER_BOOK_CONFLICT
 }
 
@@ -1674,6 +1781,12 @@ function parseEngineProblem(text: string): EngineProblem | null {
   } catch {
     return null
   }
+}
+
+function parseRetryAfterHeader(value: string | null): number | undefined {
+  if (value === null || !/^[1-9][0-9]*$/.test(value)) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) ? seconds : undefined
 }
 
 function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> {

@@ -1,4 +1,6 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { hkdf } from '@noble/hashes/hkdf.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import { equalBytes } from './encryptedWalletBackupServerValidation.ts'
@@ -15,12 +17,26 @@ export interface EncryptedWalletBackupV2KeyAuthority {
   readonly encryptionRoot: Uint8Array
   readonly requestAuthRoot: Uint8Array
   readonly assetLocatorRoot: Uint8Array
+  readonly terminalSealKey: Uint8Array
   readonly runtime: EncryptedWalletBackupV2Runtime
 }
 
 const KEY_AUTHORITIES = new WeakMap<object, EncryptedWalletBackupV2KeyAuthority>()
 const SCALAR_ATTEMPTS = 256
 const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
+
+/** Independent of the relay realm so the retained proof classification stays portable. */
+export function deriveEncryptedWalletBackupV2TerminalSealKey(seed: Uint8Array): Uint8Array {
+  if (!(seed instanceof Uint8Array) || seed.byteLength !== 64)
+    throw new Error('encrypted backup seed is invalid')
+  return hkdf(
+    sha256,
+    seed,
+    ENCRYPTED_WALLET_BACKUP_V2_ROOT_SALT,
+    new TextEncoder().encode('bitcaster/encrypted-wallet-backup/verified-losing-seal/v2'),
+    32,
+  )
+}
 
 export function registerEncryptedWalletBackupV2KeyHandle(
   handle: EncryptedWalletBackupV2KeyHandle,

@@ -1,4 +1,4 @@
-/** Pure LMSR strategy parameter shapes shared by wallet-service and clients. */
+/** Pure LMSR strategy parameter shapes for SDK calculations. */
 
 export interface AmmStrategyParams {
   /** Raw creator budget in sats. */
@@ -37,7 +37,7 @@ export const ZERO_AMM_STRATEGY_PARAMS: Readonly<AmmStrategyParams> = {
   levelsPerSide: 0,
   perLevelSizeCapShares: 0,
   minFillSizeShares: 0,
-  sizeTickSubunits: 10_000,
-  divisibility: 10_000,
+  sizeTickSubunits: 1_000,
+  divisibility: 1_000,
   priceStepSubunits: 10,
 }

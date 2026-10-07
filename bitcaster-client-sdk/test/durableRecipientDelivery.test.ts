@@ -28,7 +28,7 @@ function submission() {
     destinationId: 'market-deposit-1',
     productBindingSha256: digest('market-binding'),
     mintUrl: 'https://mint.example',
-    unit: 'sat',
+    unit: 'msat',
     requestedAmount: '21',
     creditPolicy: 'exact-amount',
     tokenSha256: digest(token),
@@ -42,7 +42,7 @@ test('roundtrips a strict immutable tuple and stable fingerprint', () => {
   const fingerprint = deriveDurableRecipientTupleFingerprint(exact)
   assert.equal(exact.mintUrl, 'https://mint.example')
   assert.equal(fingerprint.length, 64)
-  assert.equal(fingerprint, 'f6360cf14eba4b3dfc7836b0b9aa6a675c03e766d876f9046bf6bcef597c40cf')
+  assert.equal(fingerprint, '538153701c2e09f7d653225ca624289ac58a2c503dcf9778fe7754efc9cfc55c')
   assertDurableRecipientDeliveryPathAuthority(exact.deliveryId, exact)
   assert.throws(
     () =>
@@ -124,7 +124,7 @@ test('binds every immutable tuple field to the fingerprint', () => {
     destinationId: 'market-deposit-2',
     productBindingSha256: digest('other-binding'),
     mintUrl: 'https://mint.example:8443',
-    unit: 'msat',
+    unit: 'sat',
     requestedAmount: '22',
     creditPolicy: 'net-of-receive-fee',
     tokenSha256: digest('other-token'),
@@ -264,9 +264,11 @@ test('enforces identifiers, mint normalization, enums, signed 64-bit amounts, an
     }).mintUrl,
     'https://mint.example:8443',
   )
-  for (const unit of ['sat', 'msat']) {
-    assert.equal(decodeDurableRecipientDeliverySubmission({ ...submission(), unit }).unit, unit)
-  }
+  assert.equal(exact.unit, 'msat')
+  assert.throws(
+    () => decodeDurableRecipientDeliverySubmission({ ...submission(), unit: 'sat' }),
+    /unit/,
+  )
   for (const mintUrl of [
     'https://mint.example/',
     'https://mint.example:443',

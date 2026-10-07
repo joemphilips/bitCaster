@@ -7,17 +7,16 @@ import {
   decodeCanonicalRangePreparation,
   encodeCanonicalRangePreparation,
   insertRangePreparation,
-  insertRangeSuccessorIntent,
   linkRangePreparationSource,
   pageActiveRangePreparations,
   readActiveRangePreparationByClientOrderId,
   readRangePreparation,
-  readRangeSuccessorIntent,
   readRangePreparationOperationLinks,
   transitionRangePreparation,
 } from '../src/ctfRangeOrderJournalSqlite.ts'
 import { FINAL_PROFILE_SCHEMA_SQL } from '../src/profileSchemaManifest.ts'
 import { configureDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { encodeCtfRangeOrderFeeConsentArtifact } from '@bitcaster-market/client-sdk/ctfRangeOrderJournal'
 
 const SCOPE_ID = `custody:wallet:${'11'.repeat(32)}`
 const MINT_URL = 'https://mint.example'
@@ -42,6 +41,7 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
   assert.equal(replayed.revision, 0)
   assert.equal(restored?.clientOrderId, input.clientOrderId)
   assert.equal(restored?.consolidateProofs, false)
+  assert.equal(restored?.feeConsentBytes, null)
   assert.equal(
     Buffer.from(restored?.preparationBytes ?? []).toString('utf8'),
     '{"authorizationId":"authorization-range-1","rangeOperationId":"range-1"}',
@@ -62,6 +62,25 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
       }),
     /conflicts with its persisted authority/,
   )
+  const feeConsentBytes = encodeCtfRangeOrderFeeConsentArtifact({
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '1',
+    consolidationFeeSubunits: '0',
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset: { kind: 'regular', unit: 'msat' },
+    consolidationAsset: { kind: 'regular', unit: 'msat' },
+    sourceMode: 'wallet-send',
+  })
+  assert.throws(
+    () => insertRangePreparation(database, { ...input, feeConsentBytes }),
+    /conflicts with its persisted authority/,
+  )
+  seedProofOperation(database, 'source-with-consent', 'reservation-with-consent', 'source')
+  const withConsent = insertRangePreparation(database, {
+    ...preparationInput('range-with-consent', 'source-with-consent', 'client-with-consent', 11),
+    feeConsentBytes,
+  })
+  assert.deepEqual(withConsent.feeConsentBytes, feeConsentBytes)
   assert.throws(
     () =>
       insertRangePreparation(database, {
@@ -101,18 +120,15 @@ test('range preparation schema rejects partial capability and loose authority', 
   const values = preparationValues(input)
   const statement = database.prepare(
     `INSERT INTO daemon_ctf_range_preparations (
-       scope_id, range_operation_id, source_operation_id, source_kind,
-       predecessor_range_operation_id, authorization_id,
+       scope_id, range_operation_id, source_operation_id, authorization_id,
        client_order_id, order_route_id, normalized_mint, condition_id, unit,
        token_side, side, price_subunits, amount_subunits,
-       minimum_fill_amount_subunits, continue_after_partial_fill, consolidate_proofs,
-       continuation_predecessor_order_id, continuation_settlement_group_id,
-       continuation_settlement_group_revision, continuation_revision, divisibility,
+       minimum_fill_amount_subunits, consolidate_proofs, divisibility,
        authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
        capability_artifact_id, capability_binding_digest, capability_artifact_digest,
        engine_order_id, created_at_ms, updated_at_ms
      ) VALUES (
-       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      )`,
   )
   const insertPrepared = (candidate: ReturnType<typeof preparationInput>) =>
@@ -131,9 +147,9 @@ test('range preparation schema rejects partial capability and loose authority', 
   assert.throws(
     () =>
       statement.run(
-        ...values.slice(0, 10),
+        ...values.slice(0, 8),
         'sat',
-        ...values.slice(11),
+        ...values.slice(9),
         'prepared',
         0,
         null,
@@ -166,9 +182,9 @@ test('range preparation schema rejects partial capability and loose authority', 
     /constraint/,
   )
   for (const candidate of [
-    { ...input, amountSubunits: 15_000 },
-    { ...input, minimumFillAmountSubunits: 5_000 },
-    { ...input, minimumFillAmountSubunits: 20_000 },
+    { ...input, amountSubunits: 1_500 },
+    { ...input, minimumFillAmountSubunits: 500 },
+    { ...input, minimumFillAmountSubunits: 2_000 },
   ]) {
     assert.throws(() => insertPrepared(candidate), /constraint/)
   }
@@ -176,7 +192,7 @@ test('range preparation schema rejects partial capability and loose authority', 
     () =>
       insertRangePreparation(database, {
         ...preparationInput('range-full-price', 'source-full-price', 'client-full-price', 2),
-        priceSubunits: 10_000,
+        priceSubunits: 1_000,
       }),
     /price/,
   )
@@ -269,55 +285,6 @@ test('source and consolidation links are exact, idempotent, and ordered', (t) =>
           'ctf-range-authorization-consolidation',
         ),
     /FOREIGN KEY/,
-  )
-})
-
-test('successor intent is strict, unique, and exact before preparation', (t) => {
-  const database = createDatabase()
-  t.after(() => database.close())
-  seedProofOperation(database, 'source-intent', 'reservation-source-intent', 'source')
-  const predecessor = preparationInput('range-intent', 'source-intent', 'client-intent', 3)
-  insertRangePreparation(database, predecessor)
-  const intent = {
-    scopeId: SCOPE_ID,
-    predecessorRangeOperationId: predecessor.rangeOperationId,
-    successorRangeOperationId: 'range-intent-successor',
-    successorAuthorizationId: 'authorization-intent-successor',
-    successorClientOrderId: 'client-intent-successor',
-    remainingAmountSubunits: 10_000,
-    continuation: {
-      predecessorOrderId: '11111111-1111-4111-8111-111111111111',
-      settlementGroupId: '22222222-2222-4222-8222-222222222222',
-      settlementGroupRevision: 3,
-      continuationRevision: 4,
-    },
-    createdAtMs: 4,
-  }
-
-  assert.deepEqual(insertRangeSuccessorIntent(database, intent), intent)
-  assert.deepEqual(insertRangeSuccessorIntent(database, intent), intent)
-  assert.deepEqual(
-    readRangeSuccessorIntent(database, SCOPE_ID, predecessor.rangeOperationId),
-    intent,
-  )
-  assert.throws(
-    () =>
-      insertRangeSuccessorIntent(database, {
-        ...intent,
-        successorClientOrderId: 'foreign-client-order',
-      }),
-    /conflicts with persisted authority/,
-  )
-  assert.throws(
-    () =>
-      insertRangeSuccessorIntent(database, {
-        ...intent,
-        predecessorRangeOperationId: 'missing-predecessor',
-        successorRangeOperationId: 'range-missing-successor',
-        successorAuthorizationId: 'authorization-missing-successor',
-        successorClientOrderId: 'client-missing-successor',
-      }),
-    /constraint/,
   )
 })
 
@@ -507,8 +474,6 @@ function preparationInput(
     scopeId: SCOPE_ID,
     rangeOperationId,
     sourceOperationId,
-    sourceKind: 'wallet-prepared' as const,
-    predecessorRangeOperationId: null,
     authorizationId: `authorization-${rangeOperationId}`,
     clientOrderId,
     orderRouteId: 'condition-1-YES',
@@ -517,18 +482,17 @@ function preparationInput(
     unit: 'msat' as const,
     tokenSide: 'Outcome' as const,
     side: 'Buy' as const,
-    priceSubunits: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    continueAfterPartialFill: false,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     consolidateProofs: false,
-    continuation: null,
-    divisibility: 10_000,
+    divisibility: 1_000,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCanonicalRangePreparation({
       rangeOperationId,
       authorizationId: `authorization-${rangeOperationId}`,
     }),
+    feeConsentBytes: null,
     createdAtMs,
   }
 }
@@ -539,8 +503,6 @@ function preparationValues(input: ReturnType<typeof preparationInput>): unknown[
     input.scopeId,
     input.rangeOperationId,
     input.sourceOperationId,
-    input.sourceKind,
-    input.predecessorRangeOperationId,
     input.authorizationId,
     input.clientOrderId,
     input.orderRouteId,
@@ -552,12 +514,7 @@ function preparationValues(input: ReturnType<typeof preparationInput>): unknown[
     input.priceSubunits,
     input.amountSubunits,
     input.minimumFillAmountSubunits,
-    input.continueAfterPartialFill ? 1 : 0,
     input.consolidateProofs ? 1 : 0,
-    input.continuation?.predecessorOrderId ?? null,
-    input.continuation?.settlementGroupId ?? null,
-    input.continuation?.settlementGroupRevision ?? null,
-    input.continuation?.continuationRevision ?? null,
     input.divisibility,
     input.authorizationExpiresAtUnixSeconds,
     input.preparationBytes,
@@ -626,7 +583,7 @@ function insertSubmittedOrder(database: DatabaseSync, clientOrderId: string): vo
       `INSERT INTO daemon_orders (
          order_id, scope_id, market_id, status, revision, client_order_id,
          base_asset, divisibility, engine_status_present, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, 'condition-1-YES', 'resting', 0, ?, 'sat', 10000, 0, 0, 0)`,
+       ) VALUES (?, ?, 'condition-1-YES', 'resting', 0, ?, 'sat', 1000, 0, 0, 0)`,
     )
     .run(`engine-${clientOrderId}`, SCOPE_ID, clientOrderId)
 }

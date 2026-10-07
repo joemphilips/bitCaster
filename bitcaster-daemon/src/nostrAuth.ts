@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
+import {
+  createTradeCommentTemplate,
+  tradeCommentToWire,
+  type TradeCommentTemplate,
+} from '@bitcaster-market/client-sdk/tradeComment'
 
 const KIND_HTTP_AUTH = 27235
 const require = createRequire(import.meta.url)
@@ -46,6 +51,20 @@ export function signNip98(
 
 export function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+export function signNativeTradeComment(
+  identity: NostrIdentity,
+  input: Parameters<typeof createTradeCommentTemplate>[0],
+): ReturnType<typeof tradeCommentToWire> {
+  const template = createTradeCommentTemplate(input)
+  const { finalizeEvent } = require('nostr-tools/pure') as {
+    finalizeEvent: (
+      template: TradeCommentTemplate,
+      privateKey: Uint8Array,
+    ) => TradeCommentTemplate & { id: string; pubkey: string; sig: string }
+  }
+  return tradeCommentToWire(finalizeEvent(template, hexToBytes(identity.privateKeyHex)))
 }
 
 function hexToBytes(hex: string): Uint8Array {

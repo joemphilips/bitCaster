@@ -12,7 +12,7 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
 import { emptyDaemonState, readDaemonKeysetCounters, writeState } from '../src/state.ts'
-import { dispatch, orderBackingError, startDaemonServer } from '../src/server.ts'
+import { dispatch, startDaemonServer } from '../src/server.ts'
 import {
   createDaemonCompleteSetOutputMode,
   recoverCompleteSetSplits,
@@ -312,7 +312,7 @@ test('wallet send and reclaim wake bounded custody recovery after a durable atte
         dispatch(
           {
             method: 'wallet.send',
-            params: { amountSats: 1, mintUrl: 'https://mint.example' },
+            params: { amountMsat: 1, mintUrl: 'https://mint.example' },
           },
           dependencies,
         ),
@@ -533,7 +533,7 @@ function completedCompleteSetOperation() {
       purpose: 'daemon-complete-set-ctf-split',
       rootOperationId: 'root',
       conditionId,
-      amountSats: 1,
+      amountMsat: 1,
       amountSubunits: 1,
       reservationId: 'root:ctf-split:reservation',
       inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
@@ -581,37 +581,3 @@ function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
     req.end(text)
   })
 }
-
-test('buy order backing uses quote payment, not face amount', () => {
-  assert.equal(
-    orderBackingError({
-      side: 'Buy',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
-      holdings: {
-        baseUnitProofs: 12_000,
-        primitiveProofsByAtom: {},
-        complementProofsByAtom: {},
-      },
-    }),
-    null,
-  )
-})
-
-test('sell order backing still uses VCS face amount', () => {
-  assert.match(
-    orderBackingError({
-      side: 'Sell',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
-      holdings: {
-        baseUnitProofs: 50_000,
-        primitiveProofsByAtom: { Alpha: 20_000 },
-        complementProofsByAtom: {},
-      },
-    }) ?? '',
-    /need 3 shares/,
-  )
-})

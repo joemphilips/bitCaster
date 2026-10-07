@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { unlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
+import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { after, test } from 'node:test'
+import { after, mock, test } from 'node:test'
 import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
@@ -15,6 +27,7 @@ import {
   bootstrapFreshDaemonProfile,
   readBootstrappedProfileSecrets,
   readBootstrappedRpcToken,
+  readLiveBootstrappedRpcToken,
   type ProfileBootstrapFaultPhase,
 } from '../src/profileBootstrap.ts'
 import {
@@ -33,12 +46,22 @@ import {
 } from '../src/profileSchema.ts'
 import {
   FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST,
+  FINAL_PROFILE_SCHEMA_VERSION,
   FINAL_PROFILE_SCHEMA_SQL,
   finalProfileSchemaManifestDigest,
   getFinalProfileSchemaManifest,
 } from '../src/profileSchemaManifest.ts'
 import { createNativeConfig, defaultNativeConfig } from '../src/nativeConfig.ts'
 import { ProfileSecretProtectionError } from '../src/profileSecretProtection.ts'
+import { configureDataDirForTest as configureSourceDataDirForTest } from '../src/dataDir.ts'
+import { configureDataDirForTest as configurePackageDataDirForTest } from '@bitcaster-market/daemon/dataDir'
+import { readRpcToken, readLiveRpcToken } from '../src/rpcAuth.ts'
+
+function configureDataDirForTest(source: () => string | undefined): void {
+  // The CLI loads the built daemon package, not this test's source module.
+  configureSourceDataDirForTest(source)
+  configurePackageDataDirForTest(source)
+}
 
 const roots: string[] = []
 after(async () => {
@@ -49,6 +72,47 @@ const seed = '11'.repeat(64)
 const nostrSecret = '22'.repeat(32)
 const rpcToken = 'R'.repeat(43)
 const initializedAtMs = 1_700_000_000_000
+
+test('RPC token reads remain valid during independent WAL commits and checkpoints', async (t) => {
+  const directory = await freshProfileDirectory('rpc-wal-checkpoints')
+  await bootstrap(directory)
+  configureDataDirForTest(() => directory)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  const writer = spawn(
+    process.execPath,
+    [
+      '--max-old-space-size=1536',
+      join(import.meta.dirname, 'fixtures', 'profileWalWriter.mjs'),
+      join(directory, DAEMON_PROFILE_DATABASE),
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  const exited = new Promise<number | null>((resolve, reject) => {
+    writer.once('error', reject)
+    writer.once('exit', resolve)
+  })
+  await new Promise<void>((resolve, reject) => {
+    writer.stdout.once('data', () => resolve())
+    writer.once('error', reject)
+    writer.once('exit', () => reject(new Error('WAL writer exited before readiness')))
+  })
+  let reads = 0
+  let refusals = 0
+  while (writer.exitCode === null && reads < 400) {
+    try {
+      const token = await readLiveRpcToken()
+      assert.equal(token === rpcToken, true, 'RPC token did not match')
+    } catch {
+      refusals += 1
+    }
+    reads += 1
+  }
+  assert.equal(await exited, 0, 'independent WAL writer failed')
+  await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
+  assert.equal(reads > 0, true, 'RPC token reader did not run with the writer')
+  assert.equal(refusals, 0, 'valid live WAL profile was refused')
+  assert.equal((await readLiveRpcToken()) === rpcToken, true)
+})
 
 test('fresh bootstrap atomically creates the exact frozen owner-only profile', async () => {
   const directory = join(await freshRoot('plain'), 'profile')
@@ -62,11 +126,40 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
 
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   assert.equal(await readBootstrappedRpcToken(directory), rpcToken)
-  assert.deepEqual(await readBootstrappedProfileSecrets(directory), {
-    walletSeedHex: seed,
-    nostrSecretKeyHex: nostrSecret,
-    nostrPublicKeyHex: result.nostrPublicKeyHex,
-  })
+  const unlockedSecrets = await readBootstrappedProfileSecrets(directory)
+  assert.equal(unlockedSecrets.walletSeedHex === seed, true, 'wallet seed did not round trip')
+  assert.equal(
+    unlockedSecrets.nostrSecretKeyHex === nostrSecret,
+    true,
+    'Nostr signing key did not round trip',
+  )
+  assert.equal(
+    unlockedSecrets.nostrPublicKeyHex === result.nostrPublicKeyHex,
+    true,
+    'Nostr public key did not round trip',
+  )
+  assert.equal(
+    /^[0-9a-f]{64}$/.test(unlockedSecrets.nativeOracleNonceSeedHex),
+    true,
+    'native oracle nonce seed must be 32 bytes of lowercase hex',
+  )
+  assert.equal(
+    unlockedSecrets.nativeOracleNonceSeedHex !== nostrSecret,
+    true,
+    'native oracle nonce seed must be independent from the Nostr key',
+  )
+  assert.deepEqual(Object.keys(unlockedSecrets).sort(), [
+    'nativeOracleNonceSeedHex',
+    'nostrPublicKeyHex',
+    'nostrSecretKeyHex',
+    'walletSeedHex',
+  ])
+  const unlockedAgain = await readBootstrappedProfileSecrets(directory)
+  assert.equal(
+    unlockedAgain.nativeOracleNonceSeedHex === unlockedSecrets.nativeOracleNonceSeedHex,
+    true,
+    'reading the profile must preserve its nonce seed',
+  )
 
   assert.equal((await stat(directory)).mode & 0o777, 0o700)
   assert.equal((await stat(join(directory, DAEMON_PROFILE_DATABASE))).mode & 0o777, 0o600)
@@ -103,6 +196,36 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
         lease: null,
         highWater: initializedAtMs,
       },
+    )
+    const nonceAllocator = database
+      .prepare(
+        `SELECT next_nonce_index AS nextNonceIndex
+         FROM daemon_oracle_nonce_allocator WHERE singleton = 1`,
+      )
+      .get() as { nextNonceIndex: number }
+    assert.equal(nonceAllocator.nextNonceIndex, 0)
+    const secretBodyRow = database
+      .prepare('SELECT secret_body AS body FROM daemon_secret_authority WHERE singleton = 1')
+      .get() as { body: Uint8Array }
+    const secretBody = JSON.parse(Buffer.from(secretBodyRow.body).toString('utf8')) as Record<
+      string,
+      unknown
+    >
+    assert.deepEqual(Object.keys(secretBody).sort(), [
+      'nativeOracleNonceSeedHex',
+      'nostrSecretKeyHex',
+      'version',
+      'walletSeedHex',
+    ])
+    assert.equal(secretBody.version === 2, true)
+    assert.equal(
+      typeof secretBody.nativeOracleNonceSeedHex === 'string' &&
+        /^[0-9a-f]{64}$/.test(secretBody.nativeOracleNonceSeedHex),
+      true,
+    )
+    assert.equal(
+      secretBody.nativeOracleNonceSeedHex === unlockedSecrets.nativeOracleNonceSeedHex,
+      true,
     )
     const walletId = deriveDurableCustodyWalletId(Buffer.from(seed, 'hex'))
     assert.equal(
@@ -161,9 +284,301 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
   }
 })
 
+test('RPC token snapshot waits for an independent exclusive schema lock to roll back', async () => {
+  const directory = await freshProfileDirectory('rpc-schema-lock')
+  await bootstrap(directory)
+  const writer = spawn(
+    process.execPath,
+    [
+      '--max-old-space-size=1536',
+      join(import.meta.dirname, 'fixtures', 'profileWalWriter.mjs'),
+      join(directory, DAEMON_PROFILE_DATABASE),
+      'schema-lock',
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  const exited = new Promise<number | null>((resolve, reject) => {
+    writer.once('error', reject)
+    writer.once('exit', resolve)
+  })
+  await new Promise<void>((resolve, reject) => {
+    writer.stdout.once('data', () => resolve())
+    writer.once('error', reject)
+    writer.once('exit', () => reject(new Error('schema lock writer exited before readiness')))
+  })
+  const immediate = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE), { readOnly: true })
+  try {
+    assert.throws(
+      () => immediate.prepare('PRAGMA quick_check(1)').all(),
+      (error: unknown) => error instanceof Error && 'errcode' in error && error.errcode === 5,
+    )
+  } finally {
+    immediate.close()
+  }
+  const token = await readLiveBootstrappedRpcToken(directory)
+  assert.equal(token === rpcToken, true, 'RPC token did not match after schema lock release')
+  assert.equal(await exited, 0, 'schema lock writer failed')
+  await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
+})
+
+test('immutable RPC token admission preserves the stopped profile artifacts', async (t) => {
+  const directory = await freshProfileDirectory('rpc-immutable-admission')
+  await bootstrap(directory)
+  configureDataDirForTest(() => directory)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  const before = (await readdir(directory)).sort()
+  const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
+  const databaseBefore = createHash('sha256')
+    .update(await readFile(databasePath))
+    .digest('hex')
+  assert.equal((await readRpcToken()) === rpcToken, true)
+  assert.deepEqual((await readdir(directory)).sort(), before)
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile(databasePath))
+      .digest('hex'),
+    databaseBefore,
+  )
+})
+
+test('CLI commands and watches authenticate with the exact selected live profile token', async (t) => {
+  const directory = await freshProfileDirectory('rpc-cli-auth')
+  await bootstrap(directory)
+  const other = await freshProfileDirectory('rpc-cli-other')
+  await bootstrapFreshDaemonProfile({ ...bootstrapInput(other), rpcToken: 'Z'.repeat(43) })
+  configureDataDirForTest(() => directory)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  const globals = globalThis as Record<symbol, unknown>
+  const symbol = Symbol.for('bitcaster.test.daemon-url')
+  const previous = globals[symbol]
+  globals[symbol] = 'http://daemon.test'
+  t.after(() => {
+    if (previous === undefined) delete globals[symbol]
+    else globals[symbol] = previous
+  })
+  let calls = 0
+  const fetchMock = mock.method(
+    globalThis,
+    'fetch',
+    async (_url: unknown, options: RequestInit) => {
+      calls += 1
+      assert.equal(_url, 'http://daemon.test/rpc')
+      const headers = new Headers(options.headers)
+      assert.equal(
+        headers.get('authorization') === `Bearer ${rpcToken}`,
+        true,
+        'wrong selected-profile authorization',
+      )
+      if (headers.get('accept') === 'application/x-ndjson') {
+        return new Response('{"type":"complete"}\n', {
+          headers: { 'content-type': 'application/x-ndjson' },
+        })
+      }
+      return Response.json({ ok: true, result: { healthy: true } })
+    },
+  )
+  t.after(() => fetchMock.mock.restore())
+  const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+  url.searchParams.set('fixture', 'exact-selected-profile')
+  const rpc = await import(url.href)
+  assert.equal((await rpc.callDaemon({ method: 'health' })).ok, true)
+  const watch = rpc.watchDaemon({ method: 'wallet.watch' })
+  assert.equal((await watch.next()).value.type, 'complete')
+  await watch.return(undefined)
+  assert.equal(calls, 2)
+})
+
+test('live RPC token refusals prevent CLI command and watch dispatch', async (t) => {
+  for (const drift of [
+    'corrupt',
+    'foreign-key',
+    'marker',
+    'permission',
+    'symlink',
+    'schema',
+    'missing-token',
+    'malformed-token',
+  ] as const) {
+    await t.test(drift, async (subtest) => {
+      const expectedReason: Record<typeof drift, ProfileSchemaRefusalError['reason']> = {
+        corrupt: 'sqlite-corrupt',
+        'foreign-key': 'sqlite-corrupt',
+        marker: 'sqlite-schema-mismatch',
+        permission: 'profile-permission-invalid',
+        symlink: 'sqlite-database-not-plain',
+        schema: 'sqlite-schema-mismatch',
+        'missing-token': 'sqlite-schema-mismatch',
+        'malformed-token': 'sqlite-corrupt',
+      }
+      const directory = await freshProfileDirectory(`rpc-refusal-${drift}`)
+      await bootstrap(directory)
+      configureDataDirForTest(() => directory)
+      subtest.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+      const path = join(directory, DAEMON_PROFILE_DATABASE)
+      const writer = new DatabaseSync(path, { enableForeignKeyConstraints: false })
+      try {
+        switch (drift) {
+          case 'foreign-key':
+            writer
+              .prepare('UPDATE daemon_profile SET wallet_scope_id = ?')
+              .run(`custody:wallet:${'0'.repeat(64)}`)
+            break
+          case 'marker': {
+            const trigger = getFinalProfileSchemaManifest().objects.find(
+              (object) => object.name === 'profile_schema_marker_no_delete',
+            )?.sql
+            assert.ok(trigger)
+            writer.exec(
+              'DROP TRIGGER profile_schema_marker_no_delete; DELETE FROM profile_schema_marker',
+            )
+            writer.exec(trigger)
+            break
+          }
+          case 'schema':
+            writer.exec('CREATE TABLE unexpected (value INTEGER) STRICT')
+            break
+          case 'missing-token':
+            writer.exec('DELETE FROM daemon_rpc_token')
+            break
+          case 'malformed-token':
+            writer.exec(
+              "PRAGMA ignore_check_constraints = ON; UPDATE daemon_rpc_token SET token = 'invalid'",
+            )
+            break
+          case 'corrupt':
+          case 'permission':
+          case 'symlink':
+            break
+        }
+      } finally {
+        writer.close()
+      }
+      if (drift === 'corrupt') await writeFile(path, 'not a SQLite database')
+      if (drift === 'permission') await chmod(path, 0o644)
+      if (drift === 'symlink') {
+        const other = await freshProfileDirectory('rpc-symlink-target')
+        await bootstrap(other)
+        await unlink(path)
+        await symlink(join(other, DAEMON_PROFILE_DATABASE), path)
+      }
+      await assert.rejects(readLiveRpcToken(), ProfileSchemaRefusalError)
+      let calls = 0
+      const fetchMock = mock.method(globalThis, 'fetch', async () => {
+        calls += 1
+        throw new Error('invalid profile reached RPC dispatch')
+      })
+      subtest.after(() => fetchMock.mock.restore())
+      const globals = globalThis as Record<symbol, unknown>
+      const symbol = Symbol.for('bitcaster.test.daemon-url')
+      const previous = globals[symbol]
+      globals[symbol] = 'http://daemon.test'
+      subtest.after(() => {
+        if (previous === undefined) delete globals[symbol]
+        else globals[symbol] = previous
+      })
+      const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+      url.searchParams.set('fixture', drift)
+      const rpc = await import(url.href)
+      await assert.rejects(rpc.callDaemon({ method: 'health' }), schemaError(expectedReason[drift]))
+      const watch = rpc.watchDaemon({ method: 'wallet.watch' })
+      await assert.rejects(watch.next(), schemaError(expectedReason[drift]))
+      await watch.return(undefined)
+      assert.equal(calls, 0)
+    })
+  }
+  const missing = await freshProfileDirectory('rpc-missing-profile')
+  configureDataDirForTest(() => missing)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  assert.equal(await readLiveRpcToken(), null)
+})
+
+test('profile replacement before live token return prevents CLI command and watch dispatch', async (t) => {
+  const directory = await freshProfileDirectory('rpc-replaced-profile')
+  const replacement = await freshProfileDirectory('rpc-replacement-source')
+  await bootstrap(directory)
+  await bootstrapFreshDaemonProfile({ ...bootstrapInput(replacement), rpcToken: 'Z'.repeat(43) })
+  configureDataDirForTest(() => directory)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  const prepare = DatabaseSync.prototype.prepare
+  const prepareMock = mock.method(
+    DatabaseSync.prototype,
+    'prepare',
+    function (this: DatabaseSync, sql: string) {
+      const statement = prepare.call(this, sql)
+      if (sql === 'SELECT token FROM daemon_rpc_token WHERE singleton = 1') {
+        renameSync(
+          join(replacement, DAEMON_PROFILE_DATABASE),
+          join(directory, DAEMON_PROFILE_DATABASE),
+        )
+      }
+      return statement
+    },
+  )
+  t.after(() => prepareMock.mock.restore())
+  let calls = 0
+  const fetchMock = mock.method(globalThis, 'fetch', async () => {
+    calls += 1
+    throw new Error('replaced profile reached RPC dispatch')
+  })
+  t.after(() => fetchMock.mock.restore())
+  const globals = globalThis as Record<symbol, unknown>
+  const symbol = Symbol.for('bitcaster.test.daemon-url')
+  const previous = globals[symbol]
+  globals[symbol] = 'http://daemon.test'
+  t.after(() => {
+    if (previous === undefined) delete globals[symbol]
+    else globals[symbol] = previous
+  })
+  const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+  url.searchParams.set('fixture', 'profile-replacement')
+  const rpc = await import(url.href)
+  const refused = schemaError('profile-identity-changed')
+  await assert.rejects(rpc.callDaemon({ method: 'health' }), refused)
+  const watch = rpc.watchDaemon({ method: 'wallet.watch' })
+  await assert.rejects(watch.next(), refused)
+  await watch.return(undefined)
+  assert.equal(calls, 0)
+})
+
+for (const version of [10, 13, 14]) {
+  test(`native custody cutover refuses schema version ${version} without changing profile bytes or modes`, async () => {
+    const directory = join(await freshRoot(`claim-old-schema-${version}`), 'profile')
+    await bootstrap(directory)
+    const path = join(directory, DAEMON_PROFILE_DATABASE)
+    const database = new DatabaseSync(path)
+    database.exec(`PRAGMA user_version = ${version}`)
+    database.close()
+    const before = await readFile(path)
+    const mode = (await stat(path)).mode
+    await assert.rejects(
+      validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()),
+      ProfileSchemaRefusalError,
+    )
+    await assert.rejects(readBootstrappedProfileSecrets(directory), ProfileSchemaRefusalError)
+    assert.equal((await readFile(path)).equals(before), true)
+    assert.equal((await stat(path)).mode, mode)
+  })
+}
+
+test('a missing Activity display table is refused without schema repair', async () => {
+  const directory = await freshProfileDirectory('activity-schema-missing')
+  await bootstrap(directory)
+  const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
+  try {
+    database.exec('DROP TABLE daemon_activity_feed')
+  } finally {
+    database.close()
+  }
+  await assert.rejects(
+    validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()),
+    schemaError('sqlite-schema-mismatch'),
+  )
+})
+
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 15)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))
@@ -173,6 +588,8 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'custody_operations',
     'custody_artifacts',
     'custody_operation_tombstones',
+    'custody_position_claim_links',
+    'custody_terminal_mint_rejections',
     'custody_verification_keyset_uses',
     'custody_selected_successors',
     'custody_successor_admissions',
@@ -183,6 +600,12 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'order_collateral_pins',
     'seed_recovery_jobs',
     'seed_recovery_keysets',
+    'daemon_market_funding_heads',
+    'daemon_bolt11_mint_quotes',
+    'daemon_activity_feed',
+    'daemon_activity_feed_meta',
+    'daemon_oracle_nonce_allocator',
+    'daemon_oracle_imports',
   ]) {
     assert.ok(names.has(required), required)
   }
@@ -190,6 +613,11 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'custody_operations_retained_operation_key_typed_idx',
     'daemon_outgoing_cashu_transfers_due_idx',
     'daemon_outgoing_cashu_transfers_all_mints_due_idx',
+    'daemon_market_funding_successor_idx',
+    'daemon_bolt11_mint_quote_no_delete',
+    'daemon_bolt11_mint_quote_no_rebind',
+    'daemon_bolt11_mint_quote_operation_binding_insert',
+    'daemon_activity_feed_page_idx',
   ]) {
     assert.ok(names.has(required), required)
   }
@@ -237,6 +665,37 @@ test('production schema manifest is pinned and excludes source-only recovery aut
   )
   const recoveryJobs = manifest.tables.find((table) => table.name === 'seed_recovery_jobs')!
   const recoveryKeysets = manifest.tables.find((table) => table.name === 'seed_recovery_keysets')!
+  const fundingHeads = manifest.tables.find(
+    (table) => table.name === 'daemon_market_funding_heads',
+  )!
+  const outgoingTransfers = manifest.tables.find(
+    (table) => table.name === 'daemon_outgoing_cashu_transfers',
+  )!
+  assert.equal(fundingHeads.strict, true)
+  assert.ok(outgoingTransfers.columns.some((column) => column.name === 'funding_sequence'))
+  assert.ok(
+    outgoingTransfers.columns.some((column) => column.name === 'funding_predecessor_transfer_id'),
+  )
+  assert.ok(
+    fundingHeads.foreignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === 'daemon_outgoing_cashu_transfers' &&
+        foreignKey.onDelete === 'RESTRICT',
+    ),
+  )
+  assert.ok(
+    outgoingTransfers.foreignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === 'daemon_outgoing_cashu_transfers' &&
+        foreignKey.onDelete === 'RESTRICT',
+    ),
+  )
+  assert.match(
+    manifest.objects.find(
+      (object) => object.name === 'daemon_outgoing_cashu_recipient_active_binding_idx',
+    )!.sql!,
+    /funding_sequence = 0/,
+  )
   assert.equal(recoveryJobs.strict, true)
   assert.equal(recoveryKeysets.strict, true)
   assert.ok(
@@ -517,11 +976,68 @@ test('passphrase encryption fails closed without exposing seed or Nostr secret',
     readBootstrappedProfileSecrets(directory, 'wrong battery'),
     secretError('unlock-failed'),
   )
-  assert.deepEqual(await readFile(join(directory, DAEMON_PROFILE_DATABASE)), bytes)
+  assert.equal((await readFile(join(directory, DAEMON_PROFILE_DATABASE))).equals(bytes), true)
+  const unlocked = await readBootstrappedProfileSecrets(directory, 'correct horse')
+  assert.equal(unlocked.nostrPublicKeyHex === result.nostrPublicKeyHex, true)
+  const unlockedAgain = await readBootstrappedProfileSecrets(directory, 'correct horse')
   assert.equal(
-    (await readBootstrappedProfileSecrets(directory, 'correct horse')).nostrPublicKeyHex,
-    result.nostrPublicKeyHex,
+    unlocked.nativeOracleNonceSeedHex === unlockedAgain.nativeOracleNonceSeedHex,
+    true,
+    'encrypted profile must preserve the same nonce seed after repeated unlock',
   )
+  assert.equal(
+    bytes.includes(Buffer.from(unlocked.nativeOracleNonceSeedHex, 'utf8')),
+    false,
+    'encrypted profile must not expose the native oracle nonce seed',
+  )
+})
+
+test('strict versioned secrets refuse missing or malformed native oracle nonce seeds', async () => {
+  const malformedBodies = [
+    JSON.stringify({ version: 1, walletSeedHex: seed, nostrSecretKeyHex: nostrSecret }),
+    JSON.stringify({ version: 2, walletSeedHex: seed, nostrSecretKeyHex: nostrSecret }),
+    JSON.stringify({
+      version: 2,
+      walletSeedHex: seed,
+      nostrSecretKeyHex: nostrSecret,
+      nativeOracleNonceSeedHex: 'g'.repeat(64),
+    }),
+  ]
+
+  for (let index = 0; index < malformedBodies.length; index += 1) {
+    const directory = await freshProfileDirectory(`invalid-oracle-secret-${index}`)
+    await bootstrap(directory)
+    const malformedBody = Buffer.from(malformedBodies[index]!, 'utf8')
+    const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
+    try {
+      database
+        .prepare('UPDATE daemon_secret_authority SET secret_body = ? WHERE singleton = 1')
+        .run(malformedBody)
+    } finally {
+      database.close()
+    }
+
+    await assert.rejects(
+      readBootstrappedProfileSecrets(directory),
+      secretError('secret-body-invalid'),
+    )
+    await assert.rejects(
+      readBootstrappedProfileSecrets(directory),
+      secretError('secret-body-invalid'),
+    )
+
+    const afterRead = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE), {
+      readOnly: true,
+    })
+    try {
+      const persisted = afterRead
+        .prepare('SELECT secret_body AS body FROM daemon_secret_authority WHERE singleton = 1')
+        .get() as { body: Uint8Array }
+      assert.equal(Buffer.from(persisted.body).equals(malformedBody), true)
+    } finally {
+      afterRead.close()
+    }
+  }
 })
 
 test('every injected bootstrap fault removes only this invocation artifacts', async () => {
@@ -831,7 +1347,11 @@ async function snapshotDirectory(directory: string) {
 }
 
 function schemaError(reason: ProfileSchemaRefusalError['reason']) {
-  return (error: unknown) => error instanceof ProfileSchemaRefusalError && error.reason === reason
+  return (error: unknown) =>
+    error instanceof Error &&
+    error.name === 'ProfileSchemaRefusalError' &&
+    'reason' in error &&
+    error.reason === reason
 }
 
 function secretError(reason: ProfileSecretProtectionError['reason']) {

@@ -31,7 +31,7 @@ import {
 } from './state.ts'
 import {
   createDaemonCounterSource,
-  splitAvailableSatProofsForCtfCollateral,
+  splitAvailableMsatProofsForCtfCollateral,
   type CashuWalletLike,
   type CtfCollateralOperationAuthority,
   type WalletOpsDependencies,
@@ -56,7 +56,7 @@ type CompleteSetDependencies = WalletOpsDependencies & {
 type CompleteSetSplitInput = {
   mintUrl: string
   conditionId: string
-  amountSats: number
+  amountMsat: number
   operationId: string
   secrets: DaemonSecrets | null
   deps: CompleteSetDependencies
@@ -66,7 +66,7 @@ type CompleteSetSplitInput = {
 type CompleteSetSplitResult = {
   operationId: string
   conditionId: string
-  amountSats: number
+  amountMsat: number
   outcomeProofCounts: Record<string, number>
 }
 
@@ -92,6 +92,9 @@ export function createDaemonCompleteSetOutputMode(input: {
 export async function splitWalletCompleteSet(
   input: CompleteSetSplitInput,
 ): Promise<CompleteSetSplitResult> {
+  if (!Number.isSafeInteger(input.amountMsat) || input.amountMsat <= 0) {
+    throw new Error('amountMsat must be a positive safe integer')
+  }
   if (!input.secrets) throw new Error('daemon secrets are not initialized')
   const inputWithSecrets = { ...input, secrets: input.secrets }
   const mutation = requireCompleteSetCustodyMutation(input.deps)
@@ -143,7 +146,7 @@ async function startCompleteSetSplit(
     conditionId: input.conditionId,
     collateralProofs: collateral.inputs,
     outcomeCollectionKeysets,
-    amountSubunits: input.amountSats,
+    amountSubunits: input.amountMsat,
     proofOperationStore: ctfAuthority.store,
     beforeMintMutation: ctfAuthority.beforeMintMutation,
     outputMode: createDaemonCompleteSetOutputMode({
@@ -173,8 +176,8 @@ async function splitCompleteSetCollateral(
     ctfHandoffAuthority: { reservationId: ctfReservationId, inputAsset: collateralAsset },
     mutation,
   })
-  return splitAvailableSatProofsForCtfCollateral(
-    input.amountSats,
+  return splitAvailableMsatProofsForCtfCollateral(
+    input.amountMsat,
     input.mintUrl,
     `${input.operationId}:regular-split`,
     input.secrets,
@@ -210,7 +213,7 @@ async function resumeExistingCompleteSetSplit(
     operationId: existing.operationId,
     conditionId: input.conditionId,
     collateralProofs: existing.inputs as Proof[],
-    amountSubunits: input.amountSats,
+    amountSubunits: input.amountMsat,
     baseAsset: 'sat',
     transport,
     proofOperationStore: ctfAuthority.store,
@@ -227,13 +230,13 @@ async function resumeExistingCompleteSetSplit(
 }
 
 function completeSetResponse(
-  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountMsat'>,
   proofsByCollection: Record<string, CashuProofRecord[]>,
 ): CompleteSetSplitResult {
   return {
     operationId: input.operationId,
     conditionId: input.conditionId,
-    amountSats: input.amountSats,
+    amountMsat: input.amountMsat,
     outcomeProofCounts: Object.fromEntries(
       Object.entries(proofsByCollection).map(([outcome, proofs]) => [outcome, proofs.length]),
     ),
@@ -241,23 +244,23 @@ function completeSetResponse(
 }
 
 function completeSetOperationContext(
-  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountMsat'>,
 ): Record<string, string | number> {
   return {
     rootOperationId: input.operationId,
     conditionId: input.conditionId,
-    amountSats: input.amountSats,
+    amountMsat: input.amountMsat,
   }
 }
 
 function completeSetRecoveryRoot(
-  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountSats' | 'mintUrl'>,
+  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountMsat' | 'mintUrl'>,
 ): CompleteSetRecoveryRoot {
   return {
     rootOperationId: input.operationId,
     mintUrl: input.mintUrl,
     conditionId: input.conditionId,
-    amountSats: input.amountSats,
+    amountMsat: input.amountMsat,
     regularOperationId: `${input.operationId}:regular-split`,
     ctfOperationId: null,
   }
@@ -265,7 +268,7 @@ function completeSetRecoveryRoot(
 
 function requireExistingCompleteSetSplit(
   operation: ProofOperationRecord,
-  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountMsat'>,
 ): {
   operationId: string
   state: ProofOperationRecord['state']
@@ -281,10 +284,10 @@ function requireExistingCompleteSetSplit(
     metadata.purpose !== DAEMON_COMPLETE_SET_CTF_SPLIT_PURPOSE ||
     metadata.rootOperationId !== input.operationId ||
     metadata.conditionId !== input.conditionId ||
-    metadata.amountSats !== input.amountSats ||
-    metadata.amountSubunits !== input.amountSats ||
+    metadata.amountMsat !== input.amountMsat ||
+    metadata.amountSubunits !== input.amountMsat ||
     metadata.reservationId !== `${input.operationId}:ctf-split:reservation` ||
-    !isSatsAsset(metadata.inputAsset) ||
+    !isCollateralMsatAsset(metadata.inputAsset) ||
     !isStringRecord(metadata.outcomeCollectionKeysets) ||
     !hasExactCompleteSetSuccessorAuthority(
       metadata.successorAssets,
@@ -316,7 +319,7 @@ async function readAndValidateRecoveryOperation(
 }
 
 function assertExactCompleteSetRecoveryAuthority(
-  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountMsat'>,
   reference: RecoverableCompleteSetRecoveryRoot,
   operation: ProofOperationRecord,
 ): void {
@@ -330,7 +333,7 @@ function assertExactCompleteSetRecoveryAuthority(
 }
 
 function recoveryReferenceMatchesInput(
-  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountMsat'>,
   reference: RecoverableCompleteSetRecoveryRoot,
   isCtf: boolean,
 ): boolean {
@@ -348,7 +351,7 @@ function recoveryReferenceMatchesInput(
     root.rootOperationId !== input.operationId ||
     root.mintUrl !== input.mintUrl ||
     root.conditionId !== input.conditionId ||
-    root.amountSats !== input.amountSats ||
+    root.amountMsat !== input.amountMsat ||
     (isCtf
       ? root.ctfOperationId !== expectedOperationId
       : root.regularOperationId !== expectedOperationId) ||
@@ -362,7 +365,7 @@ function recoveryReferenceMatchesInput(
 }
 
 function recoveryOperationMatchesReference(
-  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountSats'>,
+  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'operationId' | 'conditionId' | 'amountMsat'>,
   reference: RecoverableCompleteSetRecoveryRoot,
   operation: ProofOperationRecord,
   isCtf: boolean,
@@ -380,10 +383,10 @@ function recoveryOperationMatchesReference(
     metadata.purpose !== expectedPurpose ||
     metadata.rootOperationId !== input.operationId ||
     metadata.conditionId !== input.conditionId ||
-    metadata.amountSats !== input.amountSats ||
-    (isCtf && metadata.amountSubunits !== input.amountSats) ||
+    metadata.amountMsat !== input.amountMsat ||
+    (isCtf && metadata.amountSubunits !== input.amountMsat) ||
     metadata.reservationId !== reference.reservationId ||
-    !isSatsAsset(metadata.inputAsset) ||
+    !isCollateralMsatAsset(metadata.inputAsset) ||
     !hasExactCompleteSetSuccessorAuthority(
       metadata.successorAssets,
       input.conditionId,
@@ -393,7 +396,7 @@ function recoveryOperationMatchesReference(
   )
 }
 
-function isSatsAsset(value: unknown): boolean {
+function isCollateralMsatAsset(value: unknown): boolean {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -415,7 +418,7 @@ function hasExactCompleteSetSuccessorAuthority(
     return (
       entries.length === 2 &&
       entries.every(
-        ([group, asset]) => (group === 'send' || group === 'keep') && isSatsAsset(asset),
+        ([group, asset]) => (group === 'send' || group === 'keep') && isCollateralMsatAsset(asset),
       )
     )
   }
@@ -471,7 +474,7 @@ export async function recoverCompleteSetSplits(input: {
       await splitWalletCompleteSet({
         mintUrl: root.mintUrl,
         conditionId: root.conditionId,
-        amountSats: root.amountSats,
+        amountMsat: root.amountMsat,
         operationId: root.rootOperationId,
         secrets: input.secrets,
         deps: input.deps,

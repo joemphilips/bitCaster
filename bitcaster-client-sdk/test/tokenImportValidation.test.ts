@@ -9,12 +9,14 @@ import {
   classifyExactTokenImportKeysets,
   decodeTokenImportLocally,
   readBoundedTokenImportJsonResponse,
+  selectPagedTokenImportKeysetCandidates,
   selectTokenImportKeysetCandidates,
   validateProductWalletTokenImport,
   validateTokenImport,
   type ResolveTokenImportKeysets,
   type TokenImportContext,
   type TokenImportKeysetLookup,
+  type TokenImportKeysetRequest,
 } from '../src/tokenImportValidation.ts'
 
 const V0_ID = '00ad268c4d1f5826'
@@ -22,6 +24,27 @@ const REGULAR_FULL_ID = `01${'12'.repeat(32)}`
 const REGULAR_SHORT_ID = REGULAR_FULL_ID.slice(0, 16)
 const CONDITIONAL_FULL_ID = `02${'34'.repeat(32)}`
 const CONDITIONAL_SHORT_ID = CONDITIONAL_FULL_ID.slice(0, 16)
+
+test('product-wallet classification retains exact conditional registry metadata for each proof', async () => {
+  const decoded = token('https://mint.example', 'msat', [CONDITIONAL_FULL_ID])
+  const conditionalMetadata = {
+    conditionId: 'ab'.repeat(32),
+    outcomeCollection: 'YES',
+    outcomeCollectionId: 'cd'.repeat(32),
+  }
+  const result = await validateProductWalletTokenImport({
+    encodedToken: getEncodedToken(decoded),
+    resolveKeysets: async () =>
+      lookup([], [{ ...metadata(CONDITIONAL_FULL_ID, 'msat'), ...conditionalMetadata }]),
+  })
+  assert.deepEqual(result.proofs[0]?.conditionalMetadata, conditionalMetadata)
+  assert.equal(result.proofs[0]?.resolvedKeysetId, CONDITIONAL_FULL_ID)
+  const regular = await validateProductWalletTokenImport({
+    encodedToken: getEncodedToken(token('https://mint.example', 'msat', [REGULAR_FULL_ID])),
+    resolveKeysets: matchingResolver('regular', REGULAR_FULL_ID, 'msat'),
+  })
+  assert.equal(regular.proofs[0]?.conditionalMetadata, undefined)
+})
 
 function token(
   mint = 'https://mint.example',
@@ -49,6 +72,28 @@ function lookup(
 
 function metadata(keysetId: string, unit = 'sat', active: unknown = true) {
   return { keysetId, unit, active }
+}
+
+function keysetRequest(
+  encodedKeysetIds: readonly string[],
+  overrides: Partial<TokenImportKeysetRequest> = {},
+): TokenImportKeysetRequest {
+  return {
+    canonicalMintUrl: 'https://mint.example',
+    encodedKeysetIds,
+    signal: new AbortController().signal,
+    deadlineMs: Date.now() + 10_000,
+    maxCandidates: 8,
+    ...overrides,
+  }
+}
+
+function conditionalKeyset(
+  id: string,
+  registered_at: number,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { id, unit: 'sat', active: true, registered_at, ...overrides }
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -539,11 +584,6 @@ test('closed contexts enforce exact token, keyset, and source agreement', async 
 test('product-wallet helper decodes once and derives one closed context from unit and source', async () => {
   const cases = [
     {
-      decoded: token('https://mint.example', 'sat', [V0_ID]),
-      resolver: matchingResolver('regular', V0_ID, 'sat'),
-      context: 'ordinary-sat',
-    },
-    {
       decoded: token('https://mint.example', 'msat', [CONDITIONAL_SHORT_ID]),
       resolver: matchingResolver('conditional', CONDITIONAL_FULL_ID, 'msat'),
       context: 'ctf-position-msat',
@@ -570,6 +610,68 @@ test('product-wallet helper decodes once and derives one closed context from uni
   }
 })
 
+test('product-wallet helper rejects sat before keyset resolution', async () => {
+  let resolverCalls = 0
+  await expectCode(
+    validateProductWalletTokenImport({
+      encodedToken: getEncodedToken(token('https://mint.example', 'sat', [V0_ID])),
+      resolveKeysets: async () => {
+        resolverCalls += 1
+        return lookup()
+      },
+    }),
+    'unsupported_unit',
+  )
+  assert.equal(resolverCalls, 0)
+})
+
+test('product-wallet helper rejects oversized input before decoding or resolving', async () => {
+  let decodeCalls = 0
+  let resolverCalls = 0
+  await expectCode(
+    validateProductWalletTokenImport({
+      encodedToken: 'cashuA-product-wallet-token-over-bound',
+      bounds: { maxEncodedBytes: 16 },
+      decode: () => {
+        decodeCalls += 1
+        return token('https://mint.example', 'msat', [REGULAR_SHORT_ID])
+      },
+      resolveKeysets: async () => {
+        resolverCalls += 1
+        return lookup([metadata(REGULAR_FULL_ID, 'msat')])
+      },
+    }),
+    'encoded_too_large',
+  )
+  assert.equal(decodeCalls, 0)
+  assert.equal(resolverCalls, 0)
+})
+
+test('product-wallet helper rejects mapped private addresses before resolver access', async () => {
+  for (const address of ['127.0.0.1', '10.0.0.1', '169.254.1.1']) {
+    let resolverCalls = 0
+    await assert.rejects(
+      validateProductWalletTokenImport({
+        encodedToken: 'cashuA-product-wallet-double',
+        decode: () => token(`https://[::ffff:${address}]`, 'msat', [REGULAR_SHORT_ID]),
+        resolveKeysets: async () => {
+          resolverCalls += 1
+          return lookup([metadata(REGULAR_FULL_ID, 'msat')])
+        },
+      }),
+      TokenImportValidationError,
+    )
+    assert.equal(resolverCalls, 0)
+  }
+
+  const publicAddress = await validateProductWalletTokenImport({
+    encodedToken: 'cashuA-product-wallet-double',
+    decode: () => token('https://[::ffff:8.8.8.8]', 'msat', [REGULAR_SHORT_ID]),
+    resolveKeysets: matchingResolver('regular', REGULAR_FULL_ID, 'msat'),
+  })
+  assert.deepEqual(publicAddress.canonicalMintUrls, ['https://[::ffff:808:808]'])
+})
+
 test('product-wallet helper rejects conditional sat and mixed-source msat imports', async () => {
   await expectCode(
     validateProductWalletTokenImport({
@@ -577,7 +679,7 @@ test('product-wallet helper rejects conditional sat and mixed-source msat import
       decode: () => token('https://mint.example', 'sat', [CONDITIONAL_SHORT_ID]),
       resolveKeysets: matchingResolver('conditional', CONDITIONAL_FULL_ID, 'sat'),
     }),
-    'source_mismatch',
+    'unsupported_unit',
   )
 
   await expectCode(
@@ -713,6 +815,166 @@ test('exact keyset classification requires explicit loopback HTTP permission', (
     })[0]?.keysetId,
     REGULAR_FULL_ID,
   )
+})
+
+test('paged conditional discovery follows opaque cursors across a large registry without a fixed page ceiling', async () => {
+  const prefix = REGULAR_SHORT_ID
+  const registry = Array.from({ length: 1_700 }, (_, index) =>
+    conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, index),
+  )
+  registry[1_650] = conditionalKeyset(REGULAR_FULL_ID, 1_650)
+  const queries: Array<{ limit: number; cursor?: string }> = []
+
+  const result = await selectPagedTokenImportKeysetCandidates({
+    request: keysetRequest([prefix], { maxCandidates: 1 }),
+    regularResponse: Promise.resolve({ keysets: [] }),
+    fetchConditionalPage: async (query) => {
+      queries.push(query)
+      const offset = query.cursor === undefined ? 0 : Number(query.cursor)
+      return {
+        keysets: registry.slice(offset, offset + query.limit),
+        next_cursor: offset + query.limit < registry.length ? String(offset + query.limit) : null,
+      }
+    },
+  })
+
+  assert.equal(queries.length, 17)
+  assert.deepEqual(result.conditionalKeysets, [metadata(REGULAR_FULL_ID)])
+  assert.equal(queries[0]?.cursor, undefined)
+  assert.equal(queries[1]?.cursor, '100')
+})
+
+test('paged conditional discovery preserves a later prefix collision', async () => {
+  const prefix = REGULAR_SHORT_ID
+  const collision = `${prefix}${'ff'.repeat(25)}`
+  const firstPage = Array.from({ length: 100 }, (_, index) =>
+    conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, index),
+  )
+  firstPage[99] = conditionalKeyset(REGULAR_FULL_ID, 99, { unit: 'msat' })
+
+  const candidates = await selectPagedTokenImportKeysetCandidates({
+    request: keysetRequest([prefix]),
+    regularResponse: Promise.resolve({ keysets: [] }),
+    fetchConditionalPage: async (query) =>
+      query.cursor === undefined
+        ? { keysets: firstPage, next_cursor: 'page-two' }
+        : {
+            next_cursor: null,
+            keysets: [firstPage[99], conditionalKeyset(collision, 100, { unit: 'msat' })],
+          },
+  })
+
+  assert.deepEqual(
+    candidates.conditionalKeysets.map(({ keysetId }) => keysetId).sort(),
+    [REGULAR_FULL_ID, collision].sort(),
+  )
+  await expectCode(
+    validateTokenImport({
+      encodedToken: 'cashuA-paged-prefix-collision-double',
+      context: 'ctf-position-msat',
+      decode: () => token('https://mint.example', 'msat', [prefix]),
+      resolveKeysets: async () => candidates,
+    }),
+    'ambiguous_keyset',
+  )
+})
+
+test('paged conditional discovery rejects a repeated cursor on a same-timestamp page', async () => {
+  const sameTimestampPage = Array.from({ length: 100 }, (_, index) =>
+    conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, 7),
+  )
+  let calls = 0
+  await expectCode(
+    selectPagedTokenImportKeysetCandidates({
+      request: keysetRequest([REGULAR_SHORT_ID]),
+      regularResponse: Promise.resolve({ keysets: [] }),
+      fetchConditionalPage: async () => {
+        calls += 1
+        return { keysets: sameTimestampPage, next_cursor: 'repeat' }
+      },
+    }),
+    'keyset_resolution_indeterminate',
+  )
+  assert.equal(calls, 2)
+})
+
+test('paged conditional discovery rejects conflicting metadata for a repeated matching id', async () => {
+  const firstPage = Array.from({ length: 100 }, (_, index) =>
+    conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, index),
+  )
+  firstPage[99] = conditionalKeyset(REGULAR_FULL_ID, 99)
+
+  await expectCode(
+    selectPagedTokenImportKeysetCandidates({
+      request: keysetRequest([REGULAR_SHORT_ID]),
+      regularResponse: Promise.resolve({ keysets: [] }),
+      fetchConditionalPage: async (query) =>
+        query.cursor === undefined
+          ? { keysets: firstPage, next_cursor: 'page-two' }
+          : {
+              next_cursor: null,
+              keysets: [
+                conditionalKeyset(REGULAR_FULL_ID, 99, { active: false }),
+                conditionalKeyset(`${REGULAR_SHORT_ID}${'cd'.repeat(25)}`, 100),
+              ],
+            },
+    }),
+    'spoofed_keyset_metadata',
+  )
+})
+
+test('paged conditional discovery rejects malformed page timestamps and ordering', async () => {
+  const cases = [
+    [conditionalKeyset(REGULAR_FULL_ID, Number.NaN)],
+    [
+      conditionalKeyset(REGULAR_FULL_ID, 2),
+      conditionalKeyset(`${REGULAR_SHORT_ID}${'cd'.repeat(25)}`, 1),
+    ],
+  ]
+  for (const keysets of cases) {
+    await expectCode(
+      selectPagedTokenImportKeysetCandidates({
+        request: keysetRequest([REGULAR_SHORT_ID]),
+        regularResponse: Promise.resolve({ keysets: [] }),
+        fetchConditionalPage: async () => ({ keysets, next_cursor: null }),
+      }),
+      'keyset_resolution_indeterminate',
+    )
+  }
+})
+
+test('paged conditional discovery enforces the combined candidate cap incrementally', async () => {
+  await expectCode(
+    selectPagedTokenImportKeysetCandidates({
+      request: keysetRequest([REGULAR_SHORT_ID], { maxCandidates: 1 }),
+      regularResponse: Promise.resolve({
+        keysets: [{ id: REGULAR_FULL_ID, unit: 'sat', active: true }],
+      }),
+      fetchConditionalPage: async () => ({
+        next_cursor: null,
+        keysets: [conditionalKeyset(`${REGULAR_SHORT_ID}${'ff'.repeat(25)}`, 0)],
+      }),
+    }),
+    'resolver_response_too_large',
+  )
+})
+
+test('paged conditional discovery checks request liveness after each page', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  await assert.rejects(
+    selectPagedTokenImportKeysetCandidates({
+      request: keysetRequest([REGULAR_SHORT_ID], { signal: controller.signal }),
+      regularResponse: Promise.resolve({ keysets: [] }),
+      fetchConditionalPage: async () => {
+        calls += 1
+        controller.abort()
+        return { keysets: [], next_cursor: null }
+      },
+    }),
+    /Mint keyset lookup deadline elapsed/,
+  )
+  assert.equal(calls, 1)
 })
 
 test('resolver timeout and caller cancellation fail closed', async () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mapOutgoingCashuWithdrawalActivity } from '../src/outgoingCashuActivity.ts'
 import { Amount, getEncodedTokenV4, OutputData } from '@cashu/cashu-ts'
 import { deriveDurableCustodyArtifactFingerprint } from '../src/durableCustody.ts'
 import {
@@ -18,6 +19,7 @@ import {
   runDurableOutgoingCashuTransfer,
   runDurableOutgoingCashuReclaim,
   scheduleDurableOutgoingCashuRecoveryRetry,
+  type DurableOutgoingCashuRecipientSequence,
 } from '../src/durableOutgoingCashuTransfer.ts'
 import {
   deriveDurableWalletOperationAuthority,
@@ -37,6 +39,8 @@ const SECOND_TOKEN_C = `02${'2'.repeat(64)}`
 test('strictly creates and decodes one exact outgoing bearer transfer', () => {
   const transfer = bearerTransfer()
 
+  assert.equal(transfer.schemaVersion, 2)
+  assert.equal(transfer.recipientSequence, null)
   assert.equal(transfer.deliveryState, 'prepared')
   assert.equal(transfer.walletSendOperationAuthority.requestFingerprint.length, 64)
   assert.throws(() => decodeDurableOutgoingCashuTransfer({ ...transfer, foreign: true }), /foreign/)
@@ -44,6 +48,211 @@ test('strictly creates and decodes one exact outgoing bearer transfer', () => {
     () => decodeDurableOutgoingCashuTransfer({ ...transfer, requestedAmount: '3' }),
     /foreign/,
   )
+  const legacy = { ...transfer } as Record<string, unknown>
+  delete legacy.recipientSequence
+  assert.throws(() => decodeDurableOutgoingCashuTransfer(legacy), /foreign/)
+  assert.throws(
+    () => decodeDurableOutgoingCashuTransfer({ ...transfer, schemaVersion: 1 }),
+    /unsupported/,
+  )
+})
+
+test('validates recipient sequence inputs and keeps sequence metadata through acknowledgement', async () => {
+  const sequenceCases = [
+    { name: 'initial', value: { predecessorTransferId: null } },
+    { name: 'successor', value: { predecessorTransferId: 'recipient-prior' } },
+    { name: 'decode-only predecessor', value: { predecessorTransferId: 'decode-only' } },
+  ] as const
+  for (const sequenceCase of sequenceCases) {
+    const transfer = recipientTransfer(`recipient-${sequenceCase.name}`, sequenceCase.value)
+    assert.deepEqual(transfer.recipientSequence, sequenceCase.value)
+    const admitted = admitDurableOutgoingCashuToken({
+      transfer,
+      keepProofs: [],
+      sendProofs: [sendProof()],
+      encodedToken: encodedToken([sendProof()]),
+      custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+      dueAtMs: 10,
+    })
+    assert.deepEqual(admitted.recipientSequence, sequenceCase.value)
+  }
+
+  const transfer = recipientTransfer('recipient-ack-sequence', {
+    predecessorTransferId: 'recipient-prior',
+  })
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer,
+    keepProofs: [],
+    sendProofs: [sendProof()],
+    encodedToken: encodedToken([sendProof()]),
+    custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+    dueAtMs: 10,
+  })
+  const acknowledged = await acknowledgeDurableOutgoingCashuRecipient({
+    transfer: admitted,
+    receiptAdapter: {
+      readAndPersistReceipt: async ({ transfer: current }) =>
+        decodeDurableOutgoingCashuTransfer({
+          ...current,
+          deliveryState: 'recipient-acknowledged',
+          recipientReceipt: {
+            transferId: current.transferId,
+            expectedSubject: 'account-subject-1',
+            opaqueProductBinding: 'binding-1',
+            mintUrl: current.mintUrl,
+            unit: current.unit,
+            requestedAmount: current.requestedAmount,
+            tokenSha256: current.token!.sha256,
+            tokenLength: current.token!.encodedLength,
+            receiveOperationId: 'wallet-service-receive-1',
+            durableResultFingerprint: current.token!.sha256,
+          },
+          revision: current.revision + 1,
+        }),
+    },
+  })
+  assert.deepEqual(acknowledged.recipientSequence, transfer.recipientSequence)
+})
+
+test('rejects malformed, empty, self, and bearer recipient sequences', () => {
+  const recipient = recipientTransfer('recipient-sequence')
+  const cases = [
+    { value: {}, message: /sequence is invalid|foreign fields/ },
+    { value: { predecessorTransferId: '' }, message: /predecessor transfer id is invalid/ },
+    { value: { predecessorTransferId: '   ' }, message: /predecessor transfer id is invalid/ },
+    {
+      value: { predecessorTransferId: recipient.transferId },
+      message: /predecessor is self/,
+    },
+    { value: 'malformed', message: /sequence is invalid/ },
+  ] as const
+  for (const sequenceCase of cases) {
+    assert.throws(
+      () =>
+        decodeDurableOutgoingCashuTransfer({
+          ...recipient,
+          recipientSequence: sequenceCase.value,
+        }),
+      sequenceCase.message,
+    )
+  }
+  assert.throws(
+    () =>
+      decodeDurableOutgoingCashuTransfer({
+        ...bearerTransfer(),
+        recipientSequence: { predecessorTransferId: null },
+      }),
+    /sequence policy is invalid/,
+  )
+})
+
+test('coordinator treats omitted sequence as unsequenced and compares exact sequence', async () => {
+  const transfer = recipientTransfer('recipient-sequence-coordinator', {
+    predecessorTransferId: 'recipient-prior',
+  })
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer,
+    keepProofs: [],
+    sendProofs: [sendProof()],
+    encodedToken: encodedToken([sendProof()]),
+    custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+    dueAtMs: 10,
+  })
+  const request = {
+    transferId: transfer.transferId,
+    walletScopeId: transfer.walletScopeId,
+    mintUrl: transfer.mintUrl,
+    unit: transfer.unit,
+    requestedAmount: transfer.requestedAmount,
+    deliveryIntent: transfer.deliveryIntent,
+  }
+  const recover = (
+    requestTransfer: typeof request & { recipientSequence?: typeof transfer.recipientSequence },
+  ) =>
+    runDurableOutgoingCashuTransfer({
+      mode: 'recover',
+      preMint: { recover: async () => admitted },
+      postMint: { persistMinted: async () => admitted },
+      transfer: requestTransfer,
+      wallet: {} as never,
+      restoreExactOutputs: async () => ({}) as never,
+      walletOperationStore: {} as never,
+    })
+
+  await assert.rejects(recover(request), /authority conflicts/)
+  const recovered = await recover({
+    ...request,
+    recipientSequence: { predecessorTransferId: 'recipient-prior' },
+  })
+  assert.deepEqual(recovered.recipientSequence, transfer.recipientSequence)
+})
+
+test('coordinator rejects initial-sequence identity mismatches before mint effects', async () => {
+  const cases = [
+    {
+      storedSequence: { predecessorTransferId: null },
+      requestSequence: undefined,
+    },
+    {
+      storedSequence: null,
+      requestSequence: { predecessorTransferId: null },
+    },
+  ] as const
+  for (const [index, sequenceCase] of cases.entries()) {
+    const transfer = recipientTransfer(
+      `recipient-sequence-mismatch-${index}`,
+      sequenceCase.storedSequence,
+    )
+    const admitted = admitDurableOutgoingCashuToken({
+      transfer,
+      keepProofs: [],
+      sendProofs: [sendProof()],
+      encodedToken: encodedToken([sendProof()]),
+      custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+      dueAtMs: 10,
+    })
+    let walletEffects = 0
+    let postMintEffects = 0
+    const request = {
+      transferId: transfer.transferId,
+      walletScopeId: transfer.walletScopeId,
+      mintUrl: transfer.mintUrl,
+      unit: transfer.unit,
+      requestedAmount: transfer.requestedAmount,
+      deliveryIntent: transfer.deliveryIntent,
+      ...(sequenceCase.requestSequence === undefined
+        ? {}
+        : { recipientSequence: sequenceCase.requestSequence }),
+    }
+    await assert.rejects(
+      runDurableOutgoingCashuTransfer({
+        mode: 'recover',
+        preMint: { recover: async () => admitted },
+        postMint: {
+          persistMinted: async () => {
+            postMintEffects += 1
+            return admitted
+          },
+        },
+        transfer: request,
+        wallet: {
+          checkProofsStates: async () => {
+            walletEffects += 1
+            return []
+          },
+          completeSwap: async () => {
+            walletEffects += 1
+            return { keep: [], send: [] }
+          },
+        } as never,
+        restoreExactOutputs: async () => ({}) as never,
+        walletOperationStore: {} as never,
+      }),
+      /authority conflicts/,
+    )
+    assert.equal(walletEffects, 0)
+    assert.equal(postMintEffects, 0)
+  }
 })
 
 test('persists one exact keep derivation locator and reserves a bounded envelope', () => {
@@ -173,6 +382,7 @@ test('does not expose a token in redacted metadata and requires a persisted reci
       tokenProofLimit: 1,
     },
   })
+  assert.equal(recipient.recipientSequence, null)
   const admitted = admitDurableOutgoingCashuToken({
     transfer: recipient,
     keepProofs: [],
@@ -565,29 +775,49 @@ test('a 512-proof transfer retains complete custody evidence and splits into exa
   ])
 })
 
-test('coordinator executes once, recovers the persisted send result, and accepts a lost post-mint response', async () => {
+test('coordinator executes once, recovers persisted random outputs, and accepts a lost post-mint response', async () => {
+  const walletSendOperation = coordinatorWalletSendOperation()
+  const keepOutput = walletSendOperation.preview.keepOutputs[0]
+  assert.ok(keepOutput)
+  const randomKeepOutput: DurableWalletProof = {
+    id: keepOutput.blindedMessage.id,
+    amount: keepOutput.blindedMessage.amount,
+    secret: keepOutput.secret,
+    C: TOKEN_C,
+    dleq: null,
+    p2pkE: null,
+    witness: null,
+  }
   const prepared = createDurableOutgoingCashuTransfer({
     transferId: 'coordinator-1',
     walletScopeId: 'wallet-1',
     requestedAmount: '2',
-    walletSendOperation: coordinatorWalletSendOperation(),
+    walletSendOperation,
+    keepProofDerivationLocators: [null],
     deliveryIntent: {
       policy: 'bearer-spend-classification',
       tokenBytesLimit: 1024,
       tokenProofLimit: 1,
     },
   })
+  assert.deepEqual(prepared.keepProofDerivationLocators, [null])
   const mintedSend = hydrateDurableWalletProof(sendProof())
   let swaps = 0
+  let preparations = 0
   let postMint = 0
+  let restoredRandomOutputs = 0
   const persist = async () => {
     postMint += 1
     return admitDurableOutgoingCashuToken({
       transfer: prepared,
-      keepProofs: [],
+      keepProofs: [randomKeepOutput],
       sendProofs: [sendProof()],
       encodedToken: encodedToken([sendProof()]),
-      custodyRevisions: custodyRevisions(prepared.walletSendOperation, [], [sendProof()]),
+      custodyRevisions: custodyRevisions(
+        prepared.walletSendOperation,
+        [randomKeepOutput],
+        [sendProof()],
+      ),
       dueAtMs: prepared.recovery.dueAtMs,
     })
   }
@@ -609,18 +839,30 @@ test('coordinator executes once, recovers the persisted send result, and accepts
         })) as never,
       completeSwap: async () => {
         swaps += 1
-        return { keep: [], send: [mintedSend] }
+        return { keep: [hydrateDurableWalletProof(randomKeepOutput)], send: [mintedSend] }
       },
     },
-    restoreExactOutputs: async () => ({ keep: [], send: [mintedSend] }),
+    restoreExactOutputs: async ({ outputs }) => {
+      restoredRandomOutputs += 1
+      assert.deepEqual(
+        outputs.keep.map(({ secret }) => secret),
+        [randomKeepOutput.secret],
+      )
+      return { keep: [hydrateDurableWalletProof(randomKeepOutput)], send: [mintedSend] }
+    },
     postMint: { persistMinted: persist },
   }
   const executed = await runDurableOutgoingCashuTransfer({
     ...common,
-    preMint: { prepare: async () => prepared },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+    },
   })
   assert.equal(executed.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 1 })
+  assert.deepEqual({ preparations, swaps, postMint }, { preparations: 1, swaps: 1, postMint: 1 })
 
   const walletOperationStore = {
     loadOperation: async () => ({
@@ -635,20 +877,38 @@ test('coordinator executes once, recovers the persisted send result, and accepts
   const recovered = await runDurableOutgoingCashuTransfer({
     ...common,
     mode: 'recover',
-    preMint: { prepare: async () => prepared, recover: async () => prepared },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+      recover: async () => prepared,
+    },
     walletOperationStore,
   })
   assert.equal(recovered.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 2 })
+  assert.deepEqual(
+    { preparations, swaps, postMint, restoredRandomOutputs },
+    { preparations: 1, swaps: 1, postMint: 2, restoredRandomOutputs: 1 },
+  )
 
   const lostResponse = await runDurableOutgoingCashuTransfer({
     ...common,
     mode: 'recover',
-    preMint: { prepare: async () => prepared, recover: async () => executed },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+      recover: async () => executed,
+    },
     walletOperationStore,
   })
   assert.equal(lostResponse.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 2 })
+  assert.deepEqual(
+    { preparations, swaps, postMint, restoredRandomOutputs },
+    { preparations: 1, swaps: 1, postMint: 2, restoredRandomOutputs: 1 },
+  )
 
   const foreignOperation = decodeDurableWalletOperation({
     ...prepared.walletSendOperation,
@@ -728,6 +988,26 @@ function reclaimEvidence(
       revision: 4,
     })),
   }
+}
+
+function recipientTransfer(
+  transferId: string,
+  recipientSequence?: DurableOutgoingCashuRecipientSequence | null,
+) {
+  return createDurableOutgoingCashuTransfer({
+    transferId,
+    walletScopeId: 'wallet-1',
+    requestedAmount: '2',
+    walletSendOperation: walletSendOperation(),
+    ...(recipientSequence === undefined ? {} : { recipientSequence }),
+    deliveryIntent: {
+      policy: 'durable-recipient-ack',
+      expectedSubject: 'account-subject-1',
+      opaqueProductBinding: 'binding-1',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 1,
+    },
+  })
 }
 
 function bearerTransfer() {
@@ -868,7 +1148,7 @@ function coordinatorWalletSendOperation() {
       inputs: [
         hydrateDurableWalletProof({
           id: KEYSET_ID,
-          amount: '2',
+          amount: '4',
           secret: 'input-coordinator',
           C: TOKEN_C,
           dleq: null,
@@ -877,7 +1157,7 @@ function coordinatorWalletSendOperation() {
         }),
       ],
       sendOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'send-secret', 5n)],
-      keepOutputs: [],
+      keepOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'random-keep-secret', 7n)],
     },
   })
 }
@@ -1027,3 +1307,127 @@ function reclaimOperation(operationId: string, inputs: readonly DurableWalletPro
     },
   })
 }
+
+test('Cashu Activity maps pending, partial, spent, and reclaimed principal without bearer material', () => {
+  const walletId = 'a'.repeat(64)
+  const createdAtMs = Date.parse('2026-10-06T01:00:00.000Z')
+  const prepared = createDurableOutgoingCashuTransfer({
+    transferId: 'activity-bearer',
+    walletScopeId: `custody:wallet:${walletId}`,
+    requestedAmount: '2',
+    walletSendOperation: { ...twoOutputWalletSendOperation(), unit: 'msat' },
+    deliveryIntent: {
+      policy: 'bearer-spend-classification',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 2,
+    },
+  })
+  const proofs = [partialFirstSendProof(), secondSendProof()]
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer: prepared,
+    keepProofs: [],
+    sendProofs: proofs,
+    encodedToken: getEncodedTokenV4({
+      mint: prepared.mintUrl,
+      unit: 'msat',
+      proofs: proofs.map(hydrateDurableWalletProof),
+    }),
+    custodyRevisions: custodyRevisions(prepared.walletSendOperation, [], proofs),
+    dueAtMs: 10,
+  })
+  const states = proofs.map((proof, index) => ({
+    Y: deriveDurableWalletProofY(proof),
+    state: index === 0 ? ('SPENT' as const) : ('UNSPENT' as const),
+  }))
+  const partial = classifyDurableOutgoingBearerProofStates({
+    transfer: admitted,
+    states,
+    dueAtMs: 11,
+  }).transfer
+  const spent = classifyDurableOutgoingBearerProofStates({
+    transfer: partial,
+    states: states.map(({ Y }) => ({ Y, state: 'SPENT' as const })),
+    dueAtMs: 12,
+  }).transfer
+  const map = (transfer: typeof prepared) =>
+    mapOutgoingCashuWithdrawalActivity({ walletId, transfer, createdAtMs })!
+  const first = map(prepared)
+  for (const transfer of [prepared, admitted, partial]) {
+    const item = map(transfer)
+    assert.equal(item.status, 'pending')
+    assert.equal(item.amountSubunits, 2)
+    assert.equal(item.id, first.id)
+    assert.equal(item.date, first.date)
+  }
+  assert.equal(map(spent).status, 'completed')
+  assert.equal(map(spent).amountSubunits, 2)
+  for (const [source, reclaimProofs, expectedAmount, expectedStatus] of [
+    [admitted, proofs, 0, 'Failed'],
+    [partial, [proofs[1]], 1, 'completed'],
+  ] as const) {
+    const reclaimId = `activity-reclaim-${expectedAmount}`
+    const reclaim = prepareDurableOutgoingCashuReclaim({
+      transfer: source,
+      reclaimId,
+      states:
+        source === admitted ? states.map(({ Y }) => ({ Y, state: 'UNSPENT' as const })) : states,
+      dueAtMs: 13,
+      walletReceiveOperation: { ...reclaimOperation(reclaimId, reclaimProofs), unit: 'msat' },
+    })
+    assert.equal(map(reclaim).status, 'pending')
+    const successors = [successorProof(reclaim)]
+    const completed = completeDurableOutgoingCashuReclaim({
+      transfer: reclaim,
+      successorProofs: successors,
+      evidence: reclaimEvidence(reclaim, successors),
+    })
+    const item = map(completed)
+    assert.equal(item.status, expectedStatus)
+    assert.equal(item.amountSubunits, expectedAmount)
+    assert.equal(item.id, first.id)
+    assert.equal(item.date, first.date)
+    assert.equal(
+      item.failureReason,
+      expectedAmount === 0 ? 'Cancelled; funds reclaimed' : undefined,
+    )
+    assert.equal(JSON.stringify(item).includes(proofs[0].secret), false)
+  }
+  assert.equal(
+    mapOutgoingCashuWithdrawalActivity({
+      walletId,
+      transfer: recipientTransfer('internal'),
+      createdAtMs,
+    }),
+    null,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId: 'b'.repeat(64),
+        transfer: prepared,
+        createdAtMs,
+      }),
+    /context is invalid/,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId,
+        transfer: { ...prepared, deliveryState: 'unknown' } as never,
+        createdAtMs,
+      }),
+    /state is invalid/,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId,
+        transfer: prepared,
+        createdAtMs: Number.MAX_SAFE_INTEGER,
+      }),
+    /context is invalid/,
+  )
+  const longReference = map({ ...prepared, transferId: 'x'.repeat(513) })
+  assert.equal(longReference.txId, null)
+  assert.equal(longReference.id.length, 81)
+})

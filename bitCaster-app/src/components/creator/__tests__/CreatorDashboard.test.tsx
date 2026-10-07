@@ -1,24 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { installCreatorDocumentLocks, seedCreatorMarkets } from "@/test/creatorDocumentLocks";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreatedMarket } from "@/types/portfolio";
 import type { DashboardStats } from "@/types/market-management";
 
-const {
-  mockUseCreatorDashboardState,
-  mockNavigate,
-  mockBuildOracleAttestationEvent,
-  mockSignEnumAttestation,
-  mockGetOracleAnnouncementEventId,
-  mockSubmitOracleAttestation,
-} = vi.hoisted(() => ({
+const { mockUseCreatorDashboardState, mockNavigate, mockPublishOracleOutcome } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
-  mockBuildOracleAttestationEvent: vi.fn(),
-  mockSignEnumAttestation: vi.fn(),
-  mockGetOracleAnnouncementEventId: vi.fn(),
-  mockSubmitOracleAttestation: vi.fn(),
+  mockPublishOracleOutcome: vi.fn(),
 }));
 
 vi.mock("@/hooks/useCreatorDashboardState", () => ({
@@ -30,25 +21,9 @@ vi.mock("react-router", async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-// The DLC attestation signature is produced by kormir against the
-// announcement's committed nonce; oracleAttestation only wraps the resulting
-// hex in a NIP-01 envelope.
-vi.mock("@/lib/kormir", () => ({
-  signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
-  getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
-}));
-
 vi.mock("@/lib/oracleAttestation", () => ({
-  buildOracleAttestationEvent: (...args: unknown[]) => mockBuildOracleAttestationEvent(...args),
+  publishBrowserOracleOutcome: (...args: unknown[]) => mockPublishOracleOutcome(...args),
 }));
-
-vi.mock("@/lib/markets", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/markets")>();
-  return {
-    ...actual,
-    submitOracleAttestation: (...args: unknown[]) => mockSubmitOracleAttestation(...args),
-  };
-});
 
 import { CreatorDashboard } from "../CreatorDashboard";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
@@ -74,29 +49,13 @@ function renderDashboard() {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  installCreatorDocumentLocks();
   mockNavigate.mockReset();
   mockUseCreatorDashboardState.mockReset();
-  mockBuildOracleAttestationEvent.mockReset();
-  mockBuildOracleAttestationEvent.mockReturnValue({
-    id: "event-id",
-    pubkey: "a".repeat(64),
-    createdAt: 1,
-    kind: 89,
-    content: "attestation-base64",
-    sig: "b".repeat(128),
-  });
-  mockSignEnumAttestation.mockReset();
-  mockSignEnumAttestation.mockResolvedValue("attestation-hex");
-  mockGetOracleAnnouncementEventId.mockReset();
-  mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
-  mockSubmitOracleAttestation.mockReset();
-  mockSubmitOracleAttestation.mockResolvedValue({ result: "Closed" });
-  vi.stubGlobal(
-    "confirm",
-    vi.fn(() => true),
-  );
-  useCreatorMarketsStore.setState({ markets: [] });
+  mockPublishOracleOutcome.mockReset();
+  mockPublishOracleOutcome.mockResolvedValue({ failures: [], record: {} });
+  await seedCreatorMarkets({ markets: [] });
   useSettingsStore.setState({
     nostrSignerMode: "none",
     nsecSecret: null,
@@ -105,6 +64,61 @@ beforeEach(() => {
 });
 
 describe("CreatorDashboard", () => {
+  it.each([
+    ["unavailable", "—", "Engine state and volume unavailable"],
+    ["stale", "75 sats", "Last known engine state and volume"],
+  ])(
+    "labels %s volume honestly instead of showing a fresh zero",
+    (engineDataStatus, value, label) => {
+      mockUseCreatorDashboardState.mockReturnValue({
+        pubkey: "a".repeat(64),
+        stats: { ...emptyStats(), totalVolumeSubunits: 75_000 },
+        markets: [
+          {
+            id: "c".repeat(64),
+            title: "Known closed market",
+            imageUrl: "",
+            status: "resolved",
+            createdDate: "2026-04-10T00:00:00.000Z",
+            volume: 75_000,
+            creatorFeesEarned: 0,
+            creatorFeePercent: 0,
+            baseAsset: "sat",
+            divisibility: 1_000,
+            engineDataStatus: "stale",
+          },
+          ...(engineDataStatus === "unavailable"
+            ? [
+                {
+                  id: "d".repeat(64),
+                  title: "Never-enriched market",
+                  imageUrl: "",
+                  status: "unknown",
+                  createdDate: "2026-04-10T00:00:00.000Z",
+                  volume: 0,
+                  creatorFeesEarned: 0,
+                  creatorFeePercent: 0,
+                  baseAsset: "sat",
+                  divisibility: 1_000,
+                  engineDataStatus: "unavailable",
+                },
+              ]
+            : []),
+        ] as CreatedMarket[],
+        isLoading: false,
+        error: engineDataStatus === "unavailable" ? "offline" : null,
+        refresh: vi.fn(),
+        engineDataStatus,
+      });
+      renderDashboard();
+      const volumeCard = screen.getByText("Total Volume").parentElement!.parentElement!;
+      expect(within(volumeCard).getByText(value)).toBeInTheDocument();
+      expect(within(volumeCard).getByText(label)).toBeInTheDocument();
+      if (engineDataStatus === "unavailable")
+        expect(within(volumeCard).queryByText("75 sats")).not.toBeInTheDocument();
+    },
+  );
+
   it("renders the empty state when no markets are stored", () => {
     mockUseCreatorDashboardState.mockReturnValue({
       pubkey: "a".repeat(64),
@@ -112,6 +126,7 @@ describe("CreatorDashboard", () => {
       markets: [] as CreatedMarket[],
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -131,6 +146,7 @@ describe("CreatorDashboard", () => {
       markets: [] as CreatedMarket[],
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -151,7 +167,7 @@ describe("CreatorDashboard", () => {
         creatorFeesEarned: 0,
         creatorFeePercent: 0.02,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       },
     ];
     mockUseCreatorDashboardState.mockReturnValue({
@@ -160,6 +176,7 @@ describe("CreatorDashboard", () => {
       markets,
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -179,6 +196,7 @@ describe("CreatorDashboard", () => {
       markets: [] as CreatedMarket[],
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -207,11 +225,12 @@ describe("CreatorDashboard", () => {
           creatorFeesEarned: 0,
           creatorFeePercent: 0,
           baseAsset: "sat",
-          divisibility: 10_000,
+          divisibility: 1_000,
         },
       ] as CreatedMarket[],
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -230,6 +249,7 @@ describe("CreatorDashboard", () => {
       markets: [] as CreatedMarket[],
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -246,12 +266,13 @@ describe("CreatorDashboard", () => {
       markets: [] as CreatedMarket[],
       isLoading: false,
       error: "engine unreachable",
+      engineDataStatus: "unavailable",
       refresh: vi.fn(),
     });
 
     renderDashboard();
 
-    expect(screen.getByText(/couldn't load live volume data/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Engine state and volume unavailable").length).toBeGreaterThan(0);
     expect(screen.getByText(/engine unreachable/i)).toBeInTheDocument();
   });
 
@@ -268,7 +289,7 @@ describe("CreatorDashboard", () => {
         creatorFeesEarned: 0,
         creatorFeePercent: 0,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
         oracle: {
           type: "self",
           eventId: "will_btc_hit_150k_abcd",
@@ -283,7 +304,7 @@ describe("CreatorDashboard", () => {
       nsecSecret: "nsec1test",
       relays: [{ url: "ws://localhost:7777", connectionStatus: "connected" }],
     });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: "a".repeat(64),
@@ -292,7 +313,7 @@ describe("CreatorDashboard", () => {
           createdAt: "2026-04-10T00:00:00.000Z",
           creatorFeePercent: 0,
           baseAsset: "sat",
-          divisibility: 10_000,
+          divisibility: 1_000,
           oracle: {
             type: "self",
             eventId: "will_btc_hit_150k_abcd",
@@ -308,6 +329,7 @@ describe("CreatorDashboard", () => {
       markets,
       isLoading: false,
       error: null,
+      engineDataStatus: "current",
       refresh: vi.fn(),
     });
 
@@ -315,37 +337,24 @@ describe("CreatorDashboard", () => {
 
     await user.click(screen.getByRole("button", { name: /close market/i }));
 
-    await screen.findByText(/published oracle attestation/i);
-
-    // Signing goes through kormir so the attestation binds to the
-    // announcement's committed nonce (relay urls, event id, outcome). The
-    // mirrored announcement hex is passed so a fresh profile can re-import the
-    // nonce index before signing (P22 B1b).
-    expect(mockSignEnumAttestation).toHaveBeenCalledWith(
-      ["ws://localhost:7777"],
-      "will_btc_hit_150k_abcd",
+    const dialog = screen.getByRole("dialog", { name: "Resolve this market" });
+    expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Public explanation (optional)" }),
+      "Official final result.",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Confirm and deliver saved resolution" }),
+    );
+    await screen.findByText("Resolution Yes is confirmed by the engine and relay.");
+    expect(mockPublishOracleOutcome).toHaveBeenCalledWith(
+      "a".repeat(64),
       "Yes",
-      "aabbccdd",
+      "Official final result.",
+      ["ws://localhost:7777"],
     );
-    // The kormir attestation hex is wrapped in a NIP-01 envelope signed by
-    // the creator's nsec.
-    expect(mockBuildOracleAttestationEvent).toHaveBeenCalledWith(
-      "nsec1test",
-      "attestation-hex",
-      "c".repeat(64),
+    expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBe(
+      "Official final result.",
     );
-    expect(mockSubmitOracleAttestation).toHaveBeenCalledWith("a".repeat(64), {
-      id: "event-id",
-      pubkey: "a".repeat(64),
-      createdAt: 1,
-      kind: 89,
-      content: "attestation-base64",
-      sig: "b".repeat(128),
-    });
-    expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
-      attestationHex: "attestation-hex",
-      attestedOutcome: "Yes",
-    });
-    expect(screen.getByText(/published oracle attestation/i)).toBeInTheDocument();
   });
 });

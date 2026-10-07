@@ -370,3 +370,19 @@ test('custody output serialization preserves final proof identity and exact priv
     /does not match/,
   )
 })
+
+test('frozen proof-operation metadata permits 24 fields and rejects 25', () => {
+  const metadata = Object.fromEntries(
+    Array.from({ length: 24 }, (_, index) => [`field${index}`, index]),
+  )
+  const value = operation()
+  assert.equal(
+    Object.keys(decodeDurableCustodyProofOperationInput({ ...value, metadata }).metadata!).length,
+    24,
+  )
+  assert.throws(
+    () =>
+      decodeDurableCustodyProofOperationInput({ ...value, metadata: { ...metadata, field24: 24 } }),
+    /metadata field limit/,
+  )
+})

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Amount, OutputData, type CounterSource, type Proof } from '@cashu/cashu-ts'
 import {
-  classifyExactProofConsolidationReplayFailure,
   completeCtfRangeConsolidationOperation,
   completeExactProofConsolidationOperation,
   prepareCtfRangeConsolidationOperation,
@@ -340,24 +339,6 @@ test('rejects a substituted deterministic blinding factor before persistence', a
     }),
     /substituted exact proof consolidation outputs/,
   )
-})
-
-test('releases only a definitely rejected exact replay with all inputs unspent', () => {
-  assert.equal(
-    classifyExactProofConsolidationReplayFailure({
-      definiteMintRejection: true,
-      inputStates: ['UNSPENT', 'UNSPENT'],
-    }),
-    'release-exact-unspent-inputs',
-  )
-  for (const input of [
-    { definiteMintRejection: false, inputStates: ['UNSPENT'] },
-    { definiteMintRejection: true, inputStates: ['PENDING'] },
-    { definiteMintRejection: true, inputStates: ['UNSPENT', 'SPENT'] },
-    { definiteMintRejection: true, inputStates: [] },
-  ]) {
-    assert.equal(classifyExactProofConsolidationReplayFailure(input), 'remain-pending')
-  }
 })
 
 test('rejects duplicate input secrets before mint completion', async () => {

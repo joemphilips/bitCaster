@@ -12,6 +12,7 @@ export const ASSET_MONITORING_CATALOGUE_PAGE_IDS_MAX = 50
 export const ASSET_MONITORING_CATALOGUE_RESPONSE_BYTES_MAX = 512 * 1024
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MS = 1_000
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MAX_MS = 30_000
+const ASSET_MONITORING_BASELINE_REQUIRED_CODE = 'asset-monitoring-baseline-required'
 const CANONICAL_CONDITION_ID = /^[0-9a-f]{64}$/
 
 export interface AssetMonitoringCatalogueEntry {
@@ -37,6 +38,8 @@ export interface AssetMonitoringReporterInput {
   readonly remote: AssetMonitoringReporterRemote
   readonly hasPendingSubmittedOrder: () => Promise<boolean>
   readonly isCurrent: () => boolean
+  /** Called after a report is accepted for the current client profile. */
+  readonly onAccepted?: () => void
   readonly createReportId?: () => string
   /** Overrides retry timing for a host that needs a shorter bounded delay. */
   readonly retryDelayMs?: (failureCount: number) => number
@@ -133,11 +136,16 @@ export class AssetMonitoringReporter {
     if (snapshot === this.#lastAcceptedSnapshot) return 'done'
     try {
       await this.#input.remote.submitAssetMonitoringReport(this.#request(canonicalHoldings, false))
-      this.#lastAcceptedSnapshot = snapshot
-      this.#failureCount = 0
+      this.#markAccepted(snapshot)
       return 'done'
     } catch (error) {
-      if (!(error instanceof EngineClientError) || error.status !== 409) {
+      if (
+        !(
+          error instanceof EngineClientError &&
+          error.status === 409 &&
+          error.code === ASSET_MONITORING_BASELINE_REQUIRED_CODE
+        )
+      ) {
         return this.#isCurrentRevision(revision) && isTransientReportError(error) ? 'retry' : 'done'
       }
     }
@@ -151,12 +159,17 @@ export class AssetMonitoringReporter {
     if (pendingOrder || !this.#isCurrentRevision(revision)) return 'done'
     try {
       await this.#input.remote.submitAssetMonitoringReport(this.#request(canonicalHoldings, true))
-      this.#lastAcceptedSnapshot = snapshot
-      this.#failureCount = 0
+      this.#markAccepted(snapshot)
     } catch (error) {
       return this.#isCurrentRevision(revision) && isTransientReportError(error) ? 'retry' : 'done'
     }
     return 'done'
+  }
+
+  #markAccepted(snapshot: string): void {
+    this.#lastAcceptedSnapshot = snapshot
+    this.#failureCount = 0
+    if (!this.#stopped && this.#input.isCurrent()) this.#input.onAccepted?.()
   }
 
   #scheduleRetry(): void {
@@ -270,7 +283,7 @@ async function fetchCataloguePage(
     ) {
       throw new Error('asset-monitoring condition catalogue is invalid')
     }
-    const outcomes = record.outcomes as string[]
+    const outcomes = [...(record.outcomes as string[])].sort()
     computeAssetMonitoringOutcomeUniverseDigest(outcomes)
     seen.add(record.conditionId)
     return { conditionId: record.conditionId, outcomes }

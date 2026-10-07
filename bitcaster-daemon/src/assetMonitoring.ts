@@ -12,6 +12,7 @@ import {
 import { decodeCanonicalMintOrigin } from '@bitcaster-market/client-sdk/durableCustody'
 import { parseCashuProofUnit } from '@bitcaster-market/client-sdk/marketUnits'
 import { canonicalizeOutcomeSet } from '@bitcaster-market/client-sdk/outcomeSets'
+import { NATIVE_RANGE_ORDER_OWNERSHIP_SQL } from './ctfRangeOrderJournalSqlite.ts'
 import {
   createDaemonStateSqliteSession,
   subscribeToDaemonWalletHoldingsCommits,
@@ -27,6 +28,7 @@ export interface DaemonAssetMonitoringOptions {
   readonly walletId: string
   readonly engineBaseUrl: string
   readonly remote: AssetMonitoringReporterRemote
+  readonly onAccepted?: () => void
   readonly fetchImpl?: typeof fetch
   readonly hasPendingSubmittedOrder?: () => Promise<boolean>
   /** Test seam. Production uses the profile-scoped SQLite session. */
@@ -59,6 +61,7 @@ export function createDaemonAssetMonitoring(
       options.hasPendingSubmittedOrder ??
       (() => hasPendingSubmittedOrder(storage, options.scopeId)),
     isCurrent: () => !stopped,
+    onAccepted: options.onAccepted,
   })
   return {
     start: () => {
@@ -108,8 +111,9 @@ async function hasPendingSubmittedOrder(
            WHERE scope_id = ? AND lifecycle_state = 'order-submitted'
            UNION ALL
            SELECT 1
-           FROM daemon_orders
-           WHERE scope_id = ?
+           FROM daemon_orders AS wallet_order
+           WHERE wallet_order.scope_id = ?
+             AND ${NATIVE_RANGE_ORDER_OWNERSHIP_SQL}
              AND status NOT IN ('Filled', 'filled', 'cancelled', 'expired', 'evicted_capacity',
                                 'rejected_capacity', 'Failed', 'failed')
            LIMIT 1`,
@@ -153,12 +157,15 @@ function readMonitoringRows(database: DatabaseSync, scopeId: string): Monitoring
       `SELECT proof_id AS proofId, normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
        amount, base_asset AS baseAsset, condition_id AS conditionId, outcome_set_id AS outcomeSetId,
        'target' AS source, state, NULL AS selectability, NULL AS nut07State
-       FROM target_wallet_proofs WHERE scope_id = ?
+       FROM target_wallet_proofs WHERE scope_id = ? AND retired_at_ms IS NULL
      UNION ALL
      SELECT proof_id AS proofId, normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
        amount, base_asset AS baseAsset, condition_id AS conditionId, outcome_set_id AS outcomeSetId,
        'custody' AS source, NULL AS state, selectability, nut07_state AS nut07State
-       FROM custody_proofs WHERE scope_id = ?
+       FROM custody_proofs WHERE scope_id = ? AND NOT EXISTS (
+         SELECT 1 FROM target_wallet_proofs AS retired
+         WHERE retired.scope_id = custody_proofs.scope_id
+           AND retired.retired_custody_proof_id = custody_proofs.proof_id)
      ORDER BY proofId, source`,
     )
     .all(scopeId, scopeId) as unknown as MonitoringRow[]
@@ -202,7 +209,7 @@ async function factsFromRows(
 interface DecodedMonitoringRow {
   readonly proofId: string
   readonly normalizedMint: string
-  readonly unit: 'sat' | 'msat'
+  readonly unit: AssetMonitoringAssetReference['cashuUnit']
   readonly keysetId: string
   readonly amount: number
   readonly conditionId: string | null
@@ -224,7 +231,7 @@ function decodeMonitoringRow(row: MonitoringRow): DecodedMonitoringRow | null {
   )
     throw new Error('asset-monitoring proof metadata is invalid')
   const unit = parseCashuProofUnit(row.unit)
-  if (unit === null) throw new Error('asset-monitoring proof unit is invalid')
+  if (unit !== 'msat') throw new Error('asset-monitoring proof unit must be msat')
   const normalizedMint = decodeCanonicalMintOrigin(row.normalizedMint)
   const conditionId = row.conditionId === null ? null : requireConditionId(row.conditionId)
   const outcomeSetId = row.outcomeSetId === null ? null : requireOutcomeSet(row.outcomeSetId)

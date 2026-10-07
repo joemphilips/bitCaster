@@ -6,69 +6,42 @@
  * self-encryption so it can be restored on a fresh browser profile.
  */
 
-import type { ActivityItem, ActivityStatus, ActivityType } from "@/types/portfolio";
+import type { ActivityItem } from "@/types/portfolio";
+import {
+  ACTIVITY_LOG_D_TAG,
+  decodeActivityLogPayload,
+  encodeActivityLogPayload,
+} from "@bitcaster/client-sdk/activityLog";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "./nip78Private";
+import type { RelayOperationOptions } from "./nostr";
 
-export const ACTIVITY_LOG_D_TAG = "bitcaster:activity-log" as const;
-
-interface ActivityLogPayload {
-  items: ActivityItem[];
-}
-
-const ACTIVITY_TYPES = new Set<ActivityType>([
-  "deposit",
-  "withdrawal",
-  "Buy",
-  "Sell",
-  "payout_claimed",
-  "creator_fee_claimed",
-]);
-
-const ACTIVITY_STATUSES = new Set<ActivityStatus>(["pending", "completed", "Failed"]);
-
-function isActivityItem(value: unknown): value is ActivityItem {
-  if (typeof value !== "object" || value === null) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === "string" &&
-    typeof item.type === "string" &&
-    ACTIVITY_TYPES.has(item.type as ActivityType) &&
-    typeof item.amountSats === "number" &&
-    typeof item.date === "string" &&
-    typeof item.status === "string" &&
-    ACTIVITY_STATUSES.has(item.status as ActivityStatus) &&
-    (item.txId === null || typeof item.txId === "string") &&
-    (item.lightningInvoice === null || typeof item.lightningInvoice === "string") &&
-    (item.failureReason === undefined || typeof item.failureReason === "string") &&
-    (item.marketId === undefined || typeof item.marketId === "string") &&
-    (item.marketTitle === undefined || typeof item.marketTitle === "string") &&
-    (item.positionId === undefined || typeof item.positionId === "string")
-  );
-}
+export { ACTIVITY_LOG_D_TAG } from "@bitcaster/client-sdk/activityLog";
 
 export async function publishNip78ActivityLog(
   privateKeyHex: string,
   items: ActivityItem[],
+  options?: RelayOperationOptions,
 ): Promise<void> {
   await publishPrivateNip78(
     privateKeyHex,
     ACTIVITY_LOG_D_TAG,
-    JSON.stringify({ items } satisfies ActivityLogPayload),
+    encodeActivityLogPayload(items),
+    options,
   );
 }
 
 export async function fetchNip78ActivityLog(
   pubkey: string,
   privateKeyHex: string,
+  options?: RelayOperationOptions,
 ): Promise<ActivityItem[] | null> {
-  const content = await fetchPrivateNip78Content(pubkey, ACTIVITY_LOG_D_TAG, privateKeyHex);
+  const content = await fetchPrivateNip78Content(
+    pubkey,
+    ACTIVITY_LOG_D_TAG,
+    privateKeyHex,
+    options,
+  );
   if (!content) return null;
 
-  try {
-    const parsed = JSON.parse(content) as Partial<ActivityLogPayload>;
-    if (!Array.isArray(parsed.items)) return null;
-    return parsed.items.filter(isActivityItem);
-  } catch {
-    return null;
-  }
+  return decodeActivityLogPayload(content);
 }

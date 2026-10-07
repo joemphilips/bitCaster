@@ -1,4 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { mapOutgoingCashuWithdrawalActivity } from '@bitcaster-market/client-sdk/outgoingCashuActivity'
+import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
 import {
   decodeDurableOutgoingCashuTransfer,
   DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX,
@@ -12,8 +14,30 @@ import {
   encodeBoundedDurableArtifact,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import { createParticipationScoreDeliveryMetadata } from '@bitcaster-market/client-sdk/participationScoreDelivery'
+import {
+  createMarketFundingDeliveryMetadata,
+  deriveMarketFundingProductBinding,
+  type MarketFundingDeliveryInput,
+} from '@bitcaster-market/client-sdk/marketFundingDelivery'
 
 const TRANSFER_BYTES_MAX = DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX
+
+export type MarketFundingProduct = Omit<
+  MarketFundingDeliveryInput,
+  'deliveryId' | 'requestedAmount'
+>
+
+export interface MarketFundingHead {
+  readonly scopeId: string
+  readonly recipientBinding: string
+  readonly transferId: string
+  readonly revision: number
+  readonly accountSubject: string
+  readonly conditionId: string
+  readonly divisibility: number
+  readonly mintUrl: string
+  readonly unit: 'msat'
+}
 
 /** SQLite authority for one exact ordinary outgoing Cashu transfer. */
 export class DurableOutgoingCashuSqliteStore {
@@ -29,6 +53,18 @@ export class DurableOutgoingCashuSqliteStore {
     readonly transfer: DurableOutgoingCashuTransfer
     readonly nowMs: number
   }): void {
+    this.#put(input, false)
+  }
+
+  #put(
+    input: {
+      readonly scopeId: string
+      readonly custodyOperationId: string
+      readonly transfer: DurableOutgoingCashuTransfer
+      readonly nowMs: number
+    },
+    admitNewFundingSequence: boolean,
+  ): void {
     const transfer = decodeDurableOutgoingCashuTransfer(input.transfer)
     if (transfer.walletScopeId !== input.scopeId)
       throw new Error('outgoing transfer scope is foreign')
@@ -38,9 +74,33 @@ export class DurableOutgoingCashuSqliteStore {
     const fingerprint = deriveDurableCustodyArtifactFingerprint(transfer)
     const existing = this.get(input.scopeId, transfer.transferId)
     if (existing === null) {
+      if (transfer.recipientSequence !== null && !admitNewFundingSequence) {
+        throw new Error('market funding transfer requires its funding head CAS')
+      }
       this.#putArtifact(input.scopeId, fingerprint, body, input.nowMs)
       this.#insert(input, transfer, fingerprint)
+      this.#writeWithdrawalActivity(input.scopeId, transfer)
       return
+    }
+    if (
+      existing.transfer.recipientSequence?.predecessorTransferId !==
+      transfer.recipientSequence?.predecessorTransferId
+    ) {
+      throw new Error('outgoing transfer funding sequence conflicts')
+    }
+    if (
+      existing.transfer.recipientSequence !== null &&
+      (existing.transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
+        transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
+        existing.transfer.deliveryIntent.expectedSubject !==
+          transfer.deliveryIntent.expectedSubject ||
+        existing.transfer.deliveryIntent.opaqueProductBinding !==
+          transfer.deliveryIntent.opaqueProductBinding ||
+        existing.transfer.mintUrl !== transfer.mintUrl ||
+        existing.transfer.unit !== transfer.unit ||
+        existing.transfer.requestedAmount !== transfer.requestedAmount)
+    ) {
+      throw new Error('outgoing transfer funding authority conflicts')
     }
     if (existing.transfer.revision >= transfer.revision) {
       if (
@@ -58,6 +118,245 @@ export class DurableOutgoingCashuSqliteStore {
     this.#putArtifact(input.scopeId, fingerprint, body, input.nowMs)
     this.#update(input, transfer, fingerprint, existing.transfer.revision)
     this.#deleteUnreferencedArtifact(input.scopeId, existing.artifactId)
+    this.#writeWithdrawalActivity(input.scopeId, transfer)
+  }
+
+  #writeWithdrawalActivity(scopeId: string, transfer: DurableOutgoingCashuTransfer): void {
+    switch (transfer.deliveryIntent.policy) {
+      case 'durable-recipient-ack':
+        return
+      case 'bearer-spend-classification':
+        break
+      default:
+        throw new Error('outgoing transfer Activity policy is invalid')
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT created_at_ms AS createdAtMs FROM daemon_outgoing_cashu_transfers
+         WHERE scope_id = ? AND transfer_id = ?`,
+      )
+      .get(scopeId, transfer.transferId) as { createdAtMs: number } | undefined
+    if (row === undefined) throw new Error('outgoing transfer Activity source is missing')
+    const walletId = scopeId.slice('custody:wallet:'.length)
+    const item = mapOutgoingCashuWithdrawalActivity({
+      walletId,
+      transfer,
+      createdAtMs: row.createdAtMs,
+    })
+    if (item === null) throw new Error('outgoing transfer Activity is missing')
+    new NativeActivitySqlite(this.#database).upsert({
+      walletId,
+      item,
+      origin: 'native',
+      sourceId: item.id,
+    })
+  }
+
+  /** Read and validate one funding head without loading bearer material into the head. */
+  readMarketFundingHead(input: {
+    readonly scopeId: string
+    readonly product: MarketFundingProduct
+  }): MarketFundingHead | null {
+    const recipientBinding = deriveMarketFundingProductBinding(input.product)
+    const row = this.#database
+      .prepare(
+        `SELECT scope_id AS scopeId, recipient_binding AS recipientBinding,
+           transfer_id AS transferId, revision, account_subject AS accountSubject,
+           condition_id AS conditionId, divisibility, normalized_mint AS mintUrl, unit
+         FROM daemon_market_funding_heads
+         WHERE scope_id = ? AND recipient_binding = ?`,
+      )
+      .get(input.scopeId, recipientBinding) as MarketFundingHead | undefined
+    if (row === undefined) return null
+    const current = this.get(input.scopeId, row.transferId)?.transfer
+    if (current === undefined) throw new Error('market funding head transfer is missing')
+    const metadata = this.#assertFundingTransfer(input.product, current)
+    if (
+      row.scopeId !== input.scopeId ||
+      row.recipientBinding !== recipientBinding ||
+      row.accountSubject !== input.product.accountSubject ||
+      row.conditionId !== input.product.conditionId ||
+      row.divisibility !== input.product.divisibility ||
+      row.mintUrl !== metadata.mintUrl ||
+      row.unit !== input.product.unit ||
+      !Number.isSafeInteger(row.revision) ||
+      row.revision < 1
+    ) {
+      throw new Error('market funding head authority conflicts')
+    }
+    return row
+  }
+
+  /** Recover product metadata for a current or historical funding transfer. */
+  readMarketFundingProductForTransfer(input: {
+    readonly scopeId: string
+    readonly transferId: string
+  }): MarketFundingProduct | null {
+    const transfer = this.get(input.scopeId, input.transferId)?.transfer
+    if (transfer === undefined) return null
+    if (transfer.recipientSequence === null) return null
+    if (transfer.deliveryIntent.policy !== 'durable-recipient-ack') {
+      throw new Error('market funding transfer authority conflicts')
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT account_subject AS accountSubject, condition_id AS conditionId,
+         divisibility, normalized_mint AS mintUrl, unit
+       FROM daemon_market_funding_heads
+       WHERE scope_id = ? AND recipient_binding = ?`,
+      )
+      .get(input.scopeId, transfer.deliveryIntent.opaqueProductBinding) as
+      | MarketFundingProduct
+      | undefined
+    if (row === undefined) throw new Error('market funding head is missing')
+    const product: MarketFundingProduct = { ...row }
+    this.readMarketFundingHead({ scopeId: input.scopeId, product })
+    this.#assertFundingTransfer(product, transfer)
+    return product
+  }
+
+  /** Resolve the one exact indexed successor for a predecessor, including the initial null head. */
+  findMarketFundingSuccessor(input: {
+    readonly scopeId: string
+    readonly product: MarketFundingProduct
+    readonly predecessorTransferId: string | null
+  }): DurableOutgoingCashuTransfer | null {
+    const recipientBinding = deriveMarketFundingProductBinding(input.product)
+    const row = this.#database
+      .prepare(
+        `SELECT transfer_id AS transferId
+         FROM daemon_outgoing_cashu_transfers
+         WHERE scope_id = ? AND recipient_binding = ? AND funding_sequence = 1
+           AND funding_predecessor_transfer_id IS ?`,
+      )
+      .get(input.scopeId, recipientBinding, input.predecessorTransferId) as
+      | { transferId: string }
+      | undefined
+    if (row === undefined) return null
+    const transfer = this.get(input.scopeId, row.transferId)?.transfer
+    if (transfer === undefined) throw new Error('market funding successor transfer is missing')
+    this.#assertFundingTransfer(input.product, transfer)
+    if (transfer.recipientSequence?.predecessorTransferId !== input.predecessorTransferId) {
+      throw new Error('market funding successor sequence conflicts')
+    }
+    return transfer
+  }
+
+  /** Call inside the caller's custody unit of work after a fenced predecessor credit check. */
+  putMarketFunding(input: {
+    readonly scopeId: string
+    readonly custodyOperationId: string
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly product: MarketFundingProduct
+    readonly expectedPreviousTransferId: string | null
+    readonly nowMs: number
+  }): DurableOutgoingCashuTransfer {
+    const transfer = decodeDurableOutgoingCashuTransfer(input.transfer)
+    const metadata = this.#assertFundingTransfer(input.product, transfer)
+    if (transfer.walletScopeId !== input.scopeId) throw new Error('market funding scope is foreign')
+    if (transfer.recipientSequence?.predecessorTransferId !== input.expectedPreviousTransferId) {
+      throw new Error('market funding sequence conflicts')
+    }
+    this.#database.exec('SAVEPOINT daemon_market_funding_put')
+    try {
+      const indexed = this.findMarketFundingSuccessor({
+        scopeId: input.scopeId,
+        product: input.product,
+        predecessorTransferId: input.expectedPreviousTransferId,
+      })
+      if (indexed !== null) {
+        const persisted = this.get(input.scopeId, indexed.transferId)
+        if (
+          persisted === null ||
+          indexed.transferId !== transfer.transferId ||
+          persisted.custodyOperationId !== input.custodyOperationId ||
+          indexed.requestedAmount !== transfer.requestedAmount ||
+          indexed.mintUrl !== transfer.mintUrl ||
+          indexed.unit !== transfer.unit ||
+          deriveDurableCustodyArtifactFingerprint(indexed.walletSendOperation) !==
+            deriveDurableCustodyArtifactFingerprint(transfer.walletSendOperation) ||
+          deriveDurableCustodyArtifactFingerprint(indexed.deliveryIntent) !==
+            deriveDurableCustodyArtifactFingerprint(transfer.deliveryIntent)
+        ) {
+          throw new Error('market funding successor preparation conflicts')
+        }
+        this.#database.exec('RELEASE SAVEPOINT daemon_market_funding_put')
+        return indexed
+      }
+      const head = this.readMarketFundingHead({ scopeId: input.scopeId, product: input.product })
+      if ((head?.transferId ?? null) !== input.expectedPreviousTransferId) {
+        throw new Error('market funding head changed')
+      }
+      this.#put(input, true)
+      const recipientBinding = deriveMarketFundingProductBinding(input.product)
+      const result =
+        head === null
+          ? this.#database
+              .prepare(
+                `INSERT INTO daemon_market_funding_heads (
+               scope_id, recipient_binding, transfer_id, revision, account_subject,
+               condition_id, divisibility, normalized_mint, unit
+             ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                input.scopeId,
+                recipientBinding,
+                transfer.transferId,
+                input.product.accountSubject,
+                input.product.conditionId,
+                input.product.divisibility,
+                metadata.mintUrl,
+                input.product.unit,
+              )
+          : this.#database
+              .prepare(
+                `UPDATE daemon_market_funding_heads SET transfer_id = ?, revision = revision + 1
+             WHERE scope_id = ? AND recipient_binding = ? AND transfer_id = ? AND revision = ?
+               AND account_subject = ? AND condition_id = ? AND divisibility = ?
+               AND normalized_mint = ? AND unit = ?`,
+              )
+              .run(
+                transfer.transferId,
+                input.scopeId,
+                recipientBinding,
+                head.transferId,
+                head.revision,
+                input.product.accountSubject,
+                input.product.conditionId,
+                input.product.divisibility,
+                metadata.mintUrl,
+                input.product.unit,
+              )
+      if (result.changes !== 1) throw new Error('market funding head CAS lost')
+      this.#database.exec('RELEASE SAVEPOINT daemon_market_funding_put')
+      return transfer
+    } catch (error) {
+      this.#database.exec('ROLLBACK TO SAVEPOINT daemon_market_funding_put')
+      this.#database.exec('RELEASE SAVEPOINT daemon_market_funding_put')
+      throw error
+    }
+  }
+
+  #assertFundingTransfer(
+    product: MarketFundingProduct,
+    transfer: DurableOutgoingCashuTransfer,
+  ): ReturnType<typeof createMarketFundingDeliveryMetadata> {
+    const metadata = createMarketFundingDeliveryMetadata({
+      ...product,
+      deliveryId: transfer.transferId,
+      requestedAmount: transfer.requestedAmount,
+    })
+    if (
+      transfer.recipientSequence === null ||
+      transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
+      transfer.deliveryIntent.expectedSubject !== metadata.accountSubject ||
+      transfer.deliveryIntent.opaqueProductBinding !== metadata.productBindingSha256 ||
+      transfer.mintUrl !== metadata.mintUrl ||
+      transfer.unit !== metadata.unit
+    ) {
+      throw new Error('market funding transfer authority conflicts')
+    }
+    return metadata
   }
 
   get(
@@ -77,6 +376,8 @@ export class DurableOutgoingCashuSqliteStore {
            transfer.normalized_mint AS normalizedMint,
            unit, requested_amount AS requestedAmount, delivery_state AS deliveryState,
            delivery_policy AS deliveryPolicy, recipient_binding AS recipientBinding,
+           funding_sequence AS fundingSequence,
+           funding_predecessor_transfer_id AS fundingPredecessorTransferId,
            due_at_ms AS dueAtMs, attempt_count AS attemptCount, transfer.revision AS revision
          FROM daemon_outgoing_cashu_transfers AS transfer
          JOIN custody_artifacts AS artifact
@@ -107,6 +408,8 @@ export class DurableOutgoingCashuSqliteStore {
            transfer.normalized_mint AS normalizedMint, transfer.unit,
            transfer.requested_amount AS requestedAmount, transfer.delivery_state AS deliveryState,
            transfer.delivery_policy AS deliveryPolicy, transfer.recipient_binding AS recipientBinding,
+           transfer.funding_sequence AS fundingSequence,
+           transfer.funding_predecessor_transfer_id AS fundingPredecessorTransferId,
            transfer.due_at_ms AS dueAtMs, transfer.attempt_count AS attemptCount,
            transfer.revision AS revision
          FROM daemon_outgoing_cashu_transfers AS transfer
@@ -183,64 +486,89 @@ export class DurableOutgoingCashuSqliteStore {
   preflightParticipationScoreDelivery(input: {
     readonly scopeId: string
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotal: number
     readonly accountSubject: string
     readonly mintUrl: string
     readonly nowMs: number
+    readonly requireExactRequest?: boolean
   }): {
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotalEpoch: number
   } {
     assertPurchasedTotal(input.purchasedTotal)
     assertTransferId(input.transferId)
-    assertParticipationScoreAmount(input.amountSats)
+    assertParticipationScoreAmount(input.amountMsat)
     const pointer = this.#readParticipationScorePointer(input.scopeId)
     if (pointer !== null) {
       const current = this.get(input.scopeId, pointer.transferId)
+      if (current !== null)
+        this.#assertParticipationScorePointerTransfer({ pointer, current, input })
+      const exactRequest =
+        pointer.transferId === input.transferId &&
+        pointer.amountMsat === input.amountMsat &&
+        pointer.purchasedTotalEpoch === input.purchasedTotal
+      const safelyRetirable =
+        current?.transfer.deliveryState === 'recipient-acknowledged' &&
+        input.purchasedTotal > pointer.purchasedTotalEpoch
+      if (input.requireExactRequest === true && !exactRequest && !safelyRetirable) {
+        throw new Error('Participation Score purchase conflicts with the active delivery')
+      }
       if (current === null) {
         if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
         this.#deleteParticipationScorePointer(input.scopeId, pointer)
       } else {
-        this.#assertParticipationScorePointerTransfer({ pointer, current, input })
         if (current.transfer.deliveryState !== 'recipient-acknowledged') return pointer
         if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
         this.#retireParticipationScorePointer(input.scopeId, pointer, current)
+      }
+    } else if (input.requireExactRequest === true) {
+      const current = this.get(input.scopeId, input.transferId)
+      if (current !== null) {
+        this.#assertParticipationScorePointerTransfer({
+          pointer: {
+            transferId: input.transferId,
+            amountMsat: input.amountMsat,
+            purchasedTotalEpoch: input.purchasedTotal,
+          },
+          current,
+          input,
+        })
       }
     }
     const inserted = this.#database
       .prepare(
         `INSERT INTO daemon_participation_score_delivery_pointers (
-           scope_id, transfer_id, amount_sats, purchased_total_epoch, created_at_ms
+           scope_id, transfer_id, amount_msat, purchased_total_epoch, created_at_ms
          ) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(input.scopeId, input.transferId, input.amountSats, input.purchasedTotal, input.nowMs)
+      .run(input.scopeId, input.transferId, input.amountMsat, input.purchasedTotal, input.nowMs)
     if (inserted.changes !== 1) throw new Error('Participation Score delivery pointer CAS lost')
     return {
       transferId: input.transferId,
-      amountSats: input.amountSats,
+      amountMsat: input.amountMsat,
       purchasedTotalEpoch: input.purchasedTotal,
     }
   }
 
   #readParticipationScorePointer(scopeId: string): {
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotalEpoch: number
   } | null {
     const row = this.#database
       .prepare(
-        `SELECT transfer_id AS transferId, amount_sats AS amountSats,
+        `SELECT transfer_id AS transferId, amount_msat AS amountMsat,
            purchased_total_epoch AS purchasedTotalEpoch
            FROM daemon_participation_score_delivery_pointers WHERE scope_id = ?`,
       )
       .get(scopeId) as
-      | { transferId: string; amountSats: number; purchasedTotalEpoch: number }
+      | { transferId: string; amountMsat: number; purchasedTotalEpoch: number }
       | undefined
     if (row === undefined) return null
     assertTransferId(row.transferId)
-    assertParticipationScoreAmount(row.amountSats)
+    assertParticipationScoreAmount(row.amountMsat)
     assertPurchasedTotal(row.purchasedTotalEpoch)
     return row
   }
@@ -249,7 +577,7 @@ export class DurableOutgoingCashuSqliteStore {
     scopeId: string,
     pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     },
     current: {
@@ -269,16 +597,16 @@ export class DurableOutgoingCashuSqliteStore {
     scopeId: string,
     pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     },
   ): void {
     const pointerDeleted = this.#database
       .prepare(
         `DELETE FROM daemon_participation_score_delivery_pointers
-         WHERE scope_id = ? AND transfer_id = ? AND amount_sats = ? AND purchased_total_epoch = ?`,
+         WHERE scope_id = ? AND transfer_id = ? AND amount_msat = ? AND purchased_total_epoch = ?`,
       )
-      .run(scopeId, pointer.transferId, pointer.amountSats, pointer.purchasedTotalEpoch)
+      .run(scopeId, pointer.transferId, pointer.amountMsat, pointer.purchasedTotalEpoch)
     if (pointerDeleted.changes !== 1)
       throw new Error('Participation Score delivery pointer CAS lost')
   }
@@ -296,7 +624,7 @@ export class DurableOutgoingCashuSqliteStore {
         `DELETE FROM daemon_outgoing_cashu_transfers
          WHERE scope_id = ? AND transfer_id = ? AND revision = ?
            AND delivery_state = 'recipient-acknowledged'
-           AND delivery_policy = 'durable-recipient-ack'`,
+           AND delivery_policy = 'durable-recipient-ack' AND funding_sequence = 0`,
       )
       .run(scopeId, current.transfer.transferId, current.transfer.revision)
     if (deleted.changes !== 1) throw new Error('Participation Score delivery retirement CAS lost')
@@ -306,7 +634,7 @@ export class DurableOutgoingCashuSqliteStore {
   #assertParticipationScorePointerTransfer(input: {
     readonly pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     }
     readonly current: {
@@ -323,17 +651,18 @@ export class DurableOutgoingCashuSqliteStore {
       deliveryId: input.pointer.transferId,
       accountSubject: input.input.accountSubject,
       mintUrl: input.input.mintUrl,
-      requestedAmount: String(input.pointer.amountSats),
+      requestedAmount: String(input.pointer.amountMsat),
     })
     const transfer = input.current.transfer
     if (
       transfer.transferId !== input.pointer.transferId ||
       transfer.requestedAmount !== expected.requestedAmount ||
       transfer.mintUrl !== expected.mintUrl ||
-      transfer.unit !== 'sat' ||
+      transfer.unit !== 'msat' ||
       transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
       transfer.deliveryIntent.expectedSubject !== expected.accountSubject ||
-      transfer.deliveryIntent.opaqueProductBinding !== expected.productBindingSha256
+      transfer.deliveryIntent.opaqueProductBinding !== expected.productBindingSha256 ||
+      transfer.recipientSequence !== null
     ) {
       throw new Error('Participation Score delivery pointer authority conflicts')
     }
@@ -371,9 +700,11 @@ export class DurableOutgoingCashuSqliteStore {
       .prepare(
         `INSERT INTO daemon_outgoing_cashu_transfers (
            scope_id, transfer_id, custody_operation_id, normalized_mint, unit,
-           requested_amount, delivery_state, delivery_policy, recipient_binding, due_at_ms, attempt_count, revision,
+           requested_amount, delivery_state, delivery_policy, recipient_binding,
+           funding_sequence, funding_predecessor_transfer_id,
+           due_at_ms, attempt_count, revision,
            transfer_artifact_id, transfer_fingerprint, created_at_ms, updated_at_ms
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.scopeId,
@@ -385,6 +716,8 @@ export class DurableOutgoingCashuSqliteStore {
         transfer.deliveryState,
         transfer.deliveryIntent.policy,
         recipientBinding(transfer),
+        transfer.recipientSequence === null ? 0 : 1,
+        transfer.recipientSequence?.predecessorTransferId ?? null,
         transfer.recovery.dueAtMs,
         transfer.recovery.attemptCount,
         transfer.revision,
@@ -476,6 +809,8 @@ interface TransferRow {
   readonly deliveryState: string
   readonly deliveryPolicy: string
   readonly recipientBinding: string | null
+  readonly fundingSequence: number
+  readonly fundingPredecessorTransferId: string | null
   readonly dueAtMs: number
   readonly attemptCount: number
   readonly revision: number
@@ -506,6 +841,9 @@ function decodeRow(
     transfer.deliveryState !== row.deliveryState ||
     transfer.deliveryIntent.policy !== row.deliveryPolicy ||
     recipientBinding(transfer) !== row.recipientBinding ||
+    (transfer.recipientSequence === null ? 0 : 1) !== row.fundingSequence ||
+    (transfer.recipientSequence?.predecessorTransferId ?? null) !==
+      row.fundingPredecessorTransferId ||
     transfer.recovery.dueAtMs !== row.dueAtMs ||
     transfer.recovery.attemptCount !== row.attemptCount ||
     transfer.revision !== row.revision ||
@@ -548,7 +886,7 @@ function assertPurchasedTotal(value: number): void {
 }
 
 function assertParticipationScoreAmount(value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value % 1_000 !== 0) {
     throw new Error('Participation Score delivery amount is invalid')
   }
 }

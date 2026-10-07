@@ -369,48 +369,84 @@ export async function validateDaemonProfileSchema(
   directory: string,
   manifest: ProfileSchemaManifest,
 ): Promise<ValidatedProfileSchema> {
-  assertCompleteProfileSchemaManifest(manifest)
-  assertDaemonProfilePlatformSupported()
-  const inventory = await inventoryDaemonProfile(directory)
-  assertAdmissibleInventory(inventory)
-
-  const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
-  const immutableUrl = pathToFileURL(databasePath)
-  immutableUrl.searchParams.set('mode', 'ro')
-  immutableUrl.searchParams.set('immutable', '1')
-
-  let database: DatabaseSync
-  try {
-    database = new DatabaseSync(immutableUrl, {
-      readOnly: true,
-      allowExtension: false,
-      enableDoubleQuotedStringLiterals: false,
-    })
-  } catch {
-    await assertProfileIdentityUnchanged(directory, inventory)
-    throw new ProfileSchemaRefusalError('sqlite-corrupt')
-  }
-
-  let validationError: ProfileSchemaRefusalError | undefined
-  try {
-    validateOpenDatabase(database, manifest)
-  } catch (error) {
-    validationError =
-      error instanceof ProfileSchemaRefusalError
-        ? error
-        : new ProfileSchemaRefusalError('sqlite-corrupt')
-  } finally {
-    database.close()
-  }
-
-  await assertProfileIdentityUnchanged(directory, inventory)
-  if (validationError !== undefined) throw validationError
-
+  const { inventory } = await inspectDaemonProfileDatabase(
+    directory,
+    manifest,
+    'immutable',
+    () => undefined,
+  )
   return {
     inventory,
     applicationId: manifest.applicationId,
     userVersion: manifest.userVersion,
   }
+}
+
+/** Validates a live profile and reads its state from one read-only WAL snapshot. */
+export async function withValidatedDaemonProfileReadSnapshot<T>(
+  directory: string,
+  manifest: ProfileSchemaManifest,
+  read: (database: DatabaseSync) => T,
+): Promise<T> {
+  const { value } = await inspectDaemonProfileDatabase(directory, manifest, 'snapshot', read)
+  return value
+}
+
+async function inspectDaemonProfileDatabase<T>(
+  directory: string,
+  manifest: ProfileSchemaManifest,
+  mode: 'immutable' | 'snapshot',
+  read: (database: DatabaseSync) => T,
+): Promise<{ readonly inventory: DaemonProfileInventory; readonly value: T }> {
+  assertCompleteProfileSchemaManifest(manifest)
+  assertDaemonProfilePlatformSupported()
+  const inventory = await inventoryDaemonProfile(directory)
+  assertAdmissibleInventory(inventory)
+
+  let database: DatabaseSync
+  try {
+    database = openProfileInspectionDatabase(directory, mode)
+  } catch {
+    await assertProfileIdentityUnchanged(directory, inventory)
+    throw new ProfileSchemaRefusalError('sqlite-corrupt')
+  }
+
+  let result: { readonly value: T } | { readonly error: ProfileSchemaRefusalError }
+  try {
+    if (mode === 'snapshot') database.exec('PRAGMA busy_timeout = 5000; BEGIN')
+    validateOpenDatabase(database, manifest)
+    const value = read(database)
+    if (mode === 'snapshot') database.exec('COMMIT')
+    result = { value }
+  } catch (error) {
+    result = {
+      error:
+        error instanceof ProfileSchemaRefusalError
+          ? error
+          : new ProfileSchemaRefusalError('sqlite-corrupt'),
+    }
+  } finally {
+    database.close()
+  }
+
+  await assertProfileIdentityUnchanged(directory, inventory)
+  if ('error' in result) throw result.error
+
+  return { inventory, value: result.value }
+}
+
+function openProfileInspectionDatabase(
+  directory: string,
+  mode: 'immutable' | 'snapshot',
+): DatabaseSync {
+  const url = pathToFileURL(join(directory, DAEMON_PROFILE_DATABASE))
+  url.searchParams.set('mode', 'ro')
+  if (mode === 'immutable') url.searchParams.set('immutable', '1')
+  return new DatabaseSync(url, {
+    readOnly: true,
+    allowExtension: false,
+    enableDoubleQuotedStringLiterals: false,
+  })
 }
 
 export function assertCompleteProfileSchemaManifest(manifest: ProfileSchemaManifest): void {

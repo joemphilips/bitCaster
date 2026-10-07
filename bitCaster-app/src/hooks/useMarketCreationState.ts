@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import type {
   WizardDraft,
   WizardStep,
@@ -11,30 +12,42 @@ import type {
 import { useSettingsStore } from "@/stores/settings";
 import { useMarketDraftStore } from "@/stores/marketDraft";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
-import { createMarket, requiredMarketCreationOutcomeCollections } from "@/lib/markets";
+import { requestBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
 import {
-  createEnumAnnouncement,
-  ensureKormirNsec,
-  getOracleAnnouncementEventId,
-} from "@/lib/kormir";
-import { buildEventId } from "@/lib/slug";
+  MAX_MARKET_CREATION_OUTCOMES,
+  assertMarketCreationMetadataSize,
+  normalizeMarketCreationInput,
+  type MarketCreationRecord,
+  type MarketCreationInput,
+  prepareMarketCreationRequest,
+} from "@bitcaster/client-sdk";
+import {
+  browserMarketCreationSession,
+  completeBrowserMarketCreation,
+  prepareBrowserMarketCreation,
+  browserMarketThumbnail,
+  type BrowserMarketCreationPointer,
+} from "@/lib/browserMarketCreation";
 import { detectMintCapabilities } from "@/lib/mints";
 import { useWalletStore } from "@/stores/wallet";
 import { refreshMintInfoWithoutActivating } from "@/lib/walletOps";
 import {
   MAX_CONDITION_REGISTRATION_FEE_SUBUNITS,
   getAvailableRegularBalanceSubunits,
-  registerConditionWithFee,
   registrationFeeForPolicy,
+  requiredMarketCreationOutcomeCollections,
 } from "@/lib/marketRegistrationFee";
 import {
   DEFAULT_MARKET_BASE_ASSET,
-  normalizeMarketCreationLiquiditySats,
-  normalizeMarketBaseAsset,
+  formatMarketSubunits,
   normalizeMarketDivisibility,
-  defaultCollateralUnit,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import {
+  categoricalOutcomeColors,
+  nextCategoricalOutcomeColor,
+} from "@/components/shared/OutcomeLabel";
 
 /**
  * Default creator fee applied to every market created via the wizard. The
@@ -46,7 +59,7 @@ import { effectiveRelayUrls } from "@/lib/relayDefaults";
  * one-line change here. CreatedMarketRow hides the row when the value is 0.
  */
 const DEFAULT_CREATOR_FEE_PERCENT = 0;
-export const MAX_MARKET_OUTCOMES = 8;
+export const MAX_MARKET_OUTCOMES = MAX_MARKET_CREATION_OUTCOMES;
 
 const NSEC_ORACLE_REQUIRED_MESSAGE = "You must register a nostr key to become an oracle";
 type RegistrationFeePrompt = {
@@ -75,52 +88,148 @@ async function activeMintCapabilities() {
   return capabilities;
 }
 
-/** Check whether outcome probabilities sum to exactly 100. */
-export function probabilitySumValid(outcomes: WizardOutcome[]): boolean {
-  return outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0) === 100;
-}
-
-/** Check whether every outcome probability is in the backend-enforced [1, 99] range. */
-export function allProbabilitiesInRange(outcomes: WizardOutcome[]): boolean {
-  return outcomes.every((o) => {
-    const p = o.probability ?? 0;
-    return p >= 1 && p <= 99;
-  });
-}
-
-/**
- * Normalize outcome probabilities to sum to exactly 100 using largest-remainder rounding.
- * Returns outcomes unchanged when all probabilities are zero.
- */
-export function normalizeProbabilities(outcomes: WizardOutcome[]): WizardOutcome[] {
-  const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-  if (total === 0) return outcomes;
-  const raw = outcomes.map((o) => ((o.probability ?? 0) / total) * 100);
-  const floors = raw.map(Math.floor);
-  let remainder = 100 - floors.reduce((a, b) => a + b, 0);
-  const fracs = raw.map((v, i) => ({ i, f: v - floors[i] })).sort((a, b) => b.f - a.f);
-  for (let j = 0; j < remainder; j++) floors[fracs[j].i] += 1;
-  return outcomes.map((o, i) => ({ ...o, probability: floors[i] }));
-}
-
-function distributeProbabilitiesEqually(outcomes: WizardOutcome[]): WizardOutcome[] {
-  if (outcomes.length === 0) return outcomes;
-  const base = Math.floor(100 / outcomes.length);
-  let remainder = 100 - base * outcomes.length;
-  return outcomes.map((outcome) => ({
-    ...outcome,
-    probability: base + (remainder-- > 0 ? 1 : 0),
-  }));
-}
-
 function defaultYesNoOutcomes(): WizardOutcome[] {
   return [
-    { id: "yes", label: "Yes", description: "", probability: 50 },
-    { id: "no", label: "No", description: "", probability: 50 },
+    { id: "yes", label: "Yes", description: "" },
+    { id: "no", label: "No", description: "" },
   ];
 }
 
+function isCanonicalYesNoOutcomes(outcomes: WizardOutcome[] | null | undefined): boolean {
+  return (
+    outcomes?.length === 2 &&
+    outcomes[0]?.id === "yes" &&
+    outcomes[0].label === "Yes" &&
+    outcomes[1]?.id === "no" &&
+    outcomes[1].label === "No"
+  );
+}
+
+function normalizeRestoredBinaryDraft(draft: WizardDraft): WizardDraft {
+  if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return draft;
+
+  const stepOutcomes =
+    draft.stepOutcomes?.outcomeType === "yesno" &&
+    isCanonicalYesNoOutcomes(draft.stepOutcomes.outcomes)
+      ? draft.stepOutcomes
+      : {
+          outcomeType: "yesno" as const,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: draft.stepOutcomes?.baseAsset ?? DEFAULT_MARKET_BASE_ASSET,
+        };
+  const currentStep = 3 as WizardStep;
+  const stepReviewAndCreate = draft.stepReviewAndCreate ?? { description: "" };
+
+  if (
+    draft.currentStep === currentStep &&
+    draft.stepOutcomes === stepOutcomes &&
+    draft.stepReviewAndCreate === stepReviewAndCreate
+  ) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    currentStep,
+    stepOutcomes,
+    stepReviewAndCreate,
+    lastModified: new Date().toISOString(),
+  };
+}
+
+function normalizeCategoricalDraftColors(draft: WizardDraft): WizardDraft {
+  if (draft.stepOutcomes?.outcomeType !== "categorical" || !draft.stepOutcomes.outcomes) {
+    return draft;
+  }
+  const outcomes = draft.stepOutcomes.outcomes;
+  const colors = categoricalOutcomeColors(outcomes);
+  if (outcomes.every((outcome, index) => outcome.color === colors[index])) return draft;
+  return {
+    ...draft,
+    stepOutcomes: {
+      ...draft.stepOutcomes,
+      outcomes: outcomes.map((outcome, index) => ({
+        ...outcome,
+        color: colors[index],
+      })),
+    },
+    lastModified: new Date().toISOString(),
+  };
+}
+
+function wizardMarketInput(draft: WizardDraft): MarketCreationInput {
+  const outcomes = draft.stepOutcomes?.outcomes;
+  if (outcomes == null)
+    throw new Error("At least two outcomes are required to create an oracle event.");
+  const closingDate = draft.stepBasicInfo?.closingDate;
+  if (!closingDate)
+    throw new Error("A closing date is required to publish an oracle announcement.");
+  return {
+    title: draft.stepBasicInfo?.title ?? "",
+    description: draft.stepReviewAndCreate?.description ?? "",
+    outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
+    outcomeDetails: outcomes.map((outcome) => ({
+      name: outcome.label,
+      color: outcome.color,
+    })),
+    maturityEpoch: Math.floor(new Date(closingDate).getTime() / 1000),
+    categoryTags: draft.stepBasicInfo?.categoryTags ?? [],
+    baseAsset: draft.stepOutcomes?.baseAsset,
+  };
+}
+
+function rememberCreationFailure(
+  record: MarketCreationRecord | null,
+  code: "incomplete" | "payment-pending",
+) {
+  let dismissed = false;
+  useMarketDraftStore.getState().setDraft((previous) => {
+    if (previous.creation === undefined) return previous;
+    const progress =
+      record === null
+        ? (previous.creation.failure?.progress ?? "prepared")
+        : record.engineResult !== null
+          ? ("engine-confirmed" as const)
+          : record.mintConfirmed
+            ? ("mint-confirmed" as const)
+            : ("prepared" as const);
+    const old = previous.creation.failure;
+    dismissed = old?.code === code && old.progress === progress && old.dismissed;
+    return {
+      ...previous,
+      creation: {
+        ...previous.creation,
+        failure: { code, progress, dismissed },
+      },
+    };
+  });
+  return dismissed;
+}
+
+function creationFailureMessage(code: "incomplete" | "payment-pending") {
+  switch (code) {
+    case "incomplete":
+      return "marketCreation.creationIncompleteError";
+    case "payment-pending":
+      return "marketCreation.creationPaymentPending";
+  }
+}
+
+function isConfirmedCreationProgress(
+  progress: NonNullable<BrowserMarketCreationPointer["failure"]>["progress"] | undefined,
+) {
+  switch (progress) {
+    case undefined:
+    case "prepared":
+      return false;
+    case "mint-confirmed":
+    case "engine-confirmed":
+      return true;
+  }
+}
+
 export function useMarketCreationState() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const relays = useSettingsStore((s) => s.relays);
@@ -131,14 +240,66 @@ export function useMarketCreationState() {
   const draft = useMarketDraftStore((s) => s.draft);
   const setDraft = useMarketDraftStore((s) => s.setDraft);
   const clearDraft = useMarketDraftStore((s) => s.clearDraft);
+  const completeCreation = useMarketDraftStore((s) => s.completeCreation);
   // Snapshot once at mount: whether the wizard is being re-entered with a
   // saved draft. We don't subscribe to `hasSavedDraft` because the first
   // keystroke would flip it to true and make the resume banner re-appear.
   const [hasSavedDraft] = useState(() => useMarketDraftStore.getState().hasSavedDraft);
 
+  useEffect(() => {
+    if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return;
+    setDraft((previous) => normalizeRestoredBinaryDraft(previous));
+  }, [
+    draft.currentStep,
+    draft.stepGetStarted?.outcomeType,
+    draft.stepOutcomes,
+    draft.stepReviewAndCreate,
+    setDraft,
+  ]);
+
+  useEffect(() => {
+    setDraft(normalizeCategoricalDraftColors);
+  }, [draft.stepOutcomes, setDraft]);
+
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
+  const [isLoadingCreation, setIsLoadingCreation] = useState(false);
+  useEffect(() => {
+    if (draft.creation === undefined) {
+      setRetainedRecord(null);
+      return;
+    }
+    const failure = draft.creation.failure;
+    if (failure !== undefined)
+      setSubmitError(failure.dismissed ? null : t(creationFailureMessage(failure.code)));
+    let cancelled = false;
+    const read = async () => {
+      setIsLoadingCreation(true);
+      try {
+        const record = await browserMarketCreationSession(draft.creation).store.read(
+          draft.creation!.creationId,
+        );
+        if (!cancelled) setRetainedRecord((previous) => (record === null ? previous : record));
+      } catch {
+        if (!cancelled && !failure?.dismissed)
+          setSubmitError(t("marketCreation.creationResumeUnavailable"));
+      } finally {
+        if (!cancelled) setIsLoadingCreation(false);
+      }
+    };
+    // Wallet hydration must select its database before a boot-time creation read.
+    const persistence = useWalletStore.persist;
+    const unsubscribe = persistence?.onFinishHydration(() => {
+      void read();
+    });
+    if (persistence === undefined || persistence.hasHydrated()) void read();
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [draft.creation, t]);
   const [registrationFeePrompt, setRegistrationFeePrompt] = useState<RegistrationFeePrompt | null>(
     null,
   );
@@ -160,6 +321,8 @@ export function useMarketCreationState() {
   const [createdMarketBaseAsset, setCreatedMarketBaseAsset] = useState<MarketBaseAsset | null>(
     null,
   );
+  const [createdMarketDivisibility, setCreatedMarketDivisibility] =
+    useState<MarketDivisibility | null>(null);
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -174,7 +337,11 @@ export function useMarketCreationState() {
   }, []);
 
   const updateDraft = useCallback((patch: Partial<WizardDraft>) => {
-    setDraft((prev) => ({ ...prev, ...patch, lastModified: new Date().toISOString() }));
+    setDraft((prev) => ({
+      ...prev,
+      ...patch,
+      lastModified: new Date().toISOString(),
+    }));
   }, []);
 
   const onClose = useCallback(() => {
@@ -189,6 +356,7 @@ export function useMarketCreationState() {
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
+      const outcomeType = prev.stepGetStarted?.outcomeType ?? "yesno";
       const next = Math.min(prev.currentStep + 1, 4) as WizardStep;
       const updated: WizardDraft = {
         ...prev,
@@ -198,10 +366,20 @@ export function useMarketCreationState() {
 
       // Initialize step data on entry
       if (next === 2 && !updated.stepBasicInfo) {
-        updated.stepBasicInfo = { imageFile: null, title: "", categoryTags: [], closingDate: "" };
+        updated.stepBasicInfo = {
+          imageFile: null,
+          title: "",
+          categoryTags: [],
+          closingDate: "",
+        };
       }
-      if (next === 3 && !updated.stepOutcomes) {
-        const outcomeType = updated.stepGetStarted?.outcomeType ?? "yesno";
+      if (next === 3 && outcomeType === "yesno" && !updated.stepOutcomes) {
+        updated.stepOutcomes = {
+          outcomeType,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: DEFAULT_MARKET_BASE_ASSET,
+        };
+      } else if (next === 3 && !updated.stepOutcomes) {
         if (outcomeType === "numeric") {
           updated.stepOutcomes = {
             outcomeType,
@@ -216,7 +394,7 @@ export function useMarketCreationState() {
           };
         }
       }
-      if (next === 4 && !updated.stepReviewAndCreate) {
+      if (next >= 3 && !updated.stepReviewAndCreate) {
         updated.stepReviewAndCreate = { description: "" };
       }
       return updated;
@@ -226,7 +404,9 @@ export function useMarketCreationState() {
   const onBack = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
-      currentStep: Math.max(Math.min(prev.currentStep, 4) - 1, 1) as WizardStep,
+      currentStep: (prev.stepGetStarted?.outcomeType === "yesno" && prev.currentStep >= 3
+        ? 2
+        : Math.max(Math.min(prev.currentStep, 4) - 1, 1)) as WizardStep,
       lastModified: new Date().toISOString(),
     }));
   }, []);
@@ -294,22 +474,15 @@ export function useMarketCreationState() {
         id: `outcome-${Date.now()}`,
         label: "",
         description: "",
-        probability: 0,
+        color: nextCategoricalOutcomeColor(
+          prev.stepOutcomes.outcomes.map((outcome) => outcome.color),
+        ),
       };
-      const withNew = [...prev.stepOutcomes.outcomes, newOutcome];
-      // Auto-normalize: give every outcome an equal fair share of 100.
-      const n = withNew.length;
-      const base = Math.floor(100 / n);
-      let r = 100 - base * n;
-      const normalized = withNew.map((o, i) => ({
-        ...o,
-        probability: base + (i < r ? 1 : 0),
-      }));
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: [...prev.stepOutcomes.outcomes, newOutcome],
         },
         lastModified: new Date().toISOString(),
       };
@@ -320,15 +493,11 @@ export function useMarketCreationState() {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev;
       const filtered = prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId);
-      // Auto-normalize so the remaining outcomes still sum to 100.
-      const normalized = filtered.every((outcome) => (outcome.probability ?? 0) === 0)
-        ? distributeProbabilitiesEqually(filtered)
-        : normalizeProbabilities(filtered);
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: filtered,
         },
         lastModified: new Date().toISOString(),
       };
@@ -351,38 +520,34 @@ export function useMarketCreationState() {
     });
   }, []);
 
-  const onOutcomeProbabilityChange = useCallback((outcomeId: string, probability: number) => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: prev.stepOutcomes.outcomes.map((o) =>
-            o.id === outcomeId ? { ...o, probability } : o,
-          ),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
+  const onOutcomeColorChange = useCallback(
+    (outcomeId: string, color: string | null) => {
+      setDraft((prev) => {
+        if (prev.stepOutcomes?.outcomeType !== "categorical" || !prev.stepOutcomes.outcomes) {
+          return prev;
+        }
+        const selectedColor =
+          color ??
+          nextCategoricalOutcomeColor(prev.stepOutcomes.outcomes.map((outcome) => outcome.color));
 
-  const onNormalizeProbabilities = useCallback(() => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      const outcomes = prev.stepOutcomes.outcomes;
-      const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-      if (total === 0) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: normalizeProbabilities(outcomes),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
+        return {
+          ...prev,
+          stepOutcomes: {
+            ...prev.stepOutcomes,
+            outcomes: prev.stepOutcomes.outcomes.map((outcome) => {
+              if (outcome.id !== outcomeId) return outcome;
+              return {
+                ...outcome,
+                color: selectedColor,
+              };
+            }),
+          },
+          lastModified: new Date().toISOString(),
+        };
+      });
+    },
+    [setDraft],
+  );
 
   const onLoBoundChange = useCallback((value: number) => {
     setDraft((prev) => ({
@@ -425,236 +590,205 @@ export function useMarketCreationState() {
   );
 
   const submitMarket = useCallback(
-    async (options: { registrationFeeConfirmed: boolean }) => {
+    async (options: { registrationFeeConfirmed: boolean; resume?: boolean }) => {
       if (isSubmitting) return;
       setIsSubmitting(true);
       setSubmitError(null);
-
-      // Read the draft fresh from the store rather than closing over it, so
-      // this callback's identity doesn't change on every keystroke.
       const draft = useMarketDraftStore.getState().draft;
-
+      let session: ReturnType<typeof browserMarketCreationSession> | undefined;
       try {
-        const title = draft.stepBasicInfo?.title ?? "";
-        const description = draft.stepReviewAndCreate?.description ?? "";
-        const categoryTags = draft.stepBasicInfo?.categoryTags ?? [];
-        const tags: string[][] = [
-          ["title", title],
-          ["description", description],
-          ...categoryTags.map((t) => ["t", t] as string[]),
-        ];
-
-        // Resolve outcome labels before any mint mutation or self-oracle publish
-        // so registration-fee checks can stop safely.
-        if (nostrSignerMode !== "nsec") {
-          throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE);
-        }
-        const nsecSecret = useSettingsStore.getState().nsecSecret;
-        if (!nsecSecret) {
-          throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE);
-        }
-
-        const draftOutcomes = draft.stepOutcomes?.outcomes;
-        if (!draftOutcomes || draftOutcomes.length < 2) {
-          throw new Error("At least two outcomes are required to create an oracle event.");
-        }
-        const outcomeType = draft.stepOutcomes?.outcomeType;
-        if (outcomeType === "numeric") {
-          throw new Error("Numeric oracle events are not yet supported.");
-        }
-        const baseAsset = normalizeMarketBaseAsset(draft.stepOutcomes?.baseAsset);
-        const closingDate = draft.stepBasicInfo?.closingDate;
-        if (!closingDate) {
-          throw new Error("A closing date is required to publish an oracle announcement.");
-        }
-        const maturityEpoch = Math.floor(new Date(closingDate).getTime() / 1000);
-        if (!Number.isFinite(maturityEpoch) || maturityEpoch <= 0) {
-          throw new Error("Invalid closing date.");
-        }
-        const outcomes = draftOutcomes.map((o) => o.label);
-        if (outcomes.length > MAX_MARKET_OUTCOMES) {
-          throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`);
-        }
-
-        const ctfCapabilities = await activeMintCapabilities();
-        if (!ctfCapabilities.ctfSettings) {
-          throw new Error(
-            ctfCapabilities.ctf
-              ? "Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint."
-              : "Active mint does not advertise CTF support.",
+        if (!useMarketDraftStore.getState().hasCreationPersistence())
+          throw new Error(t("marketCreation.creationStorageUnavailable"));
+        session = browserMarketCreationSession(draft.creation);
+        let record =
+          draft.creation === undefined ? null : await session.store.read(draft.creation.creationId);
+        if (record !== null && !options.resume)
+          throw new Error(t("marketCreation.creationResumeRequired"));
+        if (record === null) {
+          const market = wizardMarketInput(draft);
+          const normalized = normalizeMarketCreationInput(market);
+          assertMarketCreationMetadataSize(normalized.metadata);
+          if (nostrSignerMode !== "nsec" || !useSettingsStore.getState().nsecSecret)
+            throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE);
+          const thumbnail = await browserMarketThumbnail(thumbnailFile);
+          await prepareMarketCreationRequest(normalized.metadata, thumbnail);
+          const capabilities = await activeMintCapabilities();
+          if (!capabilities.ctfSettings)
+            throw new Error(
+              capabilities.ctf
+                ? "Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint."
+                : "Active mint does not advertise CTF support.",
+            );
+          session.requireBinding();
+          const settings = capabilities.ctfSettings;
+          const feeAmount = registrationFeeForPolicy(
+            normalized.outcomeLabels,
+            settings,
+            normalized.collateralUnit,
           );
-        }
-        const ctfSettings = ctfCapabilities.ctfSettings;
-        const collateralUnit = defaultCollateralUnit(baseAsset);
-        const requiredRegistrationFee = registrationFeeForPolicy(
-          outcomes,
-          ctfSettings,
-          collateralUnit,
-        );
-        if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS) {
-          const requiredFee = `${requiredRegistrationFee.toLocaleString()} subunits`;
-          const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS.toLocaleString()} subunits`;
-          throw new Error(
-            `This mint requires a ${requiredFee} condition registration fee, ` +
-              `which exceeds the ${maxFee} app limit.`,
-          );
-        }
-
-        const wallet = useWalletStore.getState();
-        const activeMintUrl = wallet.activeMintUrl;
-        if (!activeMintUrl) {
-          throw new Error("No active mint is configured.");
-        }
-        if (requiredRegistrationFee > 0 && !options.registrationFeeConfirmed) {
-          const balance = await getAvailableRegularBalanceSubunits(activeMintUrl, baseAsset);
-          if (balance < requiredRegistrationFee) {
-            setRegistrationFeeTopUp({
-              feeSubunits: requiredRegistrationFee,
+          if (feeAmount > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS)
+            throw new Error(
+              t("marketCreation.registrationFeeOverLimit", {
+                requiredFee: formatMarketSubunits(feeAmount, normalized.metadata.baseAsset),
+                maxFee: formatMarketSubunits(
+                  MAX_CONDITION_REGISTRATION_FEE_SUBUNITS,
+                  normalized.metadata.baseAsset,
+                ),
+              }),
+            );
+          if (feeAmount > 0 && !options.registrationFeeConfirmed) {
+            const balance = await getAvailableRegularBalanceSubunits(
+              session.binding.mintUrl,
+              normalized.metadata.baseAsset,
+            );
+            const prompt = {
+              feeSubunits: feeAmount,
               balanceSubunits: balance,
-              baseAsset,
-            });
-            setRegistrationFeeTopUpStage("modal");
+              baseAsset: normalized.metadata.baseAsset,
+            };
+            if (balance < feeAmount) {
+              setRegistrationFeeTopUp(prompt);
+              setRegistrationFeeTopUpStage("modal");
+            } else setRegistrationFeePrompt(prompt);
             return;
           }
-          setRegistrationFeePrompt({
-            feeSubunits: requiredRegistrationFee,
-            balanceSubunits: balance,
-            baseAsset,
+          const pointer = draft.creation ?? {
+            creationId: crypto.randomUUID(),
+            binding: session.binding,
+          };
+          // The pointer write must succeed before preparation can lead to payment.
+          setDraft((previous) => ({
+            ...previous,
+            creation: pointer,
+            lastModified: new Date().toISOString(),
+          }));
+          record = await prepareBrowserMarketCreation(session, {
+            creationId: pointer.creationId,
+            market,
+            relayUrls: effectiveRelayUrls(relays),
+            feeAmount,
+            outcomeCollections:
+              settings.defaultKeysetCreation === "none"
+                ? requiredMarketCreationOutcomeCollections(normalized.outcomeLabels)
+                : undefined,
+            thumbnail,
           });
-          return;
         }
-
-        // Resolve the oracle announcement hex after fee gates. For self-oracle
-        // creation this avoids publishing an announcement when the user cannot
-        // or does not want to pay the mint registration fee.
-        let announcementHex: string;
-        let creatorOracle:
-          | {
-              type: "self";
-              eventId: string;
-              announcementEventId?: string;
-              announcementHex?: string;
-              outcomes: string[];
-            }
-          | undefined;
-
-        const eventId = buildEventId(title || "market");
-        const relayUrls = effectiveRelayUrls(relays);
-        if (relayUrls.length === 0) {
-          throw new Error(
-            "Add at least one Nostr relay in Settings before publishing an oracle announcement.",
-          );
+        setRetainedRecord(record);
+        const result = await completeBrowserMarketCreation(session, record);
+        switch (result.status) {
+          case "payment-pending":
+            if (!rememberCreationFailure(record, "payment-pending"))
+              setSubmitError(t("marketCreation.creationPaymentPending"));
+            return;
+          case "created":
+            break;
         }
-        await ensureKormirNsec(relayUrls, nsecSecret);
-        // kormir.create_enum_event both constructs the DLC announcement and
-        // publishes the kind-88 event to the configured relays.
-        announcementHex = await createEnumAnnouncement(
-          relayUrls,
-          eventId,
-          outcomes,
-          maturityEpoch,
-          title,
-          description,
-        );
-        const announcementEventId =
-          (await getOracleAnnouncementEventId(relayUrls, eventId)) ?? undefined;
-        creatorOracle = {
-          type: "self",
-          eventId,
-          announcementEventId,
-          outcomes,
-          announcementHex,
-        };
-        const outcomeCollections =
-          ctfSettings.defaultKeysetCreation === "none"
-            ? requiredMarketCreationOutcomeCollections(outcomes)
-            : undefined;
-
-        // 1. Register condition on the mint
-        const { condition_id } = await registerConditionWithFee({
-          mintUrl: activeMintUrl,
-          requiredFeeSubunits: requiredRegistrationFee,
-          request: {
-            tags,
-            announcementHex,
-            collateral: collateralUnit,
-            outcomeCollections,
-          },
-        });
-
-        // 2. Create market on matching engine. Creator AMM funding is handled
-        // after creation, so the pre-create liquidity field is always zero.
-        const liquiditySats = normalizeMarketCreationLiquiditySats({
+        const createResponse = result.market;
+        const baseAsset = record.metadata.baseAsset;
+        const snapshotDivisibility = normalizeMarketDivisibility(
+          createResponse.divisibility,
           baseAsset,
-          liquiditySats: 0,
-        });
-        const createResponse = await createMarket(
-          condition_id,
-          {
-            title,
-            description,
-            outcomes: outcomes.map((name) => ({
-              name,
-              probability:
-                draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
-            })),
-            outcomeType:
-              draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
-            liquiditySats,
-            baseAsset,
-            categoryTags,
-            oracleAnnouncementHex: announcementHex,
-          },
-          thumbnailFile,
         );
-
-        // Record the newly created market in the client-side creator store so
-        // the dashboard can render it immediately. NIP-78 sync takes over from
-        // here (see `useCreatorSync`). This write is best-effort: the market
-        // has already been registered on the mint and the matching engine, so
-        // a localStorage quota error must not surface as "Failed to create
-        // market" and strand the user on the wizard.
         try {
-          useCreatorMarketsStore.getState().addCreatedMarket({
-            conditionId: condition_id,
-            title,
+          await useCreatorMarketsStore.getState().saveCreatedMarket({
+            conditionId: result.conditionId,
+            title: record.metadata.title,
             thumbnailUrl: createResponse.thumbnailUrl ?? null,
             createdAt: new Date().toISOString(),
             baseAsset,
-            divisibility: normalizeMarketDivisibility(createResponse.divisibility, baseAsset),
+            divisibility: snapshotDivisibility,
             creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
-            oracle: creatorOracle,
+            oracle: {
+              type: "self",
+              eventId: record.eventId,
+              announcementEventId: JSON.parse(record.announcement.announcementNostrEventJson).id,
+              announcementEventJson: record.announcement.announcementNostrEventJson,
+              oraclePubkey: record.creatorId,
+              engineBaseUrl: record.engineBaseUrl,
+              destinations: {
+                mintUrl: record.mintUrl,
+                engineUrl: record.engineBaseUrl,
+                relayUrls: record.relayUrls,
+              },
+              announcementHex: record.announcement.announcementTlvHex,
+              outcomes: record.metadata.outcomes.map(({ name }) => name),
+            },
           });
-        } catch (storeErr) {
-          console.warn(
-            "Failed to persist created market to local creator store; dashboard will not show it until NIP-78 sync recovers.",
-            storeErr,
-          );
+        } catch {
+          // Keep the completed creation pointer. Resume retries only this durable row save.
+          throw new Error("Durable creator storage is unavailable.");
         }
-
-        const snapshotOutcomeCount = outcomes.length;
-        const snapshotBaseAsset = baseAsset;
-
-        clearDraft();
-        // Hand off to the deposit step. The wizard renders DepositStep when
-        // `createdMarketConditionId` is set; the user navigates to
-        // /markets/{conditionId} once the Lightning payment reaches Paid while
-        // AMM crediting and order posting continue asynchronously.
-        setCreatedMarketOutcomeCount(snapshotOutcomeCount);
-        setCreatedMarketBaseAsset(snapshotBaseAsset);
-        setCreatedMarketConditionId(condition_id);
-      } catch (err) {
-        setSubmitError(err instanceof Error ? err.message : "Failed to create market");
+        completeCreation(record.creationId);
+        // Backup progress has its own durable owner. It must not turn paid creation into failure.
+        requestBrowserOracleBackup(result.conditionId);
+        setRetainedRecord(null);
+        setCreatedMarketOutcomeCount(record.metadata.outcomes.length);
+        setCreatedMarketBaseAsset(baseAsset);
+        setCreatedMarketDivisibility(snapshotDivisibility);
+        setCreatedMarketConditionId(result.conditionId);
+      } catch (error) {
+        const pointer = useMarketDraftStore.getState().draft.creation;
+        if (pointer !== undefined) {
+          let retained: MarketCreationRecord | null = null;
+          try {
+            retained = (await session?.store.read(pointer.creationId)) ?? null;
+            if (retained != null) setRetainedRecord(retained);
+          } catch {
+            /* The original binding can be unavailable. Keep its draft pointer. */
+          }
+          let dismissed = false;
+          if (retained !== null || pointer.failure !== undefined) {
+            try {
+              dismissed = rememberCreationFailure(retained, "incomplete");
+            } catch {
+              /* The retained creation still owns progress. */
+            }
+          }
+          if (!dismissed)
+            setSubmitError(
+              retained === null &&
+                error instanceof Error &&
+                /^(Market metadata|Market creation exceeds|Market thumbnail)/.test(error.message)
+                ? error.message
+                : t("marketCreation.creationIncompleteError"),
+            );
+        } else setSubmitError(error instanceof Error ? error.message : "Failed to create market");
       } finally {
         setIsSubmitting(false);
       }
     },
-    [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft],
+    [thumbnailFile, isSubmitting, nostrSignerMode, relays, setDraft, completeCreation, t],
   );
 
   const onCreateMarket = useCallback(async () => {
     await submitMarket({ registrationFeeConfirmed: false });
   }, [submitMarket]);
+
+  const onResumeCreation = useCallback(async () => {
+    await submitMarket({ registrationFeeConfirmed: false, resume: true });
+  }, [submitMarket]);
+
+  const onDismissCreationError = useCallback(() => {
+    setDraft((previous) =>
+      previous.creation === undefined
+        ? previous
+        : {
+            ...previous,
+            creation: {
+              ...previous.creation,
+              failure: {
+                ...(previous.creation.failure ?? {
+                  code: "incomplete",
+                  progress: "prepared",
+                }),
+                dismissed: true,
+              },
+            },
+          },
+    );
+    setSubmitError(null);
+  }, [setDraft]);
 
   const onConfirmRegistrationFee = useCallback(async () => {
     setRegistrationFeePrompt(null);
@@ -698,12 +832,26 @@ export function useMarketCreationState() {
     thumbnailFile,
     isSubmitting,
     submitError,
+    retainedCreation:
+      draft.creation === undefined ||
+      (retainedRecord === null && draft.creation.failure === undefined)
+        ? null
+        : {
+            title: retainedRecord?.metadata.title ?? draft.stepBasicInfo?.title ?? "",
+            mintConfirmed:
+              retainedRecord?.mintConfirmed ??
+              isConfirmedCreationProgress(draft.creation.failure?.progress),
+          },
+    isLoadingCreation,
+    onResumeCreation,
+    onDismissCreationError,
     registrationFeePrompt,
     registrationFeeTopUp,
     registrationFeeTopUpStage,
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
+    createdMarketDivisibility,
     onClose,
     clearDraft,
     onNext,
@@ -716,8 +864,7 @@ export function useMarketCreationState() {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
-    onOutcomeProbabilityChange,
-    onNormalizeProbabilities,
+    onOutcomeColorChange,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,

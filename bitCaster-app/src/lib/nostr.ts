@@ -17,11 +17,12 @@ import NDK, {
   type NDKConstructorParams,
 } from "@nostr-dev-kit/ndk";
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
-import { nip19 } from "nostr-tools";
-import * as nip49 from "nostr-tools/nip49";
+import { decodePrivateNostrSignerKey } from "@bitcaster/client-sdk";
 import { setPendingKormirNsec } from "./kormir";
 import { useSettingsStore } from "@/stores/settings";
 import { DEFAULT_NOSTR_RELAYS, effectiveRelayUrls } from "./relayDefaults";
+import { selectNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
+import { awaitAbortable } from "@bitcaster/client-sdk/engineClient";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -70,71 +71,76 @@ export function createExplicitRelayNdk(opts: NDKConstructorParams = {}): NDK {
 }
 
 /**
- * Merge user-configured relays from the settings store with the static
- * {@link DEFAULT_RELAYS} list, deduplicating while preserving order. The
- * profile-fetch surface specifically needs this — a kind:0 published only to
- * a user-added relay would never resolve when the NDK pool is restricted to
- * the defaults. Returns DEFAULT_RELAYS alone when settings hasn't hydrated
- * (or has no relays configured) so module-load callers don't crash.
+ * Read the user's exact relay selection. Only missing settings use defaults.
  */
-function mergedRelayUrls(): string[] {
+export function selectedRelayUrls(): string[] {
   try {
-    const userRelays = effectiveRelayUrls(useSettingsStore.getState().relays);
-    const merged = [...DEFAULT_RELAYS];
-    for (const url of userRelays) {
-      if (!merged.includes(url)) merged.push(url);
-    }
-    return merged;
+    return effectiveRelayUrls(useSettingsStore.getState().relays);
   } catch {
-    return DEFAULT_RELAYS;
+    return [];
   }
 }
 
 function reconcileRelays(ndk: NDK, urls: string[]): void {
-  const known = new Set(ndk.pool.relays.keys());
-  const desired = new Set(urls);
-  // Add any desired relay not already in the pool.
-  for (const url of urls) {
-    if (known.has(url)) continue;
-    try {
-      ndk.addExplicitRelay(url, undefined, true);
-    } catch {
-      // Bad URL or already-known race — ignore; profile fetch can still
-      // succeed via the other relays.
-    }
-  }
-  // P8 codex review #4: reconcile must also remove relays the user dropped
-  // from settings. Without this, removed relays stay connected and continue
-  // to receive subscriptions / leak the user's queries to a relay they
-  // explicitly tried to disconnect.
-  for (const url of known) {
-    if (desired.has(url)) continue;
-    try {
-      const relay = ndk.pool.relays.get(url);
-      if (relay) {
-        relay.disconnect?.();
-        ndk.pool.relays.delete(url);
-      }
-    } catch {
-      // Best-effort teardown — leave the next reconciliation pass to retry.
-    }
+  // The maintained dependency setter retains unchanged objects and disposes removals.
+  ndk.explicitRelayUrls = urls;
+}
+
+export interface RelayOperationOptions {
+  relays?: readonly string[];
+  signal?: AbortSignal;
+}
+
+/** A temporary operation owns cancellation from connection setup through completion. */
+export async function withTemporaryRelayNdk<T>(
+  options: RelayOperationOptions,
+  signer: NDKSigner | undefined,
+  action: (ndk: NDK) => Promise<T>,
+): Promise<T | undefined> {
+  const relays = selectNostrRelayUrls(options.relays, selectedRelayUrls());
+  if (relays.length === 0) return undefined;
+  const signal = options.signal ?? new AbortController().signal;
+  const ndk = createExplicitRelayNdk({ explicitRelayUrls: relays, signer });
+  const dispose = () => {
+    for (const subscription of ndk.subManager.subscriptions.values()) subscription.stop();
+    ndk.explicitRelayUrls = [];
+  };
+  signal.addEventListener("abort", dispose, { once: true });
+  try {
+    signal.throwIfAborted();
+    await awaitAbortable(ndk.connect(), signal);
+    signal.throwIfAborted();
+    return await awaitAbortable(action(ndk), signal);
+  } finally {
+    signal.removeEventListener("abort", dispose);
+    dispose();
   }
 }
 
 export function getNdk(): NDK {
-  const urls = mergedRelayUrls();
+  const urls = selectedRelayUrls();
   if (!_ndk) {
     _ndk = createExplicitRelayNdk({ explicitRelayUrls: urls });
-    _lastReconciledRelaysKey = urls.slice().sort().join("|");
+    _lastReconciledRelaysKey = JSON.stringify(urls.slice().sort());
+    // Settings removal must disconnect existing relays before another NDK call.
+    // This subscription has the same tab lifetime as the singleton.
+    useSettingsStore.subscribe((state, previous) => {
+      if (!_ndk || state.relays === previous.relays) return;
+      const selected = effectiveRelayUrls(state.relays);
+      const selectedKey = JSON.stringify(selected.slice().sort());
+      if (selectedKey === _lastReconciledRelaysKey) return;
+      reconcileRelays(_ndk, selected);
+      _lastReconciledRelaysKey = selectedKey;
+    });
     return _ndk;
   }
-  // `addExplicitRelay` is idempotent on URL — but the pool walk plus Set
-  // construction is wasted work on every call. Short-circuit when the merged
+  // Pool reconciliation is idempotent but it still walks the current set.
+  // Short-circuit when the selected
   // URL set (order-independent) hasn't changed since the previous
-  // reconciliation. Sorted join makes the cache key set-equal: re-hydration
+  // reconciliation. Sorted serialization makes the cache key set-equal: re-hydration
   // of settings with a different iteration order does not trigger a spurious
   // pool walk.
-  const key = urls.slice().sort().join("|");
+  const key = JSON.stringify(urls.slice().sort());
   if (key !== _lastReconciledRelaysKey) {
     reconcileRelays(_ndk, urls);
     _lastReconciledRelaysKey = key;
@@ -221,18 +227,7 @@ export async function loginWithNsecOrNcryptsec(
   input: string,
   passphrase?: string,
 ): Promise<{ signer: NDKSigner; nsec: string }> {
-  const trimmed = input.trim();
-  let nsec: string;
-  if (trimmed.startsWith("ncryptsec1")) {
-    if (!passphrase) {
-      throw new Error("A passphrase is required to decrypt an ncryptsec key.");
-    }
-    // nip49.decrypt returns the 32-byte secret key as Uint8Array.
-    const secretKey = nip49.decrypt(trimmed, passphrase);
-    nsec = nip19.nsecEncode(secretKey);
-  } else {
-    nsec = trimmed;
-  }
+  const { nsec } = decodePrivateNostrSignerKey(input, passphrase);
   const signer = await loginWithNsec(nsec);
   return { signer, nsec };
 }
@@ -359,10 +354,12 @@ export async function fetchPublicNostrProfile(pubkey: string): Promise<PublicNos
     ]).catch(() => {});
     const profile = user.profile;
     if (!profile) return null;
+    const displayName = typeof profile.displayName === "string" ? profile.displayName.trim() : "";
+    const name = typeof profile.name === "string" ? profile.name.trim() : "";
     return {
       pubkey,
-      displayName: profile.displayName ?? profile.name ?? pubkey.slice(0, 8),
-      avatar: profile.image ?? "",
+      displayName: displayName || name || pubkey.slice(0, 8),
+      avatar: typeof profile.image === "string" ? profile.image.trim() : "",
     };
   } catch {
     return null;

@@ -14,3 +14,8 @@ nuts
 **/test-results
 bitCaster-app/src/generated
 bitCaster-app/src/lib/kormir-wasm-pkg
+
+# Preserve the captured producer bytes for the registry decoder tests.
+bitcaster-client-sdk/test/fixtures/ctf-pagination-real-registration-sqlite.json
+bitcaster-client-sdk/test/fixtures/d4/condition-info.json
+bitcaster-daemon/test/fixtures/d4/condition-info.json

@@ -30,6 +30,12 @@ describe("useBookmarkStore.toggle", () => {
     useBookmarkStore.getState().toggle("m1");
     expect(useBookmarkStore.getState().markets.includes("m1")).toBe(false);
   });
+
+  it("unlike removes every duplicate without changing the other bookmark order", () => {
+    useBookmarkStore.setState({ markets: ["m1", "m2", "m1", "m3"] });
+    useBookmarkStore.getState().toggle("m1");
+    expect(useBookmarkStore.getState().markets).toEqual(["m2", "m3"]);
+  });
 });
 
 describe("useBookmarkStore.replace", () => {
@@ -48,6 +54,14 @@ describe("useBookmarkStore.replace", () => {
     useBookmarkStore.getState().replace(["m2", "m1"]); // same set, different order
     expect(useBookmarkStore.getState().markets).toBe(before);
   });
+
+  it("repeated unlike replacement is idempotent", () => {
+    useBookmarkStore.getState().replace(["m1"]);
+    useBookmarkStore.getState().replace([]);
+    const empty = useBookmarkStore.getState().markets;
+    useBookmarkStore.getState().replace([]);
+    expect(useBookmarkStore.getState().markets).toBe(empty);
+  });
 });
 
 describe("bookmarkSetsEqual", () => {
@@ -55,6 +69,13 @@ describe("bookmarkSetsEqual", () => {
     expect(bookmarkSetsEqual(["a", "b"], ["b", "a"])).toBe(true);
     expect(bookmarkSetsEqual(["a", "b"], ["a"])).toBe(false);
     expect(bookmarkSetsEqual([], [])).toBe(true);
+  });
+
+  it("compares actual sets even when either input has duplicates", () => {
+    expect(bookmarkSetsEqual(["a", "a"], ["a"])).toBe(true);
+    expect(bookmarkSetsEqual(["a"], ["a", "a"])).toBe(true);
+    expect(bookmarkSetsEqual(["a", "b"], ["a", "a"])).toBe(false);
+    expect(bookmarkSetsEqual(["a", "a"], ["a", "b"])).toBe(false);
   });
 });
 
@@ -93,15 +114,14 @@ describe("persist hydration race (P7 regression guard)", () => {
     //      include the just-clicked id — the default `merge` replaces
     //      `markets` with `['m-existing']`, silently dropping the click.
     //      Our overridden `merge` unions instead.
-    useBookmarkStore.persist.rehydrate();
-    // Manually push a snapshot through the merge so the test asserts the
-    // function-level contract independent of jsdom's localStorage state.
-    useBookmarkStore.setState((state) => ({
-      markets: Array.from(new Set([...state.markets, "m-existing"])),
-    }));
-
-    const after = useBookmarkStore.getState().markets;
-    expect(after).toContain("m-clicked-pre-hydration");
-    expect(after).toContain("m-existing");
+    const current = useBookmarkStore.getState();
+    const merge = useBookmarkStore.persist.getOptions().merge!;
+    const hydrated = merge(
+      { markets: ["m-existing", "m-existing", "m-clicked-pre-hydration"] },
+      current,
+    );
+    expect(hydrated.markets).toEqual(["m-clicked-pre-hydration", "m-existing"]);
+    expect(hydrated.toggle).toBe(current.toggle);
+    expect(hydrated.replace).toBe(current.replace);
   });
 });

@@ -11,7 +11,6 @@ import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -20,37 +19,49 @@ function MonitoringStatus({
   onDismissError,
   onRetryAssets,
   onDismissAssetError,
+  refreshing,
 }: {
   monitoring: PortfolioProps["monitoring"];
   onDismissError?: () => void;
   onRetryAssets?: () => void;
   onDismissAssetError?: () => void;
+  refreshing?: boolean;
 }) {
   const { t } = useTranslation();
   if (!monitoring) return null;
   const error = monitoring.error ?? monitoring.assetPageError;
+  const needsAttention = error || monitoring.stale || monitoring.incomplete;
   const states = [
+    monitoring.retainingDisplay && t("portfolio.monitoringRetained"),
     monitoring.stale && t("portfolio.monitoringStale"),
+    (refreshing || monitoring.building) && t("common.loading"),
     monitoring.incomplete && t("portfolio.monitoringIncomplete"),
-    monitoring.building && t("portfolio.monitoringBuilding"),
     monitoring.unvaluedAssetCount > 0 &&
       t("portfolio.monitoringUnvalued", { count: monitoring.unvaluedAssetCount }),
-    monitoring.hasPendingOutgoing &&
-      (monitoring.pendingOutgoingValueMsat === null
-        ? t("portfolio.monitoringPendingUnvalued")
-        : t("portfolio.monitoringPending", {
-            amount: formatMarketSubunits(monitoring.pendingOutgoingValueMsat, "sat"),
-          })),
   ].filter(Boolean);
   if (!error && states.length === 0) return null;
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+    <div
+      role="status"
+      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
+        needsAttention
+          ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+          : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+      }`}
+    >
       <span className="flex-1">
         {error
           ? monitoring.error
-            ? t("portfolio.monitoringUnavailable")
+            ? [
+                t(
+                  monitoring.retainingDisplay
+                    ? "portfolio.monitoringRetainedUnavailable"
+                    : "portfolio.monitoringUnavailable",
+                ),
+                ...states,
+              ].join(" ")
             : t("portfolio.assetPageUnavailable")
-          : `${t("portfolio.monitoringLabel")}: ${states.join(", ")}`}
+          : states.join(" ")}
       </span>
       {monitoring.assetPageError && onRetryAssets && (
         <button
@@ -156,6 +167,7 @@ export function Portfolio(props: PortfolioProps) {
         onDismissError={props.onDismissMonitoringError}
         onRetryAssets={props.onRetryLoadMoreAssets}
         onDismissAssetError={props.onDismissAssetPageError}
+        refreshing={props.stats.totalValueLoading}
       />
 
       {/* Profile + Chart Section */}
@@ -180,6 +192,7 @@ export function Portfolio(props: PortfolioProps) {
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
             totalValueKnown={props.stats.totalValueKnown}
+            totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
         </div>
@@ -240,17 +253,23 @@ export function Portfolio(props: PortfolioProps) {
                 onViewPosition={props.onViewPosition}
               />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
+              {props.monitoring?.liveUpdateCoverageLimited && (
+                <p
+                  role="note"
+                  className="pt-3 text-center text-xs text-slate-500 dark:text-slate-400"
+                >
+                  {t("portfolio.liveUpdatesCoverFirstPage")}
+                </p>
+              )}
             </>
           )}
           {mainTab === "funds" && (
             <>
-              <FundsList funds={props.funds} onViewFund={props.onViewFund} />
+              <FundsList funds={props.funds} />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
             </>
           )}
-          {mainTab === "activity" && (
-            <ActivityFeed activity={props.activity} onViewActivity={props.onViewActivity} />
-          )}
+          {mainTab === "activity" && <ActivityFeed activity={props.activity} />}
         </div>
       </div>
 

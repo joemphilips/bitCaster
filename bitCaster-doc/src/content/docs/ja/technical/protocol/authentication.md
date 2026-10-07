@@ -17,7 +17,9 @@ sidebar:
 
 このバインドは、取得された authentication event が fresh period 中に別の本文を認可することを防ぎます。`GET`、`DELETE`、本文がないリクエストでは `payload` tag を省略します。
 
-multipart リクエストでは、送信する正確な bytes から digest を計算します。それらの bytes と一致する `Content-Type` boundary を保持します。サービスは digest を計算する前に 1 MiB より大きい本文を拒否します。
+multipart リクエストでは、送信する正確な bytes から digest を計算します。それらの bytes と一致する `Content-Type` boundary を保持します。サービスは digest を計算する前に、エンドポイントのサイズ上限を超える本文を拒否します。
+既定の上限は 1 MiB です。市場作成では multipart 本文全体で 6 MiB まで受け付けます。サムネイルは 5 MiB まで、metadata は UTF-16 コード単位で 65,536 までです。multipart boundary も本文全体のサイズに含みます。
+本文が上限を超えると `413 Payload Too Large` を返します。
 
 ## ウォレットと決済の境界
 

@@ -1,3 +1,8 @@
+import { assertDurableCustodyVerifiedLosingAuthority } from './durableCustodyMintResult.ts'
+import {
+  requireCtfVerifiedLosingAuthority,
+  type CtfVerifiedLosingAuthority,
+} from './conditionOracleEvidence.ts'
 // Persistence-neutral subset re-authored from 7e1385c with ordinary
 // wallet-scope, exact-unit, and fail-closed corrections from f1cb65b/b683120.
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -133,6 +138,7 @@ export interface DurableCustodyAuthenticatedTerminalMintRejectionAuthority {
   rejectionBody: { code: 13015 }
   predecessorDisposition: 'retain'
   selectedSuccessorProofIds: []
+  losingAuthority?: CtfVerifiedLosingAuthority
 }
 export interface DurableCustodyTerminalMintRejection {
   kind: 'authenticated-terminal-mint-rejection'
@@ -1291,6 +1297,19 @@ export function applyDurableCustodyTransaction<T>(
       if (reconcile === undefined) {
         throw new Error('custody adapter does not support terminal mint rejection')
       }
+      const privateMaterial = selected.getArtifact({
+        scopeId: record.scope.scopeId,
+        operationId: input.operationId,
+        expectedOperationRevision: input.expectedRevision,
+        reference: record.operation.privateMaterial.exactPrivateMaterial,
+      })
+      if (privateMaterial === null || !isRecord(input.exactRejection.artifact))
+        throw new Error('custody terminal losing original authority is absent')
+      assertDurableCustodyVerifiedLosingAuthority(
+        record,
+        privateMaterial.artifact,
+        input.exactRejection.artifact.losingAuthority as CtfVerifiedLosingAuthority,
+      )
       reconcile(input)
     },
     rebuildActiveWorkIndex(input) {
@@ -1487,6 +1506,8 @@ export function reduceDurableCustodyState(
       operation.operation.proofStorage.lineage.successorAdmission = structuredClone(
         transition.successorAdmission,
       )
+      operation.operation.proofStorage.pinReasons =
+        operation.operation.proofStorage.pinReasons.filter((pin) => pin !== 'active-reservation')
       break
     case 'reconcile-authenticated-terminal-mint-rejection':
       if (
@@ -2483,7 +2504,30 @@ function validateAuthenticatedTerminalMintRejectionAuthority(
     'rejectionBody',
     'predecessorDisposition',
     'selectedSuccessorProofIds',
+    'losingAuthority',
   ])
+  const losing = requireCtfVerifiedLosingAuthority(
+    value.losingAuthority as CtfVerifiedLosingAuthority,
+  )
+  const losingInputIds = losing.inputs
+    .map((proof) =>
+      deriveDurableCustodyProofId({
+        scopeId: record.scope.scopeId,
+        normalizedMint: losing.normalizedMint,
+        unit: losing.resolution.registered.unit,
+        keysetId: proof.id as string,
+        secret: proof.secret as string,
+      }),
+    )
+    .sort()
+  if (
+    JSON.stringify(losingInputIds) !==
+      JSON.stringify([...record.operation.exactRequest.inputProofIds].sort()) ||
+    losing.resolution.registered.unit !== record.operation.custodyContext.unit ||
+    losing.operationId !== record.operation.retainedOperationKey ||
+    losing.normalizedMint !== record.operation.custodyContext.normalizedMint
+  )
+    throw new Error('custody losing authority is foreign')
   if (
     value.schemaVersion !== 1 ||
     value.kind !== 'authenticated-terminal-mint-rejection' ||

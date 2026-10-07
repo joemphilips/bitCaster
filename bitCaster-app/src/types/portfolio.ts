@@ -43,13 +43,16 @@ export interface PortfolioStats {
   totalValueSats: number;
   positionsValueKnown?: boolean;
   totalValueKnown?: boolean;
+  positionsValueLoading?: boolean;
+  totalValueLoading?: boolean;
   positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
-  biggestWinSats: number;
   predictionsCount: number;
 }
 
 export interface PortfolioMonitoringState {
+  /** The shown estimate is retained in memory, not current custody or spending authority. */
+  retainingDisplay?: boolean;
   stale: boolean;
   incomplete: boolean;
   building: boolean;
@@ -60,6 +63,7 @@ export interface PortfolioMonitoringState {
   assetPageError: "unavailable" | null;
   hasMoreAssets: boolean;
   loadingMoreAssets: boolean;
+  liveUpdateCoverageLimited: boolean;
 }
 
 // =============================================================================
@@ -77,30 +81,33 @@ export interface Position {
   side: PositionSide;
   outcomeId?: string;
   outcomeLabel?: string;
+  /** Persisted accent for one primitive categorical outcome. */
+  outcomeColor?: string;
   canClaimPayout?: boolean;
+  /** Retained conditional face amount; excluded from action and value amounts. */
+  retainedUnverifiedAmountSubunits?: number;
+  claimRecoveryPending?: boolean;
+  removalPending?: boolean;
   canDiscard?: boolean;
   /** False for server monitoring rows. Local proofs authorize all wallet actions. */
   canSell?: boolean;
   /** Complete canonical monitor identity when local custody can prove it. */
   monitoringAssetIdentity?: string;
   baseAsset: "sat";
-  divisibility: import("./market").ProductMarketDivisibility;
+  /** Registered market denominator, when the catalogue or monitor supplied it. */
+  divisibility?: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
   shares?: number;
-  avgBuyPrice: number;
-  currentPrice: number;
   currentValueSats: number;
   /** False when the display-only monitor cannot value this asset. */
   valueKnown?: boolean;
-  profitLossSats: number;
-  profitLossPercent: number;
   status: PositionStatus;
   /**
    * Single source-of-truth winner flag for a closed position (P22 Link F),
    * derived once in usePortfolioState via deriveWinner. A position is a winner
    * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
    * member of the keyset's collection). The "Won" badge, Claim button,
-   * value/P&L, and the destructive "Remove" guard all read this same field so
+   * and the destructive "Remove" guard all read this same field so
    * they can never disagree. Always false while active.
    */
   isWinner: boolean;
@@ -113,8 +120,8 @@ export interface Position {
    * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
    * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
    * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
-   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
-   * full held amount, not zero. Always false while active.
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value remains
+   * unvalued until authoritative attestation. Always false while active.
    */
   isPending: boolean;
   /**
@@ -145,41 +152,28 @@ export interface Fund {
 // Activity Types (replaces OrderHistoryItem)
 // =============================================================================
 
-export type ActivityType =
-  | "deposit"
-  | "withdrawal"
-  | "Buy"
-  | "Sell"
-  | "payout_claimed"
-  | "creator_fee_claimed";
-export type ActivityStatus = "pending" | "completed" | "Failed";
-
-export interface ActivityItem {
-  id: string;
-  type: ActivityType;
-  amountSats: number;
-  baseAsset: "sat";
-  date: string;
-  status: ActivityStatus;
-  txId: string | null;
-  lightningInvoice: string | null;
-  failureReason?: string;
-  marketId?: string;
-  marketTitle?: string;
-  positionId?: string;
-}
+export type {
+  ActivityType,
+  ActivityStatus,
+  TradeActivityDetails,
+  ActivityItem,
+} from "@bitcaster/client-sdk/activityLog";
+import type { ActivityItem } from "@bitcaster/client-sdk/activityLog";
 
 // =============================================================================
 // Created Market Types
 // =============================================================================
 
-export type CreatedMarketStatus = "active" | "resolved" | "refunded";
+export type CreatedMarketStatus = "active" | "resolved" | "refunded" | "unknown";
+export type CreatorEngineDataStatus = "current" | "stale" | "unavailable";
 
 export interface CreatedMarket {
   id: string;
   title: string;
   imageUrl: string;
   status: CreatedMarketStatus;
+  /** Display freshness only. It does not authorize oracle or lifecycle changes. */
+  engineDataStatus?: CreatorEngineDataStatus;
   createdDate: string;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
@@ -188,21 +182,7 @@ export interface CreatedMarket {
   volume: number;
   creatorFeesEarned: number;
   creatorFeePercent: number;
-  oracle?: {
-    type: "self";
-    eventId: string;
-    announcementEventId?: string;
-    outcomes: string[];
-    /**
-     * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a
-     * fresh browser profile can re-import the committed-nonce material before
-     * re-signing the attestation (P22 B1b).
-     */
-    announcementHex?: string;
-    attestationHex?: string;
-    attestedOutcome?: string;
-    attestedAt?: string;
-  };
+  oracle?: import("@/stores/creatorMarkets").StoredCreatorOracleMetadata;
 }
 
 // =============================================================================
@@ -222,7 +202,7 @@ export interface PortfolioProps {
   /** User profile information */
   profile: UserProfile;
 
-  /** P/L chart data for each time range */
+  /** Estimated portfolio-value history for each time range */
   plChartData: PLChartData;
 
   /** Portfolio statistics */
@@ -267,9 +247,6 @@ export interface PortfolioProps {
   /** Called when user clicks to view a market they created */
   onViewMarket?: (marketId: string) => void;
 
-  /** Called when user clicks to view activity item details */
-  onViewActivity?: (activityId: string) => void;
-
   /** Called when user switches positions sub-tab */
   onPositionsTabChange?: (tab: "active" | "closed") => void;
 
@@ -281,9 +258,6 @@ export interface PortfolioProps {
 
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
-
-  /** Called when user clicks to view a fund */
-  onViewFund?: (fundId: string) => void;
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void;

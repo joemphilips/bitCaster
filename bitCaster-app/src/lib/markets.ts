@@ -1,21 +1,20 @@
-import type { CurrentOdds, Market, FilterState } from "@/types/market";
-import type { ProductMarketDivisibility } from "@/types/market";
-import type {
-  MarketDetail,
-  OrderBook,
-  Order,
-  PriceHistory,
-  PricePoint,
-} from "@/types/market-detail";
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from "@bitcaster/client-sdk/ctfListing";
+import type { CurrentOdds, LatestConfirmedTrade, Market, FilterState } from "@/types/market";
+import type { MarketDetail, OrderBook, Order, PriceHistory } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
-import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from "@cashu/cashu-ts";
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
+  CreateMarketError,
   createMarketViaEngine,
+  createPreparedMarketViaEngine,
+  type PreparedMarketCreationRequest,
   submitOracleAttestationViaEngine,
+  createTradeCommentTemplate,
+  tradeCommentToWire,
 } from "@bitcaster/client-sdk";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
+import type { MarketSnapshotReadOptions } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -23,17 +22,23 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
+import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
+export { windowPriceHistory } from "@/lib/priceHistory";
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
-import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
 import {
-  decodeDurableRecipientDeliveryStatus,
+  registerCtfCondition,
+  type CtfConditionRegistrationRequest,
+} from "@bitcaster/client-sdk/ctfRegistration";
+export { MintError } from "@bitcaster/client-sdk/ctfRegistration";
+import {
   decodeDurableRecipientDeliverySubmission,
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
 } from "@bitcaster/client-sdk/durableRecipientDelivery";
 
 export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/ctfRegistration";
+export { CreateMarketError };
 
 // Types from generated OpenAPI spec
 
@@ -100,14 +105,9 @@ function isYesNoUniverse(outcomes: readonly string[]): boolean {
 }
 
 function orderAtomicOutcomes(outcomes: string[]): string[] {
-  if (
-    outcomes.length === 2 &&
-    outcomes.some((outcome) => outcome.toLowerCase() === "yes") &&
-    outcomes.some((outcome) => outcome.toLowerCase() === "no")
-  ) {
-    return ["Yes", "No"];
-  }
-  return outcomes;
+  const yes = outcomes.find((outcome) => outcome.toLowerCase() === "yes");
+  const no = outcomes.find((outcome) => outcome.toLowerCase() === "no");
+  return outcomes.length === 2 && yes && no ? [yes, no] : outcomes;
 }
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
@@ -116,6 +116,7 @@ export function extractCategoryTagIds(tags: string[][]): string[] {
 
 interface ConditionsResponse {
   conditions: ConditionInfo[];
+  next_cursor: string | null;
 }
 
 /**
@@ -124,12 +125,19 @@ interface ConditionsResponse {
  * call mintd directly before value is spent, locked, claimed, or resolved.
  */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
-  const response = await fetch("/v1/conditions");
-  if (!response.ok) {
-    throw new Error(`Failed to fetch conditions: ${response.status}`);
-  }
-  const data: ConditionsResponse = await response.json();
-  return data.conditions;
+  return collectCtfListing({
+    fetchPage: async (cursor) => {
+      const query = new URLSearchParams({ limit: String(CTF_LISTING_PAGE_SIZE) });
+      if (cursor !== undefined) query.set("cursor", cursor);
+      const response = await fetch(`/v1/conditions?${query}`);
+      if (!response.ok) throw new Error(`Failed to fetch conditions: ${response.status}`);
+      const page: ConditionsResponse = await response.json();
+      return { items: page.conditions, next_cursor: page.next_cursor };
+    },
+    getId: (condition) => condition.condition_id,
+    maxRecords: 10_000,
+    maxPages: 100,
+  });
 }
 
 // =============================================================================
@@ -170,60 +178,179 @@ export interface GetMarketsResult {
 
 export type MarketCatalogueEntry = components["schemas"]["MarketCatalogueEntry"];
 export type MarketCatalogueResponse = components["schemas"]["MarketCatalogueResponse"];
+export type MarketRegistrationResponse = components["schemas"]["MarketRegistrationResponse"];
 
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, value));
+const MAX_REGISTERED_PRIMITIVE_OUTCOMES = 8;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RFC3339_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function compareEventOrder(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
-function probabilityFromLastTradedPrice(
-  lastTradedPrice: number | null | undefined,
+/**
+ * Validate the exact bounded latest-trade REST representation at ingress.
+ * Any malformed, duplicated, unknown, or cross-denominator fact invalidates
+ * the complete snapshot so callers never display a partial guess.
+ */
+export function validateLatestConfirmedTrades(
+  raw: unknown,
+  registeredPrimitiveOutcomeIds: readonly string[],
   divisibility: number,
-): number | null {
-  if (!Number.isFinite(lastTradedPrice)) return null;
-  const price = Number(lastTradedPrice);
-  // The catalogue currently documents lastTradedPrice as a decimal ratio, while
-  // runtime price fields use integer numerators against divisibility. Accept
-  // both shapes so generated-contract clients render correctly during the
-  // compatibility window.
-  return clampPercent(price <= 1 ? price * 100 : (price / divisibility) * 100);
-}
+): LatestConfirmedTrade[] {
+  if (
+    !Array.isArray(registeredPrimitiveOutcomeIds) ||
+    registeredPrimitiveOutcomeIds.length < 2 ||
+    registeredPrimitiveOutcomeIds.length > MAX_REGISTERED_PRIMITIVE_OUTCOMES ||
+    new Set(registeredPrimitiveOutcomeIds).size !== registeredPrimitiveOutcomeIds.length ||
+    registeredPrimitiveOutcomeIds.some(
+      (id) => typeof id !== "string" || id.length === 0 || id.trim() !== id,
+    )
+  ) {
+    return [];
+  }
+  if (divisibility !== 1_000 && divisibility !== 1_000_000) return [];
+  if (!Array.isArray(raw) || raw.length > registeredPrimitiveOutcomeIds.length) return [];
 
-function resolveYesNoCatalogueOdds(entry: MarketCatalogueEntry, divisibility: number): CurrentOdds {
-  // Prefer last traded price (already in the paginated DTO — no N+1 calls)
-  if (Number.isFinite(entry.lastTradedPrice)) {
-    const yes = probabilityFromLastTradedPrice(entry.lastTradedPrice, divisibility) ?? 50;
-    return { yes, no: 100 - yes };
+  const allowed = new Set(registeredPrimitiveOutcomeIds);
+  const seenOutcomes = new Set<string>();
+  const seenFills = new Set<string>();
+  const validated: LatestConfirmedTrade[] = [];
+  let previousPrimitiveOutcomeId: string | undefined;
+
+  for (const value of raw) {
+    if (typeof value !== "object" || value === null) return [];
+    const candidate = value as Record<string, unknown>;
+    const primitiveOutcomeId = candidate.primitiveOutcomeId;
+    const fillId = candidate.fillId;
+    const executedAt = candidate.executedAt;
+    const eventOrder = candidate.eventOrder;
+    const priceTick = candidate.priceTick;
+    const factDivisibility = candidate.divisibility;
+    const faceAmountSubunits = candidate.faceAmountSubunits;
+    if (
+      typeof primitiveOutcomeId !== "string" ||
+      !allowed.has(primitiveOutcomeId) ||
+      (previousPrimitiveOutcomeId !== undefined &&
+        primitiveOutcomeId <= previousPrimitiveOutcomeId) ||
+      seenOutcomes.has(primitiveOutcomeId) ||
+      typeof fillId !== "string" ||
+      fillId.length === 0 ||
+      fillId.trim() !== fillId ||
+      !UUID_RE.test(fillId) ||
+      seenFills.has(fillId) ||
+      typeof executedAt !== "string" ||
+      executedAt.length === 0 ||
+      !RFC3339_DATE_TIME_RE.test(executedAt) ||
+      !Number.isFinite(Date.parse(executedAt)) ||
+      typeof eventOrder !== "string" ||
+      eventOrder.length === 0 ||
+      eventOrder.trim() !== eventOrder ||
+      typeof priceTick !== "number" ||
+      !Number.isSafeInteger(priceTick) ||
+      priceTick <= 0 ||
+      priceTick >= divisibility ||
+      factDivisibility !== divisibility ||
+      typeof faceAmountSubunits !== "number" ||
+      !Number.isSafeInteger(faceAmountSubunits) ||
+      faceAmountSubunits <= 0
+    ) {
+      return [];
+    }
+    seenOutcomes.add(primitiveOutcomeId);
+    seenFills.add(fillId);
+    previousPrimitiveOutcomeId = primitiveOutcomeId;
+    validated.push(value as LatestConfirmedTrade);
   }
 
-  // Fall back to creator-specified initial probabilities
-  const yesInitial = initialProbabilityForOutcome(entry.initialProbabilities, "Yes");
-  const noInitial = initialProbabilityForOutcome(entry.initialProbabilities, "No");
-  if (yesInitial != null) return { yes: yesInitial, no: 100 - yesInitial };
-  if (noInitial != null) return { yes: 100 - noInitial, no: noInitial };
-
-  return { yes: 50, no: 50 };
+  // The REST contract already promises canonical primitive-outcome order.
+  // Preserve that exact representation instead of sorting malformed input
+  // into an apparently valid snapshot.
+  return validated;
 }
 
-function resolveYesNoDetailOdds(entry: MarketCatalogueEntry, divisibility: number): CurrentOdds {
-  if (Number.isFinite(entry.lastTradedPrice)) {
-    const yes = probabilityFromLastTradedPrice(entry.lastTradedPrice, divisibility) ?? 50;
-    return { yes, no: 100 - yes };
+export function latestConfirmedTradesAuthorityValid(
+  raw: unknown,
+  registeredPrimitiveOutcomeIds: readonly string[],
+  divisibility: number,
+): boolean {
+  if (!Array.isArray(raw)) return false;
+  if (
+    registeredPrimitiveOutcomeIds.length < 2 ||
+    registeredPrimitiveOutcomeIds.length > MAX_REGISTERED_PRIMITIVE_OUTCOMES ||
+    new Set(registeredPrimitiveOutcomeIds).size !== registeredPrimitiveOutcomeIds.length ||
+    registeredPrimitiveOutcomeIds.some(
+      (id) => typeof id !== "string" || id.length === 0 || id.trim() !== id,
+    )
+  ) {
+    return false;
   }
-
-  return resolveYesNoCatalogueOdds(entry, divisibility);
+  const validated = validateLatestConfirmedTrades(raw, registeredPrimitiveOutcomeIds, divisibility);
+  return validated.length === raw.length && validated.every((trade, index) => trade === raw[index]);
 }
 
-function initialProbabilityForOutcome(
-  initialProbabilities: Record<string, number> | null | undefined,
-  outcome: string,
+function latestTradeByOutcome(
+  trades: readonly LatestConfirmedTrade[],
+): Map<string, LatestConfirmedTrade> {
+  const latest = new Map<string, LatestConfirmedTrade>();
+  for (const trade of trades) {
+    const previous = latest.get(trade.primitiveOutcomeId);
+    if (!previous || compareEventOrder(previous.eventOrder, trade.eventOrder) < 0) {
+      latest.set(trade.primitiveOutcomeId, trade);
+    }
+  }
+  return latest;
+}
+
+function latestTradeAcrossOutcomes(
+  trades: readonly LatestConfirmedTrade[],
+): LatestConfirmedTrade | null {
+  return trades.reduce<LatestConfirmedTrade | null>((latest, trade) => {
+    if (!latest || compareEventOrder(latest.eventOrder, trade.eventOrder) < 0) return trade;
+    return latest;
+  }, null);
+}
+
+function primitivePriceForOutcome(
+  trade: LatestConfirmedTrade | undefined,
+  primitiveOutcomeId: string,
 ): number | null {
-  if (!initialProbabilities) return null;
-  const direct = initialProbabilities[outcome];
-  if (Number.isFinite(direct)) return clampPercent(Number(direct));
-  const caseInsensitive = Object.entries(initialProbabilities).find(
-    ([key]) => key.toLowerCase() === outcome.toLowerCase(),
-  )?.[1];
-  return Number.isFinite(caseInsensitive) ? clampPercent(Number(caseInsensitive)) : null;
+  if (!trade) return null;
+  return trade.primitiveOutcomeId === primitiveOutcomeId
+    ? trade.priceTick
+    : trade.divisibility - trade.priceTick;
+}
+
+export function deriveYesNoOdds(
+  trades: readonly LatestConfirmedTrade[],
+  registeredPrimitiveOutcomeIds: readonly string[],
+): CurrentOdds {
+  const latest = latestTradeAcrossOutcomes(trades);
+  if (!latest) return { yes: null, no: null };
+  const yesId = registeredPrimitiveOutcomeIds.find((id) => id.toLowerCase() === "yes");
+  const noId = registeredPrimitiveOutcomeIds.find((id) => id.toLowerCase() === "no");
+  if (
+    !yesId ||
+    !noId ||
+    (latest.primitiveOutcomeId !== yesId && latest.primitiveOutcomeId !== noId)
+  ) {
+    return { yes: null, no: null };
+  }
+  return {
+    yes: primitivePriceForOutcome(latest, yesId),
+    no: primitivePriceForOutcome(latest, noId),
+  };
+}
+
+export function deriveCategoricalOdds(
+  trades: readonly LatestConfirmedTrade[],
+  outcomes: readonly string[],
+): Record<string, number | null> {
+  const latest = latestTradeByOutcome(trades);
+  return Object.fromEntries(
+    outcomes.map((outcome) => [outcome, latest.get(outcome)?.priceTick ?? null]),
+  );
 }
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
@@ -246,19 +373,36 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
-  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
+  const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
+  const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
+  const outcomeColors = new Map(
+    (entry.outcomeDetails ?? []).map(
+      (detail) =>
+        [detail.name, typeof detail.color === "string" ? detail.color : undefined] as const,
+    ),
+  );
 
-  const closingDate = entry.deadline ?? entry.createdAt;
+  const closingDate = entry.deadline ?? null;
   const title = entry.title ?? "Untitled Market";
   const imageUrl = entry.thumbnailUrl ?? "";
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
+  const latestConfirmedTrades = validateLatestConfirmedTrades(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const latestConfirmedTradesValid = latestConfirmedTradesAuthorityValid(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
 
   const base = {
     id: entry.conditionId,
     title,
-    state: normalizeEngineMarketState(entry.state) ?? "open",
+    state: decodeEngineMarketState(entry.state),
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
@@ -266,6 +410,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     liquidity: entry.liquiditySubunits ?? 0,
     liquiditySubunits: entry.liquiditySubunits ?? 0,
     ammBotBudgetSubunits: entry.ammBotBudgetSubunits ?? 0,
+    fundingRevision: entry.fundingRevision,
+    registeredPrimitiveOutcomeIds,
     volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate,
     createdDate: entry.createdAt,
@@ -274,6 +420,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     baseAsset,
     divisibility,
     baseMarket: marketUnitLabel(baseAsset),
+    latestConfirmedTrades,
+    latestConfirmedTradesValid,
     finalOutcome: entry.finalOutcome?.trim() || undefined,
   };
 
@@ -281,19 +429,23 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoCatalogueOdds(entry, divisibility),
+      currentOdds: deriveYesNoOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds),
     };
   }
 
-  const evenOutcomePercent = 100 / Math.max(outcomes.length, 1);
+  const categoricalOdds = deriveCategoricalOdds(
+    latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+  );
 
   return {
     ...base,
     type: "categorical",
     outcomes: outcomes.map((label) => ({
+      ...(outcomeColors.get(label) ? { color: outcomeColors.get(label) } : {}),
       id: label,
       label,
-      odds: initialProbabilityForOutcome(entry.initialProbabilities, label) ?? evenOutcomePercent,
+      odds: categoricalOdds[label] ?? null,
     })),
   };
 }
@@ -356,7 +508,9 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
     const days = filter.closingInDays;
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() + days);
-    result = result.filter((m) => new Date(m.closingDate) <= cutoff);
+    result = result.filter(
+      (market) => market.closingDate !== null && new Date(market.closingDate) <= cutoff,
+    );
   }
 
   return result;
@@ -367,30 +521,50 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
 // =============================================================================
 
 function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDetail {
-  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
+  const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
+  const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
+  const isYesNo = isYesNoUniverse(outcomes);
+  const outcomeColors = new Map(
+    (entry.outcomeDetails ?? []).map(
+      (detail) =>
+        [detail.name, typeof detail.color === "string" ? detail.color : undefined] as const,
+    ),
+  );
   const mappedOutcomes = outcomes.map((label) => ({
+    ...(!isYesNo && outcomeColors.get(label) ? { color: outcomeColors.get(label) } : {}),
     id: label,
     label,
-    odds:
-      initialProbabilityForOutcome(entry.initialProbabilities, label) ??
-      100 / Math.max(outcomes.length, 1),
+    odds: null,
   }));
   const now = new Date().toISOString();
   const createdAt = entry.createdAt ?? now;
   const title = entry.title?.trim() || "Untitled Market";
   const description = entry.description?.trim();
   const creatorPubkey = entry.creatorPubkey?.trim();
-  const normalisedState = normalizeEngineMarketState(entry.state);
   const finalOutcome = entry.finalOutcome?.trim() || undefined;
-  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt;
-  const isYesNo = isYesNoUniverse(outcomes);
+  const resolutionDate = entry.closedAt ?? entry.deadline ?? null;
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
+  const latestConfirmedTrades = validateLatestConfirmedTrades(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const latestConfirmedTradesValid = latestConfirmedTradesAuthorityValid(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const yesNoOdds = deriveYesNoOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
+  const categoricalOdds = deriveCategoricalOdds(
+    latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+  );
 
   const base = {
     id: entry.conditionId,
     title,
-    state: normalisedState ?? undefined,
+    state: decodeEngineMarketState(entry.state),
     imageUrl: entry.thumbnailUrl ?? undefined,
     categoryTags: (entry.categoryTags ?? []).map((id) => ({
       id,
@@ -401,6 +575,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     liquidity: entry.liquiditySubunits ?? 0,
     liquiditySubunits: entry.liquiditySubunits ?? 0,
     ammBotBudgetSubunits: entry.ammBotBudgetSubunits ?? 0,
+    fundingRevision: entry.fundingRevision,
     volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
@@ -408,6 +583,9 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     baseAsset,
     divisibility,
     baseUnit: marketUnitLabel(baseAsset),
+    registeredPrimitiveOutcomeIds,
+    latestConfirmedTrades,
+    latestConfirmedTradesValid,
     mint: {
       collateral: baseAsset,
       keysetCount: 0,
@@ -427,6 +605,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
         },
     outcomes: mappedOutcomes,
     resolution: {
+      conditionId: entry.conditionId,
       criteria: description || title,
       source: "oracle" as const,
       resolutionDate,
@@ -438,20 +617,25 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
-    initialProbabilities: entry.initialProbabilities,
   };
 
   if (isYesNo) {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoDetailOdds(entry, divisibility),
+      currentOdds: yesNoOdds,
     };
   }
+
+  const categoricalOutcomes = mappedOutcomes.map((outcome) => ({
+    ...outcome,
+    odds: categoricalOdds[outcome.id] ?? null,
+  }));
 
   return {
     ...base,
     type: "categorical",
+    outcomes: categoricalOutcomes,
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
   };
@@ -459,19 +643,19 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
 
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
- * detail page to read engine-authoritative fields (`outcomes`, `state`,
- * `thumbnailUrl`, `volumeLifetimeSubunits`, `liquiditySubunits`).
+ * detail page and same-submission creation reconciliation to read
+ * engine-authoritative market metadata.
  * Creator-defined outcome order comes from engine registration metadata, not
  * mintd's one-vs-rest keysets.
- * Returns `null` when the engine has no record of the market or the request
- * fails.
+ * Returns `null` when the engine has no record or for existing non-503 failures.
+ * Propagates temporary service unavailability to the detail page.
  *
  * Single-shot: no retry delay. Callers that need retry-on-not-found (e.g.
  * newly registered markets that haven't been indexed yet) must implement the
  * retry loop in their own post-paint enrichment path so the blocking first
  * render is never delayed.
  */
-async function fetchEngineCatalogueEntry(
+export async function fetchEngineCatalogueEntry(
   conditionId: string,
 ): Promise<MarketCatalogueEntry | null> {
   try {
@@ -479,33 +663,48 @@ async function fetchEngineCatalogueEntry(
     const response = await fetch(url, {
       headers: { Accept: "application/json" },
     });
+    if (response.status === 503) throw new MarketDetailUnavailableError();
     if (!response.ok) return null;
     const body: MarketCatalogueResponse = await response.json();
     return body.markets.find((m) => m.conditionId === conditionId) ?? null;
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketDetailUnavailableError) throw error;
     return null;
   }
 }
 
 /**
- * Normalise the engine `state` field at the boundary. Per the OpenAPI spec
- * (and `bitcaster-coding-guideline` Rule 1) the engine MUST emit `"open"` /
- * `"closed"` (camelCase). Some engine builds ship with NSwag-generated DTOs
- * whose property-level `[JsonConverter(typeof(JsonStringEnumConverter<T>))]`
- * attribute overrides the global naming policy and emits the bare enum
- * NAME — i.e. `"Open"` / `"Closed"` (PascalCase). Until the producer is
- * fixed upstream (track via the engine repo's TODO), normalise once here so
- * the detail page's exhaustive switch over `'open' | 'closed'` does not
- * fall through to `assertNever` on every load.
- *
- * This is the SOLE place this normalisation lives — Rule 2 forbids paving
- * over the case mismatch at every call site.
+ * Read exact registration metadata for recovery after an uncertain create.
+ * This anonymous read does not depend on the enriched, eventually projected catalogue.
  */
-function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"] | null {
-  if (raw == null) return null;
-  const s = String(raw).toLowerCase().trim();
-  if (s === "open" || s === "closed") return s;
-  return null;
+export async function fetchMarketRegistrationForRecovery(
+  conditionId: string,
+): Promise<MarketRegistrationResponse | null> {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketRegistration(conditionId);
+}
+
+export class MarketDetailUnavailableError extends Error {
+  constructor() {
+    super("Market details are temporarily unavailable.");
+    this.name = "MarketDetailUnavailableError";
+  }
+}
+
+/**
+ * Decode the engine state exactly as defined by the OpenAPI wire contract.
+ * Reject unknown values so callers cannot render an unsupported state as open.
+ */
+function decodeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"] {
+  switch (raw) {
+    case "open":
+      return "open";
+    case "closed":
+      return "closed";
+    default:
+      throw new Error("Unsupported engine market state");
+  }
 }
 
 /**
@@ -513,9 +712,8 @@ function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"]
  * request so the route shell renders immediately without any retry delay.
  *
  * Newly registered markets that have not yet been indexed by the engine will
- * cause this to throw "Market not found". The page's post-paint
- * `needsEngineDetailRefresh` polling loop (activated whenever `closingDate` or
- * `state` is missing) handles the catch-up without blocking initial render.
+ * cause this to throw "Market not found". The page's post-paint missing-entry
+ * recovery handles that case without blocking initial render.
  */
 export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
   // First render is engine-first and intentionally narrow: the route shell
@@ -536,26 +734,20 @@ export async function fetchMarketDetail(conditionId: string): Promise<MarketDeta
 export async function fetchMarketPriceHistory(
   conditionId: string,
   timeframe: PriceHistory["timeframe"] = "7d",
+  options: MarketSnapshotReadOptions = {},
 ): Promise<MarketPriceHistoryResponse> {
-  const params = new URLSearchParams({ timeframe });
-  const response = await fetch(
-    `/api/v1/markets/${encodeURIComponent(conditionId)}/price-history?${params}`,
-    { headers: { Accept: "application/json" } },
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to fetch price history: ${response.status}`);
-  }
-  return (await response.json()) as MarketPriceHistoryResponse;
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketPriceHistory(conditionId, timeframe, options);
 }
 
-export async function fetchMarketComments(conditionId: string): Promise<MarketCommentsResponse> {
-  const response = await fetch(`/api/v1/markets/${encodeURIComponent(conditionId)}/comments`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch comments: ${response.status}`);
-  }
-  return (await response.json()) as MarketCommentsResponse;
+export async function fetchMarketComments(
+  conditionId: string,
+  options: MarketSnapshotReadOptions = {},
+): Promise<MarketCommentsResponse> {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketComments(conditionId, options);
 }
 
 export function applyMarketComments(
@@ -566,65 +758,15 @@ export function applyMarketComments(
     ...market,
     comments: response.comments.map((comment) => ({
       id: comment.commentId,
-      userId: `comment:${comment.commentId}`,
-      userDisplayName: "Verified trader",
+      userId: comment.authorPubkey,
+      userDisplayName: `${comment.authorPubkey.slice(0, 8)}…${comment.authorPubkey.slice(-8)}`,
       userAvatarUrl: undefined,
       content: comment.content,
       timestamp: comment.createdAt,
+      trade: comment.trade,
       likeCount: 0,
       isLiked: false,
     })),
-  };
-}
-
-const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000;
-
-// Width of each timeframe window in milliseconds. The chart X-axis scale is
-// derived from the visible point span, so trimming the series to the active
-// window keeps the date ticks proportional to the selected timeframe instead
-// of always spanning the full retained history. `all` keeps the newest capped
-// retained points so live tabs cannot grow without bound.
-const TIMEFRAME_WINDOW_MS: Record<PriceHistory["timeframe"], number | null> = {
-  "1h": 60 * 60 * 1000,
-  "24h": 24 * 60 * 60 * 1000,
-  "7d": 7 * 24 * 60 * 60 * 1000,
-  "30d": 30 * 24 * 60 * 60 * 1000,
-  all: null,
-};
-
-/**
- * Trim a price series to the active timeframe window. Anchored on the newest
- * sample (not wall-clock now) so a series whose latest point is older than the
- * window still renders. One pre-window point is retained so the step line has a
- * defined starting value at the left edge of the window.
- */
-export function windowPriceHistory(history: PriceHistory): PriceHistory {
-  const windowMs = TIMEFRAME_WINDOW_MS[history.timeframe];
-  if (history.data.length === 0) return history;
-  const byTimestamp = new Map<string, PricePoint>();
-  for (const point of history.data) byTimestamp.set(point.timestamp, point);
-  const sorted = [...byTimestamp.values()].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
-  if (windowMs === null) {
-    return {
-      ...history,
-      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
-    };
-  }
-  const newest = new Date(sorted[sorted.length - 1].timestamp).getTime();
-  const cutoff = newest - windowMs;
-  const firstInWindow = sorted.findIndex((p) => new Date(p.timestamp).getTime() >= cutoff);
-  if (firstInWindow <= 0) {
-    return {
-      ...history,
-      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
-    };
-  }
-  // Keep one point before the cutoff so the line has a left-edge value.
-  return {
-    ...history,
-    data: sorted.slice(firstInWindow - 1).slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
   };
 }
 
@@ -639,6 +781,7 @@ function normalizePricePoint(
   divisibility: number,
 ) {
   return {
+    eventOrder: point.eventOrder,
     timestamp: point.timestamp,
     price: priceNumeratorToPercent(point.price, divisibility),
     volume: point.volumeSubunits,
@@ -646,39 +789,29 @@ function normalizePricePoint(
   };
 }
 
-export function appendLivePricePoint(
-  history: PriceHistory,
-  point: { timestamp: string; price: number; volume?: number },
-): PriceHistory {
-  const byTimestamp = new Map(history.data.map((p) => [p.timestamp, p]));
-  byTimestamp.set(point.timestamp, point);
-  return windowPriceHistory({
-    ...history,
-    data: [...byTimestamp.values()].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-    ),
-  });
-}
-
 export function applyMarketPriceHistory(
   market: MarketDetail,
   response: MarketPriceHistoryResponse,
 ): MarketDetail {
   const byOutcomeLabel = new Map(
-    (market.outcomes ?? []).map((outcome) => [outcome.label, outcome.id] as const),
+    (market.outcomes ?? []).map(
+      (outcome) => [outcome.label, canonicalizeOutcomeSet([outcome.label])] as const,
+    ),
   );
   const toPriceHistory = (
     data: MarketPriceHistoryResponse["outcomes"][number]["data"],
-  ): PriceHistory =>
-    windowPriceHistory({
-      timeframe: response.timeframe as PriceHistory["timeframe"],
-      data: data.map((point) =>
-        normalizePricePoint(
-          point,
-          normalizeMarketDivisibility(market.divisibility, market.baseAsset),
-        ),
+  ): PriceHistory => ({
+    timeframe: response.timeframe as PriceHistory["timeframe"],
+    asOf: response.asOf,
+    snapshotEventOrder: response.snapshotEventOrder,
+    receivedAt: performance.now(),
+    data: data.map((point) =>
+      normalizePricePoint(
+        point,
+        normalizeMarketDivisibility(market.divisibility, market.baseAsset),
       ),
-    });
+    ),
+  });
   const histories = Object.fromEntries(
     response.outcomes.map((outcome) => {
       const outcomeId = byOutcomeLabel.get(outcome.outcomeId) ?? outcome.outcomeId;
@@ -687,21 +820,37 @@ export function applyMarketPriceHistory(
   );
   const primary =
     market.type === "yesno"
-      ? (histories[byOutcomeLabel.get("YES") ?? byOutcomeLabel.get("Yes") ?? "outcome-0"] ??
-        histories[Object.keys(histories)[0]])
+      ? {
+          timeframe: response.timeframe as PriceHistory["timeframe"],
+          asOf: response.asOf,
+          snapshotEventOrder: response.snapshotEventOrder,
+          receivedAt: performance.now(),
+          data: response.outcomes
+            .flatMap((outcome) =>
+              outcome.data.map((point) => {
+                return normalizePricePoint(
+                  outcome.outcomeId.toLowerCase() === "no"
+                    ? { ...point, price: market.divisibility - point.price }
+                    : point,
+                  market.divisibility,
+                );
+              }),
+            )
+            .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)),
+        }
       : histories[Object.keys(histories)[0]];
 
   if (market.type === "categorical") {
     return {
       ...market,
-      priceHistory: primary ?? market.priceHistory,
+      priceHistory: primary ?? toPriceHistory([]),
       outcomePriceHistories: histories,
     };
   }
 
   return {
     ...market,
-    priceHistory: primary ?? market.priceHistory,
+    priceHistory: primary ?? toPriceHistory([]),
   };
 }
 
@@ -750,21 +899,27 @@ export async function signTradeComment(
   const ndk = getNdk();
   if (!ndk.signer) throw new Error("No Nostr signer configured — connect in Settings first");
   const event = new NDKEvent(ndk);
-  event.kind = 1;
-  event.created_at = Math.floor(Date.now() / 1000);
-  event.content = content;
-  event.tags = [["r", `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`]];
+  const template = createTradeCommentTemplate({
+    conditionId,
+    marketUrl: `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`,
+    content,
+    createdAt: Math.floor(Date.now() / 1000),
+  });
+  event.kind = template.kind;
+  event.created_at = template.created_at;
+  event.content = template.content;
+  event.tags = template.tags;
   await event.sign();
   const raw = event.rawEvent();
-  return {
+  return tradeCommentToWire({
     id: raw.id ?? "",
     pubkey: raw.pubkey ?? "",
-    createdAt: raw.created_at ?? event.created_at,
+    created_at: raw.created_at ?? template.created_at,
     kind: 1,
     tags: raw.tags ?? event.tags,
     content: raw.content ?? content,
     sig: raw.sig ?? "",
-  };
+  });
 }
 
 export function createAuthenticatedBrowserEngineClient(signer?: NDKSigner): BitcasterEngineClient {
@@ -784,63 +939,16 @@ export function createAuthenticatedBrowserEngineClient(signer?: NDKSigner): Bitc
 // Market Creation API
 // =============================================================================
 
-export class MintError extends Error {
-  constructor(
-    public readonly code: number,
-    public readonly detail: string,
-  ) {
-    super(`[Mint] ${detail}`);
-    this.name = "MintError";
-  }
-}
-
-/** Parse a non-OK mint response into a MintError with the CDK error code. */
-async function parseMintError(response: Response, fallbackPrefix: string): Promise<MintError> {
-  let code = 0;
-  let detail = `${fallbackPrefix}: ${response.status}`;
-  try {
-    const text = await response.text();
-    try {
-      const body = JSON.parse(text);
-      code = typeof body.code === "number" ? body.code : 0;
-      detail = body.detail ?? body.message ?? text;
-    } catch {
-      detail = text;
-    }
-  } catch {
-    /* empty */
-  }
-  return new MintError(code, detail);
-}
-
-export async function registerCondition(params: {
-  tags: string[][];
-  announcementHex: string;
-  collateral?: string;
-  outcomeCollections?: readonly string[];
-  fee?: readonly Proof[];
-  outputs?: readonly SerializedBlindedMessage[];
-}): Promise<{
-  condition_id: string;
-  keysets: Record<string, string>;
-  change?: SerializedBlindedSignature[];
-}> {
-  const response = await fetch("/v1/conditions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tags: params.tags,
-      announcements: [params.announcementHex],
-      ...(params.collateral ? { collateral: params.collateral } : {}),
-      ...(params.outcomeCollections ? { outcome_collections: params.outcomeCollections } : {}),
-      ...(params.fee ? { fee: params.fee.map(toWireAmountBearing) } : {}),
-      ...(params.outputs ? { outputs: params.outputs.map(toWireAmountBearing) } : {}),
-    }),
+export function registerCondition(
+  params: CtfConditionRegistrationRequest,
+  options?: { mintUrl: string },
+) {
+  return registerCtfCondition(params, {
+    endpoint:
+      options === undefined
+        ? "/v1/conditions"
+        : `${options.mintUrl.replace(/\/+$/, "")}/v1/conditions`,
   });
-  if (!response.ok) {
-    throw await parseMintError(response, "Failed to register condition");
-  }
-  return response.json();
 }
 
 /**
@@ -849,7 +957,7 @@ export async function registerCondition(params: {
  * REST verbs whose token's `payload` does not match the digest of the bytes
  * the server actually receives.
  */
-async function sha256Hex(data: BufferSource): Promise<string> {
+export async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", data);
   return bytesToHex(new Uint8Array(hash));
 }
@@ -927,6 +1035,31 @@ export async function createMarket(
   )) as unknown as CreateMarketResponse;
 }
 
+export async function createPreparedMarket(
+  conditionId: string,
+  request: PreparedMarketCreationRequest,
+  requireActiveBinding: () => void,
+): Promise<import("@bitcaster/client-sdk").CreateMarketResponse> {
+  requireActiveBinding();
+  return createPreparedMarketViaEngine(
+    new BitcasterEngineClient({
+      baseUrl: window.location.origin,
+      authorization: async ({ url, method, bodyText, payloadHash }) => {
+        requireActiveBinding();
+        const header = await generateNip98Header(
+          url,
+          method,
+          await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+        );
+        requireActiveBinding();
+        return header;
+      },
+    }),
+    conditionId,
+    request,
+  );
+}
+
 export async function submitOracleAttestation(
   conditionId: string,
   event: OracleNostrEvent,
@@ -967,154 +1100,21 @@ export function getMarketThumbnail(market: {
   return null;
 }
 
-// =============================================================================
-// AMM Bot Deposit API (matching engine MarketFunding aggregate)
-// =============================================================================
-
-export type RequestEcashDepositRequest = components["schemas"]["RequestEcashDepositRequest"];
-export type RequestEcashDepositResponse = components["schemas"]["RequestEcashDepositResponse"];
 export type ParticipationScoreResponse = components["schemas"]["ParticipationScoreResponse"];
-export type PayParticipationScoreEcashResponse =
-  components["schemas"]["PayParticipationScoreEcashResponse"];
-export type GetDepositResponseDto = components["schemas"]["GetDepositResponseDto"];
-export type DepositState = components["schemas"]["DepositState"];
-export type DepositMethod = components["schemas"]["DepositMethod"];
-
-export interface MarketFundingDepositOptions {
-  creatorPubkey?: string | null;
-  fundAmm?: boolean;
-  unit: "msat";
-  divisibility: ProductMarketDivisibility;
-}
-
-function normalizeDepositState(state: unknown): DepositState {
-  switch (state) {
-    case "Requested":
-    case "requested":
-      return "requested";
-    case "Paid":
-    case "paid":
-      return "paid";
-    case "Credited":
-    case "credited":
-      return "credited";
-    case "Failed":
-    case "failed":
-      return "failed";
-    default:
-      throw new Error(`Unknown deposit state: ${String(state)}`);
-  }
-}
-
-function normalizeDepositMethod(method: unknown): DepositMethod {
-  switch (method) {
-    case "LightningInvoice":
-    case "lightningInvoice":
-      return "lightningInvoice";
-    case "Ecash":
-    case "ecash":
-      return "ecash";
-    default:
-      throw new Error(`Unknown deposit method: ${String(method)}`);
-  }
-}
-
-/**
- * Submit ecash proofs as a market's AMM bot deposit. Phase 1 of the engine
- * records the request and defers proof verification to the wallet-service;
- * the deposit walks `Requested → Paid → Credited` as the wallet-service
- * confirms.
- */
-export async function requestEcashDeposit(
-  conditionId: string,
-  amountSubunits: number,
-  proofsToken: string,
-  options: MarketFundingDepositOptions,
-): Promise<RequestEcashDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const body: RequestEcashDepositRequest = {
-    amountSubunits,
-    unit: options.unit,
-    divisibility: options.divisibility,
-    proofsToken,
-    fundAmm: false,
-  };
-  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
-  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
-  const bodyText = JSON.stringify(body);
-  const bodyBytes = new TextEncoder().encode(bodyText);
-  const payloadHash = await sha256Hex(bodyBytes);
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
-    );
-  }
-  const result = (await response.json()) as RequestEcashDepositResponse;
-  return { ...result, state: normalizeDepositState(result.state) };
-}
-
-/**
- * Polling read of a deposit's current lifecycle state. Public — no auth.
- * Returns `null` when the engine has no record of `depositId` for this
- * `conditionId` (404). Bearer payment instruments (bolt11) and proof
- * material are deliberately excluded from this shape by the engine.
- */
-export async function getDepositStatus(
-  conditionId: string,
-  depositId: string,
-): Promise<GetDepositResponseDto | null> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`;
-  const response = await fetch(url);
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Failed to read deposit status: ${response.status}`);
-  }
-  const result = (await response.json()) as GetDepositResponseDto;
-  return {
-    ...result,
-    state: normalizeDepositState(result.state),
-    method: normalizeDepositMethod(result.method),
-  };
-}
 
 /** Submit one exact durable Cashu delivery. The response never exposes the token. */
 export async function submitDurableCashuDelivery(
   submission: DurableRecipientDeliverySubmission,
 ): Promise<DurableRecipientDeliveryStatus> {
   const exact = decodeDurableRecipientDeliverySubmission(submission);
-  const url = `${window.location.origin}/api/v1/cashu-deliveries/${encodeURIComponent(exact.deliveryId)}`;
-  const bodyText = JSON.stringify(exact);
-  const payloadHash = await sha256Hex(new TextEncoder().encode(bodyText));
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-  });
-  if (!response.ok) {
-    throw new Error(`Durable Cashu delivery submission failed: ${response.status}`);
-  }
-  return decodeDurableRecipientDeliveryStatus(await response.json());
+  return createAuthenticatedBrowserEngineClient().submitDurableRecipientDelivery(exact);
 }
 
 /** Read one exact durable Cashu delivery status. A missing id is not an error. */
 export async function getDurableCashuDeliveryStatus(
   deliveryId: string,
 ): Promise<DurableRecipientDeliveryStatus | null> {
-  const url = `${window.location.origin}/api/v1/cashu-deliveries/${encodeURIComponent(deliveryId)}`;
-  const authHeader = await generateNip98Header(url, "GET");
-  const response = await fetch(url, { headers: { Authorization: authHeader } });
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Durable Cashu delivery status failed: ${response.status}`);
-  }
-  return decodeDurableRecipientDeliveryStatus(await response.json());
+  return createAuthenticatedBrowserEngineClient().getDurableRecipientDeliveryStatus(deliveryId);
 }
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {
@@ -1123,9 +1123,9 @@ export async function getParticipationScore(): Promise<ParticipationScoreRespons
 
 /**
  * Fetch the list of markets the matching engine has indexed under a given
- * creator pubkey. The engine returns volume/created-at for markets it knows
- * about; the client is responsible for merging this with its own store so
- * markets the backend hasn't indexed still show up as `0` volume.
+ * creator pubkey. The response supplies engine lifecycle and confirmed volume.
+ * Local discovery metadata does not establish engine state. Missing or failed
+ * enrichment must remain visibly unavailable, not imply an active market.
  */
 export async function fetchCreatorMarkets(pubkey: string): Promise<CreatorMarketsResponse> {
   const response = await fetch(`/api/v1/creators/${pubkey}/markets`);

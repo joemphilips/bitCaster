@@ -1,7 +1,9 @@
 import { ChevronRight, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { RelatedMarket } from "@/types/market-detail";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
+import { MetricExplanation } from "@/components/shared/MetricExplanation";
 
 interface RelatedMarketsProps {
   markets: RelatedMarket[];
@@ -24,37 +26,54 @@ function formatClosingDate(dateStr: string, t: (key: string) => string, locale: 
 
 function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick?: () => void }) {
   const { t, i18n } = useTranslation();
+  const formatNullablePrice = (price: number | null) => {
+    if (market.latestConfirmedTradesValid !== true) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
+    if (price == null) return <span aria-label={t("trade.noTrades")}>—</span>;
+    if (market.divisibility == null) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
+    return formatPricePercentage(price, market.divisibility);
+  };
   return (
-    <button
-      onClick={onClick}
-      className="flex-shrink-0 w-64 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-blue-500/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-left group"
-    >
-      {/* Title */}
-      <h4 className="text-sm font-medium text-slate-900 dark:text-white line-clamp-2 mb-3 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-        {market.title}
-      </h4>
+    <div className="flex-shrink-0 w-64 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-blue-500/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-left group">
+      <button type="button" onClick={onClick} className="block w-full text-left">
+        {/* Title */}
+        <h4 className="text-sm font-medium text-slate-900 dark:text-white line-clamp-2 mb-3 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+          {market.title}
+        </h4>
 
-      {/* Odds (if available) */}
-      {market.currentOdds && (
-        <div className="flex gap-2 mb-3">
-          <span className="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
-            {t("common.yes")} {market.currentOdds.yes.toFixed(2)}%
-          </span>
-          <span className="px-2 py-1 rounded-md bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-medium">
-            {t("common.no")} {market.currentOdds.no.toFixed(2)}%
-          </span>
-        </div>
-      )}
+        {/* Odds (if available) */}
+        {market.currentOdds && (
+          <div className="flex gap-2 mb-3">
+            <span className="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
+              {t("common.yes")} {formatNullablePrice(market.currentOdds.yes)}
+            </span>
+            <span className="px-2 py-1 rounded-md bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-medium">
+              {t("common.no")} {formatNullablePrice(market.currentOdds.no)}
+            </span>
+          </div>
+        )}
+      </button>
 
       {/* Stats */}
       <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-        <div className="flex items-center gap-1">
-          <TrendingUp className="w-3.5 h-3.5" />
-          <span>{formatMarketSubunits(market.volume, market.baseAsset)}</span>
-        </div>
+        <MetricExplanation
+          className="flex items-center gap-1"
+          label={t("market.volume")}
+          description={t("market.volumeDescription")}
+        >
+          <TrendingUp aria-hidden="true" className="w-3.5 h-3.5" />
+          <InlineAmount
+            amountSubunits={market.volume}
+            baseAsset={market.baseAsset}
+            showTitle={false}
+          />
+        </MetricExplanation>
         <span>{formatClosingDate(market.closingDate, t, i18n.language)}</span>
       </div>
-    </button>
+    </div>
   );
 }
 

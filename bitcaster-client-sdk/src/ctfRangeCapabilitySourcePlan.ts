@@ -1,7 +1,8 @@
 import { splitAmount, type Proof } from '@cashu/cashu-ts'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsFromPpk,
+  computeInputFeeSubunitsForProofs,
   sumProofs,
   takeProofsForLock,
 } from './proofSelection.ts'
@@ -12,6 +13,15 @@ export interface CtfRangeCapabilitySourceKeyset {
   readonly keys: Readonly<Record<string, string>>
 }
 
+/**
+ * Names why no bounded source can fund a refused plan. `offered` means the
+ * offered holding cannot cover the requested face. `collateral` means a Sell
+ * holding covers the face within the mint bounds, but bounded regular cash
+ * cannot pay the joint preparation fee. `mint-limits` means the cash would
+ * pay that fee, but the selection exceeds the mint input or output bound.
+ */
+export type CtfRangeSourceShortfall = 'offered' | 'collateral' | 'mint-limits'
+
 export type CtfRangeCapabilitySourcePlan =
   | {
       readonly kind: 'same-keyset-swap'
@@ -19,6 +29,15 @@ export type CtfRangeCapabilitySourcePlan =
       readonly inputFee: number
       readonly authorizationAmounts: readonly number[]
       readonly changeAmount: number
+    }
+  | {
+      readonly kind: 'mixed-source-ctf-convert'
+      readonly offeredInputs: readonly Proof[]
+      readonly collateralInputs: readonly Proof[]
+      readonly inputFee: number
+      readonly authorizationAmounts: readonly number[]
+      readonly offeredChangeAmounts: readonly number[]
+      readonly collateralChangeAmounts: readonly number[]
     }
   | {
       readonly kind: 'collateral-ctf-convert'
@@ -34,7 +53,7 @@ export type CtfRangeCapabilitySourcePlan =
       readonly selectedInputCount: number
       readonly maxInputs: number
     }
-  | { readonly kind: 'source-unavailable' }
+  | { readonly kind: 'source-unavailable'; readonly shortfall: CtfRangeSourceShortfall }
 
 type SourceSelection =
   | { readonly kind: 'selected'; readonly proofs: Proof[] }
@@ -59,12 +78,144 @@ export function planCtfRangeCapabilitySource(input: {
   assertKeyset(input.offeredKeyset, 'offered')
   assertKeyset(input.collateralKeyset, 'collateral')
   assertKeyset(input.complementKeyset, 'complement')
+  assertSourceCandidates(input)
+
+  if (input.side === 'Buy') {
+    return (
+      planSameKeysetSource(input, authorizationAmounts, target, maxInputs, maxOutputs) ?? {
+        kind: 'source-unavailable',
+        shortfall: 'offered',
+      }
+    )
+  }
+
+  const mixed = planMixedSource(input, authorizationAmounts, target, maxInputs, maxOutputs)
+  if (mixed.kind === 'mixed-source-ctf-convert') return mixed
 
   const offered = planSameKeysetSource(input, authorizationAmounts, target, maxInputs, maxOutputs)
   if (offered !== null) return offered
 
-  if (input.side === 'Buy') return { kind: 'source-unavailable' }
-  return planCollateralSource(input, authorizationAmounts, target, maxInputs, maxOutputs)
+  switch (mixed.shortfall) {
+    case 'offered':
+      return planCollateralSource(input, authorizationAmounts, target, maxInputs, maxOutputs)
+    case 'collateral':
+    case 'mint-limits':
+      // The held shares cover the face. Collateral-only conversion would
+      // mint new shares instead of exiting the held ones, so name the shortfall.
+      return { kind: 'source-unavailable', shortfall: mixed.shortfall }
+    default:
+      return assertNever(mixed.shortfall)
+  }
+}
+
+type MixedSourceResult =
+  | Extract<CtfRangeCapabilitySourcePlan, { kind: 'mixed-source-ctf-convert' }>
+  | { readonly kind: 'refused'; readonly shortfall: CtfRangeSourceShortfall }
+
+function planMixedSource(
+  input: Parameters<typeof planCtfRangeCapabilitySource>[0],
+  authorizationAmounts: readonly number[],
+  target: number,
+  maxInputs: number,
+  maxOutputs: number,
+): MixedSourceResult {
+  const offered = takeProofsForLock(input.offeredCandidates, target)
+  if (offered === null) return { kind: 'refused', shortfall: 'offered' }
+
+  const remainingInputs = maxInputs - offered.length
+  if (remainingInputs <= 0) {
+    return { kind: 'refused', shortfall: inputBoundShortfall(input, offered) }
+  }
+  const collateral = selectCollateralForJointFee(
+    offered,
+    input.offeredKeyset,
+    input.collateralCandidates,
+    input.collateralKeyset,
+    remainingInputs,
+  )
+  switch (collateral.kind) {
+    case 'selected':
+      break
+    case 'fragmented':
+      return { kind: 'refused', shortfall: inputBoundShortfall(input, offered) }
+    case 'absent':
+      return { kind: 'refused', shortfall: 'collateral' }
+    default:
+      return assertNever(collateral)
+  }
+
+  const inputs = [...offered, ...collateral.proofs]
+  const inputFee = sourceFee(inputs, input.offeredKeyset, input.collateralKeyset)
+  const offeredChangeAmounts = splitPositiveAmount(
+    checkedSubtract(sumProofs(offered), target, 'offered change'),
+    input.offeredKeyset.keys,
+  )
+  const collateralChangeAmounts = splitPositiveAmount(
+    checkedSubtract(sumProofs(collateral.proofs), inputFee, 'collateral change'),
+    input.collateralKeyset.keys,
+  )
+  if (
+    authorizationAmounts.length + offeredChangeAmounts.length + collateralChangeAmounts.length >
+    maxOutputs
+  ) {
+    return { kind: 'refused', shortfall: 'mint-limits' }
+  }
+
+  return {
+    kind: 'mixed-source-ctf-convert',
+    offeredInputs: offered,
+    collateralInputs: collateral.proofs,
+    inputFee,
+    authorizationAmounts,
+    offeredChangeAmounts,
+    collateralChangeAmounts,
+  }
+}
+
+/**
+ * The input bound blocked the fee cash. Name the mint limit only when the
+ * same deterministic selection, without that bound, finds cash for the joint
+ * fee. Otherwise the missing cash is the actionable fact.
+ */
+function inputBoundShortfall(
+  input: Parameters<typeof planCtfRangeCapabilitySource>[0],
+  offered: readonly Proof[],
+): CtfRangeSourceShortfall {
+  const unbounded = selectCollateralForJointFee(
+    offered,
+    input.offeredKeyset,
+    input.collateralCandidates,
+    input.collateralKeyset,
+    Math.max(1, input.collateralCandidates.length),
+  )
+  return unbounded.kind === 'selected' ? 'mint-limits' : 'collateral'
+}
+
+function selectCollateralForJointFee(
+  offeredInputs: readonly Proof[],
+  offeredKeyset: CtfRangeCapabilitySourceKeyset,
+  candidates: readonly Proof[],
+  collateralKeyset: CtfRangeCapabilitySourceKeyset,
+  maxInputs: number,
+): SourceSelection {
+  const initialFeePpk = checkedAddFeePpk(
+    sourceFeePpk(offeredInputs, offeredKeyset),
+    collateralKeyset.inputFeePpk,
+  )
+  let targetFee = computeInputFeeSubunitsFromPpk(initialFeePpk)
+
+  for (let attempt = 0; attempt < maxInputs; attempt += 1) {
+    const selected = selectGrossSource(candidates, targetFee, maxInputs)
+    if (selected.kind !== 'selected') return selected
+
+    const fee = sourceFee([...offeredInputs, ...selected.proofs], offeredKeyset, collateralKeyset)
+    if (sumProofs(selected.proofs) >= fee) return selected
+
+    // Adding another regular input can add another fee unit. Re-select by the
+    // exact joint fee, using the existing deterministic greedy primitive.
+    targetFee = fee
+  }
+  return { kind: 'absent' }
 }
 
 function planSameKeysetSource(
@@ -109,7 +260,7 @@ function planCollateralSource(
     target,
     maxInputs,
   )
-  if (collateral.kind === 'absent') return { kind: 'source-unavailable' }
+  if (collateral.kind === 'absent') return { kind: 'source-unavailable', shortfall: 'offered' }
   if (collateral.kind === 'fragmented') {
     return consolidationRequired(
       input.collateralKeyset.id,
@@ -156,6 +307,18 @@ function selectExactSource(
     : { kind: 'fragmented', selectedInputCount: selected.length }
 }
 
+function selectGrossSource(
+  candidates: readonly Proof[],
+  target: number,
+  maxInputs: number,
+): SourceSelection {
+  const selected = takeProofsForLock(candidates, target)
+  if (selected === null) return { kind: 'absent' }
+  return selected.length <= maxInputs
+    ? { kind: 'selected', proofs: selected }
+    : { kind: 'fragmented', selectedInputCount: selected.length }
+}
+
 function consolidationRequired(
   keysetId: string,
   selectedInputCount: number,
@@ -164,8 +327,56 @@ function consolidationRequired(
   return { kind: 'consolidation-required', keysetId, selectedInputCount, maxInputs }
 }
 
-function sourceFee(proofs: readonly Proof[], keyset: CtfRangeCapabilitySourceKeyset): number {
-  return computeInputFeeSatsForProofs(proofs, { [keyset.id]: keyset.inputFeePpk })
+function sourceFee(
+  proofs: readonly Proof[],
+  offeredKeyset: CtfRangeCapabilitySourceKeyset,
+  collateralKeyset: CtfRangeCapabilitySourceKeyset = offeredKeyset,
+): number {
+  return computeInputFeeSubunitsForProofs(proofs, {
+    [offeredKeyset.id]: offeredKeyset.inputFeePpk,
+    [collateralKeyset.id]: collateralKeyset.inputFeePpk,
+  })
+}
+
+function sourceFeePpk(proofs: readonly Proof[], keyset: CtfRangeCapabilitySourceKeyset): number {
+  const total = keyset.inputFeePpk * proofs.length
+  if (!Number.isSafeInteger(total)) {
+    throw new Error('CTF range source input fee exceeds the safe integer range')
+  }
+  return total
+}
+
+function checkedAddFeePpk(total: number, amount: number): number {
+  if (!Number.isSafeInteger(amount) || amount < 0 || total > Number.MAX_SAFE_INTEGER - amount) {
+    throw new Error('CTF range source input fee exceeds the safe integer range')
+  }
+  return total + amount
+}
+
+function assertSourceCandidates(input: Parameters<typeof planCtfRangeCapabilitySource>[0]): void {
+  const seenSecrets = new Set<string>()
+  for (const [candidates, keyset, label] of [
+    [input.offeredCandidates, input.offeredKeyset, 'offered'],
+    [input.collateralCandidates, input.collateralKeyset, 'collateral'],
+  ] as const) {
+    const groupSecrets = new Set<string>()
+    for (const proof of candidates) {
+      if (proof.id !== keyset.id) {
+        throw new Error(`CTF range ${label} source candidates contain a foreign keyset`)
+      }
+      if (amountToNumber(proof.amount) <= 0 || proof.secret.length === 0 || proof.C.length === 0) {
+        throw new Error(`CTF range ${label} source candidate is invalid`)
+      }
+      if (
+        groupSecrets.has(proof.secret) ||
+        (input.side === 'Sell' && seenSecrets.has(proof.secret))
+      ) {
+        throw new Error('CTF range source candidates contain a duplicate proof')
+      }
+      groupSecrets.add(proof.secret)
+      seenSecrets.add(proof.secret)
+    }
+  }
 }
 
 function decodeAmounts(values: readonly string[], label: string): number[] {
@@ -231,4 +442,8 @@ function assertKeyset(keyset: CtfRangeCapabilitySourceKeyset, label: string): vo
   ) {
     throw new Error(`CTF range ${label} keyset is invalid`)
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported CTF range source variant: ${String(value)}`)
 }

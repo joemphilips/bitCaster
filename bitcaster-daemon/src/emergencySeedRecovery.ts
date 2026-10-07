@@ -1,3 +1,9 @@
+import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
+import {
+  assertDurableCustodyMintOperationAuthority,
+  prepareDurableCustodyVerifiedMintResult,
+} from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -23,6 +29,7 @@ import {
 import {
   CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT,
   bindExactSeedRecoveryResponse,
+  bindRetainedOutputRecoveryResponse,
   bindConditionalKeysetSeedRecoveryResponse,
   planExactSeedRecoveryBatch,
   planConditionalKeysetSeedRecoveryPage,
@@ -58,6 +65,7 @@ export interface WalletSeedRecoveryResult {
   readonly selectedKeysetCount: number
   readonly completedChildCount: number
   readonly batchesProcessed: number
+  readonly retainedOutputProofsImported?: number
   readonly gapLimit: 300
 }
 
@@ -122,6 +130,7 @@ const CUSTODY_LEASE_RENEW_INTERVAL_MS = 20_000
 export async function runOfflineDaemonSeedRecovery(
   input: OfflineDaemonSeedRecoveryInput,
 ): Promise<WalletSeedRecoveryResult> {
+  assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
   }
@@ -210,6 +219,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
   store: SeedRecoverySqliteStore
   batches: readonly ExplicitSeedRecoveryBatch[]
 }): Promise<EmergencySeedRecoveryCursor> {
+  assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
   }
@@ -274,6 +284,7 @@ export async function recoverAllDaemonWalletFromSeed(
     readonly storage?: DaemonStateSqliteSession
   },
 ): Promise<WalletSeedRecoveryResult> {
+  assertProductRecoveryUnit(input.unit)
   assertWalletSeedHex(input.walletSeedHex)
   const seed = Uint8Array.from(Buffer.from(input.walletSeedHex, 'hex'))
   try {
@@ -291,11 +302,84 @@ export async function recoverAllDaemonWalletFromSeed(
     )
     await initializeRecoveryRoster(input, deps, store, fence, selected)
     await initializeRecoveryWallet(deps.transport.wallet, selected)
+    const retainedOutputProofsImported = await recoverRetainedClaimOutputs(
+      input,
+      deps,
+      store,
+      fence,
+    )
     const batchesProcessed = await scanSelectedKeysets(input, deps, store, fence, seed, selected)
-    return await finalizeRecoveryResult(input, deps, store, fence, selected, batchesProcessed)
+    return {
+      ...(await finalizeRecoveryResult(input, deps, store, fence, selected, batchesProcessed)),
+      retainedOutputProofsImported,
+    }
   } finally {
     seed.fill(0)
   }
+}
+
+async function recoverRetainedClaimOutputs(
+  input: AllKeysetSeedRecoveryRequest,
+  deps: Parameters<typeof recoverAllDaemonWalletFromSeed>[1],
+  store: SeedRecoverySqliteStore,
+  fence: CustodyScopeFence,
+): Promise<number> {
+  if (input.unit !== 'msat') return 0
+  let after = ''
+  let imported = 0
+  for (let pageNumber = 0; pageNumber < 64; pageNumber += 1) {
+    const page = await store.readRetainedClaimPage(input.mintUrl, after)
+    if (page.length === 0) return imported
+    for (const retained of page) {
+      const outputs = deserializeOutputGroups(retained.target.outputs).regular ?? []
+      if (outputs.length === 0 || outputs.length > 256)
+        throw new Error('retained payout output bound is invalid')
+      const authority = assertDurableCustodyMintOperationAuthority(
+        retained.record,
+        retained.exactAuthority,
+      )
+      const response = await deps.transport.restoreCandidates(
+        outputs.map(({ blindedMessage }) => ({
+          ...blindedMessage,
+          amount: blindedMessage.amount.toString(),
+        })),
+      )
+      const matches = bindRetainedOutputRecoveryResponse({ outputs, response })
+      if (matches.length === 0) continue
+      if (matches.length !== outputs.length)
+        throw new Error('retained payout restore is incomplete')
+      const proofs = matches.map(({ outputData, signature }) => {
+        const keyset = authority.keysets.find(({ id }) => id === outputData.blindedMessage.id)
+        if (keyset === undefined) throw new Error('retained payout keyset is absent')
+        return outputData.toProof(
+          { ...signature, amount: outputData.blindedMessage.amount },
+          keyset,
+        )
+      })
+      prepareDurableCustodyVerifiedMintResult({
+        record: retained.record,
+        exactAuthority: retained.exactAuthority,
+        result: { regular: proofs },
+      })
+      const states = await classifyRestoredProofStates(proofs, deps.transport.wallet)
+      if (states === null) throw new Error('retained payout mint state is pending')
+      const live = deps.getFence()
+      assertRecoveryOwnerUnchanged(fence, live)
+      store.setAuthority(live, (deps.nowMs ?? Date.now)())
+      imported += await store.commitRetainedClaimPayout({
+        operationId: retained.target.operationId,
+        authorityFingerprint: retained.exactAuthority.fingerprint,
+        proofs,
+        unspentProofSecrets: proofs
+          .filter((_, index) => states[index] === 'UNSPENT')
+          .map(({ secret }) => secret),
+      })
+    }
+    after = page[page.length - 1]!.target.operationId
+    if (page.length < 16) return imported
+  }
+  if ((await store.readRetainedClaimPage(input.mintUrl, after)).length === 0) return imported
+  throw new Error('retained payout recovery record bound exceeded')
 }
 
 function createRecoveryStore(
@@ -337,6 +421,11 @@ async function selectRecoveryKeysets(
   ])
   const regular = decodeRegularKeysets(regularRaw, input.unit)
   const conditional = decodeConditionalKeysets(conditionalRaw, input.unit)
+  await store.assertRecoveryKeysetMintBindings({
+    walletScopeId: fence.scopeId,
+    mintUrl: input.mintUrl,
+    keysetIds: [...regular, ...conditional].map(({ id }) => id),
+  })
   assertListedRecoveryAuthority(highWaters, roster.keysetIds, regular, conditional)
   const rosterKeysetIds = new Set(roster.keysetIds)
   const eligibleConditional = conditional.filter(
@@ -882,7 +971,17 @@ function createAllKeysetRecoveryTransport(
   return {
     wallet,
     listRegularKeysets: () => mint.getKeySets(),
-    listConditionalKeysets: () => mint.getConditionalKeysets(),
+    listConditionalKeysets: async () => ({
+      keysets: await collectCtfListing({
+        fetchPage: async (cursor) => {
+          const page = await mint.getConditionalKeysets({ limit: CTF_LISTING_PAGE_SIZE, cursor })
+          return { items: page.keysets, next_cursor: page.next_cursor }
+        },
+        getId: (keyset) => keyset.id,
+        maxRecords: 10_000,
+        maxPages: 100,
+      }),
+    }),
     async getConditionalKeyset(id) {
       const keys = await mint.getKeys(id)
       const keyset = keys.keysets.find((candidate) => candidate.id === id)
@@ -896,6 +995,12 @@ function createAllKeysetRecoveryTransport(
 function assertWalletSeedHex(walletSeedHex: string): void {
   if (!/^[0-9a-f]{128}$/.test(walletSeedHex)) {
     throw new Error('wallet seed must be a 64-byte lowercase hex value')
+  }
+}
+
+function assertProductRecoveryUnit(unit: string): asserts unit is 'msat' {
+  if (unit !== 'msat') {
+    throw new Error('seed recovery supports only the msat product unit')
   }
 }
 

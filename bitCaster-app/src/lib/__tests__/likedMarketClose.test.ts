@@ -24,7 +24,7 @@ function market(id: string, state: Market["state"]): Market {
     creatorFeePercent: 0,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
   };
 }
 
@@ -77,5 +77,14 @@ describe("reconcileLikedMarketCloses", () => {
       [MARKET_ID]: "closed",
     });
     expect(notifications).toHaveLength(0);
+  });
+
+  it("drops unliked states and keeps a closed-to-open observation silent", () => {
+    const { notifications, nextStates } = reconcileLikedMarketCloses([market(MARKET_ID, "open")], {
+      [MARKET_ID]: "closed",
+      unliked: "open",
+    });
+    expect(notifications).toHaveLength(0);
+    expect(nextStates).toEqual({ [MARKET_ID]: "open" });
   });
 });

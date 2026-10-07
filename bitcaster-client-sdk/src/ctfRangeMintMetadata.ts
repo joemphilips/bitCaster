@@ -1,3 +1,4 @@
+import { CTF_LISTING_PAGE_SIZE, readCtfListingCursor } from './ctfListing.ts'
 import type { GetInfoResponse, MintKeys, MintKeyset } from '@cashu/cashu-ts'
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
 import {
@@ -24,8 +25,14 @@ const MINT_KEYSET_CANDIDATE_LIMIT = 256
 export interface CtfRangeMintMetadataClient {
   getInfo(): Promise<GetInfoResponse>
   getKeySets(): Promise<{ keysets: MintKeyset[] }>
-  getConditionalKeysets(query?: { since?: number; limit?: number; active?: boolean }): Promise<{
+  getConditionalKeysets(query?: {
+    since?: number
+    limit?: number
+    active?: boolean
+    cursor?: string
+  }): Promise<{
     keysets: CtfRangeConditionalKeysetMetadata[]
+    next_cursor: string | null
   }>
   getCtfCondition(conditionId: string): Promise<{
     condition_id: string
@@ -141,34 +148,43 @@ async function loadConditionKeysets(
 ): Promise<CtfRangeConditionalKeysetMetadata[]> {
   const targets = new Set(conditionKeysetIds)
   const found = new Map<string, CtfRangeConditionalKeysetMetadata>()
-  let since = conditionRegisteredAt
-  let priorPage = ''
-  for (let pageNumber = 0; pageNumber < 16; pageNumber += 1) {
+  let cursor: string | undefined
+  const cursors = new Set<string>()
+  let count = 0
+  const maximumRecords = 16 * MINT_KEYSET_CANDIDATE_LIMIT
+  for (
+    let pageNumber = 0;
+    pageNumber < Math.ceil(maximumRecords / CTF_LISTING_PAGE_SIZE);
+    pageNumber += 1
+  ) {
     const response = await mint.getConditionalKeysets({
-      limit: MINT_KEYSET_CANDIDATE_LIMIT,
-      since,
+      limit: CTF_LISTING_PAGE_SIZE,
+      since: conditionRegisteredAt,
+      cursor,
     })
-    if (response.keysets.length > MINT_KEYSET_CANDIDATE_LIMIT) {
+    count += response.keysets.length
+    if (response.keysets.length > CTF_LISTING_PAGE_SIZE || count > maximumRecords) {
       throw new Error('mint exceeded the conditional keyset page limit')
     }
+    const nextCursor = readCtfListingCursor(response.next_cursor)
+    if (nextCursor !== null && cursors.has(nextCursor)) {
+      throw new Error('mint conditional keyset pagination did not advance')
+    }
     for (const keyset of response.keysets) {
-      if (targets.has(keyset.id)) found.set(keyset.id, keyset)
+      if (targets.has(keyset.id)) {
+        const prior = found.get(keyset.id)
+        if (prior !== undefined && JSON.stringify(prior) !== JSON.stringify(keyset)) {
+          throw new Error('mint returned conflicting conditional keyset metadata')
+        }
+        found.set(keyset.id, keyset)
+      }
     }
     if (found.size === targets.size) {
       return [...found.values()].sort((left, right) => left.id.localeCompare(right.id))
     }
-    if (response.keysets.length === 0) break
-    const page = response.keysets.map(({ id }) => id).join('\0')
-    const registeredAt = response.keysets.at(-1)?.registered_at
-    if (
-      page === priorPage ||
-      !Number.isSafeInteger(registeredAt) ||
-      (registeredAt as number) < since
-    ) {
-      throw new Error('mint conditional keyset pagination did not advance')
-    }
-    priorPage = page
-    since = registeredAt as number
+    if (nextCursor === null) break
+    cursors.add(nextCursor)
+    cursor = nextCursor
   }
   throw new Error('mint CTF condition keyset authority is incomplete')
 }

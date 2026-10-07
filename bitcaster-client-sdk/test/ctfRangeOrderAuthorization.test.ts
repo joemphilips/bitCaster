@@ -13,53 +13,53 @@ const KEYS = Object.fromEntries(
 test('buy authorization reserves its per-proof fee and preserves the whole-share limit', () => {
   const plan = planCtfRangeOrderAuthorization({
     side: 'Buy',
-    priceNumerator: 4_200,
-    amountSubunits: 20_000,
-    divisibility: 10_000,
+    priceNumerator: 420,
+    amountSubunits: 2_000,
+    divisibility: 1_000,
     inputFeePpk: 100,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 29,
   })
 
-  assert.equal(plan.inputAmount, '8401')
+  assert.equal(plan.inputAmount, '841')
   assert.equal(plan.participantFeeAllocationUpperBound, '1')
   assert.equal(plan.reservedFeeHeadroom, '0')
   assert.equal(
     plan.authorizationAmounts.reduce((sum, value) => sum + BigInt(value), 0n),
-    8_401n,
+    841n,
   )
   assert.deepEqual(plan.policy, {
-    rateN: '10000',
-    rateD: '4201',
-    minReceive: '10000',
-    maxDebit: '8401',
+    rateN: '1000',
+    rateD: '421',
+    minReceive: '1000',
+    maxDebit: '841',
   })
   assert.deepEqual(plan.manifest, {
-    maxReceive: '20000',
-    maxChange: '8401',
-    entryCount: 29,
+    maxReceive: '2000',
+    maxChange: '841',
+    entryCount: 21,
   })
 })
 
 test('sell authorization charges the fee from collateral receive at the minimum fill', () => {
   const plan = planCtfRangeOrderAuthorization({
     side: 'Sell',
-    priceNumerator: 4_200,
-    amountSubunits: 20_000,
-    divisibility: 10_000,
+    priceNumerator: 420,
+    amountSubunits: 2_000,
+    divisibility: 1_000,
     inputFeePpk: 100,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 128,
   })
 
-  assert.equal(plan.inputAmount, '20000')
+  assert.equal(plan.inputAmount, '2000')
   assert.equal(plan.participantFeeAllocationUpperBound, '1')
   assert.equal(plan.reservedFeeHeadroom, '0')
   assert.deepEqual(plan.policy, {
-    rateN: '4199',
-    rateD: '10000',
-    minReceive: '4199',
-    maxDebit: '20000',
+    rateN: '419',
+    rateD: '1000',
+    minReceive: '419',
+    maxDebit: '2000',
   })
 })
 
@@ -67,8 +67,8 @@ test('buy preparation retains only the minimal safe change headroom when fee cou
   const plan = planCtfRangeOrderAuthorization({
     side: 'Buy',
     priceNumerator: 7,
-    amountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    divisibility: 1_000,
     inputFeePpk: 1_000,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 128,
@@ -85,8 +85,8 @@ test('buy preparation finds a safe reserve between high-fee proof-count candidat
   const plan = planCtfRangeOrderAuthorization({
     side: 'Buy',
     priceNumerator: 12,
-    amountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    divisibility: 1_000,
     inputFeePpk: 2_500,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 128,
@@ -105,8 +105,8 @@ test('authorization refuses an unsafe fee or proof-count bound', () => {
       planCtfRangeOrderAuthorization({
         side: 'Sell',
         priceNumerator: 1,
-        amountSubunits: 10_000,
-        divisibility: 10_000,
+        amountSubunits: 1_000,
+        divisibility: 1_000,
         inputFeePpk: 1_000,
         offerKeysetKeys: KEYS,
         maxPoolEntries: 128,
@@ -117,9 +117,9 @@ test('authorization refuses an unsafe fee or proof-count bound', () => {
     () =>
       planCtfRangeOrderAuthorization({
         side: 'Buy',
-        priceNumerator: 4_200,
-        amountSubunits: 10_000,
-        divisibility: 10_000,
+        priceNumerator: 420,
+        amountSubunits: 1_000,
+        divisibility: 1_000,
         inputFeePpk: 100,
         offerKeysetKeys: KEYS,
         maxPoolEntries: 128,
@@ -135,9 +135,9 @@ test('authorization rejects invalid or case-drifted sides instead of treating th
       () =>
         planCtfRangeOrderAuthorization({
           side: side as 'Buy',
-          priceNumerator: 4_200,
-          amountSubunits: 10_000,
-          divisibility: 10_000,
+          priceNumerator: 420,
+          amountSubunits: 1_000,
+          divisibility: 1_000,
           inputFeePpk: 100,
           offerKeysetKeys: KEYS,
           maxPoolEntries: 128,
@@ -148,7 +148,7 @@ test('authorization rejects invalid or case-drifted sides instead of treating th
 })
 
 test('authorization rejects a huge amount against a shallow denomination map without materializing inputs', () => {
-  const hugeWholeShareAmount = Math.floor(Number.MAX_SAFE_INTEGER / 10_000) * 10_000
+  const hugeWholeShareAmount = Math.floor(Number.MAX_SAFE_INTEGER / 1_000) * 1_000
   const shallowKeys = {
     '1': '02' + '11'.repeat(32),
     '2': '02' + '22'.repeat(32),
@@ -159,9 +159,9 @@ test('authorization rejects a huge amount against a shallow denomination map wit
     () =>
       planCtfRangeOrderAuthorization({
         side: 'Sell',
-        priceNumerator: 4_200,
+        priceNumerator: 420,
         amountSubunits: hugeWholeShareAmount,
-        divisibility: 10_000,
+        divisibility: 1_000,
         inputFeePpk: 100,
         offerKeysetKeys: shallowKeys,
         maxPoolEntries: 128,
@@ -180,8 +180,8 @@ test('participant fee allocation upper bound rounds proof weight at ppk boundari
     const plan = planCtfRangeOrderAuthorization({
       side: 'Buy',
       priceNumerator: 14,
-      amountSubunits: 10_000,
-      divisibility: 10_000,
+      amountSubunits: 1_000,
+      divisibility: 1_000,
       inputFeePpk,
       offerKeysetKeys: KEYS,
       maxPoolEntries: 128,
@@ -195,9 +195,9 @@ test('participant fee allocation upper bound rounds proof weight at ppk boundari
 test('authorization validates advertised option bounds', () => {
   const base = {
     side: 'Sell' as const,
-    priceNumerator: 4_200,
-    amountSubunits: 10_000,
-    divisibility: 10_000,
+    priceNumerator: 420,
+    amountSubunits: 1_000,
+    divisibility: 1_000,
     inputFeePpk: 100,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 128,
@@ -221,8 +221,8 @@ test('authorization validates input fee ppk safe-integer boundaries', () => {
   const base = {
     side: 'Buy' as const,
     priceNumerator: 14,
-    amountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    divisibility: 1_000,
     offerKeysetKeys: KEYS,
     maxPoolEntries: 128,
   }
@@ -256,9 +256,9 @@ test('fee-adjusted covenants cover every whole-share partial fill', () => {
     for (const shares of [1, 2, 5, 20]) {
       const plan = planCtfRangeOrderAuthorization({
         side,
-        priceNumerator: 4_200,
-        amountSubunits: shares * 10_000,
-        divisibility: 10_000,
+        priceNumerator: 420,
+        amountSubunits: shares * 1_000,
+        divisibility: 1_000,
         inputFeePpk: 250,
         offerKeysetKeys: KEYS,
         maxPoolEntries: 128,
@@ -267,8 +267,8 @@ test('fee-adjusted covenants cover every whole-share partial fill', () => {
       const rateN = BigInt(plan.policy.rateN)
       const rateD = BigInt(plan.policy.rateD)
       for (let filled = 1; filled <= shares; filled += 1) {
-        const face = BigInt(filled * 10_000)
-        const quote = BigInt(filled * 4_200)
+        const face = BigInt(filled * 1_000)
+        const quote = BigInt(filled * 420)
         const debit = side === 'Buy' ? quote + fee : face
         const receive = side === 'Buy' ? face : quote - fee
         assert.ok(receive * rateD >= debit * rateN)
@@ -284,26 +284,26 @@ test('authorization refuses a range larger than the advertised manifest limit', 
     () =>
       planCtfRangeOrderAuthorization({
         side: 'Buy',
-        priceNumerator: 4_200,
-        amountSubunits: 20_000,
-        divisibility: 10_000,
+        priceNumerator: 420,
+        amountSubunits: 2_000,
+        divisibility: 1_000,
         inputFeePpk: 100,
         offerKeysetKeys: KEYS,
-        maxPoolEntries: 28,
+        maxPoolEntries: 20,
       }),
     /manifest entry limit/,
   )
 })
 
 test('buy fee reservation is minimal across bounded proof-count candidates', () => {
-  for (const priceNumerator of [1, 7, 511, 4_200]) {
+  for (const priceNumerator of [1, 7, 511, 420]) {
     for (const shares of [1, 2, 5, 20]) {
       for (const inputFeePpk of [1, 250, 1_000, 2_500]) {
         const plan = planCtfRangeOrderAuthorization({
           side: 'Buy',
           priceNumerator,
-          amountSubunits: shares * 10_000,
-          divisibility: 10_000,
+          amountSubunits: shares * 1_000,
+          divisibility: 1_000,
           inputFeePpk,
           offerKeysetKeys: KEYS,
           maxPoolEntries: 128,
@@ -321,20 +321,20 @@ test('buy fee reservation is minimal across bounded proof-count candidates', () 
   }
 })
 
-test('sell planning is deterministic across bounded proof-count and fee combinations', () => {
+test('sell planning preserves independently computed D=1000 proof counts', () => {
   const truncatedKeys = Object.fromEntries(Object.entries(KEYS).slice(0, 14))
   for (const [shares, expectedProofCount] of [
-    [1, 5],
-    [3, 8],
-    [9, 17],
-    [13, 22],
-  ]) {
+    [1, 6],
+    [3, 7],
+    [9, 5],
+    [13, 6],
+  ] as const) {
     for (const inputFeePpk of [1, 999, 1_000, 1_001, 2_500]) {
       const input = {
         side: 'Sell' as const,
-        priceNumerator: 9_000,
-        amountSubunits: shares * 10_000,
-        divisibility: 10_000,
+        priceNumerator: 900,
+        amountSubunits: shares * 1_000,
+        divisibility: 1_000,
         inputFeePpk,
         offerKeysetKeys: truncatedKeys,
         maxPoolEntries: 128,

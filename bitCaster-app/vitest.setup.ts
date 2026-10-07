@@ -2,6 +2,19 @@ import "@testing-library/jest-dom/vitest";
 // Initialize i18n so components that call useTranslation() get real translations
 import "./src/i18n";
 
+if (typeof HTMLDialogElement !== "undefined") {
+  if (typeof HTMLDialogElement.prototype.showModal === "undefined") {
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      this.open = true;
+    };
+  }
+  if (typeof HTMLDialogElement.prototype.close === "undefined") {
+    HTMLDialogElement.prototype.close = function close() {
+      this.open = false;
+    };
+  }
+}
+
 // Polyfill matchMedia for jsdom and chart libraries that inspect device pixel
 // ratio/media queries during module initialization.
 if (typeof globalThis.matchMedia === "undefined") {

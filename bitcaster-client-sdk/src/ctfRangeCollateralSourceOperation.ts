@@ -1,5 +1,6 @@
 import {
   OutputData,
+  splitAmount,
   type CtfConvertRequest,
   type CtfConvertResponse,
   type CounterSource,
@@ -21,17 +22,41 @@ import {
   serializeDurableCustodyProofInput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
-import { amountToNumber } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs, sumProofs } from './proofSelection.ts'
 import {
+  assertCanonicalNut02V2KeysetId,
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
   matchDurableSeedDerivedProofsToPlan,
   reconstructDurableSeedDerivedOutputs,
   reserveAndConstructLabeledDurableSeedDerivedOutputs,
   type DurableSeedDerivedOutputPlan,
 } from './durableSeedDerivedOutputs.ts'
+import {
+  ctfRangePlannedOutputDerivationLocators,
+  type CtfRangeSourceKeepDerivationLocator,
+} from './ctfRangeSourceOperation.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
+const MIXED_SOURCE_ENDPOINT = 'POST /v1/ctf/convert'
+const MIXED_SOURCE_METADATA_KEYS = [
+  'amount',
+  'collateralInputCount',
+  'collateralKeysetId',
+  'collateralPlan',
+  'conditionId',
+  'endpoint',
+  'fees',
+  'offeredCollection',
+  'offeredInputCount',
+  'offeredKeysetId',
+  'offeredPlan',
+  'parentCollectionId',
+  'purpose',
+  'rangeOperationId',
+  'sourceMode',
+  'unit',
+] as const
 const METADATA_KEYS = [
   'amount',
   'collateralKeysetId',
@@ -50,6 +75,7 @@ const METADATA_KEYS = [
 ] as const
 
 type CollateralPlan = Extract<CtfRangeCapabilitySourcePlan, { kind: 'collateral-ctf-convert' }>
+type MixedSourcePlan = Extract<CtfRangeCapabilitySourcePlan, { kind: 'mixed-source-ctf-convert' }>
 
 export interface CtfRangeCollateralSourceTransport {
   postConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
@@ -59,6 +85,17 @@ export interface CtfRangeCollateralSourceResult {
   readonly authorization: readonly Proof[]
   readonly complement: readonly Proof[]
   readonly collateralChange: readonly Proof[]
+}
+
+export interface CtfRangeMixedSourceResult {
+  readonly authorization: readonly Proof[]
+  readonly offeredChange: readonly Proof[]
+  readonly collateralChange: readonly Proof[]
+}
+
+export interface CtfRangeMixedSourceChangeLocators {
+  readonly offeredChange: readonly CtfRangeSourceKeepDerivationLocator[]
+  readonly collateralChange: readonly CtfRangeSourceKeepDerivationLocator[]
 }
 
 /** Build one exact, persistable CTF conversion without performing mint I/O. */
@@ -121,6 +158,259 @@ export async function prepareCtfRangeCollateralSourceOperation(input: {
   }
   validateCtfRangeCollateralSourceOperation(operation, preparation)
   return operation
+}
+
+/** Build one exact mixed held-conditional and regular-collateral conversion. */
+export async function prepareCtfRangeMixedSourceOperation(input: {
+  readonly preparation: PersistedCtfRangeOrderPreparation
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+  readonly plan: MixedSourcePlan
+}): Promise<DurableCustodyProofOperationInput> {
+  const preparation = input.preparation
+  const { offered, collateral } = mixedKeysets(preparation)
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed: input.seed,
+    ...withoutRequest(preparation),
+  }).authorizationOutputs
+  assertAmounts(authorization, input.plan.authorizationAmounts, 'authorization')
+  const serializedInputs = [
+    ...input.plan.offeredInputs.map(serializeDurableCustodyProofInput),
+    ...input.plan.collateralInputs.map(serializeDurableCustodyProofInput),
+  ]
+  decodeDurableCustodyProofOperationInput({
+    operationId: preparation.sourceOperationId,
+    kind: 'ctf-range-conditional-source',
+    mintUrl: preparation.mintUrl,
+    inputs: serializedInputs,
+    outputs: {},
+  })
+  assertMixedPlanAuthority(preparation, input.plan, authorization, offered, collateral)
+  const [offeredChange, collateralChange] = await reserveOutputGroups({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    groups: [
+      {
+        label: 'offered-change',
+        keyset: offered,
+        amounts: input.plan.offeredChangeAmounts,
+      },
+      {
+        label: 'collateral-change',
+        keyset: collateral,
+        amounts: input.plan.collateralChangeAmounts,
+      },
+    ],
+  })
+  const operation: DurableCustodyProofOperationInput = {
+    operationId: preparation.sourceOperationId,
+    kind: 'ctf-range-conditional-source',
+    mintUrl: preparation.mintUrl,
+    inputs: serializedInputs,
+    outputs: {
+      authorization: authorization.map(serializeDurableCustodyOutput),
+      'offered-change': offeredChange.outputs.map(serializeDurableCustodyOutput),
+      'collateral-change': collateralChange.outputs.map(serializeDurableCustodyOutput),
+    },
+    metadata: {
+      purpose: SOURCE_PURPOSE,
+      sourceMode: 'mixed-source-ctf-convert',
+      rangeOperationId: preparation.operationId,
+      conditionId: preparation.conditionId,
+      parentCollectionId: ROOT_PARENT_COLLECTION_ID,
+      unit: 'msat',
+      endpoint: MIXED_SOURCE_ENDPOINT,
+      amount: sumAmounts(input.plan.authorizationAmounts),
+      fees: input.plan.inputFee,
+      offeredCollection: offered.outcomeCollection,
+      offeredKeysetId: offered.id,
+      collateralKeysetId: collateral.id,
+      offeredInputCount: input.plan.offeredInputs.length,
+      collateralInputCount: input.plan.collateralInputs.length,
+      offeredPlan: offeredChange.plan,
+      collateralPlan: collateralChange.plan,
+    },
+  }
+  validateCtfRangeMixedSourceOperation(operation, preparation)
+  return operation
+}
+
+export function validateCtfRangeMixedSourceOperation(
+  value: unknown,
+  preparation: PersistedCtfRangeOrderPreparation,
+): DurableCustodyProofOperationInput {
+  const operation = decodeDurableCustodyProofOperationInput(value)
+  const metadata = operation.metadata ?? {}
+  if (
+    operation.kind !== 'ctf-range-conditional-source' ||
+    Object.keys(metadata).sort().join('\0') !== [...MIXED_SOURCE_METADATA_KEYS].sort().join('\0') ||
+    metadata.purpose !== SOURCE_PURPOSE ||
+    metadata.sourceMode !== 'mixed-source-ctf-convert' ||
+    metadata.endpoint !== MIXED_SOURCE_ENDPOINT ||
+    metadata.parentCollectionId !== ROOT_PARENT_COLLECTION_ID ||
+    metadata.unit !== 'msat' ||
+    Object.keys(operation.outputs).sort().join('\0') !==
+      'authorization\0collateral-change\0offered-change'
+  ) {
+    throw new Error('persisted mixed range source operation is invalid')
+  }
+
+  const amount = positiveInteger(metadata.amount, 'amount')
+  const fees = nonnegativeInteger(metadata.fees, 'fee')
+  const offeredKeysetId = text(metadata.offeredKeysetId, 'offered keyset')
+  const collateralKeysetId = text(metadata.collateralKeysetId, 'collateral keyset')
+  const offeredInputCount = positiveInteger(metadata.offeredInputCount, 'offered input count')
+  const collateralInputCount = positiveInteger(
+    metadata.collateralInputCount,
+    'collateral input count',
+  )
+  const offeredInputs = inputProofs(operation, 0, offeredInputCount)
+  const collateralInputs = inputProofs(operation, offeredInputCount, collateralInputCount)
+  const authorization = outputs(operation, 'authorization')
+  const offeredChange = outputs(operation, 'offered-change')
+  const collateralChange = outputs(operation, 'collateral-change')
+  const offeredPlan = metadata.offeredPlan
+  const collateralPlan = metadata.collateralPlan
+  assertOutputPlan(offeredPlan, offeredChange, offeredKeysetId, 'offered change')
+  assertOutputPlan(collateralPlan, collateralChange, collateralKeysetId, 'collateral change')
+  const offeredKeyset = conditionalKeyset(preparation.offerKeyset, 'offered')
+  const collateralKeyset = regularKeyset(preparation.receiveKeyset)
+  if (
+    offeredKeysetId === collateralKeysetId ||
+    operation.inputs.length !== offeredInputCount + collateralInputCount ||
+    operation.inputs.length > 256 ||
+    operation.inputs.some(({ amount }) => amountToNumber(amount) <= 0) ||
+    offeredInputs.some(({ id }) => id !== offeredKeysetId) ||
+    collateralInputs.some(({ id }) => id !== collateralKeysetId) ||
+    hasDuplicateInputSecrets(operation.inputs) ||
+    authorization.length === 0 ||
+    text(metadata.offeredCollection, 'offered collection') !== offeredKeyset.outcomeCollection ||
+    offeredChange.some((output) => output.blindedMessage.id !== offeredKeysetId) ||
+    collateralChange.some((output) => output.blindedMessage.id !== collateralKeysetId) ||
+    authorization.some((output) => output.blindedMessage.id !== offeredKeysetId) ||
+    outputAmount(authorization) !== amount ||
+    sumProofs(offeredInputs) < amount ||
+    sumProofs(collateralInputs) < fees ||
+    computeInputFeeSubunitsForProofs(operation.inputs, {
+      [offeredKeysetId]: offeredKeyset.inputFeePpk,
+      [collateralKeysetId]: collateralKeyset.inputFeePpk,
+    }) !== fees ||
+    outputAmount(offeredChange) !== sumProofs(offeredInputs) - amount ||
+    outputAmount(collateralChange) !== sumProofs(collateralInputs) - fees ||
+    !amountsMatchSplit(offeredChange, sumProofs(offeredInputs) - amount, offeredKeyset.keys) ||
+    !amountsMatchSplit(
+      collateralChange,
+      sumProofs(collateralInputs) - fees,
+      collateralKeyset.keys,
+    ) ||
+    inputAmount(operation) !==
+      amount + fees + outputAmount(offeredChange) + outputAmount(collateralChange)
+  ) {
+    throw new Error('persisted mixed range source value authority is invalid')
+  }
+  assertMixedPreparation(operation, preparation)
+  return operation
+}
+
+/** Complete the exact persisted mixed conversion without deriving new outputs. */
+export async function completeCtfRangeMixedSourceOperation(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly preparation: PersistedCtfRangeOrderPreparation
+  readonly seed: Uint8Array
+  readonly transport: CtfRangeCollateralSourceTransport
+}): Promise<CtfRangeMixedSourceResult> {
+  const operation = validateCtfRangeMixedSourceOperation(input.operation, input.preparation)
+  const metadata = operation.metadata!
+  const offered = conditionalKeyset(input.preparation.offerKeyset, 'offered')
+  const collateral = regularKeyset(input.preparation.receiveKeyset)
+  const groups = {
+    authorization: outputs(operation, 'authorization'),
+    offeredChange: reconstructOutputGroup({
+      seed: input.seed,
+      keyset: offered,
+      outputs: outputs(operation, 'offered-change'),
+      plan: metadata.offeredPlan,
+    }),
+    collateralChange: reconstructOutputGroup({
+      seed: input.seed,
+      keyset: collateral,
+      outputs: outputs(operation, 'collateral-change'),
+      plan: metadata.collateralPlan,
+    }),
+  }
+  const offeredCollection = text(metadata.offeredCollection, 'offered collection')
+  const offeredProofs = inputProofs(operation, 0, metadata.offeredInputCount as number)
+  const collateralProofs = inputProofs(
+    operation,
+    metadata.offeredInputCount as number,
+    metadata.collateralInputCount as number,
+  )
+  const offeredOutputs = [...groups.authorization, ...groups.offeredChange]
+  const collateralOutputs = [...groups.collateralChange]
+  const response = await input.transport.postConvert({
+    condition_id: text(metadata.conditionId, 'condition'),
+    parent_collection_id: text(metadata.parentCollectionId, 'parent collection'),
+    inputs: {
+      [offeredCollection]: offeredProofs.map(toProof),
+      '*': collateralProofs.map(toProof),
+    },
+    outputs: {
+      [offeredCollection]: wireOutputs(offeredOutputs),
+      ...(collateralOutputs.length === 0 ? {} : { '*': wireOutputs(collateralOutputs) }),
+    },
+  })
+  const expectedSignatureKeys = [
+    offeredCollection,
+    ...(collateralOutputs.length === 0 ? [] : ['*']),
+  ]
+  assertSignatureGroupsExact(response.signatures, expectedSignatureKeys)
+  const offeredSignatures = response.signatures[offeredCollection]!
+  return {
+    authorization: completeGroup(
+      'authorization',
+      groups.authorization,
+      offeredSignatures.slice(0, groups.authorization.length),
+      mintKeys(offered),
+      null,
+    ),
+    offeredChange: completeGroup(
+      'offered-change',
+      groups.offeredChange,
+      offeredSignatures.slice(groups.authorization.length),
+      mintKeys(offered),
+      metadata.offeredPlan,
+    ),
+    collateralChange: completeGroup(
+      'collateral-change',
+      groups.collateralChange,
+      response.signatures['*'],
+      mintKeys(collateral),
+      metadata.collateralPlan,
+    ),
+  }
+}
+
+export function ctfRangeMixedSourceChangeDerivationLocators(
+  operationValue: DurableCustodyProofOperationInput,
+  preparation: PersistedCtfRangeOrderPreparation,
+  change: {
+    readonly offeredChange: readonly Proof[]
+    readonly collateralChange: readonly Proof[]
+  },
+): CtfRangeMixedSourceChangeLocators {
+  const operation = validateCtfRangeMixedSourceOperation(operationValue, preparation)
+  return {
+    offeredChange: derivationLocators(
+      change.offeredChange,
+      operation.metadata!.offeredPlan,
+      'offered change',
+    ),
+    collateralChange: derivationLocators(
+      change.collateralChange,
+      operation.metadata!.collateralPlan,
+      'collateral change',
+    ),
+  }
 }
 
 export function validateCtfRangeCollateralSourceOperation(
@@ -255,6 +545,128 @@ function assertPreparation(
   }
 }
 
+function assertMixedPreparation(
+  operation: DurableCustodyProofOperationInput,
+  preparation: PersistedCtfRangeOrderPreparation,
+): void {
+  const metadata = operation.metadata!
+  const { offered, collateral } = mixedKeysets(preparation)
+  if (
+    operation.operationId !== preparation.sourceOperationId ||
+    operation.mintUrl !== preparation.mintUrl ||
+    metadata.rangeOperationId !== preparation.operationId ||
+    metadata.conditionId !== preparation.conditionId ||
+    metadata.offeredCollection !== offered.outcomeCollection ||
+    metadata.offeredKeysetId !== offered.id ||
+    metadata.collateralKeysetId !== collateral.id ||
+    operation.inputs.length > preparation.maxInputs
+  ) {
+    throw new Error('persisted mixed range source preparation is foreign or stale')
+  }
+}
+
+function mixedKeysets(preparation: PersistedCtfRangeOrderPreparation): {
+  readonly offered: ReturnType<typeof conditionalKeyset>
+  readonly collateral: ReturnType<typeof regularKeyset>
+} {
+  if (preparation.side !== 'Sell') {
+    throw new Error('mixed range source is only valid for a conditional sell')
+  }
+  const offered = conditionalKeyset(preparation.offerKeyset, 'offered')
+  const collateral = regularKeyset(preparation.receiveKeyset)
+  try {
+    assertCanonicalNut02V2KeysetId(offered.id, 'mixed range offered keyset id')
+    assertCanonicalNut02V2KeysetId(collateral.id, 'mixed range collateral keyset id')
+  } catch {
+    throw new Error('mixed range source keyset identity is invalid')
+  }
+  if (
+    offered.id === collateral.id ||
+    offered.conditionId !== preparation.conditionId ||
+    offered.canonicalMintUrl !== preparation.mintUrl ||
+    collateral.canonicalMintUrl !== preparation.mintUrl ||
+    offered.unit !== 'msat' ||
+    collateral.unit !== 'msat' ||
+    offered.active !== true ||
+    collateral.active !== true ||
+    !Number.isSafeInteger(offered.inputFeePpk) ||
+    offered.inputFeePpk <= 0 ||
+    !Number.isSafeInteger(collateral.inputFeePpk) ||
+    collateral.inputFeePpk <= 0 ||
+    !Number.isSafeInteger(preparation.maxInputs) ||
+    preparation.maxInputs < 1
+  ) {
+    throw new Error('mixed range source keysets are foreign or inactive')
+  }
+  return { offered, collateral }
+}
+
+function assertMixedPlanAuthority(
+  preparation: PersistedCtfRangeOrderPreparation,
+  plan: MixedSourcePlan,
+  authorization: readonly OutputData[],
+  offered: ReturnType<typeof conditionalKeyset>,
+  collateral: ReturnType<typeof regularKeyset>,
+): void {
+  const offeredInputs = plan.offeredInputs
+  const collateralInputs = plan.collateralInputs
+  const amount = outputAmount(authorization)
+  const inputCount = offeredInputs.length + collateralInputs.length
+  if (
+    offeredInputs.length < 1 ||
+    collateralInputs.length < 1 ||
+    inputCount > preparation.maxInputs ||
+    inputCount > 256 ||
+    offeredInputs.some(
+      (proof) =>
+        proof.id !== offered.id ||
+        amountToNumber(proof.amount) <= 0 ||
+        typeof proof.secret !== 'string' ||
+        proof.secret.length === 0 ||
+        typeof proof.C !== 'string' ||
+        proof.C.length === 0,
+    ) ||
+    collateralInputs.some(
+      (proof) =>
+        proof.id !== collateral.id ||
+        amountToNumber(proof.amount) <= 0 ||
+        typeof proof.secret !== 'string' ||
+        proof.secret.length === 0 ||
+        typeof proof.C !== 'string' ||
+        proof.C.length === 0,
+    ) ||
+    hasDuplicateInputSecrets([...offeredInputs, ...collateralInputs])
+  ) {
+    throw new Error('mixed range source input authority is invalid')
+  }
+
+  const fees = computeInputFeeSubunitsForProofs([...offeredInputs, ...collateralInputs], {
+    [offered.id]: offered.inputFeePpk,
+    [collateral.id]: collateral.inputFeePpk,
+  })
+  const offeredFace = sumProofs(offeredInputs)
+  const collateralFace = sumProofs(collateralInputs)
+  const offeredChange = offeredFace - amount
+  const collateralChange = collateralFace - fees
+  if (
+    plan.inputFee !== fees ||
+    offeredFace < amount ||
+    collateralFace < fees ||
+    !amountsEqual(plan.offeredChangeAmounts, splitPositiveAmount(offeredChange, offered.keys)) ||
+    !amountsEqual(
+      plan.collateralChangeAmounts,
+      splitPositiveAmount(collateralChange, collateral.keys),
+    ) ||
+    !Number.isSafeInteger(
+      authorization.length + plan.offeredChangeAmounts.length + plan.collateralChangeAmounts.length,
+    ) ||
+    authorization.length + plan.offeredChangeAmounts.length + plan.collateralChangeAmounts.length >
+      256
+  ) {
+    throw new Error('mixed range source fee or output plan authority is invalid')
+  }
+}
+
 async function reserveOutputGroups(input: {
   readonly seed: Uint8Array
   readonly counterSource: CounterSource
@@ -312,6 +724,73 @@ function assertOutputPlan(
     assertDurableSeedDerivedOutputPlanMatchesOutputs({ plan: value, keysetId, outputs })
   } catch {
     throw new Error(`persisted collateral range ${label} plan is invalid`)
+  }
+}
+
+function derivationLocators(
+  proofs: readonly Proof[],
+  planValue: unknown,
+  label: string,
+): readonly CtfRangeSourceKeepDerivationLocator[] {
+  return ctfRangePlannedOutputDerivationLocators(planValue, proofs, `mixed range source ${label}`)
+}
+
+function amountsMatchSplit(
+  values: readonly OutputData[],
+  amount: number,
+  keys: Readonly<Record<string, string>>,
+): boolean {
+  const expected = amount === 0 ? [] : splitAmount(BigInt(amount), { ...keys }).map(amountToNumber)
+  return (
+    values.length === expected.length &&
+    values.every((value, index) => amountToNumber(value.blindedMessage.amount) === expected[index])
+  )
+}
+
+function splitPositiveAmount(amount: number, keys: Readonly<Record<string, string>>): number[] {
+  return amount === 0 ? [] : splitAmount(BigInt(amount), { ...keys }).map(amountToNumber)
+}
+
+function amountsEqual(left: readonly number[], right: readonly number[]): boolean {
+  return (
+    Array.isArray(left) &&
+    left.length === right.length &&
+    left.every(
+      (amount, index) => Number.isSafeInteger(amount) && amount > 0 && amount === right[index],
+    )
+  )
+}
+
+function inputProofs(
+  operation: DurableCustodyProofOperationInput,
+  start: number,
+  count: number,
+): Proof[] {
+  return operation.inputs.slice(start, start + count).map(toProof)
+}
+
+function hasDuplicateInputSecrets<T extends { readonly secret: string }>(
+  inputs: readonly T[],
+): boolean {
+  const secrets = new Set<string>()
+  for (const proof of inputs) {
+    if (secrets.has(proof.secret)) return true
+    secrets.add(proof.secret)
+  }
+  return false
+}
+
+function assertSignatureGroupsExact(
+  signatures: CtfConvertResponse['signatures'],
+  expected: readonly string[],
+): void {
+  const actual = Object.keys(signatures).sort()
+  const sortedExpected = [...expected].sort()
+  if (
+    actual.length !== sortedExpected.length ||
+    actual.some((key, index) => key !== sortedExpected[index])
+  ) {
+    throw new Error('mint returned foreign mixed range source signatures')
   }
 }
 

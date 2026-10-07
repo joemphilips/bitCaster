@@ -12,6 +12,7 @@ interface FilterControlsProps {
   onVolumeRangeChange?: (range: VolumeRange) => void;
   onClosingDateChange?: (days?: number) => void;
   onIncludeClosedChange?: (includeClosed: boolean) => void;
+  onClearAll?: () => void;
 }
 
 const MARKET_TYPE_OPTIONS: { value: MarketType; labelKey: string }[] = [
@@ -47,6 +48,7 @@ export function FilterControls({
   onVolumeRangeChange,
   onClosingDateChange,
   onIncludeClosedChange,
+  onClearAll,
 }: FilterControlsProps) {
   const { t } = useTranslation();
 
@@ -151,7 +153,12 @@ export function FilterControls({
                 })}
               </span>
               <button
+                data-testid="market-filter-clear-all"
                 onClick={() => {
+                  if (onClearAll) {
+                    onClearAll();
+                    return;
+                  }
                   onMarketTypeChange?.([]);
                   onVolumeRangeChange?.({});
                   onClosingDateChange?.(undefined);

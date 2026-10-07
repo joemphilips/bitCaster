@@ -42,9 +42,16 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
 import {
   ctfRangeSourceKeepDerivationLocators,
+  ctfRangeSourceMode,
   validateCtfRangeSourceCompletionOperation,
   type CtfRangeSourceResult,
 } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import {
+  ctfRangeMixedSourceChangeDerivationLocators,
+  validateCtfRangeMixedSourceOperation,
+  type CtfRangeMixedSourceResult,
+} from "@bitcaster/client-sdk/ctfRangeCollateralSourceOperation";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   ctfRangeOrderPreparationKeysetLookup,
   encodePersistedCtfRangeOrderPreparation,
@@ -64,6 +71,21 @@ import type {
   BrowserCustodyProofRow,
 } from "../stores/durable-custody-types";
 import { normalizeAndValidateStoredProof, type StoredProof } from "../stores/proof-db";
+
+const MIXED_SOURCE_CONVERT_PATH = "/v1/ctf/convert";
+
+export type BrowserRangeSourceResult = CtfRangeSourceResult | CtfRangeMixedSourceResult;
+
+export interface BrowserMixedSourcePredecessorProofRows {
+  readonly offeredInputs: readonly StagedBrowserCustodyProof[];
+  readonly collateralInputs: readonly StagedBrowserCustodyProof[];
+}
+
+export interface BrowserMixedSourceSuccessorProofRows {
+  readonly authorization: readonly StagedBrowserCustodyProof[];
+  readonly offeredChange: readonly StagedBrowserCustodyProof[];
+  readonly collateralChange: readonly StagedBrowserCustodyProof[];
+}
 
 export function browserWalletScope(
   seed: Uint8Array,
@@ -109,8 +131,6 @@ export function browserRangeJournalIdentity(
     scopeId: scope.scopeId,
     rangeOperationId: preparation.operationId,
     sourceOperationId: preparation.sourceOperationId,
-    sourceKind: preparation.sourceKind,
-    predecessorRangeOperationId: preparation.predecessorRangeOperationId,
     authorizationId: preparation.authorizationId,
     clientOrderId: preparation.request.clientOrderId,
     orderRouteId: preparation.request.marketId,
@@ -122,11 +142,10 @@ export function browserRangeJournalIdentity(
     priceSubunits: preparation.priceNumerator,
     amountSubunits: preparation.amountSubunits,
     minimumFillAmountSubunits: preparation.request.minimumFillAmountSubunits,
-    continueAfterPartialFill: false,
-    continuation: null,
     divisibility: preparation.divisibility,
     authorizationExpiresAtUnixSeconds: preparation.expiry,
     preparationBytes: encodePersistedCtfRangeOrderPreparation(preparation),
+    feeConsentBytes: null,
     createdAtMs,
   };
 }
@@ -137,10 +156,7 @@ export async function createBrowserRangeSourceBinding(
   seed: Uint8Array,
   operation: DurableCustodyProofOperationInput,
 ) {
-  validateCtfRangeSourceCompletionOperation(operation, {
-    seed,
-    keyset: preparation.offerKeyset,
-  });
+  const path = browserRangeSourceBoundaryPath(operation, preparation, seed);
   const facts = await resolveFacts(
     operation,
     exactCtfRangeOrderPreparationMintKeysets(preparation),
@@ -160,12 +176,36 @@ export async function createBrowserRangeSourceBinding(
       inventoryAccountId: null,
       exactBoundary: {
         method: "POST",
-        path: "/v1/swap",
+        path,
         idempotencyKey: operation.operationId,
         ...artifacts,
       },
     }),
   };
+}
+
+function browserRangeSourceBoundaryPath(
+  operation: DurableCustodyProofOperationInput,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
+): string {
+  const mode = ctfRangeSourceMode(operation);
+  switch (mode) {
+    case "wallet-send":
+    case "conditional-keyset-swap":
+      validateCtfRangeSourceCompletionOperation(operation, {
+        seed,
+        keyset: preparation.offerKeyset,
+      });
+      return "/v1/swap";
+    case "mixed-source-ctf-convert":
+      validateCtfRangeMixedSourceOperation(operation, preparation);
+      return MIXED_SOURCE_CONVERT_PATH;
+    case "ctf-range-collateral-convert":
+      throw new Error("collateral-only range source is not a capability authorization source");
+    default:
+      return assertNever(mode);
+  }
 }
 
 export function createBrowserRangeConsolidationBinding(
@@ -390,9 +430,21 @@ export function browserSourceCompletionProofRows(
   scope: DurableCustodyScope,
   preparation: PersistedCtfRangeOrderPreparation,
   operation: DurableCustodyProofOperationInput,
-  result: CtfRangeSourceResult,
+  result: BrowserRangeSourceResult,
   receivedAtMs: number,
 ): StagedBrowserCustodyProof[] {
+  if (ctfRangeSourceMode(operation) === "mixed-source-ctf-convert") {
+    if (!("offeredChange" in result)) throw new Error("Mixed source result groups are missing");
+    const rows = browserMixedSourceSuccessorProofRows(
+      scope,
+      preparation,
+      operation,
+      result,
+      receivedAtMs,
+    );
+    return [...rows.authorization, ...rows.offeredChange, ...rows.collateralChange];
+  }
+  if (!("keep" in result)) throw new Error("Same-keyset source result groups are missing");
   const keepLocators = ctfRangeSourceKeepDerivationLocators(operation, result.keep);
   const authorization = result.authorization.map((proof) => ({
     proof: createProofRow(scope, preparation, proof, receivedAtMs),
@@ -409,11 +461,107 @@ export function browserSourceCompletionProofRows(
   return [...authorization, ...keep];
 }
 
-export function browserPersistedSourceResult(result: CtfRangeSourceResult) {
+/** Map mixed-source inputs without merging their distinct wallet asset classes. */
+export function browserMixedSourcePredecessorProofRows(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operationValue: DurableCustodyProofOperationInput,
+  receivedAtMs: number,
+): BrowserMixedSourcePredecessorProofRows {
+  const operation = validateCtfRangeMixedSourceOperation(operationValue, preparation);
+  const metadata = operation.metadata!;
+  const offeredInputCount = metadata.offeredInputCount as number;
+  const offeredInputs = operation.inputs.slice(0, offeredInputCount).map(sourceInputProof);
+  const collateralInputs = operation.inputs.slice(offeredInputCount).map(sourceInputProof);
+  const conditionalAsset = browserRangeSourceAsset(preparation);
+
+  return {
+    offeredInputs: offeredInputs.map((proof) =>
+      stagedSourceProof({
+        scope,
+        preparation,
+        proof,
+        receivedAtMs,
+        asset: conditionalAsset,
+        conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+      }),
+    ),
+    collateralInputs: collateralInputs.map((proof) =>
+      stagedSourceProof({
+        scope,
+        preparation,
+        proof,
+        receivedAtMs,
+        asset: { kind: "regular" },
+      }),
+    ),
+  };
+}
+
+/** Map each mixed-source output group to its exact asset and derivation plan. */
+export function browserMixedSourceSuccessorProofRows(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+  result: CtfRangeMixedSourceResult,
+  receivedAtMs: number,
+): BrowserMixedSourceSuccessorProofRows {
+  const locators = ctfRangeMixedSourceChangeDerivationLocators(operation, preparation, {
+    offeredChange: result.offeredChange,
+    collateralChange: result.collateralChange,
+  });
+  const conditionalAsset = browserRangeSourceAsset(preparation);
+  return {
+    authorization: result.authorization.map((proof) =>
+      stagedSourceProof({
+        scope,
+        preparation,
+        proof,
+        receivedAtMs,
+        asset: conditionalAsset,
+        conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+      }),
+    ),
+    offeredChange: result.offeredChange.map((proof, index) =>
+      stagedSourceProof({
+        scope,
+        preparation,
+        proof,
+        receivedAtMs,
+        asset: conditionalAsset,
+        derivationLocator: locators.offeredChange[index]!,
+        conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+      }),
+    ),
+    collateralChange: result.collateralChange.map((proof, index) =>
+      stagedSourceProof({
+        scope,
+        preparation,
+        proof,
+        receivedAtMs,
+        asset: { kind: "regular" },
+        derivationLocator: locators.collateralChange[index]!,
+      }),
+    ),
+  };
+}
+
+export function browserPersistedSourceResult(result: BrowserRangeSourceResult) {
+  if ("offeredChange" in result) return browserPersistedMixedSourceResult(result);
   return {
     schemaVersion: 1 as const,
     authorization: result.authorization.map(serializeDurableCustodyProofArtifact),
     keep: result.keep.map(serializeDurableCustodyProofArtifact),
+  };
+}
+
+export function browserPersistedMixedSourceResult(result: CtfRangeMixedSourceResult) {
+  return {
+    schemaVersion: 1 as const,
+    sourceMode: "mixed-source-ctf-convert" as const,
+    authorization: result.authorization.map(serializeDurableCustodyProofArtifact),
+    offeredChange: result.offeredChange.map(serializeDurableCustodyProofArtifact),
+    collateralChange: result.collateralChange.map(serializeDurableCustodyProofArtifact),
   };
 }
 
@@ -433,13 +581,17 @@ export function browserSourceOperationFromSnapshot(
 export function browserSourceResultFromSnapshot(
   record: DurableCustodyRecord,
   artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
-): CtfRangeSourceResult {
+): BrowserRangeSourceResult {
   if (record.operation.result.state !== "verified-staged") {
     throw new Error("range source result is not staged");
   }
   const reference = record.operation.result.exactResult;
   if (reference === null) throw new Error("range source result reference is missing");
   const row = findArtifact(artifacts, reference.artifactId, "range source result authority");
+  const source = browserSourceOperationFromSnapshot(record, artifacts);
+  if (ctfRangeSourceMode(source) === "mixed-source-ctf-convert") {
+    return decodeBrowserPersistedMixedSourceResult(row.artifact.artifact);
+  }
   return decodeBrowserPersistedSourceResult(row.artifact.artifact);
 }
 
@@ -586,6 +738,36 @@ export function decodeBrowserPersistedSourceResult(value: unknown): CtfRangeSour
   };
 }
 
+export function decodeBrowserPersistedMixedSourceResult(value: unknown): CtfRangeMixedSourceResult {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw new Error("mixed range source result authority is invalid");
+  }
+  if (
+    Object.keys(value).sort().join(",") !==
+    "authorization,collateralChange,offeredChange,schemaVersion,sourceMode"
+  ) {
+    throw new Error("mixed range source result fields are invalid");
+  }
+  if (
+    value.sourceMode !== "mixed-source-ctf-convert" ||
+    !Array.isArray(value.authorization) ||
+    !Array.isArray(value.offeredChange) ||
+    !Array.isArray(value.collateralChange)
+  ) {
+    throw new Error("mixed range source result proof groups are invalid");
+  }
+  const authorization = decodeProofGroup(value.authorization);
+  const offeredChange = decodeProofGroup(value.offeredChange);
+  const collateralChange = decodeProofGroup(value.collateralChange);
+  if (
+    authorization.length === 0 ||
+    authorization.length + offeredChange.length + collateralChange.length > 256
+  ) {
+    throw new Error("mixed range source result exceeds its proof limit");
+  }
+  return { authorization, offeredChange, collateralChange };
+}
+
 export function requireBrowserStagedResult(record: DurableCustodyRecord): {
   resultHandle: string;
   resultFingerprint: string;
@@ -640,6 +822,52 @@ function createProofRow(
     proof,
     asset: browserRangeSourceAsset(preparation),
     receivedAtMs,
+  });
+}
+
+function stagedSourceProof(input: {
+  readonly scope: DurableCustodyScope;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
+  readonly proof: Proof;
+  readonly receivedAtMs: number;
+  readonly asset: BrowserCustodyProofAsset;
+  readonly derivationLocator?: DurableWalletProofDerivationLocator | null;
+  readonly conditionalKeyset?: BrowserCustodyConditionalKeysetAuthority;
+}): StagedBrowserCustodyProof {
+  return {
+    proof: createBrowserCustodyProofRow({
+      scopeId: input.scope.scopeId,
+      normalizedMint: input.preparation.mintUrl,
+      unit: "msat",
+      proof: input.proof,
+      asset: input.asset,
+      receivedAtMs: input.receivedAtMs,
+    }),
+    expectedRevision: null,
+    derivationLocator: input.derivationLocator ?? null,
+    ...(input.conditionalKeyset === undefined
+      ? {}
+      : { conditionalKeyset: input.conditionalKeyset }),
+  };
+}
+
+function sourceInputProof(input: DurableCustodyProofOperationInput["inputs"][number]): Proof {
+  if (
+    typeof input.id !== "string" ||
+    typeof input.secret !== "string" ||
+    typeof input.C !== "string"
+  ) {
+    throw new Error("mixed range source input proof is incomplete");
+  }
+  return deserializeDurableCustodyProofArtifact({
+    schemaVersion: 1,
+    id: input.id,
+    amount: String(amountToNumber(input.amount)),
+    secret: input.secret,
+    C: input.C,
+    dleq: input.dleq ?? null,
+    p2pkE: input.p2pk_e ?? null,
+    witness: input.witness ?? null,
   });
 }
 

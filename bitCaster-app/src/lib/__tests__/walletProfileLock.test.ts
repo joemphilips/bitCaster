@@ -28,4 +28,40 @@ describe("wallet profile Web Lock", () => {
       /cannot safely lock/,
     );
   });
+
+  it("cancels a queued profile-lock request without entering its callback", async () => {
+    const controller = new AbortController();
+    const action = vi.fn(async () => "complete");
+    const request = vi.fn(
+      (_name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) =>
+        new Promise<unknown>((resolve, reject) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Lock request was aborted", "AbortError")),
+            { once: true },
+          );
+          if (options.signal?.aborted) {
+            reject(new DOMException("Lock request was aborted", "AbortError"));
+          } else if (options.signal === undefined) {
+            void Promise.resolve(callback({} as Lock)).then(resolve, reject);
+          }
+        }),
+    );
+    const pending = withWalletProfileLock(
+      scopeId,
+      action,
+      { request } as unknown as LockManager,
+      controller.signal,
+    );
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(request).toHaveBeenCalledWith(
+      `bitcaster:wallet-profile:${scopeId}`,
+      { mode: "exclusive", signal: controller.signal },
+      action,
+    );
+    expect(action).not.toHaveBeenCalled();
+  });
 });
