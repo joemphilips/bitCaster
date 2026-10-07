@@ -326,10 +326,6 @@
       "market_unavailable": "This market is not available for trading.",
       "temporarily_unavailable": "The market preview is temporarily unavailable."
     },
-    "selectedAveragePrice": "Selected-token average price",
-    "selectedWorstPrice": "Selected-token worst price",
-    "confirmedSelectedTokenPrice": "Latest confirmed selected-token price",
-    "projectedFinalPrice": "Estimated last fill price",
     "quoteProceeds": "Quote proceeds",
     "netProceeds": "Net proceeds",
     "settlementInputFee": "Settlement input fee",
@@ -388,7 +384,14 @@
     "recentTrades": "Recent Trades",
     "noTrades": "No trades yet",
     "priceUnavailable": "Price unavailable",
-    "loadMoreTrades": "Load more trades"
+    "loadMoreTrades": "Load more trades",
+    "newProbability": "New probability",
+    "newProbabilityEstimate": "Estimated final execution price for the selected outcome.",
+    "payoutIfYouWin": "Payout if you win",
+    "redemptionFeeNotice": "Face value, not net profit. Redemption fees can apply.",
+    "fees": "Fees",
+    "conditionalShares": "conditional shares",
+    "attemptFeeNotice": "Reviewed fees for this attempt. These amounts do not show which fees were paid. Preparation and refund fees can apply even when no trade completes."
   },
   "comment": {
     "title": "Comments",

@@ -325,10 +325,6 @@
       "market_unavailable": "このマーケットは取引できません。",
       "temporarily_unavailable": "マーケットプレビューを一時的に利用できません。"
     },
-    "selectedAveragePrice": "選択トークンの平均価格",
-    "selectedWorstPrice": "選択トークンの最悪価格",
-    "confirmedSelectedTokenPrice": "選択トークンの最新確定価格",
-    "projectedFinalPrice": "最終約定価格の見積もり",
     "quoteProceeds": "見積受取額",
     "netProceeds": "純受取額",
     "settlementInputFee": "決済入力手数料",
@@ -386,7 +382,14 @@
     "recentTrades": "最近の取引",
     "noTrades": "まだ取引がありません",
     "priceUnavailable": "価格を利用できません",
-    "loadMoreTrades": "さらに取引を表示"
+    "loadMoreTrades": "さらに取引を表示",
+    "newProbability": "取引後の確率",
+    "newProbabilityEstimate": "選択した結果の最終約定価格の見積もりです。",
+    "payoutIfYouWin": "的中時の受取額",
+    "redemptionFeeNotice": "額面金額であり、純利益ではありません。償還手数料がかかる場合があります。",
+    "fees": "手数料",
+    "conditionalShares": "条件付きシェア",
+    "attemptFeeNotice": "この試行で確認した手数料です。この金額は支払い済み手数料を示すものではありません。約定がなくても準備・返金手数料がかかる場合があります。"
   },
   "comment": {
     "title": "コメント",

@@ -323,6 +323,9 @@ export interface MarketDetailProps {
   /** Exact wallet preparation and settlement facts for the current ticket. */
   tradeFeeFacts?: TradeFeeFacts | null;
 
+  /** Display-only reviewed fees for the last cancelled or failed attempt. These do not supply current consent. */
+  attemptedTradeFeeFacts?: TradeFeeFacts | null;
+
   /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
   feeConsentCurrent?: boolean;
 

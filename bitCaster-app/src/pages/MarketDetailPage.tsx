@@ -1210,6 +1210,8 @@ export function MarketDetailPage() {
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
+    reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
+    reviewedFeeIdentityKey?: string;
   } | null>(null);
   const clearCompletedTradeNotice = useCallback(() => {
     setTradeSubmitStatus((status) => {
@@ -1734,6 +1736,17 @@ export function MarketDetailPage() {
     () => currentTradePreviewIdentityKey(currentRouteId ?? ""),
     [currentRouteId, nostrProfilePubkey, nostrSignerMode, signerRevision, walletMnemonic],
   );
+  useEffect(() => {
+    setTradeSubmitStatus((status) =>
+      status?.reviewedFeeIdentityKey && status.reviewedFeeIdentityKey !== previewIdentityKey
+        ? { kind: status.kind, message: status.message }
+        : status,
+    );
+  }, [previewIdentityKey]);
+  const displayedAttemptedTradeFeeFacts =
+    tradeSubmitStatus?.reviewedFeeIdentityKey === previewIdentityKey
+      ? tradeSubmitStatus.reviewedFeeFacts
+      : null;
   const capacityRequest = useMemo<PreviewFokOrderCapacityRequest | null>(() => {
     if (!market || !tradeSelection) return null;
     const resolved = resolveOutcomeSets(market, tradeSelection);
@@ -2121,6 +2134,7 @@ export function MarketDetailPage() {
       }
 
       const clientOrderId = crypto.randomUUID();
+      let reviewedFeeFacts: BrowserCtfRangeOrderFeePreview | null = null;
       try {
         if (abortIfAttemptStale()) return;
         const signedComment = comment?.trim()
@@ -2156,6 +2170,7 @@ export function MarketDetailPage() {
           throw new Error("Wallet fee facts changed. Review the updated trade cost and retry.");
         }
         if (abortIfAttemptStale()) return;
+        reviewedFeeFacts = consentedFeeFacts;
         const response = await submitBrowserCtfRangeOrder({
           market: latestMarket,
           ticket,
@@ -2251,13 +2266,34 @@ export function MarketDetailPage() {
           setTradeAmount(0);
           setTradeComment("");
         }
-        setTradeSubmitStatus({
-          kind: "success",
-          message:
-            response.status === "resting"
-              ? "Order posted to the book."
-              : `Order ${response.status.replace("_", " ")}.`,
-        });
+        switch (response.status) {
+          case "cancelled":
+            setTradeSubmitStatus({
+              kind: "info",
+              message: "Order cancelled.",
+              reviewedFeeFacts,
+              reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+            });
+            break;
+          case "matched":
+          case "filled":
+          case "expired":
+          case "evicted_capacity":
+          case "rejected_capacity":
+          case "failed":
+          case "resting":
+          case "partially_filled":
+            setTradeSubmitStatus({
+              kind: "success",
+              message:
+                response.status === "resting"
+                  ? "Order posted to the book."
+                  : `Order ${response.status.replace("_", " ")}.`,
+            });
+            break;
+          default:
+            assertNever(response.status);
+        }
         if (useSettingsStore.getState().signerBackupState === "needs_backup") {
           setShowBackupReminder(true);
         }
@@ -2272,17 +2308,29 @@ export function MarketDetailPage() {
           setTradeSubmitStatus({
             kind: "info",
             message: t("trade.scoreTopUpCancelled"),
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
           });
           return;
         }
         if (e instanceof BrowserCtfRangeScoreTopUpRequiredError) {
-          setTradeSubmitStatus({ kind: "error", message: e.message });
+          setTradeSubmitStatus({
+            kind: "error",
+            message: e.message,
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+          });
           return;
         }
         if (e instanceof BrowserCtfRangeOrderError && e.code === "source-preparation-failed") {
           setRangeFeePreview(null);
           setFeeFactsRefreshGeneration((current) => current + 1);
-          setTradeSubmitStatus({ kind: "error", message: e.message });
+          setTradeSubmitStatus({
+            kind: "error",
+            message: e.message,
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+          });
           return;
         }
         if (e instanceof Error && e.message.includes("No Nostr signer configured")) {
@@ -2292,6 +2340,8 @@ export function MarketDetailPage() {
         setTradeSubmitStatus({
           kind: "error",
           message: e instanceof Error ? e.message : "Failed to submit order.",
+          reviewedFeeFacts,
+          reviewedFeeIdentityKey: capturedPreviewIdentityKey,
         });
       } finally {
         if (routeStillActive()) {
@@ -2750,6 +2800,7 @@ export function MarketDetailPage() {
         sellHoldings={sellHoldings}
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
+        attemptedTradeFeeFacts={displayedAttemptedTradeFeeFacts}
         feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}

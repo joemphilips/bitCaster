@@ -78,6 +78,7 @@ export function MarketDetail({
   onTradeCommentChange,
   tradePreview,
   tradeFeeFacts,
+  attemptedTradeFeeFacts,
   feeConsentCurrent,
   tradeSide,
   tradeCapacityPreview,
@@ -178,6 +179,7 @@ export function MarketDetail({
       onTradeCommentChange={onTradeCommentChange}
       tradePreview={tradePreview}
       tradeFeeFacts={tradeFeeFacts}
+      attemptedTradeFeeFacts={attemptedTradeFeeFacts}
       feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
       tradeCapacityPreview={tradeCapacityPreview}

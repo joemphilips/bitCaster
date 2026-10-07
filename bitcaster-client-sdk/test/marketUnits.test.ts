@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  conditionalShareWinningPayoutSubunits,
+  formatConditionalShareAmount,
   CTF_COLLATERAL_UNIT,
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   NUMERIC_MARKET_DIVISIBILITY,
@@ -248,3 +250,52 @@ function sharedMarketUnitSettlementVectors(): MarketUnitSettlementVector[] {
   ) as { vectors: MarketUnitSettlementVector[] }
   return fixture.vectors
 }
+
+test('winning payout uses delivered conditional face and registered denomination', () => {
+  assert.equal(
+    conditionalShareWinningPayoutSubunits({
+      deliveredFaceAmountSubunits: 50_000,
+      baseAsset: 'sat',
+      divisibility: 1_000,
+    }),
+    50_000n,
+  )
+  assert.equal(
+    conditionalShareWinningPayoutSubunits({
+      deliveredFaceAmountSubunits: 1_000_000,
+      baseAsset: 'sat',
+      divisibility: 1_000_000,
+    }),
+    1_000_000n,
+  )
+  assert.equal(
+    conditionalShareWinningPayoutSubunits({
+      deliveredFaceAmountSubunits: 999,
+      baseAsset: 'sat',
+      divisibility: 1_000,
+    }),
+    999n,
+  )
+  assert.throws(() =>
+    conditionalShareWinningPayoutSubunits({
+      deliveredFaceAmountSubunits: -1,
+      baseAsset: 'sat',
+      divisibility: 1_000,
+    }),
+  )
+  assert.throws(() =>
+    conditionalShareWinningPayoutSubunits({
+      deliveredFaceAmountSubunits: 1_000,
+      baseAsset: 'sat',
+      divisibility: 1,
+    }),
+  )
+})
+
+test('conditional share fees retain fractional units and registered denomination', () => {
+  assert.equal(formatConditionalShareAmount(5_001n, 1_000), '5.001')
+  assert.equal(formatConditionalShareAmount(1n, 1_000_000), '0.000001')
+  assert.equal(formatConditionalShareAmount(0n, 1_000), '0')
+  assert.equal(formatConditionalShareAmount(1_000_000n, 1_000_000), '1')
+  assert.throws(() => formatConditionalShareAmount(-1n, 1_000))
+})

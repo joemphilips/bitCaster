@@ -127,8 +127,29 @@ longer fits, review a fresh preview and confirm a new attempt. The GUI does
 not retry the order automatically. Wallet or Nostr setup, or a change of
 trading identity, also requires a fresh preview and confirmation.
 
-The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
-settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
+The trade summary shows `New probability` for the selected outcome. This is the
+estimated final execution price. It is not a forecast or the theoretical
+post-trade LMSR probability. The current market price stays in the market header.
+The summary does not show average, worst, or latest-confirmed token price rows.
+The accepted worst per-fill price still protects the submitted order.
+
+For Buy, `Payout if you win` shows the face value of the conditional shares that
+the accepted trade will deliver. Use the registered payout denomination. This
+value is not net profit. Redemption fees can apply. Sell shows expected proceeds
+and no winning payout for sold shares.
+
+One fee summary has a collapsed, accessible breakdown. It groups fees only when
+the asset and unit match. Distinct conditional collections stay separate.
+A cancelled or failed attempt keeps its reviewed preparation fees in a separate labelled
+breakdown. These amounts do not show which fees were paid. A new draft does
+not reuse them as current consent. Dismissal, a new attempt, or an identity
+change clears this display. After reload, the durable recovery notice states
+that preparation and refund fees can apply even when no trade completes.
+Zero, pending, unavailable, and changed-fee states remain explicit.
+Current fee consent is required before confirmation.
+
+The UI displays amounts in sats: 100 msat is 0.1 sats. Buy cash totals add the quote and
+only fees paid in regular collateral. Sell totals
 show gross collateral proceeds and net proceeds after the settlement-input fee
 and preparation costs paid in regular cash.
 Show conditional-token preparation and consolidation fees separately. Do not

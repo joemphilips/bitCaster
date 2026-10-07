@@ -812,6 +812,13 @@ function categoricalMarket(): MarketDetail {
   };
 }
 
+function getFeeBreakdownRow(testId: string): HTMLElement {
+  const row = screen.getByTestId(testId);
+  const disclosure = row.closest("details");
+  if (disclosure && !disclosure.open) fireEvent.click(disclosure.querySelector("summary")!);
+  return row;
+}
+
 describe("fetchMarketDetailWithBooks", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
@@ -2797,12 +2804,128 @@ describe("MarketDetailPage live market status", () => {
       fireEvent.click(screen.getAllByTestId("trade-outcome-no")[0]);
       if (remainsVisible) {
         expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(message);
+        expect(screen.getByTestId("trade-attempt-fees")).toHaveTextContent(
+          "These amounts do not show which fees were paid",
+        );
+        expect(getFeeBreakdownRow("trade-attempt-source-preparation-fee")).toHaveTextContent(
+          "0.000 sats",
+        );
+        expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
+        fireEvent.click(screen.getByTestId("trade-submit-status").querySelector("button")!);
+        expect(screen.queryByTestId("trade-attempt-fees")).not.toBeInTheDocument();
       } else {
         expect(screen.queryByTestId("trade-submit-status")).not.toBeInTheDocument();
       }
       expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("retains reviewed preparation fees for an accepted cancelled FOK with no fills", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      ...rangeFeeFacts("0"),
+      sourcePreparationFeeSubunits: "2",
+    });
+    vi.mocked(submitBrowserCtfRangeOrder).mockResolvedValue({
+      orderId: "cancelled-order",
+      status: "cancelled",
+      remainingAmountSubunits: 1000,
+      fills: [],
+      baseAsset: "sat",
+      divisibility: 1000,
+      activeSettlementGroup: null,
+    });
+    render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Order cancelled."),
+    );
+    expect(screen.getByTestId("trade-submit-status")).toHaveClass("border-amber-200");
+    expect(screen.getByTestId("trade-attempt-fees")).toHaveTextContent(
+      "These amounts do not show which fees were paid",
+    );
+    expect(getFeeBreakdownRow("trade-attempt-source-preparation-fee")).toHaveTextContent(
+      "0.002 sats",
+    );
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId("trade-amount-input")).toHaveValue(null));
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+  });
+
+  it("does not attach an earlier failed attempt's fees to a new pre-submission refusal", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    const openMarket = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(openMarket);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    mockAcceptedOrder();
+    vi.mocked(submitBrowserCtfRangeOrder).mockRejectedValueOnce(new Error("Order refused."));
+    render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    await screen.findByTestId("trade-attempt-fees");
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    vi.mocked(fetchMarketDetail).mockRejectedValueOnce(new Error("Market status unavailable"));
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
+        "Could not refresh market status before submitting",
+      ),
+    );
+    expect(screen.queryByTestId("trade-attempt-fees")).not.toBeInTheDocument();
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the failed attempt fee snapshot on a signer handoff before obtaining new consent", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    mockAcceptedOrder();
+    vi.mocked(submitBrowserCtfRangeOrder).mockRejectedValueOnce(new Error("Order refused."));
+    const rendered = render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    await screen.findByTestId("trade-attempt-fees");
+    let resolveNewFees!: (fees: ReturnType<typeof rangeFeeFacts>) => void;
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveNewFees = resolve;
+        }),
+    );
+    mocks.settingsState.nostrProfile = { pubkey: "b".repeat(64) };
+    rendered.rerender(<MarketDetailPage />);
+    await waitFor(() => expect(screen.queryByTestId("trade-attempt-fees")).not.toBeInTheDocument());
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    await waitFor(() => expect(resolveNewFees).toBeTypeOf("function"));
+    await act(async () => resolveNewFees(rangeFeeFacts("0")));
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    expect(screen.queryByTestId("trade-attempt-fees")).not.toBeInTheDocument();
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+  });
 
   it("retries real fee preparation after a transient mint-metadata failure", async () => {
     const conditionId = "aa".repeat(32);
@@ -3087,8 +3210,8 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-worst-price")).toHaveAttribute(
-        "data-price-numerator",
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
         "500",
       ),
     );
@@ -3211,7 +3334,7 @@ describe("MarketDetailPage live market status", () => {
           },
           sourceMode: "mixed-source-ctf-convert",
         });
-        expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent("0.001 sats");
+        expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent("0.001 sats");
         expect(screen.queryByTestId("trade-feasibility-status")).not.toBeInTheDocument();
       } else {
         expect(await screen.findByTestId("trade-feasibility-status")).toHaveTextContent(refusal);
@@ -3335,7 +3458,7 @@ describe("MarketDetailPage live market status", () => {
       fireEvent.change(amountInput, { target: { value: "1" } });
       await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
       await waitFor(() =>
-        expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("0.000 sats"),
+        expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent("0.000 sats"),
       );
       const callsBeforeReceive = vi.mocked(previewBrowserCtfRangeOrderFees).mock.calls.length;
 
@@ -3349,7 +3472,7 @@ describe("MarketDetailPage live market status", () => {
         ),
       );
       await waitFor(() =>
-        expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
+        expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
       );
       expect(amountInput).toHaveValue(1);
       expect(previewBrowserCtfRangeOrderFees).toHaveBeenLastCalledWith(
@@ -3390,7 +3513,7 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
     await act(async () => resolveNewFees(rangeFeeFacts("1500")));
     await waitFor(() =>
-      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
+      expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
     );
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
@@ -3400,7 +3523,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
-    const feeFactsF0 = rangeFeeFacts("0");
+    const feeFactsF0 = { ...rangeFeeFacts("0"), sourcePreparationFeeSubunits: "2" };
     const feeFactsF1 = rangeFeeFacts("1500");
     let resolveFeeFactsF1!: (feeFacts: typeof feeFactsF1) => void;
     const feeFactsF1Promise = new Promise<typeof feeFactsF1>((resolve) => {
@@ -3432,7 +3555,7 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("0.000 sats"),
+      expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent("0.000 sats"),
     );
     await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
 
@@ -3447,14 +3570,22 @@ describe("MarketDetailPage live market status", () => {
       expect(screen.queryByTestId("trade-consolidation-fee")).not.toBeInTheDocument(),
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
+    expect(screen.getByTestId("trade-attempt-fees")).toHaveTextContent(
+      "These amounts do not show which fees were paid",
+    );
+    expect(getFeeBreakdownRow("trade-attempt-consolidation-fee")).toHaveTextContent("0.000 sats");
+    expect(getFeeBreakdownRow("trade-attempt-source-preparation-fee")).toHaveTextContent(
+      "0.002 sats",
+    );
 
     await act(async () => {
       resolveFeeFactsF1(feeFactsF1);
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
+      expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
     );
     expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    expect(getFeeBreakdownRow("trade-attempt-consolidation-fee")).toHaveTextContent("0.000 sats");
     await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
 
@@ -3462,6 +3593,7 @@ describe("MarketDetailPage live market status", () => {
     expect(submitBrowserCtfRangeOrder).toHaveBeenLastCalledWith(
       expect.objectContaining({ consentedFeeFacts: feeFactsF1 }),
     );
+    await waitFor(() => expect(screen.queryByTestId("trade-attempt-fees")).not.toBeInTheDocument());
   });
 
   it.each([
@@ -3710,8 +3842,8 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-worst-price")).toHaveAttribute(
-        "data-price-numerator",
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
         "400",
       ),
     );
@@ -3740,8 +3872,8 @@ describe("MarketDetailPage live market status", () => {
       });
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-worst-price")).toHaveAttribute(
-        "data-price-numerator",
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
         "250",
       ),
     );
@@ -4225,6 +4357,8 @@ describe("MarketDetailPage live market status", () => {
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
       marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
+    const reviewedFees = { ...rangeFeeFacts("0"), sourcePreparationFeeSubunits: "2" };
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue(reviewedFees);
     vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
       await input.onScoreTopUpRequired?.({
         requiredSats: 5,
@@ -4261,6 +4395,17 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
       "Participation Score top-up was cancelled. The order was not submitted.",
     );
+    const retainedFees = await screen.findByTestId("trade-attempt-fees");
+    expect(retainedFees).toHaveTextContent("These amounts do not show which fees were paid");
+    expect(screen.getByTestId("trade-attempt-fee-breakdown")).not.toHaveAttribute("open");
+    expect(screen.getByTestId("trade-attempt-fee-summary")).toHaveTextContent("0.003 sats");
+    expect(getFeeBreakdownRow("trade-attempt-source-preparation-fee")).toHaveTextContent(
+      "0.002 sats",
+    );
+    expect(submitBrowserCtfRangeOrder).toHaveBeenLastCalledWith(
+      expect.objectContaining({ consentedFeeFacts: reviewedFees }),
+    );
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
   });
 
   it("does not auto-submit when collateral remains insufficient after top-up", async () => {
