@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Settings } from "@/components/settings/Settings";
@@ -47,9 +47,20 @@ export function SettingsPage() {
   // on every unrelated settings-store update.
   const openCategory = useSettingsStore((s) => s.openCategory);
   const [searchParams] = useSearchParams();
-  const [isReplacementOpen, setIsReplacementOpen] = useState(false);
-  const [isReplacingWallet, setIsReplacingWallet] = useState(false);
-  const [walletReplacementError, setWalletReplacementError] = useState<string | null>(null);
+  const [walletDialog, setWalletDialog] = useState<{
+    mode: "setup" | "replace";
+    generation: number;
+  } | null>(null);
+  const [isWalletActionPending, setIsWalletActionPending] = useState(false);
+  const [walletDialogError, setWalletDialogError] = useState<string | null>(null);
+  const walletDialogGeneration = useRef(0);
+  const walletActionGeneration = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      walletDialogGeneration.current += 1;
+    },
+    [],
+  );
 
   // Allow other parts of the app (e.g. the market creation wizard) to
   // deep-link to a specific category via /settings?category=nostr. Use
@@ -152,29 +163,66 @@ export function SettingsPage() {
     userRemoveMint(url);
   }, []);
 
-  const handleOpenWalletReplacement = useCallback(() => {
-    setWalletReplacementError(null);
-    setIsReplacementOpen(true);
+  const closeWalletDialog = useCallback((generation: number) => {
+    if (walletDialogGeneration.current !== generation) return;
+    walletDialogGeneration.current += 1;
+    setWalletDialog(null);
+    setIsWalletActionPending(false);
+    setWalletDialogError(null);
   }, []);
 
-  const handleWalletReplacement = useCallback(
-    async (words: string[]) => {
-      setIsReplacingWallet(true);
-      setWalletReplacementError(null);
+  const openWalletDialog = useCallback((mode: "setup" | "replace") => {
+    const hasWallet = Boolean(useWalletStore.getState().mnemonic.trim());
+    if (hasWallet !== (mode === "replace")) return;
+    const generation = ++walletDialogGeneration.current;
+    setWalletDialogError(null);
+    setIsWalletActionPending(false);
+    setWalletDialog({ mode, generation });
+  }, []);
+
+  const handleWalletAction = useCallback(
+    async (words?: string[]) => {
+      if (
+        !walletDialog ||
+        walletDialogGeneration.current !== walletDialog.generation ||
+        walletActionGeneration.current !== null
+      )
+        return;
+      const { mode, generation } = walletDialog;
+      if (Boolean(useWalletStore.getState().mnemonic.trim()) !== (mode === "replace")) {
+        closeWalletDialog(generation);
+        return;
+      }
+      if (mode === "replace" && !words) return;
+      walletActionGeneration.current = generation;
+      setIsWalletActionPending(true);
+      setWalletDialogError(null);
+      const isCurrent = () => walletDialogGeneration.current === generation;
       try {
-        const result = await useWalletStore.getState().recoverFromMnemonic(words);
-        if (result.valid) {
-          setIsReplacementOpen(false);
-        } else {
-          setWalletReplacementError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+        if (words) {
+          const result = await useWalletStore.getState().recoverFromMnemonic(words);
+          if (!isCurrent()) return;
+          if (!result.valid) {
+            setWalletDialogError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+            return;
+          }
         }
+        if (mode === "setup") {
+          await useWalletStore.getState().ensureImplicitWallet();
+          if (!isCurrent()) return;
+        }
+        closeWalletDialog(generation);
       } catch {
-        setWalletReplacementError(t("wallet.replaceBlockedSafetyChecks"));
+        if (isCurrent())
+          setWalletDialogError(
+            t(mode === "setup" ? "wallet.setupFailed" : "wallet.replaceBlockedSafetyChecks"),
+          );
       } finally {
-        setIsReplacingWallet(false);
+        if (walletActionGeneration.current === generation) walletActionGeneration.current = null;
+        if (isCurrent()) setIsWalletActionPending(false);
       }
     },
-    [t],
+    [walletDialog, closeWalletDialog, t],
   );
 
   const handleThemeChange = useCallback(
@@ -262,7 +310,8 @@ export function SettingsPage() {
         onSignerModeChange={handleSignerModeChange}
         onNsecSubmit={handleNsecSubmit}
         onViewSeedPhrase={walletStore.acknowledgeWalletSeedReminder}
-        onReplaceWallet={handleOpenWalletReplacement}
+        onCreateWallet={() => openWalletDialog("setup")}
+        onReplaceWallet={() => openWalletDialog("replace")}
         onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
         onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
         onDisconnectNostr={handleDisconnectNostr}
@@ -270,14 +319,15 @@ export function SettingsPage() {
         onAddRelay={userAddRelay}
         onRemoveRelay={userRemoveRelay}
       />
-      {isReplacementOpen && (
+      {walletDialog && (
         <WalletSetupModal
-          mode="replace"
-          isCreating={isReplacingWallet}
-          error={walletReplacementError}
-          onClose={() => setIsReplacementOpen(false)}
-          onCreateNew={() => undefined}
-          onImportSeed={handleWalletReplacement}
+          key={walletDialog.generation}
+          mode={walletDialog.mode}
+          isCreating={isWalletActionPending}
+          error={walletDialogError}
+          onClose={() => closeWalletDialog(walletDialog.generation)}
+          onCreateNew={() => void handleWalletAction()}
+          onImportSeed={(words) => handleWalletAction(words)}
         />
       )}
     </>

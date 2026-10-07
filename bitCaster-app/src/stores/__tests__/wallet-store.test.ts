@@ -188,6 +188,72 @@ describe("useWalletStore", () => {
   });
 
   describe("recoverFromMnemonic", () => {
+    it("rolls back a failed initial import before activating its profile and retries the same seed", async () => {
+      const words = bip39.generate();
+      const mnemonic = words.join(" ");
+      setActiveBrowserWalletProfile("");
+      const databaseBefore = db;
+      const previousWallet = useWalletStore.getState();
+      const durableBefore = localStorage.getItem("bitcaster-wallet");
+      const originalSetItem = Storage.prototype.setItem;
+      let failedWalletWrites = 0;
+      const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        if (key === "bitcaster-wallet") {
+          failedWalletWrites += 1;
+          throw new Error("initial wallet write failed");
+        }
+        return originalSetItem.call(this, key, value);
+      });
+      try {
+        await expect(useWalletStore.getState().recoverFromMnemonic(words)).rejects.toThrow(
+          "initial wallet write failed",
+        );
+        const failed = useWalletStore.getState();
+        expect(failed.mnemonic === previousWallet.mnemonic).toBe(true);
+        expect(failed.walletBackupState).toBe(previousWallet.walletBackupState);
+        expect(failed.walletSeedReminderAcknowledgedScopeId).toBe(
+          previousWallet.walletSeedReminderAcknowledgedScopeId,
+        );
+        expect(activeBrowserWalletScopeId()).toBeNull();
+        expect(db === databaseBefore).toBe(true);
+        expect(persistenceMocks.request).not.toHaveBeenCalled();
+        expect(useToastStore.getState().toasts).toHaveLength(0);
+        expect(failedWalletWrites).toBe(2);
+        expect(localStorage.getItem("bitcaster-wallet") === durableBefore).toBe(true);
+      } finally {
+        setItem.mockRestore();
+      }
+      const result = await useWalletStore.getState().recoverFromMnemonic(words);
+      expect(result.valid).toBe(true);
+      expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+      expect(activeBrowserWalletScopeId()).toBe(browserWalletScopeIdFromMnemonic(mnemonic));
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
+      const durableSnapshot = window.localStorage.getItem("bitcaster-wallet");
+      const storage = useWalletStore.persist.getOptions().storage!;
+      try {
+        useWalletStore.persist.setOptions({ storage: { ...storage, setItem: () => undefined } });
+        useWalletStore.setState({
+          mnemonic: "",
+          walletBackupState: "none",
+          walletSeedReminderAcknowledgedScopeId: null,
+        });
+        setActiveBrowserWalletProfile("");
+      } finally {
+        useWalletStore.persist.setOptions({ storage });
+      }
+      expect(window.localStorage.getItem("bitcaster-wallet") === durableSnapshot).toBe(true);
+      await useWalletStore.persist.rehydrate();
+      expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+      expect(useWalletStore.getState().walletBackupState).toBe("confirmed");
+      expect(activeBrowserWalletScopeId()).toBe(browserWalletScopeIdFromMnemonic(mnemonic));
+      expect(window.localStorage.getItem("bitcaster-wallet") === durableSnapshot).toBe(true);
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
+    });
+
     it("accepts a valid phrase", async () => {
       const words = bip39.generate();
       const result = await useWalletStore.getState().recoverFromMnemonic(words);

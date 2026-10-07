@@ -302,3 +302,30 @@ describe("Settings liked-market close notifications opt-in (P22 Link G)", () => 
     await waitFor(() => expect(calls).toEqual([true]));
   });
 });
+
+describe("Settings wallet setup entry", () => {
+  it("offers setup only when the mnemonic is absent", () => {
+    const onCreateWallet = vi.fn();
+    const view = render(
+      <Settings
+        activeCategory="cashu"
+        settings={settingsState()}
+        seedPhrase=""
+        onCreateWallet={onCreateWallet}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create Wallet" }));
+    expect(onCreateWallet).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /view seed phrase/i })).not.toBeInTheDocument();
+    view.rerender(
+      <Settings
+        activeCategory="cashu"
+        settings={settingsState()}
+        seedPhrase="existing wallet"
+        onCreateWallet={onCreateWallet}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Create Wallet" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /view seed phrase/i })).toBeInTheDocument();
+  });
+});

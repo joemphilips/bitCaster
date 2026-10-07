@@ -139,6 +139,12 @@ A new wallet is generated locally in your browser. To restore a wallet, enter
 a valid 12-word recovery phrase. Setup does not submit a payment automatically.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
+If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
+Use the chooser to create a wallet or import a valid 12-word recovery phrase.
+This does not change your Nostr signer or submit a payment or order.
+Create Wallet is hidden when a recovery phrase exists, even with no funds or mints.
+Closing setup after creation starts does not remove an already saved recovery phrase.
+
 To use another wallet, open the wallet section in Settings and import its
 recovery phrase. This replaces the active wallet; it does not add a second
 named profile. Save the current recovery phrase first. Unfinished wallet work

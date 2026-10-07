@@ -135,6 +135,7 @@ export function Settings({
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
+  onCreateWallet,
   onReplaceWallet,
   onMintClick,
   onSignerModeChange,
@@ -484,6 +485,16 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
+        {!hasWallet && onCreateWallet && (
+          <button
+            type="button"
+            data-testid="settings-create-wallet"
+            onClick={onCreateWallet}
+            className="mb-4 px-4 py-2 rounded-lg bg-purple-600 text-white font-medium hover:bg-purple-700"
+          >
+            {t("wallet.createWallet")}
+          </button>
+        )}
         {/* Connected Mints */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">

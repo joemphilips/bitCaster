@@ -60,6 +60,7 @@
   "wallet": {
     "getStarted": "Get Started",
     "startTrading": "Start Trading",
+    "createWallet": "Create Wallet",
     "setupTitle": "Wallet Setup",
     "setupDesc": "Create a new local Cashu wallet or import an existing seed phrase.",
     "setupFailed": "Could not set up wallet. Please try again.",

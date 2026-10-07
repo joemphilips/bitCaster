@@ -60,6 +60,7 @@
   "wallet": {
     "getStarted": "はじめる",
     "startTrading": "トレードを開始",
+    "createWallet": "ウォレットを作成",
     "setupTitle": "ウォレット設定",
     "setupDesc": "新しいローカル Cashu ウォレットを作成するか、既存のシードフレーズをインポートします。",
     "setupFailed": "ウォレットを設定できませんでした。もう一度お試しください。",

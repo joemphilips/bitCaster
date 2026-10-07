@@ -368,14 +368,27 @@ export const useWalletStore = create<WalletState>()(
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };
-        } else {
-          activateWalletProfile(mnemonic);
         }
-        set({
-          mnemonic,
-          walletBackupState: "confirmed",
-          walletSeedReminderAcknowledgedScopeId: null,
-        });
+        const previousSeedState = {
+          mnemonic: get().mnemonic,
+          walletBackupState: get().walletBackupState,
+          walletSeedReminderAcknowledgedScopeId: get().walletSeedReminderAcknowledgedScopeId,
+        };
+        try {
+          set({
+            mnemonic,
+            walletBackupState: "confirmed",
+            walletSeedReminderAcknowledgedScopeId: null,
+          });
+        } catch (error) {
+          try {
+            set(previousSeedState);
+          } catch {
+            // Zustand resets memory before the synchronous rollback storage write.
+          }
+          throw error;
+        }
+        activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };
       },
