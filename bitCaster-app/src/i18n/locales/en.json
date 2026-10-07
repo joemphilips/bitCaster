@@ -565,7 +565,41 @@
     "likedMarketCloseNotificationsDesc": "Show a browser notification when a market you have bookmarked closes. Detection is client-side only — no data leaves your device.",
     "enableNotifications": "Enable notifications",
     "notificationsBlocked": "Notifications are blocked in your browser settings.",
-    "notificationsUnsupported": "Your browser does not support notifications."
+    "notificationsUnsupported": "Your browser does not support notifications.",
+    "pageLoading": "Loading Settings…",
+    "pageLoadFailed": "Settings could not load. Retry to continue.",
+    "pageLoadRetry": "Retry loading Settings",
+    "profileEditLoading": "Loading profile editor…",
+    "profileEditLoadFailed": "The profile editor could not load. Retry to continue.",
+    "profileEditLoadRetry": "Retry loading editor",
+    "profileEditTitle": "Edit public profile",
+    "profileEditHint": "Edit your name, description, and picture URL. Other metadata stays unchanged. Another Nostr client can use a separate display name.",
+    "profileEditFields": {
+      "name": "Name",
+      "about": "Description",
+      "picture": "Picture URL"
+    },
+    "profileEditSave": "Save profile",
+    "profileEditReload": "Reload metadata",
+    "profileEditCancel": "Cancel",
+    "profileEditDismiss": "Dismiss profile message",
+    "profileEditSaved": "Profile saved. The accepted event is retained in this browser.",
+    "profileEditNotAcknowledged": "No relay acknowledged acceptance. Delivery may be uncertain. Your draft is kept. Check the relay results and retry.",
+    "profileEditRetentionFailed": "The profile was accepted by a relay, but this browser could not retain it. Your draft is kept. Check browser storage before editing again.",
+    "profileEditSelectionChanged": "The signer or relay selection changed. Your draft was not applied to the new selection.",
+    "profileEditCancelled": "Profile editing was cancelled. Your draft is kept.",
+    "profileEditCancelledPublished": "Editing was cancelled after publication started. A relay accepted the event, and it is retained for its original identity.",
+    "profileEditDelivery": "Accepted: {{accepted}} · Rejected: {{rejected}} · No acknowledgment: {{uncertain}} · Not sent: {{unsent}}",
+    "profileEditError": {
+      "unavailable": "Connect your Nostr signer before editing.",
+      "read-failed": "The profile read failed. Your draft is kept. Check the selected relays and retry.",
+      "base-unavailable": "Profile metadata is incomplete or unusable. Your draft is kept. Check the selected relays. Repair unusable metadata with another Nostr client.",
+      "invalid-input": "The profile fields exceed the supported size or are invalid. Your draft is kept.",
+      "signing-failed": "Profile signing was refused or returned an altered event. Nothing was published. Your draft is kept.",
+      "selection-changed": "The signer or relay selection changed. No new send will start.",
+      "cancelled": "Profile editing was cancelled. Your draft is kept.",
+      "cache-unavailable": "This browser cannot safely retain profile edits. Your draft is kept. Check browser storage and retry."
+    }
   },
   "deposit": {
     "title": "Deposit",

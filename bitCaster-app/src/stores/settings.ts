@@ -137,7 +137,10 @@ export const useSettingsStore = create<SettingsStoreState>()(
       setSignerSource: (source) => set({ signerSource: source }),
       setSignerBackupState: (state) => set({ signerBackupState: state }),
       setProfile: (profile, status) =>
-        set({ nostrProfile: profile, nostrProfileFetchStatus: status }),
+        set({
+          nostrProfile: profile ? { ...profile, nip05verified: false } : null,
+          nostrProfileFetchStatus: status,
+        }),
       setNsecSecret: (nsec) => set({ nsecSecret: nsec }),
       setLikedMarketCloseNotifications: (enabled) =>
         set({ likedMarketCloseNotifications: enabled }),
@@ -173,6 +176,10 @@ export const useSettingsStore = create<SettingsStoreState>()(
       onRehydrateStorage: () => {
         return (state: SettingsStoreState | undefined) => {
           if (state) {
+            // Historical metadata marked an address as verified from its presence alone.
+            if (state.nostrProfile) {
+              state.nostrProfile = { ...state.nostrProfile, nip05verified: false };
+            }
             state.relays = normalizeRelayConfigs(state.relays);
             applyTheme(state.theme);
           }

@@ -1,10 +1,15 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { Command } from 'commander'
-import { readNativeSignerProfile } from '@bitcaster-market/daemon/nativeSignerProfile'
+import {
+  editNativeSignerProfile,
+  readNativeSignerProfile,
+} from '@bitcaster-market/daemon/nativeSignerProfile'
 import {
   decodePrivateNostrSignerKey,
   generatePrivateNostrSignerKey,
+  validateNostrProfilePatch,
+  type NostrProfilePatch,
 } from '@bitcaster-market/client-sdk'
 import {
   disconnectDaemonSigner,
@@ -25,11 +30,33 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
   signer
     .command('profile')
     .description(
-      'Read and refresh public profile metadata from the selected relays. No stored cache.',
+      'Read public profile metadata from selected relays. No stored cache for reads. Edit supplied fields and retain acknowledged edits.',
     )
-    .action(async () => {
-      if (context.isDryRun()) return print({ action: 'profile', dryRun: true })
-      print(await readNativeSignerProfile())
+    .option('--name <text>', 'Set the canonical name; an empty string clears it')
+    .option('--about <text>', 'Set the description; an empty string clears it')
+    .option('--picture <url>', 'Set the picture URL; an empty string clears it')
+    .action(async (options: NostrProfilePatch) => {
+      const patch = Object.fromEntries(
+        Object.entries(options).filter(([, value]) => value !== undefined),
+      )
+      if (Object.keys(patch).length === 0) {
+        if (context.isDryRun()) return print({ action: 'profile', dryRun: true })
+        return print(await readNativeSignerProfile())
+      }
+      const validated = validateNostrProfilePatch(patch)
+      if (context.isDryRun())
+        return print({ action: 'profile-edit', patch: validated, dryRun: true })
+      const result = await editNativeSignerProfile(validated)
+      print(result)
+      switch (result.status) {
+        case 'saved':
+          break
+        case 'not-acknowledged':
+        case 'published-retention-failed':
+        case 'selection-changed':
+          process.exitCode = 1
+          break
+      }
     })
   signer
     .command('show')

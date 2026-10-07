@@ -23,6 +23,7 @@ export const DAEMON_RUN_LOCK = 'daemon-run.lock'
 export const DAEMON_RPC_SOCKET = 'daemon.sock'
 export const DAEMON_LOG_FILE = 'daemon.log'
 export const DAEMON_PID_FILE = 'daemon-autostart.pid'
+export const NOSTR_PROFILE_CACHE_DIRECTORY = 'nostr-profile-cache'
 
 const recognizedProfileArtifacts = new Set<string>([
   DAEMON_PROFILE_DATABASE,
@@ -33,6 +34,7 @@ const recognizedProfileArtifacts = new Set<string>([
   DAEMON_RPC_SOCKET,
   DAEMON_LOG_FILE,
   DAEMON_PID_FILE,
+  NOSTR_PROFILE_CACHE_DIRECTORY,
 ])
 
 export type ProfileArtifactKind = 'file' | 'directory' | 'symbolic-link' | 'socket' | 'other'
@@ -873,6 +875,15 @@ function assertAdmissibleInventory(inventory: DaemonProfileInventory): void {
   }
   if (inventory.unknownArtifacts.length > 0) {
     throw new ProfileSchemaRefusalError('unknown-artifact')
+  }
+  const profileCache = inventory.artifacts.find(
+    ({ name }) => name === NOSTR_PROFILE_CACHE_DIRECTORY,
+  )
+  if (
+    profileCache &&
+    (profileCache.kind !== 'directory' || (profileCache.identity.mode & 0o777) !== 0o700)
+  ) {
+    throw new ProfileSchemaRefusalError('profile-permission-invalid')
   }
   if (inventory.sqliteDatabase === undefined) {
     throw new ProfileSchemaRefusalError('sqlite-database-missing')

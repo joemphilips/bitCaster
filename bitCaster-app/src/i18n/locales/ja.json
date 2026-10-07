@@ -562,7 +562,41 @@
     "likedMarketCloseNotificationsDesc": "ブックマークしたマーケットがクローズしたときにブラウザ通知を表示します。検知はクライアント側のみで行われ、データが端末の外に出ることはありません。",
     "enableNotifications": "通知を有効にする",
     "notificationsBlocked": "ブラウザの設定で通知がブロックされています。",
-    "notificationsUnsupported": "お使いのブラウザは通知に対応していません。"
+    "notificationsUnsupported": "お使いのブラウザは通知に対応していません。",
+    "pageLoading": "設定画面を読み込み中…",
+    "pageLoadFailed": "設定画面を読み込めませんでした。再試行してください。",
+    "pageLoadRetry": "設定画面の読み込みを再試行",
+    "profileEditLoading": "プロフィール編集画面を読み込み中…",
+    "profileEditLoadFailed": "プロフィール編集画面を読み込めませんでした。再試行してください。",
+    "profileEditLoadRetry": "編集画面の読み込みを再試行",
+    "profileEditTitle": "公開プロフィールを編集",
+    "profileEditHint": "名前、自己紹介、画像URLを編集します。その他のメタデータは保持されます。他のNostrクライアントでは別の表示名が使われる場合があります。",
+    "profileEditFields": {
+      "name": "名前",
+      "about": "自己紹介",
+      "picture": "画像URL"
+    },
+    "profileEditSave": "プロフィールを保存",
+    "profileEditReload": "メタデータを再読み込み",
+    "profileEditCancel": "キャンセル",
+    "profileEditDismiss": "プロフィールのメッセージを閉じる",
+    "profileEditSaved": "プロフィールを保存しました。リレーが受理したイベントはこのブラウザーに保持されます。",
+    "profileEditNotAcknowledged": "受理を確認できたリレーはありません。配信結果が不明な場合があります。入力内容は保持されています。リレーの結果を確認して再試行してください。",
+    "profileEditRetentionFailed": "リレーはプロフィールを受理しましたが、このブラウザーに保持できませんでした。入力内容は保持されています。次の編集前にブラウザーの保存領域を確認してください。",
+    "profileEditSelectionChanged": "署名者またはリレーの選択が変更されました。入力内容は新しい選択には適用されません。",
+    "profileEditCancelled": "プロフィールの編集をキャンセルしました。入力内容は保持されています。",
+    "profileEditCancelledPublished": "公開開始後に編集をキャンセルしました。リレーが受理したイベントは元のIDの記録として保持されます。",
+    "profileEditDelivery": "受理: {{accepted}} · 拒否: {{rejected}} · 応答なし: {{uncertain}} · 未送信: {{unsent}}",
+    "profileEditError": {
+      "unavailable": "編集する前にNostr署名者を接続してください。",
+      "read-failed": "プロフィールを読み込めませんでした。入力内容は保持されています。選択したリレーを確認して再試行してください。",
+      "base-unavailable": "プロフィールのメタデータが不完全か使用できません。入力内容は保持されています。選択したリレーを確認してください。使用できないメタデータは別のNostrクライアントで修復してください。",
+      "invalid-input": "プロフィールの入力がサイズ上限を超えているか無効です。入力内容は保持されています。",
+      "signing-failed": "署名が拒否されたか、変更されたイベントが返されました。公開は行われていません。入力内容は保持されています。",
+      "selection-changed": "署名者またはリレーの選択が変更されました。新しい送信は開始されません。",
+      "cancelled": "プロフィールの編集をキャンセルしました。入力内容は保持されています。",
+      "cache-unavailable": "このブラウザーでプロフィールの編集を安全に保持できません。入力内容は保持されています。保存領域を確認して再試行してください。"
+    }
   },
   "deposit": {
     "title": "入金",

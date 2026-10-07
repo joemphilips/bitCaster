@@ -30,6 +30,30 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
   };
 }
 
+describe("Settings profile picture", () => {
+  it.each(["", "https://example.com/avatar.png"])("renders the picture state for %j", (avatar) => {
+    const { container } = render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nip07",
+          profile: {
+            pubkey: "a".repeat(64),
+            displayName: "Alice",
+            avatar,
+            nip05: "",
+            nip05verified: false,
+            bio: "",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Alice")).toBeVisible();
+    if (avatar) expect(screen.getByRole("img", { name: "Alice" })).toHaveAttribute("src", avatar);
+    else expect(container.querySelector("img")).toBeNull();
+  });
+});
+
 describe("Settings local nsec reveal", () => {
   it("shows local key backup for an implicit signer without a relay profile", () => {
     render(
@@ -327,5 +351,40 @@ describe("Settings wallet setup entry", () => {
     );
     expect(screen.queryByRole("button", { name: "Create Wallet" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /view seed phrase/i })).toBeInTheDocument();
+  });
+});
+
+describe("Settings deferred profile editing", () => {
+  it("loads canonical fields only after the Nostr category opens", async () => {
+    const load = vi.fn().mockResolvedValue({
+      publicKey: "01".repeat(32),
+      fields: { name: "Canonical", about: "Description", picture: "" },
+    });
+    const save = vi.fn();
+    const settings = settingsState({ signerMode: "nip07", signerSource: "nip07" });
+    const view = render(
+      <Settings
+        activeCategory="general"
+        settings={settings}
+        onLoadNostrProfileEdit={load}
+        onSaveNostrProfileEdit={save}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("nostr-profile-editor")).not.toBeInTheDocument();
+    view.rerender(
+      <Settings
+        activeCategory="nostr"
+        settings={settings}
+        onLoadNostrProfileEdit={load}
+        onSaveNostrProfileEdit={save}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId("nostr-profile-name")).toHaveValue("Canonical"));
+    expect(load).toHaveBeenCalledOnce();
+    expect(save).not.toHaveBeenCalled();
   });
 });

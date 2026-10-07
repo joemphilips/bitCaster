@@ -36,6 +36,7 @@ import { getRelayUrlValidationError } from "@/lib/walletOps";
 import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { NativeDialog } from "@/components/shared/NativeDialog";
+import { DeferredNostrProfileEditor } from "./DeferredNostrProfileEditor";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -145,6 +146,8 @@ export function Settings({
   onConfirmWalletBackup,
   onDisconnectNostr,
   onRetryNostrProfile,
+  onLoadNostrProfileEdit,
+  onSaveNostrProfileEdit,
   onAddRelay,
   onRemoveRelay,
 }: SettingsProps) {
@@ -759,11 +762,15 @@ export function Settings({
             )}
             {nostr.profile && (
               <div className="flex items-start gap-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <img
-                  src={nostr.profile.avatar}
-                  alt={nostr.profile.displayName}
-                  className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-600 object-cover"
-                />
+                {nostr.profile.avatar ? (
+                  <img
+                    src={nostr.profile.avatar}
+                    alt={nostr.profile.displayName}
+                    className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-600 object-cover"
+                  />
+                ) : (
+                  <UserCircle aria-hidden="true" className="w-12 h-12 shrink-0 text-slate-400" />
+                )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-slate-900 dark:text-white">
@@ -838,6 +845,13 @@ export function Settings({
               <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
                 {t("settings.externalSignerBackup")}
               </p>
+            )}
+            {onLoadNostrProfileEdit && onSaveNostrProfileEdit && (
+              <DeferredNostrProfileEditor
+                key={nostr.profileEditorKey ?? nostr.signerMode}
+                load={onLoadNostrProfileEdit}
+                save={onSaveNostrProfileEdit}
+              />
             )}
           </div>
         )}

@@ -156,7 +156,19 @@ phrase and any Nostr secret key shown in the app. If you already use a Nostr
 account, connect it instead of generating a new one.
 
 Settings also shows the connected Nostr profile and a refresh control.
-Profile names are display information, not proof of identity.
+In Nostr Settings, edit your name, description, and picture URL. These fields
+are public. The app publishes standard Nostr profile metadata with your connected
+local key or supported browser extension. It does not host picture uploads.
+Other metadata stays unchanged. A separate display name set in another client
+can still take priority over the name you edit here.
+
+Save first reads all selected relays. If a read or signature request fails,
+your draft stays available. A relay rejection and a missing acknowledgement
+are different results; a missing acknowledgement does not prove rejection.
+If publication succeeds but local retention fails, the app reports both facts.
+After a successful durable save, this client preserves that metadata when a
+later relay reply is older. This does not prevent concurrent edits on other devices.
+Profile names and NIP-05 address claims are not proof of identity.
 Use only your saved relay destinations. An empty relay list is an explicit
 opt-out from Nostr relay traffic, not a request to use fallback relays.
 Liked markets and other preferences are not a backup of wallet funds.

@@ -23,6 +23,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { DEFAULT_NOSTR_RELAYS, effectiveRelayUrls } from "./relayDefaults";
 import { selectNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
 import { awaitAbortable } from "@bitcaster/client-sdk/engineClient";
+import type { BrowserProfileSelection } from "./browserNostrProfile";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -233,11 +234,8 @@ let _installedNsec: string | null = null;
  * with nsec before a reload would appear connected (mode still `'nsec'`)
  * but have no live signer — every signing attempt would throw.
  *
- * Also re-fetches the Nostr profile: `nostrProfile` is intentionally not
- * persisted (the relay is source of truth), so after a reload the profile
- * rehydrates as `null` and `ShellRoutes` falls back to "Anon" / no avatar.
- * Kick off the fetch here so the user doesn't see the connected-but-anon
- * state flicker.
+ * Refresh the persisted display profile from the selected relays. Keep a
+ * matching cached display while the verified public read is in progress.
  */
 export async function rehydrateNostrSigner(): Promise<void> {
   const settings = useSettingsStore.getState();
@@ -282,48 +280,33 @@ export async function rehydrateNostrSigner(): Promise<void> {
  * defined in exactly one place.
  */
 export async function fetchAndStoreNostrProfile(): Promise<void> {
-  const settings = useSettingsStore.getState();
+  let selection: BrowserProfileSelection | undefined;
+  let cached: ReturnType<typeof useSettingsStore.getState>["nostrProfile"] = null;
   try {
-    const ndk = getNdk();
-    const signer = ndk.signer;
-    if (!signer) {
-      settings.setProfile(null, "not-found");
+    const { captureBrowserNostrProfileSelection, readBrowserSignerProfile } =
+      await import("./browserNostrProfile");
+    selection = await captureBrowserNostrProfileSelection({ getNdk });
+    const settings = useSettingsStore.getState();
+    cached =
+      settings.nostrProfile?.pubkey === selection.publicKey
+        ? { ...settings.nostrProfile, nip05verified: false }
+        : null;
+    selection.requireCurrent();
+    settings.setProfile(cached, "fetching");
+    const result = await readBrowserSignerProfile(selection);
+    selection.requireCurrent();
+    const profile = result.profile ?? cached;
+    useSettingsStore.getState().setProfile(profile, profile ? "found" : "not-found");
+  } catch {
+    if (!selection) return;
+    try {
+      selection.requireCurrent();
+    } catch {
       return;
     }
-    const user = await signer.user();
-    const cached = settings.nostrProfile?.pubkey === user.pubkey ? settings.nostrProfile : null;
-    settings.setProfile(cached, "fetching");
-    await Promise.race([
-      user.fetchProfile(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000)),
-    ]).catch(() => {
-      /* timeout or relay error — profile stays null */
-    });
-    const profile = user.profile;
-    if (profile) {
-      settings.setProfile(
-        {
-          pubkey: user.pubkey,
-          displayName: profile.displayName ?? profile.name ?? user.pubkey.slice(0, 8),
-          avatar: profile.image ?? "",
-          nip05: profile.nip05 ?? "",
-          nip05verified: !!profile.nip05,
-          bio: profile.bio ?? profile.about ?? "",
-        },
-        "found",
-      );
-    } else if (cached) {
-      settings.setProfile(cached, "found");
-    } else {
-      settings.setProfile(null, "not-found");
-    }
-  } catch {
-    const current = useSettingsStore.getState().nostrProfile;
-    if (current) {
-      settings.setProfile(current, "found");
-    } else {
-      settings.setProfile(null, "not-found");
-    }
+    useSettingsStore.getState().setProfile(cached, cached ? "found" : "not-found");
+  } finally {
+    selection?.dispose();
   }
 }
 

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
-import { Settings } from "@/components/settings/Settings";
+import { DeferredSettings } from "@/components/settings/DeferredSettings";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
@@ -13,7 +13,11 @@ import {
   refreshNostrProfile,
   userConnectNostrSignerMode,
   userConnectNsecIdentity,
+  resolveCreatorPubkey,
 } from "@/lib/identityOps";
+import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import {
   userAddAndSelectMint,
   userAddRelay,
@@ -28,6 +32,15 @@ import type {
   ThemeOption,
 } from "@/types/settings";
 
+async function loadBrowserNostrProfileEdit(signal: AbortSignal) {
+  const adapter = await import("@/lib/browserNostrProfile");
+  return adapter.loadBrowserNostrProfileEdit(signal);
+}
+async function saveBrowserNostrProfileEdit(patch: NostrProfilePatch, signal: AbortSignal) {
+  const adapter = await import("@/lib/browserNostrProfile");
+  return adapter.saveBrowserNostrProfileEdit(patch, signal);
+}
+
 const VALID_CATEGORIES: readonly SettingsCategory[] = ["general", "cashu", "nostr"];
 
 function isValidCategory(value: string | null): value is SettingsCategory {
@@ -40,6 +53,10 @@ export function SettingsPage() {
   const { t } = useTranslation();
   const walletStore = useWalletStore();
   const settingsStore = useSettingsStore();
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+  );
   const navigate = useNavigate();
   // Subscribe to the setter via a selector so we get the stable reference
   // zustand guarantees for actions — avoids re-running the deep-link effect
@@ -133,6 +150,7 @@ export function SettingsPage() {
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
+      profileEditorKey: `${settingsStore.nostrSignerMode}:${signerRevision}:${resolveCreatorPubkey({ nostrSignerMode: settingsStore.nostrSignerMode, nsecSecret: settingsStore.nsecSecret }) ?? ""}`,
     },
   };
 
@@ -288,7 +306,7 @@ export function SettingsPage() {
 
   return (
     <>
-      <Settings
+      <DeferredSettings
         activeCategory={settingsStore.activeCategory}
         settings={settingsState}
         seedPhrase={walletStore.mnemonic}
@@ -314,6 +332,8 @@ export function SettingsPage() {
         onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
         onDisconnectNostr={handleDisconnectNostr}
         onRetryNostrProfile={refreshNostrProfile}
+        onLoadNostrProfileEdit={loadBrowserNostrProfileEdit}
+        onSaveNostrProfileEdit={saveBrowserNostrProfileEdit}
         onAddRelay={userAddRelay}
         onRemoveRelay={userRemoveRelay}
       />

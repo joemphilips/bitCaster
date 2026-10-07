@@ -85,11 +85,32 @@ Stop the daemon before import, generation, connect, or disconnect.
 These changes require the revision from `signer show` and can refuse unfinished work.
 They do not replace the wallet seed.
 
-`signer show` works offline. Each `signer profile` call refreshes public metadata
-from the selected signer's configured relays. It has no stored profile cache.
+`signer show` works offline. With no edit flags, `signer profile` refreshes public
+metadata from the selected signer's configured relays. It does not return a cached profile.
 There is no separate `signer refresh` command.
 Connect a disconnected signer and configure a relay before reading a profile.
 No profile found is a valid result. A profile name is not proof of identity.
+
+Use optional profile flags to edit public kind-0 metadata:
+
+```bash
+bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --about ""
+```
+
+Only supplied fields change. An empty string clears a field. Unrelated metadata,
+including a separate `display_name`, stays unchanged. Profile edits do not require
+the daemon to stop. All selected relay reads must complete before signing.
+An unusable latest profile or an incomplete read refuses the edit.
+Output distinguishes relay acceptance, rejection, and missing acknowledgement.
+Missing acknowledgement does not prove that a relay rejected the event.
+After acceptance, the client retains the signed public profile for later edits.
+It reports local retention failure separately from publication. A successful
+durable save protects the next edit from older relay replies, including after
+reload. It cannot prevent concurrent changes from another client.
+Profile-edit `--dry-run` validates the supplied fields without network access,
+secret unlock, or publication.
+
 `--dry-run` prints the intended signer action without changing the signer or exporting a key.
 Import dry-run still reads and validates the private input files.
 

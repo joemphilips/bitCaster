@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
+import { finalizeEvent, type Event as NostrEvent } from "nostr-tools/pure";
 import { encrypt } from "nostr-tools/nip49";
 
 // Hoisted state lets `vi.mock` factories close over live references.
@@ -273,42 +274,108 @@ describe("Nostr signer revision", () => {
 
 describe("fetchAndStoreNostrProfile", () => {
   let nostrModule: typeof import("../nostr");
+  const key = new Uint8Array(32).fill(1);
+  const signed = finalizeEvent(
+    {
+      kind: 0,
+      created_at: 10,
+      tags: [],
+      content: '{"name":"Signed user","nip05":"claim@example.test"}',
+    },
+    key,
+  );
+  let received: NostrEvent | undefined;
+  let beforeReply: (() => void) | undefined;
+  const cached = {
+    pubkey: signed.pubkey,
+    displayName: "Cached User",
+    avatar: "https://example.com/a.png",
+    nip05: "",
+    nip05verified: false,
+    bio: "",
+  };
 
   beforeEach(async () => {
     vi.resetModules();
-    mocks.settingsState.relays = [{ url: "wss://relay.damus.io" }];
+    received = undefined;
+    beforeReply = undefined;
+    mocks.settingsState.nostrSignerMode = "nip07";
+    mocks.settingsState.nsecSecret = null;
+    mocks.settingsState.relays = [{ url: "wss://relay.example" }];
     mocks.settingsState.nostrProfile = null;
     mocks.ndkCtor.mockClear();
     vi.mocked(mocks.settingsState.setProfile).mockClear();
+    class ProfileSocket {
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((message: MessageEvent) => void) | null = null;
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.onopen?.();
+        });
+      }
+      send(raw: string) {
+        const frame = JSON.parse(raw);
+        if (frame[0] !== "REQ") return;
+        queueMicrotask(() => {
+          beforeReply?.();
+          if (received)
+            this.onmessage?.(
+              new MessageEvent("message", { data: JSON.stringify(["EVENT", frame[1], received]) }),
+            );
+          this.onmessage?.(
+            new MessageEvent("message", { data: JSON.stringify(["EOSE", frame[1]]) }),
+          );
+        });
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", ProfileSocket);
     nostrModule = await import("../nostr");
+    (nostrModule.getNdk() as unknown as { signer: unknown }).signer = {
+      user: async () => ({ pubkey: signed.pubkey }),
+    };
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("keeps a cached matching profile when relays return no fresh kind:0", async () => {
-    const cached = {
-      pubkey: "pk",
-      displayName: "Cached User",
-      avatar: "https://example.com/a.png",
-      nip05: "",
-      nip05verified: false,
-      bio: "",
-    };
     mocks.settingsState.nostrProfile = cached;
-    (
-      nostrModule.getNdk() as unknown as {
-        signer: unknown;
-      }
-    ).signer = {
-      user: () =>
-        Promise.resolve({
-          pubkey: "pk",
-          profile: null,
-          fetchProfile: () => Promise.resolve(),
-        }),
-    };
-
     await nostrModule.fetchAndStoreNostrProfile();
-
     expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(cached, "found");
+  });
+  it("projects only verified signed metadata and never asserts the nip05 claim is verified", async () => {
+    received = signed;
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile).toMatchObject({
+      pubkey: signed.pubkey,
+      displayName: "Signed user",
+      nip05: "claim@example.test",
+      nip05verified: false,
+    });
+    received = { ...signed, content: '{"name":"Forged"}' };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile?.displayName).toBe("Signed user");
+  });
+  it("does not fall back to another identity's cached profile", async () => {
+    mocks.settingsState.nostrProfile = { ...cached, pubkey: "02".repeat(32) };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(null, "not-found");
+  });
+  it("ignores stale completion after selected relays change", async () => {
+    const next = { ...cached, pubkey: "02".repeat(32), displayName: "Next identity" };
+    received = signed;
+    beforeReply = () => {
+      mocks.settingsState.nostrProfile = next;
+      mocks.setRelays([{ url: "wss://next.example" }]);
+    };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile).toEqual(next);
+    expect(mocks.settingsState.setProfile).toHaveBeenCalledTimes(1);
   });
 });
 

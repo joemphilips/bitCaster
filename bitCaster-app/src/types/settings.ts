@@ -1,3 +1,6 @@
+import type { BrowserProfileEditView, BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
+import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+
 // =============================================================================
 // Settings Category
 // =============================================================================
@@ -76,6 +79,7 @@ export interface NostrSettings {
   profile: NostrProfile | null;
   profileFetchStatus: NostrProfileFetchStatus;
   relays: RelayConfig[];
+  profileEditorKey?: string;
 }
 
 // =============================================================================
@@ -134,6 +138,11 @@ export interface SettingsProps {
   onConfirmWalletBackup?: () => void;
   onDisconnectNostr?: () => void;
   onRetryNostrProfile?: () => Promise<void>;
+  onLoadNostrProfileEdit?: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
+  onSaveNostrProfileEdit?: (
+    patch: NostrProfilePatch,
+    signal: AbortSignal,
+  ) => Promise<BrowserProfileSaveResult>;
   onAddRelay?: (url: string) => void;
   onRemoveRelay?: (url: string) => void;
 }

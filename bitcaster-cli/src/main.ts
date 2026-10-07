@@ -138,11 +138,17 @@ async function main(): Promise<void> {
       json?: boolean
     }>()
     configureDataDir(opts.datadir)
+    globalDryRun = opts.dryRun === true
+    globalJson = opts.json === true
+    if (
+      globalDryRun &&
+      actionCommand.name() === 'profile' &&
+      actionCommand.parent?.name() === 'signer'
+    )
+      return
     const config = readConfig(commandAllowsMissingConfig(actionCommand))
     globalEngineUrl = config.engineUrl
     globalMintUrl = config.mintUrl
-    globalDryRun = opts.dryRun === true
-    globalJson = opts.json === true
     void globalEngineUrl
     void globalMintUrl
     void globalDryRun
