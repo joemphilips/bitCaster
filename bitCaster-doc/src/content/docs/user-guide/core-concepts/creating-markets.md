@@ -93,6 +93,11 @@ After creation finishes, the client attempts an encrypted oracle backup on
 the original relays. Backup failure does not undo creation or charge another fee.
 Keep the local oracle record until backup delivery is confirmed.
 
+Changing your Nostr identity does not erase retained oracle data.
+If a different key owns that data, private oracle preparation and recovery
+refuse the key change. Keep the data and return to its original key.
+Saved public artifacts remain available for exact delivery retry without a signer.
+
 Open Settings, then Oracle backups. Use the original local Nostr key to
 list backups or restore one version. The client fetches the selected event
 again and checks its signature, encryption, and oracle binding before import.

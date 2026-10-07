@@ -2,11 +2,11 @@ import { deriveDlcConditionId, type OracleBackupRecord } from "@bitcaster/client
 import { createCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { creatorMarketFixture } from "./creatorOracleFixture";
 import {
-  getKormir,
-  restoreKormirWithNsec,
-  prepareEnumAnnouncement,
-  prepareEnumAttestation,
-} from "@/lib/kormir";
+  fixtureOracleCore as getKormir,
+  restoreFixtureOracleKey as restoreKormirWithNsec,
+  prepareFixtureAnnouncement as prepareEnumAnnouncement,
+  prepareFixtureAttestation as prepareEnumAttestation,
+} from "@/test/localOracleProvider";
 import { importBrowserOracleBackup } from "@/lib/browserOracleBackup";
 
 export async function fixture() {

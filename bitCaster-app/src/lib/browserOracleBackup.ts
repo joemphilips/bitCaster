@@ -24,9 +24,11 @@ import { useSettingsStore } from "@/stores/settings";
 import { resolveNsecIdentity } from "./identityOps";
 import {
   browserOracleBackupValidator,
-  ensureKormirNsec,
-  getKormir,
-  importEnumAnnouncement,
+  BrowserOracleMutationError,
+  prepareBrowserOracleMutation,
+  withBrowserOracleMutation,
+  type BrowserOracleMutation,
+  type Kormir,
 } from "./kormir";
 import {
   browserOraclePrivateAuthorityPort,
@@ -38,56 +40,53 @@ type CreatorStore = typeof useCreatorMarketsStore;
 /** Fresh and resumed unpaid creation must fit the complete private envelope before payment. */
 export async function preflightBrowserOracleCreation(preparation: MarketCreationPreparation) {
   try {
-    const core = await requireOracleCore(preparation.creatorId);
-    await importEnumAnnouncement([], preparation.announcement.announcementTlvHex);
-    const authority = JSON.parse(
-      await core.export_enum_authority(
-        preparation.eventId,
-        preparation.announcement.announcementNostrEventJson,
-      ),
-    ) as OracleBackupRecord["authority"];
-    await encodeOracleBackup(
-      {
-        schemaVersion: 1,
-        conditionId: preparation.announcement.conditionId,
-        oraclePubkey: preparation.creatorId,
-        oracleEventId: preparation.eventId,
-        authority,
-        destinations: {
-          mintUrl: preparation.mintUrl,
-          engineUrl: preparation.engineBaseUrl,
-          relayUrls: preparation.relayUrls,
-        },
-      },
-      browserOracleBackupValidator,
+    await withBrowserOracleMutation(preparation.creatorId, (core) =>
+      preflightLockedBrowserOracleCreation(preparation, core),
     );
   } catch (error) {
+    if (error instanceof BrowserOracleMutationError && error.reason !== "authority-unavailable")
+      throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
   }
 }
 
-export { browserOracleOwnerAuthority } from "@/stores/creatorMarkets";
-
-async function requireOracleCore(expectedPubkey: string) {
-  const settings = useSettingsStore.getState();
-  const identity = resolveNsecIdentity(settings.nsecSecret);
-  if (settings.nostrSignerMode !== "nsec" || !identity || identity.publicKey !== expectedPubkey)
-    throw new OracleBackupError("invalid-record");
-  await ensureKormirNsec([], settings.nsecSecret!);
-  const current = useSettingsStore.getState();
-  if (
-    current.nostrSignerMode !== "nsec" ||
-    resolveNsecIdentity(current.nsecSecret)?.publicKey !== expectedPubkey
-  )
-    throw new OracleBackupError("invalid-record");
-  return getKormir([]);
+/** The caller already owns local oracle admission. */
+export async function preflightLockedBrowserOracleCreation(
+  preparation: MarketCreationPreparation,
+  core: Kormir,
+) {
+  await core.import_enum_event(preparation.announcement.announcementTlvHex);
+  const authority = JSON.parse(
+    await core.export_enum_authority(
+      preparation.eventId,
+      preparation.announcement.announcementNostrEventJson,
+    ),
+  ) as OracleBackupRecord["authority"];
+  await encodeOracleBackup(
+    {
+      schemaVersion: 1,
+      conditionId: preparation.announcement.conditionId,
+      oraclePubkey: preparation.creatorId,
+      oracleEventId: preparation.eventId,
+      authority,
+      destinations: {
+        mintUrl: preparation.mintUrl,
+        engineUrl: preparation.engineBaseUrl,
+        relayUrls: preparation.relayUrls,
+      },
+    },
+    browserOracleBackupValidator,
+  );
 }
+
+export { browserOracleOwnerAuthority } from "@/stores/creatorMarkets";
 
 export async function reconcileLockedBrowserOracle(
   locked: BrowserOracleLockedPort,
   binding: OraclePublicationBinding,
   announcementHex: string,
+  core: Kormir,
   incoming?: OraclePublicationRecord,
 ) {
   const owner = await locked.readOwner(binding.conditionId);
@@ -97,10 +96,9 @@ export async function reconcileLockedBrowserOracle(
       ? !owner.oracle.importComplete
       : owner.market.oracle?.importComplete === false
   )
-    throw new Error("Complete the oracle backup import before signing.");
-  const core = await requireOracleCore(binding.oraclePubkey);
+    throw new BrowserOracleMutationError("import-incomplete");
   // This preserves the bounded deterministic recovery path for old announcements.
-  await importEnumAnnouncement([], announcementHex);
+  await core.import_enum_event(announcementHex);
   return reconcileBrowserOraclePublication({
     binding,
     core: browserOraclePrivateAuthorityPort(core),
@@ -128,6 +126,7 @@ export async function importBrowserOracleBackupEnvelope(
   const identity = resolveNsecIdentity(settings.nsecSecret);
   if (settings.nostrSignerMode !== "nsec" || !identity)
     throw new OracleBackupError("invalid-record");
+  const admission = await prepareBrowserOracleMutation(identity.publicKey);
   const envelope = readOracleBackupEnvelope(event, identity.publicKey);
   const restored = await restoreOracleBackupEnvelope({
     event: envelope,
@@ -135,11 +134,16 @@ export async function importBrowserOracleBackupEnvelope(
     privateKey: hexToBytes(identity.privateKeyHex),
     validator: browserOracleBackupValidator,
   });
-  await importBrowserOracleBackupRecord(restored.record, store, {
-    record: restored.record,
-    event: envelope,
-    sourceRelay: restored.source.sourceRelay,
-  });
+  await importBrowserOracleBackupRecord(
+    restored.record,
+    store,
+    {
+      record: restored.record,
+      event: envelope,
+      sourceRelay: restored.source.sourceRelay,
+    },
+    admission,
+  );
   return restored.descriptor;
 }
 
@@ -151,8 +155,10 @@ async function importBrowserOracleBackupRecord(
     event: unknown;
     sourceRelay: string;
   },
+  capturedAdmission?: BrowserOracleMutation,
 ) {
   try {
+    const admission = capturedAdmission ?? (await prepareBrowserOracleMutation());
     const encoded = await encodeOracleBackup(input, browserOracleBackupValidator);
     const record = JSON.parse(encoded) as OracleBackupRecord;
     const summary = await browserOracleBackupValidator.validateAuthority(
@@ -166,29 +172,35 @@ async function importBrowserOracleBackupRecord(
       outcomes: summary.outcomes,
       announcementEventJson: record.authority.announcementEventJson,
     };
-    const core = await requireOracleCore(record.oraclePubkey);
-    return await store.getState().withOracleMutation(async (locked) => {
-      await locked.retainImportMetadata(
-        {
+    if (admission.publicKey !== record.oraclePubkey) throw new OracleBackupError("invalid-record");
+    const result = await store.getState().withOracleMutation((locked) =>
+      admission.withCoreLocked(async (core) => {
+        await locked.retainImportMetadata(
+          {
+            binding,
+            announcementHex: record.authority.announcementTlvHex,
+            destinations: record.destinations,
+          },
+          authenticatedEnvelope,
+        );
+        await core.import_enum_authority(JSON.stringify(record.authority));
+        await reconcileBrowserOraclePublication({
           binding,
-          announcementHex: record.authority.announcementTlvHex,
-          destinations: record.destinations,
-        },
-        authenticatedEnvelope,
-      );
-      await core.import_enum_authority(JSON.stringify(record.authority));
-      await reconcileBrowserOraclePublication({
-        binding,
-        core: browserOraclePrivateAuthorityPort(core),
-        store: locked,
-        validator: browserOracleBackupValidator,
-      });
-      await locked.markImportComplete(record.conditionId);
-      const owner = await locked.readOwner(record.conditionId);
-      if (!owner) throw new OracleBackupError("invalid-record");
-      return owner;
-    });
+          core: browserOraclePrivateAuthorityPort(core),
+          store: locked,
+          validator: browserOracleBackupValidator,
+        });
+        await locked.markImportComplete(record.conditionId);
+        const owner = await locked.readOwner(record.conditionId);
+        if (!owner) throw new OracleBackupError("invalid-record");
+        return owner;
+      }),
+    );
+    admission.requireCurrent();
+    return result;
   } catch (error) {
+    if (error instanceof BrowserOracleMutationError && error.reason !== "authority-unavailable")
+      throw error;
     if (error instanceof OracleBackupDeliveryError) throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
@@ -199,6 +211,7 @@ async function importBrowserOracleBackupRecord(
 export async function exportLockedBrowserOracleBackup(
   conditionId: string,
   locked: BrowserOracleLockedPort,
+  core?: Kormir,
 ): Promise<OracleBackupRecord> {
   const owner = await locked.readOwner(conditionId);
   if (!owner) throw new OracleBackupError("invalid-record");
@@ -215,7 +228,8 @@ export async function exportLockedBrowserOracleBackup(
       publication,
     });
   } else {
-    const result = await reconcileLockedBrowserOracle(locked, binding, announcementHex);
+    if (!core) throw new OracleBackupError("invalid-record");
+    const result = await reconcileLockedBrowserOracle(locked, binding, announcementHex, core);
     record = {
       schemaVersion: 1,
       conditionId,
@@ -230,15 +244,59 @@ export async function exportLockedBrowserOracleBackup(
   ) as OracleBackupRecord;
 }
 
+/** Terminal public authority needs neither a private core nor a connected signer. */
+async function readLockedTerminalBackup(
+  conditionId: string,
+  locked: BrowserOracleLockedPort,
+): Promise<OracleBackupRecord | null> {
+  const owner = await locked.readOwner(conditionId);
+  if (!owner) throw new OracleBackupError("invalid-record");
+  const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
+  if (!destinations) throw new OracleBackupError("invalid-record");
+  const delivery = await locked.readBackupDelivery(conditionId);
+  const publication = await locked.read(conditionId);
+  if (!delivery?.terminalAdmission || delivery.terminalCommitPending || !publication) return null;
+  return buildTerminalOracleBackupRecord({
+    binding,
+    announcementTlvHex: announcementHex,
+    destinations,
+    publication,
+  });
+}
+
 export async function exportBrowserOracleBackup(
   conditionId: string,
   store: CreatorStore = useCreatorMarketsStore,
 ): Promise<OracleBackupRecord> {
   try {
-    return await store
+    const terminal = await store
       .getState()
-      .withOracleMutation((locked) => exportLockedBrowserOracleBackup(conditionId, locked));
+      .withOracleMutation((locked) => readLockedTerminalBackup(conditionId, locked));
+    if (terminal)
+      return JSON.parse(
+        await encodeOracleBackup(terminal, browserOracleBackupValidator),
+      ) as OracleBackupRecord;
+    const owner = await store.getState().readOracleOwner(conditionId);
+    if (!owner) throw new OracleBackupError("invalid-record");
+    const admission = await prepareBrowserOracleMutation(
+      browserOracleOwnerAuthority(owner).binding.oraclePubkey,
+    );
+    const result = await store
+      .getState()
+      .withOracleMutation((locked) =>
+        admission.withCoreLocked((core) =>
+          exportLockedBrowserOracleBackup(conditionId, locked, core),
+        ),
+      );
+    admission.requireCurrent();
+    return result;
   } catch (error) {
+    if (
+      error instanceof BrowserOracleMutationError &&
+      error.reason !== "authority-unavailable" &&
+      error.reason !== "import-incomplete"
+    )
+      throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
   }

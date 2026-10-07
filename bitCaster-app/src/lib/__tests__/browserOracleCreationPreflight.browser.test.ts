@@ -10,7 +10,11 @@ import {
   prepareBrowserMarketCreation,
   completeBrowserMarketCreation,
 } from "../browserMarketCreation";
-import { getKormir, resetKormir, restoreKormirWithNsec } from "../kormir";
+import { resetKormir } from "@/lib/kormir";
+import {
+  fixtureOracleCore as getKormir,
+  restoreFixtureOracleKey as restoreKormirWithNsec,
+} from "@/test/localOracleProvider";
 
 const state = vi.hoisted(() => ({
   artifact: null as { artifactHex: string; eventJson: string } | null,
@@ -22,7 +26,6 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("../kormir", async (original) => ({
   ...(await original<typeof import("../kormir")>()),
-  ensureKormirNsec: vi.fn(async () => {}),
   prepareEnumAnnouncement: vi.fn(async () => state.artifact!),
 }));
 vi.mock("../slug", async (original) => ({

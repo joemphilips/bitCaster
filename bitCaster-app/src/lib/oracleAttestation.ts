@@ -33,6 +33,8 @@ import {
   decodeOracleAnnouncement,
   decodeOracleAttestation,
   prepareEnumAttestation,
+  prepareBrowserOracleMutation,
+  type BrowserOracleMutation,
 } from "./kormir";
 import { browserOracleOwnerAuthority, reconcileLockedBrowserOracle } from "./browserOracleBackup";
 import { resolveNsecIdentity } from "./identityOps";
@@ -308,6 +310,7 @@ function browserOracleAdapters(
   read: OracleAttestationReadPort,
   owner: typeof useCreatorMarketsStore,
   engineUrl: string,
+  privateAdmission?: BrowserOracleMutation,
 ) {
   const requireSigner = () => {
     const settings = useSettingsStore.getState();
@@ -323,28 +326,39 @@ function browserOracleAdapters(
   return {
     store,
     async prepareAttestation(saved: OraclePublicationBinding, chosen: string) {
+      privateAdmission?.requireCurrent();
       requireSigner();
-      return owner.getState().withOracleMutation(async (locked) => {
-        const reconciled = await reconcileLockedBrowserOracle(locked, saved, announcementHex);
-        if (reconciled.publication?.chosenOutcome !== chosen)
-          throw new Error("The saved oracle outcome cannot change.");
-        if (reconciled.publication.attestation) return reconciled.publication.attestation;
-        requireSigner();
-        const artifact = await prepareEnumAttestation(
-          [],
-          saved.oracleEventId,
-          chosen,
-          saved.announcementEventJson,
-          announcementHex,
-        );
-        const exact = await reconcileLockedBrowserOracle(locked, saved, announcementHex, {
-          ...reconciled.publication,
-          attestation: { attestationHex: artifact.artifactHex, eventJson: artifact.eventJson },
-        });
-        if (!exact.publication?.attestation)
-          throw new Error("Exact oracle preparation is unavailable.");
-        return exact.publication.attestation;
-      });
+      const admission = await prepareBrowserOracleMutation(saved.oraclePubkey);
+      const result = await owner.getState().withOracleMutation((locked) =>
+        admission.withCoreLocked(async (core) => {
+          const reconciled = await reconcileLockedBrowserOracle(
+            locked,
+            saved,
+            announcementHex,
+            core,
+          );
+          if (reconciled.publication?.chosenOutcome !== chosen)
+            throw new Error("The saved oracle outcome cannot change.");
+          if (reconciled.publication.attestation) return reconciled.publication.attestation;
+          const artifact = await prepareEnumAttestation(
+            core,
+            saved.oracleEventId,
+            chosen,
+            saved.announcementEventJson,
+            announcementHex,
+          );
+          const exact = await reconcileLockedBrowserOracle(locked, saved, announcementHex, core, {
+            ...reconciled.publication,
+            attestation: { attestationHex: artifact.artifactHex, eventJson: artifact.eventJson },
+          });
+          if (!exact.publication?.attestation)
+            throw new Error("Exact oracle preparation is unavailable.");
+          return exact.publication.attestation;
+        }),
+      );
+      admission.requireCurrent();
+      privateAdmission?.requireCurrent();
+      return result;
     },
     verifyAttestation: (
       saved: OraclePublicationBinding,
@@ -354,15 +368,18 @@ function browserOracleAdapters(
       verifyRetainedOracleAttestation(saved, chosen, artifact, {
         announcementTlvHex: announcementHex,
       }),
-    publishRelay: async (json: string) => ({
-      eventId: await publishRetainedOracleEvent(relays, json),
-    }),
+    publishRelay: async (json: string) => {
+      privateAdmission?.requireCurrent();
+      return { eventId: await publishRetainedOracleEvent(relays, json) };
+    },
     async submitEngine(saved: OraclePublicationBinding, json: string) {
+      privateAdmission?.requireCurrent();
       const artifact = {
         attestationHex: artifactHex(readSignedOracleEvent(json, 89).content),
         eventJson: json,
       };
       const outcome = (await decodeOracleAttestation(artifact.attestationHex)).outcomes[0]!;
+      privateAdmission?.requireCurrent();
       // A lost response is reconciled by the verified read, not by an HTTP status.
       try {
         await withOracleEngine(
@@ -371,11 +388,14 @@ function browserOracleAdapters(
           engineUrl,
         );
       } catch {
+        privateAdmission?.requireCurrent();
         return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
       }
+      privateAdmission?.requireCurrent();
       return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
     },
     async prepareExplanation(context: OracleExplanationContext, text: string) {
+      privateAdmission?.requireCurrent();
       const signer = requireSigner();
       return JSON.stringify(
         finalizeEvent(
@@ -466,18 +486,24 @@ export async function publishBrowserOracleOutcome(
     await store.getState().saveOracleExplanationDraft(conditionId, explanation);
   const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
   const exactRetry = retained?.attestation !== null && retained?.attestation !== undefined;
+  let privateAdmission: BrowserOracleMutation | undefined;
   if (!exactRetry) {
-    await store.getState().withOracleMutation(async (locked) => {
-      await reconcileLockedBrowserOracle(locked, binding, announcementHex, {
-        binding,
-        chosenOutcome: outcome,
-        attestation: null,
-        relayPublished: false,
-        engineEvidence: null,
-        explanationEventJson: null,
-        explanationRelayPublished: false,
-      });
-    });
+    privateAdmission = await prepareBrowserOracleMutation(binding.oraclePubkey);
+    const admission = privateAdmission;
+    await store.getState().withOracleMutation((locked) =>
+      admission.withCoreLocked(async (core) => {
+        await reconcileLockedBrowserOracle(locked, binding, announcementHex, core, {
+          binding,
+          chosenOutcome: outcome,
+          attestation: null,
+          relayPublished: false,
+          engineEvidence: null,
+          explanationEventJson: null,
+          explanationRelayPublished: false,
+        });
+      }),
+    );
+    admission.requireCurrent();
     retained = await publicationStore.read(conditionId);
   }
   const adapters = browserOracleAdapters(
@@ -488,6 +514,7 @@ export async function publishBrowserOracleOutcome(
     readOriginal,
     store,
     engineUrl,
+    privateAdmission,
   );
   const result =
     exactRetry || retained?.attestation
@@ -499,7 +526,9 @@ export async function publishBrowserOracleOutcome(
           originalDraft?.trim() ? originalDraft : undefined,
           options,
         );
+  privateAdmission?.requireCurrent();
   await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
+  privateAdmission?.requireCurrent();
   if (result.record.relayPublished) {
     // The signed result remains successful while its independent private backup is pending.
     requestBrowserOracleBackup(conditionId, { store });

@@ -1,396 +1,235 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getPublicKey } from "nostr-tools/pure";
+import { useSettingsStore } from "@/stores/settings";
+import { withCreatorDocumentLock } from "../browserCreatorDocumentLock";
 import {
   __setKormirModuleForTest,
   browserOracleBackupValidator,
-  createEnumAnnouncement,
-  ensureKormirNsec,
-  getKormir,
-  getOraclePublicKey,
-  importEnumAnnouncement,
+  BrowserOracleMutationError,
+  prepareBrowserOracleMutation,
   prepareEnumAnnouncement,
   prepareEnumAttestation,
-  resetKormir,
-  restoreKormirWithNsec,
   setPendingKormirNsec,
+  withBrowserOracleMutation,
+  type Kormir,
 } from "../kormir";
-import { getPublicKey } from "nostr-tools/pure";
 
-// ---------------------------------------------------------------------------
-// Fake kormir-wasm module used in place of the real dynamic import.
-// ---------------------------------------------------------------------------
+const signer = vi.hoisted(() => ({ revision: 0 }));
+vi.mock("../nostrSignerRevision", () => ({ getNostrSignerRevision: () => signer.revision }));
+const keyA = "11".repeat(32);
+const keyB = "22".repeat(32);
+const pubkeyA = getPublicKey(new Uint8Array(32).fill(0x11));
 
-interface FakeKormir {
-  instanceId: number;
-  create_enum_event: ReturnType<typeof vi.fn>;
-  prepare_enum_event: ReturnType<typeof vi.fn>;
-  prepare_enum_attestation: ReturnType<typeof vi.fn>;
-  sign_enum_event: ReturnType<typeof vi.fn>;
-  import_enum_event: ReturnType<typeof vi.fn>;
-  list_events: ReturnType<typeof vi.fn>;
-  get_public_key: ReturnType<typeof vi.fn>;
-}
-
-function buildFakeModule(publicKey = "02abc") {
-  const defaultInit = vi.fn().mockResolvedValue({});
-  const restore = vi.fn().mockResolvedValue(undefined);
-  const validateAuthority = vi.fn();
-  let nextId = 0;
-  const newFn = vi.fn().mockImplementation(async (_relays: string[]) => {
-    nextId += 1;
-    const fake: FakeKormir = {
-      instanceId: nextId,
-      create_enum_event: vi.fn().mockResolvedValue("deadbeef"),
-      prepare_enum_event: vi.fn(),
-      prepare_enum_attestation: vi.fn(),
-      sign_enum_event: vi.fn().mockResolvedValue("beeff00d"),
-      import_enum_event: vi.fn().mockResolvedValue("event_1"),
-      list_events: vi.fn().mockResolvedValue([]),
-      get_public_key: vi.fn().mockReturnValue(publicKey),
-    };
-    return fake;
+function fakeProvider() {
+  const origin = { key: keyA, retained: false };
+  const calls = { local: 0, freed: 0 };
+  const restore = vi.fn(async (key: string) => {
+    if (origin.retained && origin.key !== key) throw 7;
+    origin.key = key;
   });
-
-  return {
-    module: {
-      default: defaultInit,
-      Kormir: {
-        restore,
-        validate_enum_authority: validateAuthority,
-        new: newFn,
+  const construct = vi.fn(async (_relays: string[]) => {
+    const installed = origin.key;
+    return {
+      get_public_key: () => getPublicKey(new Uint8Array(32).fill(installed === keyA ? 0x11 : 0x22)),
+      import_enum_event: async () => {
+        calls.local += 1;
+        return "event";
       },
-    } as unknown as Parameters<typeof __setKormirModuleForTest>[0],
-    init: defaultInit,
-    restore,
-    validateAuthority,
-    newFn,
-  };
+      prepare_enum_event: async () => ({
+        artifact_hex: "artifact",
+        nostr_event_json: "event-json",
+        free() {},
+      }),
+      prepare_enum_attestation: async () => ({
+        artifact_hex: "attestation",
+        nostr_event_json: "attestation-json",
+        free() {},
+      }),
+      free: () => {
+        calls.freed += 1;
+      },
+    } as unknown as Kormir;
+  });
+  const validate = vi.fn();
+  const module = {
+    Kormir: { restore, new: construct, validate_enum_authority: validate },
+    JsError: { SigningKeyConflict: 7 },
+  } as unknown as NonNullable<Parameters<typeof __setKormirModuleForTest>[0]>;
+  __setKormirModuleForTest(module);
+  return { origin, calls, restore, construct, validate };
 }
 
-describe("kormir wrapper", () => {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function installLock(beforeAdmission?: () => Promise<void>) {
+  let active = false;
+  const request = vi.fn(async (_name: string, action: () => Promise<unknown>) => {
+    await beforeAdmission?.();
+    active = true;
+    try {
+      return await action();
+    } finally {
+      active = false;
+    }
+  });
+  vi.stubGlobal("navigator", { locks: { request } });
+  return { request, isActive: () => active };
+}
+
+describe("captured browser oracle mutation", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     __setKormirModuleForTest(null);
-    resetKormir();
+    signer.revision = 0;
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: keyA });
   });
-
-  it("validates private authority without opening or changing the oracle store", async () => {
-    const { module, validateAuthority, restore, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-    const summary = {
-      eventId: "event_1",
-      oraclePubkey: "a".repeat(64),
-      outcomes: ["YES", "NO"],
-      noncePoint: "b".repeat(64),
-    };
-    validateAuthority.mockReturnValue(JSON.stringify(summary));
-
-    await expect(
-      browserOracleBackupValidator.validateAuthority("private DTO", summary.oraclePubkey),
-    ).resolves.toEqual(summary);
-    expect(validateAuthority).toHaveBeenCalledWith("private DTO", summary.oraclePubkey);
-    expect(restore).not.toHaveBeenCalled();
-    expect(newFn).not.toHaveBeenCalled();
+  it("stages a login without loading WASM or installing a key", () => {
+    const provider = fakeProvider();
+    setPendingKormirNsec(keyA);
+    expect(provider.restore.mock.calls.length).toBe(0);
+    expect(provider.construct.mock.calls.length).toBe(0);
   });
-
-  it("replaces nested private validation errors with a fixed diagnostic", async () => {
-    const { module, validateAuthority } = buildFakeModule();
-    __setKormirModuleForTest(module);
-    validateAuthority.mockImplementation(() => {
-      throw new Error("private scalar must not escape");
+  it.each(["none", "nip07"] as const)("refuses %s before private preparation", async (mode) => {
+    const provider = fakeProvider();
+    useSettingsStore.setState({ nostrSignerMode: mode });
+    await expect(prepareBrowserOracleMutation(pubkeyA)).rejects.toBeInstanceOf(
+      BrowserOracleMutationError,
+    );
+    expect(provider.restore.mock.calls.length).toBe(0);
+  });
+  it("validates private authority without constructing or changing a core", async () => {
+    const provider = fakeProvider();
+    provider.validate.mockReturnValue(JSON.stringify({ eventId: "event" }));
+    expect(
+      (await browserOracleBackupValidator.validateAuthority("private-input", pubkeyA)).eventId,
+    ).toBe("event");
+    expect(provider.restore.mock.calls.length).toBe(0);
+    expect(provider.construct.mock.calls.length).toBe(0);
+    provider.validate.mockImplementation(() => {
+      throw new Error("private authority detail");
     });
     await expect(
-      browserOracleBackupValidator.validateAuthority("private DTO", "a".repeat(64)),
+      browserOracleBackupValidator.validateAuthority("private-input", pubkeyA),
     ).rejects.toThrow("Private oracle backup: invalid-record.");
   });
-
-  it("caches the Kormir instance across getKormir calls", async () => {
-    const { module, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    const first = await getKormir(["wss://a"]);
-    const second = await getKormir(["wss://a"]);
-
-    expect(first).toBe(second);
-    expect(newFn).toHaveBeenCalledTimes(1);
-    expect(newFn).toHaveBeenCalledWith(["wss://a"]);
-  });
-
-  it("resetKormir drops the cached instance so the next call rebuilds it", async () => {
-    const { module, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    await getKormir(["wss://a"]);
-    resetKormir();
-    await getKormir(["wss://b"]);
-
-    expect(newFn).toHaveBeenCalledTimes(2);
-    expect(newFn).toHaveBeenNthCalledWith(1, ["wss://a"]);
-    expect(newFn).toHaveBeenNthCalledWith(2, ["wss://b"]);
-  });
-
-  it("rebuilds the instance when the relay list changes", async () => {
-    const { module, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    const first = await getKormir(["wss://a"]);
-    const second = await getKormir(["wss://b"]);
-
-    expect(first).not.toBe(second);
-    expect(newFn).toHaveBeenCalledTimes(2);
-    expect(newFn).toHaveBeenNthCalledWith(1, ["wss://a"]);
-    expect(newFn).toHaveBeenNthCalledWith(2, ["wss://b"]);
-  });
-
-  it("does not rebuild when the relay list is reused", async () => {
-    const { module, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    await getKormir(["wss://a", "wss://b"]);
-    await getKormir(["wss://a", "wss://b"]);
-
-    expect(newFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears the cache when construction fails so a retry can re-attempt", async () => {
-    const defaultInit = vi.fn().mockResolvedValue({});
-    const restore = vi.fn().mockResolvedValue(undefined);
-    const newFn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("boom"))
-      .mockResolvedValueOnce({ instanceId: 1 });
-    const module = {
-      default: defaultInit,
-      Kormir: { restore, new: newFn },
-    } as unknown as Parameters<typeof __setKormirModuleForTest>[0];
-    __setKormirModuleForTest(module);
-
-    await expect(getKormir(["wss://a"])).rejects.toThrow("boom");
-    // After the failure the cached promise must be cleared so the next call
-    // rebuilds instead of resurfacing the stale rejection forever.
-    const second = await getKormir(["wss://a"]);
-    expect(second).toBeDefined();
-    expect(newFn).toHaveBeenCalledTimes(2);
-  });
-
-  it("restoreKormirWithNsec pushes the key into kormir and clears the cached instance", async () => {
-    const { module, restore, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    await getKormir(["wss://a"]);
-    expect(newFn).toHaveBeenCalledTimes(1);
-
-    await restoreKormirWithNsec("nsec1example");
-    expect(restore).toHaveBeenCalledWith("nsec1example");
-
-    await getKormir(["wss://a"]);
-    expect(newFn).toHaveBeenCalledTimes(2);
-  });
-
-  it("setPendingKormirNsec defers restore until the next getKormir call", async () => {
-    const { module, restore, newFn } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    setPendingKormirNsec("11".repeat(32));
-    // No kormir calls yet — the nsec should be remembered, not applied.
-    expect(restore).not.toHaveBeenCalled();
-    expect(newFn).not.toHaveBeenCalled();
-
-    await getKormir(["wss://a"]);
-
-    expect(restore).toHaveBeenCalledWith("11".repeat(32));
-    expect(newFn).toHaveBeenCalledTimes(2);
-    expect(newFn.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]);
-  });
-
-  it("setPendingKormirNsec is a one-shot: a second getKormir does not re-restore", async () => {
-    const { module, restore } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    setPendingKormirNsec("11".repeat(32));
-    await getKormir(["wss://a"]);
-    // Reset the in-memory instance so the next call rebuilds, but no new
-    // pending nsec has been set.
-    resetKormir();
-    await getKormir(["wss://a"]);
-
-    expect(restore).toHaveBeenCalledTimes(1);
-  });
-
-  it("setPendingKormirNsec keeps existing kormir storage when the key already matches", async () => {
-    const nsecHex = "11".repeat(32);
-    const { module, restore, newFn } = buildFakeModule(`02${getPublicKey(hexToBytes(nsecHex))}`);
-    __setKormirModuleForTest(module);
-
-    setPendingKormirNsec(nsecHex);
-    await getKormir(["wss://a"]);
-
-    expect(restore).not.toHaveBeenCalled();
-    expect(newFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("setPendingKormirNsec(null) forgets a previously-staged key", async () => {
-    const { module, restore } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    setPendingKormirNsec("nsec1deferred");
-    setPendingKormirNsec(null);
-    await getKormir(["wss://a"]);
-
-    expect(restore).not.toHaveBeenCalled();
-  });
-
-  it("createEnumAnnouncement delegates to the instance and returns the announcement hex", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    const hex = await createEnumAnnouncement(
-      ["wss://a"],
-      "what_is_the_bitcoin_price",
-      ["Yes", "No"],
-      1_750_000_000,
-      "What is the Bitcoin price?",
-      "Resolve based on the reference exchange close.",
-    );
-
-    expect(hex).toBe("deadbeef");
-    const instance = (await getKormir(["wss://a"])) as unknown as FakeKormir;
-    expect(instance.create_enum_event).toHaveBeenCalledWith(
-      "what_is_the_bitcoin_price",
-      ["Yes", "No"],
-      1_750_000_000,
-      "What is the Bitcoin price?",
-      "Resolve based on the reference exchange close.",
-    );
-  });
-
-  it("prepares the exact announcement envelope without publishing", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-    const instance = (await getKormir(["wss://a"])) as unknown as FakeKormir;
-    const prepared = {
-      artifact_hex: "deadbeef",
-      nostr_event_json: '{ "kind": 88, "content": "exact signed announcement" }',
-      free: vi.fn(),
-    };
-    instance.prepare_enum_event.mockResolvedValue(prepared);
-
-    await expect(
-      prepareEnumAnnouncement(
-        ["wss://a"],
-        "event_1",
-        ["Alpha", "Beta"],
-        1_750_000_000,
-        "Event title",
-        "Event description",
-      ),
-    ).resolves.toEqual({
-      artifactHex: "deadbeef",
-      eventJson: prepared.nostr_event_json,
+  it("installs then constructs a fresh local core under the existing document lock", async () => {
+    const provider = fakeProvider();
+    const lock = installLock();
+    const order: string[] = [];
+    provider.restore.mockImplementation(async (key) => {
+      expect(lock.isActive()).toBe(true);
+      order.push("install");
+      provider.origin.key = key;
     });
-    expect(instance.prepare_enum_event).toHaveBeenCalledWith(
-      "event_1",
-      ["Alpha", "Beta"],
-      1_750_000_000,
-      "Event title",
-      "Event description",
-    );
-    expect(instance.create_enum_event).not.toHaveBeenCalled();
-    expect(prepared.free).toHaveBeenCalledOnce();
-  });
-
-  it("imports then prepares an attestation against the retained announcement without publishing", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-    const instance = (await getKormir(["wss://a"])) as unknown as FakeKormir;
-    const announcementEventJson = '{ "kind": 88, "id": "retained announcement" }';
-    const prepared = {
-      artifact_hex: "beeff00d",
-      nostr_event_json: '{ "kind": 89, "content": "exact signed attestation" }',
-      free: vi.fn(),
-    };
-    instance.prepare_enum_attestation.mockResolvedValue(prepared);
-
-    await expect(
-      prepareEnumAttestation(["wss://a"], "event_1", "Alpha", announcementEventJson, "deadbeef"),
-    ).resolves.toEqual({
-      artifactHex: "beeff00d",
-      eventJson: prepared.nostr_event_json,
+    const construct = provider.construct.getMockImplementation()!;
+    provider.construct.mockImplementation(async (relays) => {
+      expect(lock.isActive()).toBe(true);
+      expect(relays.length).toBe(0);
+      order.push("construct");
+      return construct(relays);
     });
-    expect(instance.import_enum_event).toHaveBeenCalledWith("deadbeef");
-    expect(instance.import_enum_event.mock.invocationCallOrder[0]).toBeLessThan(
-      instance.prepare_enum_attestation.mock.invocationCallOrder[0],
-    );
-    expect(instance.prepare_enum_attestation).toHaveBeenCalledWith(
-      "event_1",
-      "Alpha",
-      announcementEventJson,
-    );
-    expect(instance.sign_enum_event).not.toHaveBeenCalled();
-    expect(prepared.free).toHaveBeenCalledOnce();
+    await withBrowserOracleMutation(pubkeyA, async (core) => {
+      expect(lock.isActive()).toBe(true);
+      await core.import_enum_event("public-artifact");
+      order.push("handoff");
+    });
+    expect(order).toEqual(["install", "construct", "handoff"]);
+    expect(lock.request.mock.calls.length).toBe(1);
+    expect(lock.request.mock.calls[0]?.[0]).toBe("bitcaster-creator-markets");
+    expect(provider.calls.freed).toBe(1);
   });
-
-  it("preserves a preparation refusal without falling back to an unrelated stored attestation", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-    const instance = (await getKormir(["wss://a"])) as unknown as FakeKormir;
-    instance.prepare_enum_attestation.mockRejectedValue(new Error("Conflicting outcome"));
-    instance.list_events.mockResolvedValue([{ event_name: "event_1", attestation: "beeff00d" }]);
-
+  it("does not trust a stale tab core when origin-wide retained authority has another key", async () => {
+    const provider = fakeProvider();
+    const stale = await provider.construct([]);
+    provider.construct.mockClear();
+    provider.origin.key = keyB;
+    provider.origin.retained = true;
+    const operation = vi.fn(async (_core: Kormir) => {});
+    installLock();
+    await expect(withBrowserOracleMutation(pubkeyA, operation)).rejects.toMatchObject({
+      reason: "key-conflict",
+    });
+    expect(stale.get_public_key() === pubkeyA).toBe(true);
+    expect(provider.origin.key === keyB).toBe(true);
+    expect(provider.origin.retained).toBe(true);
+    expect(provider.construct.mock.calls.length).toBe(0);
+    expect(operation.mock.calls.length).toBe(0);
+  });
+  it.each(["different-key", "A-B-A", "signer-revision"])(
+    "cancels %s before lock admission",
+    async (change) => {
+      const provider = fakeProvider();
+      const gate = deferred<void>();
+      installLock(() => gate.promise);
+      const admission = await prepareBrowserOracleMutation(pubkeyA);
+      const pending = withCreatorDocumentLock(() => admission.withCoreLocked(async () => {}));
+      if (change === "signer-revision") signer.revision += 1;
+      else {
+        useSettingsStore.setState({ nsecSecret: keyB });
+        if (change === "A-B-A") useSettingsStore.setState({ nsecSecret: keyA });
+      }
+      gate.resolve();
+      await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
+      expect(provider.restore.mock.calls.length).toBe(0);
+      expect(provider.construct.mock.calls.length).toBe(0);
+    },
+  );
+  it("finishes admitted local writes for the captured owner and blocks subsequent work", async () => {
+    const provider = fakeProvider();
+    installLock();
+    const admitted = deferred<void>();
+    const finish = deferred<void>();
+    const publish = vi.fn();
+    const pending = withBrowserOracleMutation(pubkeyA, async (core) => {
+      admitted.resolve();
+      await finish.promise;
+      await core.import_enum_event("public-artifact");
+      expect(core.get_public_key() === pubkeyA).toBe(true);
+    }).then(() => {
+      publish();
+    });
+    await admitted.promise;
+    useSettingsStore.setState({ nsecSecret: keyB });
+    finish.resolve();
+    await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
+    expect(provider.calls.local).toBe(1);
+    expect(provider.origin.key === keyA).toBe(true);
+    expect(publish.mock.calls.length).toBe(0);
+  });
+  it("expires the core and single-use admission after its bounded callback", async () => {
+    fakeProvider();
+    installLock();
+    const admission = await prepareBrowserOracleMutation(pubkeyA);
+    let lease!: Kormir;
+    await withCreatorDocumentLock(() =>
+      admission.withCoreLocked(async (core) => {
+        lease = core;
+      }),
+    );
+    expect(() => lease.get_public_key()).toThrow("The local oracle mutation has expired.");
     await expect(
-      prepareEnumAttestation(["wss://a"], "event_1", "Beta", '{"kind":88}'),
-    ).rejects.toThrow("Conflicting outcome");
-    expect(instance.list_events).not.toHaveBeenCalled();
-    expect(instance.sign_enum_event).not.toHaveBeenCalled();
-    expect(instance.import_enum_event).not.toHaveBeenCalled();
+      withCreatorDocumentLock(() => admission.withCoreLocked(async () => {})),
+    ).rejects.toMatchObject({ reason: "expired" });
   });
-
-  it("importEnumAnnouncement delegates to the instance and returns the recovered event id", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    const eventId = await importEnumAnnouncement(["wss://a"], "annhex");
-
-    expect(eventId).toBe("event_1");
-    const instance = (await getKormir(["wss://a"])) as unknown as FakeKormir;
-    expect(instance.import_enum_event).toHaveBeenCalledWith("annhex");
-  });
-
-  it("getOraclePublicKey returns the key from the kormir instance", async () => {
-    const { module } = buildFakeModule();
-    __setKormirModuleForTest(module);
-
-    const key = await getOraclePublicKey(["wss://a"]);
-
-    expect(key).toBe("02abc");
-  });
-
-  it("ensureKormirNsec does not restore when kormir already uses the requested key", async () => {
-    const nsecHex = "11".repeat(32);
-    const publicKey = `02${getPublicKey(hexToBytes(nsecHex))}`;
-    const { module, restore } = buildFakeModule(publicKey);
-    __setKormirModuleForTest(module);
-
-    await ensureKormirNsec(["wss://a"], nsecHex);
-
-    expect(restore).not.toHaveBeenCalled();
-  });
-
-  it("ensureKormirNsec restores and rebuilds when kormir uses a different key", async () => {
-    const { module, restore, newFn } = buildFakeModule(`02${"22".repeat(32)}`);
-    __setKormirModuleForTest(module);
-
-    await ensureKormirNsec(["wss://a"], "11".repeat(32));
-
-    expect(restore).toHaveBeenCalledWith("11".repeat(32));
-    expect(newFn).toHaveBeenCalledTimes(1);
-    await getKormir(["wss://a"]);
-    expect(newFn).toHaveBeenCalledTimes(2);
+  it("prepares announcement and attestation through the same admitted core", async () => {
+    const provider = fakeProvider();
+    installLock();
+    await withBrowserOracleMutation(pubkeyA, async (core) => {
+      expect(
+        (await prepareEnumAnnouncement(core, "event", ["Yes", "No"], 1800000000)).artifactHex,
+      ).toBe("artifact");
+      expect(
+        (await prepareEnumAttestation(core, "event", "Yes", "event-json", "public-artifact"))
+          .artifactHex,
+      ).toBe("attestation");
+    });
+    expect(provider.construct.mock.calls.length).toBe(1);
+    expect(provider.calls.local).toBe(1);
   });
 });
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}

@@ -36,29 +36,18 @@ let _ndk: NDK | null = null;
 // the snapshot lets us skip the pool walk when the user hasn't added or
 // removed a relay since the previous call.
 let _lastReconciledRelaysKey = "";
-let _signerRevision = 0;
-const _signerRevisionSubscribers = new Set<() => void>();
 
 type TeardownCapableSigner = NDKSigner & {
   destroy?: () => void | Promise<void>;
   stop?: () => void | Promise<void>;
 };
 
-/** Returns the session-only revision of application-installed Nostr signers. */
-export function getNostrSignerRevision(): number {
-  return _signerRevision;
-}
-
-/** Subscribes to application-installed Nostr signer replacements. */
-export function subscribeToNostrSignerRevision(listener: () => void): () => void {
-  _signerRevisionSubscribers.add(listener);
-  return () => _signerRevisionSubscribers.delete(listener);
-}
+export { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrSignerRevision";
+import { advanceNostrSignerRevision } from "./nostrSignerRevision";
 
 function installNostrSigner(ndk: NDK, signer: NDKSigner): void {
   ndk.signer = signer;
-  _signerRevision += 1;
-  for (const listener of _signerRevisionSubscribers) listener();
+  advanceNostrSignerRevision();
 }
 
 export function createExplicitRelayNdk(opts: NDKConstructorParams = {}): NDK {

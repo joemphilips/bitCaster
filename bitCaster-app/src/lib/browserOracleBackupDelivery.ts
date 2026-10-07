@@ -7,13 +7,15 @@ import {
   readOracleBackupRelayEvent,
   retryOracleBackupDelivery,
   type OracleBackupDeliveryAdapters,
+  type OracleBackupDeliveryState,
 } from "@bitcaster/client-sdk/oracleBackupDelivery";
-import { hexToBytes } from "nostr-tools/utils";
 import { OracleBackupError } from "@bitcaster/client-sdk";
 import { browserOracleOwnerAuthority, useCreatorMarketsStore } from "@/stores/creatorMarkets";
-import { useSettingsStore } from "@/stores/settings";
-import { resolveNsecIdentity } from "./identityOps";
-import { browserOracleBackupValidator } from "./kormir";
+import {
+  browserOracleBackupValidator,
+  prepareBrowserOracleMutation,
+  type BrowserOracleMutation,
+} from "./kormir";
 import { exportLockedBrowserOracleBackup } from "./browserOracleBackup";
 import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 
@@ -24,12 +26,11 @@ export interface BrowserOracleBackupDeliveryOptions {
   readonly publishRelay?: OracleBackupDeliveryAdapters["publishRelay"];
 }
 
-function requireBackupKey(pubkey: string) {
-  const settings = useSettingsStore.getState();
-  const identity = resolveNsecIdentity(settings.nsecSecret);
-  if (settings.nostrSignerMode !== "nsec" || !identity || identity.publicKey !== pubkey)
-    throw new OracleBackupDeliveryError("preparation-key-unavailable");
-  return hexToBytes(identity.privateKeyHex);
+function retainedDelivery(previous: OracleBackupDeliveryState | null, terminalReady: boolean) {
+  return (
+    previous?.current?.mode === "terminal" ||
+    (previous?.current?.mode === "initial" && !terminalReady)
+  );
 }
 
 /** Local preparation owns the document lock. Saved relay retry never reads the signer. */
@@ -37,54 +38,72 @@ export function createBrowserOracleBackupDeliveryAdapters(
   options: BrowserOracleBackupDeliveryOptions = {},
 ): OracleBackupDeliveryAdapters {
   const owner = options.store ?? useCreatorMarketsStore;
+  let preparationAdmission: BrowserOracleMutation | undefined;
   return {
     store: {
       read: (id) => owner.getState().readOracleBackupDelivery(id),
       async prepare(id) {
         try {
-          return await owner.getState().withOracleMutation(async (locked) => {
-            const savedOwner = await locked.readOwner(id);
-            if (!savedOwner) throw new OracleBackupDeliveryError("invalid-source");
-            const { binding, announcementHex, destinations } =
-              browserOracleOwnerAuthority(savedOwner);
-            if (!destinations) throw new OracleBackupDeliveryError("invalid-source");
+          const retained = await owner.getState().withOracleMutation(async (locked) => {
             const previous = await locked.readBackupDelivery(id);
             const publication = await locked.read(id);
-            const terminalReady = publication?.attestation != null && publication.relayPublished;
-            if (
-              previous?.current?.mode === "terminal" ||
-              (previous?.current?.mode === "initial" && !terminalReady)
-            )
-              return previous;
-            const privateKey = requireBackupKey(binding.oraclePubkey);
-            const record = terminalReady
-              ? buildTerminalOracleBackupRecord({
-                  binding,
-                  announcementTlvHex: announcementHex,
-                  destinations,
-                  publication: publication!,
-                })
-              : await exportLockedBrowserOracleBackup(id, locked);
-            const state = await prepareOracleBackupDelivery({
-              record,
+            return retainedDelivery(
               previous,
-              privateKey,
-              validator: browserOracleBackupValidator,
-              nowSeconds: options.nowSeconds?.() ?? Math.floor(Date.now() / 1000),
-              observedEvents: options.observedEvents,
-            });
-            requireBackupKey(binding.oraclePubkey);
-            const currentOwner = await locked.readOwner(id);
-            if (!currentOwner) throw new OracleBackupDeliveryError("invalid-source");
-            const current = browserOracleOwnerAuthority(currentOwner);
-            assertOracleBackupDeliveryOwner(state, {
-              binding: current.binding,
-              relayUrls: current.destinations!.relayUrls,
-              publication: await locked.read(id),
-            });
-            await locked.saveBackupPreparation(id, state);
-            return (await locked.readBackupDelivery(id))!;
+              publication?.attestation != null && publication.relayPublished,
+            )
+              ? previous
+              : null;
           });
+          if (retained) return retained;
+          const savedOwner = await owner.getState().readOracleOwner(id);
+          if (!savedOwner) throw new OracleBackupDeliveryError("invalid-source");
+          const admission = await prepareBrowserOracleMutation(
+            browserOracleOwnerAuthority(savedOwner).binding.oraclePubkey,
+          );
+          preparationAdmission = admission;
+          const result = await owner.getState().withOracleMutation((locked) =>
+            admission.withCoreLocked(async (core, privateKey) => {
+              const savedOwner = await locked.readOwner(id);
+              if (!savedOwner) throw new OracleBackupDeliveryError("invalid-source");
+              const { binding, announcementHex, destinations } =
+                browserOracleOwnerAuthority(savedOwner);
+              if (!destinations) throw new OracleBackupDeliveryError("invalid-source");
+              const previous = await locked.readBackupDelivery(id);
+              const publication = await locked.read(id);
+              const terminalReady = publication?.attestation != null && publication.relayPublished;
+              if (binding.oraclePubkey !== admission.publicKey)
+                throw new OracleBackupDeliveryError("invalid-source");
+              if (retainedDelivery(previous, terminalReady)) return previous!;
+              const record = terminalReady
+                ? buildTerminalOracleBackupRecord({
+                    binding,
+                    announcementTlvHex: announcementHex,
+                    destinations,
+                    publication: publication!,
+                  })
+                : await exportLockedBrowserOracleBackup(id, locked, core);
+              const state = await prepareOracleBackupDelivery({
+                record,
+                previous,
+                privateKey,
+                validator: browserOracleBackupValidator,
+                nowSeconds: options.nowSeconds?.() ?? Math.floor(Date.now() / 1000),
+                observedEvents: options.observedEvents,
+              });
+              const currentOwner = await locked.readOwner(id);
+              if (!currentOwner) throw new OracleBackupDeliveryError("invalid-source");
+              const current = browserOracleOwnerAuthority(currentOwner);
+              assertOracleBackupDeliveryOwner(state, {
+                binding: current.binding,
+                relayUrls: current.destinations!.relayUrls,
+                publication: await locked.read(id),
+              });
+              await locked.saveBackupPreparation(id, state);
+              return (await locked.readBackupDelivery(id))!;
+            }),
+          );
+          admission.requireCurrent();
+          return result;
         } catch (error) {
           if (error instanceof OracleBackupDeliveryError) throw error;
           if (error instanceof OracleBackupError && error.reason === "oversized")
@@ -95,15 +114,12 @@ export function createBrowserOracleBackupDeliveryAdapters(
       confirm: (id, ack) => owner.getState().confirmOracleBackupDelivery(id, ack),
       commitTerminal: (id, admission) => owner.getState().commitOracleBackupTerminal(id, admission),
     },
-    publishRelay:
-      options.publishRelay ??
-      (async (relayUrl, eventJson) => {
-        readOracleBackupRelayEvent(eventJson);
-        return {
-          eventId: await publishRetainedOracleEvent([relayUrl], eventJson),
-          relayUrl,
-        };
-      }),
+    publishRelay: async (relayUrl, eventJson) => {
+      preparationAdmission?.requireCurrent();
+      if (options.publishRelay) return options.publishRelay(relayUrl, eventJson);
+      readOracleBackupRelayEvent(eventJson);
+      return { eventId: await publishRetainedOracleEvent([relayUrl], eventJson), relayUrl };
+    },
   };
 }
 

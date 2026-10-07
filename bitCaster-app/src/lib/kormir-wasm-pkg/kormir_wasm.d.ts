@@ -48,6 +48,7 @@ export enum JsError {
     InvalidOutcome = 4,
     Internal = 5,
     Nostr = 6,
+    SigningKeyConflict = 7,
 }
 
 export class Kormir {

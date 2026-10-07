@@ -27,8 +27,8 @@ const {
   mockGetAvailableRegularBalanceSubunits,
   mockCreateMarket,
   mockFetchMarketRegistrationForRecovery,
-  mockCreateEnumAnnouncement,
-  mockEnsureKormirNsec,
+  mockPrepareEnumAnnouncement,
+  mockWithBrowserOracleMutation,
   mockGetOracleAnnouncementEventId,
   mockRefreshMintInfoWithoutActivating,
   mockWalletState,
@@ -39,8 +39,8 @@ const {
   mockGetAvailableRegularBalanceSubunits: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockFetchMarketRegistrationForRecovery: vi.fn(),
-  mockCreateEnumAnnouncement: vi.fn(),
-  mockEnsureKormirNsec: vi.fn(),
+  mockPrepareEnumAnnouncement: vi.fn(),
+  mockWithBrowserOracleMutation: vi.fn(),
   mockGetOracleAnnouncementEventId: vi.fn(),
   mockRefreshMintInfoWithoutActivating: vi.fn(),
   runtime: {
@@ -177,17 +177,16 @@ vi.mock("@/lib/marketRegistrationFee", async () => ({
 }));
 
 vi.mock("@/lib/kormir", async () => ({
-  createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
-  ensureKormirNsec: (...args: unknown[]) => mockEnsureKormirNsec(...args),
+  withBrowserOracleMutation: (...args: unknown[]) => mockWithBrowserOracleMutation(...args),
   getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
-  prepareEnumAnnouncement: async (...args: any[]) => {
+  prepareEnumAnnouncement: async (_core: unknown, ...args: any[]) => {
     const sdk = await import("@bitcaster/client-sdk");
     const { finalizeEvent, getPublicKey } = await import("nostr-tools/pure");
     const key = new Uint8Array(32).fill(0x11);
-    const artifactHex = await mockCreateEnumAnnouncement(...args);
+    const artifactHex = await mockPrepareEnumAnnouncement(...args);
     runtime.conditionId = sdk.deriveDlcConditionId({
-      eventId: args[1],
-      outcomeCount: args[2].length,
+      eventId: args[0],
+      outcomeCount: args[1].length,
       oraclePublicKeys: [getPublicKey(key)],
     });
     return {
@@ -236,6 +235,7 @@ vi.mock("@/lib/browserOracleBackupDelivery", () => ({
 }));
 vi.mock("@/lib/browserOracleBackup", () => ({
   preflightBrowserOracleCreation: vi.fn(async () => {}),
+  preflightLockedBrowserOracleCreation: vi.fn(async () => {}),
 }));
 vi.mock("@nostr-dev-kit/ndk", async () => ({
   ...(await vi.importActual("@nostr-dev-kit/ndk")),
@@ -345,8 +345,10 @@ beforeEach(async () => {
     divisibility: 1_000,
   }));
   mockFetchMarketRegistrationForRecovery.mockResolvedValue(null);
-  mockCreateEnumAnnouncement.mockResolvedValue("aabb");
-  mockEnsureKormirNsec.mockResolvedValue(undefined);
+  mockPrepareEnumAnnouncement.mockResolvedValue("aabb");
+  mockWithBrowserOracleMutation.mockImplementation(
+    async (_pubkey: string, action: (core: unknown) => Promise<unknown>) => action({}),
+  );
   mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
   mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined);
   mockWalletState.activeMintUrl = "https://mint.example.test";
@@ -522,7 +524,7 @@ describe("durable browser market creation", () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(runtime.feeOperations).toHaveLength(1);
     expect(runtime.feeOperations[0]).toBe(retained.registration.feeOperationRef);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(runtime.published).toEqual([retained.announcement.announcementNostrEventJson]);
     expect(runtime.engineThumbnails).toHaveLength(2);
     expect(
@@ -566,7 +568,7 @@ describe("durable browser market creation", () => {
     expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(runtime.feeOperations).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(runtime.published).toHaveLength(1);
   });
 
@@ -665,7 +667,7 @@ describe("durable browser market creation", () => {
       description: "Test description",
     });
     expect(runtime.feeOperations).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the completed pointer when the creator row fails, then cold-resumes only its save", async () => {
@@ -705,7 +707,7 @@ describe("durable browser market creation", () => {
     );
     expect(runtime.feeOperations).toHaveLength(1);
     expect(runtime.published).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(mockCreateMarket).toHaveBeenCalledTimes(1);
     expect([
@@ -753,7 +755,7 @@ describe("durable browser market creation", () => {
         await result.current.onCreateMarket();
       });
       expect(await runtime.database.marketCreations.count()).toBe(0);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);
     } finally {
@@ -790,7 +792,7 @@ describe("durable browser market creation", () => {
         await result.current.onConfirmRegistrationFee();
       });
       expect(runtime.feeOperations).toHaveLength(0);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.published).toHaveLength(0);
       expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
       expect(mockCreateMarket).not.toHaveBeenCalled();
@@ -852,7 +854,7 @@ describe("durable browser market creation", () => {
         await result.current.onCreateMarket();
       });
       expect(result.current.submitError).toMatch(/Market (thumbnail|metadata|creation)/);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);
       expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
@@ -1288,8 +1290,8 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
     expect(result.current.submitError).toBe("You must register a nostr key to become an oracle");
     expect(mockGetAvailableRegularBalanceSubunits).not.toHaveBeenCalled();
-    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
-    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockWithBrowserOracleMutation).not.toHaveBeenCalled();
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
@@ -1308,22 +1310,22 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(result.current.submitError).toBe(
       "Outcome labels must be 1 to 191 ASCII letters or digits.",
     );
-    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
-    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockWithBrowserOracleMutation).not.toHaveBeenCalled();
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
 
   it("checks the final serialized metadata limit before paying the mint registration fee", async () => {
     const result = await setupDraftForSubmission();
-    mockCreateEnumAnnouncement.mockResolvedValueOnce("a".repeat(65_537));
+    mockPrepareEnumAnnouncement.mockResolvedValueOnce("a".repeat(65_537));
 
     await act(async () => {
       await result.current.onCreateMarket();
     });
 
     expect(result.current.submitError).toBe("Market metadata exceeds the 64 KB engine limit.");
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledOnce();
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledOnce();
     expect(mockGetOracleAnnouncementEventId).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
@@ -1632,9 +1634,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(mockEnsureKormirNsec).toHaveBeenCalledWith(["ws://localhost:7777"], "11".repeat(32));
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
-      ["ws://localhost:7777"],
+    expect(mockWithBrowserOracleMutation).toHaveBeenCalledWith(
+      getPublicKey(new Uint8Array(32).fill(0x11)),
+      expect.any(Function),
+    );
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledWith(
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
       ["Yes", "No"],
       expect.any(Number),
