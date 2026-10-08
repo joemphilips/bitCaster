@@ -72,7 +72,9 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const isReviewStep = outcomeType === "yesno" ? currentStep >= 3 : currentStep === 4;
 
   const [bannerDismissed, setBannerDismissed] = useState(false);
-  const showResumeBanner = hasSavedDraft && !bannerDismissed && !retainedCreation;
+  const isCreationBusy = isSubmitting || isLoadingCreation;
+  const showResumeBanner =
+    hasSavedDraft && !bannerDismissed && !retainedCreation && !isCreationBusy;
 
   const handleStartOver = () => {
     clearDraft();
@@ -173,6 +175,27 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     );
   }
 
+  // A saved attempt is also present during normal creation. Show recovery only
+  // after work stops; saving the attempt does not mean creation failed.
+  if (isCreationBusy) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
+        {header}
+        <div
+          role="status"
+          data-testid="market-creation-progress"
+          className="flex-1 flex items-center justify-center p-8"
+        >
+          <Loader2 aria-hidden="true" className="h-8 w-8 animate-spin text-blue-500" />
+          <span className="sr-only">
+            {t(isSubmitting ? "marketCreation.creatingMarket" : "common.loading")}
+          </span>
+        </div>
+        {feeOverlays}
+      </div>
+    );
+  }
+
   if (retainedCreation) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
@@ -199,10 +222,9 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           <button
             data-testid="resume-market-creation"
             onClick={onResumeCreation}
-            disabled={isSubmitting || isLoadingCreation}
             className="mt-6 w-full rounded-full bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
           >
-            {t(isSubmitting ? "marketCreation.creatingMarket" : "marketCreation.resumeCreation")}
+            {t("marketCreation.resumeCreation")}
           </button>
           {submitError && (
             <div

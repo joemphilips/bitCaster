@@ -289,28 +289,37 @@ export function useMarketCreationState() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
-  const [isLoadingCreation, setIsLoadingCreation] = useState(false);
+  const [loadedCreation, setLoadedCreation] = useState<typeof draft.creation>(undefined);
+  // A retained pointer is pending from its first render, including wallet hydration.
+  const isLoadingCreation = draft.creation !== undefined && loadedCreation !== draft.creation;
+  const currentRetainedRecord =
+    retainedRecord?.creationId === draft.creation?.creationId ? retainedRecord : null;
   useEffect(() => {
     if (draft.creation === undefined) {
       setRetainedRecord(null);
       return;
     }
-    const failure = draft.creation.failure;
+    const pointer = draft.creation;
+    const failure = pointer.failure;
     if (failure !== undefined)
       setSubmitError(failure.dismissed ? null : t(creationFailureMessage(failure.code)));
     let cancelled = false;
+    let started = false;
+    const isCurrent = () => !cancelled && useMarketDraftStore.getState().draft.creation === pointer;
     const read = async () => {
-      setIsLoadingCreation(true);
+      if (started || !isCurrent()) return;
+      started = true;
       try {
-        const record = await browserMarketCreationSession(draft.creation).store.read(
-          draft.creation!.creationId,
-        );
-        if (!cancelled) setRetainedRecord((previous) => (record === null ? previous : record));
+        const record = await browserMarketCreationSession(pointer).store.read(pointer.creationId);
+        if (isCurrent())
+          setRetainedRecord(
+            (previous) => record ?? (previous?.creationId === pointer.creationId ? previous : null),
+          );
       } catch {
-        if (!cancelled && !failure?.dismissed)
+        if (isCurrent() && !failure?.dismissed)
           setSubmitError(t("marketCreation.creationResumeUnavailable"));
       } finally {
-        if (!cancelled) setIsLoadingCreation(false);
+        if (isCurrent()) setLoadedCreation(pointer);
       }
     };
     // Wallet hydration must select its database before a boot-time creation read.
@@ -964,12 +973,12 @@ export function useMarketCreationState() {
     submitError,
     retainedCreation:
       draft.creation === undefined ||
-      (retainedRecord === null && draft.creation.failure === undefined)
+      (currentRetainedRecord === null && draft.creation.failure === undefined)
         ? null
         : {
-            title: retainedRecord?.metadata.title ?? draft.stepBasicInfo?.title ?? "",
+            title: currentRetainedRecord?.metadata.title ?? draft.stepBasicInfo?.title ?? "",
             mintConfirmed:
-              retainedRecord?.mintConfirmed ??
+              currentRetainedRecord?.mintConfirmed ??
               isConfirmedCreationProgress(draft.creation.failure?.progress),
           },
     isLoadingCreation,

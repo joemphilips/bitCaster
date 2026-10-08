@@ -53,6 +53,10 @@ Keep browser storage enabled. Clearing site data removes the local draft.
 
 ## Resume an incomplete creation
 
+The app shows a spinner while it creates the market or loads a saved attempt.
+Fee confirmation remains available when payment needs your approval.
+Resume controls appear when a saved attempt is incomplete and work has stopped.
+
 Mint registration can succeed before the engine accepts the market.
 If the engine request fails, resume the saved creation instead of starting
 another one. Use the original wallet, oracle key, mint, and engine.

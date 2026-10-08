@@ -1,5 +1,7 @@
 import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
+import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
+import { currentBrowserMarketCreationBinding } from "@/lib/browserMarketCreation";
 import { marketDraftImages } from "@/stores/marketDraftImage";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
 import Dexie from "dexie";
@@ -33,6 +35,7 @@ const {
   mockGetOracleAnnouncementEventId,
   mockRefreshMintInfoWithoutActivating,
   mockWalletState,
+  walletHydration,
   runtime,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
@@ -44,6 +47,7 @@ const {
   mockWithBrowserOracleMutation: vi.fn(),
   mockGetOracleAnnouncementEventId: vi.fn(),
   mockRefreshMintInfoWithoutActivating: vi.fn(),
+  walletHydration: { hydrated: true, listeners: new Set<() => void>() },
   runtime: {
     database: null as any,
     conditionId: "",
@@ -265,6 +269,13 @@ vi.mock("@/lib/walletOps", () => ({
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
     getState: () => mockWalletState,
+    persist: {
+      hasHydrated: () => walletHydration.hydrated,
+      onFinishHydration: (listener: () => void) => {
+        walletHydration.listeners.add(listener);
+        return () => walletHydration.listeners.delete(listener);
+      },
+    },
   },
 }));
 
@@ -310,6 +321,8 @@ const announcementEvent = finalizeEvent(
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  walletHydration.hydrated = true;
+  walletHydration.listeners.clear();
   installCreatorDocumentLocks();
   // Each independent creation fixture owns a fresh public creator record.
   await useCreatorMarketsStore.getState().clear();
@@ -389,6 +402,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  vi.restoreAllMocks();
   const imageId = useMarketDraftStore.getState().draft.thumbnailId;
   if (imageId) await marketDraftImages.remove(imageId);
   runtime.database?.close();
@@ -503,6 +517,90 @@ async function beginPaidCreation() {
   expect(result.current.registrationFeePrompt?.feeSubunits).toBe(7);
   return result;
 }
+
+describe("retained creation loading", () => {
+  function retainPointer(creationId = "pending-creation") {
+    const creation = { creationId, binding: currentBrowserMarketCreationBinding() };
+    useMarketDraftStore.getState().setDraft((draft) => ({ ...draft, creation }));
+    return useMarketDraftStore.getState().draft.creation!;
+  }
+
+  it("reports loading on the first render and throughout wallet hydration", async () => {
+    retainPointer();
+    walletHydration.hydrated = false;
+    const read = vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockResolvedValue(null);
+    const renders: boolean[] = [];
+    const { result } = renderHook(
+      () => {
+        const state = useMarketCreationState();
+        renders.push(state.isLoadingCreation);
+        return state;
+      },
+      { wrapper },
+    );
+    expect(renders[0]).toBe(true);
+    expect(result.current.isLoadingCreation).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    await act(async () => {
+      walletHydration.hydrated = true;
+      walletHydration.listeners.forEach((listener) => listener());
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.isLoadingCreation).toBe(false);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("stops loading immediately when the pointer is cleared and ignores the cancelled failure", async () => {
+    retainPointer();
+    let rejectRead!: (error: Error) => void;
+    vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    expect(result.current.isLoadingCreation).toBe(true);
+    act(() => useMarketDraftStore.setState({ draft: defaultDraft() }));
+    expect(result.current.isLoadingCreation).toBe(false);
+    await act(async () => rejectRead(new Error("cancelled read")));
+    expect(result.current.submitError).toBeNull();
+    expect(result.current.retainedCreation).toBeNull();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replacement pointer pending when the old read completes", async () => {
+    retainPointer("first");
+    const complete = new Map<string, () => void>();
+    vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockImplementation(
+      (id) => new Promise((resolve) => complete.set(id, () => resolve(null))),
+    );
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    act(() => {
+      retainPointer("second");
+    });
+    await act(async () => complete.get("first")!());
+    expect(result.current.isLoadingCreation).toBe(true);
+    await act(async () => complete.get("second")!());
+    expect(result.current.isLoadingCreation).toBe(false);
+    expect(result.current.retainedCreation).toBeNull();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("cancels hydration waiting when the pointer is cleared", async () => {
+    retainPointer();
+    walletHydration.hydrated = false;
+    const read = vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockResolvedValue(null);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    act(() => useMarketDraftStore.setState({ draft: defaultDraft() }));
+    expect(result.current.isLoadingCreation).toBe(false);
+    await act(async () => {
+      walletHydration.hydrated = true;
+      walletHydration.listeners.forEach((listener) => listener());
+    });
+    expect(read).not.toHaveBeenCalled();
+  });
+});
 
 describe("preparation-independent draft image", () => {
   it("survives remount before wallet setup and supplies exact retained bytes after setup", async () => {
