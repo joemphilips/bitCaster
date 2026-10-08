@@ -256,9 +256,15 @@ An outcome with no confirmed trade at or before that date has no available price
 Categorical lines connect confirmed points across alignment gaps.
 Those connections do not add trades or invent prices for untraded outcomes.
 
-If the service cannot read confirmed-trade prices, market details are
-temporarily unavailable. Try again later. This error does not mean that the
-market is missing or has no trades.
+After a buy or sell, the chart keeps the confirmed prices and history that it
+has already loaded while newer data arrives. A message shows when the data is
+updating or its refresh failed. A failed refresh does not mean that the market
+has no trades. If no valid data has loaded, the chart shows an unavailable state.
+
+A previously traded market can have no trades in the selected period. The chart
+then shows **No trades in this period**. Its current price still comes from the
+latest confirmed trade. Categorical price labels show each outcome's latest
+confirmed price when you are not pointing at history.
 
 The order book shows asks (sell orders) above the spread and bids (buy orders)
 below it, with the best prices closest to the spread. Each row combines price,
@@ -275,6 +281,8 @@ Chart comment bubbles point to the time and price of the associated confirmed
 trade. The pointer stays on that trade when new prices arrive or the chart
 size changes. Hover over or focus a bubble to expand it into a comment card.
 Click or tap to keep the card open. Press Escape or use its close button to close it.
+Opening a comment keeps the latest price visible. Move over the chart without
+an open comment to inspect a historical price.
 Bubbles become larger and less transparent as their comments receive more likes.
 A comment stays
 in the comment list when its trade point is unavailable or outside the chart

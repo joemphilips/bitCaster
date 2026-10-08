@@ -734,7 +734,7 @@ export async function fetchMarketDetail(conditionId: string): Promise<MarketDeta
 export async function fetchMarketPriceHistory(
   conditionId: string,
   timeframe: PriceHistory["timeframe"] = "7d",
-  options: MarketSnapshotReadOptions = {},
+  options: import("@bitcaster/client-sdk/engineClient").MarketPriceHistoryReadOptions = {},
 ): Promise<MarketPriceHistoryResponse> {
   return new BitcasterEngineClient({
     baseUrl: window.location.origin,

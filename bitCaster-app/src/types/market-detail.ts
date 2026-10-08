@@ -168,6 +168,9 @@ interface BaseMarketDetail {
   latestConfirmedTrades?: LatestConfirmedTrade[];
   /** False means the source price authority was malformed and is unavailable. */
   latestConfirmedTradesValid?: boolean;
+  /** The displayed validated price survived an unavailable same-market refresh. */
+  priceRefreshUnavailable?: boolean;
+  priceHistoryStatus?: "loading" | "refreshing" | "ready" | "unavailable";
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];

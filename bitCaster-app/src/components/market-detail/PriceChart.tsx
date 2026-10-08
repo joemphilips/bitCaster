@@ -24,6 +24,11 @@ interface PriceChartProps {
   currentDisplay?: string;
   emptyDisplay?: string;
   comments?: Comment[];
+  divisibility?: number;
+  historyStatus?: "loading" | "refreshing" | "ready" | "unavailable";
+  priceRefreshUnavailable?: boolean;
+  priceAuthorityUnavailable?: boolean;
+  hasConfirmedTrades?: boolean;
   unit?: string;
   /** Numeric markets remain disabled until a native numeric trade exists. */
   disabledNumeric?: boolean;
@@ -50,6 +55,11 @@ export function PriceChart({
   emptyDisplay,
   comments = EMPTY_COMMENTS,
   disabledNumeric = false,
+  divisibility,
+  historyStatus,
+  priceRefreshUnavailable = false,
+  priceAuthorityUnavailable = false,
+  hasConfirmedTrades,
 }: PriceChartProps) {
   const { t, i18n } = useTranslation();
   const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
@@ -133,9 +143,7 @@ export function PriceChart({
     () => chartDomain(series, chartTimeframe, evaluationMs),
     [series, chartTimeframe, evaluationMs],
   );
-  const isCategorical = Boolean(
-    outcomePriceHistories && outcomes && outcomes.length > 0 && !disabledNumeric,
-  );
+  const isCategorical = Boolean(outcomes && outcomes.length > 0 && !disabledNumeric);
   const commentGroupResult = useMemo(
     () => groupComments(comments, domain, series, isCategorical),
     [comments, domain, series, isCategorical],
@@ -153,15 +161,44 @@ export function PriceChart({
         data: series.find((item) => item.id === outcome.id)?.data ?? [],
       }))
     : series;
-  const latestValues = displayedSeries.map((item) => ({
-    id: item.id,
-    label: item.label,
-    color: item.color,
-    value:
-      cursorTime !== null
-        ? confirmedPriceAtOrBefore(item.data, cursorTime / 1000)
-        : (item.data[item.data.length - 1]?.price ?? null),
-  }));
+  const latestValues = displayedSeries.map((item) => {
+    const odds = outcomes?.find((outcome) => outcome.id === item.id)?.odds;
+    const currentValue =
+      odds != null && divisibility != null && divisibility > 1 && odds > 0 && odds < divisibility
+        ? (odds * 100) / divisibility
+        : null;
+    return {
+      id: item.id,
+      label: item.label,
+      color: item.color,
+      neverTraded: isCategorical && odds === null && !priceAuthorityUnavailable,
+      value:
+        cursorTime !== null
+          ? confirmedPriceAtOrBefore(item.data, cursorTime / 1000)
+          : isCategorical
+            ? currentValue
+            : (item.data[item.data.length - 1]?.price ?? null),
+    };
+  });
+  const freshnessMessage = disabledNumeric
+    ? null
+    : historyStatus === "unavailable" || priceRefreshUnavailable
+      ? t("market.priceRefreshUnavailable")
+      : historyStatus === "refreshing"
+        ? t("market.priceHistoryUpdating")
+        : null;
+  const emptyMessage = disabledNumeric
+    ? t("trade.priceUnavailable")
+    : historyStatus === "loading" || historyStatus === "refreshing"
+      ? t("market.priceHistoryLoading")
+      : historyStatus === "unavailable"
+        ? t("trade.priceUnavailable")
+        : (emptyDisplay ??
+          (hasConfirmedTrades === false
+            ? t("trade.noTrades")
+            : chartTimeframe !== "all" && hasConfirmedTrades === true
+              ? t("market.noTradesInPeriod")
+              : t("market.noDataAvailable")));
   useEffect(() => {
     setCursorTime(null);
   }, [chartTimeframe, hasChartData]);
@@ -190,7 +227,7 @@ export function PriceChart({
             data-testid="price-chart-empty-state"
             className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm"
           >
-            {emptyDisplay ?? t("market.noDataAvailable")}
+            {emptyMessage}
           </div>
         ) : (
           <div data-testid="price-chart-chartjs" className="h-full w-full">
@@ -226,6 +263,21 @@ export function PriceChart({
         />
       </div>
 
+      <div className="mb-4 grid text-sm text-slate-500 dark:text-slate-400">
+        {/* Reserve the translated messages' height so refreshes do not move controls. */}
+        <span aria-hidden="true" className="invisible col-start-1 row-start-1">
+          {t("market.priceHistoryUpdating")}
+        </span>
+        <span aria-hidden="true" className="invisible col-start-1 row-start-1">
+          {t("market.priceRefreshUnavailable")}
+        </span>
+        {freshnessMessage && (
+          <p role="status" className="col-start-1 row-start-1">
+            {freshnessMessage}
+          </p>
+        )}
+      </div>
+
       {latestValues.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-4" data-testid="latest-price-pills">
           {latestValues.map((latest) => (
@@ -240,7 +292,9 @@ export function PriceChart({
                 labelClassName="text-slate-700 dark:text-slate-200"
               />
               <span>
-                {latest.value === null ? t("trade.priceUnavailable") : formatPercent(latest.value)}
+                {latest.value === null
+                  ? t(latest.neverTraded ? "trade.noTrades" : "trade.priceUnavailable")
+                  : formatPercent(latest.value)}
               </span>
             </span>
           ))}

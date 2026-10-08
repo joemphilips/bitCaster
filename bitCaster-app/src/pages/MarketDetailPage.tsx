@@ -44,6 +44,7 @@ import {
   deriveYesNoOdds,
   signTradeComment,
   validateLatestConfirmedTrades,
+  latestConfirmedTradesAuthorityValid,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
 } from "@/lib/markets";
@@ -420,6 +421,9 @@ export type MarketDetailDataState = {
   activeRouteId: string | null;
   marketId: string | null;
   core: MarketDetailCore | null;
+  historyStatuses: Partial<
+    Record<ChartTimeframe, NonNullable<MarketDetailType["priceHistoryStatus"]>>
+  >;
   confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
   registeredPrimitiveOutcomeIdsByConditionId: Record<string, string[]>;
   booksByMarketId: Record<string, Record<string, OrderBook>>;
@@ -439,6 +443,12 @@ export type MarketDetailDataState = {
 };
 
 export type MarketDetailDataAction =
+  | {
+      type: "historyStatusChanged";
+      marketId: string;
+      timeframe: ChartTimeframe;
+      status: NonNullable<MarketDetailType["priceHistoryStatus"]>;
+    }
   | {
       type: "marketFundingUpdated";
       observation: MarketFundingUpdatedMessage;
@@ -507,6 +517,7 @@ const emptyMarketDetailDataState: MarketDetailDataState = {
   activeRouteId: null,
   marketId: null,
   core: null,
+  historyStatuses: {},
   confirmedTradesByConditionId: {},
   registeredPrimitiveOutcomeIdsByConditionId: {},
   booksByMarketId: {},
@@ -719,7 +730,7 @@ function applyConfirmedTradePrices(
     ...market,
     latestConfirmedTrades: [...confirmedTrades],
   } as MarketDetailCore;
-  if (market.latestConfirmedTradesValid === false) {
+  if (market.latestConfirmedTradesValid === false && confirmedTrades.length === 0) {
     if (market.type === "yesno") {
       return { ...withConfirmedTrades, currentOdds: { yes: null, no: null } } as MarketDetailCore;
     }
@@ -769,6 +780,7 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
     activeRouteId: detail.id,
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
+    historyStatuses: {},
     confirmedTradesByConditionId: {
       [detail.id]: detail.latestConfirmedTrades ?? [],
     },
@@ -812,24 +824,62 @@ function withSnapshotLoaded(
   }
 
   const currentConfirmedTrades = state.confirmedTradesByConditionId[detail.id] ?? [];
-  const incomingConfirmedTrades = validateLatestConfirmedTrades(
-    detail.latestConfirmedTrades,
-    detail.registeredPrimitiveOutcomeIds ?? [],
-    detail.divisibility,
-  );
+  const previousIds = state.core.registeredPrimitiveOutcomeIds ?? [];
+  const incomingIds = detail.registeredPrimitiveOutcomeIds ?? [];
+  const samePriceContext =
+    state.core.type === detail.type &&
+    state.core.divisibility === detail.divisibility &&
+    previousIds.length === incomingIds.length &&
+    previousIds.every((id) => incomingIds.includes(id));
+  const incomingValid =
+    detail.latestConfirmedTradesValid !== false &&
+    latestConfirmedTradesAuthorityValid(
+      detail.latestConfirmedTrades,
+      incomingIds,
+      detail.divisibility,
+    );
+  const retainedValid =
+    (state.core.latestConfirmedTradesValid !== false || currentConfirmedTrades.length > 0) &&
+    latestConfirmedTradesAuthorityValid(
+      currentConfirmedTrades,
+      previousIds,
+      state.core.divisibility,
+    );
+  // Registration and denominator are immutable. Keep them with the observation
+  // they validated; a broken refresh must not reinterpret a retained price.
+  const retainPriceContext = retainedValid && (!incomingValid || !samePriceContext);
+  const incomingCore = marketCoreFromDetail(detail);
+  const core = retainPriceContext
+    ? ({
+        ...incomingCore,
+        type: state.core.type,
+        divisibility: state.core.divisibility,
+        registeredPrimitiveOutcomeIds: previousIds,
+        outcomes: state.core.outcomes,
+        latestConfirmedTradesValid: state.core.latestConfirmedTradesValid,
+        priceRefreshUnavailable: true,
+      } as MarketDetailCore)
+    : { ...incomingCore, priceRefreshUnavailable: false };
+  const incomingConfirmedTrades = retainPriceContext
+    ? []
+    : validateLatestConfirmedTrades(
+        detail.latestConfirmedTrades,
+        detail.registeredPrimitiveOutcomeIds ?? [],
+        detail.divisibility,
+      );
   const confirmedTradesByConditionId = {
     ...state.confirmedTradesByConditionId,
     [detail.id]: mergeConfirmedTradeRecords(currentConfirmedTrades, incomingConfirmedTrades),
   };
   const registeredPrimitiveOutcomeIdsByConditionId = {
     ...state.registeredPrimitiveOutcomeIdsByConditionId,
-    [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
+    [detail.id]: core.registeredPrimitiveOutcomeIds ?? [],
   };
 
   return {
     ...state,
     core: {
-      ...marketCoreFromDetail(detail),
+      ...core,
       ...mergeMarketFundingObservation(state.core, {
         ammBotBudgetSubunits: detail.ammBotBudgetSubunits,
         fundingRevision: detail.fundingRevision ?? null,
@@ -944,6 +994,15 @@ export function marketDetailDataReducer(
         },
       };
     }
+    case "historyStatusChanged": {
+      if (state.activeRouteId !== action.marketId || state.marketId !== action.marketId)
+        return state;
+      if (state.historyStatuses[action.timeframe] === action.status) return state;
+      return {
+        ...state,
+        historyStatuses: { ...state.historyStatuses, [action.timeframe]: action.status },
+      };
+    }
     case "historyLoaded": {
       const expectedRouteId = action.expectedRouteId ?? action.marketId;
       if (state.activeRouteId !== expectedRouteId) return state;
@@ -951,6 +1010,7 @@ export function marketDetailDataReducer(
       const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
       return {
         ...state,
+        historyStatuses: { ...state.historyStatuses, [action.timeframe]: "ready" },
         historiesByMarketId: {
           ...state.historiesByMarketId,
           [action.marketId]: {
@@ -962,13 +1022,14 @@ export function marketDetailDataReducer(
     }
     case "historyInvalidated": {
       if (state.activeRouteId !== action.marketId) return state;
-      const current = state.historiesByMarketId[action.marketId] ?? {};
+      // Every selected range is refreshed on subscription. Keep its last
+      // snapshot available while that refresh is pending or unavailable.
+      const cached = state.historiesByMarketId[action.marketId] ?? {};
       return {
         ...state,
-        historiesByMarketId: {
-          ...state.historiesByMarketId,
-          [action.marketId]: { [action.timeframe]: current[action.timeframe] },
-        },
+        historyStatuses: Object.fromEntries(
+          Object.keys(cached).map((range) => [range, "refreshing"]),
+        ),
       };
     }
     case "marketStatusChanged": {
@@ -1033,6 +1094,14 @@ export function marketDetailDataReducer(
       if (!validated.includes(action.trade)) return state;
       return {
         ...state,
+        core: state.core
+          ? {
+              ...state.core,
+              priceRefreshUnavailable:
+                state.core.priceRefreshUnavailable ||
+                state.core.latestConfirmedTradesValid === false,
+            }
+          : null,
         confirmedTradesByConditionId: {
           ...state.confirmedTradesByConditionId,
           [action.conditionId]: validated,
@@ -1088,6 +1157,8 @@ export function composeMarketDetail(
   const orderBook = (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
   const base = {
     ...oddsAlignedCore,
+    priceHistoryStatus:
+      state.historyStatuses[timeframe] ?? (priceHistory.asOf ? "ready" : "loading"),
     priceHistory,
     orderBook,
     outcomeOrderBooks: booksByOutcomeSetId,
@@ -1681,6 +1752,15 @@ export function MarketDetailPage() {
   useMarketDetailSnapshots({
     market: market?.id === currentRouteId ? market : null,
     timeframe: chartTimeframe,
+    onHistoryStatus: (status) => {
+      if (market)
+        dispatchMarketData({
+          type: "historyStatusChanged",
+          marketId: market.id,
+          timeframe: chartTimeframe,
+          status,
+        });
+    },
     onHistory: (response) => {
       if (!market || response.timeframe !== chartTimeframe) return;
       const { timeframe, historiesByOutcomeSetId } = historiesByOutcomeSetFromResponse(

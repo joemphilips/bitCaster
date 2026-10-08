@@ -41,7 +41,7 @@ function computeCurrentDisplay(
     // Numeric HI/LO probability ticks are not a native numeric trade
     // representation. Keep the public current value unavailable until the
     // contract carries one, regardless of any legacy currentPrice field.
-    return t("market.priceUnavailable");
+    return t("trade.priceUnavailable");
   }
 
   if (isResolved && market.resolution.finalOutcome) {
@@ -50,13 +50,13 @@ function computeCurrentDisplay(
 
   if (market.type === "yesno") {
     return market.currentOdds.yes == null
-      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
+      ? t(priceAuthorityUnavailable ? "trade.priceUnavailable" : "trade.noTrades")
       : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
   return market.outcomes.some((outcome) => outcome.odds != null)
     ? ""
-    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades");
+    : t(priceAuthorityUnavailable ? "trade.priceUnavailable" : "trade.noTrades");
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {
@@ -260,6 +260,15 @@ export function MarketDetail({
                 market.latestConfirmedTradesValid === true &&
                 market.latestConfirmedTrades?.length === 0
                   ? t("trade.noTrades")
+                  : undefined
+              }
+              divisibility={market.divisibility}
+              historyStatus={market.priceHistoryStatus}
+              priceRefreshUnavailable={market.priceRefreshUnavailable}
+              priceAuthorityUnavailable={market.latestConfirmedTradesValid === false}
+              hasConfirmedTrades={
+                market.latestConfirmedTradesValid === true
+                  ? (market.latestConfirmedTrades?.length ?? 0) > 0
                   : undefined
               }
               comments={market.comments}

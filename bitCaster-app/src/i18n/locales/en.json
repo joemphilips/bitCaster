@@ -244,7 +244,11 @@
     "oracleAuditHint": "Search this person in the Nostr network to make sure it's trustworthy",
     "copyOraclePubkey": "Copy oracle pubkey",
     "oraclePubkeyCopied": "Oracle public key copied.",
-    "oraclePubkeyCopyFailed": "Could not copy the oracle public key."
+    "oraclePubkeyCopyFailed": "Could not copy the oracle public key.",
+    "noTradesInPeriod": "No trades in this period",
+    "priceHistoryLoading": "Loading price history…",
+    "priceHistoryUpdating": "Updating price history…",
+    "priceRefreshUnavailable": "Price refresh unavailable."
   },
   "orderBook": {
     "title": "Order Book",

@@ -1,3 +1,11 @@
+import {
+  decodeMarketPriceHistoryResponse,
+  type MarketPriceHistoryValidationContext,
+} from './marketPriceHistory.ts'
+export {
+  decodeMarketPriceHistoryResponse,
+  type MarketPriceHistoryValidationContext,
+} from './marketPriceHistory.ts'
 import type { components, operations } from './generated/api.ts'
 import {
   parseMarketDivisibility,
@@ -415,6 +423,9 @@ export type MarketSnapshotReadOptions = NonNullable<
   operations['getMarketComments']['parameters']['query']
 > & { signal?: AbortSignal }
 
+export type MarketPriceHistoryReadOptions = MarketSnapshotReadOptions &
+  Pick<MarketPriceHistoryValidationContext, 'minimumAsOf' | 'outcomeIds' | 'divisibility'>
+
 export type MarketComment = components['schemas']['MarketComment']
 export type MarketCommentsResponse = components['schemas']['MarketCommentsResponse']
 
@@ -778,7 +789,7 @@ export class BitcasterEngineClient {
   async getMarketPriceHistory(
     conditionId: string,
     timeframe: PriceHistoryTimeframe = '7d',
-    options: MarketSnapshotReadOptions = {},
+    options: MarketPriceHistoryReadOptions = {},
   ): Promise<MarketPriceHistoryResponse> {
     const query = new URLSearchParams({ timeframe })
     if (options.minimumEventOrder !== undefined)
@@ -788,7 +799,11 @@ export class BitcasterEngineClient {
       `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
       { signal: options.signal },
     )
-    return (await response.json()) as MarketPriceHistoryResponse
+    return decodeMarketPriceHistoryResponse(await response.json(), {
+      ...options,
+      conditionId,
+      timeframe,
+    })
   }
 
   async getMarketComments(

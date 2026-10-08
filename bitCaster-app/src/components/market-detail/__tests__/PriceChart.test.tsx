@@ -258,7 +258,7 @@ describe("PriceChart", () => {
         .getAllByTestId("price-chart-current-endpoint")
         .map((endpoint) => endpoint.getAttribute("data-series-id")),
     ).toEqual(["a", "b"]);
-    expect(screen.getAllByTestId("latest-price-pill")[2]).toHaveTextContent("CPrice unavailable");
+    expect(screen.getAllByTestId("latest-price-pill")[2]).toHaveTextContent("CNo trades yet");
     expect(nativeChart().data.datasets.flatMap((dataset) => dataset.data)).toHaveLength(2);
   });
 
@@ -351,6 +351,67 @@ describe("PriceChart", () => {
     expect(screen.getByTestId("price-chart-y-axis-cursor-label")).toHaveTextContent("52.00%");
     expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("52.00%");
   });
+
+  it.each(["hover", "focus", "pin"] as const)(
+    "keeps latest prices when %s selects a comment whose history buckets are replaced",
+    (intent) => {
+      const timestamp = "2026-05-25T10:10:00.000Z";
+      const comments = [makeComment("retained", timestamp, makeTrade(timestamp, { price: 40 }))];
+      const history: PriceHistory = {
+        timeframe: "1h",
+        asOf: "2026-05-25T10:30:00.000Z",
+        receivedAt: performance.now(),
+        data: [
+          { eventOrder: "old-first", timestamp, price: 40 },
+          { eventOrder: "old-second", timestamp: "2026-05-25T10:20:00.000Z", price: 50 },
+        ],
+      };
+      const view = render(
+        <PriceChart chartTimeframe="1h" priceHistory={history} comments={comments} />,
+      );
+      moveCursor(0.7);
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("40.00%");
+      const marker = screen.getByTestId("price-chart-comment-marker");
+      const anchor = markerCoordinate(marker);
+      if (intent === "hover") fireEvent.pointerEnter(marker, { pointerType: "mouse" });
+      else if (intent === "focus") act(() => marker.focus());
+      else {
+        fireEvent.pointerDown(marker, { pointerType: "touch" });
+        fireEvent.click(marker);
+      }
+      const card = screen.getByRole("dialog");
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("50.00%");
+      const replacements = [
+        { eventOrder: "new-first", timestamp: "2026-05-25T10:11:00.000Z", price: 45 },
+        { eventOrder: "new-second", timestamp: "2026-05-25T10:21:00.000Z", price: 60 },
+      ];
+      view.rerender(
+        <PriceChart
+          chartTimeframe="1h"
+          priceHistory={{ ...history, data: replacements }}
+          comments={comments}
+        />,
+      );
+      expect(screen.getByRole("dialog")).toBe(card);
+      expect(card).toHaveTextContent("Comment retained");
+      expect(markerCoordinate(marker)).toEqual(anchor);
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("60.00%");
+      expect(screen.getAllByTestId("price-chart-chartjs")).toHaveLength(1);
+      // Pointer motion behind an open card must not restore an invisible inspection cursor.
+      moveCursor(0.1);
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("60.00%");
+      expect(screen.queryByTestId("price-chart-x-axis-cursor-label")).not.toBeInTheDocument();
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      // Free inspection still uses only the replacement history, without fallback or merging.
+      moveCursor(0.67);
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("Price unavailable");
+      moveCursor(0.7);
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("45.00%");
+      leaveCursor();
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("60.00%");
+    },
+  );
 
   it("preserves the open card and keyboard focus through append and resize", () => {
     const timestamp = "2026-05-25T10:00:00.000Z";
@@ -713,7 +774,7 @@ describe("PriceChart", () => {
     expect(screen.queryByTestId("price-chart-cursor-tooltip")).not.toBeInTheDocument();
     expect(screen.queryByTestId("price-chart-x-axis-cursor-label")).not.toBeInTheDocument();
     expect(screen.queryByTestId("price-chart-y-axis-cursor-label")).not.toBeInTheDocument();
-    expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("Price unavailable");
+    expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("42.00%");
 
     fireEvent.pointerDown(markers[1], { pointerType: "touch" });
     fireEvent.click(markers[1]);
@@ -1389,10 +1450,11 @@ describe("PriceChart", () => {
       <PriceChart
         priceHistory={{ timeframe: "7d", data: [] }}
         chartTimeframe="7d"
+        divisibility={1000}
         outcomes={[
-          { id: "outcome-0", label: "Alice", odds: 33 },
-          { id: "outcome-1", label: "Bob", odds: 33 },
-          { id: "outcome-2", label: "Carol", odds: 34 },
+          { id: "outcome-0", label: "Alice", odds: 330 },
+          { id: "outcome-1", label: "Bob", odds: 330 },
+          { id: "outcome-2", label: "Carol", odds: null },
         ]}
         outcomePriceHistories={{
           Alice: {
@@ -1420,8 +1482,8 @@ describe("PriceChart", () => {
     expect(pills[0]).toHaveTextContent("Alice");
     expect(pills[0]).toHaveTextContent("33.00%");
     expect(pills[1]).toHaveTextContent("Bob");
-    expect(pills[1]).toHaveTextContent("28.00%");
-    expect(pills[2]).toHaveTextContent("CarolPrice unavailable");
+    expect(pills[1]).toHaveTextContent("33.00%");
+    expect(pills[2]).toHaveTextContent("CarolNo trades yet");
   });
 
   it("keeps independent categorical histories and never prices a future trade at the cursor", () => {
@@ -2064,4 +2126,100 @@ describe("chart data identity", () => {
       ["b", 1, "b"],
     ]);
   });
+});
+
+describe("price history freshness presentation", () => {
+  it.each(["refreshing", "unavailable"] as const)(
+    "keeps confirmed chart data during %s",
+    (historyStatus) => {
+      render(
+        <PriceChart
+          priceHistory={{
+            timeframe: "all",
+            data: [
+              {
+                eventOrder: "confirmed",
+                timestamp: "2026-10-08T12:00:00Z",
+                price: 42,
+              },
+            ],
+          }}
+          chartTimeframe="all"
+          historyStatus={historyStatus}
+        />,
+      );
+      expect(screen.getByTestId("price-chart-canvas")).toBeInTheDocument();
+      expect(screen.queryByTestId("price-chart-empty-state")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        historyStatus === "refreshing" ? "Updating price history" : "Price refresh unavailable",
+      );
+    },
+  );
+
+  it.each([
+    ["loading", true, "Loading price history"],
+    ["unavailable", true, "Price unavailable"],
+    ["ready", true, "No trades in this period"],
+    ["ready", false, "No trades yet"],
+  ] as const)(
+    "separates empty history %s with traded=%s",
+    (historyStatus, hasConfirmedTrades, text) => {
+      render(
+        <PriceChart
+          priceHistory={{ timeframe: "1h", data: [] }}
+          chartTimeframe="1h"
+          historyStatus={historyStatus}
+          hasConfirmedTrades={hasConfirmedTrades}
+        />,
+      );
+      expect(screen.getByTestId("price-chart-empty-state")).toHaveTextContent(text);
+      expect(screen.queryByTestId("price-chart-canvas")).not.toBeInTheDocument();
+    },
+  );
+
+  it("shows current categorical prices without manufacturing history for an empty period", () => {
+    render(
+      <PriceChart
+        priceHistory={{ timeframe: "1h", data: [] }}
+        chartTimeframe="1h"
+        historyStatus="ready"
+        hasConfirmedTrades
+        divisibility={1000}
+        outcomePriceHistories={{}}
+        outcomes={[
+          { id: "a", label: "Alice", odds: 420 },
+          { id: "b", label: "Bob", odds: null },
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("price-chart-empty-state")).toHaveTextContent(
+      "No trades in this period",
+    );
+    expect(screen.getAllByTestId("latest-price-pill")[0]).toHaveTextContent("Alice42.00%");
+    expect(screen.getAllByTestId("latest-price-pill")[1]).toHaveTextContent("BobNo trades yet");
+    expect(screen.queryByTestId("price-chart-canvas")).not.toBeInTheDocument();
+  });
+});
+
+it("shows a validated categorical price without treating unknown outcomes as never traded", () => {
+  render(
+    <PriceChart
+      priceHistory={{ timeframe: "1h", data: [] }}
+      chartTimeframe="1h"
+      divisibility={1000}
+      priceAuthorityUnavailable
+      outcomePriceHistories={{}}
+      outcomes={[
+        { id: "a", label: "A", odds: 420 },
+        { id: "b", label: "B", odds: null },
+        { id: "c", label: "C", odds: null },
+      ]}
+    />,
+  );
+
+  const pills = screen.getAllByTestId("latest-price-pill");
+  expect(pills[0]).toHaveTextContent("A42.00%");
+  expect(pills[1]).toHaveTextContent("BPrice unavailable");
+  expect(pills[2]).toHaveTextContent("CPrice unavailable");
+  expect(screen.queryByText("No trades yet")).not.toBeInTheDocument();
 });

@@ -243,7 +243,11 @@
     "oracleAuditHint": "この人物が信頼できるか、Nostrネットワークで検索して確認してください",
     "copyOraclePubkey": "オラクル公開鍵をコピー",
     "oraclePubkeyCopied": "オラクル公開鍵をコピーしました。",
-    "oraclePubkeyCopyFailed": "オラクル公開鍵をコピーできませんでした。"
+    "oraclePubkeyCopyFailed": "オラクル公開鍵をコピーできませんでした。",
+    "noTradesInPeriod": "この期間の取引はありません",
+    "priceHistoryLoading": "価格履歴を読み込み中…",
+    "priceHistoryUpdating": "価格履歴を更新中…",
+    "priceRefreshUnavailable": "価格を更新できません。"
   },
   "orderBook": {
     "title": "注文板",

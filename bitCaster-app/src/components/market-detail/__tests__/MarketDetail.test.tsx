@@ -23,13 +23,22 @@ vi.mock("../PriceChart", () => ({
     currentDisplay,
     emptyDisplay,
     outcomes,
+    historyStatus,
+    priceRefreshUnavailable,
+    divisibility,
   }: {
     currentDisplay?: string;
     emptyDisplay?: string;
+    historyStatus?: string;
+    priceRefreshUnavailable?: boolean;
+    divisibility?: number;
     outcomes?: Array<{ label: string; color?: string }>;
   }) => (
     <div
       data-testid="price-chart-mock"
+      data-history-status={historyStatus}
+      data-refresh-unavailable={priceRefreshUnavailable}
+      data-divisibility={divisibility}
       data-outcome-colors={outcomes
         ?.map(({ label, color }) => `${label}:${color ?? "automatic"}`)
         .join("|")}
@@ -438,7 +447,7 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.getByText("Price unavailable")).toBeInTheDocument();
     expect(screen.queryByText("$75.00")).not.toBeInTheDocument();
   });
 
@@ -773,4 +782,27 @@ describe("MarketDetail", () => {
 
     expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
   });
+});
+
+it("passes refresh status independently from a retained confirmed headline", () => {
+  render(
+    <MarketDetail
+      market={makeMarket({
+        currentOdds: { yes: 420, no: null },
+        latestConfirmedTradesValid: true,
+        priceHistoryStatus: "unavailable",
+        priceRefreshUnavailable: true,
+      })}
+      chartTimeframe="1h"
+      tradeSelection={null}
+      tradeAmount={0}
+      tradePreview={null}
+      tradeSide="Buy"
+    />,
+  );
+  const chart = screen.getByTestId("price-chart-mock");
+  expect(chart).toHaveTextContent("42.0%");
+  expect(chart).toHaveAttribute("data-history-status", "unavailable");
+  expect(chart).toHaveAttribute("data-refresh-unavailable", "true");
+  expect(chart).toHaveAttribute("data-divisibility", "1000");
 });

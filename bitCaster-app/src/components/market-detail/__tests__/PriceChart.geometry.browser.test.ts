@@ -71,13 +71,69 @@ async function renderFixture(fixture: Fixture, expectedMarkers = 40) {
   await frame();
   await frame();
 }
-afterEach(() => {
+afterEach(async () => {
   root?.unmount();
   root = undefined;
   host?.remove();
   host = undefined;
   observer?.restore();
   observer = undefined;
+  await i18n.changeLanguage("en");
+  await page.viewport(1280, 900);
+});
+it.each([
+  { language: "en", width: 1000 },
+  { language: "ja", width: 390 },
+])("keeps chart controls stationary during $language refreshes", async ({ language, width }) => {
+  await page.viewport(width + 40, 900);
+  await i18n.changeLanguage(language);
+  const fixture = makeFixture({
+    name: "refresh",
+    outcomes: 2,
+    binary: true,
+    pointsPerOutcome: 300,
+  });
+  fixture.props.comments = [];
+  await renderFixture(fixture, 0);
+  host!.style.width = `${width}px`;
+  await expect.poll(() => observer!.snapshot().plot?.width ?? Infinity).toBeLessThan(width);
+  await frame();
+  await frame();
+  const bounds = () => {
+    const elements = [
+      host!,
+      host!.querySelector("canvas")!,
+      host!.querySelector('[data-testid="latest-price-pills"]')!,
+      host!.querySelector("button")!,
+    ];
+    return elements.map((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+  };
+  const readyBounds = bounds();
+  for (const historyStatus of ["ready", "refreshing", "unavailable", "ready"] as const) {
+    await renderFixture({ ...fixture, props: { ...fixture.props, historyStatus } }, 0);
+    expect(bounds()).toEqual(readyBounds);
+    const status = host!.querySelector('[role="status"]');
+    if (historyStatus === "ready") expect(status).toBeNull();
+    else
+      expect(status?.textContent).toBe(
+        i18n.t(
+          historyStatus === "refreshing"
+            ? "market.priceHistoryUpdating"
+            : "market.priceRefreshUnavailable",
+        ),
+      );
+    const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+    if (captureDirectory) {
+      await page.screenshot({
+        path: `${captureDirectory}/${language}-${historyStatus}.png`,
+        element: host!,
+      });
+    }
+  }
+  await page.viewport(1280, 900);
 });
 function plotRectangle() {
   const observation = observer!.snapshot();

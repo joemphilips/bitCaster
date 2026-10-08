@@ -238,7 +238,8 @@ export function PriceChartAnnotations({
     dismissTimerRef.current = null;
     activeMarkerRef.current = marker;
     setActiveCommentGroupId(group.id);
-    onCursorTime(group.timestamp);
+    // Comment selection owns its confirmed trade anchor, not the inspection cursor.
+    onCursorTime(null);
   };
 
   const scheduleCommentPopoverDismiss = () => {

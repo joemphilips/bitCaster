@@ -1940,7 +1940,7 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("chart-comments")).toHaveTextContent("late confirmed comment");
     const options = vi.mocked(fetchMarketPriceHistory).mock.calls[2][2];
     expect(options).toMatchObject({ refresh: true });
-    expect(options?.minimumEventOrder).toBeUndefined();
+    expect(options?.minimumEventOrder).toBe("opaque-19");
     view.unmount();
     expect(options?.signal?.aborted).toBe(true);
     expect(mocks.commentHandlers).toHaveLength(0);
@@ -4606,7 +4606,7 @@ describe("marketDetailDataReducer", () => {
     },
   );
 
-  it("replaces independently widened all buckets and invalidates inactive snapshots", () => {
+  it("replaces independently widened all buckets and retains inactive snapshots during refresh", () => {
     const market = categoricalMarket();
     const point = (timestamp: string, price: number) => ({
       timestamp,
@@ -4650,7 +4650,9 @@ describe("marketDetailDataReducer", () => {
       marketId: market.id,
       timeframe: "all",
     });
-    expect(invalidated.historiesByMarketId[market.id]?.["7d"]).toBeUndefined();
+    expect(invalidated.historiesByMarketId[market.id]?.["7d"]).toEqual(
+      initial.historiesByMarketId[market.id]?.["7d"],
+    );
     expect(invalidated.historiesByMarketId[market.id]?.all).toEqual({
       Alice: aliceWide,
       Bob: bobWide,
@@ -5061,6 +5063,115 @@ describe("marketDetailDataReducer", () => {
       yes: 620,
       no: 380,
     });
+  });
+
+  it.each([
+    { latestConfirmedTradesValid: false, latestConfirmedTrades: [] },
+    { registeredPrimitiveOutcomeIds: ["OTHER", "UNKNOWN"], divisibility: 1_000_000 },
+  ])("retains validated price context across an invalid same-market refresh: %j", (change) => {
+    const confirmed: LatestConfirmedTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000031",
+      executedAt: "2026-08-18T00:00:00Z",
+      eventOrder: "0001",
+      priceTick: 610,
+      divisibility: 1_000,
+      faceAmountSubunits: 1000,
+    };
+    const initial = yesNoMarket({
+      latestConfirmedTrades: [confirmed],
+      latestConfirmedTradesValid: true,
+    });
+    const refreshed = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "marketSnapshotLoaded",
+      detail: { ...initial, ...change, title: "Updated metadata" } as MarketDetail,
+    });
+    const view = composeMarketDetail(refreshed, "7d");
+    expect(view?.title).toBe("Updated metadata");
+    expect(view?.divisibility).toBe(1000);
+    expect(view?.registeredPrimitiveOutcomeIds).toEqual(["YES", "NO"]);
+    expect(view?.latestConfirmedTradesValid).toBe(true);
+    expect(view && view.type === "yesno" ? view.currentOdds : null).toEqual({ yes: 610, no: 390 });
+    const live = marketDetailDataReducer(refreshed, {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: {
+        ...confirmed,
+        fillId: "00000000-0000-0000-0000-000000000032",
+        eventOrder: "0002",
+        priceTick: 650,
+      },
+    });
+    const liveView = composeMarketDetail(live, "7d");
+    expect(liveView && liveView.type === "yesno" ? liveView.currentOdds : null).toEqual({
+      yes: 650,
+      no: 350,
+    });
+  });
+
+  it("accepts a validated live fill after an initially unavailable price snapshot", () => {
+    const initial = yesNoMarket({ latestConfirmedTrades: [], latestConfirmedTradesValid: false });
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: {
+        primitiveOutcomeId: "YES",
+        fillId: "00000000-0000-0000-0000-000000000033",
+        executedAt: "2026-08-18T00:00:00Z",
+        eventOrder: "0001",
+        priceTick: 610,
+        divisibility: 1000,
+        faceAmountSubunits: 1000,
+      },
+    });
+    const view = composeMarketDetail(state, "7d");
+    expect(view?.latestConfirmedTradesValid).toBe(false);
+    expect(view && view.type === "yesno" ? view.currentOdds : null).toEqual({ yes: 610, no: 390 });
+  });
+
+  it("recovers a categorical live price without claiming that unknown outcomes never traded", () => {
+    const initial = {
+      ...categoricalMarket(),
+      registeredPrimitiveOutcomeIds: ["outcome-0", "outcome-1", "outcome-2"],
+      latestConfirmedTrades: [],
+      latestConfirmedTradesValid: false,
+    } as MarketDetail;
+    const recovered = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: {
+        primitiveOutcomeId: "outcome-0",
+        fillId: "00000000-0000-0000-0000-000000000034",
+        executedAt: "2026-08-18T00:00:00Z",
+        eventOrder: "0001",
+        priceTick: 610,
+        divisibility: 1000,
+        faceAmountSubunits: 1000,
+      },
+    });
+    const view = composeMarketDetail(recovered, "7d");
+    expect(view?.latestConfirmedTradesValid).toBe(false);
+    expect(view?.priceRefreshUnavailable).toBe(true);
+    expect(view?.type === "categorical" && view.outcomes.map((outcome) => outcome.odds)).toEqual([
+      610,
+      null,
+      null,
+    ]);
+    const changedContext = marketDetailDataReducer(recovered, {
+      type: "marketSnapshotLoaded",
+      detail: {
+        ...initial,
+        divisibility: 1_000_000,
+        registeredPrimitiveOutcomeIds: ["Other", "Unknown"],
+      },
+    });
+    const retained = composeMarketDetail(changedContext, "7d");
+    expect(retained?.divisibility).toBe(1000);
+    expect(retained?.registeredPrimitiveOutcomeIds).toEqual(initial.registeredPrimitiveOutcomeIds);
+    expect(retained?.latestConfirmedTradesValid).toBe(false);
+    expect(
+      retained?.type === "categorical" && retained.outcomes.map((outcome) => outcome.odds),
+    ).toEqual([610, null, null]);
   });
 
   it("ignores a malformed live delta without erasing the confirmed price", () => {

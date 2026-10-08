@@ -410,6 +410,7 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
               data: [
                 {
                   timestamp: '2026-05-25T10:00:00Z',
+                  source: 'fill',
                   eventOrder: '00000000000000000042',
                   price: 42,
                   volumeSubunits: 100,
