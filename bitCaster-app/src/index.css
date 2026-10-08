@@ -72,3 +72,17 @@
     transform: translateX(100%);
   }
 }
+
+@keyframes claim-confetti {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px) rotate(0deg);
+  }
+  20% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(36px) rotate(150deg);
+  }
+}

@@ -307,6 +307,173 @@ describe("PortfolioPage position action dialogs", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  async function claimWithTimers() {
+    await act(async () => fireEvent.click(screen.getByLabelText(/claim payout for/i)));
+  }
+
+  it("celebrates only completed exact fractional credit and never hides a residual holding", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1234,
+      });
+      const view = render(<PortfolioPage />);
+      await claimWithTimers();
+      const snapshot = screen.getByTestId("claim-celebration");
+      expect(within(snapshot).getByRole("group", { name: "1.234 sats" })).toBeVisible();
+      mockPositions = [positionFor("claim", { marketTitle: "Residual holding", shares: 7 })];
+      view.rerender(<PortfolioPage />);
+      expect(screen.getByText("Residual holding")).toBeVisible();
+      expect(snapshot).toHaveTextContent("Lost market");
+      await act(async () => vi.advanceTimersByTimeAsync(2999));
+      expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      expect(screen.getByText("Residual holding")).toBeVisible();
+      expect(removeProofs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN])(
+    "does not celebrate invalid/zero completed credit %s",
+    async (amount) => {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: amount,
+      });
+      render(<PortfolioPage />);
+      await startAction("claim");
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["pending", "partial", "error", "stopped"])(
+    "does not celebrate %s despite a committed leg",
+    async (kind) => {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+        onCommittedLeg({ payoutAmount: 1234, keysetId: "credited" });
+        return { kind, committedPayoutAmount: 1234, error: claimFailure };
+      });
+      render(<PortfolioPage />);
+      await startAction("claim");
+      expectCommittedPayout(1234);
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    },
+  );
+
+  it("creates one snapshot from the terminal result, not repeated credit callbacks", async () => {
+    mockPositions = [positionFor("claim")];
+    cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+      onCommittedLeg({ payoutAmount: 1000, keysetId: "one" });
+      onCommittedLeg({ payoutAmount: 2000, keysetId: "two" });
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      return { kind: "completed", committedPayoutAmount: 3000 };
+    });
+    render(<PortfolioPage />);
+    await startAction("claim");
+    expect(screen.getAllByTestId("claim-celebration")).toHaveLength(1);
+    expect(
+      within(screen.getByTestId("claim-celebration")).getByRole("group", { name: "3 sats" }),
+    ).toBeVisible();
+  });
+
+  it("expires only the matching completed claim while a newer same-id claim stays visible", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1000,
+      });
+      render(<PortfolioPage />);
+      await claimWithTimers();
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 2000,
+      });
+      await claimWithTimers();
+      expect(screen.getAllByTestId("claim-celebration")).toHaveLength(2);
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      const remaining = screen.getByTestId("claim-celebration");
+      expect(within(remaining).getByRole("group", { name: "2 sats" })).toBeVisible();
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the unverified warning after the completed credit celebration expires", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 125,
+        oracleEvidence: { status: "unverified" },
+      });
+      render(<PortfolioPage />);
+      await claimWithTimers();
+      expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+      expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops celebration across batched wallet changes and rejects old positive completion", async () => {
+    mockPositions = [positionFor("claim")];
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.claimPortfolioPosition.mockResolvedValueOnce({
+      kind: "completed",
+      committedPayoutAmount: 1000,
+    });
+    cashuMocks.claimPortfolioPosition.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PortfolioPage />);
+    await startAction("claim");
+    expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+    await startAction("claim");
+    act(() => {
+      cashuMocks.walletState.mnemonic = "other fake wallet seed";
+      cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+    });
+    await act(async () => finish({ kind: "completed", committedPayoutAmount: 2000 }));
+    expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+  });
+
+  it("does not create or retain celebration after unmount", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1000,
+      });
+      const view = render(<PortfolioPage />);
+      await claimWithTimers();
+      view.unmount();
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("claims an unvalued local winner with the exact canonical target", async () => {
     mockPositions = [
       positionFor("claim", {

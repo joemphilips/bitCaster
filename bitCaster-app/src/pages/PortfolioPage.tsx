@@ -20,7 +20,7 @@ import {
   isActiveBrowserWalletId,
 } from "@/lib/browserWalletProfile";
 import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
-import type { PLTimeSelector } from "@/types/portfolio";
+import type { ClaimCelebration, PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 
 export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string | null): string {
@@ -66,6 +66,12 @@ type PositionOperation = {
   kind: "claim" | "remove";
 };
 
+type ScopedClaimCelebration = ClaimCelebration & {
+  epoch: number;
+  scopeId: string | null;
+  walletId: string;
+};
+
 export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -74,6 +80,8 @@ export function PortfolioPage() {
   const [positionAction, setPositionAction] = useState<PositionOperation | null>(null);
   const operation = useRef<PositionOperation | null>(null);
   const epoch = useRef(0);
+  const claimSequence = useRef(0);
+  const [claimCelebrations, setClaimCelebrations] = useState<ScopedClaimCelebration[]>([]);
   const mounted = useRef(true);
   const confirmation = useRef<RemovalConfirmation | null>(null);
   const [removalConfirmation, setRemovalConfirmation] = useState<RemovalConfirmation | null>(null);
@@ -105,6 +113,7 @@ export function PortfolioPage() {
       setPositionAction(null);
       setRemovalConfirmation(null);
       setActionDialog(null);
+      setClaimCelebrations([]);
     };
     // A store subscription sees each transition, including batched A → B → A.
     const unsubscribe = useWalletStore.subscribe((current, previous) => {
@@ -118,6 +127,26 @@ export function PortfolioPage() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    const timers = claimCelebrations.map((snapshot) =>
+      window.setTimeout(
+        () => {
+          if (
+            !mounted.current ||
+            snapshot.epoch !== epoch.current ||
+            snapshot.scopeId !== activeBrowserWalletScopeId() ||
+            !isCurrentWallet(snapshot.walletId)
+          )
+            return;
+          // Expiry removes only presentation. A residual/new holding keeps its own authority.
+          setClaimCelebrations((current) => current.filter((item) => item.id !== snapshot.id));
+        },
+        Math.max(0, snapshot.expiresAtMs - Date.now()),
+      ),
+    );
+    return () => timers.forEach(window.clearTimeout);
+  }, [claimCelebrations]);
 
   const isCurrentOperation = useCallback(
     (captured: PositionOperation) =>
@@ -301,6 +330,22 @@ export function PortfolioPage() {
           },
         });
         if (!isCurrentOperation(captured)) return;
+        if (
+          result.kind === "completed" &&
+          Number.isSafeInteger(result.committedPayoutAmount) &&
+          result.committedPayoutAmount > 0
+        ) {
+          const snapshot: ScopedClaimCelebration = {
+            id: `claim-${captured.epoch}-${++claimSequence.current}`,
+            position: { ...position },
+            creditedAmountSubunits: result.committedPayoutAmount,
+            expiresAtMs: Date.now() + 3_000,
+            epoch: captured.epoch,
+            scopeId: captured.scopeId,
+            walletId: captured.walletId,
+          };
+          setClaimCelebrations((current) => [...current, snapshot]);
+        }
         const warning =
           result.oracleEvidence?.status === "unverified"
             ? t("portfolio.unverifiedOracleOutcome")
@@ -485,6 +530,12 @@ export function PortfolioPage() {
         onClaimPayout={handleClaimPayout}
         onDiscardLostPosition={handleDiscardLostPosition}
         onPositionsTabChange={handlePositionsTabChange}
+        claimCelebrations={claimCelebrations.filter(
+          (snapshot) =>
+            snapshot.epoch === epoch.current &&
+            snapshot.scopeId === activeScopeId &&
+            isCurrentWallet(snapshot.walletId),
+        )}
         positionAction={visibleAction}
         removalConfirmationPositionId={visibleConfirmation?.positionId}
         onConfirmDiscardLostPosition={(id) => {

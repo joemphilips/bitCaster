@@ -476,7 +476,9 @@
     "volLabel": "出来高: {{value}}",
     "connectNostr": "Nostr に接続",
     "likedMarkets": "ブックマーク",
-    "likedMarketsEmpty": "ブックマークしたマーケットはありません — /markets でブックマークアイコンをタップしてください"
+    "likedMarketsEmpty": "ブックマークしたマーケットはありません — /markets でブックマークアイコンをタップしてください",
+    "claimCongratulations": "おめでとうございます！<amount/>を受け取りました！",
+    "claimFeedbackCountdown": "受け取り完了の表示は自動で閉じます"
   },
   "activityType": {
     "deposit": "入金",

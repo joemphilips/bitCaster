@@ -210,6 +210,14 @@ export type CreatedMarket = CreatedMarketDisplay &
 // Component Props
 // =============================================================================
 
+/** Completed claim feedback. This snapshot is not custody or an actionable holding. */
+export interface ClaimCelebration {
+  id: string;
+  position: Position;
+  creditedAmountSubunits: number;
+  expiresAtMs: number;
+}
+
 export interface PortfolioProps {
   /** Wallet state — determines whether to show portfolio or onboarding CTA */
   walletState: WalletState;
@@ -279,6 +287,7 @@ export interface PortfolioProps {
   onDiscardLostPosition?: (positionId: string) => void;
 
   positionAction?: { positionId: string; kind: "claim" | "remove" };
+  claimCelebrations?: readonly ClaimCelebration[];
   removalConfirmationPositionId?: string;
   onConfirmDiscardLostPosition?: (positionId: string) => void;
   onCancelDiscardLostPosition?: () => void;

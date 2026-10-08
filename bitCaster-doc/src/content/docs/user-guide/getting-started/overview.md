@@ -83,6 +83,12 @@ Confirm or cancel in the position row. During removal, a spinner replaces the
 action. Routine success needs no extra dialog. Pending results and recovery
 problems remain visible.
 
+A completed claim with a new payout shows a short congratulations message and
+the exact amount credited to your wallet. A bottom bar counts down for about
+three seconds. The amount is the payout, not profit. Pending claims and claims
+with no new credit do not show this message. Any remaining position and oracle
+warning stay visible. Reduced-motion settings turn off the decorative animation.
+
 ### Create your own market
 
 Define the question, the possible outcomes, and how the result will be decided.

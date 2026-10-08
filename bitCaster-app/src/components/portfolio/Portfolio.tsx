@@ -244,6 +244,7 @@ export function Portfolio(props: PortfolioProps) {
                 onClaimPayout={props.onClaimPayout}
                 onDiscardLostPosition={props.onDiscardLostPosition}
                 positionAction={props.positionAction}
+                claimCelebrations={props.claimCelebrations}
                 removalConfirmationPositionId={props.removalConfirmationPositionId}
                 onConfirmDiscardLostPosition={props.onConfirmDiscardLostPosition}
                 onCancelDiscardLostPosition={props.onCancelDiscardLostPosition}

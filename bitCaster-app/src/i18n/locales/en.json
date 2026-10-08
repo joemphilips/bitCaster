@@ -479,7 +479,9 @@
     "volLabel": "Vol: {{value}}",
     "connectNostr": "Connect Nostr",
     "likedMarkets": "Liked Markets",
-    "likedMarketsEmpty": "No liked markets yet — explore /markets and tap the bookmark icon"
+    "likedMarketsEmpty": "No liked markets yet — explore /markets and tap the bookmark icon",
+    "claimCongratulations": "Congratulations! You've earned <amount/>!",
+    "claimFeedbackCountdown": "Claim confirmation closes automatically"
   },
   "activityType": {
     "deposit": "Deposit",
