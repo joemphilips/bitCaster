@@ -92,3 +92,22 @@ describe("BasicInfo", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 });
+
+describe("thumbnail retention controls", () => {
+  it("blocks Next while retention is pending or failed and exposes explicit removal", async () => {
+    const onRemove = vi.fn();
+    const props = {
+      data: { ...defaultData, title: "Test", closingDate: futureDate() },
+      categoryTags,
+      onThumbnailRemove: onRemove,
+    };
+    const view = render(<BasicInfo {...props} thumbnailPending />);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    view.rerender(<BasicInfo {...props} thumbnailError="Image could not be retained" />);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Image could not be retained");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Remove" }));
+    expect(onRemove).toHaveBeenCalledOnce();
+  });
+});

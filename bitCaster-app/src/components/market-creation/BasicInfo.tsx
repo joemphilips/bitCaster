@@ -11,6 +11,10 @@ interface BasicInfoProps {
   onCategoryTagsChange?: (tags: string[]) => void;
   onClosingDateChange?: (date: string) => void;
   onThumbnailUpload?: (file: File) => void;
+  onThumbnailRemove?: () => void;
+  thumbnailPending?: boolean;
+  thumbnailError?: string | null;
+  thumbnailLocked?: boolean;
   onNext?: () => void;
 }
 
@@ -21,11 +25,17 @@ export function BasicInfo({
   onCategoryTagsChange,
   onClosingDateChange,
   onThumbnailUpload,
+  onThumbnailRemove,
+  thumbnailPending = false,
+  thumbnailError = null,
+  thumbnailLocked = false,
   onNext,
 }: BasicInfoProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canProceed =
+    !thumbnailPending &&
+    !thumbnailError &&
     data.title.trim().length > 0 &&
     data.closingDate.length > 0 &&
     new Date(data.closingDate) > new Date();
@@ -33,6 +43,8 @@ export function BasicInfo({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) onThumbnailUpload?.(file);
+    // Permit retrying the same file after a failed retention attempt.
+    e.target.value = "";
   };
 
   return (
@@ -68,16 +80,38 @@ export function BasicInfo({
                 ref={fileInputRef}
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                disabled={thumbnailLocked}
                 onChange={handleFileChange}
                 className="hidden"
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
+                disabled={thumbnailLocked}
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
               >
                 <Upload className="w-4 h-4 inline-block mr-1.5" strokeWidth={1.5} />
                 {t("marketCreation.uploadImage")}
               </button>
+              {(data.imageFile || thumbnailPending || thumbnailError) && (
+                <button
+                  type="button"
+                  onClick={onThumbnailRemove}
+                  disabled={thumbnailLocked}
+                  className="ml-2 rounded-lg px-3 py-2 text-sm text-slate-300 disabled:opacity-50"
+                >
+                  {t("common.remove")}
+                </button>
+              )}
+              {thumbnailPending && (
+                <p role="status" className="mt-2 text-sm text-slate-400">
+                  {t("common.loading")}
+                </p>
+              )}
+              {thumbnailError && (
+                <p role="alert" className="mt-2 text-sm text-red-400">
+                  {thumbnailError}
+                </p>
+              )}
               <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.imageHint")}</p>
             </div>
           </div>

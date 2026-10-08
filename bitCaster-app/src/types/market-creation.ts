@@ -58,6 +58,8 @@ export interface WizardStepReviewAndCreate {
 export type WizardStep = 1 | 2 | 3 | 4;
 
 export interface WizardDraft {
+  /** Selection intent. Missing matching bytes must block preparation, not omit the image. */
+  thumbnailId?: string;
   /** References one immutable local preparation. It carries no proof or oracle secret. */
   creation?: import("@/lib/browserMarketCreation").BrowserMarketCreationPointer;
   currentStep: WizardStep;
@@ -159,6 +161,9 @@ export interface MarketCreationWizardProps {
 
   /** Called when user uploads a thumbnail */
   onThumbnailUpload?: (file: File) => void;
+  onThumbnailRemove?: () => void;
+  thumbnailPending?: boolean;
+  thumbnailError?: string | null;
 
   // -------------------------------------------------------------------------
   // Outcomes Callbacks (Step 4)

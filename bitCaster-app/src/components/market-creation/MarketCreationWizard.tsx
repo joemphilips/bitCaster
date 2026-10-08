@@ -38,6 +38,9 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onCategoryTagsChange,
     onClosingDateChange,
     onThumbnailUpload,
+    onThumbnailRemove,
+    thumbnailPending,
+    thumbnailError,
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
@@ -273,6 +276,10 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onCategoryTagsChange={onCategoryTagsChange}
             onClosingDateChange={onClosingDateChange}
             onThumbnailUpload={onThumbnailUpload}
+            onThumbnailRemove={onThumbnailRemove}
+            thumbnailPending={thumbnailPending}
+            thumbnailError={thumbnailError}
+            thumbnailLocked={isSubmitting || !!draft.creation}
             onNext={onNext}
           />
         )}
@@ -302,8 +309,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             description={draft.stepReviewAndCreate?.description ?? ""}
             basicInfo={draft.stepBasicInfo}
             outcomes={draft.stepOutcomes}
-            isSubmitting={isSubmitting}
-            submitError={submitError}
+            isSubmitting={isSubmitting || !!thumbnailPending}
+            submitError={thumbnailError ?? submitError}
             onDescriptionChange={onDescriptionChange}
             onCreateMarket={onCreateMarket}
           />

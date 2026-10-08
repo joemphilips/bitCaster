@@ -40,6 +40,17 @@ API clients can set the optional `color` field to a six-digit hexadecimal
 value with a leading `#`. Omit it for automatic assignment. See the
 [Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
 
+## Keep a draft image
+
+The browser saves your selected JPG, PNG, or WebP image before payment.
+The image must contain data and must not exceed 5 MiB.
+Reloading in the same browser restores the image preview, even before wallet setup.
+If the browser cannot save or restore the selected image, creation stops.
+Select the image again or remove it before continuing.
+You can replace or remove the image before creation preparation starts.
+After preparation, retries use the original saved image.
+Keep browser storage enabled. Clearing site data removes the local draft.
+
 ## Resume an incomplete creation
 
 Mint registration can succeed before the engine accepts the market.

@@ -867,7 +867,10 @@
     "depositWalletTopUpMinimumDescription": "マーケットメイカーに資金提供するには少なくとも {{amount}} をチャージしてください。",
     "depositWalletTopUpMinimumError": "マーケットメイカーに資金提供するには少なくとも {{amount}} が必要です。",
     "retryEcashDeposit": "Ecash 入金を再試行",
-    "statusPollError": "状態の取得に失敗しました"
+    "statusPollError": "状態の取得に失敗しました",
+    "imageRetentionMissing": "選択した画像がこのブラウザーに保存されていません。続行する前に、画像を選び直すか削除してください。",
+    "imageRetentionFailed": "このブラウザーに画像を保存できませんでした。ブラウザーの保存機能を有効にして画像を選び直すか、続行する前に画像を削除してください。",
+    "imageRetentionInvalid": "サイズが 5 MiB 以下で、空ではない JPG、PNG、WebP 画像を選択してください。"
   },
   "filter": {
     "yesNo": "YES/NO",

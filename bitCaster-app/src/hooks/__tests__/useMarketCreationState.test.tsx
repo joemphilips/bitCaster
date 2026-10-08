@@ -1,5 +1,6 @@
 import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
+import { marketDraftImages } from "@/stores/marketDraftImage";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
 import Dexie from "dexie";
 import { Blob as NativeBlob, File as NativeFile } from "node:buffer";
@@ -384,6 +385,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  const imageId = useMarketDraftStore.getState().draft.thumbnailId;
+  if (imageId) await marketDraftImages.remove(imageId);
   runtime.database?.close();
   await Dexie.delete(databaseName);
   vi.unstubAllGlobals();
@@ -496,6 +499,159 @@ async function beginPaidCreation() {
   expect(result.current.registrationFeePrompt?.feeSubunits).toBe(7);
   return result;
 }
+
+describe("preparation-independent draft image", () => {
+  it("survives remount before wallet setup and supplies exact retained bytes after setup", async () => {
+    const result = await setupDraftForSubmission();
+    const walletDatabase = runtime.database;
+    runtime.database = null;
+    const bytes = new Uint8Array([255, 216, 255, 217]);
+    await act(async () =>
+      result.current.onThumbnailUpload(new File([bytes], "draft.jpg", { type: "image/jpeg" })),
+    );
+    await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+    const selectionId = useMarketDraftStore.getState().draft.thumbnailId!;
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    cleanup();
+    await useMarketDraftStore.persist.rehydrate();
+    const reloaded = renderHook(() => useMarketCreationState(), { wrapper }).result;
+    await waitFor(() => expect(reloaded.current.thumbnailFile?.name).toBe("draft.jpg"));
+    expect(reloaded.current.thumbnailFile?.type).toBe("image/jpeg");
+    expect(Array.from(new Uint8Array(await reloaded.current.thumbnailFile!.arrayBuffer()))).toEqual(
+      Array.from(bytes),
+    );
+    expect(reloaded.current.draft.stepBasicInfo?.imageFile).toBe("blob:retained-thumbnail");
+    // Wallet setup is later. The draft image was never placed in that database.
+    runtime.database = walletDatabase;
+    await act(async () => {
+      await reloaded.current.onCreateMarket();
+    });
+    expect(runtime.engineThumbnails[0].name).toBe("draft.jpg");
+    expect(Array.from(runtime.engineThumbnails[0].bytes)).toEqual(Array.from(bytes));
+    await waitFor(async () => {
+      await expect(marketDraftImages.read(selectionId)).rejects.toThrow("not retained");
+    });
+  });
+
+  it("blocks preparation after retention fails until explicit removal", async () => {
+    const result = await setupDraftForSubmission();
+    const retain = vi
+      .spyOn(marketDraftImages, "retain")
+      .mockRejectedValueOnce(new DOMException("Full", "QuotaExceededError"));
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "failed.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+    expect([
+      i18n.t("marketCreation.imageRetentionFailed"),
+      i18n.t("marketCreation.imageRetentionMissing"),
+    ]).toContain(result.current.thumbnailError);
+    expect(result.current.thumbnailError).not.toContain("Full");
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+    cleanup();
+    await useMarketDraftStore.persist.rehydrate();
+    const reloaded = renderHook(() => useMarketCreationState(), { wrapper }).result;
+    await waitFor(() =>
+      expect(reloaded.current.thumbnailError).toBe(i18n.t("marketCreation.imageRetentionMissing")),
+    );
+    await act(async () => {
+      await reloaded.current.onCreateMarket();
+    });
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+    await act(async () => {
+      await reloaded.current.onThumbnailRemove();
+    });
+    await waitFor(() => expect(reloaded.current.thumbnailError).toBeNull());
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+    retain.mockRestore();
+  });
+
+  it("does not let delayed cleanup failure block a newer retained image", async () => {
+    const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "first.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailFile?.name).toBe("first.jpg"));
+    let rejectCleanup!: (error: Error) => void;
+    const cleanupFailure = new Promise<void>((_, reject) => {
+      rejectCleanup = reject;
+    });
+    const remove = vi
+      .spyOn(marketDraftImages, "remove")
+      .mockImplementationOnce(() => cleanupFailure);
+    let removal!: Promise<void>;
+    act(() => {
+      removal = result.current.onThumbnailRemove();
+    });
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+    const bytes = new Uint8Array([255, 216, 255, 217]);
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([bytes], "replacement.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailFile?.name).toBe("replacement.jpg"));
+    const replacementId = useMarketDraftStore.getState().draft.thumbnailId;
+    const preview = result.current.draft.stepBasicInfo?.imageFile;
+    await act(async () => {
+      rejectCleanup(new Error("Old attachment cleanup failed"));
+      await removal;
+    });
+    expect(result.current.thumbnailError).toBeNull();
+    expect(result.current.thumbnailPending).toBe(false);
+    expect(result.current.thumbnailFile?.name).toBe("replacement.jpg");
+    expect(result.current.draft.stepBasicInfo?.imageFile).toBe(preview);
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(replacementId);
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(runtime.engineThumbnails[0].name).toBe("replacement.jpg");
+    expect(Array.from(runtime.engineThumbnails[0].bytes)).toEqual(Array.from(bytes));
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledOnce();
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    remove.mockRestore();
+  });
+
+  it("start over removes the unprepared attachment but retains an unfinished creation's attachment", async () => {
+    const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "draft.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    const id = useMarketDraftStore.getState().draft.thumbnailId!;
+    await act(async () => result.current.clearDraft());
+    await waitFor(async () => {
+      await expect(marketDraftImages.read(id)).rejects.toThrow("not retained");
+    });
+    cleanup();
+    // The existing paid-retry case below still verifies the exact immutable attempt.
+    const pending = await beginPaidCreation();
+    await act(async () =>
+      pending.current.onThumbnailUpload(
+        new File([new Uint8Array([2])], "paid.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await pending.current.onConfirmRegistrationFee();
+    });
+    const before = useMarketDraftStore.getState().draft;
+    await act(async () => pending.current.clearDraft());
+    expect(useMarketDraftStore.getState().draft.creation).toEqual(before.creation);
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(before.thumbnailId);
+    expect((await marketDraftImages.read(before.thumbnailId!)).filename).toBe("paid.jpg");
+  });
+});
 
 describe("durable browser market creation", () => {
   it("resumes a paid engine 401 after a cold read with the original thumbnail and one announcement", async () => {
@@ -853,7 +1009,10 @@ describe("durable browser market creation", () => {
       await act(async () => {
         await result.current.onCreateMarket();
       });
-      expect(result.current.submitError).toMatch(/Market (thumbnail|metadata|creation)/);
+      if (limit === "thumbnail") {
+        expect(result.current.thumbnailError).not.toBeNull();
+        expect(result.current.submitError).toBe(result.current.thumbnailError);
+      } else expect(result.current.submitError).toMatch(/Market (metadata|creation)/);
       expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);

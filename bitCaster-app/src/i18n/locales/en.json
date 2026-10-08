@@ -870,7 +870,10 @@
     "depositWalletTopUpMinimumDescription": "Top up at least {{amount}} to fund the market maker.",
     "depositWalletTopUpMinimumError": "Amount must be at least {{amount}} to fund the market maker.",
     "retryEcashDeposit": "Retry ecash deposit",
-    "statusPollError": "Status poll failed"
+    "statusPollError": "Status poll failed",
+    "imageRetentionMissing": "The selected image is missing from this browser. Select it again or remove it before continuing.",
+    "imageRetentionFailed": "The image could not be saved in this browser. Enable browser storage and select the image again, or remove it before continuing.",
+    "imageRetentionInvalid": "Select a nonempty JPG, PNG, or WebP image no larger than 5 MiB."
   },
   "filter": {
     "yesNo": "Yes/No",

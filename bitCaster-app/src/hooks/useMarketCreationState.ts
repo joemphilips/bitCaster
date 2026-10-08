@@ -1,3 +1,4 @@
+import { DraftImageRetentionError, marketDraftImages } from "@/stores/marketDraftImage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -25,7 +26,6 @@ import {
   browserMarketCreationSession,
   completeBrowserMarketCreation,
   prepareBrowserMarketCreation,
-  browserMarketThumbnail,
   type BrowserMarketCreationPointer,
 } from "@/lib/browserMarketCreation";
 import { detectMintCapabilities } from "@/lib/mints";
@@ -228,6 +228,22 @@ function isConfirmedCreationProgress(
   }
 }
 
+function draftImageErrorKey(error: unknown) {
+  if (error instanceof DraftImageRetentionError) {
+    if (error.code === "missing") return "marketCreation.imageRetentionMissing";
+    if (error.code === "invalid") return "marketCreation.imageRetentionInvalid";
+  }
+  return "marketCreation.imageRetentionFailed";
+}
+
+function isCurrentDraftThumbnail(selectionId: string | undefined): boolean {
+  const persisted = JSON.parse(localStorage.getItem("bitcaster-market-draft") ?? "null");
+  return (
+    useMarketDraftStore.getState().draft.thumbnailId === selectionId &&
+    persisted?.state?.draft?.thumbnailId === selectionId
+  );
+}
+
 export function useMarketCreationState() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -262,6 +278,9 @@ export function useMarketCreationState() {
   }, [draft.stepOutcomes, setDraft]);
 
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
+  const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
+  const [thumbnailPending, setThumbnailPending] = useState(false);
+  const [thumbnailError, setThumbnailError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
@@ -453,17 +472,90 @@ export function useMarketCreationState() {
   );
 
   const onThumbnailUpload = useCallback(
-    (file: File) => {
-      setThumbnailFile(file);
-      if (thumbnailObjectUrlRef.current) {
-        URL.revokeObjectURL(thumbnailObjectUrlRef.current);
+    async (file: File) => {
+      if (useMarketDraftStore.getState().draft.creation) return;
+      const selectionId = crypto.randomUUID();
+      setThumbnailPending(true);
+      setThumbnailError(null);
+      setThumbnailFile(null);
+      setThumbnailPreview(null);
+      try {
+        // Retain intent first. Missing bytes after a reload cannot become "no image".
+        setDraft((previous) => ({
+          ...previous,
+          thumbnailId: selectionId,
+          lastModified: new Date().toISOString(),
+        }));
+        await marketDraftImages.retain(selectionId, file, () =>
+          isCurrentDraftThumbnail(selectionId),
+        );
+      } catch (error) {
+        if (useMarketDraftStore.getState().draft.thumbnailId === selectionId) {
+          setThumbnailError(t(draftImageErrorKey(error)));
+          setThumbnailPending(false);
+        }
       }
-      const url = URL.createObjectURL(file);
-      thumbnailObjectUrlRef.current = url;
-      updateBasicInfo({ imageFile: url });
     },
-    [updateBasicInfo],
+    [setDraft, t],
   );
+
+  const onThumbnailRemove = useCallback(async () => {
+    const current = useMarketDraftStore.getState().draft;
+    if (current.creation) return;
+    const selectionId = current.thumbnailId;
+    try {
+      setDraft((previous) => {
+        const remaining = { ...previous, lastModified: new Date().toISOString() };
+        delete remaining.thumbnailId;
+        return remaining;
+      });
+      setThumbnailError(null);
+    } catch {
+      setThumbnailError(t("marketCreation.imageRetentionFailed"));
+      return;
+    }
+    // The durable draft no longer selects this image. Cleanup is best effort:
+    // a late failure must not block a newer selection or restore removed intent.
+    if (selectionId) await marketDraftImages.remove(selectionId).catch(() => {});
+  }, [setDraft, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const selectionId = draft.thumbnailId;
+    setThumbnailFile(null);
+    setThumbnailPreview(null);
+    setThumbnailError(null);
+    if (thumbnailObjectUrlRef.current) {
+      URL.revokeObjectURL(thumbnailObjectUrlRef.current);
+      thumbnailObjectUrlRef.current = null;
+    }
+    if (!selectionId || draft.creation) {
+      setThumbnailPending(false);
+      return;
+    }
+    setThumbnailPending(true);
+    void marketDraftImages
+      .read(selectionId)
+      .then((thumbnail) => {
+        if (cancelled) return;
+        const file = new File([thumbnail.data.slice().buffer as ArrayBuffer], thumbnail.filename, {
+          type: thumbnail.contentType,
+        });
+        const url = URL.createObjectURL(file);
+        thumbnailObjectUrlRef.current = url;
+        setThumbnailFile(file);
+        setThumbnailPreview(url);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setThumbnailError(t(draftImageErrorKey(error)));
+      })
+      .finally(() => {
+        if (!cancelled) setThumbnailPending(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.thumbnailId, draft.creation, t]);
 
   // --- Outcomes (Step 4) ---
   const onAddOutcome = useCallback(() => {
@@ -610,7 +702,13 @@ export function useMarketCreationState() {
           assertMarketCreationMetadataSize(normalized.metadata);
           if (nostrSignerMode !== "nsec" || !useSettingsStore.getState().nsecSecret)
             throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE);
-          const thumbnail = await browserMarketThumbnail(thumbnailFile);
+          if (thumbnailPending || thumbnailError)
+            throw new Error(thumbnailError ?? t("marketCreation.creationStorageUnavailable"));
+          const thumbnail = draft.thumbnailId
+            ? await marketDraftImages.read(draft.thumbnailId)
+            : undefined;
+          if (!isCurrentDraftThumbnail(draft.thumbnailId))
+            throw new Error(t("marketCreation.creationStorageUnavailable"));
           await prepareMarketCreationRequest(normalized.metadata, thumbnail);
           const capabilities = await activeMintCapabilities();
           if (!capabilities.ctfSettings)
@@ -652,6 +750,8 @@ export function useMarketCreationState() {
             } else setRegistrationFeePrompt(prompt);
             return;
           }
+          if (!isCurrentDraftThumbnail(draft.thumbnailId))
+            throw new Error(t("marketCreation.creationStorageUnavailable"));
           const pointer = draft.creation ?? {
             creationId: crypto.randomUUID(),
             binding: session.binding,
@@ -753,12 +853,28 @@ export function useMarketCreationState() {
                 ? error.message
                 : t("marketCreation.creationIncompleteError"),
             );
-        } else setSubmitError(error instanceof Error ? error.message : "Failed to create market");
+        } else
+          setSubmitError(
+            error instanceof DraftImageRetentionError
+              ? t(draftImageErrorKey(error))
+              : error instanceof Error
+                ? error.message
+                : "Failed to create market",
+          );
       } finally {
         setIsSubmitting(false);
       }
     },
-    [thumbnailFile, isSubmitting, nostrSignerMode, relays, setDraft, completeCreation, t],
+    [
+      thumbnailPending,
+      thumbnailError,
+      isSubmitting,
+      nostrSignerMode,
+      relays,
+      setDraft,
+      completeCreation,
+      t,
+    ],
   );
 
   const onCreateMarket = useCallback(async () => {
@@ -826,10 +942,15 @@ export function useMarketCreationState() {
   ];
 
   return {
-    draft,
+    draft: draft.stepBasicInfo
+      ? { ...draft, stepBasicInfo: { ...draft.stepBasicInfo, imageFile: thumbnailPreview } }
+      : draft,
     hasSavedDraft,
     categoryTags,
     thumbnailFile,
+    thumbnailPending,
+    thumbnailError,
+    onThumbnailRemove,
     isSubmitting,
     submitError,
     retainedCreation:

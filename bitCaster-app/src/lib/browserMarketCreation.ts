@@ -14,7 +14,6 @@ import {
   type MarketCreationInput,
   type MarketThumbnailBytes,
   normalizeMarketCreationInput,
-  MAX_MARKET_CREATION_THUMBNAIL_BYTES,
 } from "@bitcaster/client-sdk";
 import { captureBrowserMintPersistenceContext } from "./cashu";
 import { resolveNsecIdentity } from "./identityOps";
@@ -44,19 +43,6 @@ export interface BrowserMarketCreationPointer {
     readonly code: "incomplete" | "payment-pending";
     readonly progress: "prepared" | "mint-confirmed" | "engine-confirmed";
     readonly dismissed: boolean;
-  };
-}
-
-export async function browserMarketThumbnail(
-  file: File | null,
-): Promise<MarketThumbnailBytes | undefined> {
-  if (file === null) return undefined;
-  if (file.size === 0 || file.size > MAX_MARKET_CREATION_THUMBNAIL_BYTES)
-    throw new Error("Market thumbnail must contain at most 5 MiB.");
-  return {
-    data: new Uint8Array(await file.arrayBuffer()),
-    filename: file.name,
-    contentType: file.type,
   };
 }
 

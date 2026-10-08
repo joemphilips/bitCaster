@@ -85,6 +85,9 @@ export function MarketCreationPage() {
         onCategoryTagsChange={state.onCategoryTagsChange}
         onClosingDateChange={state.onClosingDateChange}
         onThumbnailUpload={state.onThumbnailUpload}
+        onThumbnailRemove={state.onThumbnailRemove}
+        thumbnailPending={state.thumbnailPending}
+        thumbnailError={state.thumbnailError}
         onAddOutcome={state.onAddOutcome}
         onRemoveOutcome={state.onRemoveOutcome}
         onOutcomeLabelChange={state.onOutcomeLabelChange}
