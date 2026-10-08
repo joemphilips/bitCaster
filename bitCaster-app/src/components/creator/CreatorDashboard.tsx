@@ -48,6 +48,16 @@ function StatCard({ label, value, subValue, icon }: StatCardProps) {
   );
 }
 
+function retainedResolution(marketId: string, state = useCreatorMarketsStore.getState()) {
+  const imported = state.importedOracles.find((row) => row.binding.conditionId === marketId);
+  const created = state.markets.find((row) => row.conditionId === marketId)?.oracle;
+  return {
+    outcome:
+      imported?.publication?.chosenOutcome ?? created?.chosenOutcome ?? created?.attestedOutcome,
+    explanation: imported?.explanationDraft ?? created?.explanationDraft,
+  };
+}
+
 /**
  * Creator Dashboard at `/creator`.
  *
@@ -68,11 +78,13 @@ export function CreatorDashboard() {
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
   const generation = useRef(0);
+  const publication = useRef<symbol | null>(null);
   const signerMode = useSettingsStore((s) => s.nostrSignerMode);
   const signerKey = useSettingsStore((s) => s.nsecSecret);
   useEffect(() => {
     const clear = () => {
       generation.current++;
+      publication.current = null;
       setResolutionDialog(null);
       setResolutionError(null);
       setResolutionSuccess(null);
@@ -97,51 +109,93 @@ export function CreatorDashboard() {
   const relays = useSettingsStore((s) => s.relays);
   const [resolutionDialog, setResolutionDialog] = useState<{
     marketId: string;
+    title: string;
+    outcomes: string[];
     outcome: string;
+    savedOutcome?: string;
+    savedExplanation?: string;
     recovery?: boolean;
-    chosen?: boolean;
     republish?: boolean;
     relayUrls?: string[];
   } | null>(null);
   const [explanation, setExplanation] = useState("");
   const handleCreateMarket = () => navigate("/creator/new");
   const handleViewMarket = (marketId: string) => navigate(`/markets/${marketId}`);
-  const handlePublishOracleAttestation = (marketId: string, outcome: string) => {
+  const storedOutcome = useCreatorMarketsStore((state) =>
+    resolutionDialog ? retainedResolution(resolutionDialog.marketId, state).outcome : undefined,
+  );
+  const storedExplanation = useCreatorMarketsStore((state) =>
+    resolutionDialog ? retainedResolution(resolutionDialog.marketId, state).explanation : undefined,
+  );
+  const immutableOutcome = storedOutcome ?? resolutionDialog?.savedOutcome;
+  const selectedOutcome = immutableOutcome ?? resolutionDialog?.outcome ?? "";
+  const displayedExplanation = immutableOutcome
+    ? (storedExplanation ?? resolutionDialog?.savedExplanation ?? "")
+    : explanation;
+  const handlePublishOracleAttestation = (marketId: string) => {
+    if (publication.current) return;
     const market = markets.find((m) => m.id === marketId);
-    if (!market?.oracle || !market.oracle.outcomes.includes(outcome)) return;
+    if (!market?.oracle || !market.oracle.outcomes.length) return;
+    const retained = retainedResolution(marketId);
+    const savedOutcome =
+      retained.outcome ?? market.oracle.chosenOutcome ?? market.oracle.attestedOutcome;
     generation.current++;
     setResolutionError(null);
     setResolutionSuccess(null);
-    setExplanation(market.oracle.explanationDraft ?? "");
+    setExplanation(retained.explanation ?? market.oracle.explanationDraft ?? "");
     setResolutionDialog({
       marketId,
-      outcome: market.oracle.chosenOutcome ?? market.oracle.attestedOutcome ?? outcome,
+      title: market.title,
+      outcomes: [...market.oracle.outcomes],
+      outcome: savedOutcome ?? "",
+      savedOutcome,
+      savedExplanation: savedOutcome
+        ? (retained.explanation ?? market.oracle.explanationDraft ?? "")
+        : undefined,
     });
   };
-  const handleRecoveryPublication: OracleRecoveryPublish = (
-    marketId,
-    outcome,
-    republish,
-    relayUrls,
-    chosen,
-  ) => {
+  const handleRecoveryPublication: OracleRecoveryPublish = (request) => {
+    if (publication.current) return;
+    const retained = retainedResolution(request.conditionId);
+    const savedOutcome = retained.outcome ?? request.chosenOutcome ?? undefined;
     generation.current++;
     setResolutionError(null);
     setResolutionSuccess(null);
-    const state = useCreatorMarketsStore.getState();
-    const imported = state.importedOracles.find((row) => row.binding.conditionId === marketId);
-    const created = state.markets.find((row) => row.conditionId === marketId);
-    setExplanation(imported?.explanationDraft ?? created?.oracle?.explanationDraft ?? "");
-    setResolutionDialog({ marketId, outcome, recovery: true, chosen, republish, relayUrls });
+    setExplanation(retained.explanation ?? "");
+    setResolutionDialog({
+      marketId: request.conditionId,
+      title: request.title,
+      outcomes: [...request.outcomes],
+      outcome: savedOutcome ?? "",
+      savedOutcome,
+      recovery: true,
+      savedExplanation: savedOutcome ? (retained.explanation ?? "") : undefined,
+      republish: request.republish,
+      relayUrls: [...request.relayUrls],
+    });
   };
   const dismissResolution = () => {
+    if (publication.current) return;
     generation.current++;
     setResolutionDialog(null);
     setResolutionError(null);
   };
   const confirmResolution = async () => {
-    if (!resolutionDialog) return;
-    const { marketId, outcome, recovery, chosen, republish, relayUrls } = resolutionDialog;
+    if (!resolutionDialog || publication.current) return;
+    const { marketId, recovery, republish, relayUrls } = resolutionDialog;
+    const retained = retainedResolution(marketId);
+    const savedOutcome = retained.outcome ?? resolutionDialog.savedOutcome;
+    const chosen = savedOutcome !== undefined;
+    const outcome = savedOutcome ?? resolutionDialog.outcome;
+    if (!outcome || !resolutionDialog.outcomes.includes(outcome)) return;
+    const publicExplanation = chosen
+      ? (retained.explanation ?? resolutionDialog.savedExplanation ?? "")
+      : explanation;
+    if (new TextEncoder().encode(publicExplanation).length > ORACLE_EXPLANATION_UTF8_BYTES_MAX)
+      return;
+    // Lock before the first await. React's disabled state alone does not prevent two submissions.
+    const operation = Symbol("oracle-publication");
+    publication.current = operation;
     const captured = generation.current;
     const revision = getNostrSignerRevision();
     const isCurrent = () =>
@@ -153,13 +207,15 @@ export function CreatorDashboard() {
     try {
       requireCurrent();
       if (!chosen)
-        await useCreatorMarketsStore.getState().saveOracleExplanationDraft(marketId, explanation);
+        await useCreatorMarketsStore
+          .getState()
+          .saveOracleExplanationDraft(marketId, publicExplanation);
       if (!isCurrent()) return;
       const result = recovery
         ? await publishBrowserOracleOutcome(
             marketId,
             outcome,
-            chosen ? undefined : explanation,
+            chosen ? undefined : publicExplanation,
             relayUrls ?? [],
             useCreatorMarketsStore,
             undefined,
@@ -172,7 +228,7 @@ export function CreatorDashboard() {
         : await publishBrowserOracleOutcome(
             marketId,
             outcome,
-            explanation,
+            chosen ? undefined : publicExplanation,
             effectiveRelayUrls(relays),
             useCreatorMarketsStore,
             undefined,
@@ -192,6 +248,7 @@ export function CreatorDashboard() {
     } catch {
       if (isCurrent()) setResolutionError(t("creator.oracleRecoveryRequired"));
     } finally {
+      if (publication.current === operation) publication.current = null;
       if (isCurrent()) setResolvingMarketId(null);
     }
   };
@@ -335,11 +392,37 @@ export function CreatorDashboard() {
             {(dismiss) => (
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
                 <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
-                <p className="mt-3">
-                  {t("creator.resolveImmutableChoice", {
-                    outcome: resolutionDialog.outcome,
-                  })}
-                </p>
+                <p className="mt-3 break-words font-medium">{resolutionDialog.title}</p>
+                {immutableOutcome ? (
+                  <p data-testid="creator-oracle-saved-outcome" className="mt-4 break-words">
+                    {t("oracleBackup.savedOutcome", { outcome: immutableOutcome })}
+                  </p>
+                ) : (
+                  <label className="mt-4 block">
+                    <span className="block [overflow-wrap:anywhere]">
+                      {t("creator.winningOutcomeLabel", { title: resolutionDialog.title })}
+                    </span>
+                    <select
+                      data-testid="creator-oracle-outcome"
+                      value={resolutionDialog.outcome}
+                      disabled={resolvingMarketId !== null}
+                      onChange={(event) =>
+                        setResolutionDialog(
+                          (current) => current && { ...current, outcome: event.target.value },
+                        )
+                      }
+                      className="mt-2 w-full rounded-lg border border-slate-300 bg-white p-3 dark:border-slate-700 dark:bg-slate-800"
+                    >
+                      <option value="">{t("oracleBackup.chooseOutcome")}</option>
+                      {resolutionDialog.outcomes.map((outcome) => (
+                        <option key={outcome} value={outcome}>
+                          {outcome}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <p className="mt-3">{t("creator.resolveChoiceNotice")}</p>
                 {resolutionError && (
                   <p role="alert" className="mt-3 text-sm text-rose-600">
                     {resolutionError}
@@ -350,15 +433,8 @@ export function CreatorDashboard() {
                 </label>
                 <textarea
                   id="oracle-explanation"
-                  value={explanation}
-                  disabled={
-                    !!resolutionDialog.chosen ||
-                    !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
-                      ?.chosenOutcome ||
-                    !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
-                      ?.attestedOutcome ||
-                    resolvingMarketId !== null
-                  }
+                  value={displayedExplanation}
+                  disabled={!!immutableOutcome || resolvingMarketId !== null}
                   onChange={(event) => setExplanation(event.target.value)}
                   className="mt-2 min-h-28 w-full rounded-lg border border-slate-300 p-3 dark:border-slate-700 dark:bg-slate-800"
                 />
@@ -377,7 +453,9 @@ export function CreatorDashboard() {
                     onClick={() => void confirmResolution()}
                     disabled={
                       resolvingMarketId !== null ||
-                      new TextEncoder().encode(explanation).length >
+                      !selectedOutcome ||
+                      !resolutionDialog.outcomes.includes(selectedOutcome) ||
+                      new TextEncoder().encode(displayedExplanation).length >
                         ORACLE_EXPLANATION_UTF8_BYTES_MAX
                     }
                     className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:opacity-50"

@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type SyntheticEvent } from "react";
+import { type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   CreatedMarket,
@@ -32,7 +32,7 @@ interface CreatedMarketRowProps {
   market: CreatedMarket;
   onView?: (marketId: string) => void;
   onClaimFees?: (marketId: string) => void;
-  onPublishOracleAttestation?: (marketId: string, outcome: string) => void;
+  onPublishOracleAttestation?: (marketId: string) => void;
   isPublishingOracleAttestation?: boolean;
 }
 
@@ -61,7 +61,6 @@ export function CreatedMarketRow({
       (!!market.oracle.explanationEventJson && !market.oracle.explanationRelayPublished)) &&
     market.oracle.outcomes.length > 0 &&
     !!onPublishOracleAttestation;
-  const [selectedOutcome, setSelectedOutcome] = useState(market.oracle?.outcomes[0] ?? "");
   const immutableOutcome = market.oracle?.chosenOutcome ?? market.oracle?.attestedOutcome;
 
   const handleRowClick = () => {
@@ -74,10 +73,6 @@ export function CreatedMarketRow({
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     onView(market.id);
-  };
-
-  const stopRowNavigation = (event: SyntheticEvent) => {
-    event.stopPropagation();
   };
 
   return (
@@ -195,26 +190,9 @@ export function CreatedMarketRow({
 
         {canPublishOracleAttestation && (
           <div className="flex shrink-0 items-center gap-2">
-            <select
-              value={immutableOutcome ?? selectedOutcome}
-              disabled={!!immutableOutcome || isPublishingOracleAttestation}
-              onChange={(e) => setSelectedOutcome(e.target.value)}
-              onClick={stopRowNavigation}
-              onKeyDown={stopRowNavigation}
-              aria-label={t("creator.winningOutcomeLabel", {
-                title: market.title,
-              })}
-              className="h-9 max-w-28 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-            >
-              {market.oracle!.outcomes.map((outcome) => (
-                <option key={outcome} value={outcome}>
-                  {outcome}
-                </option>
-              ))}
-            </select>
             <button
               type="button"
-              disabled={!selectedOutcome || isPublishingOracleAttestation}
+              disabled={isPublishingOracleAttestation}
               aria-label={
                 isPublishingOracleAttestation
                   ? t("creator.closingMarket")
@@ -222,7 +200,7 @@ export function CreatedMarketRow({
               }
               onClick={(event) => {
                 event.stopPropagation();
-                onPublishOracleAttestation?.(market.id, immutableOutcome ?? selectedOutcome);
+                onPublishOracleAttestation?.(market.id);
               }}
               className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
             >

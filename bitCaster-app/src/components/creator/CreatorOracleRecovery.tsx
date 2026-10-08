@@ -15,17 +15,18 @@ import { useSettingsStore } from "@/stores/settings";
 type LocalPage = Awaited<ReturnType<typeof localBrowserOracleBackupStatuses>>;
 type LocalRows = LocalPage["rows"];
 type ReadyRow = Extract<LocalRows[number], { available: true }>;
-const SHOW_OUTCOME_SELECTION: Record<ReadyRow["kind"], boolean> = {
+const CAN_OPEN_OUTCOME_DIALOG: Record<ReadyRow["kind"], boolean> = {
   created: false,
   imported: true,
 };
-export type OracleRecoveryPublish = (
-  conditionId: string,
-  outcome: string,
-  republish: boolean,
-  relayUrls: string[],
-  chosen: boolean,
-) => void;
+export type OracleRecoveryPublish = (request: {
+  conditionId: string;
+  title: string;
+  outcomes: string[];
+  chosenOutcome: string | null;
+  republish: boolean;
+  relayUrls: string[];
+}) => void;
 const READINESS_MESSAGES: Record<ReadyRow["readiness"], string | null> = {
   ready: "oracleBackup.authorityReady",
   "needs-restore": "oracleBackup.needsRestore",
@@ -48,14 +49,19 @@ function OracleBackupOwner({
   onPublish: OracleRecoveryPublish;
 }) {
   const { t } = useTranslation();
-  const [outcome, setOutcome] = useState("");
   const status = row.status;
   const chosen = row.chosenOutcome;
   const readinessMessage = READINESS_MESSAGES[row.readiness];
   const publish = (republish = false) => {
-    const selected = chosen ?? outcome;
-    if (selected)
-      onPublish(row.conditionId, selected, republish, [...status.destinations.relayUrls], !!chosen);
+    if (busy) return;
+    onPublish({
+      conditionId: row.conditionId,
+      title: row.title,
+      outcomes: [...row.outcomes],
+      chosenOutcome: chosen ?? null,
+      republish,
+      relayUrls: [...status.destinations.relayUrls],
+    });
   };
   return (
     <article
@@ -157,33 +163,17 @@ function OracleBackupOwner({
             {t("oracleBackup.republishResolution")}
           </button>
         </div>
-      ) : SHOW_OUTCOME_SELECTION[row.kind] ? (
+      ) : CAN_OPEN_OUTCOME_DIALOG[row.kind] ? (
         <div className="space-y-2">
-          <p className="text-sm">{t("oracleBackup.immutableOutcome")}</p>
-          <label className="block space-y-1 text-sm">
-            <span>{t("oracleBackup.chooseOutcome")}</span>
-            <select
-              data-testid="creator-oracle-outcome"
-              className={input}
-              value={outcome}
-              onChange={(event) => setOutcome(event.target.value)}
-              disabled={busy || !status.importComplete || row.readiness !== "ready"}
-            >
-              <option value="">{t("oracleBackup.chooseOutcome")}</option>
-              {row.outcomes.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </label>
           <button
             className={button}
             data-testid="creator-oracle-publish"
-            disabled={busy || !outcome || !status.importComplete || row.readiness !== "ready"}
+            disabled={
+              busy || !row.outcomes.length || !status.importComplete || row.readiness !== "ready"
+            }
             onClick={() => void publish()}
           >
-            {t("oracleBackup.publishOutcome")}
+            {t("creator.closeMarket")}
           </button>
         </div>
       ) : null}

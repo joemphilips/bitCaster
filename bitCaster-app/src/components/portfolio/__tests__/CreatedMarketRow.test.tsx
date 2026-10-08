@@ -52,7 +52,7 @@ describe("CreatedMarketRow", () => {
     { outcomes: ["Alpha", "Beta", "Gamma"], selected: "Beta" },
   ])(
     "keeps market information and working oracle actions together for $outcomes",
-    async ({ outcomes, selected }) => {
+    async ({ outcomes }) => {
       const onPublishOracleAttestation = vi.fn();
       render(
         <CreatedMarketRow
@@ -76,10 +76,10 @@ describe("CreatedMarketRow", () => {
       expect(screen.getByText("Vol: 10 sats", { exact: true })).toBeVisible();
       expect(close.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-      await userEvent.selectOptions(screen.getByRole("combobox"), selected);
+      expect(screen.queryByRole("combobox")).toBeNull();
       await userEvent.click(close);
 
-      expect(onPublishOracleAttestation).toHaveBeenCalledWith("m1", selected);
+      expect(onPublishOracleAttestation).toHaveBeenCalledWith("m1");
     },
   );
 
@@ -100,9 +100,9 @@ describe("CreatedMarketRow", () => {
         onPublishOracleAttestation={publish}
       />,
     );
-    await userEvent.selectOptions(screen.getByRole("combobox"), "NO");
+    expect(screen.queryByRole("combobox")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /close market/i }));
-    expect(publish).toHaveBeenCalledWith("m1", "NO");
+    expect(publish).toHaveBeenCalledWith("m1");
     expect(screen.getByText("Closed")).toBeVisible();
   });
 
@@ -124,12 +124,11 @@ describe("CreatedMarketRow", () => {
         onPublishOracleAttestation={publish}
       />,
     );
-    expect(screen.getByRole("combobox")).toBeDisabled();
-    expect(screen.getByRole("combobox")).toHaveValue("NO");
+    expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.getByText(/Engine unconfirmed/)).toBeVisible();
     expect(screen.getByText(/Relay confirmed/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Retry saved resolution" }));
-    expect(publish).toHaveBeenCalledWith("m1", "NO");
+    expect(publish).toHaveBeenCalledWith("m1");
   });
 
   it("marks closed market thumbnails as Closed", () => {
@@ -166,4 +165,21 @@ describe("CreatedMarketRow", () => {
     expect(screen.getByText("Vol: 75 sats")).toBeInTheDocument();
     expect(screen.getByText("Last known engine state and volume")).toBeInTheDocument();
   });
+});
+
+it("keeps Portfolio rows without publication capability", () => {
+  render(
+    <CreatedMarketRow
+      market={fixture({
+        oracle: {
+          type: "self",
+          eventId: "event",
+          outcomes: ["YES", "NO"],
+        },
+      })}
+      onView={vi.fn()}
+    />,
+  );
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.queryByRole("button", { name: /close market|retry saved resolution/i })).toBeNull();
 });

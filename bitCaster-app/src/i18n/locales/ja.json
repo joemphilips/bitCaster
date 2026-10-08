@@ -648,10 +648,10 @@
     "autoCloseProgress": "自動遷移のカウントダウン"
   },
   "creator": {
-    "resolveDialogTitle": "この市場の結果判定",
+    "resolveDialogTitle": "この市場を閉じる",
     "retrySavedResolution": "保存した結果判定を再試行",
     "resolveImmutableChoice": "結果を{{outcome}}と判定します。保存した結果は変更できません。配信は再試行できます。",
-    "confirmResolution": "保存した結果判定を確認して配信",
+    "confirmResolution": "この結果で市場を閉じる",
     "explanationOptional": "公開の説明（任意）",
     "explanationLimit": "プレーンテキスト、UTF-8で最大{{limit}}バイト。説明の失敗は結果判定を妨げません。",
     "oracleDeliveryIncomplete": "結果{{outcome}}を保存しました。一部の配信は未確認です。保存した結果判定を再試行してください。",
@@ -699,7 +699,8 @@
     "invalidAttestationOutcome": "オラクルアテステーションを公開する前に、このマーケットでアナウンスされたアウトカムを選択してください。",
     "attestationErrorTitle": "オラクルアテステーションを公開できませんでした。",
     "attestationPublishFailed": "オラクルアテステーションの公開に失敗しました",
-    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンがマーケットをクローズ済みにするまで待機しています。"
+    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンがマーケットをクローズ済みにするまで待機しています。",
+    "resolveChoiceNotice": "オラクルの結果判定を公開して、この市場を閉じます。保存した結果は変更できません。配信は再試行できます。"
   },
   "marketCreation": {
     "creationRetainedTitle": "保存済みの市場作成を完了する",

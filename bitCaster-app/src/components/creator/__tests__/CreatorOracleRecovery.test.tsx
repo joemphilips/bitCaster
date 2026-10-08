@@ -142,20 +142,20 @@ it("shows frozen-source refusal without raw diagnostics and permits explicit dis
   ).toBeVisible();
 });
 
-it("restored unresolved authority uses the selected outcome and original relays", async () => {
+it("opens the common dialog with restored title, all outcomes and original relays", async () => {
   render(<CreatorOracleRecovery onPublish={h.publication} />);
   await screen.findByText("Restored event");
-  fireEvent.change(screen.getByRole("combobox", { name: "Choose outcome" }), {
-    target: { value: "YES" },
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(h.publication).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Close market" }));
+  expect(h.publication).toHaveBeenCalledWith({
+    conditionId: "aa".repeat(32),
+    title: "Restored event",
+    outcomes: ["YES", "NO"],
+    chosenOutcome: null,
+    republish: false,
+    relayUrls: ["wss://relay.original.example"],
   });
-  fireEvent.click(screen.getByRole("button", { name: "Publish selected outcome" }));
-  await waitFor(() => expect(h.publication).toHaveBeenCalled());
-  const args = h.publication.mock.calls[0];
-  expect(args[0]).toBe("aa".repeat(32));
-  expect(args[1]).toBe("YES");
-  expect(args[2]).toBe(false);
-  expect(args[3]).toEqual(["wss://relay.original.example"]);
-  expect(args[4]).toBe(false);
 });
 
 it("terminal owner requests explicit identical republication without selecting another outcome", async () => {
@@ -174,9 +174,8 @@ it("terminal owner requests explicit identical republication without selecting a
   render(<CreatorOracleRecovery onPublish={h.publication} />);
   fireEvent.click(await screen.findByRole("button", { name: "Republish exact resolution" }));
   await waitFor(() => expect(h.publication).toHaveBeenCalled());
-  expect(h.publication.mock.calls[0][1]).toBe("YES");
-  expect(h.publication.mock.calls[0][2]).toBe(true);
-  expect(h.publication.mock.calls[0][4]).toBe(true);
+  expect(h.publication.mock.calls[0][0].chosenOutcome).toBe("YES");
+  expect(h.publication.mock.calls[0][0].republish).toBe(true);
   expect(screen.queryByRole("combobox")).toBeNull();
 });
 
@@ -210,8 +209,9 @@ it("blocks new signing until restoration and retains immutable exact retries", a
     nextOffset: null,
   }));
   const view = render(<CreatorOracleRecovery onPublish={h.publication} />);
-  expect(await screen.findByRole("combobox", { name: "Choose outcome" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Publish selected outcome" })).toBeDisabled();
+  await screen.findByText("Restored event");
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.getByRole("button", { name: "Close market" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Retry oracle backup" })).toBeDisabled();
   view.unmount();
   row.chosenOutcome = "YES";
@@ -221,13 +221,14 @@ it("blocks new signing until restoration and retains immutable exact retries", a
   }));
   render(<CreatorOracleRecovery onPublish={h.publication} />);
   fireEvent.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
-  expect(h.publication).toHaveBeenCalledWith(
-    row.conditionId,
-    "YES",
-    false,
-    ["wss://relay.original.example"],
-    true,
-  );
+  expect(h.publication).toHaveBeenCalledWith({
+    conditionId: row.conditionId,
+    title: row.title,
+    outcomes: row.outcomes,
+    chosenOutcome: "YES",
+    republish: false,
+    relayUrls: ["wss://relay.original.example"],
+  });
 });
 
 it("discards an action failure after unmount without raw feedback", async () => {
@@ -440,13 +441,14 @@ it.each([
     }));
     render(<CreatorOracleRecovery onPublish={h.publication} />);
     fireEvent.click(await screen.findByRole("button", { name: label }));
-    expect(h.publication).toHaveBeenCalledWith(
-      row.conditionId,
-      "YES",
+    expect(h.publication).toHaveBeenCalledWith({
+      conditionId: row.conditionId,
+      title: row.title,
+      outcomes: row.outcomes,
+      chosenOutcome: "YES",
       republish,
-      ["wss://relay.original.example"],
-      true,
-    );
+      relayUrls: ["wss://relay.original.example"],
+    });
     expect(screen.queryByRole("combobox")).toBeNull();
   },
 );

@@ -8,7 +8,7 @@ interface MyMarketsProps {
   markets: CreatedMarket[];
   onViewMarket?: (marketId: string) => void;
   onClaimCreatorFees?: (marketId: string) => void;
-  onPublishOracleAttestation?: (marketId: string, outcome: string) => void;
+  onPublishOracleAttestation?: (marketId: string) => void;
   publishingOracleAttestationMarketId?: string | null;
 }
 
