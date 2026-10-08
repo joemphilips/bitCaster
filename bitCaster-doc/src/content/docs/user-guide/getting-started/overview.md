@@ -177,9 +177,12 @@ reload does not mean that the extension has authorized the connection.
 Disconnect cancels pending connection work. Disconnect before switching from
 an extension to a local private key.
 
-Settings also shows the connected Nostr profile and a refresh control.
-In Nostr Settings, edit your name, description, and picture URL. These fields
-are public. The app publishes standard Nostr profile metadata with your connected
+Settings and Portfolio show the same connected Nostr profile card.
+The card shows your picture, display name, and description. Settings also has
+a refresh control. An unavailable relay read is different from an absent profile.
+In Nostr Settings, choose **Edit** to change your name, description, and picture URL.
+Choose **Save profile** to publish the changes. Choose **Cancel** to discard an
+unsaved draft. These fields are public. The app publishes standard Nostr profile metadata with your connected
 local key or supported browser extension. It does not host picture uploads.
 Other metadata stays unchanged. A separate display name set in another client
 can still take priority over the name you edit here.

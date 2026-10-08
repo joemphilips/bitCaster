@@ -14,10 +14,8 @@ vi.mock("../usePortfolioState", () => ({
       baseCurrency: "BTC",
       selectedTimeRange: "ALL",
       profile: {
-        userId: "activity-wallet",
         displayName: "Activity wallet",
         avatarUrl: null,
-        registeredDate: "2026-09-27T12:00:00.000Z",
       },
       plChartData: { "1D": [], "1W": [], "1M": [], ALL: [] },
       stats: { positionsValueSats: 0, totalValueSats: 0, predictionsCount: 0 },
@@ -31,10 +29,22 @@ vi.mock("../usePortfolioState", () => ({
 vi.mock("@/hooks/useLikedMarkets", () => ({
   useLikedMarkets: () => ({ markets: [], loading: false, error: null }),
 }));
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = {
+    nostrSignerMode: "none",
+    nsecSecret: null,
+    nostrProfile: null,
+    signerConnectionStatus: "disconnected",
+    nostrProfileFetchStatus: "idle",
+    relays: [],
+  };
+  return {
+    useSettingsStore: Object.assign((selector: (state: unknown) => unknown) => selector(state), {
+      getState: () => state,
+      subscribe: () => () => {},
+    }),
+  };
+});
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: unknown) => unknown) =>
     selector({ addActivity: vi.fn() }),
@@ -47,6 +57,7 @@ vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletIdFromMnemonic: vi.fn(),
   isActiveBrowserWalletId: vi.fn(),
 }));
+vi.mock("@/lib/identityOps", () => ({ createImplicitWalletAndNostrIdentity: vi.fn() }));
 vi.mock("@/lib/browserPortfolioClaim", () => ({ claimPortfolioPosition: vi.fn() }));
 vi.mock("@/lib/browserPortfolioRemove", () => ({ removePortfolioPosition: vi.fn() }));
 vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({

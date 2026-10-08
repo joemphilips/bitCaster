@@ -146,14 +146,6 @@ export function PortfolioPage() {
     [t],
   );
 
-  const handleAvatarUpload = useCallback(
-    (file: File) => {
-      const url = URL.createObjectURL(file);
-      state.saveProfile({ ...state.profile, avatarUrl: url });
-    },
-    [state],
-  );
-
   const handleTimeRangeChange = useCallback(
     (range: PLTimeSelector) => {
       state.setSelectedTimeRange(range);
@@ -381,11 +373,9 @@ export function PortfolioPage() {
     navigate("/settings?category=nostr");
   }, [navigate]);
 
-  // Anon state: no signer configured and no cached profile. Matches the
-  // empty app-bar "Anon" + empty avatar the user sees in this state.
-  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
-  const nostrProfile = useSettingsStore((s) => s.nostrProfile);
-  const showConnectNostrCta = nostrSignerMode === "none" && nostrProfile == null;
+  const nostrConnectionStatus = useSettingsStore((s) => s.signerConnectionStatus);
+  const nostrProfileFetchStatus = useSettingsStore((s) => s.nostrProfileFetchStatus);
+  const showConnectNostrCta = nostrConnectionStatus === "disconnected";
 
   return (
     <>
@@ -394,6 +384,9 @@ export function PortfolioPage() {
         baseCurrency={state.baseCurrency}
         selectedTimeRange={state.selectedTimeRange}
         profile={state.profile}
+        profileFetchStatus={
+          nostrConnectionStatus === "connected" ? nostrProfileFetchStatus : undefined
+        }
         plChartData={state.plChartData}
         stats={state.stats}
         positions={state.positions}
@@ -403,7 +396,6 @@ export function PortfolioPage() {
         positionsTab={state.positionsTab}
         monitoring={state.monitoring}
         onGetStarted={handleGetStarted}
-        onAvatarUpload={handleAvatarUpload}
         onTimeRangeChange={handleTimeRangeChange}
         onDeposit={handleDeposit}
         onWithdraw={handleWithdraw}
@@ -419,6 +411,7 @@ export function PortfolioPage() {
         onRetryLoadMoreAssets={state.loadMoreAssets}
         onDismissAssetPageError={state.dismissAssetPageError}
         showConnectNostrCta={showConnectNostrCta}
+        nostrConnectionPending={nostrConnectionStatus === "connecting"}
         onConnectNostr={handleConnectNostr}
       />
       {operationScopeId === activeScopeId && (claimingPositionId || removingPositionId) && (

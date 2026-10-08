@@ -1,3 +1,5 @@
+import type { NostrProfileFetchStatus } from "./settings";
+
 // =============================================================================
 // Wallet & Currency Types
 // =============================================================================
@@ -28,10 +30,9 @@ export interface PLChartData {
 // =============================================================================
 
 export interface UserProfile {
-  userId: string;
   displayName: string;
   avatarUrl: string | null;
-  registeredDate: string;
+  bio?: string;
 }
 
 // =============================================================================
@@ -206,6 +207,7 @@ export interface PortfolioProps {
 
   /** User profile information */
   profile: UserProfile;
+  profileFetchStatus?: NostrProfileFetchStatus;
 
   /** Estimated portfolio-value history for each time range */
   plChartData: PLChartData;
@@ -230,9 +232,6 @@ export interface PortfolioProps {
 
   /** Called when user clicks "Get Started" (no-wallet state). */
   onGetStarted?: () => void;
-
-  /** Called when user uploads a new avatar image */
-  onAvatarUpload?: (file: File) => void;
 
   /** Called when user selects a P/L time range */
   onTimeRangeChange?: (range: PLTimeSelector) => void;
@@ -288,6 +287,7 @@ export interface PortfolioProps {
    * profile (Anon state) — P5 item 4.
    */
   showConnectNostrCta?: boolean;
+  nostrConnectionPending?: boolean;
 
   /** Called when user clicks "Connect Nostr" (navigates to Nostr settings) */
   onConnectNostr?: () => void;

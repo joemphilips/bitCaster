@@ -23,6 +23,7 @@ export function DeferredNostrProfileEditor(props: NostrProfileEditorProps) {
     };
   }, [attempt]);
   if (Editor) return <Editor {...props} />;
+  if (props.editing === false) return null;
   if (failed)
     return (
       <div
@@ -40,11 +41,21 @@ export function DeferredNostrProfileEditor(props: NostrProfileEditorProps) {
         >
           {t("settings.profileEditLoadRetry")}
         </button>
+        {props.onEditEnd && (
+          <button type="button" onClick={props.onEditEnd} className="ml-2 rounded-lg px-3 py-2">
+            {t("common.cancel")}
+          </button>
+        )}
       </div>
     );
   return (
-    <p role="status" className="mt-5 text-sm text-slate-500 dark:text-slate-400">
-      {t("settings.profileEditLoading")}
-    </p>
+    <div className="mt-5 flex items-center justify-between gap-3 text-sm text-slate-500 dark:text-slate-400">
+      <p role="status">{t("settings.profileEditLoading")}</p>
+      {props.onEditEnd && (
+        <button type="button" onClick={props.onEditEnd} className="rounded-lg px-3 py-2">
+          {t("common.cancel")}
+        </button>
+      )}
+    </div>
   );
 }

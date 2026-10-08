@@ -32,6 +32,8 @@ const mocks = vi.hoisted(() => ({
   localFundsState: "available" as "available" | "null" | "undefined",
   walletMnemonic: "test mnemonic",
   signerRevision: 0,
+  connectionStatus: "disconnected" as "connected" | "connecting" | "disconnected",
+  profile: null as import("@/types/settings").NostrProfile | null,
 }));
 
 const monitoredConditionId = "b".repeat(64);
@@ -90,7 +92,8 @@ vi.mock("@/stores/wallet", () => ({
     selector({ setupComplete: true, mnemonic: mocks.walletMnemonic, mints: [] }),
 }));
 vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: object) => unknown) => selector({ nostrProfile: null }),
+  useSettingsStore: (selector: (state: object) => unknown) =>
+    selector({ nostrProfile: mocks.profile, signerConnectionStatus: mocks.connectionStatus }),
 }));
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: object) => unknown) =>
@@ -423,7 +426,36 @@ function conditionalMonitoringAsset(
 }
 
 describe("usePortfolioState monitoring facade", () => {
+  it("shows profile metadata only for a runtime-authorized signer and keeps the description", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    mocks.profile = {
+      pubkey: "a".repeat(64),
+      displayName: "Researcher",
+      avatar: "https://example.test/avatar.png",
+      bio: "Independent research",
+      nip05: "",
+      nip05verified: false,
+    };
+    const view = renderHook(() => usePortfolioState());
+    expect(view.result.current.profile.displayName).toBe("");
+    mocks.connectionStatus = "connecting";
+    view.rerender();
+    expect(view.result.current.profile.displayName).toBe("");
+    mocks.connectionStatus = "connected";
+    view.rerender();
+    expect(view.result.current.profile).toEqual({
+      displayName: "Researcher",
+      avatarUrl: "https://example.test/avatar.png",
+      bio: "Independent research",
+    });
+    mocks.connectionStatus = "disconnected";
+    view.rerender();
+    expect(view.result.current.profile.displayName).toBe("");
+  });
+
   afterEach(() => {
+    mocks.connectionStatus = "disconnected";
+    mocks.profile = null;
     vi.useRealTimers();
     vi.unstubAllGlobals();
     mocks.getPortfolio.mockReset();

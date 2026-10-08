@@ -476,7 +476,7 @@ describe("Settings wallet setup entry", () => {
 });
 
 describe("Settings deferred profile editing", () => {
-  it("loads canonical fields only after the Nostr category opens", async () => {
+  it("loads canonical fields only after Edit is selected", async () => {
     const load = vi.fn().mockResolvedValue({
       publicKey: "01".repeat(32),
       fields: { name: "Canonical", about: "Description", picture: "" },
@@ -504,6 +504,8 @@ describe("Settings deferred profile editing", () => {
         onSaveNostrProfileEdit={save}
       />,
     );
+    expect(load).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     await waitFor(() => expect(screen.getByTestId("nostr-profile-name")).toHaveValue("Canonical"));
     expect(load).toHaveBeenCalledOnce();
     expect(save).not.toHaveBeenCalled();

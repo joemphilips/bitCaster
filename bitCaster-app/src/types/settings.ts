@@ -54,7 +54,7 @@ export interface CashuSettings {
 export type NostrSignerMode = "none" | "nip07" | "nsec";
 export type NostrSignerSource = "none" | "implicit-generated" | "user-nsec" | "nip07";
 export type SecretBackupState = "none" | "needs_backup" | "confirmed";
-export type NostrProfileFetchStatus = "idle" | "fetching" | "found" | "not-found";
+export type NostrProfileFetchStatus = "idle" | "fetching" | "found" | "not-found" | "unavailable";
 export type RelayConnectionStatus = "connected" | "disconnected";
 
 export interface NostrProfile {

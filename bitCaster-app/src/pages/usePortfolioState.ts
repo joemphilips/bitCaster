@@ -92,22 +92,7 @@ interface PortfolioState {
 
 const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
 
-const DEFAULT_PROFILE: UserProfile = {
-  userId: "",
-  displayName: "Anon",
-  avatarUrl: null,
-  registeredDate: new Date().toISOString(),
-};
-
-function loadProfile(): UserProfile {
-  try {
-    const stored = localStorage.getItem("bitcaster-profile");
-    if (stored) return JSON.parse(stored);
-  } catch {
-    // ignore
-  }
-  return DEFAULT_PROFILE;
-}
+const DEFAULT_PROFILE: UserProfile = { displayName: "", avatarUrl: null, bio: "" };
 
 export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === "active");
@@ -519,7 +504,6 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
 export function usePortfolioState(): PortfolioState & {
   setSelectedTimeRange: (range: PLTimeSelector) => void;
   setPositionsTab: (tab: "active" | "closed") => void;
-  saveProfile: (profile: UserProfile) => void;
   dismissMonitoringError: () => void;
   loadMoreAssets: () => void;
   dismissAssetPageError: () => void;
@@ -579,19 +563,18 @@ export function usePortfolioState(): PortfolioState & {
   const portfolioObserver = useRef<ReturnType<typeof observePortfolioValuations> | null>(null);
   const portfolioObserverRefresh = useRef<() => void>(() => {});
   const subscribedConditionIds = useRef<string[] | null>(null);
-  const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
-  // Merge nostr profile into local profile when available
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
+  const connectionStatus = useSettingsStore((s) => s.signerConnectionStatus);
   const profile: UserProfile = useMemo(() => {
-    if (!nostrProfile) return localProfile;
+    if (connectionStatus !== "connected" || !nostrProfile) return DEFAULT_PROFILE;
     return {
-      ...localProfile,
-      displayName: nostrProfile.displayName || localProfile.displayName,
-      avatarUrl: nostrProfile.avatar || localProfile.avatarUrl,
+      displayName: nostrProfile.displayName,
+      avatarUrl: nostrProfile.avatar || null,
+      bio: nostrProfile.bio,
     };
-  }, [localProfile, nostrProfile]);
+  }, [connectionStatus, nostrProfile]);
 
   const activityItems = useActivityLogStore((s) => s.items);
   const [createdMarkets] = useState<CreatedMarket[]>([]);
@@ -1252,11 +1235,6 @@ export function usePortfolioState(): PortfolioState & {
     setSelectedTimeRange(range);
   }, []);
 
-  const saveProfile = useCallback((updated: UserProfile) => {
-    setLocalProfile(updated);
-    localStorage.setItem("bitcaster-profile", JSON.stringify(updated));
-  }, []);
-
   return {
     walletState,
     baseCurrency,
@@ -1272,7 +1250,6 @@ export function usePortfolioState(): PortfolioState & {
     monitoring,
     setSelectedTimeRange: selectTimeRange,
     setPositionsTab,
-    saveProfile,
     dismissMonitoringError: () => setMonitoringError(null),
     loadMoreAssets,
     dismissAssetPageError: () => setAssetPageError(null),

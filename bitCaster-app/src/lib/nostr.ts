@@ -342,7 +342,10 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
     const result = await readBrowserSignerProfile(selection);
     selection.requireCurrent();
     const profile = result.profile ?? cached;
-    useSettingsStore.getState().setProfile(profile, profile ? "found" : "not-found");
+    const unavailable = result.failedRelayCount > 0 || result.completedRelayCount === 0;
+    useSettingsStore
+      .getState()
+      .setProfile(profile, unavailable ? "unavailable" : profile ? "found" : "not-found");
   } catch {
     if (!selection) return;
     try {
@@ -350,7 +353,7 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
     } catch {
       return;
     }
-    useSettingsStore.getState().setProfile(cached, cached ? "found" : "not-found");
+    useSettingsStore.getState().setProfile(cached, "unavailable");
   } finally {
     selection?.dispose();
   }

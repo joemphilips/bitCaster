@@ -23,8 +23,6 @@ import {
   Landmark,
   Radio,
   Loader2,
-  UserCircle,
-  BadgeCheck,
   Plug,
   KeyRound,
   AlertTriangle,
@@ -36,7 +34,8 @@ import { getRelayUrlValidationError } from "@/lib/walletOps";
 import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { NativeDialog } from "@/components/shared/NativeDialog";
-import { DeferredNostrProfileEditor } from "./DeferredNostrProfileEditor";
+import { NostrProfilePanel } from "./NostrProfilePanel";
+import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -501,14 +500,11 @@ export function Settings({
         onToggle={onCategoryToggle}
       >
         {!hasWallet && onCreateWallet && (
-          <button
-            type="button"
-            data-testid="settings-create-wallet"
-            onClick={onCreateWallet}
-            className="mb-4 px-4 py-2 rounded-lg bg-purple-600 text-white font-medium hover:bg-purple-700"
-          >
-            {t("wallet.createWallet")}
-          </button>
+          <div className="mb-4" data-testid="settings-create-wallet">
+            <PrimaryGradientButton onClick={onCreateWallet} icon={Landmark}>
+              {t("wallet.createWallet")}
+            </PrimaryGradientButton>
+          </div>
         )}
         {/* Connected Mints */}
         <div>
@@ -794,71 +790,15 @@ export function Settings({
         {/* Profile Preview */}
         {signerConnected && (
           <div>
-            <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-              Profile
-            </h3>
-            {nostr.profileFetchStatus === "fetching" && !nostr.profile && (
-              <div className="flex items-center gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                <span className="text-sm text-slate-500 dark:text-slate-400">
-                  Fetching profile...
-                </span>
-              </div>
-            )}
-            {nostr.profileFetchStatus === "not-found" && (
-              <div className="flex items-center justify-between gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <div className="flex items-center gap-2 min-w-0">
-                  <UserCircle className="w-5 h-5 text-slate-400 shrink-0" />
-                  <span className="text-sm text-slate-500 dark:text-slate-400 truncate">
-                    Profile not found on connected relays
-                  </span>
-                </div>
-                <button
-                  onClick={handleRetryProfile}
-                  disabled={isRetryingProfile}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors disabled:opacity-60 shrink-0"
-                >
-                  {isRetryingProfile && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Retry
-                </button>
-              </div>
-            )}
-            {nostr.profile && (
-              <div className="flex items-start gap-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                {nostr.profile.avatar ? (
-                  <img
-                    src={nostr.profile.avatar}
-                    alt={nostr.profile.displayName}
-                    className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-600 object-cover"
-                  />
-                ) : (
-                  <UserCircle aria-hidden="true" className="w-12 h-12 shrink-0 text-slate-400" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-900 dark:text-white">
-                      {nostr.profile.displayName}
-                    </span>
-                    {nostr.profileFetchStatus === "fetching" && (
-                      <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                    )}
-                    {nostr.profile.nip05verified && (
-                      <BadgeCheck className="w-4 h-4 text-blue-500" />
-                    )}
-                  </div>
-                  {nostr.profile.nip05 && (
-                    <p className="text-sm text-slate-500 dark:text-slate-400 truncate">
-                      {nostr.profile.nip05}
-                    </p>
-                  )}
-                  {nostr.profile.bio && (
-                    <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 line-clamp-2">
-                      {nostr.profile.bio}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
+            <NostrProfilePanel
+              key={nostr.profileEditorKey ?? nostr.signerMode}
+              profile={nostr.profile}
+              status={nostr.profileFetchStatus}
+              retry={handleRetryProfile}
+              retrying={isRetryingProfile}
+              load={onLoadNostrProfileEdit}
+              save={onSaveNostrProfileEdit}
+            />
             <div className="mt-3 flex items-center gap-3">
               {nostr.signerMode === "nip07" && (
                 <button
@@ -908,13 +848,6 @@ export function Settings({
               <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
                 {t("settings.externalSignerBackup")}
               </p>
-            )}
-            {onLoadNostrProfileEdit && onSaveNostrProfileEdit && (
-              <DeferredNostrProfileEditor
-                key={nostr.profileEditorKey ?? nostr.signerMode}
-                load={onLoadNostrProfileEdit}
-                save={onSaveNostrProfileEdit}
-              />
             )}
           </div>
         )}

@@ -304,6 +304,7 @@ describe("fetchAndStoreNostrProfile", () => {
   );
   let received: NostrEvent | undefined;
   let beforeReply: (() => void) | undefined;
+  let failRead = false;
   const cached = {
     pubkey: signed.pubkey,
     displayName: "Cached User",
@@ -317,6 +318,7 @@ describe("fetchAndStoreNostrProfile", () => {
     vi.resetModules();
     received = undefined;
     beforeReply = undefined;
+    failRead = false;
     mocks.settingsState.nostrSignerMode = "nip07";
     mocks.settingsState.nsecSecret = null;
     mocks.settingsState.relays = [{ url: "wss://relay.example" }];
@@ -331,6 +333,10 @@ describe("fetchAndStoreNostrProfile", () => {
       onmessage: ((message: MessageEvent) => void) | null = null;
       constructor() {
         queueMicrotask(() => {
+          if (failRead) {
+            this.onerror?.();
+            return;
+          }
           this.readyState = 1;
           this.onopen?.();
         });
@@ -366,6 +372,25 @@ describe("fetchAndStoreNostrProfile", () => {
     await nostrModule.fetchAndStoreNostrProfile();
     expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(cached, "found");
   });
+  it.each([true, false])(
+    "distinguishes a failed relay read from absence (cached=%s)",
+    async (hasCache) => {
+      failRead = true;
+      mocks.settingsState.nostrProfile = hasCache ? cached : null;
+      await nostrModule.fetchAndStoreNostrProfile();
+      expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(
+        hasCache ? cached : null,
+        "unavailable",
+      );
+    },
+  );
+
+  it("does not claim an absent profile when no relay is selected", async () => {
+    mocks.settingsState.relays = [];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(null, "unavailable");
+  });
+
   it("projects only verified signed metadata and never asserts the nip05 claim is verified", async () => {
     received = signed;
     await nostrModule.fetchAndStoreNostrProfile();

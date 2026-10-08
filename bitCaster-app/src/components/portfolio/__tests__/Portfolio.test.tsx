@@ -17,10 +17,9 @@ import type {
 } from "@/types/portfolio";
 
 const mockProfile: UserProfile = {
-  userId: "usr-a1b2",
   displayName: "SatoshiTrader",
   avatarUrl: null,
-  registeredDate: "2025-08-15T09:30:00Z",
+  bio: "Independent Bitcoin market researcher.",
 };
 
 const mockPLData: PLChartData = {
@@ -341,6 +340,9 @@ describe("Portfolio", () => {
     it("renders profile card with display name", () => {
       renderPortfolio();
       expect(screen.getByText("SatoshiTrader")).toBeInTheDocument();
+      expect(screen.getByText("Independent Bitcoin market researcher.")).toBeVisible();
+      expect(screen.queryByRole("button", { name: /upload avatar/i })).toBeNull();
+      expect(screen.queryByText(/joined/i)).toBeNull();
     });
 
     it("renders stats row", () => {

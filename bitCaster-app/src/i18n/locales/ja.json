@@ -612,7 +612,14 @@
     "nip07Missing": "接続するには、AlbyなどのNostrブラウザー拡張機能をインストールしてください。",
     "nip07Connected": "NIP-07拡張機能で接続しました",
     "nip07ConnectionFailed": "Nostr拡張機能に接続できませんでした。拡張機能の権限を確認して、もう一度お試しください。",
-    "nostrConnecting": "Nostrに接続中…"
+    "nostrConnecting": "Nostrに接続中…",
+    "profileAbsent": "公開プロフィールが見つかりません。",
+    "profileAnonymous": "匿名",
+    "profileEditAction": "編集",
+    "profileFetching": "プロフィールを取得中…",
+    "profileReadUnavailable": "プロフィールを更新できませんでした。選択したリレーを確認して再試行してください。",
+    "profileRefresh": "更新",
+    "profileTitle": "公開プロフィール"
   },
   "deposit": {
     "title": "入金",

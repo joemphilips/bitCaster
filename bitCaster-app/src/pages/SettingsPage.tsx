@@ -275,17 +275,20 @@ export function SettingsPage() {
     [settingsStore],
   );
 
-  const handleSignerModeChange = useCallback(async (mode: NostrSignerMode): Promise<boolean> => {
-    const result = await userConnectNostrSignerMode(mode);
-    if (result.superseded) return false;
-    if (!result.ok) {
-      useToastStore.getState().addToast({
-        type: "error",
-        message: t("settings.nip07ConnectionFailed"),
-      });
-    }
-    return result.ok;
-  }, [t]);
+  const handleSignerModeChange = useCallback(
+    async (mode: NostrSignerMode): Promise<boolean> => {
+      const result = await userConnectNostrSignerMode(mode);
+      if (result.superseded) return false;
+      if (!result.ok) {
+        useToastStore.getState().addToast({
+          type: "error",
+          message: t("settings.nip07ConnectionFailed"),
+        });
+      }
+      return result.ok;
+    },
+    [t],
+  );
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {

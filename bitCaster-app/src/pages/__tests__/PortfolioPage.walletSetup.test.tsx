@@ -6,6 +6,7 @@ const ensureImplicitWallet = vi.fn();
 const recoverFromMnemonic = vi.fn();
 const navigate = vi.fn();
 let mockWalletState: "none" | "ready" = "none";
+let mockConnectionStatus: "connected" | "connecting" | "disconnected" = "disconnected";
 let mockWalletBackupState: "none" | "needs_backup" | "confirmed" = "none";
 
 vi.mock("react-router", () => ({
@@ -17,7 +18,13 @@ vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
 }));
 
 vi.mock("@/stores/settings", () => {
-  const state = { nostrSignerMode: "none", nostrProfile: null };
+  const state = {
+    nostrSignerMode: "nip07",
+    nostrProfile: null,
+    get signerConnectionStatus() {
+      return mockConnectionStatus;
+    },
+  };
   return {
     useSettingsStore: Object.assign(
       (selector: (value: typeof state) => unknown) => selector(state),
@@ -84,11 +91,25 @@ import { PortfolioPage } from "../PortfolioPage";
 describe("PortfolioPage wallet setup", () => {
   beforeEach(() => {
     mockWalletState = "none";
+    mockConnectionStatus = "disconnected";
     mockWalletBackupState = "none";
     navigate.mockReset();
     ensureImplicitWallet.mockReset();
     recoverFromMnemonic.mockReset();
   });
+
+  it.each(["connected", "connecting", "disconnected"] as const)(
+    "uses runtime %s state for the Nostr connect action",
+    (status) => {
+      mockWalletState = "ready";
+      mockConnectionStatus = status;
+      render(<PortfolioPage />);
+      expect(screen.queryByRole("button", { name: /connect nostr/i }) !== null).toBe(
+        status === "disconnected",
+      );
+      expect(screen.queryByText(/Connecting to Nostr/) !== null).toBe(status === "connecting");
+    },
+  );
 
   it("opens the wallet setup modal from the no-wallet portfolio CTA", async () => {
     render(<PortfolioPage />);

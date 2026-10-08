@@ -175,7 +175,12 @@ export function Portfolio(props: PortfolioProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Profile */}
           <div className="flex flex-col gap-3">
-            <ProfileCard profile={props.profile} onAvatarUpload={props.onAvatarUpload} />
+            <ProfileCard profile={props.profile} status={props.profileFetchStatus} />
+            {props.nostrConnectionPending && (
+              <p role="status" className="text-sm text-slate-500 dark:text-slate-400">
+                {t("settings.nostrConnecting")}
+              </p>
+            )}
             {/* P5 item 4: Anon users have no identity across reloads —
                 surface the Nostr connect flow here so they can find it
                 without hunting through the Settings category list. */}

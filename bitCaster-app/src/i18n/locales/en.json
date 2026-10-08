@@ -615,7 +615,14 @@
     "nip07Missing": "Install a Nostr browser extension, such as Alby, to connect.",
     "nip07Connected": "Connected via NIP-07 extension",
     "nip07ConnectionFailed": "Could not connect to the Nostr extension. Check its permissions and try again.",
-    "nostrConnecting": "Connecting to Nostr…"
+    "nostrConnecting": "Connecting to Nostr…",
+    "profileAbsent": "No public profile was found.",
+    "profileAnonymous": "Anon",
+    "profileEditAction": "Edit",
+    "profileFetching": "Fetching profile…",
+    "profileReadUnavailable": "The profile could not be refreshed. Check your selected relays and retry.",
+    "profileRefresh": "Refresh",
+    "profileTitle": "Public profile"
   },
   "deposit": {
     "title": "Deposit",
