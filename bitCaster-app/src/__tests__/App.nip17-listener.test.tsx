@@ -66,7 +66,7 @@ vi.mock("@/stores/wallet", () => ({
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: Object.assign(
     (selector: (state: typeof mocks.settings) => unknown) => selector(mocks.settings),
-    { getState: () => mocks.settings },
+    { getState: () => mocks.settings, subscribe: () => () => {} },
   ),
 }));
 vi.mock("@/stores/useBookmarkSync", () => ({ useBookmarkSync: vi.fn() }));
@@ -91,7 +91,8 @@ vi.mock("@/lib/nip17-listener", () => ({
   startNip17Listener: mocks.startListener,
   stopNip17Listener: mocks.stopListener,
 }));
-vi.mock("@/lib/relayDefaults", () => ({
+vi.mock("@/lib/relayDefaults", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/relayDefaults")>("@/lib/relayDefaults")),
   effectiveRelayUrls: (relays: { url: string }[]) => relays.map(({ url }) => url),
 }));
 vi.mock("@/lib/walletOps", () => ({

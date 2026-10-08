@@ -16,10 +16,18 @@ vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: ({ mode }: { mode: string }) => <div>{mode} overlay</div>,
 }));
 
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (s: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = { nostrSignerMode: "none", nostrProfile: null };
+  return {
+    useSettingsStore: Object.assign(
+      (selector: (value: typeof state) => unknown) => selector(state),
+      {
+        getState: () => state,
+        subscribe: () => () => {},
+      },
+    ),
+  };
+});
 
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) => selector({ addActivity: vi.fn() }),

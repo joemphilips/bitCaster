@@ -413,7 +413,7 @@ vi.mock("@/stores/wallet", () => {
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: Object.assign(
     (selector: (state: typeof mocks.settingsState) => unknown) => selector(mocks.settingsState),
-    { getState: () => mocks.settingsState },
+    { getState: () => mocks.settingsState, subscribe: () => () => {} },
   ),
 }));
 
@@ -3741,7 +3741,8 @@ describe("MarketDetailPage live market status", () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
-    vi.mocked(previewBrowserCtfRangeOrderFees).mockRejectedValueOnce(insufficientExactFundsError());
+    // Funds remain unavailable until this test completes the top-up.
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockRejectedValue(insufficientExactFundsError());
     mocks.previewFokOrder.mockResolvedValue({
       ...fillablePreview(),
       averagePrice: 400,
@@ -3764,12 +3765,16 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
 
-    await screen.findAllByRole("button", { name: /Top up .+ wallet/i });
-    fireEvent.click(
-      screen
-        .getAllByTestId("trade-confirm")
-        .find((button) => /Top up .+ wallet/i.test(button.textContent ?? ""))!,
+    await waitFor(() =>
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
+        "400",
+      ),
     );
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Top up sats wallet"),
+    );
+    fireEvent.click(screen.getByTestId("trade-confirm"));
     await screen.findByTestId("top-up-success");
 
     mocks.previewFokOrder.mockResolvedValue({
@@ -3788,12 +3793,29 @@ describe("MarketDetailPage live market status", () => {
         spread: null,
       });
     });
-    await waitFor(() => expect(mocks.previewFokOrder.mock.calls.at(-1)?.[0].price).toBe(999));
+    await waitFor(() =>
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
+        "250",
+      ),
+    );
 
+    const previewCallsBeforeTopUp = mocks.previewFokOrder.mock.calls.length;
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue(rangeFeeFacts());
     fireEvent.click(screen.getByTestId("top-up-success"));
     await waitFor(() =>
       expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
         "Wallet fee facts changed. Review the updated trade cost and retry.",
+      ),
+    );
+    expect(
+      mocks.previewFokOrder.mock.calls.slice(previewCallsBeforeTopUp).map(([request]) => request),
+    ).toContainEqual(expect.objectContaining({ price: 400 }));
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
+        "250",
       ),
     );
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
