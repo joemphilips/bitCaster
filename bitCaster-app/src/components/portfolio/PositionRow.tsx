@@ -1,5 +1,5 @@
-import type { KeyboardEvent } from "react";
-import { Trash2 } from "lucide-react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
+import { Loader2, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Position } from "@/types/portfolio";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
@@ -12,6 +12,11 @@ interface PositionRowProps {
   onClaim?: (positionId: string) => void;
   onDiscard?: (positionId: string) => void;
   onView?: (positionId: string) => void;
+  action?: "claim" | "remove";
+  actionsDisabled?: boolean;
+  confirmingRemoval?: boolean;
+  onConfirmDiscard?: (positionId: string) => void;
+  onCancelDiscard?: () => void;
 }
 
 const activeSideColors: Record<Position["side"], string> = {
@@ -34,8 +39,27 @@ function fallbackPositionLabel(position: Position, sideLabel: string): string {
   return position.side === "Outcome" ? "Position" : sideLabel;
 }
 
-export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: PositionRowProps) {
+export function PositionRow({
+  position,
+  onSell,
+  onClaim,
+  onDiscard,
+  onView,
+  action,
+  actionsDisabled = false,
+  confirmingRemoval = false,
+  onConfirmDiscard,
+  onCancelDiscard,
+}: PositionRowProps) {
   const { t } = useTranslation();
+  const discardRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    if (confirmingRemoval) cancelRef.current?.focus();
+    else if (wasConfirming.current && action !== "remove") discardRef.current?.focus();
+    wasConfirming.current = confirmingRemoval;
+  }, [confirmingRemoval, action]);
   // Single source-of-truth (P22 F1/F2/F3): the "Won"/"Lost" badge, the Claim
   // button, and the destructive "Remove" gate all read these flags, derived
   // once in usePortfolioState. They can never disagree, so the Remove button
@@ -75,6 +99,7 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
       tabIndex={onView ? 0 : undefined}
       onClick={handleView}
       onKeyDown={onView ? handleViewKeyDown : undefined}
+      aria-busy={action !== undefined}
       className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50"
     >
       <div className="flex min-w-0 items-start gap-3 sm:contents">
@@ -168,7 +193,9 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
           {t("portfolio.removePending")}
         </p>
       )}
-      <div className="flex w-full items-center justify-between gap-3 sm:contents">
+      <div
+        className={`flex w-full gap-3 sm:contents ${confirmingRemoval ? "flex-col items-stretch" : "items-center justify-between"}`}
+      >
         <div className="shrink-0 text-left sm:text-right">
           {position.valueKnown === false ? (
             <div className="max-w-48 text-slate-500 dark:text-slate-400">
@@ -182,7 +209,9 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
           )}
         </div>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2 sm:contents">
+        <div
+          className={`flex items-center gap-2 sm:contents ${confirmingRemoval ? "min-w-0 w-full" : "ml-auto shrink-0"}`}
+        >
           {/* Action Button */}
           {position.canSell !== false && position.status === "active" && onSell && (
             <button
@@ -198,6 +227,7 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
           )}
           {canClaim && onClaim && (
             <button
+              disabled={actionsDisabled}
               onClick={(e) => {
                 e.stopPropagation();
                 onClaim(position.id);
@@ -208,19 +238,69 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
               {t("common.claim")}
             </button>
           )}
-          {canDiscard && onDiscard && (
-            <button
-              onClick={handleDiscard}
-              aria-label={t("portfolio.discardLostPosition", {
-                title: position.marketTitle,
-              })}
-              title={t("portfolio.discardLostPosition", {
-                title: position.marketTitle,
-              })}
-              className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+          {action === "remove" ? (
+            <span
+              role="status"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-blue-500"
             >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            </button>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <span className="sr-only">{t("portfolio.removalInProgress")}</span>
+            </span>
+          ) : canDiscard && onDiscard && confirmingRemoval ? (
+            <div
+              data-testid="position-removal-confirmation"
+              role="group"
+              aria-label={t("portfolio.discardLostPosition", { title: position.marketTitle })}
+              className="min-w-0 w-full max-w-64 space-y-2 text-left [overflow-wrap:anywhere]"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onCancelDiscard?.();
+                }
+              }}
+            >
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                {t("portfolio.discardLostPositionConfirm")}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={actionsDisabled}
+                  onClick={() => onConfirmDiscard?.(position.id)}
+                  className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {t("common.remove")}
+                </button>
+                <button
+                  ref={cancelRef}
+                  type="button"
+                  onClick={onCancelDiscard}
+                  className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                >
+                  {t("common.cancel")}
+                </button>
+              </div>
+            </div>
+          ) : (
+            canDiscard &&
+            onDiscard && (
+              <button
+                ref={discardRef}
+                disabled={actionsDisabled}
+                onClick={handleDiscard}
+                aria-label={t("portfolio.discardLostPosition", {
+                  title: position.marketTitle,
+                })}
+                title={t("portfolio.discardLostPosition", {
+                  title: position.marketTitle,
+                })}
+                className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )
           )}
         </div>
       </div>

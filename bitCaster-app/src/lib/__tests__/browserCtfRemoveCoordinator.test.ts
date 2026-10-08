@@ -1,6 +1,8 @@
 // @vitest-environment node
-import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
+import { createBrowserEncryptedWalletBackupV2RuntimeDriver } from "../encryptedWalletBackupDriver";
+import * as coordinator from "../browserCtfRemoveCoordinator";
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveConditionalKeysetId } from "@cashu/cashu-ts";
 import {
@@ -27,6 +29,7 @@ import {
 } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   createBrowserRemoteProofBackupAuthorityRow,
+  createBrowserCompletedLocalProofRemovalMarkerRow,
   createBrowserProofBackupAuthorityRow,
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
@@ -42,6 +45,7 @@ import {
   discoverBrowserCtfRemovals,
   finalizeBrowserCtfRemove,
   startBrowserCtfRemove,
+  readBrowserCtfRemoveCompletion,
   type BrowserCtfRemoveTarget,
 } from "../browserCtfRemoveCoordinator";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
@@ -77,7 +81,8 @@ const mocks = vi.hoisted(() => ({
   requireNewWritePermission: vi.fn(),
 }));
 
-vi.mock("../browserWalletNewWritePermission", () => ({
+vi.mock("../browserWalletNewWritePermission", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../browserWalletNewWritePermission")>()),
   requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
 }));
 
@@ -94,6 +99,229 @@ afterEach(async () => {
 });
 
 describe("browser CTF explicit removal coordinator", () => {
+  it.each([false, true])(
+    "awaits real driver removal and finalizer completion (first observation delayed: %s)",
+    async (delayFirstRead) => {
+      const fixture = await createFixture(2);
+      const targets = fixture.proofs.map((proof) => fixture.target(proof.proofId));
+      const { driver, worker, cancel } = await removalRuntime(fixture);
+      let release!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let firstRead!: () => void;
+      const readStarted = new Promise<void>((resolve) => {
+        firstRead = resolve;
+      });
+      const originalRead = coordinator.readBrowserCtfRemoveCompletion;
+      const observe = vi.spyOn(coordinator, "readBrowserCtfRemoveCompletion");
+      if (delayFirstRead)
+        observe.mockImplementationOnce(async (input) => {
+          firstRead();
+          await readGate;
+          return originalRead(input);
+        });
+      let settled = false;
+      const removal = driver.removeManagedProofs({ asset: fixture.asset, targets }).finally(() => {
+        settled = true;
+      });
+      try {
+        await vi.waitFor(async () =>
+          expect(
+            (
+              await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+                fixture.scopeId,
+                fixture.desired.localAssetKey,
+              ])
+            )?.removalIntent?.state,
+          ).toBe("pending"),
+        );
+        if (delayFirstRead) await readStarted;
+        expect(settled).toBe(false);
+        await acknowledgeRemoval(fixture);
+        // Use the production finalizer, as the background discovery does. Its
+        // complete transaction is the only source of these success markers.
+        await finalizeBrowserCtfRemove({
+          ...fixture.input(targets),
+          localAssetKey: fixture.desired.localAssetKey,
+          proofIds: targets.map((t) => t.proofId),
+          observedAtMs: 4000,
+        });
+        if (delayFirstRead) expect(settled).toBe(false);
+        release();
+        await expect(removal).resolves.toMatchObject({ kind: "completed" });
+        expect(await fixture.database.custodyProofs.count()).toBe(0);
+        expect(await fixture.database.custodyProofBackupAuthorities.count()).toBe(2);
+        expect(worker).toHaveBeenCalled();
+        expect(cancel).toHaveBeenCalledOnce();
+      } finally {
+        release();
+        driver.stop();
+        await removal;
+        observe.mockRestore();
+      }
+    },
+  );
+
+  it("requires every exact managed marker and real local companion completion", async () => {
+    const fixture = await createFixture(2);
+    const targets = fixture.proofs.map((proof) => fixture.target(proof.proofId));
+    const started = await startBrowserCtfRemove(fixture.input(targets));
+    if (started.kind !== "started") throw new Error("expected managed start");
+    await acknowledgeRemoval(fixture);
+    await finalizeBrowserCtfRemove({
+      ...fixture.input(targets),
+      localAssetKey: fixture.desired.localAssetKey,
+      observedAtMs: 4000,
+    });
+    const read = { ...fixture.input(targets), intentId: started.intentId };
+    const key: [string, string] = [fixture.scopeId, targets[1]!.proofId];
+    const second = (await fixture.database.custodyProofBackupAuthorities.get(key))!;
+    await fixture.database.custodyProofBackupAuthorities.delete(key);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    await fixture.database.custodyProofBackupAuthorities.put(second);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(true);
+    // The real local-only coordinator writes companion completion under the
+    // same seed/profile and asset. It does not manufacture backup evidence.
+    const local = await createLocalFixture(1);
+    const localTarget = removeTarget(local.proofs[0]!);
+    await expect(startBrowserCtfRemove(local.input([localTarget]))).resolves.toMatchObject({
+      kind: "completed",
+    });
+    expect(await readBrowserCtfRemoveCompletion({ ...read, localTargets: [localTarget] })).toBe(
+      true,
+    );
+  });
+
+  it("observes exact finalizer-written managed completion and rejects mismatched authority", async () => {
+    const fixture = await createFixture(1);
+    const targets = [fixture.target(fixture.proofs[0]!.proofId)];
+    const input = fixture.input(targets);
+    const started = await startBrowserCtfRemove(input);
+    if (started.kind !== "started") throw new Error("expected started removal");
+    const read = { ...input, intentId: started.intentId };
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    const head = createEncryptedWalletBackupV2CurrentHead({
+      realm: REALM,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: 1,
+      headVersion: 2,
+      bundles: [],
+    });
+    await fixture.store.acceptCompetingHead({
+      collectedHeadEvidence: evidence(head, []),
+      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+    });
+    const current = (await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+      fixture.scopeId,
+      fixture.desired.localAssetKey,
+    ]))!;
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...current,
+      syncState: "acknowledged",
+      removalIntent: {
+        ...current.removalIntent!,
+        state: "exclusion-acknowledged",
+        acknowledgedExclusionEvidence: {
+          kind: "current-head",
+          headVersion: 2,
+          activeSetDigest: head.activeSetDigest,
+          bundleId: null,
+          bundleDescriptorDigest: null,
+          acknowledgedAtMs: 3000,
+        },
+      },
+    });
+    // An acknowledged head alone does not complete the UI operation.
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    await expect(
+      finalizeBrowserCtfRemove({
+        ...input,
+        localAssetKey: fixture.desired.localAssetKey,
+        observedAtMs: 4_000,
+        proofIds: targets.map((t) => t.proofId),
+      }),
+    ).resolves.toEqual({ kind: "completed" });
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(true);
+    expect(await readBrowserCtfRemoveCompletion({ ...read, intentId: "another-intent" })).toBe(
+      false,
+    );
+    expect(
+      await readBrowserCtfRemoveCompletion({
+        ...read,
+        targets: [{ ...targets[0]!, proofFingerprint: "aa".repeat(32) }],
+      }),
+    ).toBe(false);
+    expect(
+      await readBrowserCtfRemoveCompletion({
+        ...read,
+        targets: [{ ...targets[0]!, proofRevision: targets[0]!.proofRevision + 1 }],
+      }),
+    ).toBe(false);
+    expect(await readBrowserCtfRemoveCompletion({ ...read, enrollmentEpoch: 2 })).toBe(false);
+    await expect(
+      readBrowserCtfRemoveCompletion({ ...read, isCurrentProfile: () => false }),
+    ).rejects.toThrow();
+    const localTarget = {
+      proofId: "ab".repeat(32),
+      proofFingerprint: "bc".repeat(32),
+      proofRevision: 2,
+    };
+    expect(await readBrowserCtfRemoveCompletion({ ...read, localTargets: [localTarget] })).toBe(
+      false,
+    );
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserCompletedLocalProofRemovalMarkerRow({
+        scopeId: fixture.scopeId,
+        ...localTarget,
+        localAssetKey: fixture.desired.localAssetKey,
+        terminalOperationId: "local-terminal",
+        completedAtMs: 4_000,
+      }),
+    );
+    expect(await readBrowserCtfRemoveCompletion({ ...read, localTargets: [localTarget] })).toBe(
+      true,
+    );
+    expect(
+      await readBrowserCtfRemoveCompletion({
+        ...read,
+        localTargets: [{ ...localTarget, proofRevision: 3 }],
+      }),
+    ).toBe(false);
+    // A same-position arrival is not part of the captured removal target set.
+    const arrival = {
+      ...fixture.proofs[0]!,
+      proofId: "cd".repeat(32),
+      proofFingerprint: "de".repeat(32),
+    };
+    await fixture.database.custodyProofs.put(arrival);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(true);
+    expect(await fixture.database.custodyProofs.get([fixture.scopeId, arrival.proofId])).toEqual(
+      arrival,
+    );
+    const key: [string, string] = [fixture.scopeId, targets[0]!.proofId];
+    const marker = (await fixture.database.custodyProofBackupAuthorities.get(key))!;
+    await fixture.database.custodyProofs.put(fixture.proofs[0]!);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    await fixture.database.custodyProofs.delete(key);
+    await fixture.database.custodyProofBackupAuthorities.delete(key);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    await fixture.database.custodyProofBackupAuthorities.put({ ...marker, proofRevision: -1 });
+    await expect(readBrowserCtfRemoveCompletion(read)).rejects.toThrow();
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserCompletedLocalProofRemovalMarkerRow({
+        scopeId: fixture.scopeId,
+        ...targets[0]!,
+        localAssetKey: fixture.desired.localAssetKey,
+        terminalOperationId: "local-terminal",
+        completedAtMs: 4_000,
+      }),
+    );
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(false);
+    await fixture.database.custodyProofBackupAuthorities.put(marker);
+    expect(await readBrowserCtfRemoveCompletion(read)).toBe(true);
+  });
+
   it.each(["flag-only", "code-only-seal"])(
     "rejects persisted %s remote losing history after reopen without deleting proofs",
     async (history) => {
@@ -1656,4 +1884,98 @@ function terminalProofCommitment(
     ),
     locator: terminalLocator(proof, counter),
   });
+}
+
+async function acknowledgeRemoval(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: REALM,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 2,
+    bundles: [],
+  });
+  await fixture.store.acceptCompetingHead({
+    collectedHeadEvidence: evidence(head, []),
+    stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+  });
+  const desired = (await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+    fixture.scopeId,
+    fixture.desired.localAssetKey,
+  ]))!;
+  if (desired.removalIntent === null) return;
+  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+    ...desired,
+    syncState: "acknowledged",
+    removalIntent: {
+      ...desired.removalIntent,
+      state: "exclusion-acknowledged",
+      acknowledgedExclusionEvidence: {
+        kind: "current-head",
+        headVersion: 2,
+        activeSetDigest: head.activeSetDigest,
+        bundleId: null,
+        bundleDescriptorDigest: null,
+        acknowledgedAtMs: 3000,
+      },
+    },
+  });
+}
+
+async function removalRuntime(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  await fixture.database.encryptedWalletBackupEnrollmentResults.put({
+    realm: REALM,
+    walletId: fixture.keyHandle.walletId,
+    record: {
+      schemaVersion: 1,
+      operationId: "11".repeat(16),
+      intentDigest: "22".repeat(32),
+      action: "enroll",
+      realm: REALM,
+      walletId: fixture.keyHandle.walletId,
+      requestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+      expectedEnrollmentEpoch: 0,
+      observedEnrollmentEpoch: 1,
+      lifecycle: "active",
+      result: "committed",
+    },
+  });
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const cancel = vi.fn();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration: {
+      realm: REALM,
+      signedOrigin: "https://backup.example",
+      transportOrigin: "https://backup.example",
+      pinnedReceiptKeys: [
+        {
+          keyId: "55".repeat(16),
+          publicKey: "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+        },
+      ],
+    },
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    seed: SEED,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    runtime: crypto,
+    remote: {
+      discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+      executeAccountOperation: vi.fn(),
+      readDescriptorPage: vi.fn(),
+      readCurrentInventory: vi.fn(),
+      mutateHeadOnce: vi.fn(),
+      readObject: vi.fn(),
+    },
+    runWorkerCycle: worker,
+    lockManager: immediateLockManager,
+    leadership: {
+      hold: async (_name, signal, task) => {
+        if (!signal.aborted) await task();
+      },
+    },
+    scheduleManagedRemoveTimeout: () => cancel,
+  });
+  await vi.waitFor(() => expect(worker).toHaveBeenCalled());
+  return { driver, worker, cancel };
 }

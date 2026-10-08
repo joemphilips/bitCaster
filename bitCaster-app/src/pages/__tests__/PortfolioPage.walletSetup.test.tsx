@@ -55,6 +55,7 @@ vi.mock("@/lib/browserPortfolioRemove", () => ({
 
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
+    subscribe: () => () => {},
     getState: () => ({
       ensureImplicitWallet,
       recoverFromMnemonic,

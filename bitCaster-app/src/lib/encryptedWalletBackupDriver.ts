@@ -22,6 +22,8 @@ import { runBrowserEncryptedWalletBackupV2WorkerCycle } from "./browserEncrypted
 import {
   discoverBrowserCtfRemovals,
   startBrowserCtfRemove,
+  readBrowserCtfRemoveCompletion,
+  type BrowserCtfRemoveInput,
   type BrowserCtfRemoveResult,
   type BrowserCtfRemoveTarget,
 } from "./browserCtfRemoveCoordinator";
@@ -323,131 +325,191 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     readonly localTargets?: readonly BrowserCtfRemoveTarget[];
   }): Promise<BrowserCtfRemoveResult> {
     if (!this.#isActive()) throw new Error("The wallet backup profile is unavailable");
+    const asset = { ...input.asset };
+    const targets = input.targets.map((target) => ({ ...target }));
+    const localTargets = input.localTargets?.map((target) => ({ ...target }));
+    // Signal identity also fences a later leadership incarnation of this profile.
+    const signal = this.#leadershipSignal;
+    const isCurrentProfile = () =>
+      !signal.aborted && signal === this.#leadershipSignal && this.#isActive();
     const keyHandle = await this.#keyHandlePromise;
     const enrollmentEpoch = await this.#resolveEnrollmentEpoch(keyHandle);
-    if (!this.#isActive()) throw new Error("The wallet backup profile changed");
+    if (!isCurrentProfile()) throw new Error("The wallet backup profile changed");
     const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
       keyHandle,
-      mintUrl: input.asset.mintUrl,
-      unit: input.asset.unit,
-      assetIdentity: input.asset.assetIdentity,
+      mintUrl: asset.mintUrl,
+      unit: asset.unit,
+      assetIdentity: asset.assetIdentity,
     });
     const removalInput = {
       database: this.#input.database,
       scopeId: this.#input.scopeId,
       keyHandle,
       enrollmentEpoch,
-      asset: input.asset,
+      asset,
       assetLocator,
-      targets: input.targets,
-      ...(input.localTargets === undefined || input.localTargets.length === 0
-        ? {}
-        : { localTargets: input.localTargets }),
-      isCurrentProfile: () => this.#isActive(),
+      targets,
+      ...(localTargets === undefined || localTargets.length === 0 ? {} : { localTargets }),
+      isCurrentProfile,
       lockManager: this.#input.lockManager,
-      signal: this.#leadershipSignal,
+      signal,
     };
-    let result = await startBrowserCtfRemove(removalInput);
-    if (result.kind === "pending") {
-      const localAssetKey = encryptedWalletBackupV2LocalAssetKey(input.asset);
-      const ready = await this.#waitForManagedRemovalReadiness({
-        asset: input.asset,
-        localAssetKey,
-        keyHandle,
-        enrollmentEpoch,
-      });
-      if (!ready || !this.#isActive() || this.#recoveryPaused || this.#terminal) {
-        this.#requestCycle();
-        return result;
-      }
-      result = await startBrowserCtfRemove(removalInput);
+    const result = await startBrowserCtfRemove(removalInput);
+    if (result.kind === "completed") {
+      this.#requestCycle();
+      return result;
     }
-    this.#requestCycle();
-    return result;
+    return this.#waitForManagedRemoval(removalInput, result);
   }
 
-  async #waitForManagedRemovalReadiness(input: {
-    readonly asset: EncryptedWalletBackupV2AssetIdentity;
-    readonly localAssetKey: string;
-    readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
-    readonly enrollmentEpoch: number;
-  }): Promise<boolean> {
-    if (!this.#isActive() || this.#recoveryPaused || this.#terminal) return false;
+  async #waitForManagedRemoval(
+    input: BrowserCtfRemoveInput & {
+      readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+      readonly enrollmentEpoch: number;
+      readonly assetLocator: string;
+      readonly signal: AbortSignal;
+      readonly isCurrentProfile: () => boolean;
+    },
+    initialResult: Exclude<BrowserCtfRemoveResult, { readonly kind: "completed" }>,
+  ): Promise<BrowserCtfRemoveResult> {
+    const available = () => input.isCurrentProfile() && !this.#recoveryPaused && !this.#terminal;
+    if (!available()) return initialResult;
     const authority = new EncryptedWalletBackupV2DexieAuthorityStore({
-      database: this.#input.database,
-      scopeId: this.#input.scopeId,
+      database: input.database,
+      scopeId: input.scopeId,
       realm: input.keyHandle.realm,
       walletId: input.keyHandle.walletId,
       enrollmentEpoch: input.enrollmentEpoch,
       requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
     });
-
-    return new Promise<boolean>((resolve) => {
+    const localAssetKey = encryptedWalletBackupV2LocalAssetKey(input.asset);
+    return new Promise<BrowserCtfRemoveResult>((resolve, reject) => {
+      let result: BrowserCtfRemoveResult = initialResult;
       let settled = false;
+      let reentering = false;
+      let refusedDuringReentry = false;
       let subscription: Subscription | undefined;
       let cancelTimeout: (() => void) | undefined;
-      const finish = (ready: boolean) => {
-        if (settled) return;
-        settled = true;
+      const dispose = () => {
         cancelTimeout?.();
         subscription?.unsubscribe();
-        this.#leadershipSignal.removeEventListener("abort", onAbort);
+        input.signal.removeEventListener("abort", onRefusal);
         this.#removeReadinessWaiters.delete(onRefusal);
-        resolve(ready);
       };
-      const onAbort = () => finish(false);
-      const onRefusal = () => finish(false);
+      const finish = (value: BrowserCtfRemoveResult) => {
+        if (settled) return;
+        settled = true;
+        dispose();
+        resolve(value);
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        dispose();
+        reject(error);
+      };
+      const onRefusal = () => {
+        if (reentering) {
+          refusedDuringReentry = true;
+          subscription?.unsubscribe();
+          return;
+        }
+        finish(result);
+      };
+      const observeCompletion = (intentId: string) => {
+        subscription?.unsubscribe();
+        subscription = liveQuery(() =>
+          readBrowserCtfRemoveCompletion({ ...input, intentId }),
+        ).subscribe({
+          next: (completed) => {
+            if (!available()) onRefusal();
+            else if (completed) finish({ kind: "completed", intentId });
+          },
+          error: fail,
+        });
+        if (settled) subscription.unsubscribe();
+      };
       this.#removeReadinessWaiters.add(onRefusal);
-      this.#leadershipSignal.addEventListener("abort", onAbort, { once: true });
+      input.signal.addEventListener("abort", onRefusal, { once: true });
+      if (!available()) {
+        onRefusal();
+        return;
+      }
       cancelTimeout = (this.#input.scheduleManagedRemoveTimeout ?? scheduleTimeout)(
-        () => finish(false),
+        onRefusal,
         BROWSER_CTF_REMOVE_ACKNOWLEDGEMENT_DEADLINE_MILLISECONDS,
       );
-
+      if (settled) {
+        cancelTimeout();
+        return;
+      }
       try {
-        subscription = liveQuery(async () => {
-          const [rawDesired, prepared, permission] = await Promise.all([
-            this.#input.database.encryptedWalletBackupV2DesiredAssets.get([
-              this.#input.scopeId,
-              input.localAssetKey,
-            ]),
-            authority.readPreparedMutation(),
-            authority.readNewWritePermission(),
-          ]);
-          const desired =
-            rawDesired === undefined
-              ? null
-              : decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-          return { desired, prepared, permission };
-        }).subscribe({
-          next: ({ desired, prepared, permission }) => {
-            if (
-              !this.#isActive() ||
-              this.#recoveryPaused ||
-              this.#terminal ||
-              !permission.canWrite
-            ) {
-              finish(false);
-              return;
-            }
-            if (
-              desired !== null &&
-              desired.scopeId === this.#input.scopeId &&
-              desired.localAssetKey === input.localAssetKey &&
-              desired.mintUrl === input.asset.mintUrl &&
-              desired.unit === input.asset.unit &&
-              desired.assetIdentity === input.asset.assetIdentity &&
-              desired.syncState === "acknowledged" &&
-              prepared === null
-            ) {
-              finish(true);
-            }
-          },
-          error: () => finish(false),
-        });
-        this.#requestCycle();
-      } catch {
-        finish(false);
+        if (initialResult.kind !== "pending") {
+          observeCompletion(initialResult.intentId);
+        } else {
+          subscription = liveQuery(async () => {
+            const [rawDesired, prepared, permission] = await Promise.all([
+              input.database.encryptedWalletBackupV2DesiredAssets.get([
+                input.scopeId,
+                localAssetKey,
+              ]),
+              authority.readPreparedMutation(),
+              authority.readNewWritePermission(),
+            ]);
+            const desired =
+              rawDesired === undefined
+                ? null
+                : decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+            return { desired, prepared, permission };
+          }).subscribe({
+            next: ({ desired, prepared, permission }) => {
+              if (!available() || !permission.canWrite) {
+                onRefusal();
+                return;
+              }
+              if (
+                settled ||
+                reentering ||
+                desired === null ||
+                desired.scopeId !== input.scopeId ||
+                desired.localAssetKey !== localAssetKey ||
+                desired.mintUrl !== input.asset.mintUrl ||
+                desired.unit !== input.asset.unit ||
+                desired.assetIdentity !== input.asset.assetIdentity ||
+                desired.syncState !== "acknowledged" ||
+                prepared !== null
+              )
+                return;
+              reentering = true;
+              subscription?.unsubscribe();
+              void startBrowserCtfRemove(input)
+                .then((next) => {
+                  reentering = false;
+                  if (settled) return;
+                  result = next;
+                  if (
+                    !available() ||
+                    refusedDuringReentry ||
+                    next.kind === "pending" ||
+                    next.kind === "completed"
+                  ) {
+                    if (available() && !refusedDuringReentry) this.#requestCycle();
+                    finish(next);
+                    return;
+                  }
+                  observeCompletion(next.intentId);
+                  if (!settled) this.#requestCycle();
+                })
+                .catch(fail);
+            },
+            // Preserve the existing readiness-unavailable pending result.
+            error: onRefusal,
+          });
+          if (settled) subscription.unsubscribe();
+        }
+        if (!settled) this.#requestCycle();
+      } catch (error) {
+        fail(error);
       }
     });
   }

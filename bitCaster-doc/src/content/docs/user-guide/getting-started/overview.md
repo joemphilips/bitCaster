@@ -79,6 +79,9 @@ execution price.
 Positions with a confirmed result show “Won😋” or “Lost😭”. The text identifies the result;
 the emoji is decorative. Activity labels a received payout as “Payout Claimed”. Removing a losing position permanently deletes its
 local tokens. The confirmation warns that this action cannot be undone.
+Confirm or cancel in the position row. During removal, a spinner replaces the
+action. Routine success needs no extra dialog. Pending results and recovery
+problems remain visible.
 
 ### Create your own market
 

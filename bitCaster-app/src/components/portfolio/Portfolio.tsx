@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PortfolioProps } from "@/types/portfolio";
-import { Settings, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import { ProfileCard } from "./ProfileCard";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 import { PLChart } from "./PLChart";
@@ -150,18 +150,6 @@ export function Portfolio(props: PortfolioProps) {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-      {/* Header with Settings */}
-      <div className="flex items-start justify-between">
-        <div className="flex-1" />
-        <button
-          onClick={() => props.onOpenSettings?.()}
-          className="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-          aria-label="Settings"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-      </div>
-
       <MonitoringStatus
         monitoring={props.monitoring}
         onDismissError={props.onDismissMonitoringError}
@@ -255,6 +243,10 @@ export function Portfolio(props: PortfolioProps) {
                 onSellPosition={props.onSellPosition}
                 onClaimPayout={props.onClaimPayout}
                 onDiscardLostPosition={props.onDiscardLostPosition}
+                positionAction={props.positionAction}
+                removalConfirmationPositionId={props.removalConfirmationPositionId}
+                onConfirmDiscardLostPosition={props.onConfirmDiscardLostPosition}
+                onCancelDiscardLostPosition={props.onCancelDiscardLostPosition}
                 onViewPosition={props.onViewPosition}
               />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />

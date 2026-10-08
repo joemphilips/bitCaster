@@ -50,7 +50,10 @@ vi.mock("@/stores/activity-log", () => ({
     selector({ addActivity: vi.fn() }),
 }));
 vi.mock("@/stores/wallet", () => ({
-  useWalletStore: { getState: () => ({ mnemonic: null }) },
+  useWalletStore: {
+    subscribe: () => () => {},
+    getState: () => ({ mnemonic: null }),
+  },
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
   activeBrowserWalletScopeId: () => "activity-wallet",

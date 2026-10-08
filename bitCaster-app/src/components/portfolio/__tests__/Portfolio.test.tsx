@@ -357,11 +357,6 @@ describe("Portfolio", () => {
       expect(screen.getByRole("button", { name: /deposit/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /withdraw/i })).toBeInTheDocument();
     });
-
-    it("renders settings button", () => {
-      renderPortfolio();
-      expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
-    });
   });
 
   describe("Main Tabs", () => {
@@ -926,11 +921,9 @@ describe("Portfolio", () => {
       expect(onWithdraw).toHaveBeenCalledOnce();
     });
 
-    it("calls onOpenSettings when settings icon is clicked", async () => {
-      const onOpenSettings = vi.fn();
-      renderPortfolio({ onOpenSettings });
-      await userEvent.click(screen.getByRole("button", { name: /settings/i }));
-      expect(onOpenSettings).toHaveBeenCalledOnce();
+    it("does not show the removed Settings gear", () => {
+      renderPortfolio();
+      expect(screen.queryByRole("button", { name: /settings/i })).not.toBeInTheDocument();
     });
   });
 });

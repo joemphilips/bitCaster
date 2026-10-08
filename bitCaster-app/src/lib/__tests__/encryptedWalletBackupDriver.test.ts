@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
 import * as removeCoordinator from "../browserCtfRemoveCoordinator";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -2049,6 +2050,262 @@ async function readyEnrolledFixture() {
   return fixture;
 }
 
+it.each(["started", "resumed"] as const)(
+  "waits for exact managed completion after %s",
+  async (kind) => {
+    const fixture = await readyEnrolledFixture();
+    const { asset, localAssetKey } = await putRemovalDesired(fixture, "acknowledged");
+    const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+    const cancel = vi.fn();
+    let expire: (() => void) | undefined;
+    const driver = createRuntime(
+      fixture,
+      worker,
+      runtimeRemote(),
+      () => true,
+      undefined,
+      undefined,
+      (task, delay) => {
+        expect(delay).toBe(10_000);
+        expire = task;
+        return cancel;
+      },
+    );
+    const targets = [
+      { proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 },
+    ];
+    const start = vi
+      .spyOn(removeCoordinator, "startBrowserCtfRemove")
+      .mockResolvedValue({ kind, intentId: "exact-intent" });
+    let settled = false;
+    const removal = driver.removeManagedProofs({ asset, targets }).finally(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      await vi.waitFor(() => expect(expire).toBeTypeOf("function"));
+      // A foreign marker wakes the exact-key query but cannot complete this call.
+      const marker = createBrowserCompletedProofRemovalMarkerRow({
+        scopeId: fixture.scopeId,
+        ...targets[0]!,
+        proofRevision: 8,
+        proofCommitment: "51".repeat(32),
+        localAssetKey,
+        removalIntentId: "foreign-intent",
+        proofSetCommitment: "61".repeat(32),
+        completionCustodyRevision: "4",
+        realm: fixture.keyHandle.realm,
+        walletId: fixture.keyHandle.walletId,
+        enrollmentEpoch: 1,
+        acknowledgedHeadVersion: 2,
+        acknowledgedActiveSetDigest: "71".repeat(32),
+        acknowledgementKind: "current-head",
+        receiptDigest: null,
+        acknowledgedAtMs: 2,
+        completedAtMs: 3,
+      });
+      await fixture.database.custodyProofBackupAuthorities.put(marker);
+      expect(settled).toBe(false);
+      await fixture.database.custodyProofBackupAuthorities.put({
+        ...marker,
+        removalIntentId: "exact-intent",
+      });
+      await expect(removal).resolves.toEqual({ kind: "completed", intentId: "exact-intent" });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      driver.stop();
+      await removal;
+    }
+  },
+);
+
+it("keeps one deadline across readiness and completion and returns genuine pending", async () => {
+  const fixture = await readyEnrolledFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  let expire: (() => void) | undefined;
+  const cancel = vi.fn();
+  const schedule = vi.fn((task: () => void, _delay: number) => {
+    expire = task;
+    return cancel;
+  });
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    schedule,
+  );
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
+    .mockResolvedValueOnce({ kind: "started", intentId: "exact-intent" });
+  const removal = driver.removeManagedProofs({
+    asset,
+    targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+  });
+  try {
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule.mock.calls[0]?.[1]).toBe(10_000);
+    expire!();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "exact-intent" });
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally {
+    driver.stop();
+    await removal;
+  }
+});
+
+it.each(["stop", "storage-error"] as const)(
+  "cleans an active completion observer after %s",
+  async (ending) => {
+    const fixture = await readyEnrolledFixture();
+    const { asset } = await putRemovalDesired(fixture, "acknowledged");
+    const cancel = vi.fn();
+    const driver = createRuntime(
+      fixture,
+      vi.fn().mockResolvedValue({ kind: "idle" }),
+      runtimeRemote(),
+      () => true,
+      undefined,
+      undefined,
+      () => cancel,
+    );
+    let detach: ReturnType<typeof vi.spyOn> | undefined;
+    vi.spyOn(removeCoordinator, "startBrowserCtfRemove").mockImplementation(async (input) => {
+      detach = vi.spyOn(input.signal!, "removeEventListener");
+      return { kind: "started", intentId: "observed-intent" };
+    });
+    const observe = vi.spyOn(removeCoordinator, "readBrowserCtfRemoveCompletion");
+    const target = {
+      proofId: "31".repeat(32),
+      proofFingerprint: "41".repeat(32),
+      proofRevision: 7,
+    };
+    const removal = driver.removeManagedProofs({ asset, targets: [target] });
+    const outcome = removal.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await vi.waitFor(() => expect(observe).toHaveBeenCalled());
+      if (ending === "stop") driver.stop();
+      else
+        await fixture.database.custodyProofBackupAuthorities.put({
+          scopeId: fixture.scopeId,
+          proofId: target.proofId,
+        } as never);
+      const result = await outcome;
+      if (ending === "stop")
+        expect(result).toEqual({ value: { kind: "started", intentId: "observed-intent" } });
+      else expect(result).toMatchObject({ error: expect.any(Error) });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(detach).toHaveBeenCalledWith("abort", expect.any(Function));
+    } finally {
+      driver.stop();
+      await outcome;
+    }
+  },
+);
+
+it("keeps coordinator reentry owned until it drains after the deadline", async () => {
+  const fixture = await readyEnrolledFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let expire: (() => void) | undefined;
+  const cancel = vi.fn();
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    (task) => {
+      expire = task;
+      return cancel;
+    },
+  );
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
+    .mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { kind: "started", intentId: "drained-intent" };
+    });
+  let settled = false;
+  const removal = driver
+    .removeManagedProofs({
+      asset,
+      targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+    })
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await entered.promise;
+    expire!();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release.resolve();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "drained-intent" });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally {
+    release.resolve();
+    driver.stop();
+    await removal;
+  }
+});
+
+it("does not revive an aborted removal when the same profile resumes", async () => {
+  const fixture = await readyEnrolledFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  const schedule = vi.fn(() => vi.fn());
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    schedule,
+  );
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return { kind: "started", intentId: "old-intent" };
+    });
+  const removal = driver.removeManagedProofs({
+    asset,
+    targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+  });
+  try {
+    await entered.promise;
+    const handoff = driver.quiesceForSeedHandoff();
+    release.resolve();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "old-intent" });
+    await handoff;
+    driver.resumeAfterSeedHandoff();
+    expect(schedule).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledOnce();
+  } finally {
+    driver.stop();
+    release.resolve();
+    await removal;
+  }
+});
+
 it("starts managed removal with the driver's existing enrollment and rejects a stale profile", async () => {
   const fixture = await readyEnrolledFixture();
   let current = true;
@@ -2056,7 +2313,7 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
   const driver = createRuntime(fixture, worker, runtimeRemote(), () => current);
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
-    .mockResolvedValue({ kind: "started", intentId: "removal" });
+    .mockResolvedValue({ kind: "completed", intentId: "removal" });
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://mint.example",
     unit: "msat",
@@ -2076,7 +2333,7 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     const before = worker.mock.calls.length;
     await expect(driver.removeManagedProofs({ asset, targets })).resolves.toEqual({
-      kind: "started",
+      kind: "completed",
       intentId: "removal",
     });
     const input = start.mock.calls[0]![0];
@@ -2121,11 +2378,11 @@ it("reenters managed removal when the desired revision is already acknowledged",
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
     .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
-    .mockResolvedValueOnce({ kind: "started", intentId: "after-ack" });
+    .mockResolvedValueOnce({ kind: "completed", intentId: "after-ack" });
   try {
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     await expect(driver.removeManagedProofs({ asset, targets })).resolves.toEqual({
-      kind: "started",
+      kind: "completed",
       intentId: "after-ack",
     });
     expect(start).toHaveBeenCalledTimes(2);
@@ -2158,7 +2415,7 @@ it("waits for a pending desired revision to be acknowledged", async () => {
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
     .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
-    .mockResolvedValueOnce({ kind: "started", intentId: "after-ack" });
+    .mockResolvedValueOnce({ kind: "completed", intentId: "after-ack" });
   try {
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     const removal = driver.removeManagedProofs({ asset: desired.asset, targets });
@@ -2172,7 +2429,7 @@ it("waits for a pending desired revision to be acknowledged", async () => {
       ...current,
       syncState: "acknowledged",
     });
-    await expect(removal).resolves.toEqual({ kind: "started", intentId: "after-ack" });
+    await expect(removal).resolves.toEqual({ kind: "completed", intentId: "after-ack" });
     expect(start).toHaveBeenCalledTimes(2);
     expect(start.mock.calls[0]?.[0].targets).toEqual(targets);
     expect(start.mock.calls[1]?.[0].targets).toEqual(targets);

@@ -97,6 +97,80 @@ export type BrowserCtfRemoveResult =
   | { readonly kind: "completed"; readonly intentId: string }
   | { readonly kind: "pending"; readonly reason: "backup-not-ready" };
 
+/** Observes completion only; the background finalizer retains all deletion authority. */
+export async function readBrowserCtfRemoveCompletion(
+  input: BrowserCtfRemoveInput & {
+    readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+    readonly enrollmentEpoch: number;
+    readonly assetLocator: string;
+    readonly intentId: string;
+  },
+): Promise<boolean> {
+  requireRemoveIdentity(input);
+  const targets = sortedRemoveTargets(input.targets);
+  const localTargets = input.localTargets?.length ? sortedRemoveTargets(input.localTargets) : [];
+  requireDisjointRemovalTargets(targets, localTargets);
+  if (input.intentId.length === 0) throw new Error("browser CTF removal intent is missing");
+  await Dexie.waitFor(requireAssetLocator(input));
+  const localAssetKey = encryptedWalletBackupV2LocalAssetKey(input.asset);
+  const keys = [...targets, ...localTargets].map<[string, string]>(({ proofId }) => [
+    input.scopeId,
+    proofId,
+  ]);
+  return input.database.transaction(
+    "r",
+    input.database.custodyProofs,
+    input.database.custodyProofBackupAuthorities,
+    input.database.custodyReservations,
+    async () => {
+      input.signal?.throwIfAborted();
+      requireCurrent(input);
+      const [rawAuthorities, bodies, reservations] = await Promise.all([
+        input.database.custodyProofBackupAuthorities.bulkGet(keys),
+        input.database.custodyProofs.bulkGet(keys),
+        input.database.custodyReservations.bulkGet(keys),
+      ]);
+      // Decode every present row, including local companions. Corruption is an
+      // error here, not the legacy replay helper's incomplete-marker result.
+      const authorities = rawAuthorities.map((raw) =>
+        raw === undefined ? null : decodeBrowserProofBackupAuthorityTableRow(raw),
+      );
+      let completed =
+        bodies.every((row) => row === undefined) &&
+        reservations.every((row) => row === undefined) &&
+        authorities
+          .slice(0, targets.length)
+          .every(
+            (marker) =>
+              marker !== null &&
+              "recordKind" in marker &&
+              marker.recordKind === "completed-removal" &&
+              marker.removalIntentId === input.intentId,
+          );
+      if (completed) {
+        completed =
+          (await completedRemovalReplay(
+            input.database,
+            input.scopeId,
+            localAssetKey,
+            targets.map(({ proofId }) => proofId),
+            input,
+            targets,
+          )) &&
+          (await completedLocalRemovalReplay(
+            input.database,
+            input.scopeId,
+            localAssetKey,
+            localTargets,
+          ));
+      }
+      input.signal?.throwIfAborted();
+      requireCurrent(input);
+      return completed;
+    },
+  );
+}
+
 export interface BrowserCtfRejectedRemoveCancellationInput {
   readonly database: BitcasterDB;
   readonly scopeId: string;

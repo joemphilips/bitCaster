@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { Position } from "@/types/portfolio";
+import type { Position, PortfolioProps } from "@/types/portfolio";
 import { PositionRow } from "./PositionRow";
 
 interface PositionsListProps {
@@ -10,6 +10,10 @@ interface PositionsListProps {
   onClaimPayout?: (positionId: string) => void;
   onDiscardLostPosition?: (positionId: string) => void;
   onViewPosition?: (positionId: string) => void;
+  positionAction?: PortfolioProps["positionAction"];
+  removalConfirmationPositionId?: string;
+  onConfirmDiscardLostPosition?: (positionId: string) => void;
+  onCancelDiscardLostPosition?: () => void;
 }
 
 export function PositionsList({
@@ -20,6 +24,10 @@ export function PositionsList({
   onClaimPayout,
   onDiscardLostPosition,
   onViewPosition,
+  positionAction,
+  removalConfirmationPositionId,
+  onConfirmDiscardLostPosition,
+  onCancelDiscardLostPosition,
 }: PositionsListProps) {
   const { t } = useTranslation();
   const filtered = positions.filter((p) => p.status === positionsTab);
@@ -65,6 +73,11 @@ export function PositionsList({
               onClaim={onClaimPayout}
               onDiscard={onDiscardLostPosition}
               onView={onViewPosition}
+              action={positionAction?.positionId === position.id ? positionAction.kind : undefined}
+              actionsDisabled={positionAction !== undefined}
+              confirmingRemoval={removalConfirmationPositionId === position.id}
+              onConfirmDiscard={onConfirmDiscardLostPosition}
+              onCancelDiscard={onCancelDiscardLostPosition}
             />
           ))}
         </div>

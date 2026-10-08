@@ -278,8 +278,10 @@ export interface PortfolioProps {
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
 
-  /** Called when user opens Settings */
-  onOpenSettings?: () => void;
+  positionAction?: { positionId: string; kind: "claim" | "remove" };
+  removalConfirmationPositionId?: string;
+  onConfirmDiscardLostPosition?: (positionId: string) => void;
+  onCancelDiscardLostPosition?: () => void;
 
   /** Display-only status from the authenticated portfolio monitor. */
   monitoring?: PortfolioMonitoringState;

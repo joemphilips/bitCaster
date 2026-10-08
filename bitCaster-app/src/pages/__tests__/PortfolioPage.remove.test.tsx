@@ -8,12 +8,29 @@ import i18n from "@/i18n";
 // --- mocks -----------------------------------------------------------------
 
 const removeProofs = vi.fn().mockResolvedValue(undefined);
-const cashuMocks = vi.hoisted(() => ({
-  claimPortfolioPosition: vi.fn(),
-  removePortfolioPosition: vi.fn(),
-  addActivity: vi.fn(),
-  walletState: { mnemonic: "fresh fake wallet seed" },
-}));
+const cashuMocks = vi.hoisted(() => {
+  const walletListeners = new Set<
+    (current: { mnemonic: string }, previous: { mnemonic: string }) => void
+  >();
+  const walletState = new Proxy(
+    { mnemonic: "fresh fake wallet seed" },
+    {
+      set(target, property, value) {
+        const previous = { ...target };
+        Reflect.set(target, property, value);
+        walletListeners.forEach((listener) => listener({ ...target }, previous));
+        return true;
+      },
+    },
+  );
+  return {
+    claimPortfolioPosition: vi.fn(),
+    removePortfolioPosition: vi.fn(),
+    addActivity: vi.fn(),
+    walletState,
+    walletListeners,
+  };
+});
 
 vi.mock("@/stores/proof-db", () => ({
   removeProofs: (...args: unknown[]) => removeProofs(...args),
@@ -50,7 +67,15 @@ vi.mock("@/stores/activity-log", () => ({
 }));
 
 vi.mock("@/stores/wallet", () => ({
-  useWalletStore: { getState: () => cashuMocks.walletState },
+  useWalletStore: {
+    getState: () => cashuMocks.walletState,
+    subscribe: (
+      listener: (current: { mnemonic: string }, previous: { mnemonic: string }) => void,
+    ) => {
+      cashuMocks.walletListeners.add(listener);
+      return () => cashuMocks.walletListeners.delete(listener);
+    },
+  },
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
@@ -124,6 +149,7 @@ function positionFor(operation: Operation, overrides: Partial<Position> = {}) {
     ...overrides,
   });
 }
+const removalConfirmation = () => screen.getByTestId("position-removal-confirmation");
 const actionDialog = () => screen.getByRole("dialog", { name: "Position action" });
 async function startAction(operation: Operation, confirm = true) {
   await userEvent.click(
@@ -132,8 +158,7 @@ async function startAction(operation: Operation, confirm = true) {
     ),
   );
   if (operation === "remove" && confirm) {
-    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
   }
 }
 function expectCommittedPayout(amount = 125) {
@@ -192,11 +217,8 @@ describe("PortfolioPage position action dialogs", () => {
         operation === "claim" ? "Claiming your payout" : "Removing the position",
       );
       // A repeated action must not start another coordinator.
-      await userEvent.click(
-        screen.getByLabelText(
-          operation === "claim" ? /claim payout for/i : /remove losing position for/i,
-        ),
-      );
+      if (operation === "claim") await userEvent.click(screen.getByLabelText(/claim payout for/i));
+      else expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
       expect(coordinator(operation)).toHaveBeenCalledOnce();
       cashuMocks.walletState.mnemonic = "other fake wallet seed";
       view.rerender(<PortfolioPage />);
@@ -209,6 +231,81 @@ describe("PortfolioPage position action dialogs", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     },
   );
+
+  it("keeps slow removal in place and synchronously rejects duplicate confirmation", async () => {
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.removePortfolioPosition.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PortfolioPage />);
+    await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
+    act(() => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
+    expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Removing the position");
+    await act(async () => finish({ kind: "completed", committedPayoutAmount: 0 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("invalidates confirmation across batched wallet A to B to A", async () => {
+    render(<PortfolioPage />);
+    await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
+    act(() => {
+      cashuMocks.walletState.mnemonic = "other fake wallet seed";
+      cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+      fireEvent.click(confirm);
+    });
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("position-removal-confirmation")).not.toBeInTheDocument();
+  });
+
+  it.each(["claim", "remove"] as const)(
+    "keeps a newer operation busy after stale %s completion",
+    async (kind) => {
+      mockPositions = [positionFor(kind)];
+      const finish: Array<(value: { kind: string; committedPayoutAmount: number }) => void> = [];
+      coordinator(kind).mockImplementation(() => new Promise((resolve) => finish.push(resolve)));
+      render(<PortfolioPage />);
+      await startAction(kind);
+      act(() => {
+        cashuMocks.walletState.mnemonic = "other fake wallet seed";
+        cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+      });
+      await startAction(kind);
+      expect(coordinator(kind)).toHaveBeenCalledTimes(2);
+      await act(async () => finish[0]({ kind: "pending", committedPayoutAmount: 0 }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        kind === "claim" ? "Claiming your payout" : "Removing the position",
+      );
+      await act(async () => finish[1]({ kind: "completed", committedPayoutAmount: 0 }));
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not publish stale removal feedback after unmount", async () => {
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.removePortfolioPosition.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = render(<PortfolioPage />);
+    await startAction("remove");
+    view.unmount();
+    await act(async () => finish({ kind: "pending", committedPayoutAmount: 0 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 
   it("claims an unvalued local winner with the exact canonical target", async () => {
     mockPositions = [
@@ -240,7 +337,8 @@ describe("PortfolioPage position action dialogs", () => {
       </I18nextProvider>,
     );
     await userEvent.click(screen.getByLabelText(/ハズレのポジションを削除/));
-    const dialog = screen.getByRole("dialog");
+    const dialog = removalConfirmation();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(dialog).toHaveTextContent("このハズレのポジションをウォレットから削除しますか？");
     expect(dialog).toHaveTextContent("ローカルの CTF プルーフは削除され、元に戻せません。");
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
@@ -251,9 +349,10 @@ describe("PortfolioPage position action dialogs", () => {
   it("passes the explicitly confirmed target to removal without deleting cached proofs", async () => {
     render(<PortfolioPage />);
     await startAction("remove", false);
-    expect(actionDialog()).toHaveTextContent("cannot be undone");
+    expect(removalConfirmation()).toHaveTextContent("cannot be undone");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
     expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         mintUrl: "https://mint.example",
@@ -271,9 +370,11 @@ describe("PortfolioPage position action dialogs", () => {
       render(<PortfolioPage />);
       await startAction("remove", false);
       if (dismissal === "Cancel") {
-        await userEvent.click(within(actionDialog()).getByRole("button", { name: "Cancel" }));
+        await userEvent.click(
+          within(removalConfirmation()).getByRole("button", { name: "Cancel" }),
+        );
       } else {
-        fireEvent(actionDialog(), new Event("cancel", { bubbles: true, cancelable: true }));
+        fireEvent.keyDown(removalConfirmation(), { key: "Escape" });
       }
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
@@ -285,7 +386,7 @@ describe("PortfolioPage position action dialogs", () => {
   it("discards an open confirmation when the wallet changes, even if it later changes back", async () => {
     const view = render(<PortfolioPage />);
     await startAction("remove", false);
-    const staleConfirm = within(actionDialog()).getByRole("button", {
+    const staleConfirm = within(removalConfirmation()).getByRole("button", {
       name: "Remove",
     });
     cashuMocks.walletState.mnemonic = "other fake wallet seed";
@@ -309,9 +410,12 @@ describe("PortfolioPage position action dialogs", () => {
   ])("revalidates the confirmed position after it changes: %j", async (changed) => {
     const view = render(<PortfolioPage />);
     await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
     mockPositions = [closedPosition(changed)];
     view.rerender(<PortfolioPage />);
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    if (screen.queryByTestId("position-removal-confirmation"))
+      await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
+    else fireEvent.click(confirm);
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
     expect(removeProofs).not.toHaveBeenCalled();
   });
