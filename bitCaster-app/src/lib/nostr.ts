@@ -12,6 +12,7 @@ import NDK, {
   NDKNip07Signer,
   NDKPrivateKeySigner,
   type NDKSigner,
+  type NDKUser,
   type NDKFilter,
   type NDKEvent,
   type NDKConstructorParams,
@@ -23,6 +24,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { DEFAULT_NOSTR_RELAYS, effectiveRelayUrls } from "./relayDefaults";
 import { selectNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
 import { awaitAbortable } from "@bitcaster/client-sdk/engineClient";
+import { beginNostrIdentityAttempt, type NostrIdentityAttempt } from "./nostrIdentityAttempt";
 import type { BrowserProfileSelection } from "./browserNostrProfile";
 
 // ---------------------------------------------------------------------------
@@ -46,9 +48,68 @@ type TeardownCapableSigner = NDKSigner & {
 export { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrSignerRevision";
 import { advanceNostrSignerRevision } from "./nostrSignerRevision";
 
-function installNostrSigner(ndk: NDK, signer: NDKSigner): void {
+// NDK schedules activeUser after signer.user(). Ignore its late callback after
+// replacement or disconnect. Both supported adapters cache their authorized user.
+const authorizedUsers = new WeakMap<NDKSigner, NDKUser>();
+class BrowserIdentityNdk extends NDK {
+  override get activeUser(): NDKUser | undefined {
+    return super.activeUser;
+  }
+  override set activeUser(user: NDKUser | undefined) {
+    if (user && (!this.signer || authorizedUsers.get(this.signer) !== user)) return;
+    super.activeUser = user;
+  }
+}
+
+export interface NostrLoginOptions {
+  attempt?: NostrIdentityAttempt;
+  /** Commit persisted identity synchronously with the live signer. */
+  onCommit?: (nsec: string | null, publicKey: string) => void;
+}
+
+async function authorizeAndInstall(
+  signer: NDKSigner,
+  nsec: string | null,
+  options: NostrLoginOptions,
+): Promise<NDKSigner> {
+  const attempt = options.attempt ?? beginNostrIdentityAttempt();
+  attempt.requireCurrent();
+  const user = await awaitAbortable(signer.user(), attempt.signal);
+  attempt.requireCurrent();
+  if (!/^[0-9a-f]{64}$/.test(user.pubkey)) throw new Error("Invalid Nostr public key.");
+  const ndk = getNdk();
+  const previous = ndk.signer;
+  authorizedUsers.set(signer, user);
   ndk.signer = signer;
+  attempt.requireCurrent();
+  ndk.activeUser = user;
+  attempt.requireCurrent();
+  options.onCommit?.(nsec, user.pubkey);
+  attempt.requireCurrent();
+  _installedNsec = nsec;
+  setPendingKormirNsec(nsec);
   advanceNostrSignerRevision();
+  void teardownSigner(previous);
+  void ndk.connect().catch(() => {});
+  return signer;
+}
+
+export function hasInstalledNostrSigner(): boolean {
+  return _ndk?.signer !== undefined && _ndk?.signer !== null;
+}
+
+/** Disconnect invalidates pending authorization and captured oracle/profile work. */
+export function disconnectNostrSigner(): void {
+  beginNostrIdentityAttempt();
+  const previous = _ndk?.signer;
+  if (_ndk) {
+    _ndk.signer = undefined;
+    _ndk.activeUser = undefined;
+  }
+  _installedNsec = null;
+  setPendingKormirNsec(null);
+  advanceNostrSignerRevision();
+  void teardownSigner(previous);
 }
 
 export function createExplicitRelayNdk(opts: NDKConstructorParams = {}): NDK {
@@ -110,7 +171,12 @@ export async function withTemporaryRelayNdk<T>(
 export function getNdk(): NDK {
   const urls = selectedRelayUrls();
   if (!_ndk) {
-    _ndk = createExplicitRelayNdk({ explicitRelayUrls: urls });
+    _ndk = new BrowserIdentityNdk({
+      explicitRelayUrls: urls,
+      enableOutboxModel: false,
+      autoConnectUserRelays: false,
+      outboxRelayUrls: [],
+    });
     _lastReconciledRelaysKey = JSON.stringify(urls.slice().sort());
     // Settings removal must disconnect existing relays before another NDK call.
     // This subscription has the same tab lifetime as the singleton.
@@ -138,8 +204,8 @@ export function getNdk(): NDK {
   return _ndk;
 }
 
-async function teardownCurrentSigner(ndk: NDK): Promise<void> {
-  const signer = ndk.signer as TeardownCapableSigner | undefined;
+async function teardownSigner(value: NDKSigner | undefined): Promise<void> {
+  const signer = value as TeardownCapableSigner | undefined;
   try {
     if (typeof signer?.destroy === "function") {
       await signer.destroy();
@@ -168,41 +234,19 @@ export function isNip07Available(): boolean {
 // Signer helpers
 // ---------------------------------------------------------------------------
 
-/** Login with a NIP-07 browser extension (e.g. Alby, nos2x). */
-export async function loginWithExtension(): Promise<NDKSigner> {
-  const signer = new NDKNip07Signer();
-  const ndk = getNdk();
-  await teardownCurrentSigner(ndk);
-  installNostrSigner(ndk, signer);
-  // Don't block login on relay connectivity — connect in background
-  ndk.connect();
-  // NIP-07 keeps the secret key inside the extension, so kormir (which needs
-  // the raw secret to produce DLC signatures locally) cannot use it. Forget
-  // any previously-staged nsec so the oracle flow will refuse to sign with a
-  // stale key after the user switches to an extension signer.
-  setPendingKormirNsec(null);
-  return signer;
+/** Authorize the extension before installing its signer. Relay reads are separate. */
+export async function loginWithExtension(options: NostrLoginOptions = {}): Promise<NDKSigner> {
+  const attempt = options.attempt ?? beginNostrIdentityAttempt();
+  return authorizeAndInstall(new NDKNip07Signer(), null, { ...options, attempt });
 }
 
-/**
- * Login with a raw nsec private key (hex or bech32).
- *
- * The same key is also staged for the kormir-wasm oracle store so that the
- * DLC oracle identity stays unified with the Nostr identity (same secp256k1
- * secret key is used for both announcement Schnorr signatures and Nostr
- * events). `setPendingKormirNsec` only remembers the key — the actual wasm
- * load and IndexedDB write happen lazily on the first oracle operation, so
- * users who only use Nostr for DMs never pay the 3MB wasm download cost.
- */
-export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
-  const signer = new NDKPrivateKeySigner(nsec);
-  const ndk = getNdk();
-  await teardownCurrentSigner(ndk);
-  installNostrSigner(ndk, signer);
-  // Don't block login on relay connectivity — connect in background
-  ndk.connect();
-  setPendingKormirNsec(nsec);
-  return signer;
+/** Install a local signer without changing retained oracle authority. */
+export async function loginWithNsec(
+  nsec: string,
+  options: NostrLoginOptions = {},
+): Promise<NDKSigner> {
+  const attempt = options.attempt ?? beginNostrIdentityAttempt();
+  return authorizeAndInstall(new NDKPrivateKeySigner(nsec), nsec, { ...options, attempt });
 }
 
 /**
@@ -216,9 +260,11 @@ export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
 export async function loginWithNsecOrNcryptsec(
   input: string,
   passphrase?: string,
+  options: NostrLoginOptions = {},
 ): Promise<{ signer: NDKSigner; nsec: string }> {
+  const attempt = options.attempt ?? beginNostrIdentityAttempt();
   const { nsec } = decodePrivateNostrSignerKey(input, passphrase);
-  const signer = await loginWithNsec(nsec);
+  const signer = await loginWithNsec(nsec, { ...options, attempt });
   return { signer, nsec };
 }
 
@@ -237,35 +283,35 @@ let _installedNsec: string | null = null;
  * Refresh the persisted display profile from the selected relays. Keep a
  * matching cached display while the verified public read is in progress.
  */
-export async function rehydrateNostrSigner(): Promise<void> {
+export async function rehydrateNostrSigner(
+  attempt: NostrIdentityAttempt = beginNostrIdentityAttempt(),
+): Promise<void> {
+  if (!attempt.isCurrent()) return;
   const settings = useSettingsStore.getState();
   const { nostrSignerMode, nsecSecret } = settings;
-  if (nostrSignerMode === "nip07") {
-    try {
-      await loginWithExtension();
-      fetchAndStoreNostrProfile().catch(() => {});
-    } catch {
-      settings.setProfile(null, "not-found");
-      settings.setSignerMode("none");
-    }
+  if (nostrSignerMode === "none") return;
+  if (nostrSignerMode === "nsec" && !nsecSecret) return;
+  if (
+    nostrSignerMode === "nsec" &&
+    _installedNsec === nsecSecret &&
+    getNdk().signer instanceof NDKPrivateKeySigner
+  )
     return;
-  }
-  if (nostrSignerMode !== "nsec" || !nsecSecret) return;
-  // Identity-binding guard (P04): only short-circuit when the live NDK
-  // signer is in fact the private-key one. A mode-switch nsec → nip07 →
-  // nsec-with-same-string would otherwise leave the NIP-07 signer attached
-  // and we'd publish under the wrong identity.
-  if (_installedNsec === nsecSecret && getNdk().signer instanceof NDKPrivateKeySigner) return;
+  settings.setSignerConnectionStatus("connecting");
   try {
-    await loginWithNsec(nsecSecret);
-    _installedNsec = nsecSecret;
-    fetchAndStoreNostrProfile().catch(() => {});
+    const options = {
+      attempt,
+      onCommit: (_nsec: string | null, publicKey: string) => {
+        useSettingsStore.getState().confirmNostrIdentity(publicKey);
+      },
+    };
+    if (nostrSignerMode === "nip07") await loginWithExtension(options);
+    else if (nostrSignerMode === "nsec" && nsecSecret) await loginWithNsec(nsecSecret, options);
+    if (attempt.isCurrent()) void fetchAndStoreNostrProfile();
   } catch {
-    // Stored nsec is corrupt — reset signer mode so the UI reflects reality.
-    // `setSignerMode` also wipes `nsecSecret` when leaving nsec mode, so we
-    // don't need a separate `setNsecSecret(null)` call.
-    _installedNsec = null;
-    settings.setSignerMode("none");
+    if (!attempt.isCurrent()) return;
+    // Keep persisted provenance for retry. Cached settings do not prove authorization.
+    useSettingsStore.getState().setSignerConnectionStatus("disconnected");
   }
 }
 

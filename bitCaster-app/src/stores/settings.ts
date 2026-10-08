@@ -16,6 +16,13 @@ import { defaultRelayConfigs, normalizeRelayConfigs } from "@/lib/relayDefaults"
 
 const DEFAULT_RELAYS: RelayConfig[] = defaultRelayConfigs();
 
+export interface NostrIdentityState {
+  nostrSignerMode: NostrSignerMode;
+  signerSource: NostrSignerSource;
+  signerBackupState: SecretBackupState;
+  nsecSecret: string | null;
+}
+
 interface SettingsStoreState {
   activeCategory: SettingsCategory;
   baseCurrency: BaseCurrency;
@@ -56,6 +63,11 @@ interface SettingsStoreState {
   setBaseCurrency: (currency: BaseCurrency) => void;
   setLanguage: (language: LanguageCode) => void;
   setTheme: (theme: ThemeOption) => void;
+  /** Runtime authorization. Never persist this value. */
+  signerConnectionStatus: "disconnected" | "connecting" | "connected";
+  setSignerConnectionStatus: (status: "disconnected" | "connecting" | "connected") => void;
+  commitNostrIdentity: (identity: NostrIdentityState) => void;
+  confirmNostrIdentity: (publicKey: string) => void;
   setSignerMode: (mode: NostrSignerMode) => void;
   setSignerSource: (source: NostrSignerSource) => void;
   setSignerBackupState: (state: SecretBackupState) => void;
@@ -111,6 +123,23 @@ export const useSettingsStore = create<SettingsStoreState>()(
         applyTheme(theme);
         set({ theme });
       },
+      signerConnectionStatus: "disconnected",
+      setSignerConnectionStatus: (signerConnectionStatus) => set({ signerConnectionStatus }),
+      confirmNostrIdentity: (publicKey) =>
+        set((state) => ({
+          signerConnectionStatus: "connected",
+          ...(state.nostrProfile?.pubkey === publicKey
+            ? {}
+            : { nostrProfile: null, nostrProfileFetchStatus: "idle" }),
+        })),
+      commitNostrIdentity: (identity) =>
+        set({
+          ...identity,
+          signerConnectionStatus:
+            identity.nostrSignerMode === "none" ? "disconnected" : "connected",
+          nostrProfile: null,
+          nostrProfileFetchStatus: "idle",
+        }),
       setSignerMode: (mode) =>
         set((s) => ({
           nostrSignerMode: mode,

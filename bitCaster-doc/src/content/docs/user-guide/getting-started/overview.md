@@ -168,6 +168,15 @@ Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr
 account, connect it instead of generating a new one.
 
+Before connecting a Nostr browser extension, the app explains its capability
+limit. Market creation needs a local Nostr private key for oracle signing.
+Other supported features can use the extension. Select OK to request the
+extension identity, or Cancel to keep the current state. Connection stays
+pending until the extension returns a valid identity. A saved identity after
+reload does not mean that the extension has authorized the connection.
+Disconnect cancels pending connection work. Disconnect before switching from
+an extension to a local private key.
+
 Settings also shows the connected Nostr profile and a refresh control.
 In Nostr Settings, edit your name, description, and picture URL. These fields
 are public. The app publishes standard Nostr profile metadata with your connected

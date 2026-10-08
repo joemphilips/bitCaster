@@ -5,6 +5,8 @@ import { generateSecretKey, nip19 } from "nostr-tools";
 import { getPublicKey } from "nostr-tools/pure";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
 import {
+  disconnectNostrSigner,
+  hasInstalledNostrSigner,
   fetchAndStoreNostrProfile,
   loginWithExtension,
   loginWithNsec,
@@ -12,7 +14,15 @@ import {
   rehydrateNostrSigner,
 } from "@/lib/nostr";
 
+import {
+  beginNostrIdentityAttempt,
+  captureNostrIdentityAttempt,
+  type NostrIdentityAttempt,
+} from "./nostrIdentityAttempt";
+import type { NostrIdentityState } from "@/stores/settings";
+
 export interface IdentityActionResult {
+  superseded?: boolean;
   ok: boolean;
   error?: string;
 }
@@ -98,94 +108,110 @@ function waitForSettingsHydration(): Promise<void> {
 }
 
 export function rehydratePersistedNostrIdentity(): Promise<void> {
-  rehydratePromise ??= waitForSettingsHydration().then(() => rehydrateNostrSigner());
+  // Capture before hydration: a later explicit user action takes precedence.
+  if (!rehydratePromise) {
+    const attempt = captureNostrIdentityAttempt();
+    rehydratePromise = waitForSettingsHydration().then(() => {
+      if (attempt.isCurrent()) return rehydrateNostrSigner(attempt);
+    });
+  }
   return rehydratePromise;
 }
 
 export function disconnectNostrIdentity(): void {
-  const settings = useSettingsStore.getState();
-  settings.setSignerMode("none");
-  settings.setSignerSource("none");
-  settings.setSignerBackupState("none");
-  settings.setProfile(null, "idle");
+  disconnectNostrSigner();
+  useSettingsStore.getState().commitNostrIdentity({
+    nostrSignerMode: "none",
+    nsecSecret: null,
+    signerSource: "none",
+    signerBackupState: "none",
+  });
 }
 
 export async function refreshNostrProfile(): Promise<void> {
   await fetchAndStoreNostrProfile();
 }
 
+async function connectIdentity(
+  install: (
+    attempt: NostrIdentityAttempt,
+    commit: (nsec: string | null) => void,
+  ) => Promise<unknown>,
+  identity: Omit<NostrIdentityState, "nsecSecret">,
+  error: string,
+): Promise<IdentityActionResult> {
+  const attempt = beginNostrIdentityAttempt();
+  const settings = useSettingsStore.getState();
+  settings.setSignerConnectionStatus("connecting");
+  try {
+    await install(attempt, (nsecSecret) => {
+      attempt.requireCurrent();
+      useSettingsStore.getState().commitNostrIdentity({ ...identity, nsecSecret });
+    });
+    if (!attempt.isCurrent()) return { ok: false, superseded: true };
+    void refreshNostrProfile();
+    return { ok: true };
+  } catch {
+    if (!attempt.isCurrent()) return { ok: false, superseded: true };
+    // A refused replacement does not delete the previous key or provenance.
+    useSettingsStore
+      .getState()
+      .setSignerConnectionStatus(hasInstalledNostrSigner() ? "connected" : "disconnected");
+    return { ok: false, error };
+  }
+}
+
 export async function userConnectNostrSignerMode(
   mode: NostrSignerMode,
 ): Promise<IdentityActionResult> {
-  const settings = useSettingsStore.getState();
-  settings.setSignerMode(mode);
-  if (mode === "nip07") {
-    try {
-      await loginWithExtension();
-      settings.setSignerSource("nip07");
-      settings.setSignerBackupState("confirmed");
-      refreshNostrProfile().catch(() => {});
+  switch (mode) {
+    case "nip07":
+      return connectIdentity(
+        (attempt, onCommit) => loginWithExtension({ attempt, onCommit }),
+        { nostrSignerMode: "nip07", signerSource: "nip07", signerBackupState: "confirmed" },
+        "Failed to connect with NIP-07 extension",
+      );
+    case "none":
+      disconnectNostrIdentity();
       return { ok: true };
-    } catch {
-      settings.setProfile(null, "not-found");
-      return { ok: false, error: "Failed to connect with NIP-07 extension" };
-    }
+    case "nsec":
+      return { ok: false, error: "A private key is required." };
+    default:
+      throw new Error("Unsupported signer mode.");
   }
-  if (mode === "none") {
-    settings.setProfile(null, "idle");
-  }
-  return { ok: true };
 }
 
 export async function userConnectNsecIdentity(
   nsec: string,
   passphrase?: string,
 ): Promise<IdentityActionResult> {
-  const settings = useSettingsStore.getState();
-  try {
-    settings.setSignerMode("nsec");
-    const { nsec: decryptedNsec } = await loginWithNsecOrNcryptsec(nsec, passphrase);
-    settings.setNsecSecret(decryptedNsec);
-    settings.setSignerSource("user-nsec");
-    settings.setSignerBackupState("confirmed");
-    refreshNostrProfile().catch(() => {});
-    return { ok: true };
-  } catch (err) {
-    settings.setSignerMode("none");
-    settings.setProfile(null, "not-found");
-    const error =
-      err instanceof Error && err.message.includes("passphrase")
-        ? err.message
-        : "Invalid private key or connection failed";
-    return { ok: false, error };
-  }
+  return connectIdentity(
+    (attempt, onCommit) => loginWithNsecOrNcryptsec(nsec, passphrase, { attempt, onCommit }),
+    { nostrSignerMode: "nsec", signerSource: "user-nsec", signerBackupState: "confirmed" },
+    "Invalid private key or connection failed",
+  );
 }
 
 export async function createGeneratedNostrIdentity(): Promise<IdentityActionResult> {
-  const settings = useSettingsStore.getState();
-  try {
-    const nsec = nip19.nsecEncode(generateSecretKey());
-    await loginWithNsec(nsec);
-    settings.setSignerMode("nsec");
-    settings.setNsecSecret(nsec);
-    settings.setSignerSource("implicit-generated");
-    settings.setSignerBackupState("needs_backup");
-    refreshNostrProfile().catch(() => {});
-    return { ok: true };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Failed to create Nostr key",
-    };
-  }
+  return connectIdentity(
+    (attempt, onCommit) =>
+      loginWithNsec(nip19.nsecEncode(generateSecretKey()), { attempt, onCommit }),
+    {
+      nostrSignerMode: "nsec",
+      signerSource: "implicit-generated",
+      signerBackupState: "needs_backup",
+    },
+    "Failed to create Nostr key",
+  );
 }
 
 export async function createImplicitWalletAndNostrIdentity(): Promise<IdentityActionResult> {
   const wallet = useWalletStore.getState();
-  const settings = useSettingsStore.getState();
+  const attempt = captureNostrIdentityAttempt();
   try {
     await wallet.ensureImplicitWallet();
-    if (settings.nostrSignerMode === "none") {
+    if (!attempt.isCurrent()) return { ok: false, superseded: true };
+    if (useSettingsStore.getState().nostrSignerMode === "none") {
       const result = await createGeneratedNostrIdentity();
       if (!result.ok) return result;
     }

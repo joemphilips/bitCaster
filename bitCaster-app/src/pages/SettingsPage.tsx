@@ -141,6 +141,7 @@ export function SettingsPage() {
     },
     nostr: {
       signerMode: settingsStore.nostrSignerMode,
+      connectionStatus: settingsStore.signerConnectionStatus,
       signerSource: settingsStore.signerSource,
       signerBackupState: settingsStore.signerBackupState,
       canRevealLocalNsec:
@@ -276,18 +277,20 @@ export function SettingsPage() {
 
   const handleSignerModeChange = useCallback(async (mode: NostrSignerMode): Promise<boolean> => {
     const result = await userConnectNostrSignerMode(mode);
+    if (result.superseded) return false;
     if (!result.ok) {
       useToastStore.getState().addToast({
         type: "error",
-        message: result.error ?? "Failed to connect Nostr signer",
+        message: t("settings.nip07ConnectionFailed"),
       });
     }
     return result.ok;
-  }, []);
+  }, [t]);
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {
       const result = await userConnectNsecIdentity(nsec, passphrase);
+      if (result.superseded) return false;
       if (result.ok) {
         useToastStore.getState().addToast({
           type: "success",

@@ -19,9 +19,27 @@ import { useWalletStore } from "@/stores/wallet";
 
 const nostrNetwork = vi.hoisted(() => ({
   fetchAndStoreNostrProfile: vi.fn(async () => {}),
-  loginWithExtension: vi.fn(async () => ({})),
-  loginWithNsec: vi.fn(async () => ({})),
-  loginWithNsecOrNcryptsec: vi.fn(async (nsec: string) => ({ nsec })),
+  loginWithExtension: vi.fn(async (options?: import("@/lib/nostr").NostrLoginOptions) => {
+    options?.attempt?.requireCurrent();
+    options?.onCommit?.(null, "11".repeat(32));
+    return {};
+  }),
+  loginWithNsec: vi.fn(async (nsec: string, options?: import("@/lib/nostr").NostrLoginOptions) => {
+    options?.attempt?.requireCurrent();
+    options?.onCommit?.(nsec, "11".repeat(32));
+    return {};
+  }),
+  loginWithNsecOrNcryptsec: vi.fn(
+    async (
+      nsec: string,
+      _passphrase?: string,
+      options?: import("@/lib/nostr").NostrLoginOptions,
+    ) => {
+      options?.attempt?.requireCurrent();
+      options?.onCommit?.(nsec, "11".repeat(32));
+      return { nsec };
+    },
+  ),
   rehydrateNostrSigner: vi.fn(async () => {}),
 }));
 const originalNavigatorLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
@@ -108,6 +126,7 @@ async function clearMemoryAndRestorePersistedNsec(expectedNsec: string) {
 
   useSettingsStore.setState({
     nostrSignerMode: "none",
+    signerConnectionStatus: "disconnected",
     signerSource: "none",
     signerBackupState: "none",
     nostrProfile: null,
@@ -119,6 +138,7 @@ async function clearMemoryAndRestorePersistedNsec(expectedNsec: string) {
   await rehydrateSettingsStore();
   expect(useSettingsStore.getState().nsecSecret === expectedNsec).toBe(true);
   expect(useSettingsStore.getState().nostrSignerMode === "nsec").toBe(true);
+  useSettingsStore.getState().setSignerConnectionStatus("connected");
 }
 
 describe("SettingsPage local Nostr-key backup", () => {
@@ -128,6 +148,7 @@ describe("SettingsPage local Nostr-key backup", () => {
     useSettingsStore.setState({
       activeCategory: "general",
       nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
       signerSource: "none",
       signerBackupState: "none",
       nostrProfile: null,
@@ -154,6 +175,7 @@ describe("SettingsPage local Nostr-key backup", () => {
     act(() => {
       useSettingsStore.setState({
         nostrSignerMode: "none",
+        signerConnectionStatus: "disconnected",
         signerSource: "none",
         signerBackupState: "none",
         nostrProfile: null,
@@ -257,6 +279,7 @@ describe("SettingsPage local Nostr-key backup", () => {
   ] as const)("hides the backup controls for $provenance keys", async ({ signerSource }) => {
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
       signerSource,
       signerBackupState: "needs_backup",
       nostrProfile: null,
@@ -274,6 +297,7 @@ describe("SettingsPage local Nostr-key backup", () => {
   it("does not offer local-key backup when no local key exists", async () => {
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
       signerSource: "user-nsec",
       signerBackupState: "confirmed",
       nostrProfile: null,
@@ -298,6 +322,8 @@ describe("SettingsPage local Nostr-key backup", () => {
 
     await renderSettingsPage();
     fireEvent.click(await screen.findByRole("button", { name: /connect with nip-07 extension/i }));
+    expect(nostrNetwork.loginWithExtension).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
 
     await waitFor(() => {
       expect(useSettingsStore.getState().nostrSignerMode).toBe("nip07");
@@ -323,6 +349,7 @@ describe("SettingsPage wallet replacement", () => {
 
     const nostrBefore = {
       nostrSignerMode: "nsec" as const,
+      signerConnectionStatus: "connected" as const,
       signerSource: "user-nsec" as const,
       signerBackupState: "confirmed" as const,
       nsecSecret: makeNsec(),
@@ -438,6 +465,7 @@ describe("SettingsPage explicit wallet setup", () => {
     useSettingsStore.setState({
       activeCategory: "cashu",
       nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
       signerSource: "none",
       signerBackupState: "none",
       nsecSecret: null,
@@ -467,6 +495,7 @@ describe("SettingsPage explicit wallet setup", () => {
     });
     useSettingsStore.setState({
       nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
       signerSource: "none",
       signerBackupState: "none",
       nsecSecret: null,
@@ -526,6 +555,7 @@ describe("SettingsPage explicit wallet setup", () => {
     const secret = makeNsec();
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
       signerSource: "user-nsec",
       signerBackupState: "confirmed",
       nsecSecret: secret,

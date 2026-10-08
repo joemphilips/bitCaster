@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => {
     relays: { url: string }[];
     setProfile: (profile: unknown, status: string) => void;
     setSignerMode: (mode: "none" | "nsec" | "nip07") => void;
+    setSignerConnectionStatus: (status: string) => void;
+    confirmNostrIdentity: (publicKey: string) => void;
   } = {
     nostrSignerMode: "none",
     nsecSecret: null,
@@ -28,6 +30,8 @@ const mocks = vi.hoisted(() => {
       settingsState.nostrProfile = profile as typeof settingsState.nostrProfile;
     }),
     setSignerMode: vi.fn(),
+    setSignerConnectionStatus: vi.fn(),
+    confirmNostrIdentity: vi.fn(),
   };
   const relaySettingSubscribers: Array<
     (state: typeof settingsState, previous: typeof settingsState) => void
@@ -96,14 +100,22 @@ vi.mock("@nostr-dev-kit/ndk", () => {
       mocks.privateKeySignerCtor(nsec);
     }
     user = () =>
-      Promise.resolve({ pubkey: "pk", profile: null, fetchProfile: () => Promise.resolve() });
+      Promise.resolve({
+        pubkey: "11".repeat(32),
+        profile: null,
+        fetchProfile: () => Promise.resolve(),
+      });
   }
   class FakeNDKNip07Signer {
     constructor() {
       mocks.nip07SignerCtor();
     }
     user = () =>
-      Promise.resolve({ pubkey: "pk", profile: null, fetchProfile: () => Promise.resolve() });
+      Promise.resolve({
+        pubkey: "11".repeat(32),
+        profile: null,
+        fetchProfile: () => Promise.resolve(),
+      });
   }
   return {
     default: FakeNDK,
@@ -119,6 +131,12 @@ vi.mock("@nostr-dev-kit/ndk-wallet", () => ({
 vi.mock("../kormir", () => ({
   setPendingKormirNsec: mocks.setPendingKormirNsecSpy,
 }));
+
+afterEach(async () => {
+  // End the identity before deferred profile imports can reach the next fixture.
+  (await import("../nostr")).disconnectNostrSigner();
+  await vi.dynamicImportSettled();
+});
 
 describe("loginWithNsecOrNcryptsec shared private-key adapter", () => {
   const secret = new Uint8Array(32).fill(0x11);

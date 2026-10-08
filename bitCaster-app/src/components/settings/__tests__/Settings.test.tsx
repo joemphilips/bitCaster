@@ -19,6 +19,8 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
     },
     nostr: {
       signerMode: "none",
+      connectionStatus:
+        overrides.signerMode && overrides.signerMode !== "none" ? "connected" : "disconnected",
       signerSource: "none",
       signerBackupState: "none",
       canRevealLocalNsec: false,
@@ -29,6 +31,125 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
     },
   };
 }
+
+describe("Settings connection consent", () => {
+  beforeEach(() => vi.stubGlobal("nostr", { getPublicKey: vi.fn() }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks about oracle capability before connecting and cancels without connecting", () => {
+    const connect = vi.fn();
+    render(
+      <Settings activeCategory="nostr" settings={settingsState()} onSignerModeChange={connect} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect with NIP-07 Extension" }));
+    expect(
+      screen.getByText(/Market creation currently needs a local Nostr private key/),
+    ).toBeVisible();
+    expect(connect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(connect).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/Market creation currently needs a local Nostr private key/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows pending authorization after OK and lets the user cancel", async () => {
+    let settle!: (ok: boolean) => void;
+    const connect = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const disconnect = vi.fn();
+    render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState()}
+        onSignerModeChange={connect}
+        onDisconnectNostr={disconnect}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect with NIP-07 Extension" }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(connect).toHaveBeenCalledWith("nip07");
+    expect(screen.getByRole("status")).toHaveTextContent("Connecting to Nostr");
+    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(disconnect).toHaveBeenCalledOnce();
+    await act(async () => settle(false));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("does not present a cached extension identity as connected during rehydration", () => {
+    render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nip07",
+          connectionStatus: "connecting",
+          profile: {
+            pubkey: "a".repeat(64),
+            displayName: "Cached Alice",
+            avatar: "",
+            nip05: "",
+            nip05verified: false,
+            bio: "",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Connecting to Nostr");
+    expect(screen.queryByText("Cached Alice")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+  });
+
+  it("clears an open private-key form when an extension connection commits", () => {
+    const view = render(<Settings activeCategory="nostr" settings={settingsState()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect with Private Key" }));
+    expect(screen.getByText("Private Key (nsec or ncryptsec)")).toBeVisible();
+    view.rerender(
+      <Settings activeCategory="nostr" settings={settingsState({ signerMode: "nip07" })} />,
+    );
+    expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
+    view.rerender(<Settings activeCategory="nostr" settings={settingsState()} />);
+    expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
+  });
+
+  it("allows local-key entry after saved extension authorization is refused", () => {
+    const view = render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nip07",
+          connectionStatus: "disconnected",
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect with Private Key" }));
+    expect(screen.getByText("Private Key (nsec or ncryptsec)")).toBeVisible();
+    view.rerender(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nip07",
+          connectionStatus: "connected",
+        })}
+      />,
+    );
+    expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
+    view.rerender(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nip07",
+          connectionStatus: "disconnected",
+        })}
+      />,
+    );
+    expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
+  });
+});
 
 describe("Settings profile picture", () => {
   it.each(["", "https://example.com/avatar.png"])("renders the picture state for %j", (avatar) => {

@@ -73,6 +73,7 @@ export interface RelayConfig {
 
 export interface NostrSettings {
   signerMode: NostrSignerMode;
+  connectionStatus?: "disconnected" | "connecting" | "connected";
   signerSource: NostrSignerSource;
   signerBackupState: SecretBackupState;
   canRevealLocalNsec: boolean;

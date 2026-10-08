@@ -42,7 +42,8 @@
     "share": "Share",
     "price": "Price",
     "success": "Success!",
-    "retry": "Retry"
+    "retry": "Retry",
+    "ok": "OK"
   },
   "nav": {
     "goToMainnet": "Go to mainnet",
@@ -609,7 +610,12 @@
       "selection-changed": "The signer or relay selection changed. No new send will start.",
       "cancelled": "Profile editing was cancelled. Your draft is kept.",
       "cache-unavailable": "This browser cannot safely retain profile edits. Your draft is kept. Check browser storage and retry."
-    }
+    },
+    "nip07CapabilityWarning": "A Nostr extension can connect your identity. Market creation currently needs a local Nostr private key for oracle signing. You can use the extension for other features. Continue with the extension?",
+    "nip07Missing": "Install a Nostr browser extension, such as Alby, to connect.",
+    "nip07Connected": "Connected via NIP-07 extension",
+    "nip07ConnectionFailed": "Could not connect to the Nostr extension. Check its permissions and try again.",
+    "nostrConnecting": "Connecting to Nostr…"
   },
   "deposit": {
     "title": "Deposit",
