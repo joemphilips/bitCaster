@@ -45,6 +45,9 @@ export async function runBrowserOracleRecoveryPass(
   for (let index = checkpoint.ownerOffset; index < end; index++) {
     pass.requireCurrent();
     const owner = owners[index];
+    // Public creator mirrors have no original private delivery destinations.
+    // Discovery can still restore their authenticated private backup below.
+    if (owner.kind === "created" && !owner.market.oracle?.destinations) continue;
     const { binding, destinations } = browserOracleOwnerAuthority(owner);
     if (binding.oraclePubkey !== pass.publicKey || !destinations) continue;
     // Retained public retry is independent of private readiness. Its saved destinations remain fixed.

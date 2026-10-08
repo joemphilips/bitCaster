@@ -33,6 +33,7 @@ vi.mock("@/lib/oracleAttestation", () => ({
 
 import { creatorOracleMetadata, creatorOraclePublication } from "@/test/creatorOracleFixture";
 import { CreatorDashboard } from "../CreatorDashboard";
+import i18n from "@/i18n";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -181,7 +182,11 @@ describe("CreatorDashboard", () => {
     ];
     mockUseCreatorDashboardState.mockReturnValue({
       pubkey: "a".repeat(64),
-      stats: { ...emptyStats(), activeMarketsCount: 1, totalVolumeSubunits: 100_000 },
+      stats: {
+        ...emptyStats(),
+        activeMarketsCount: 1,
+        totalVolumeSubunits: 100_000,
+      },
       markets,
       isLoading: false,
       error: null,
@@ -356,11 +361,15 @@ describe("CreatorDashboard", () => {
       await user.selectOptions(within(dialog).getByRole("combobox"), selected);
       expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
       await user.type(
-        within(dialog).getByRole("textbox", { name: "Public explanation (optional)" }),
+        within(dialog).getByRole("textbox", {
+          name: "Public explanation (optional)",
+        }),
         "Official final result.",
       );
       await user.click(
-        within(dialog).getByRole("button", { name: "Close market with this outcome" }),
+        within(dialog).getByRole("button", {
+          name: "Close market with this outcome",
+        }),
       );
       await screen.findByText(`Resolution ${selected} is confirmed by the engine and relay.`);
       expect(mockPublishOracleOutcome).toHaveBeenCalledWith(
@@ -417,7 +426,7 @@ it.each(["chosenOutcome", "attestedOutcome"] as const)(
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByRole("combobox")).toBeNull();
     expect(within(dialog).getByRole("textbox")).toHaveValue("Saved explanation.");
-    expect(within(dialog).getByRole("textbox")).toBeDisabled();
+    expect(within(dialog).getByRole("textbox")).toHaveAttribute("readonly");
     await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
     await waitFor(() => expect(mockPublishOracleOutcome).toHaveBeenCalledOnce());
     expect(mockPublishOracleOutcome.mock.calls[0].slice(0, 3)).toEqual([
@@ -447,38 +456,76 @@ describe("saved oracle confirmation", () => {
         destinations: {
           mintUrl: "https://original.mint",
           engineUrl: "https://original.engine",
-          relayUrls: ["wss://original.relay"],
+          relayUrls: ["wss://original.relay"] as readonly string[],
         },
         initial: { prepared: true, acknowledgedRelays: 1, totalRelays: 1 },
-        terminal: { prepared: false, deletionRequired: false, localCommitPending: false },
+        terminal: {
+          prepared: false,
+          deletionRequired: false,
+          localCommitPending: false,
+        },
         publication: { relayPublished: true, engineSynchronized: false },
       },
     };
+  }
+  function marketRow(
+    row: ReturnType<typeof importedRow>,
+    kind: "created" | "imported" = "imported",
+  ): CreatedMarket {
+    const common = {
+      id: row.conditionId,
+      title: row.title,
+      imageUrl: "",
+      status: "unknown" as const,
+      engineDataStatus: "unavailable" as const,
+      baseAsset: "sat" as const,
+      divisibility: 1_000 as const,
+    };
+    return kind === "imported"
+      ? {
+          ...common,
+          oracleOwnerKind: "imported",
+          createdDate: null,
+          volume: null,
+          creatorFeesEarned: null,
+          creatorFeePercent: null,
+        }
+      : {
+          ...common,
+          oracleOwnerKind: "created",
+          createdDate: "2026-10-08",
+          volume: 0,
+          creatorFeesEarned: 0,
+          creatorFeePercent: 0,
+          oracle: {
+            type: "self",
+            eventId: "created-event",
+            outcomes: row.outcomes,
+            destinations: row.status.destinations,
+          },
+        };
   }
   function setup(ownerKind: "created" | "imported" = "imported") {
     mockUseCreatorDashboardState.mockReturnValue({
       pubkey: "f".repeat(64),
       stats: emptyStats(),
-      markets: [],
+      markets: [marketRow(importedRow(), ownerKind)],
       isLoading: false,
       error: null,
       engineDataStatus: "current",
       refresh: vi.fn(),
     });
-    mockLocalStatuses.mockImplementation(async ({ kind }) => ({
-      rows:
-        kind === ownerKind
-          ? [
-              {
-                ...importedRow(),
-                kind: ownerKind,
-                status: {
-                  ...importedRow().status,
-                  publication: { relayPublished: true, engineSynchronized: true },
-                },
-              },
-            ]
-          : [],
+    mockLocalStatuses.mockImplementation(async () => ({
+      rows: [
+        {
+          ...importedRow(),
+          kind: ownerKind,
+          status: {
+            ...importedRow().status,
+            publication: { relayPublished: true, engineSynchronized: true },
+          },
+        },
+      ],
       nextOffset: null,
     }));
   }
@@ -494,13 +541,18 @@ describe("saved oracle confirmation", () => {
       const user = userEvent.setup();
       renderDashboard();
       await user.click(await screen.findByRole("button", { name: label }));
-      const dialog = screen.getByRole("dialog", { name: "Close this market" });
+      const dialog = screen.getByRole("dialog", {
+        name: republish ? "Republish the saved resolution" : "Retry the saved resolution",
+      });
+      expect(within(dialog).getByTestId("creator-oracle-confirm")).toHaveTextContent(
+        republish ? "Republish saved resolution" : "Retry saved resolution",
+      );
+      expect(within(dialog).getByText(/This sends the same signed resolution again/)).toBeVisible();
       expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
       expect(within(dialog).queryByRole("combobox")).toBeNull();
       expect(within(dialog).getByTestId("creator-oracle-saved-outcome")).toHaveTextContent("YES");
-      expect(
-        within(dialog).getByRole("textbox", { name: "Public explanation (optional)" }),
-      ).toBeDisabled();
+      expect(within(dialog).queryByRole("textbox")).toBeNull();
+      expect(within(dialog).queryByText("Public explanation (optional)")).toBeNull();
       await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
       await screen.findByText("Resolution YES is confirmed by the engine and relay.");
       expect(mockPublishOracleOutcome).toHaveBeenCalledWith(
@@ -525,7 +577,11 @@ describe("saved oracle confirmation", () => {
       const user = userEvent.setup();
       renderDashboard();
       await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      await user.click(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: "Cancel",
+        }),
+      );
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
     },
@@ -607,10 +663,17 @@ describe("saved oracle confirmation", () => {
       conditionId: creatorOracleMetadata.binding.conditionId,
       readiness: "ready",
       title: "Restored original market",
-      status: { ...importedRow().status, destinations: creatorOracleMetadata.destinations },
+      status: {
+        ...importedRow().status,
+        destinations: creatorOracleMetadata.destinations,
+      },
     };
-    mockLocalStatuses.mockImplementation(async ({ kind }) => ({
-      rows: kind === "imported" ? [row] : [],
+    mockUseCreatorDashboardState.mockReturnValue({
+      ...mockUseCreatorDashboardState(),
+      markets: [marketRow(row)],
+    });
+    mockLocalStatuses.mockImplementation(async () => ({
+      rows: [row],
       nextOffset: null,
     }));
     return row;
@@ -663,7 +726,7 @@ describe("saved oracle confirmation", () => {
     expect(within(dialog).queryByRole("combobox")).toBeNull();
     expect(within(dialog).getByTestId("creator-oracle-saved-outcome")).toHaveTextContent("YES");
     expect(within(dialog).getByRole("textbox")).toHaveValue("Original public explanation.");
-    expect(within(dialog).getByRole("textbox")).toBeDisabled();
+    expect(within(dialog).getByRole("textbox")).toHaveAttribute("readonly");
     await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
     await waitFor(() => expect(mockPublishOracleOutcome).toHaveBeenCalledOnce());
     expect(mockPublishOracleOutcome.mock.calls[0].slice(0, 4)).toEqual([
@@ -691,7 +754,7 @@ describe("saved oracle confirmation", () => {
         .saveOraclePublication(creatorOracleMetadata.binding.conditionId, creatorOraclePublication);
     });
     expect(within(dialog).queryByRole("combobox")).toBeNull();
-    expect(within(dialog).getByRole("textbox")).toHaveValue("");
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
     expect(within(dialog).getByTestId("creator-oracle-saved-outcome")).toHaveTextContent("YES");
     await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
     await waitFor(() => expect(mockPublishOracleOutcome).toHaveBeenCalledOnce());
@@ -717,7 +780,9 @@ describe("saved oracle confirmation", () => {
     });
     expect(mockPublishOracleOutcome).toHaveBeenCalledOnce();
     expect(
-      within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }),
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Cancel",
+      }),
     ).toBeDisabled();
     await act(async () => {
       finish({ failures: [], record: {} });
@@ -764,7 +829,9 @@ describe("saved oracle confirmation", () => {
       });
       expect(screen.getByRole("dialog")).toBe(currentDialog);
       expect(confirm).toBeDisabled();
-      const cancel = within(currentDialog).getByRole("button", { name: "Cancel" });
+      const cancel = within(currentDialog).getByRole("button", {
+        name: "Cancel",
+      });
       expect(cancel).toBeDisabled();
       await user.click(confirm);
       await user.click(cancel);
@@ -782,9 +849,57 @@ describe("saved oracle confirmation", () => {
     },
   );
 
+  it.each(["complete", "incomplete", "error"] as const)(
+    "retranslates retained %s feedback when the language changes without publishing again",
+    async (result) => {
+      setup();
+      if (result === "error")
+        mockPublishOracleOutcome.mockRejectedValueOnce(new Error("Unavailable"));
+      else
+        mockPublishOracleOutcome.mockResolvedValueOnce({
+          failures: result === "incomplete" ? ["relay"] : [],
+          record: {},
+        });
+      const key =
+        result === "error"
+          ? "creator.oracleRecoveryRequired"
+          : result === "incomplete"
+            ? "creator.oracleDeliveryIncomplete"
+            : "creator.oracleDeliveryComplete";
+      const english = i18n.t(key, { lng: "en", outcome: "YES" });
+      const japanese = i18n.t(key, { lng: "ja", outcome: "YES" });
+      const user = userEvent.setup();
+      renderDashboard();
+      try {
+        await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
+        await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
+        expect((await screen.findAllByText(english)).length).toBeGreaterThan(0);
+        await act(async () => {
+          await i18n.changeLanguage("ja");
+        });
+        expect(screen.queryByText(english)).toBeNull();
+        expect(screen.getAllByText(japanese).length).toBeGreaterThan(0);
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+        expect(screen.getAllByText(english).length).toBeGreaterThan(0);
+        expect(screen.queryByText(japanese)).toBeNull();
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+      }
+    },
+  );
+
   it("keeps partial delivery distinct from complete delivery", async () => {
     setup();
-    mockPublishOracleOutcome.mockResolvedValueOnce({ failures: ["relay"], record: {} });
+    mockPublishOracleOutcome.mockResolvedValueOnce({
+      failures: ["relay"],
+      record: {},
+    });
     const user = userEvent.setup();
     renderDashboard();
     await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));

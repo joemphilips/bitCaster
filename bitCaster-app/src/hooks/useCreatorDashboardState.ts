@@ -64,6 +64,7 @@ function buildCreatedMarket(
   const backend = backendByConditionId.get(stored.conditionId);
   return {
     id: stored.conditionId,
+    oracleOwnerKind: "created",
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? "",
     status: toCreatedMarketStatus(backend?.state),
@@ -130,6 +131,7 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
   const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null);
   const storedMarkets = useCreatorMarketsStore((s) => s.markets);
+  const importedOracles = useCreatorMarketsStore((s) => s.importedOracles);
 
   const pubkey = useMemo(
     () =>
@@ -214,14 +216,37 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
     const currentConditionIds = new Set(
       backend.pubkey === pubkey ? backend.currentConditionIds : [],
     );
-    return storedMarkets.map((m) =>
+    const created = storedMarkets.map((m) =>
       buildCreatedMarket(m, backendByConditionId, currentConditionIds),
     );
-  }, [storedMarkets, backend, pubkey]);
+    const createdIds = new Set(created.map((market) => market.id));
+    const restored: CreatedMarket[] = importedOracles
+      .filter((oracle) => !createdIds.has(oracle.binding.conditionId))
+      .map((oracle) => ({
+        id: oracle.binding.conditionId,
+        oracleOwnerKind: "imported",
+        title: oracle.binding.oracleEventId,
+        imageUrl: "",
+        status: "unknown",
+        engineDataStatus: "unavailable",
+        createdDate: null,
+        baseAsset: "sat",
+        divisibility: 1_000,
+        volume: null,
+        creatorFeesEarned: null,
+        creatorFeePercent: null,
+      }));
+    return [...created, ...restored];
+  }, [storedMarkets, importedOracles, backend, pubkey]);
 
+  // Imported authority has no paid creation facts and does not contribute to these statistics.
+  const paidMarkets = useMemo(
+    () => markets.filter((market) => market.oracleOwnerKind !== "imported"),
+    [markets],
+  );
   const stats = useMemo<DashboardStats>(() => {
     const base = emptyStats();
-    for (const market of markets) {
+    for (const market of paidMarkets) {
       switch (market.status) {
         case "active":
           base.activeMarketsCount += 1;
@@ -241,13 +266,13 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
       base.totalFeesEarnedSats += market.creatorFeesEarned;
     }
     return base;
-  }, [markets]);
+  }, [paidMarkets]);
 
   const scopedBackend = backend.pubkey === pubkey ? backend : null;
   const engineDataStatus: CreatorEngineDataStatus =
-    !pubkey || markets.some((market) => market.engineDataStatus === "unavailable")
+    !pubkey || paidMarkets.some((market) => market.engineDataStatus === "unavailable")
       ? "unavailable"
-      : markets.some((market) => market.engineDataStatus === "stale")
+      : paidMarkets.some((market) => market.engineDataStatus === "stale")
         ? "stale"
         : !scopedBackend || scopedBackend.isLoading || scopedBackend.error
           ? "unavailable"

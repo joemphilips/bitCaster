@@ -173,23 +173,38 @@ export interface ActivityDisplayItem extends RecordedActivityItem {
 export type CreatedMarketStatus = "active" | "resolved" | "refunded" | "unknown";
 export type CreatorEngineDataStatus = "current" | "stale" | "unavailable";
 
-export interface CreatedMarket {
+interface CreatedMarketDisplay {
   id: string;
   title: string;
   imageUrl: string;
   status: CreatedMarketStatus;
   /** Display freshness only. It does not authorize oracle or lifecycle changes. */
   engineDataStatus?: CreatorEngineDataStatus;
-  createdDate: string;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
   resolvedDate?: string;
   refundedDate?: string;
-  volume: number;
-  creatorFeesEarned: number;
-  creatorFeePercent: number;
   oracle?: import("@/stores/creatorMarkets").StoredCreatorOracleMetadata;
 }
+
+/** Imported oracle authority does not establish paid creation or economic facts. */
+export type CreatedMarket = CreatedMarketDisplay &
+  (
+    | {
+        oracleOwnerKind?: "created";
+        createdDate: string;
+        volume: number;
+        creatorFeesEarned: number;
+        creatorFeePercent: number;
+      }
+    | {
+        oracleOwnerKind: "imported";
+        createdDate: null;
+        volume: null;
+        creatorFeesEarned: null;
+        creatorFeePercent: null;
+      }
+  );
 
 // =============================================================================
 // Component Props

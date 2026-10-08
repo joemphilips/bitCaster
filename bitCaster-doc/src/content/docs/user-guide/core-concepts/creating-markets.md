@@ -124,7 +124,9 @@ oracle records. It also retries when relay settings change or connectivity
 returns. Discovery uses bounded pages. Recovery never selects or publishes
 an outcome automatically.
 
-Open Creator to see restored oracle records below your created markets.
+Open Creator to see restored oracle records in the normal market list.
+Use the row's Close market action to choose an outcome. Confirm the choice
+before publication. A saved outcome offers exact delivery retry and republication.
 The client fetches each selected backup event again and checks its signature,
 encryption, and oracle binding before import.
 The browser and native client use the same portable backup format.
@@ -134,12 +136,14 @@ NIP-07 extension signing does not support this private recovery path. It needs
 the matching local Nostr key.
 
 Discovery depends on relay retention. A page or an empty result does not
-prove that all backups were found. Try another relay or open advanced recovery
-in Creator. Enter the exact backup event ID and source relay URL there.
-This explicit recovery also works when no discovery relays are configured.
+prove that all backups were found. Configure another relay for automatic recovery,
+or use the CLI commands below with the exact backup event ID and source relay URL.
+Manual discovery and exact restore are CLI operations. Creator has no manual
+recovery panel. CLI exact restore also works without configured discovery relays.
 
-Local status distinguishes incomplete import, pending preparation, initial
-delivery, terminal replacement, deletion requests, and pending local updates.
+The market row shows incomplete restoration and pending backup delivery.
+CLI status distinguishes preparation, initial delivery, terminal replacement,
+deletion requests, and pending local updates.
 Initial backup confirmation does not confirm the terminal replacement.
 If import is incomplete, restore the same version again before signing.
 Retry preparation with the original key. A saved exact backup retry can run

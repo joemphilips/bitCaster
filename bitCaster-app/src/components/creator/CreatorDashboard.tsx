@@ -14,7 +14,7 @@ import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
-import { CreatorOracleRecovery, type OracleRecoveryPublish } from "./CreatorOracleRecovery";
+import type { CreatorOraclePublication } from "./CreatorMarketActions";
 import { AnalyticsComingSoon } from "./AnalyticsComingSoon";
 import type { CreatorEngineDataStatus } from "@/types/portfolio";
 
@@ -73,8 +73,13 @@ export function CreatorDashboard() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<ActiveTab>("overview");
   const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null);
-  const [resolutionError, setResolutionError] = useState<string | null>(null);
-  const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null);
+  const [resolutionError, setResolutionError] = useState<"creator.oracleRecoveryRequired" | null>(
+    null,
+  );
+  const [resolutionSuccess, setResolutionSuccess] = useState<{
+    outcome: string;
+    incomplete: boolean;
+  } | null>(null);
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
   const generation = useRef(0);
@@ -132,6 +137,20 @@ export function CreatorDashboard() {
   const displayedExplanation = immutableOutcome
     ? (storedExplanation ?? resolutionDialog?.savedExplanation ?? "")
     : explanation;
+  const resolutionTitle = immutableOutcome
+    ? resolutionDialog?.republish
+      ? "creator.republishSavedTitle"
+      : "creator.retrySavedTitle"
+    : "creator.resolveDialogTitle";
+  const resolutionAction = immutableOutcome
+    ? resolvingMarketId
+      ? "creator.sendingSavedResolution"
+      : resolutionDialog?.republish
+        ? "creator.republishSavedAction"
+        : "creator.retrySavedAction"
+    : resolvingMarketId
+      ? "creator.closingMarket"
+      : "creator.confirmResolution";
   const handlePublishOracleAttestation = (marketId: string) => {
     if (publication.current) return;
     const market = markets.find((m) => m.id === marketId);
@@ -154,7 +173,7 @@ export function CreatorDashboard() {
         : undefined,
     });
   };
-  const handleRecoveryPublication: OracleRecoveryPublish = (request) => {
+  const handleRecoveryPublication: CreatorOraclePublication = (request) => {
     if (publication.current) return;
     const retained = retainedResolution(request.conditionId);
     const savedOutcome = retained.outcome ?? request.chosenOutcome ?? undefined;
@@ -235,25 +254,18 @@ export function CreatorDashboard() {
             { engineDelivery: "synchronize", requireCurrent },
           );
       if (!isCurrent()) return;
-      setResolutionSuccess(
-        t(
-          result.failures.length
-            ? "creator.oracleDeliveryIncomplete"
-            : "creator.oracleDeliveryComplete",
-          { outcome },
-        ),
-      );
+      setResolutionSuccess({ outcome, incomplete: result.failures.length > 0 });
       setResolutionDialog(null);
       refresh();
     } catch {
-      if (isCurrent()) setResolutionError(t("creator.oracleRecoveryRequired"));
+      if (isCurrent()) setResolutionError("creator.oracleRecoveryRequired");
     } finally {
       if (publication.current === operation) publication.current = null;
       if (isCurrent()) setResolvingMarketId(null);
     }
   };
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div data-testid="creator-dashboard" className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -345,7 +357,7 @@ export function CreatorDashboard() {
                 <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
                 <div>
                   <p className="font-semibold">{t("creator.attestationErrorTitle")}</p>
-                  <p className="mt-0.5 select-text text-xs opacity-80">{resolutionError}</p>
+                  <p className="mt-0.5 select-text text-xs opacity-80">{t(resolutionError)}</p>
                   <button
                     onClick={() => setResolutionError(null)}
                     aria-label={t("oracleBackup.dismiss")}
@@ -358,7 +370,12 @@ export function CreatorDashboard() {
 
             {resolutionSuccess && (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                {resolutionSuccess}
+                {t(
+                  resolutionSuccess.incomplete
+                    ? "creator.oracleDeliveryIncomplete"
+                    : "creator.oracleDeliveryComplete",
+                  { outcome: resolutionSuccess.outcome },
+                )}
               </div>
             )}
 
@@ -371,36 +388,37 @@ export function CreatorDashboard() {
                   markets={markets}
                   onViewMarket={handleViewMarket}
                   onPublishOracleAttestation={handlePublishOracleAttestation}
+                  onOraclePublication={handleRecoveryPublication}
                   publishingOracleAttestationMarketId={resolvingMarketId}
                 />
               )}
             </div>
-            <CreatorOracleRecovery
-              onPublish={handleRecoveryPublication}
-              publicationBusy={resolvingMarketId !== null}
-            />
           </div>
         )}
 
         {activeTab === "analytics" && <AnalyticsComingSoon />}
         {resolutionDialog && (
           <NativeDialog
-            ariaLabel={t("creator.resolveDialogTitle")}
+            ariaLabel={t(resolutionTitle)}
             canDismiss={resolvingMarketId === null}
             onDismiss={dismissResolution}
           >
             {(dismiss) => (
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
-                <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
+                <h2 className="text-xl font-semibold">{t(resolutionTitle)}</h2>
                 <p className="mt-3 break-words font-medium">{resolutionDialog.title}</p>
                 {immutableOutcome ? (
                   <p data-testid="creator-oracle-saved-outcome" className="mt-4 break-words">
-                    {t("oracleBackup.savedOutcome", { outcome: immutableOutcome })}
+                    {t("oracleBackup.savedOutcome", {
+                      outcome: immutableOutcome,
+                    })}
                   </p>
                 ) : (
                   <label className="mt-4 block">
                     <span className="block [overflow-wrap:anywhere]">
-                      {t("creator.winningOutcomeLabel", { title: resolutionDialog.title })}
+                      {t("creator.winningOutcomeLabel", {
+                        title: resolutionDialog.title,
+                      })}
                     </span>
                     <select
                       data-testid="creator-oracle-outcome"
@@ -408,7 +426,11 @@ export function CreatorDashboard() {
                       disabled={resolvingMarketId !== null}
                       onChange={(event) =>
                         setResolutionDialog(
-                          (current) => current && { ...current, outcome: event.target.value },
+                          (current) =>
+                            current && {
+                              ...current,
+                              outcome: event.target.value,
+                            },
                         )
                       }
                       className="mt-2 w-full rounded-lg border border-slate-300 bg-white p-3 dark:border-slate-700 dark:bg-slate-800"
@@ -422,29 +444,51 @@ export function CreatorDashboard() {
                     </select>
                   </label>
                 )}
-                <p className="mt-3">{t("creator.resolveChoiceNotice")}</p>
+                <p className="mt-3">
+                  {t(
+                    immutableOutcome
+                      ? "creator.savedResolutionNotice"
+                      : "creator.resolveChoiceNotice",
+                  )}
+                </p>
                 {resolutionError && (
                   <p role="alert" className="mt-3 text-sm text-rose-600">
-                    {resolutionError}
+                    {t(resolutionError)}
                   </p>
                 )}
-                <label className="mt-4 block" htmlFor="oracle-explanation">
-                  {t("creator.explanationOptional")}
-                </label>
-                <textarea
-                  id="oracle-explanation"
-                  value={displayedExplanation}
-                  disabled={!!immutableOutcome || resolvingMarketId !== null}
-                  onChange={(event) => setExplanation(event.target.value)}
-                  className="mt-2 min-h-28 w-full rounded-lg border border-slate-300 p-3 dark:border-slate-700 dark:bg-slate-800"
-                />
-                <p className="mt-2 text-sm text-slate-500">
-                  {t("creator.explanationLimit", {
-                    limit: ORACLE_EXPLANATION_UTF8_BYTES_MAX,
-                  })}
-                </p>
+                {(!immutableOutcome || displayedExplanation) && (
+                  <>
+                    <label className="mt-4 block" htmlFor="oracle-explanation">
+                      {t(
+                        immutableOutcome
+                          ? "creator.savedExplanation"
+                          : "creator.explanationOptional",
+                      )}
+                    </label>
+                    <textarea
+                      id="oracle-explanation"
+                      value={displayedExplanation}
+                      readOnly={!!immutableOutcome}
+                      disabled={!immutableOutcome && resolvingMarketId !== null}
+                      onChange={(event) => setExplanation(event.target.value)}
+                      className="mt-2 min-h-28 w-full rounded-lg border border-slate-300 p-3 dark:border-slate-700 dark:bg-slate-800"
+                    />
+                    {!immutableOutcome && (
+                      <p className="mt-2 text-sm text-slate-500">
+                        {t("creator.explanationLimit", {
+                          limit: ORACLE_EXPLANATION_UTF8_BYTES_MAX,
+                        })}
+                      </p>
+                    )}
+                  </>
+                )}
                 <div className="mt-6 flex justify-end gap-3">
-                  <button type="button" disabled={resolvingMarketId !== null} onClick={dismiss}>
+                  <button
+                    type="button"
+                    className="shrink-0 whitespace-nowrap"
+                    disabled={resolvingMarketId !== null}
+                    onClick={dismiss}
+                  >
                     {t("common.cancel")}
                   </button>
                   <button
@@ -460,7 +504,7 @@ export function CreatorDashboard() {
                     }
                     className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
                   >
-                    {t(resolvingMarketId ? "creator.closingMarket" : "creator.confirmResolution")}
+                    {t(resolutionAction)}
                   </button>
                 </div>
               </div>

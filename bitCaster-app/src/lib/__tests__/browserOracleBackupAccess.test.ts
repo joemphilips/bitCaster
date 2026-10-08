@@ -176,10 +176,26 @@ it("projects only the selected bounded local page from one owner snapshot", asyn
   );
   expect(preparations).toBe(25);
   expect(read).toHaveBeenCalledTimes(2);
+  const selected = await localBrowserOracleBackupStatuses({
+    conditionId: last.rows[0].conditionId,
+  });
+  expect(selected.rows).toHaveLength(1);
+  expect(selected.rows[0].conditionId).toBe(last.rows[0].conditionId);
+  expect(selected.nextOffset).toBeNull();
+  expect(preparations).toBe(26);
+  expect(read).toHaveBeenCalledTimes(3);
+  const visibleIds = last.rows.slice(0, 2).map((row) => row.conditionId);
+  const page = await localBrowserOracleBackupStatuses({ conditionIds: visibleIds });
+  expect(page.rows.map((row) => row.conditionId)).toEqual(visibleIds);
+  expect(preparations).toBe(28);
+  expect(read).toHaveBeenCalledTimes(4);
   await expect(localBrowserOracleBackupStatuses({ localOffset: -1 })).rejects.toThrow(
     "page is invalid",
   );
-  expect(read).toHaveBeenCalledTimes(2);
+  await expect(
+    localBrowserOracleBackupStatuses({ conditionIds: Array(21).fill("id") }),
+  ).rejects.toThrow("page exceeds its limit");
+  expect(read).toHaveBeenCalledTimes(4);
 });
 
 it.each(["discovery", "exact restore"] as const)(

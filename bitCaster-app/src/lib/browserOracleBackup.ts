@@ -14,6 +14,7 @@ import {
   OracleBackupDeliveryError,
 } from "@bitcaster/client-sdk/oracleBackupDelivery";
 import { restoreOracleBackupEnvelope } from "@bitcaster/client-sdk/oracleBackupAccess";
+import { readSignedOracleEvent } from "@bitcaster/client-sdk/oracleResolutionExplanation";
 import { hexToBytes } from "nostr-tools/utils";
 import {
   useCreatorMarketsStore,
@@ -326,8 +327,42 @@ export async function browserOracleAuthorityReadiness(
       return admission.withCoreLocked(async (core): Promise<BrowserOracleAuthorityReadiness> => {
         const owner = await locked.readOwner(conditionId);
         if (!owner) return "needs-restore";
-        const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
-        if (binding.oraclePubkey !== admission.publicKey || !destinations) return "unavailable";
+        let ownerAuthority: ReturnType<typeof browserOracleOwnerAuthority>;
+        if (
+          owner.kind === "created" &&
+          (!owner.market.oracle?.oraclePubkey || !owner.market.oracle?.destinations)
+        ) {
+          const oracle = owner.market.oracle;
+          if (!oracle?.announcementEventJson || !oracle.announcementHex) return "unavailable";
+          const event = readSignedOracleEvent(oracle.announcementEventJson, 88);
+          const binding = {
+            conditionId: owner.market.conditionId,
+            oracleEventId: oracle.eventId,
+            oraclePubkey: oracle.oraclePubkey ?? event.pubkey,
+            outcomes: oracle.outcomes,
+            announcementEventJson: oracle.announcementEventJson,
+          };
+          // Load the shared verifier after module initialization; publication also uses this adapter.
+          const { retainedOracleAuthority } = await import("./oracleAttestation");
+          // This supplies only a verified public binding, never private signing authority.
+          const verified = await retainedOracleAuthority(binding, {
+            announcementTlvHex: oracle.announcementHex,
+          });
+          if (
+            oracle.announcementEventId !== undefined &&
+            oracle.announcementEventId !== verified.announcementEventId
+          )
+            return "unavailable";
+          ownerAuthority = {
+            binding,
+            announcementHex: oracle.announcementHex,
+            destinations: oracle.destinations,
+          };
+        } else ownerAuthority = browserOracleOwnerAuthority(owner);
+        admission.requireCurrent();
+        requireCurrent?.();
+        const { binding, announcementHex, destinations } = ownerAuthority;
+        if (binding.oraclePubkey !== admission.publicKey) return "unavailable";
         // This exact event lookup distinguishes absence from a corrupt nonce or invalid export.
         // JsError.NotFound (2) here means the event is absent, not a validation failure.
         try {
@@ -335,6 +370,7 @@ export async function browserOracleAuthorityReadiness(
         } catch (error) {
           return error === 2 ? "needs-restore" : "unavailable";
         }
+        if (!destinations) return "unavailable";
         const publication = await locked.read(conditionId);
         const dto = await core.export_enum_authority(
           binding.oracleEventId,

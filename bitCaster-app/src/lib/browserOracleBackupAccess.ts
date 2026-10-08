@@ -194,14 +194,28 @@ export async function restoreBrowserOracleBackup(
 }
 
 export async function localBrowserOracleBackupStatuses(
-  options: BrowserOracleBackupAccessOptions = {},
+  options: BrowserOracleBackupAccessOptions & {
+    conditionId?: string;
+    conditionIds?: readonly string[];
+  } = {},
 ) {
   const store = options.store ?? useCreatorMarketsStore;
   const offset = options.localOffset ?? 0;
   if (!Number.isSafeInteger(offset) || offset < 0)
     throw new Error("Oracle backup status page is invalid.");
+  if (options.conditionIds && options.conditionIds.length > 20)
+    throw new Error("Oracle backup status page exceeds its limit.");
+  const conditionIds = options.conditionIds ? new Set(options.conditionIds) : null;
   const owners = (await store.getState().readOracleOwners()).filter(
-    (owner) => !options.kind || owner.kind === options.kind,
+    (owner) =>
+      (!options.kind || owner.kind === options.kind) &&
+      (!conditionIds ||
+        conditionIds.has(
+          owner.kind === "created" ? owner.market.conditionId : owner.oracle.binding.conditionId,
+        )) &&
+      (!options.conditionId ||
+        (owner.kind === "created" ? owner.market.conditionId : owner.oracle.binding.conditionId) ===
+          options.conditionId),
   );
   const rows = await Promise.all(
     owners.slice(offset, offset + 20).map(async (owner) => {

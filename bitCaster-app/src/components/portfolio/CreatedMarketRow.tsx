@@ -8,6 +8,10 @@ import type {
 import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { CheckCircle2, Eye } from "lucide-react";
+import {
+  CreatorMarketActions,
+  type CreatorOraclePublication,
+} from "@/components/creator/CreatorMarketActions";
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
   active: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
@@ -34,6 +38,8 @@ interface CreatedMarketRowProps {
   onClaimFees?: (marketId: string) => void;
   onPublishOracleAttestation?: (marketId: string) => void;
   isPublishingOracleAttestation?: boolean;
+  onOraclePublication?: CreatorOraclePublication;
+  oraclePublicationBusy?: boolean;
 }
 
 export function CreatedMarketRow({
@@ -42,14 +48,23 @@ export function CreatedMarketRow({
   onClaimFees,
   onPublishOracleAttestation,
   isPublishingOracleAttestation = false,
+  onOraclePublication,
+  oraclePublicationBusy = false,
 }: CreatedMarketRowProps) {
   const { t } = useTranslation();
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const engineDataLabel = market.engineDataStatus
     ? ENGINE_DATA_LABELS[market.engineDataStatus]
     : null;
-  const canClaimFees = market.status === "resolved" && market.creatorFeesEarned > 0;
+  const canClaimFees =
+    market.status === "resolved" &&
+    market.creatorFeesEarned !== null &&
+    market.creatorFeesEarned > 0;
   const canPublishOracleAttestation =
+    !(
+      onOraclePublication &&
+      (market.oracleOwnerKind === "imported" || market.oracle?.destinations)
+    ) &&
     (market.status === "active" ||
       market.status === "resolved" ||
       !!market.oracle?.chosenOutcome ||
@@ -78,6 +93,10 @@ export function CreatedMarketRow({
   return (
     <div
       data-created-market-id={market.id}
+      data-condition-id={market.id}
+      data-testid={
+        market.oracleOwnerKind === "imported" ? "creator-imported-oracle" : "creator-market"
+      }
       onClick={onView ? handleRowClick : undefined}
       onKeyDown={handleRowKeyDown}
       tabIndex={onView ? 0 : undefined}
@@ -107,16 +126,22 @@ export function CreatedMarketRow({
 
         {/* Market Info */}
         <div className="min-w-0 flex-1 basis-40 sm:basis-0">
-          <p className="truncate text-sm font-medium text-slate-900 dark:text-white">
+          <p
+            data-testid="creator-market-title"
+            className="truncate text-sm font-medium text-slate-900 dark:text-white"
+          >
             {market.title}
           </p>
+          {market.oracleOwnerKind === "imported" && (
+            <p className="text-xs text-slate-500">{t("oracleBackup.owner_imported")}</p>
+          )}
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
             <span
               className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLES[market.status]}`}
             >
               {t(`marketStatus.${market.status}`)}
             </span>
-            {market.volume > 0 && (
+            {market.volume !== null && market.volume > 0 && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
                 {t("portfolio.volLabel", {
                   value: formatMarketSubunits(market.volume, baseAsset),
@@ -163,12 +188,12 @@ export function CreatedMarketRow({
             regression. A non-zero value still renders so a future engine-side
             fee model surfaces without further UI work. */}
         <div className="shrink-0 text-right">
-          {market.creatorFeesEarned > 0 && (
+          {market.creatorFeesEarned !== null && market.creatorFeesEarned > 0 && (
             <div className="font-mono text-sm text-amber-600 dark:text-amber-400">
               <InlineAmount amountSubunits={market.creatorFeesEarned} baseAsset={baseAsset} />
             </div>
           )}
-          {market.creatorFeePercent > 0 && (
+          {market.creatorFeePercent !== null && market.creatorFeePercent > 0 && (
             <div className="text-xs text-slate-400 dark:text-slate-500">
               {market.creatorFeePercent}% fee
             </div>
@@ -228,6 +253,15 @@ export function CreatedMarketRow({
           </button>
         )}
       </div>
+      {onOraclePublication &&
+        (market.oracleOwnerKind === "imported" || market.oracle?.destinations) && (
+          <CreatorMarketActions
+            conditionId={market.id}
+            title={market.title}
+            onPublish={onOraclePublication}
+            publicationBusy={oraclePublicationBusy}
+          />
+        )}
     </div>
   );
 }

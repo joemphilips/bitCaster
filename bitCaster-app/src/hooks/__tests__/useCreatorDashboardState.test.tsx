@@ -21,6 +21,7 @@ vi.mock("@/lib/identityOps", () => ({
   resolveCreatorPubkey: (...args: unknown[]) => mockResolveCreatorPubkey(...args),
 }));
 
+import { creatorOracleMetadata } from "@/test/creatorOracleFixture";
 import { useCreatorDashboardState } from "../useCreatorDashboardState";
 
 const FAKE_PUBKEY = "a".repeat(64);
@@ -436,3 +437,84 @@ describe("useCreatorDashboardState", () => {
     });
   });
 });
+
+it("shows restored authority with absent economic facts without fabricating paid creation", async () => {
+  await useCreatorMarketsStore.getState().retainImportedOracleMetadata(creatorOracleMetadata);
+  await useCreatorMarketsStore
+    .getState()
+    .markOracleImportComplete(creatorOracleMetadata.binding.conditionId);
+  const { result } = renderHook(() => useCreatorDashboardState());
+  expect(result.current.markets).toHaveLength(1);
+  expect(result.current.markets[0]).toMatchObject({
+    id: creatorOracleMetadata.binding.conditionId,
+    oracleOwnerKind: "imported",
+    status: "unknown",
+    engineDataStatus: "unavailable",
+    volume: null,
+    createdDate: null,
+    creatorFeesEarned: null,
+    creatorFeePercent: null,
+  });
+  expect(useCreatorMarketsStore.getState().markets).toHaveLength(0);
+  expect(result.current.stats.activeMarketsCount).toBe(0);
+  expect(result.current.engineDataStatus).toBe("unavailable");
+});
+
+it.each(["current", "stale", "unavailable"] as const)(
+  "keeps imported unknown facts separate from %s paid aggregate freshness",
+  async (freshness) => {
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+    const local = {
+      conditionId: CONDITION_A,
+      title: "Paid market",
+      thumbnailUrl: null,
+      createdAt: "2026-04-10T00:00:00.000Z",
+      creatorFeePercent: 0,
+      baseAsset: "sat" as const,
+      divisibility: 1_000 as const,
+    };
+    await seedCreatorMarkets({ markets: [local] });
+    await useCreatorMarketsStore.getState().retainImportedOracleMetadata(creatorOracleMetadata);
+    await useCreatorMarketsStore
+      .getState()
+      .markOracleImportComplete(creatorOracleMetadata.binding.conditionId);
+    mockFetchCreatorMarkets.mockResolvedValueOnce({
+      pubkey: FAKE_PUBKEY,
+      markets:
+        freshness === "unavailable"
+          ? []
+          : [
+              {
+                conditionId: CONDITION_A,
+                totalVolumeSubunits: 10_000,
+                createdAt: local.createdAt,
+                state: "open",
+              },
+            ],
+    });
+    const { result } = renderHook(() => useCreatorDashboardState());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    if (freshness === "stale") {
+      mockFetchCreatorMarkets.mockRejectedValueOnce(new Error("offline"));
+      act(() => result.current.refresh());
+      await waitFor(() => expect(mockFetchCreatorMarkets).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+    }
+    expect(result.current.engineDataStatus).toBe(freshness);
+    expect(result.current.stats.totalVolumeSubunits).toBe(freshness === "unavailable" ? 0 : 10_000);
+    expect(
+      result.current.markets.find((market) => market.id === CONDITION_A)?.engineDataStatus,
+    ).toBe(freshness);
+    expect(
+      result.current.markets.find((market) => market.oracleOwnerKind === "imported"),
+    ).toMatchObject({
+      status: "unknown",
+      engineDataStatus: "unavailable",
+      volume: null,
+      creatorFeesEarned: null,
+      creatorFeePercent: null,
+      createdDate: null,
+    });
+    expect(useCreatorMarketsStore.getState().markets).toHaveLength(1);
+  },
+);
