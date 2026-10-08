@@ -870,7 +870,8 @@
     "statusPollError": "状態の取得に失敗しました",
     "imageRetentionMissing": "選択した画像がこのブラウザーに保存されていません。続行する前に、画像を選び直すか削除してください。",
     "imageRetentionFailed": "このブラウザーに画像を保存できませんでした。ブラウザーの保存機能を有効にして画像を選び直すか、続行する前に画像を削除してください。",
-    "imageRetentionInvalid": "サイズが 5 MiB 以下で、空ではない JPG、PNG、WebP 画像を選択してください。"
+    "imageRetentionInvalid": "サイズが 5 MiB 以下で、空ではない JPG、PNG、WebP 画像を選択してください。",
+    "creationImageMismatch": "登録済みマーケットの画像が、保存した作成内容と一致しません。この作成内容とブラウザーのデータを保持してください。再度支払ったり、代わりのマーケットを作成したりしないでください。画像の自動修復はできません。"
   },
   "filter": {
     "yesNo": "YES/NO",

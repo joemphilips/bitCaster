@@ -281,6 +281,26 @@ function parseMarketOutcomeDetails(
   })
 }
 
+/** The original attempt remains retained work. This error does not authorize another upload. */
+export class MarketCreationThumbnailMismatchError extends Error {
+  readonly code = 'thumbnail-presence-mismatch' as const
+
+  constructor() {
+    super(
+      'The registered market image does not match the retained creation. Keep the original attempt for recovery; do not pay again or create a replacement.',
+    )
+    this.name = 'MarketCreationThumbnailMismatchError'
+  }
+}
+
+export function assertMarketCreationThumbnailPresence(
+  result: CreateMarketResponse,
+  expected: boolean,
+): void {
+  const present = typeof result.thumbnailUrl === 'string' && result.thumbnailUrl.trim().length > 0
+  if (present !== expected) throw new MarketCreationThumbnailMismatchError()
+}
+
 export function recoverCreatedMarketResponse(
   value: unknown,
   expected: {
@@ -289,6 +309,8 @@ export function recoverCreatedMarketResponse(
     outcomes: readonly string[]
     baseAsset: MarketBaseAsset
     divisibility: number
+    /** Omit only when validating readability of a historical retained result. */
+    hasThumbnail?: boolean
   },
 ): CreateMarketResponse | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
@@ -311,7 +333,7 @@ export function recoverCreatedMarketResponse(
     !expected.outcomes.every((outcome) => actual.has(outcome))
   )
     return null
-  return parseCreateMarketResponse({
+  const result = parseCreateMarketResponse({
     conditionId: entry.conditionId,
     marketsCreated: entry.outcomes.map((outcome) => `${entry.conditionId}-${outcome}`),
     baseAsset: entry.baseAsset,
@@ -319,6 +341,9 @@ export function recoverCreatedMarketResponse(
     thumbnailUrl: entry.thumbnailUrl ?? null,
     ...(entry.outcomeDetails === undefined ? {} : { outcomeDetails: entry.outcomeDetails }),
   })
+  if (expected.hasThumbnail !== undefined)
+    assertMarketCreationThumbnailPresence(result, expected.hasThumbnail)
+  return result
 }
 
 export async function submitOracleAttestationViaEngine(

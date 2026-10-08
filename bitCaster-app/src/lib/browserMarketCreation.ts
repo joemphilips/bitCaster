@@ -40,7 +40,7 @@ export interface BrowserMarketCreationPointer {
   readonly creationId: string;
   readonly binding: MarketCreationBinding;
   readonly failure?: {
-    readonly code: "incomplete" | "payment-pending";
+    readonly code: "incomplete" | "payment-pending" | "thumbnail-presence-mismatch";
     readonly progress: "prepared" | "mint-confirmed" | "engine-confirmed";
     readonly dismissed: boolean;
   };

@@ -65,6 +65,11 @@ charge another registration fee. If a response is lost, the client checks
 the existing registration before it sends another request.
 A paid mint registration alone does not mean that the market is ready.
 
+If the registered image presence differs from the saved creation, the client
+refuses to report completion. Keep the saved creation and its local data.
+Do not pay again or create a replacement market. Automatic image repair is
+not available. Retrying keeps the original image and payment reference.
+
 CLI users can check and resume the same creation in the original daemon profile:
 
 ```bash

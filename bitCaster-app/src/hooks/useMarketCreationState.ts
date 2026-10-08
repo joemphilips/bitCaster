@@ -16,6 +16,7 @@ import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { requestBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
 import {
   MAX_MARKET_CREATION_OUTCOMES,
+  MarketCreationThumbnailMismatchError,
   assertMarketCreationMetadataSize,
   normalizeMarketCreationInput,
   type MarketCreationRecord,
@@ -180,7 +181,7 @@ function wizardMarketInput(draft: WizardDraft): MarketCreationInput {
 
 function rememberCreationFailure(
   record: MarketCreationRecord | null,
-  code: "incomplete" | "payment-pending",
+  code: NonNullable<BrowserMarketCreationPointer["failure"]>["code"],
 ) {
   let dismissed = false;
   useMarketDraftStore.getState().setDraft((previous) => {
@@ -206,12 +207,16 @@ function rememberCreationFailure(
   return dismissed;
 }
 
-function creationFailureMessage(code: "incomplete" | "payment-pending") {
+function creationFailureMessage(
+  code: NonNullable<BrowserMarketCreationPointer["failure"]>["code"],
+) {
   switch (code) {
     case "incomplete":
       return "marketCreation.creationIncompleteError";
     case "payment-pending":
       return "marketCreation.creationPaymentPending";
+    case "thumbnail-presence-mismatch":
+      return "marketCreation.creationImageMismatch";
   }
 }
 
@@ -828,6 +833,10 @@ export function useMarketCreationState() {
         setCreatedMarketDivisibility(snapshotDivisibility);
         setCreatedMarketConditionId(result.conditionId);
       } catch (error) {
+        const failureCode =
+          error instanceof MarketCreationThumbnailMismatchError
+            ? "thumbnail-presence-mismatch"
+            : "incomplete";
         const pointer = useMarketDraftStore.getState().draft.creation;
         if (pointer !== undefined) {
           let retained: MarketCreationRecord | null = null;
@@ -840,7 +849,7 @@ export function useMarketCreationState() {
           let dismissed = false;
           if (retained !== null || pointer.failure !== undefined) {
             try {
-              dismissed = rememberCreationFailure(retained, "incomplete");
+              dismissed = rememberCreationFailure(retained, failureCode);
             } catch {
               /* The retained creation still owns progress. */
             }
@@ -851,7 +860,7 @@ export function useMarketCreationState() {
                 error instanceof Error &&
                 /^(Market metadata|Market creation exceeds|Market thumbnail)/.test(error.message)
                 ? error.message
-                : t("marketCreation.creationIncompleteError"),
+                : t(creationFailureMessage(failureCode)),
             );
         } else
           setSubmitError(

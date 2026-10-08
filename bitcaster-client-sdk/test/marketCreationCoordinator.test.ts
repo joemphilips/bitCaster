@@ -11,11 +11,16 @@ import {
   type MarketCreationStore,
 } from '../src/index.ts'
 import {
+  assertCreatedResultMatches,
   completeDurableMarketCreation,
   readMarketCreationMintRegistration,
   type MarketCreationCoordinatorAdapters,
 } from '../src/marketCreationCoordinator.ts'
-import { CreateMarketError } from '../src/marketLifecycle.ts'
+import {
+  CreateMarketError,
+  MarketCreationThumbnailMismatchError,
+  parseCreateMarketResponse,
+} from '../src/marketLifecycle.ts'
 
 test('paid engine rejection and reload retain one fee operation and announcement identity', async () => {
   const fixture = createFixture()
@@ -171,6 +176,101 @@ test('only the protocol condition-not-found response proves mint absence', async
     await assert.rejects(lookup(response))
 })
 
+for (const missing of [null, undefined, '', '  ']) {
+  test(`fresh engine response with missing image (${JSON.stringify(missing)}) retains the paid attempt`, async () => {
+    const fixture = createFixture()
+    fixture.result.thumbnailUrl = missing
+    await assert.rejects(fixture.complete(), MarketCreationThumbnailMismatchError)
+    const retained = await fixture.store.read(fixture.preparation.creationId)
+    assert.equal(retained?.mintConfirmed, true)
+    assert.equal(retained?.engineResult, null)
+    assert.equal(retained?.thumbnail?.filename, 'original.png')
+    assert.deepEqual(Array.from(retained!.thumbnail!.data), [1, 2, 3])
+    const effects = [...fixture.effects]
+    await assert.rejects(fixture.complete(), { code: 'thumbnail-presence-mismatch' })
+    assert.deepEqual(fixture.effects, effects)
+    assert.equal(fixture.feeReferences.length, 1)
+  })
+}
+
+test('existing engine image mismatch refuses completion without registering a replacement', async () => {
+  const fixture = createFixture()
+  await fixture.store.reserve(fixture.preparation)
+  await fixture.store.confirmMint(fixture.preparation.creationId)
+  fixture.adapters.lookupEngine = async () => ({
+    ...fixture.result,
+    creatorPubkey: fixture.preparation.creatorId,
+    outcomes: ['Yes', 'No'],
+    thumbnailUrl: null,
+  })
+  await assert.rejects(fixture.complete(), { code: 'thumbnail-presence-mismatch' })
+  assert.deepEqual(fixture.effects, [])
+  assert.equal((await fixture.store.read(fixture.preparation.creationId))?.engineResult, null)
+})
+
+test('lost response recovery refuses a missing image without repeating payment or upload', async () => {
+  const fixture = createFixture()
+  let created = false
+  fixture.adapters.createEngine = async () => {
+    fixture.effects.push('engine')
+    created = true
+    throw new CreateMarketError('response lost', null, true)
+  }
+  fixture.adapters.lookupEngine = async () =>
+    created
+      ? {
+          ...fixture.result,
+          creatorPubkey: fixture.preparation.creatorId,
+          outcomes: ['Yes', 'No'],
+          thumbnailUrl: null,
+        }
+      : null
+  await assert.rejects(fixture.complete(), MarketCreationThumbnailMismatchError)
+  assert.equal((await fixture.store.read(fixture.preparation.creationId))?.mintConfirmed, true)
+  const effects = [...fixture.effects]
+  await assert.rejects(fixture.complete(), MarketCreationThumbnailMismatchError)
+  assert.deepEqual(fixture.effects, effects)
+  assert.equal(fixture.feeReferences.length, 1)
+})
+
+test('historical cached image mismatch stays readable but cannot return cached success', async () => {
+  const fixture = createFixture()
+  await fixture.store.reserve(fixture.preparation)
+  await fixture.store.confirmMint(fixture.preparation.creationId)
+  const historical = parseCreateMarketResponse({ ...fixture.result, thumbnailUrl: null })
+  // These are the shared validators used by browser and native record readers.
+  assert.doesNotThrow(() => assertCreatedResultMatches(historical, fixture.preparation))
+  await fixture.store.confirmEngine(fixture.preparation.creationId, historical)
+  const before = await fixture.store.read(fixture.preparation.creationId)
+  assert.equal(before?.engineResult?.thumbnailUrl, null)
+  fixture.adapters.confirmFee = async () => {
+    throw new Error('unexpected fee write')
+  }
+  fixture.adapters.store = {
+    ...fixture.store,
+    confirmMint: async () => {
+      throw new Error('unexpected mint write')
+    },
+    confirmEngine: async () => {
+      throw new Error('unexpected engine write')
+    },
+  }
+  await assert.rejects(fixture.complete(), MarketCreationThumbnailMismatchError)
+  assert.deepEqual(fixture.effects, [])
+  const after = await fixture.store.read(fixture.preparation.creationId)
+  assert.equal(after?.engineResult?.thumbnailUrl, null)
+  assert.equal(after?.thumbnail?.filename, 'original.png')
+  assert.deepEqual(Array.from(after!.thumbnail!.data), [1, 2, 3])
+})
+
+test('image-free creation still completes and accepts its cached result', async () => {
+  const fixture = createFixture(false)
+  assert.equal((await fixture.complete()).status, 'created')
+  const effects = [...fixture.effects]
+  assert.equal((await fixture.complete()).status, 'created')
+  assert.deepEqual(fixture.effects, effects)
+})
+
 function preparation(): MarketCreationPreparation {
   const walletId = deriveDurableCustodyWalletId(new Uint8Array(64).fill(0x11))
   const eventJson = JSON.stringify(
@@ -211,8 +311,11 @@ function preparation(): MarketCreationPreparation {
   })
 }
 
-function createFixture() {
-  const input = preparation()
+function createFixture(withThumbnail = true) {
+  const input = snapshotMarketCreationPreparation({
+    ...preparation(),
+    ...(withThumbnail ? {} : { thumbnail: null }),
+  })
   const rows = new Map<string, MarketCreationRecord>()
   const effects: string[] = [],
     feeReferences: string[] = [],
@@ -261,8 +364,10 @@ function createFixture() {
     ),
     baseAsset: 'sat' as const,
     divisibility: 1000 as const,
+    thumbnailUrl: (withThumbnail ? '/thumbnail' : null) as string | null | undefined,
   }
   const fixture = {
+    result,
     preparation: input,
     effects,
     feeReferences,

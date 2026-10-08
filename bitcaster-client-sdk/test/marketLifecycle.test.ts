@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { BitcasterEngineClient } from '../src/engineClient.ts'
 import {
   CreateMarketError,
+  MarketCreationThumbnailMismatchError,
   createMarketViaEngine,
   parseCreateMarketResponse,
   recoverCreatedMarketResponse,
@@ -49,6 +50,55 @@ test('creation recovery accepts only the exact creator, condition, outcome set, 
     { ...entry, divisibility: 10000 },
   ])
     assert.equal(recoverCreatedMarketResponse(changed, expected), null)
+})
+
+test('recovery checks declared image presence after matching registration identity', () => {
+  const expected = {
+    conditionId: 'condition',
+    creatorPubkey: 'creator',
+    outcomes: ['Yes', 'No'],
+    baseAsset: 'sat' as const,
+    divisibility: 1000,
+    hasThumbnail: true,
+  }
+  for (const thumbnailUrl of [undefined, null, '', '  ']) {
+    const entry = { ...expected, thumbnailUrl }
+    assert.throws(
+      () => recoverCreatedMarketResponse(entry, expected),
+      MarketCreationThumbnailMismatchError,
+    )
+    assert.equal(
+      recoverCreatedMarketResponse(entry, { ...expected, hasThumbnail: false })?.thumbnailUrl,
+      thumbnailUrl ?? null,
+    )
+  }
+  assert.equal(
+    recoverCreatedMarketResponse({ ...expected, thumbnailUrl: '/image' }, expected)?.thumbnailUrl,
+    '/image',
+  )
+  assert.throws(
+    () =>
+      recoverCreatedMarketResponse(
+        { ...expected, thumbnailUrl: '/image' },
+        { ...expected, hasThumbnail: false },
+      ),
+    MarketCreationThumbnailMismatchError,
+  )
+  assert.equal(
+    recoverCreatedMarketResponse(
+      { ...expected, creatorPubkey: 'other', thumbnailUrl: null },
+      expected,
+    ),
+    null,
+  )
+  // Historical record shape validation does not claim completion.
+  assert.notEqual(
+    recoverCreatedMarketResponse(
+      { ...expected, thumbnailUrl: null },
+      { ...expected, hasThumbnail: undefined },
+    ),
+    null,
+  )
 })
 
 test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized multipart bytes', async () => {

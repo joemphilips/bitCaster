@@ -121,7 +121,11 @@ vi.mock("@/lib/markets", async () => ({
         name: (thumbnail as File).name,
         bytes: new Uint8Array(await thumbnail.arrayBuffer()),
       });
-    return mockCreateMarket(conditionId, JSON.parse(String(form.get("metadata"))));
+    return mockCreateMarket(
+      conditionId,
+      JSON.parse(String(form.get("metadata"))),
+      form.get("thumbnail"),
+    );
   },
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
@@ -335,14 +339,14 @@ beforeEach(async () => {
     keysets: { Yes: "ks1", No: "ks2" },
   }));
   mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000);
-  mockCreateMarket.mockImplementation(async (_id, metadata) => ({
+  mockCreateMarket.mockImplementation(async (_id, metadata, thumbnail) => ({
     conditionId: runtime.conditionId,
     baseAsset: "sat",
     marketsCreated: metadata.outcomes.map(
       (outcome: { name: string }) => `${runtime.conditionId}-${outcome.name}`,
     ),
     outcomeDetails: metadata.outcomes,
-    thumbnailUrl: null,
+    thumbnailUrl: thumbnail ? "/original-thumbnail" : null,
     divisibility: 1_000,
   }));
   mockFetchMarketRegistrationForRecovery.mockResolvedValue(null);
@@ -474,7 +478,7 @@ function registrationMarket(
     ],
     baseAsset: "sat",
     divisibility: 1_000,
-    thumbnailUrl: "/api/v1/test-cond-id/thumbnail",
+    thumbnailUrl: null,
     ...overrides,
   };
 }
@@ -654,6 +658,58 @@ describe("preparation-independent draft image", () => {
 });
 
 describe("durable browser market creation", () => {
+  it("retains a paid image mismatch and restores specific translated guidance after reload", async () => {
+    const result = await beginPaidCreation();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1, 2, 3])], "original.png", { type: "image/png" }),
+      ),
+    );
+    mockCreateMarket.mockResolvedValueOnce({
+      conditionId,
+      baseAsset: "sat",
+      divisibility: 1000,
+      marketsCreated: [`${conditionId}-Yes`, `${conditionId}-No`],
+      thumbnailUrl: null,
+    });
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+    expect(useMarketDraftStore.getState().draft.creation?.failure?.code).toBe(
+      "thumbnail-presence-mismatch",
+    );
+    const creationId = useMarketDraftStore.getState().draft.creation!.creationId;
+    const retained = await runtime.database.marketCreations.get([walletScopeId, creationId]);
+    expect(retained.mintConfirmed).toBe(true);
+    expect(retained.thumbnail?.filename).toBe("original.png");
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+    mockFetchMarketRegistrationForRecovery.mockResolvedValue(registrationMarket());
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBeNull();
+    expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(
+      (await runtime.database.marketCreations.get([walletScopeId, creationId])).thumbnail,
+    ).toEqual(retained.thumbnail);
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(reloaded.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+      expect(reloaded.current.submitError).toContain("画像の自動修復はできません");
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+  });
+
   it("resumes a paid engine 401 after a cold read with the original thumbnail and one announcement", async () => {
     const result = await beginPaidCreation();
     const bytes = new Uint8Array(2 * 1024 * 1024).fill(0x7a);
@@ -1533,6 +1589,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
   it("adopts a matching committed market after a lost create response", async () => {
     await useCreatorMarketsStore.getState().clear();
     const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([4, 5])], "persisted.png", { type: "image/png" }),
+      ),
+    );
     const originalError = new CreateMarketError("connection was lost", null, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
     mockFetchMarketRegistrationForRecovery.mockResolvedValueOnce(null).mockResolvedValueOnce(

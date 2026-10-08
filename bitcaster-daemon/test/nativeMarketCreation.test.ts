@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { finalizeEvent } from 'nostr-tools/pure'
 import { bytesToHex } from '@noble/curves/utils.js'
@@ -23,6 +24,7 @@ import {
 import {
   BitcasterEngineClient,
   EngineClientError,
+  MarketCreationThumbnailMismatchError,
   defaultMarketDivisibility,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
@@ -368,6 +370,77 @@ test('paid engine failure survives a cold SQLite read and resumes the original t
   })
 })
 
+test('historical image mismatch survives cold SQLite read but native resume refuses without new effects', async () => {
+  const data = new Uint8Array([1, 2, 3])
+  const expectedHash = createHash('sha256').update(data).digest('hex')
+  const input: NativeMarketCreationInput = {
+    ...creationInput('historical-image-mismatch', binaryMarket()),
+    registration: { requiredFeeMsat: 7 },
+    destination: {
+      ...creationInput('unused', binaryMarket()).destination,
+      thumbnailSha256: expectedHash,
+      thumbnailFilename: 'original.png',
+      thumbnailContentType: 'image/png',
+    },
+  }
+  await withFixture(input, async (fixture) => {
+    fixture.failEngineCreateBeforeCommit()
+    await assert.rejects(
+      completeNativeMarketCreation(fixture.dependencies, input, {
+        maxWalletDebitMsat: 7,
+        thumbnail: { data, filename: 'original.png', contentType: 'image/png' },
+      }),
+      /Failed to create market/,
+    )
+    // Write the historical result through the real store's existing compatibility validator.
+    const saved = (await fixture.store.readCreation(input.creationId))!
+    await fixture.store.confirmMarketCreationEngine(input.creationId, {
+      conditionId: saved.announcement!.conditionId,
+      baseAsset: 'sat',
+      divisibility: 1000,
+      marketsCreated: input.market.outcomeDetails.map(
+        ({ name }) => `${saved.announcement!.conditionId}-${name}`,
+      ),
+      thumbnailUrl: null,
+    })
+    const reopened = createNativeOracleCreationStore(fixture.directory)
+    const before = (await reopened.readCreation(input.creationId))!
+    assert.equal(before.marketCreation?.engineResult?.thumbnailUrl, null)
+    assert.equal(before.marketCreation?.mintConfirmed, true)
+    assert.equal(
+      createHash('sha256').update(before.marketCreation!.thumbnail!.data).digest('hex'),
+      expectedHash,
+    )
+    const counts = {
+      engine: fixture.engineStats(),
+      wallet: fixture.paymentWalletStats(),
+      mint: fixture.mintRequests().length,
+      published: fixture.publishedEvents().length,
+      helper: fixture.helperCreateCount(),
+      uploads: fixture.engineThumbnails().length,
+    }
+    await assert.rejects(
+      completeNativeMarketCreation(fixture.dependenciesAfterRestart(), input),
+      MarketCreationThumbnailMismatchError,
+    )
+    assert.deepEqual(
+      {
+        engine: fixture.engineStats(),
+        wallet: fixture.paymentWalletStats(),
+        mint: fixture.mintRequests().length,
+        published: fixture.publishedEvents().length,
+        helper: fixture.helperCreateCount(),
+        uploads: fixture.engineThumbnails().length,
+      },
+      counts,
+    )
+    const after = await createNativeOracleCreationStore(fixture.directory).readCreation(
+      input.creationId,
+    )
+    assert.ok(isDeepStrictEqual(after, before), 'Retained native creation changed during refusal.')
+  })
+})
+
 test('lost paid engine response and lookup survive cold SQLite resume without another delivery', async () => {
   const input: NativeMarketCreationInput = {
     ...creationInput('paid-engine-lost-response', categoricalMarket()),
@@ -612,7 +685,10 @@ function createFixture(
         return new Response('fresh authentication required', { status: 401 })
       }
       const conditionId = decodeURIComponent(url.pathname.slice('/api/v1/markets/'.length))
-      const createdMarket = marketRecord(conditionId, input.market)
+      const createdMarket = {
+        ...marketRecord(conditionId, input.market),
+        thumbnailUrl: thumbnail instanceof Blob ? '/original-thumbnail' : null,
+      }
       storedEngineMarket = createdMarket
       if (engineCreateUncertain) {
         engineCreateUncertain = false
@@ -627,6 +703,7 @@ function createFixture(
         marketsCreated: outcomes.map((outcome) => `${conditionId}-${outcome}`),
         baseAsset: input.market.baseAsset,
         divisibility: defaultMarketDivisibility(input.market.baseAsset),
+        thumbnailUrl: createdMarket.thumbnailUrl,
       })
     }
     throw new Error(`Unexpected mocked engine request: ${url.pathname}`)
