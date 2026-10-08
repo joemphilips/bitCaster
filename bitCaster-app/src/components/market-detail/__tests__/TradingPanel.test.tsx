@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -1275,6 +1275,96 @@ describe("TradingPanel", () => {
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();
+  });
+
+  it.each(["loading", "fees"] as const)(
+    "retains an opened fee disclosure across %s refresh",
+    async (transition) => {
+      const user = userEvent.setup();
+      const props = {
+        market: makeMarket({
+          baseAsset: "sat",
+          baseUnit: "sats",
+          divisibility: 1_000,
+        }),
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 50,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        tradeSide: "Buy" as const,
+        tradePreview: readyPreview(),
+        onTradeConfirm: vi.fn(),
+      };
+      const { rerender } = render(<TradingPanel {...props} />);
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      expect(screen.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      rerender(
+        <TradingPanel
+          {...props}
+          tradePreview={transition === "loading" ? loadingPreview() : props.tradePreview}
+          tradeFeeFacts={transition === "fees" ? null : props.tradeFeeFacts}
+          feeConsentCurrent={false}
+        />,
+      );
+      expect(screen.queryByTestId("trade-fee-breakdown")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      rerender(
+        <TradingPanel {...props} tradeFeeFacts={feeFacts({ consolidationFeeSubunits: "7" })} />,
+      );
+      expect(screen.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("0.007 sats");
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      rerender(<TradingPanel {...props} tradePreview={loadingPreview()} />);
+      rerender(<TradingPanel {...props} />);
+      expect(screen.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      rerender(<TradingPanel {...props} tradeSelection={{ side: "no" }} />);
+      expect(screen.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+    },
+  );
+
+  it("keeps disclosure preferences local to each panel and resets them for a new trade context", async () => {
+    const user = userEvent.setup();
+    const props = {
+      market: makeMarket({
+        baseAsset: "sat",
+        baseUnit: "sats",
+        divisibility: 1_000,
+      }),
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 50,
+      tradeSide: "Buy" as const,
+      tradeFeeFacts: feeFacts(),
+      feeConsentCurrent: true,
+      tradePreview: readyPreview(),
+    };
+    const view = (changed: Partial<ComponentProps<typeof TradingPanel>> = {}) => (
+      <>
+        <section data-testid="first-panel">
+          <TradingPanel {...props} {...changed} />
+        </section>
+        <section data-testid="second-panel">
+          <TradingPanel {...props} />
+        </section>
+      </>
+    );
+    const { rerender } = render(view());
+    const first = within(screen.getByTestId("first-panel"));
+    const second = within(screen.getByTestId("second-panel"));
+    for (const change of [
+      { market: { ...props.market, id: "another-market" } },
+      { tradeTab: "Sell" as const },
+      {
+        tradeSelection: { side: "yes" as const, outcomeId: "another-outcome" },
+      },
+    ]) {
+      rerender(view());
+      await user.click(first.getByTestId("trade-fee-summary"));
+      expect(first.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      expect(second.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+      rerender(view(change));
+      expect(first.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+    }
   });
 
   it("formats exact msat quote and fee facts as display sats", () => {

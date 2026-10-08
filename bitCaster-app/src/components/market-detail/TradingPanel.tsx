@@ -502,10 +502,14 @@ function TradeFeeBreakdown({
   feeFacts,
   divisibility,
   testIdPrefix = "trade",
+  open,
+  onOpenChange,
 }: {
   feeFacts: TradeFeeFacts;
   divisibility: number;
   testIdPrefix?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const feeTotals = summarizeCtfRangeOrderFees(feeFacts);
@@ -531,7 +535,12 @@ function TradeFeeBreakdown({
     ],
   ] as const;
   return (
-    <details data-testid={`${testIdPrefix}-fee-breakdown`} className="mt-2 text-sm">
+    <details
+      data-testid={`${testIdPrefix}-fee-breakdown`}
+      className="mt-2 text-sm"
+      open={open}
+      onToggle={onOpenChange ? (event) => onOpenChange(event.currentTarget.open) : undefined}
+    >
       <summary data-testid={`${testIdPrefix}-fee-summary`} className="cursor-pointer break-words">
         {t("trade.fees")}:{" "}
         {feeTotals.map((fee, index) => (
@@ -620,6 +629,7 @@ function FokOrderPreviewSection({
   isComplement: boolean;
 }) {
   const { t } = useTranslation();
+  const [feesOpen, setFeesOpen] = useState(false);
   if (preview == null || preview.status === "idle") {
     const message = discoveryMessage(capacityPreview, isSell);
     return message === null ? null : (
@@ -812,7 +822,12 @@ function FokOrderPreviewSection({
         </button>
         {feeFacts != null ? (
           <>
-            <TradeFeeBreakdown feeFacts={feeFacts} divisibility={divisibility} />
+            <TradeFeeBreakdown
+              feeFacts={feeFacts}
+              divisibility={divisibility}
+              open={feesOpen}
+              onOpenChange={setFeesOpen}
+            />
             {buyTotal != null && (
               <div className="mt-2 flex justify-between gap-2 font-medium">
                 <span className="text-slate-700 dark:text-slate-300">
@@ -1303,6 +1318,12 @@ export function TradingPanel({
           {/* The engine preview is authoritative for both market and limit FOK. */}
           {tradeAmount > 0 && (
             <FokOrderPreviewSection
+              key={JSON.stringify([
+                market.id,
+                activeTradeSide,
+                tradeSelection?.outcomeId,
+                tradeSelection?.side,
+              ])}
               preview={tradePreview}
               capacityPreview={tradeCapacityPreview}
               divisibility={divisibility}
