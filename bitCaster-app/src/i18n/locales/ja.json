@@ -45,6 +45,8 @@
     "retry": "再試行"
   },
   "nav": {
+    "goToMainnet": "メインネットへ",
+    "goToTestnet": "テストネットへ",
     "markets": "マーケット",
     "searchMarkets": "マーケットを検索...",
     "portfolio": "ポートフォリオ",

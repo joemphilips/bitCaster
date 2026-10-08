@@ -206,6 +206,13 @@ Retrying does not guarantee that unresolved work or an unpaid invoice is cleared
 The local wallet keeps its funds and unfinished work while recovery is incomplete.
 Do not delete wallet data or start another payment to bypass the pause.
 
+## Switch between environments
+
+When configured, the user menu includes **Go to testnet** or **Go to mainnet**.
+The link opens the other environment in a new tab. It does not transfer your
+wallet, keys, login state, or backups. Each environment keeps its own browser
+state. If no destination is configured, the menu has no environment link.
+
 ## Find a market
 
 Use search, tags, and filters on the market list. The controls stay available

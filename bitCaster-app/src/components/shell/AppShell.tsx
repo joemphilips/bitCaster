@@ -6,6 +6,7 @@ import { MainNav } from "./MainNav";
 import { UserMenu } from "./UserMenu";
 import { NotificationBell } from "./NotificationBell";
 import { BitCasterLogo } from "./BitCasterLogo";
+import { EnvironmentLink } from "./EnvironmentLink";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 
 export interface AppShellProps {
@@ -58,7 +59,6 @@ export function AppShell({
             <button onClick={() => onNavigate?.("/")} className="flex-shrink-0">
               <h1 className="text-xl md:text-2xl text-blue-600 dark:text-blue-400 flex items-center">
                 <BitCasterLogo className="h-7 md:h-8 w-auto" />
-                <span className="sr-only">bitCaster (beta)</span>
               </h1>
             </button>
 
@@ -92,7 +92,6 @@ export function AppShell({
           <button onClick={() => onNavigate?.("/")} className="flex-shrink-0">
             <h1 className="text-xl text-blue-600 dark:text-blue-400 flex items-center">
               <BitCasterLogo className="h-6 w-auto" />
-              <span className="sr-only">bitCaster (beta)</span>
             </h1>
           </button>
         </div>
@@ -227,6 +226,11 @@ export function AppShell({
             >
               {t("nav.settings")}
             </button>
+
+            <EnvironmentLink
+              onClick={() => setMobileUserMenuOpen(false)}
+              className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3 flex items-center gap-2"
+            />
 
             {/* Language selector */}
             <div className="py-2 border-t border-slate-200 dark:border-slate-700">

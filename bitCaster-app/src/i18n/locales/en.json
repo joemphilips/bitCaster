@@ -45,6 +45,8 @@
     "retry": "Retry"
   },
   "nav": {
+    "goToMainnet": "Go to mainnet",
+    "goToTestnet": "Go to testnet",
     "markets": "Markets",
     "searchMarkets": "Search markets...",
     "portfolio": "Portfolio",

@@ -81,6 +81,17 @@ Build for production:
 npm run build                 # output in dist/
 ```
 
+For an environment switch in the user menu, set these values before the build:
+
+- `VITE_BITCASTER_ENVIRONMENT`: `mainnet` or `testnet` for this deployment.
+- `VITE_ALTERNATE_ORIGIN`: the approved HTTPS origin of the other deployment.
+
+Use only an origin, with no credentials, path, query, or fragment. The target
+must differ from the current origin. Missing or invalid settings hide the link.
+Keep both values empty for local development. The frontend server does not
+inject these settings at runtime. Rebuild after changing them.
+The link opens the other deployment without transferring wallet or login state.
+
 ### 3. Matching Engine Server
 
 ```bash
