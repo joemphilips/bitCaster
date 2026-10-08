@@ -249,7 +249,8 @@ liquidity.
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 
 Chart comment bubbles point to the time and price of the associated confirmed
-trade. Hover over, focus, or tap a bubble to read the comment. A comment stays
+trade. The pointer stays on that trade when new prices arrive or the chart
+size changes. Hover over, focus, or tap a bubble to read the comment. A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
 

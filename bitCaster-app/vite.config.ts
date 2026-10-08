@@ -69,6 +69,22 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Split chart code from the entry to retain the per-asset precache limit.
+          // Both chunks stay in the static module graph and match the precache glob.
+          if (
+            id.includes("/node_modules/chart.js/") ||
+            id.includes("/node_modules/@kurkle/color/")
+          ) {
+            return "chart";
+          }
+        },
+      },
+    },
+  },
   resolve: {
     alias: [
       { find: "@", replacement: "/src" },

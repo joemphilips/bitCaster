@@ -26,6 +26,7 @@
     "@nostr-dev-kit/ndk": "3.0.3",
     "@nostr-dev-kit/ndk-wallet": "^0.3.8",
     "@scure/bip39": "^2.2.0",
+    "chart.js": "4.5.1",
     "compression": "^1.8.1",
     "dexie": "^4.4.4",
     "dexie-react-hooks": "^4.4.0",
@@ -42,7 +43,6 @@
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.8",
     "react-router": "^8.0.1",
-    "uplot": "^1.6.32",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

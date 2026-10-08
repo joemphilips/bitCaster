@@ -6,6 +6,7 @@ import type {} from "@vitest/browser-playwright";
 import "@/index.css";
 import i18n from "@/i18n";
 import { PriceChart } from "../PriceChart";
+import { installCanvasObserver } from "./priceChartCanvasObserver";
 import {
   appendFixture,
   makeFixture,
@@ -20,7 +21,8 @@ import {
 vi.mock("@/lib/nostr", () => ({ fetchPublicNostrProfile: vi.fn(async () => null) }));
 
 declare const __P8_CHART_BENCHMARK__: {
-  renderer: "uplot" | "recharts";
+  renderer: "uplot" | "chartjs";
+  buildMode: "vite-served-production-react" | "vite-served-development-react";
   repetitions: number;
   warmups: number;
   updates: number;
@@ -30,6 +32,7 @@ declare const __P8_CHART_BENCHMARK__: {
     runMode: "diagnostic" | "measurement";
     stageLogging: boolean;
     profileEnabled: boolean;
+    profileStage: string | null;
     profileDurationMs: number;
     profilePath: string | null;
   };
@@ -54,6 +57,8 @@ declare module "vitest/browser" {
 const options = __P8_CHART_BENCHMARK__;
 async function stage(message: string) {
   if (options.diagnostics.stageLogging) await commands.recordChartStage(message);
+  if (options.diagnostics.profileEnabled && options.diagnostics.profileStage === message)
+    await commands.startChartProfile();
 }
 console.log(`[p8-chart] module loaded; mode=${options.diagnostics.runMode}`);
 const markerSelector = '[data-testid="price-chart-comment-marker"]';
@@ -91,31 +96,37 @@ async function memory(): Promise<MemorySample> {
   await cdp().send("HeapProfiler.collectGarbage");
   return { heap: await heapUsage(), dom: await domCounters() };
 }
-function svgRectangle(rect: SVGRectElement): Rectangle {
-  const matrix = rect.getScreenCTM();
-  if (!matrix) throw new Error("SVG plot rectangle has no screen transform");
-  const box = rect.getBBox();
-  const a = new DOMPoint(box.x, box.y).matrixTransform(matrix);
-  const b = new DOMPoint(box.x + box.width, box.y + box.height).matrixTransform(matrix);
-  return { left: a.x, top: a.y, width: b.x - a.x, height: b.y - a.y };
-}
+const canvasObservers = new WeakMap<HTMLElement, ReturnType<typeof installCanvasObserver>>();
 function plotRectangle(host: HTMLElement): Rectangle | null {
   if (options.renderer === "uplot") {
     const over = host.querySelector<HTMLElement>(".u-over");
     return over?.getBoundingClientRect() ?? null;
   }
-  // Renderer adapter only: read the rendered clipping rectangle, never a
-  // production scale hook or separately exported anchor/layout coordinates.
-  const rect = host.querySelector<SVGRectElement>(".recharts-surface clipPath rect");
-  return rect ? svgRectangle(rect) : null;
+  // Observe the actual series clip. Do not read the production scale or a
+  // separately exported layout attribute to establish the expected position.
+  return canvasObservers.get(host)?.snapshot().plot ?? null;
 }
 function observeRendererDraws(host: HTMLElement, fixture: Fixture) {
+  const colors = fixture.props.outcomes?.map((outcome) => outcome.color ?? "#3b82f6") ?? [
+    "#3b82f6",
+  ];
+  if (options.renderer === "chartjs") {
+    const observer = installCanvasObserver(host, { geometry: false, colors });
+    canvasObservers.set(host, observer);
+    return {
+      revision: () => observer.snapshot().revision,
+      hasDrawing: () => observer.snapshot().draws.length > 0,
+      pruneDetached: () => {
+        observer.snapshot();
+      },
+      close: () => {
+        observer.restore();
+        canvasObservers.delete(host);
+      },
+    };
+  }
   let revision = 0;
-  // Instrument real output without replacing renderer behavior or reading every
-  // point. Only line-colored strokes in this test's canvas count as a draw.
-  const colors = new Set(
-    fixture.props.outcomes?.map((outcome) => outcome.color?.toLowerCase()) ?? ["#3b82f6"],
-  );
+  const lineColors = new Set(colors.map((color) => color.toLowerCase()));
   const original = CanvasRenderingContext2D.prototype.stroke;
   const observedStroke: typeof original = function (
     this: CanvasRenderingContext2D,
@@ -125,48 +136,17 @@ function observeRendererDraws(host: HTMLElement, fixture: Fixture) {
     if (
       host.contains(this.canvas) &&
       typeof this.strokeStyle === "string" &&
-      colors.has(this.strokeStyle.toLowerCase())
+      lineColors.has(this.strokeStyle.toLowerCase())
     )
       revision++;
   };
-  if (options.renderer === "uplot") CanvasRenderingContext2D.prototype.stroke = observedStroke;
-  const observer = new MutationObserver((records) => {
-    if (
-      records.some(
-        (record) =>
-          record.type === "attributes" &&
-          record.attributeName === "d" &&
-          record.target instanceof SVGPathElement &&
-          record.target.classList.contains("recharts-line-curve"),
-      )
-    )
-      revision++;
-    if (
-      records.some(
-        (record) =>
-          record.type === "childList" &&
-          [...record.addedNodes].some(
-            (node) =>
-              node instanceof Element &&
-              (node.matches(".recharts-line-curve[d]") ||
-                node.querySelector(".recharts-line-curve[d]")),
-          ),
-      )
-    )
-      revision++;
-  });
-  if (options.renderer === "recharts")
-    observer.observe(host, {
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["d"],
-      childList: true,
-    });
+  CanvasRenderingContext2D.prototype.stroke = observedStroke;
   return {
     revision: () => revision,
+    hasDrawing: () => revision > 0,
+    pruneDetached: () => {},
     close: () => {
-      observer.disconnect();
-      if (options.renderer === "uplot") CanvasRenderingContext2D.prototype.stroke = original;
+      CanvasRenderingContext2D.prototype.stroke = original;
     },
   };
 }
@@ -193,21 +173,55 @@ async function ready(
       : "";
     const valid =
       committed() &&
+      draws.hasDrawing() &&
       box &&
       box.width > 0 &&
       box.height > 0 &&
       (afterRevision === undefined || draws.revision() > afterRevision) &&
       markers.length === 40 &&
       tails.length === 40 &&
-      markers.every((marker) => marker.getBoundingClientRect().width > 0) &&
+      markers.every(
+        (marker) =>
+          marker.getBoundingClientRect().width > 0 &&
+          marker.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+      ) &&
       tails.every((tail) => !/NaN|Infinity/.test(tail.getAttribute("d") ?? "NaN")) &&
-      (!cardOpen || host.querySelector(cardSelector));
+      (!cardOpen ||
+        host.querySelector(cardSelector)?.checkVisibility({
+          opacityProperty: true,
+          visibilityProperty: true,
+        }));
     stableFrames = valid && signature === previous ? stableFrames + 1 : 0;
     previous = signature;
     if (stableFrames >= 2) return;
   }
+  const failedTails = [
+    ...host.querySelectorAll<SVGPathElement>('[data-testid="price-chart-comment-tail"]'),
+  ];
+  const failedMarkers = [...host.querySelectorAll<HTMLElement>(markerSelector)];
   throw new Error(
-    `${options.renderer} readiness failed: draws=${draws.revision()}, requiredAfter=${afterRevision}, markers=${host.querySelectorAll(markerSelector).length}, card=${Boolean(host.querySelector(cardSelector))}`,
+    `${options.renderer} readiness failed: ${JSON.stringify({
+      draws: draws.revision(),
+      requiredAfter: afterRevision,
+      stableFrames,
+      committed: committed(),
+      plot: plotRectangle(host),
+      markers: failedMarkers.length,
+      zeroWidthMarkers: failedMarkers.filter((marker) => marker.getBoundingClientRect().width <= 0)
+        .length,
+      hiddenMarkers: failedMarkers.filter(
+        (marker) =>
+          !marker.checkVisibility({
+            opacityProperty: true,
+            visibilityProperty: true,
+          }),
+      ).length,
+      tails: failedTails.length,
+      invalidTails: failedTails.filter((tail) =>
+        /NaN|Infinity/.test(tail.getAttribute("d") ?? "NaN"),
+      ).length,
+      card: Boolean(host.querySelector(cardSelector)),
+    })}`,
   );
 }
 function geometry(host: HTMLElement, fixture: Fixture, phase: string): Geometry {
@@ -330,6 +344,8 @@ async function sample(workload: Workload): Promise<Sample> {
     host.remove();
     await nextFrame();
     await nextFrame();
+    // Drop test-observer references to detached contexts before measuring cleanup.
+    draws.pruneDetached();
     await stage(`${workload.name}: after unmount; before unmounted GC`);
     const unmounted = await memory();
     await stage(`${workload.name}: after unmounted GC`);
@@ -381,7 +397,7 @@ it("records the real chart renderer on fixed P8 workloads", async () => {
   const startedAt = new Date().toISOString();
   let failure: string | null = null;
   try {
-    await commands.startChartProfile();
+    if (options.diagnostics.profileStage === null) await commands.startChartProfile();
     for (const workload of WORKLOADS) {
       currentWorkload = workload.name;
       for (let warmup = 0; warmup < options.warmups; warmup++) {
@@ -434,7 +450,7 @@ it("records the real chart renderer on fixed P8 workloads", async () => {
     await commands.finishChartProfile();
   }
   await stage("test complete");
-  if (options.renderer === "recharts") {
+  if (options.renderer === "chartjs") {
     for (const row of rows)
       for (const measurement of row.samples)
         for (const check of measurement.geometry) {

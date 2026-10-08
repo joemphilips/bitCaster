@@ -15,11 +15,15 @@ function boundedInteger(name: string, fallback: number, maximum: number) {
   if (!/^\d+$/.test(value) || Number(value) > maximum) throw new Error(`Invalid ${name}`);
   return Number(value);
 }
-const renderer = process.env.P8_CHART_RENDERER ?? "uplot";
-if (renderer !== "uplot" && renderer !== "recharts") throw new Error("Invalid P8_CHART_RENDERER");
+const renderer = process.env.P8_CHART_RENDERER ?? "chartjs";
+if (renderer !== "uplot" && renderer !== "chartjs") throw new Error("Invalid P8_CHART_RENDERER");
 const profileFlag = process.env.P8_CHART_PROFILE ?? "0";
 if (profileFlag !== "0" && profileFlag !== "1") throw new Error("Invalid P8_CHART_PROFILE");
 const profileEnabled = profileFlag === "1";
+const productionReact = process.env.NODE_ENV === "production";
+const profileStage = process.env.P8_CHART_PROFILE_STAGE ?? null;
+if (profileStage !== null && (!profileEnabled || profileStage.length > 300))
+  throw new Error("P8_CHART_PROFILE_STAGE requires profiling and a bounded stage name");
 const repetitions = boundedInteger("P8_CHART_REPETITIONS", 5, 20);
 if (repetitions < 1) throw new Error("P8_CHART_REPETITIONS must be positive");
 const warmups = boundedInteger("P8_CHART_WARMUPS", 1, 5);
@@ -46,16 +50,28 @@ const hashFiles = (files: string[]) => {
   for (const file of files) hash.update(file).update(readFileSync(resolve(file)));
   return hash.digest("hex");
 };
-const sourceFiles = ["src/components/market-detail/PriceChart.tsx", "src/lib/priceHistory.ts"];
+const sourceFiles = [
+  "src/components/market-detail/PriceChart.tsx",
+  "src/lib/priceHistory.ts",
+  ...(renderer === "chartjs"
+    ? [
+        "src/components/market-detail/PriceChartAnnotations.tsx",
+        "src/components/market-detail/PriceChartCanvas.tsx",
+        "src/components/market-detail/priceChartModel.ts",
+      ]
+    : []),
+];
 const harnessFiles = [
   "vitest.chart.config.ts",
   "src/components/market-detail/__tests__/PriceChart.benchmark.ts",
   "src/components/market-detail/__tests__/priceChartBenchmarkFixtures.ts",
+  "src/components/market-detail/__tests__/priceChartCanvasObserver.ts",
+  "src/components/market-detail/__tests__/priceChartCanvasObserver.install.js",
 ];
 const packages = Object.fromEntries(
   [renderer, "react", "vitest", "@vitest/browser-playwright", "playwright"].map((name) => [
     name,
-    packageVersion(name),
+    packageVersion(name === "chartjs" ? "chart.js" : name),
   ]),
 );
 const reportPath = resolve(
@@ -69,11 +85,15 @@ let profileFinished: Promise<string | null> | undefined;
 export default mergeConfig(
   viteConfig,
   defineConfig({
+    cacheDir: `node_modules/.vite-chart-${productionReact ? "production" : "development"}`,
     server: { host: "127.0.0.1" },
     optimizeDeps: { include: ["react-dom/client"] },
     define: {
       __P8_CHART_BENCHMARK__: JSON.stringify({
         renderer,
+        buildMode: productionReact
+          ? "vite-served-production-react"
+          : "vite-served-development-react",
         repetitions,
         warmups,
         updates,
@@ -83,6 +103,7 @@ export default mergeConfig(
           runMode: profileEnabled ? "diagnostic" : "measurement",
           stageLogging: true,
           profileEnabled,
+          profileStage,
           profileDurationMs,
           profilePath: profileEnabled ? profilePath : null,
         },
