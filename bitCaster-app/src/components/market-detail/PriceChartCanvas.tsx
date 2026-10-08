@@ -16,7 +16,7 @@ type Domain = { min: number; max: number };
 type Input = {
   series: readonly Series[];
   domain: Domain;
-  formatTime: (timestamp: number) => string;
+  formatTime: (timestamp: number, tickValues?: readonly number[]) => string;
 };
 export type PriceChartRender = Input & {
   chart: PriceCanvasChart;
@@ -27,7 +27,7 @@ type PriceDataset = ChartDataset<"line", ChartPoint[]> & {
   seriesId: string;
   pieceIndex: number;
 };
-type Props = Input & { onRender: (render: PriceChartRender) => void };
+type Props = Input & { height: number; onRender: (render: PriceChartRender) => void };
 
 function datasetsFor(series: readonly Series[], cache: Map<string, PriceDataset>): PriceDataset[] {
   const datasets: PriceDataset[] = [];
@@ -79,7 +79,12 @@ export const PriceChartCanvas = memo(function PriceChartCanvas({
   domain,
   formatTime,
   onRender,
+  height,
 }: Props) {
+  const resizeHeightRef = useRef<((height: number) => void) | null>(null);
+  useLayoutEffect(() => {
+    resizeHeightRef.current?.(height);
+  }, [height]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const input = useMemo(() => ({ series, domain, formatTime }), [series, domain, formatTime]);
   const inputRef = useRef(input);
@@ -128,7 +133,12 @@ export const PriceChartCanvas = memo(function PriceChartCanvas({
               font: { size: 10 },
               maxRotation: 0,
               maxTicksLimit: 5,
-              callback: (value) => applied.formatTime(Number(value)),
+              autoSkipPadding: 12,
+              callback: (value, _index, ticks) =>
+                applied.formatTime(
+                  Number(value),
+                  ticks.map((tick) => tick.value),
+                ),
             },
           },
           y: {
@@ -171,6 +181,9 @@ export const PriceChartCanvas = memo(function PriceChartCanvas({
       chart.options.scales!.x!.max = next.domain.max;
       chart.update("none");
     };
+    resizeHeightRef.current = (nextHeight) => {
+      if (active && chart.height !== nextHeight) chart.resize(chart.width, nextHeight);
+    };
     const resize = () => {
       if (!active) return;
       const width = Math.max(1, container.clientWidth);
@@ -189,6 +202,7 @@ export const PriceChartCanvas = memo(function PriceChartCanvas({
     return () => {
       active = false;
       updateRef.current = null;
+      resizeHeightRef.current = null;
       observer.disconnect();
       window.removeEventListener("resize", resize);
       chart.destroy();

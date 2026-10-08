@@ -11,6 +11,8 @@ import {
   clampPosition,
   commentTailPath,
   commentMarkerPresentation,
+  commentPreview,
+  commentLayout,
   createChartTimeFormatter,
   createCommentTimeFormatter,
   formatPercent,
@@ -21,7 +23,6 @@ import {
 
 import "./priceChartAnnotations.css";
 
-const MAX_AUTHOR_PROFILE_LOOKUPS = 40;
 export type ChartProfileRequests = Map<string, Promise<PublicNostrProfile | null>>;
 
 interface Props {
@@ -84,6 +85,7 @@ export function PriceChartAnnotations({
     previousRenderRef.current = renderState;
   }, [renderState]);
   const pointerGroupRef = useRef<string | null>(null);
+  const dismissedHoverGroupRef = useRef<string | null>(null);
   const commentMarkerLayerRef = useRef<HTMLDivElement | null>(null);
   const commentPopoverRef = useRef<HTMLDivElement | null>(null);
   const activeMarkerRef = useRef<HTMLButtonElement | null>(null);
@@ -91,6 +93,26 @@ export function PriceChartAnnotations({
   const dismissTimerRef = useRef<number | null>(null);
   const pinnedCommentGroupIdRef = useRef<string | null>(null);
   const [activeCommentGroupId, setActiveCommentGroupId] = useState<string | null>(null);
+  useEffect(() => {
+    let lastPosition: { x: number; y: number } | null = null;
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      const moved =
+        lastPosition !== null &&
+        (event.clientX !== lastPosition.x || event.clientY !== lastPosition.y);
+      lastPosition = { x: event.clientX, y: event.clientY };
+      const dismissed = dismissedHoverGroupRef.current;
+      if (!moved || dismissed === null) return;
+      const bubble = activeMarkerRef.current?.closest('[data-testid="price-chart-comment-bubble"]');
+      if (bubble && event.target instanceof Node && bubble.contains(event.target)) return;
+      // Close removes the hit descendant; its later pointerleave may never reach React.
+      // Actual movement outside the surviving bubble releases only that hover dismissal.
+      dismissedHoverGroupRef.current = null;
+      if (pointerGroupRef.current === dismissed) pointerGroupRef.current = null;
+    };
+    document.addEventListener("pointermove", onPointerMove, true);
+    return () => document.removeEventListener("pointermove", onPointerMove, true);
+  }, []);
   const [authorProfiles, setAuthorProfiles] = useState(
     new Map<string, PublicNostrProfile | null>(),
   );
@@ -108,13 +130,15 @@ export function PriceChartAnnotations({
         !Number.isFinite(anchorTop)
       )
         continue;
-      const marker = commentMarkerPresentation(group.comments);
+      const marker = commentMarkerPresentation(group.comments, plot?.width);
       positioned.push({
         ...group,
         anchorLeft,
         anchorTop,
         plotLeft: anchorLeft - plot.x,
         plotTop: anchorTop - plot.y,
+        width: marker.width,
+        height: marker.height,
         ...chooseMarkerBodyPosition(
           anchorLeft,
           anchorTop,
@@ -123,6 +147,7 @@ export function PriceChartAnnotations({
           positioned,
           marker.width,
           marker.height,
+          plot,
         ),
       });
     }
@@ -131,59 +156,76 @@ export function PriceChartAnnotations({
   const activeCommentGroup = positionedCommentGroups.find(
     (group) => group.id === activeCommentGroupId,
   );
+  const selectedAuthors = useMemo(
+    () =>
+      new Set(
+        commentGroupResult.groups.flatMap((group) =>
+          group.comments
+            .map((comment) => comment.userId)
+            .filter((author) => /^[0-9a-f]{64}$/.test(author)),
+        ),
+      ),
+    [commentGroupResult],
+  );
+  useEffect(() => {
+    // Range changes release obsolete authors instead of exhausting a chart-lifetime budget.
+    for (const author of profileRequests.keys()) {
+      if (!selectedAuthors.has(author)) profileRequests.delete(author);
+    }
+    setAuthorProfiles(
+      (previous) => new Map([...previous].filter(([author]) => selectedAuthors.has(author))),
+    );
+  }, [selectedAuthors, profileRequests]);
   useEffect(() => {
     if (!activeGroup) return undefined;
     let cancelled = false;
     const authors = [...new Set(activeGroup.comments.map((comment) => comment.userId))].filter(
-      (author) => /^[0-9a-f]{64}$/.test(author),
+      (author) => selectedAuthors.has(author),
     );
     const requests = profileRequests;
     for (const author of authors) {
       if (requests.has(author)) continue;
-      // Best-effort display enrichment must remain bounded even across repeated group changes.
-      if (requests.size >= MAX_AUTHOR_PROFILE_LOOKUPS) break;
       requests.set(
         author,
         fetchPublicNostrProfile(author).catch(() => null),
       );
     }
-    if (!authors.some((author) => requests.has(author))) return undefined;
     void Promise.all(
-      authors
-        .filter((author) => requests.has(author))
-        .map(async (author) => [author, (await requests.get(author)) ?? null] as const),
+      authors.map(async (author) => [author, (await requests.get(author)) ?? null] as const),
     ).then((profiles) => {
       if (!cancelled) setAuthorProfiles(new Map(profiles));
     });
     return () => {
       cancelled = true;
     };
-  }, [activeGroup, profileRequests]);
-  const commentPopoverWidth = Math.max(1, Math.min(288, chartRegionWidth - 8));
+  }, [activeGroup, profileRequests, selectedAuthors]);
+  const plotBounds = plot ?? { x: 0, y: 0, width: chartRegionWidth, height: chartRegionHeight };
+  const commentPopoverWidth = Math.max(1, Math.min(288, plotBounds.width - 8));
   const activeResting = activeCommentGroup
-    ? commentMarkerPresentation(activeCommentGroup.comments)
-    : { width: 24, height: 18, opacity: 0.6 };
+    ? commentMarkerPresentation(activeCommentGroup.comments, plotBounds.width)
+    : { width: 172, height: 56, opacity: 0.8 };
   const commentPopoverBelow = activeCommentGroup
     ? activeCommentGroup.top + activeResting.height / 2 >= activeCommentGroup.anchorTop
     : true;
-  const activeHitTop = activeCommentGroup
-    ? activeCommentGroup.top - (44 - activeResting.height) / 2
-    : 4;
-  const activeHitLeft = activeCommentGroup
-    ? activeCommentGroup.left - (44 - activeResting.width) / 2
-    : 4;
-  const commentPopoverSpace = activeCommentGroup
-    ? (commentPopoverBelow ? chartRegionHeight - activeHitTop : activeHitTop + 44) - 4
-    : chartRegionHeight - 8;
-  const commentPopoverHeight = Math.max(1, Math.min(176, commentPopoverSpace));
-  const commentPopoverLeft = activeCommentGroup
-    ? clampPosition(activeHitLeft, commentPopoverWidth, chartRegionWidth)
-    : 4;
-  const commentPopoverTop = activeCommentGroup
-    ? commentPopoverBelow
-      ? activeHitTop
-      : activeHitTop + 44 - commentPopoverHeight
-    : 4;
+  const commentPopoverHeight = Math.max(1, Math.min(176, plotBounds.height - 8));
+  const commentPopoverLeft =
+    plotBounds.x +
+    clampPosition(
+      (activeCommentGroup?.left ?? plotBounds.x) - plotBounds.x,
+      commentPopoverWidth,
+      plotBounds.width,
+    );
+  const commentPopoverTop =
+    plotBounds.y +
+    clampPosition(
+      (activeCommentGroup
+        ? commentPopoverBelow
+          ? activeCommentGroup.top
+          : activeCommentGroup.top + activeResting.height - commentPopoverHeight
+        : plotBounds.y) - plotBounds.y,
+      commentPopoverHeight,
+      plotBounds.height,
+    );
 
   const cursorPrice =
     cursorTime === null ? null : confirmedPriceAtOrBefore(series[0]?.data ?? [], cursorTime / 1000);
@@ -204,6 +246,8 @@ export function PriceChartAnnotations({
     if (dismissTimerRef.current !== null) window.clearTimeout(dismissTimerRef.current);
     dismissTimerRef.current = null;
     pinnedCommentGroupIdRef.current = null;
+    if (restoreFocus && pointerGroupRef.current === activeCommentGroupId)
+      dismissedHoverGroupRef.current = activeCommentGroupId;
     setActiveCommentGroupId(null);
     onCursorTime(null);
     if (
@@ -221,6 +265,8 @@ export function PriceChartAnnotations({
     marker: HTMLButtonElement,
     intent: "hover" | "focus" | "pin",
   ) => {
+    if (intent === "hover" && dismissedHoverGroupRef.current === group.id) return;
+    if (intent !== "hover") dismissedHoverGroupRef.current = null;
     const focused = document.activeElement;
     if (
       intent === "hover" &&
@@ -258,6 +304,12 @@ export function PriceChartAnnotations({
   };
 
   useEffect(() => {
+    dismissedHoverGroupRef.current = null;
+  }, [chartTimeframe]);
+
+  useEffect(() => {
+    if (!commentGroupResult.groups.some((group) => group.id === dismissedHoverGroupRef.current))
+      dismissedHoverGroupRef.current = null;
     if (
       activeCommentGroupId === null ||
       commentGroupResult.groups.some((group) => group.id === activeCommentGroupId)
@@ -416,6 +468,14 @@ export function PriceChartAnnotations({
           <div
             ref={commentMarkerLayerRef}
             data-testid="price-chart-comment-markers"
+            style={{
+              visibility:
+                plot &&
+                plot.height + 0.5 <
+                  commentLayout(plot.width, commentGroupResult.groups.length).requiredPlotHeight
+                  ? "hidden"
+                  : undefined,
+            }}
             aria-label={t("market.chartComments")}
             className="pointer-events-none absolute inset-0 z-20"
           >
@@ -426,7 +486,7 @@ export function PriceChartAnnotations({
               });
               const label = group.seriesLabel ? `${group.seriesLabel}: ${markerText}` : markerText;
               const expanded = activeCommentGroupId === group.id;
-              const resting = commentMarkerPresentation(group.comments);
+              const resting = commentMarkerPresentation(group.comments, plot?.width);
               const left = expanded ? commentPopoverLeft : group.left;
               const top = expanded ? commentPopoverTop : group.top;
               const width = expanded ? commentPopoverWidth : resting.width;
@@ -436,7 +496,7 @@ export function PriceChartAnnotations({
                 <div key={group.id} className="contents">
                   <svg
                     aria-hidden="true"
-                    className={`pointer-events-none absolute inset-0 overflow-visible ${expanded ? "z-30" : ""}`}
+                    className="pointer-events-none absolute inset-0 z-0 overflow-visible"
                     width={chartRegionWidth}
                     height={chartRegionHeight}
                     viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
@@ -457,7 +517,7 @@ export function PriceChartAnnotations({
                     data-testid="price-chart-comment-bubble"
                     data-expanded={expanded}
                     data-series-id={group.seriesId}
-                    className={`price-chart-comment-bubble absolute rounded-lg border border-slate-400 bg-slate-200 text-slate-800 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${expanded ? "z-30 shadow-xl" : ""}`}
+                    className={`price-chart-comment-bubble absolute rounded-lg border border-slate-400 bg-slate-200 text-slate-800 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${expanded ? "z-30 shadow-xl" : "z-10"}`}
                     style={{
                       left,
                       top,
@@ -477,6 +537,8 @@ export function PriceChartAnnotations({
                       dismissTimerRef.current = null;
                     }}
                     onPointerLeave={() => {
+                      if (dismissedHoverGroupRef.current === group.id)
+                        dismissedHoverGroupRef.current = null;
                       pointerGroupRef.current = null;
                       scheduleCommentPopoverDismiss();
                     }}
@@ -498,11 +560,12 @@ export function PriceChartAnnotations({
                       aria-haspopup="dialog"
                       aria-expanded={expanded}
                       aria-controls={`price-chart-comments-${group.id}`}
-                      className="absolute flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[10px] font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="absolute flex min-h-11 items-center rounded-lg px-2 py-1 text-left text-sm leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                       style={{
-                        left: group.left - left + resting.width / 2,
-                        top: group.top - top + resting.height / 2,
-                        transform: "translate(-50%, -50%)",
+                        left: group.left - left,
+                        top: group.top - top,
+                        width: resting.width,
+                        height: resting.height,
                         opacity: expanded ? 0 : 1,
                         pointerEvents: expanded || !layoutReady ? "none" : "auto",
                       }}
@@ -525,7 +588,12 @@ export function PriceChartAnnotations({
                         activateCommentMarker(group, event.currentTarget, "pin");
                       }}
                     >
-                      {group.comments.length > 1 ? group.comments.length : "•"}
+                      <span
+                        data-testid="price-chart-comment-preview"
+                        className="line-clamp-2 break-words [overflow-wrap:anywhere]"
+                      >
+                        {commentPreview(group.comments[0]?.content ?? "")}
+                      </span>
                     </button>
                     {expanded && (
                       <div
@@ -551,23 +619,26 @@ export function PriceChartAnnotations({
                                 key={comment.id}
                                 className="border-b border-slate-300 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
                               >
-                                <div className="mb-1 flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                                <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[11px] text-slate-600 dark:text-slate-300">
                                   <span
-                                    className="min-w-0 flex-1 truncate font-medium"
+                                    className="col-start-1 row-start-1 min-w-0 truncate font-medium"
                                     data-testid="price-chart-comment-author"
                                     title={comment.userId}
                                   >
                                     {authorProfiles.get(comment.userId)?.displayName.trim() ||
                                       comment.userDisplayName}
                                   </span>
-                                  <time className="shrink-0" dateTime={comment.timestamp}>
+                                  <time
+                                    className="col-span-2 row-start-2 min-w-0 [overflow-wrap:anywhere]"
+                                    dateTime={comment.timestamp}
+                                  >
                                     {formatCommentTime(Date.parse(comment.timestamp))}
                                   </time>
                                   {index === 0 && (
                                     <button
                                       type="button"
                                       aria-label={t("common.close")}
-                                      className="-my-2 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
+                                      className="col-start-2 row-start-1 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         closeCommentPopover(true);
@@ -577,7 +648,7 @@ export function PriceChartAnnotations({
                                     </button>
                                   )}
                                 </div>
-                                <p className="whitespace-pre-wrap break-words text-xs">
+                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
                                   {comment.content}
                                 </p>
                               </li>

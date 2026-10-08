@@ -12,6 +12,7 @@ import {
   makeFixture,
   rollingFixture,
   WORKLOADS,
+  VISIBLE_COMMENT_COUNT,
   type Fixture,
   type Workload,
 } from "./priceChartBenchmarkFixtures";
@@ -192,9 +193,9 @@ async function ready(
       box.width > 0 &&
       box.height > 0 &&
       (afterRevision === undefined || draws.revision() > afterRevision) &&
-      markers.length === 40 &&
-      markerBodies.length === 40 &&
-      tails.length === 40 &&
+      markers.length === VISIBLE_COMMENT_COUNT &&
+      markerBodies.length === VISIBLE_COMMENT_COUNT &&
+      tails.length === VISIBLE_COMMENT_COUNT &&
       markerBodies.every(
         (marker) =>
           marker.getBoundingClientRect().width > 0 &&
@@ -320,8 +321,8 @@ async function sample(workload: Workload): Promise<Sample> {
     await ready(host, draws, true);
     const openMs = performance.now() - opened;
     await stage(`${workload.name}: after open`);
-    // Fixture comment0 is the earliest group; confirm identity before measuring.
-    expect(host.querySelector(cardSelector)?.textContent).toContain("Benchmark comment 0.");
+    // Equal volumes select the ten newest comments, 30–39. Confirm the first group.
+    expect(host.querySelector(cardSelector)?.textContent).toContain("Benchmark comment 30.");
     const checks = [geometry(host, fixture, "mounted-open")];
     await stage(`${workload.name}: before mounted GC`);
     const mounted = await memory();

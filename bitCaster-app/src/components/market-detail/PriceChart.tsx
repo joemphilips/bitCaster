@@ -10,9 +10,10 @@ import {
   preparePriceSeries,
   windowPriceSeries,
   chartDomain,
-  createChartTimeFormatter,
+  createChartAxisTimeFormatter,
   formatPercent,
   groupComments,
+  commentLayout,
 } from "./priceChartModel";
 
 interface PriceChartProps {
@@ -66,7 +67,7 @@ export function PriceChart({
   const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
   const [cursorTime, setCursorTime] = useState<number | null>(null);
   const [chartRender, setChartRender] = useState<PriceChartRender | null>(null);
-  // The public-profile budget belongs to this chart, including empty ranges.
+  // Reuse selected-author requests across card changes; annotations prune obsolete authors.
   const profileRequests = useRef<ChartProfileRequests>(new Map());
   const clock = useMemo(
     () => ({
@@ -148,10 +149,21 @@ export function PriceChart({
     () => groupComments(comments, domain, series, isCategorical),
     [comments, domain, series, isCategorical],
   );
+  const measuredPlot = chartRender?.chart.chartArea;
+  const requiredPlotHeight = measuredPlot
+    ? commentLayout(measuredPlot.width, commentGroupResult.groups.length).requiredPlotHeight
+    : 0;
+  const chartHeight = Math.max(
+    224,
+    Math.ceil(
+      requiredPlotHeight +
+        (measuredPlot && chartRender ? chartRender.chart.height - measuredPlot.height : 0),
+    ),
+  );
   const hasChartData = domain !== null;
   const formatTimeTick = useMemo(
-    () => createChartTimeFormatter(locale, chartTimeframe),
-    [locale, chartTimeframe],
+    () => createChartAxisTimeFormatter(locale, chartTimeframe, domain),
+    [locale, chartTimeframe, domain],
   );
   const displayedSeries = isCategorical
     ? (outcomes ?? []).slice(0, 8).map((outcome) => ({
@@ -220,7 +232,8 @@ export function PriceChart({
 
       <div
         data-testid="price-chart-region"
-        className="relative h-56 mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden"
+        className="relative mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden"
+        style={{ height: chartHeight }}
       >
         {!hasChartData ? (
           <div
@@ -236,6 +249,7 @@ export function PriceChart({
               domain={domain!}
               formatTime={formatTimeTick}
               onRender={setChartRender}
+              height={chartHeight}
             />
             <PriceChartAnnotations
               renderState={chartRender}

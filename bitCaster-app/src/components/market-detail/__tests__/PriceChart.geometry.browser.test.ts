@@ -31,7 +31,7 @@ function RenderFixture({ fixture, committed }: { fixture: Fixture; committed: ()
   useEffect(committed, [fixture, committed]);
   return createElement(PriceChart, fixture.props);
 }
-async function renderFixture(fixture: Fixture, expectedMarkers = 40) {
+async function renderFixture(fixture: Fixture, expectedMarkers = 10) {
   if (!host) {
     host = document.createElement("div");
     host.style.width = "1000px";
@@ -79,8 +79,9 @@ afterEach(async () => {
   observer?.restore();
   observer = undefined;
   await i18n.changeLanguage("en");
-  await page.viewport(1280, 900);
+  await commands.setChartReducedMotion("no-preference");
 });
+
 it.each([
   { language: "en", width: 1000 },
   { language: "ja", width: 390 },
@@ -283,7 +284,7 @@ it.each([
     await assertPointerAndStep(fixture);
     expect(
       host!.querySelector('[data-testid="price-chart-comment-popover"]')?.textContent,
-    ).toContain("Benchmark comment 0.");
+    ).toContain("Benchmark comment 30.");
   },
 );
 
@@ -294,7 +295,7 @@ it("anchors a binary NO fill at its exact YES-complement price", async () => {
     outcomes: 2,
     pointsPerOutcome: 300,
   });
-  const trade = fixture.props.comments![1].trade!;
+  const trade = fixture.props.comments![31].trade!;
   fixture.anchor = {
     timestamp: Date.parse(trade.executedAt),
     price: 100 - (trade.price / trade.priceDenominator) * 100,
@@ -305,7 +306,7 @@ it("anchors a binary NO fill at its exact YES-complement price", async () => {
     .click();
   await assertPointerAndStep(fixture);
   expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')?.textContent).toContain(
-    "Benchmark comment 1.",
+    "Benchmark comment 31.",
   );
 });
 
@@ -327,7 +328,7 @@ it("retains distinct confirmed fills at the same millisecond on the step line", 
     ),
   };
   fixture.props.comments = fixture.props.comments!.map((comment, index) =>
-    index === 1
+    index === 31
       ? {
           ...comment,
           trade: { ...comment.trade!, executedAt: timestamp, outcomeId: "yes", price: 90 },
@@ -352,7 +353,7 @@ it("retains distinct confirmed fills at the same millisecond on the step line", 
   fixture.anchor = { timestamp: fixture.anchor.timestamp, price: 90 };
   await assertPointerAndStep(fixture);
   expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')?.textContent).toContain(
-    "Benchmark comment 1.",
+    "Benchmark comment 31.",
   );
 });
 
@@ -390,7 +391,7 @@ it("removes an expired point and its open card through real browser frames", asy
     receivedAt,
   };
   fixture.props.chartTimeframe = "1h";
-  fixture.props.comments = [fixture.props.comments![0]];
+  fixture.props.comments = [fixture.props.comments![30]];
   await renderFixture(fixture, 1);
   host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
   await expect
@@ -623,6 +624,201 @@ function edgeFixture(edge: "left" | "right") {
   return fixture;
 }
 
+it.each([
+  { language: "en", width: 1000 },
+  { language: "ja", width: 390 },
+])("shows ten selected previews in a $language $width-pixel chart", async ({ language, width }) => {
+  await i18n.changeLanguage(language);
+  const fixture = makeFixture({
+    name: "dense-previews",
+    binary: true,
+    outcomes: 2,
+    pointsPerOutcome: 300,
+  });
+  const messages =
+    language === "ja"
+      ? [
+          "今後の需要増加に期待しています。",
+          "価格の変化を慎重に見守っています。",
+          "今回の発表で予想が変わりました。",
+          "長期的には成長すると思います。",
+          "まだ不確実な要素が多いと感じます。",
+        ]
+      : [
+          "Demand should grow after this announcement.",
+          "I'm watching the next update closely.",
+          "This changes my earlier prediction.",
+          "The long-term outlook still looks strong.",
+          "There is still considerable uncertainty.",
+        ];
+  fixture.props.comments = fixture.props.comments!.map((comment, index) => ({
+    ...comment,
+    content: messages[index % messages.length],
+  }));
+  await renderFixture(fixture);
+  host!.style.width = `${width}px`;
+  await expect.poll(() => Math.round(host!.getBoundingClientRect().width)).toBe(width);
+  await frame();
+  await frame();
+  const previewNodes = host!.querySelectorAll('[data-testid="price-chart-comment-preview"]');
+  expect(previewNodes).toHaveLength(10);
+  await expect
+    .poll(() =>
+      [...previewNodes].every((preview) => preview.checkVisibility({ visibilityProperty: true })),
+    )
+    .toBe(true);
+  const bodies = [
+    ...host!.querySelectorAll<HTMLElement>('[data-testid="price-chart-comment-bubble"]'),
+  ];
+  const assertPacked = () => {
+    const plot = plotRectangle();
+    const bounds = bodies.map((body) => body.getBoundingClientRect());
+    for (const body of bounds) {
+      expect(body.left).toBeGreaterThanOrEqual(plot.left - 1);
+      expect(body.right).toBeLessThanOrEqual(plot.left + plot.width + 1);
+      expect(body.top).toBeGreaterThanOrEqual(plot.top - 1);
+      expect(body.bottom).toBeLessThanOrEqual(plot.top + plot.height + 1);
+    }
+    for (let first = 0; first < bounds.length; first++) {
+      for (let second = first + 1; second < bounds.length; second++) {
+        const a = bounds[first],
+          b = bounds[second];
+        expect(
+          a.right <= b.left + 0.5 ||
+            b.right <= a.left + 0.5 ||
+            a.bottom <= b.top + 0.5 ||
+            b.bottom <= a.top + 0.5,
+        ).toBe(true);
+      }
+    }
+  };
+  await expect
+    .poll(() => {
+      assertPacked();
+      return true;
+    })
+    .toBe(true);
+
+  const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+  if (captureDirectory)
+    await page.screenshot({
+      path: `${captureDirectory}/${language}-ten-previews-${width}-dpr${devicePixelRatio}.png`,
+      element: host!,
+    });
+  if (captureDirectory)
+    await page.screenshot({
+      path: `${captureDirectory}/layout-${language}-${width}-plot${plotRectangle().width.toFixed(2)}-height${host!.querySelector('[data-testid="price-chart-region"]')!.getBoundingClientRect().height}-dpr${devicePixelRatio}.png`,
+      element: host!,
+    });
+});
+
+it("converges through wide narrow wide layout without losing the pinned card or anchor", async () => {
+  const fixture = makeFixture({
+    name: "packing-resize",
+    binary: true,
+    outcomes: 2,
+    pointsPerOutcome: 300,
+  });
+  await renderFixture(fixture);
+  const region = host!.querySelector<HTMLElement>('[data-testid="price-chart-region"]')!;
+  const initialHeight = region.getBoundingClientRect().height;
+  const initialPlotWidth = plotRectangle().width;
+  host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+    .not.toBeNull();
+  const card = host!.querySelector('[data-testid="price-chart-comment-popover"]');
+  for (const width of [390, 1000]) {
+    host!.style.width = `${width}px`;
+    await expect.poll(() => Math.round(host!.getBoundingClientRect().width)).toBe(width);
+    if (width === 390)
+      await expect.poll(() => region.getBoundingClientRect().height).toBeGreaterThan(initialHeight);
+    else await expect.poll(() => region.getBoundingClientRect().height).toBe(initialHeight);
+    await assertPointerAndStep(fixture);
+    expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')).toBe(card);
+    const settled = region.getBoundingClientRect().height;
+    await frame();
+    await frame();
+    expect(region.getBoundingClientRect().height).toBe(settled);
+  }
+  expect(plotRectangle().width).toBe(initialPlotWidth);
+});
+
+it.each(["no-preference", "reduce"] as const)(
+  "keeps Japanese previews and full comments readable inside a narrow plot (%s)",
+  async (motion) => {
+    await commands.setChartReducedMotion(motion);
+    await i18n.changeLanguage("ja");
+    const fixture = edgeFixture("right");
+    const content = "日本語のコメントを最後まで安全に読むための確認です。".repeat(10).slice(0, 280);
+    fixture.props.comments![0] = {
+      ...fixture.props.comments![0],
+      content,
+      userDisplayName: "表示名",
+    };
+    await renderFixture(fixture, 1);
+    host!.style.width = "320px";
+    await expect.poll(() => plotRectangle().width).toBeLessThan(320);
+    await frame();
+    // Canvas observer snapshots already use viewport coordinates, including canvas offsets.
+    const plot = plotRectangle();
+    const bubble = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-bubble"]')!;
+    const assertWithinPlot = () => {
+      const body = bubble.getBoundingClientRect();
+      expect(body.left).toBeGreaterThanOrEqual(plot.left - 1);
+      expect(body.right).toBeLessThanOrEqual(plot.left + plot.width + 1);
+      expect(body.top).toBeGreaterThanOrEqual(plot.top - 1);
+      expect(body.bottom).toBeLessThanOrEqual(plot.top + plot.height + 1);
+    };
+    assertWithinPlot();
+    const preview = host!.querySelector<HTMLElement>(
+      '[data-testid="price-chart-comment-preview"]',
+    )!;
+    expect(preview.textContent).toBe(
+      `${Array.from(
+        new Intl.Segmenter("ja", { granularity: "grapheme" }).segment(content),
+        (item) => item.segment,
+      )
+        .slice(0, 20)
+        .join("")}…`,
+    );
+    expect(bubble.querySelector("time")).toBeNull();
+    expect(bubble.textContent).not.toContain("表示名");
+    const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/ja-preview-${motion}-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+    host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
+    await expect.poll(() => bubble.querySelector('[role="region"]')).not.toBeNull();
+    // Wait for the bounded expansion to settle without hiding animation defects in other tests.
+    await expect
+      .poll(() => Math.round(bubble.getBoundingClientRect().height))
+      .toBe(Math.round(Math.min(176, plot.height - 8)));
+    assertWithinPlot();
+    const region = bubble.querySelector<HTMLElement>('[role="region"]')!;
+    const body = region.querySelector("li p")!;
+    expect(body.textContent).toBe(content);
+    expect(getComputedStyle(body).fontSize).toBe("14px");
+    expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/ja-expanded-top-${motion}-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+    region.scrollTop = region.scrollHeight;
+    expect(region.scrollTop).toBeGreaterThan(0);
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/ja-expanded-${motion}-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+    await commands.setChartReducedMotion("no-preference");
+    await i18n.changeLanguage("en");
+  },
+);
+
 it.each(["left", "right"] as const)(
   "keeps the %s-edge confirmed pointer fixed throughout bubble expansion",
   async (edge) => {
@@ -743,7 +939,12 @@ it("preserves a pinned or focused card under real hover over another group", asy
   await expect
     .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
     .toBeNull();
+  // Explicit dismissal suppresses only the stationary pointer. Leave before starting a new hover.
+  await page.getByTestId("price-chart-region").hover({ position: { x: 500, y: 210 } });
   await page.getByTestId("price-chart-comment-marker").nth(0).hover();
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+    .not.toBeNull();
   const focusedCard = host!.querySelector<HTMLElement>(
     '[data-testid="price-chart-comment-popover"]',
   )!;
@@ -768,4 +969,301 @@ it("preserves a pinned or focused card under real hover over another group", asy
   } finally {
     outside.remove();
   }
+});
+
+it.each(["en", "ja"])(
+  "keeps the %s narrow comment author and close control usable",
+  async (language) => {
+    await page.viewport(320, 900);
+    await i18n.changeLanguage(language);
+    const fixture = edgeFixture("right");
+    const displayName =
+      language === "ja"
+        ? "長い表示名でも閉じる操作を妨げない投稿者"
+        : "A deliberately long commenter display name";
+    fixture.props.comments![0] = { ...fixture.props.comments![0], userDisplayName: displayName };
+    await renderFixture(fixture, 1);
+    // A 320px page also needs its outer content gutters. Exercise the actual smaller plot.
+    host!.style.width = "280px";
+    await expect.poll(() => plotRectangle().width).toBeLessThan(200);
+    await frame();
+    await frame();
+    host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
+    await expect
+      .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+      .not.toBeNull();
+    const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]')!;
+    const close = card.querySelector<HTMLButtonElement>("button")!;
+    const author = card.querySelector<HTMLElement>('[data-testid="price-chart-comment-author"]')!;
+    await expect
+      .poll(() => Math.round(card.parentElement!.getBoundingClientRect().height))
+      .toBe(Math.round(Math.min(176, plotRectangle().height - 8)));
+    const bounds = card.getBoundingClientRect();
+    const button = close.getBoundingClientRect();
+    const authorBounds = author.getBoundingClientRect();
+    expect(author.textContent).toBe(displayName);
+    expect(authorBounds.width).toBeGreaterThanOrEqual(32);
+    expect(authorBounds.right).toBeLessThanOrEqual(button.left);
+    expect(button.left).toBeGreaterThanOrEqual(bounds.left);
+    expect(button.right).toBeLessThanOrEqual(bounds.right);
+    expect(button.top).toBeGreaterThanOrEqual(bounds.top);
+    expect(button.bottom).toBeLessThanOrEqual(bounds.bottom);
+    const hit = document.elementFromPoint(
+      button.left + button.width / 2,
+      button.top + button.height / 2,
+    );
+    expect(hit === close || close.contains(hit)).toBe(true);
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+    const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/${language}-expanded-header-320-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+    await page.getByRole("button", { name: i18n.t("common.close"), exact: true }).click();
+    await expect
+      .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+      .toBeNull();
+    // The pointer stays still while the bubble collapses. Finish real CSS transitions.
+    await frame();
+    const bubble = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-bubble"]')!;
+    await Promise.all(
+      bubble
+        .getAnimations({ subtree: true })
+        .map((animation) => animation.finished.catch(() => undefined)),
+    );
+    await frame();
+    expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')).toBeNull();
+    await page.getByRole("heading", { name: i18n.t("market.priceChart"), exact: true }).hover();
+    await page.getByTestId("price-chart-comment-marker").hover();
+    await expect
+      .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+      .not.toBeNull();
+  },
+);
+
+it("keeps a pinned confirmed NO comment at its fill after its history bucket is replaced", async () => {
+  const fixture = edgeFixture("right");
+  const oldTime = "2026-05-25T10:10:00.000Z";
+  const newTime = "2026-05-25T10:20:00.000Z";
+  const first = { eventOrder: "first", timestamp: "2026-05-25T10:01:00.000Z", price: 40 };
+  fixture.props.chartTimeframe = "1h";
+  fixture.props.priceHistory = {
+    timeframe: "1h",
+    asOf: "2026-05-25T11:00:00.000Z",
+    receivedAt: performance.now(),
+    data: [first, { eventOrder: "old", timestamp: oldTime, price: 51 }],
+  };
+  fixture.props.comments![0] = {
+    ...fixture.props.comments![0],
+    trade: {
+      ...fixture.props.comments![0].trade!,
+      outcomeId: "no",
+      executedAt: oldTime,
+      price: 490,
+      priceDenominator: 1000,
+    },
+  };
+  fixture.anchor = { timestamp: Date.parse(oldTime), price: 51 };
+  await renderFixture(fixture, 1);
+  host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
+  await assertPointerAndStep(fixture);
+  const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]')!;
+  const close = card.querySelector<HTMLButtonElement>("button")!;
+  close.focus();
+  const replacement = {
+    ...fixture,
+    props: {
+      ...fixture.props,
+      priceHistory: {
+        ...fixture.props.priceHistory,
+        data: [first, { eventOrder: "new", timestamp: newTime, price: 49 }],
+      },
+    },
+  };
+  expect(replacement.props.priceHistory.data.some((point) => point.timestamp === oldTime)).toBe(
+    false,
+  );
+  await renderFixture(replacement, 1);
+  await expect.poll(() => pointerError(replacement)).toBeLessThanOrEqual(1);
+  expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')).toBe(card);
+  expect(document.activeElement).toBe(close);
+  const expectedNew = expectedPointer({
+    ...replacement,
+    anchor: { timestamp: Date.parse(newTime), price: 49 },
+  });
+  const expectedOld = expectedPointer(replacement);
+  const distanceTo = (expected: { x: number; y: number }) =>
+    Math.min(
+      ...currentLines()
+        .flatMap(lineVertices)
+        .map((point) => Math.hypot(point.x - expected.x, point.y - expected.y)),
+    );
+  await expect.poll(() => distanceTo(expectedNew)).toBeLessThanOrEqual(1);
+  expect(distanceTo(expectedOld)).toBeGreaterThan(1);
+});
+
+it.each(
+  [
+    { language: "en", width: 320 },
+    { language: "ja", width: 320 },
+    { language: "en", width: 1280 },
+    { language: "ja", width: 1280 },
+  ].flatMap((input) =>
+    (["7d", "all", "all90s", "all30h"] as const).map((span) => ({ ...input, span })),
+  ),
+)(
+  "keeps actual $language axis labels separate for $span at $width pixels",
+  async ({ language, width, span }) => {
+    const timeframe = span === "7d" ? "7d" : "all";
+    const first =
+      span === "all90s"
+        ? "2026-10-09T09:13:30.000Z"
+        : span === "all30h"
+          ? "2026-10-08T03:15:00.000Z"
+          : "2026-10-09T08:15:00.000Z";
+    await page.viewport(width, 900);
+    await i18n.changeLanguage(language);
+    const textDraws: Array<{ text: string; left: number; right: number }> = [];
+    const originalText = CanvasRenderingContext2D.prototype.fillText;
+    const originalClear = CanvasRenderingContext2D.prototype.clearRect;
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      if (this.canvas === host?.querySelector("canvas")) textDraws.length = 0;
+      originalClear.apply(this, args);
+    };
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      if (this.canvas === host?.querySelector("canvas") && /[/:月]/.test(text)) {
+        const metric = this.measureText(text),
+          matrix = this.getTransform();
+        const rect = this.canvas.getBoundingClientRect();
+        const start = new DOMPoint(x - metric.actualBoundingBoxLeft, y).matrixTransform(matrix);
+        const end = new DOMPoint(x + metric.actualBoundingBoxRight, y).matrixTransform(matrix);
+        textDraws.push({
+          text,
+          left: rect.left + (start.x * rect.width) / this.canvas.width,
+          right: rect.left + (end.x * rect.width) / this.canvas.width,
+        });
+      }
+      if (maxWidth === undefined) originalText.call(this, text, x, y);
+      else originalText.call(this, text, x, y, maxWidth);
+    };
+    try {
+      const fixture = makeFixture({
+        name: "seven-day-axis",
+        binary: true,
+        outcomes: 2,
+        pointsPerOutcome: 300,
+      });
+      fixture.props.comments = [];
+      fixture.props.chartTimeframe = timeframe;
+      fixture.props.priceHistory = {
+        timeframe,
+        asOf: "2026-10-09T09:15:00.000Z",
+        receivedAt: performance.now(),
+        data: [
+          {
+            eventOrder: "first",
+            timestamp: timeframe === "all" ? first : "2026-10-06T10:00:00.000Z",
+            price: 40,
+          },
+          {
+            eventOrder: "last",
+            timestamp:
+              timeframe === "all" ? "2026-10-09T09:15:00.000Z" : "2026-10-08T10:00:00.000Z",
+            price: 60,
+          },
+        ],
+      };
+      fixture.props.historyStatus = "ready";
+      fixture.props.priceRefreshUnavailable = true;
+      await renderFixture(fixture, 0);
+      host!.style.width = `${width === 320 ? 288 : 1000}px`;
+      await expect
+        .poll(() => host!.querySelector("canvas")!.getBoundingClientRect().width)
+        .toBeLessThan(width);
+      await frame();
+      await frame();
+      await expect.poll(() => textDraws.length).toBeGreaterThanOrEqual(2);
+      const labels = [...textDraws].sort((a, b) => a.left - b.left);
+      const canvasBounds = host!.querySelector("canvas")!.getBoundingClientRect();
+      for (let i = 0; i < labels.length; i++) {
+        expect(labels[i].left).toBeGreaterThanOrEqual(canvasBounds.left - 1);
+        expect(labels[i].right).toBeLessThanOrEqual(canvasBounds.right + 1);
+        if (i) expect(labels[i].left - labels[i - 1].right).toBeGreaterThanOrEqual(4);
+      }
+      expect(new Set(labels.map((label) => label.text)).size).toBe(labels.length);
+      if (timeframe === "7d") {
+        expect(labels[0].text).toBe("10/2");
+        expect(labels.at(-1)!.text).toBe("10/9");
+      } else if (span === "all") {
+        expect(labels[0].text).toBe(language === "en" ? "8:15 AM" : "8:15");
+        expect(labels.at(-1)!.text).toBe(language === "en" ? "9:15 AM" : "9:15");
+      }
+      if (span === "all90s") {
+        expect(labels[0].text).toMatch(/9:13(?::30)?/);
+        expect(labels.at(-1)!.text).toMatch(/9:15(?::00)?/);
+      }
+      if (span === "all30h") {
+        expect(labels[0].text).toContain("10/8");
+        expect(labels.at(-1)!.text).toContain("10/9");
+      }
+      const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+      if (captureDirectory)
+        await page.screenshot({
+          path: `${captureDirectory}/${language}-axis-${span}-${width}-dpr${devicePixelRatio}.png`,
+          element: host!,
+        });
+      const surface = host!.querySelector<HTMLElement>(
+        '[data-testid="price-chart-cursor-surface"]',
+      )!;
+      const bounds = surface.getBoundingClientRect();
+      await page
+        .getByTestId("price-chart-cursor-surface")
+        .hover({ position: { x: bounds.width * 0.6, y: bounds.height * 0.5 } });
+      const detail = host!.querySelector('[data-testid="price-chart-x-axis-cursor-label"]')!;
+      expect(detail.textContent).toMatch(/\d:\d{2}/);
+    } finally {
+      CanvasRenderingContext2D.prototype.fillText = originalText;
+      CanvasRenderingContext2D.prototype.clearRect = originalClear;
+    }
+  },
+);
+
+it("reopens after physical exit when closing removes the pointer leave ancestry", async () => {
+  await page.viewport(320, 900);
+  await i18n.changeLanguage("en");
+  await renderFixture(edgeFixture("right"), 1);
+  host!.style.width = "280px";
+  await expect.poll(() => plotRectangle().width).toBeLessThan(200);
+  const marker = page.getByTestId("price-chart-comment-marker");
+  host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.focus();
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+    .not.toBeNull();
+  await frame();
+  const bubble = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-bubble"]')!;
+  await Promise.all(
+    bubble
+      .getAnimations({ subtree: true })
+      .map((animation) => animation.finished.catch(() => undefined)),
+  );
+  // The connected browser lost the bubble leave after its hit descendant was removed.
+  // Reproduce that observed missing event deterministically, with real mouse operations.
+  const omitLeave = (event: Event) => event.stopImmediatePropagation();
+  document.addEventListener("pointerout", omitLeave, true);
+  document.addEventListener("pointerleave", omitLeave, true);
+  try {
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await expect
+      .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+      .toBeNull();
+    await page.getByRole("heading", { name: "Price Chart", exact: true }).hover();
+  } finally {
+    document.removeEventListener("pointerout", omitLeave, true);
+    document.removeEventListener("pointerleave", omitLeave, true);
+  }
+  await marker.hover();
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+    .not.toBeNull();
 });

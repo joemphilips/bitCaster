@@ -15,6 +15,9 @@ export type Fixture = {
   append: number;
 };
 export const AS_OF = Date.parse("2026-10-08T00:00:00.000Z");
+// Retain the historical input size as stress input, not the visible product budget.
+export const STRESS_INPUT_COMMENT_COUNT = 40;
+export const VISIBLE_COMMENT_COUNT = 10;
 const SPAN_MS = 50 * 60_000;
 const COLORS = [
   "#3b82f6",
@@ -74,7 +77,7 @@ export function makeFixture(workload: Workload): Fixture {
     odds: null,
     color: COLORS[s],
   }));
-  const comments: Comment[] = Array.from({ length: 40 }, (_, i) => {
+  const comments: Comment[] = Array.from({ length: STRESS_INPUT_COMMENT_COUNT }, (_, i) => {
     const s = i % workload.outcomes;
     // Keep all comments inside the rolling window after the expiry update.
     const p = series[s][Math.floor(workload.pointsPerOutcome * (0.35 + i * 0.014))];
@@ -102,6 +105,9 @@ export function makeFixture(workload: Workload): Fixture {
   const primary = workload.binary
     ? series.flat().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
     : series[0];
+  // Equal fill sizes select the ten newest comments. The first visible marker
+  // is the earliest of those selected comments, after chronological placement.
+  const anchorTrade = comments[STRESS_INPUT_COMMENT_COUNT - VISIBLE_COMMENT_COUNT].trade!;
   return {
     props: {
       priceHistory: history(primary),
@@ -117,8 +123,11 @@ export function makeFixture(workload: Workload): Fixture {
           }),
     },
     anchor: {
-      timestamp: Date.parse(comments[0].trade!.executedAt),
-      price: series[0][Math.floor(workload.pointsPerOutcome * 0.35)].price,
+      timestamp: Date.parse(anchorTrade.executedAt),
+      price:
+        workload.binary && anchorTrade.outcomeId === "no"
+          ? 100 - anchorTrade.price
+          : anchorTrade.price,
     },
     append: 0,
   };

@@ -283,12 +283,15 @@ size changes. Hover over or focus a bubble to expand it into a comment card.
 Click or tap to keep the card open. Press Escape or use its close button to close it.
 Opening a comment keeps the latest price visible. Move over the chart without
 an open comment to inspect a historical price.
-Bubbles become larger and less transparent as their comments receive more likes.
+The chart selects up to ten comments in the period, ranked by their linked
+confirmed trade size. Comments with a known size come first. Each collapsed
+bubble shows about twenty characters of text. The expanded card shows the
+author and date, with scrolling for long text. Likes increase opacity, not size.
 A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
 
-Each chart comment shows its public author, text, and written date. The author
+Each expanded chart comment shows its public author, text, and written date. The author
 is the public key that signed the comment. If a public Nostr profile is
 available, the app shows its display name. Otherwise, it shows a shortened
 public key. Profile lookup does not block the market page. A profile name is

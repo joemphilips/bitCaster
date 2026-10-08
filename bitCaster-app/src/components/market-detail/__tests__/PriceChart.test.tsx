@@ -517,6 +517,7 @@ describe("PriceChart", () => {
         expect(screen.getByRole("dialog")).toBe(dialog);
         const close = screen.getByRole("button", { name: /^Close$/ });
         act(() => close.focus());
+        fireEvent.pointerEnter(close, { pointerType: "mouse" });
         if (closeWith === "button") fireEvent.click(close);
         else fireEvent.keyDown(document, { key: "Escape" });
         act(() => vi.advanceTimersByTime(300));
@@ -524,6 +525,16 @@ describe("PriceChart", () => {
         expect(marker).toHaveFocus();
         fireEvent.pointerMove(marker);
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        // Closing can reveal the preview beneath the stationary pointer.
+        fireEvent.pointerEnter(marker, { pointerType: "mouse" });
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        fireEvent.pointerLeave(marker.closest('[data-testid="price-chart-comment-bubble"]')!);
+        fireEvent.pointerEnter(marker, { pointerType: "mouse" });
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
+        fireEvent.click(marker);
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
       }
     } finally {
       view.unmount();
@@ -637,6 +648,46 @@ describe("PriceChart", () => {
     });
   });
 
+  it.each(["日", "e\u0301", "👨‍👩‍👧‍👦", "🇯🇵"])(
+    "previews twenty complete %s graphemes and expands the unchanged body",
+    (grapheme) => {
+      const timestamp = "2026-05-25T10:00:00Z";
+      const content = grapheme.repeat(21);
+      render(
+        <PriceChart
+          chartTimeframe="all"
+          priceHistory={{ timeframe: "all", data: [{ eventOrder: "one", timestamp, price: 50 }] }}
+          comments={[{ ...makeComment("preview", timestamp, makeTrade(timestamp)), content }]}
+        />,
+      );
+      const preview = screen.getByTestId("price-chart-comment-preview");
+      expect(preview).toHaveTextContent(`${grapheme.repeat(20)}…`);
+      expect(preview).not.toHaveTextContent("Trader preview");
+      fireEvent.click(screen.getByTestId("price-chart-comment-marker"));
+      expect(screen.getByRole("dialog")).toHaveTextContent(content);
+      expect(screen.getByRole("dialog").querySelector("li p")).toHaveClass(
+        "text-sm",
+        "leading-relaxed",
+      );
+    },
+  );
+
+  it("keeps a maximum 280 UTF-16-unit body intact in the expanded scroll region", () => {
+    const timestamp = "2026-05-25T10:00:00Z";
+    const content = "日".repeat(280);
+    render(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={{ timeframe: "all", data: [{ eventOrder: "one", timestamp, price: 50 }] }}
+        comments={[{ ...makeComment("maximum", timestamp, makeTrade(timestamp)), content }]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("price-chart-comment-marker"));
+    const body = screen.getByRole("dialog").querySelector("li p")!;
+    expect(body.textContent).toBe(content);
+    expect(body.closest('[role="region"]')).toHaveClass("overflow-y-auto");
+  });
+
   it("bounds reaction appearance without changing confirmed anchors or fill ranking", () => {
     const data = [0, 1, 2].map((index) => ({
       eventOrder: String(index),
@@ -655,19 +706,19 @@ describe("PriceChart", () => {
     const widths = bubbles.map((bubble) => Number.parseFloat(bubble.style.width));
     const heights = bubbles.map((bubble) => Number.parseFloat(bubble.style.height));
     const opacity = bubbles.map((bubble) => Number(bubble.style.opacity));
-    expect(widths[1]).toBeGreaterThan(widths[0]);
+    expect(widths[1]).toBe(widths[0]);
     expect(opacity[1]).toBeGreaterThan(opacity[0]);
     for (const width of widths) {
-      expect(width).toBeGreaterThanOrEqual(24);
-      expect(width).toBeLessThanOrEqual(36);
+      expect(width).toBeGreaterThanOrEqual(172);
+      expect(width).toBeLessThanOrEqual(172);
     }
     for (const height of heights) {
-      expect(height).toBeGreaterThanOrEqual(18);
-      expect(height).toBeLessThanOrEqual(26);
+      expect(height).toBeGreaterThanOrEqual(56);
+      expect(height).toBeLessThanOrEqual(56);
     }
     for (const value of opacity) {
-      expect(value).toBeGreaterThanOrEqual(0.6);
-      expect(value).toBeLessThanOrEqual(0.9);
+      expect(value).toBeGreaterThanOrEqual(0.8);
+      expect(value).toBeLessThanOrEqual(1);
     }
     const markers = screen.getAllByTestId("price-chart-comment-marker");
     const anchors = markers.map((marker) => [
@@ -694,7 +745,7 @@ describe("PriceChart", () => {
 
   it("groups comments by exact trade coordinate and opens a bounded escaped keyboard-accessible list", () => {
     const timestamp = "2026-05-25T10:00:00.000Z";
-    const comments: Comment[] = Array.from({ length: 12 }, (_, index) => ({
+    const comments: Comment[] = Array.from({ length: 9 }, (_, index) => ({
       id: `comment-${index}`,
       userId: `user-${index}`,
       userDisplayName: index === 0 ? "<img src=x onerror=alert(1)>" : `Trader ${index}`,
@@ -731,7 +782,7 @@ describe("PriceChart", () => {
 
     const markers = screen.getAllByTestId("price-chart-comment-marker");
     expect(markers).toHaveLength(2);
-    expect(markers[0]).toHaveAccessibleName(expect.stringContaining("12 comments"));
+    expect(markers[0]).toHaveAccessibleName(expect.stringContaining("9 comments"));
     fireEvent.pointerEnter(markers[0]);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
@@ -747,8 +798,8 @@ describe("PriceChart", () => {
     const closeButton = screen.getByRole("button", { name: "Close" });
     expect(closeButton).toHaveTextContent("");
     expect(closeButton.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(dialog.querySelectorAll("time")).toHaveLength(12);
-    expect(dialog.querySelectorAll('[data-testid="price-chart-comment-author"]')).toHaveLength(12);
+    expect(dialog.querySelectorAll("time")).toHaveLength(9);
+    expect(dialog.querySelectorAll('[data-testid="price-chart-comment-author"]')).toHaveLength(9);
     expect(dialog.querySelectorAll('button[aria-label="Close"]')).toHaveLength(1);
     expect(screen.getByTestId("price-chart-comment-panel-tail")).toBeInTheDocument();
     expect(dialog.querySelector("h4")).toBeNull();
@@ -756,7 +807,7 @@ describe("PriceChart", () => {
     expect(dialog).toHaveTextContent("<img src=x onerror=alert(1)>");
     expect(dialog).toHaveTextContent("<script>alert(1)</script>");
     expect(dialog.querySelector("img,script")).toBeNull();
-    expect(dialog.querySelectorAll("li")).toHaveLength(12);
+    expect(dialog.querySelectorAll("li")).toHaveLength(9);
     expect(
       Number.parseFloat(
         (dialog.closest('[data-testid="price-chart-comment-bubble"]') as HTMLElement).style.height,
@@ -768,7 +819,7 @@ describe("PriceChart", () => {
     expect(scrollContainer).toHaveAttribute("tabindex", "0");
     expect(scrollContainer).toHaveAccessibleName("Price chart comments");
     expect(scrollContainer).toHaveClass("focus-visible:ring-2");
-    expect(scrollContainer).toContainElement(screen.getByText("Comment 11"));
+    expect(scrollContainer).toContainElement(screen.getByText("Comment 8"));
     act(() => (scrollContainer as HTMLElement).focus());
     expect(scrollContainer).toHaveFocus();
     expect(screen.queryByTestId("price-chart-cursor-tooltip")).not.toBeInTheDocument();
@@ -844,7 +895,7 @@ describe("PriceChart", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
       moveCursor(1);
       expect(screen.getByTestId("price-chart-x-axis-cursor-label")).toHaveTextContent(
-        dateOnly ? /^5\/25\/26$/ : /5\/25\/26, .*\d:\d/,
+        dateOnly && timeframe !== "all" ? /^5\/25\/26$/ : /5\/25\/26, .*\d:\d/,
       );
     },
   );
@@ -968,7 +1019,7 @@ describe("PriceChart", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("bounds author lookups while retaining every comment and fallback", async () => {
+  it("bounds author lookups to selected comments and permits new authors after a range change", async () => {
     const timestamp = "2026-05-25T10:00:00.000Z";
     const comments = Array.from({ length: 41 }, (_, index) => ({
       ...makeComment(String(index), timestamp, makeTrade(timestamp)),
@@ -988,9 +1039,9 @@ describe("PriceChart", () => {
       />,
     );
     await act(async () => fireEvent.click(screen.getByTestId("price-chart-comment-marker")));
-    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(40);
-    expect(screen.getByRole("dialog").querySelectorAll("li")).toHaveLength(41);
-    expect(screen.getByRole("dialog")).toHaveTextContent("Public author 40");
+    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(10);
+    expect(screen.getByRole("dialog").querySelectorAll("li")).toHaveLength(10);
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("Public author 40");
     view.rerender(
       <PriceChart chartTimeframe="all" priceHistory={{ timeframe: "all", data: [] }} />,
     );
@@ -1006,7 +1057,7 @@ describe("PriceChart", () => {
       />,
     );
     await act(async () => fireEvent.click(screen.getByTestId("price-chart-comment-marker")));
-    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(40);
+    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(11);
     expect(screen.getByRole("dialog")).toHaveTextContent("Trader new-author");
   });
 
@@ -1045,10 +1096,10 @@ describe("PriceChart", () => {
     );
 
     const markers = screen.getAllByTestId("price-chart-comment-marker");
-    expect(markers).toHaveLength(40);
-    expect(new Set(markers.map((marker) => marker.getAttribute("aria-controls")))).toHaveLength(40);
+    expect(markers).toHaveLength(10);
+    expect(new Set(markers.map((marker) => marker.getAttribute("aria-controls")))).toHaveLength(10);
     expect(screen.getByTestId("price-chart-comment-markers-hidden")).toHaveTextContent(
-      "2 comment markers are not shown.",
+      "32 comments are not shown.",
     );
     expect(screen.queryByText("Outside the selected period")).not.toBeInTheDocument();
     fireEvent.click(markers[0]);
@@ -1661,22 +1712,22 @@ describe("PriceChart", () => {
       const comments = [...ordinary, large, ...spam, unknown];
       render(<PriceChart priceHistory={history} chartTimeframe="7d" comments={comments} />);
       const selected = coordinates();
-      expect(selected).toHaveLength(40);
+      expect(selected).toHaveLength(10);
       expect(selected.map((coordinate) => coordinate[1])).toEqual([
         Date.parse(large.trade!.executedAt),
         ...ordinary
-          .slice()
+          .slice(0, 9)
           .reverse()
           .map((item) => Date.parse(item.trade!.executedAt)),
       ]);
       expect(screen.getByTestId("price-chart-comment-markers-hidden")).toHaveTextContent(
-        "2 comment markers are not shown.",
+        "181 comments are not shown.",
       );
       expect(comments).toHaveLength(191);
       expect(comments.filter((item) => item.id.startsWith("spam-"))).toHaveLength(150);
     });
 
-    it("uses the largest linked fill in each coordinate and keeps stable equal-size ties", () => {
+    it("selects individual linked fills before grouping and keeps stable equal-size ties", () => {
       const comments = Array.from({ length: 42 }, (_, index) =>
         comment(`tie-${index}`, 0, 100, { price: index + 1 }),
       );
@@ -1691,7 +1742,7 @@ describe("PriceChart", () => {
         <PriceChart priceHistory={history} chartTimeframe="7d" comments={comments} />,
       );
       const selected = coordinates();
-      expect(selected).toHaveLength(40);
+      expect(selected).toHaveLength(10);
       expect(selected.some((coordinate) => Math.round(coordinate[2]) === 9)).toBe(true);
       expect(selected.some((coordinate) => Math.round(coordinate[2]) === 8)).toBe(false);
       expect(selected.some((coordinate) => Math.round(coordinate[2]) === 7)).toBe(false);
@@ -1714,7 +1765,7 @@ describe("PriceChart", () => {
             )[2] === 9,
         )!;
       fireEvent.click(groupedMarker);
-      expect(screen.getByRole("dialog").querySelectorAll("li")).toHaveLength(2);
+      expect(screen.getByRole("dialog").querySelectorAll("li")).toHaveLength(1);
       expect(screen.getByRole("dialog")).toHaveTextContent("largest-in-group");
     });
 
@@ -1728,7 +1779,7 @@ describe("PriceChart", () => {
         comments.push(large);
         render(<PriceChart priceHistory={history} chartTimeframe="7d" comments={comments} />);
         const selected = coordinates();
-        expect(selected).toHaveLength(40);
+        expect(selected).toHaveLength(10);
         expect(selected[0]).toEqual([
           "primary",
           Date.parse(large.trade!.executedAt),
@@ -1765,10 +1816,12 @@ describe("PriceChart", () => {
         />,
       );
       const selected = coordinates();
-      expect(selected).toHaveLength(40);
+      expect(selected).toHaveLength(10);
       expect(selected.every((coordinate) => coordinate[0] === "A")).toBe(true);
       expect(selected[0][1]).toBe(Date.parse(large.trade!.executedAt));
-      expect(screen.queryByTestId("price-chart-comment-markers-hidden")).not.toBeInTheDocument();
+      expect(screen.getByTestId("price-chart-comment-markers-hidden")).toHaveTextContent(
+        "30 comments are not shown.",
+      );
     });
   });
 });
