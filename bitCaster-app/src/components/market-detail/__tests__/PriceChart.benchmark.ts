@@ -63,6 +63,12 @@ async function stage(message: string) {
 console.log(`[p8-chart] module loaded; mode=${options.diagnostics.runMode}`);
 const markerSelector = '[data-testid="price-chart-comment-marker"]';
 const cardSelector = '[data-testid="price-chart-comment-popover"]';
+const markerBodySelector =
+  options.renderer === "chartjs" ? '[data-testid="price-chart-comment-bubble"]' : markerSelector;
+const tailSelector =
+  options.renderer === "chartjs"
+    ? '[data-testid="price-chart-comment-tail"], [data-testid="price-chart-comment-panel-tail"]'
+    : '[data-testid="price-chart-comment-tail"]';
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 type Rectangle = { left: number; top: number; width: number; height: number };
@@ -165,9 +171,17 @@ async function ready(
     await nextFrame();
     const box = plotRectangle(host);
     const markers = [...host.querySelectorAll<HTMLButtonElement>(markerSelector)];
-    const tails = [
-      ...host.querySelectorAll<SVGPathElement>('[data-testid="price-chart-comment-tail"]'),
-    ];
+    const markerBodies = [...host.querySelectorAll<HTMLElement>(markerBodySelector)];
+    const tails = [...host.querySelectorAll<SVGPathElement>(tailSelector)];
+    const card = host.querySelector(cardSelector);
+    const openBody = card?.closest(markerBodySelector) ?? card;
+    const expanding = openBody
+      ?.getAnimations({ subtree: true })
+      .some(
+        (animation) =>
+          animation.playState === "running" &&
+          animation.effect?.getTiming().iterations !== Infinity,
+      );
     const signature = box
       ? [box.left, box.top, box.width, box.height, draws.revision()].join(":")
       : "";
@@ -179,26 +193,26 @@ async function ready(
       box.height > 0 &&
       (afterRevision === undefined || draws.revision() > afterRevision) &&
       markers.length === 40 &&
+      markerBodies.length === 40 &&
       tails.length === 40 &&
-      markers.every(
+      markerBodies.every(
         (marker) =>
           marker.getBoundingClientRect().width > 0 &&
           marker.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
       ) &&
       tails.every((tail) => !/NaN|Infinity/.test(tail.getAttribute("d") ?? "NaN")) &&
       (!cardOpen ||
-        host.querySelector(cardSelector)?.checkVisibility({
-          opacityProperty: true,
-          visibilityProperty: true,
-        }));
+        (!expanding &&
+          card?.checkVisibility({
+            opacityProperty: true,
+            visibilityProperty: true,
+          })));
     stableFrames = valid && signature === previous ? stableFrames + 1 : 0;
     previous = signature;
     if (stableFrames >= 2) return;
   }
-  const failedTails = [
-    ...host.querySelectorAll<SVGPathElement>('[data-testid="price-chart-comment-tail"]'),
-  ];
-  const failedMarkers = [...host.querySelectorAll<HTMLElement>(markerSelector)];
+  const failedTails = [...host.querySelectorAll<SVGPathElement>(tailSelector)];
+  const failedMarkers = [...host.querySelectorAll<HTMLElement>(markerBodySelector)];
   throw new Error(
     `${options.renderer} readiness failed: ${JSON.stringify({
       draws: draws.revision(),

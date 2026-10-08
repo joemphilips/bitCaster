@@ -162,14 +162,15 @@ export function clampPosition(value: number, elementSize: number, availableSize:
   );
 }
 
-function markerBodiesOverlap(left: number, top: number, right: number, bottom: number): boolean {
-  const separation = 4;
-  return (
-    left < right + COMMENT_MARKER_WIDTH + separation &&
-    left + COMMENT_MARKER_WIDTH + separation > right &&
-    top < bottom + COMMENT_MARKER_HEIGHT + separation &&
-    top + COMMENT_MARKER_HEIGHT + separation > bottom
+/** Reaction weight affects presentation only, never group ranking or its anchor. */
+export function commentMarkerPresentation(comments: readonly Comment[]) {
+  const likes = comments.reduce(
+    (total, comment) =>
+      total + (Number.isFinite(comment.likeCount) ? Math.max(0, comment.likeCount) : 0),
+    0,
   );
+  const weight = Math.min(1, Math.log2(1 + likes) / 6);
+  return { width: 24 + 12 * weight, height: 18 + 8 * weight, opacity: 0.6 + 0.3 * weight };
 }
 
 export function chooseMarkerBodyPosition(
@@ -178,25 +179,29 @@ export function chooseMarkerBodyPosition(
   chartWidth: number,
   chartHeight: number,
   positioned: readonly PositionedCommentGroup[],
+  width = COMMENT_MARKER_WIDTH,
+  height = COMMENT_MARKER_HEIGHT,
 ): { left: number; top: number } {
   let bestPosition: { left: number; top: number } | null = null;
   let fewestOverlaps = Number.POSITIVE_INFINITY;
-  for (const [offsetLeft, offsetTop] of COMMENT_MARKER_OFFSETS) {
+  // Keep the resting bubble on the side where its card can grow away from
+  // the trade. Expansion must retain the hovered pixels inside the same body.
+  const direction = anchorTop < chartHeight / 2 ? 1 : -1;
+  for (const [offsetLeft, verticalOffset] of COMMENT_MARKER_OFFSETS) {
+    const offsetTop = direction * Math.max(28, Math.abs(verticalOffset));
     const candidate = {
-      left: clampPosition(
-        anchorLeft + offsetLeft - COMMENT_MARKER_WIDTH / 2,
-        COMMENT_MARKER_WIDTH,
-        chartWidth,
-      ),
-      top: clampPosition(
-        anchorTop + offsetTop - COMMENT_MARKER_HEIGHT / 2,
-        COMMENT_MARKER_HEIGHT,
-        chartHeight,
-      ),
+      left: clampPosition(anchorLeft + offsetLeft - width / 2, width, chartWidth),
+      top: clampPosition(anchorTop + offsetTop - height / 2, height, chartHeight),
     };
-    const overlaps = positioned.filter((item) =>
-      markerBodiesOverlap(candidate.left, candidate.top, item.left, item.top),
-    ).length;
+    const overlaps = positioned.filter((item) => {
+      const other = commentMarkerPresentation(item.comments);
+      return (
+        candidate.left < item.left + other.width + 4 &&
+        candidate.left + width + 4 > item.left &&
+        candidate.top < item.top + other.height + 4 &&
+        candidate.top + height + 4 > item.top
+      );
+    }).length;
     if (overlaps < fewestOverlaps) {
       bestPosition = candidate;
       fewestOverlaps = overlaps;

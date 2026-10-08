@@ -58,6 +58,7 @@ const sourceFiles = [
         "src/components/market-detail/PriceChartAnnotations.tsx",
         "src/components/market-detail/PriceChartCanvas.tsx",
         "src/components/market-detail/priceChartModel.ts",
+        "src/components/market-detail/priceChartAnnotations.css",
       ]
     : []),
 ];

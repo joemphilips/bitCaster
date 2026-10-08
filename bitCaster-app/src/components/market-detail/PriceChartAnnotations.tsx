@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
@@ -10,6 +10,7 @@ import {
   chooseMarkerBodyPosition,
   clampPosition,
   commentTailPath,
+  commentMarkerPresentation,
   createChartTimeFormatter,
   createCommentTimeFormatter,
   formatPercent,
@@ -17,6 +18,8 @@ import {
   type PositionedCommentGroup,
   type Series,
 } from "./priceChartModel";
+
+import "./priceChartAnnotations.css";
 
 const MAX_AUTHOR_PROFILE_LOOKUPS = 40;
 export type ChartProfileRequests = Map<string, Promise<PublicNostrProfile | null>>;
@@ -75,6 +78,12 @@ export function PriceChartAnnotations({
   const { xScale, yScale, inverseX, plot } = coordinates ?? {};
   const chartRegionWidth = coordinates?.width ?? 0;
   const chartRegionHeight = coordinates?.height ?? 0;
+  const previousRenderRef = useRef(renderState);
+  const geometryChanged = previousRenderRef.current !== renderState;
+  useLayoutEffect(() => {
+    previousRenderRef.current = renderState;
+  }, [renderState]);
+  const pointerGroupRef = useRef<string | null>(null);
   const commentMarkerLayerRef = useRef<HTMLDivElement | null>(null);
   const commentPopoverRef = useRef<HTMLDivElement | null>(null);
   const activeMarkerRef = useRef<HTMLButtonElement | null>(null);
@@ -99,6 +108,7 @@ export function PriceChartAnnotations({
         !Number.isFinite(anchorTop)
       )
         continue;
+      const marker = commentMarkerPresentation(group.comments);
       positioned.push({
         ...group,
         anchorLeft,
@@ -111,6 +121,8 @@ export function PriceChartAnnotations({
           chartRegionWidth,
           chartRegionHeight,
           positioned,
+          marker.width,
+          marker.height,
         ),
       });
     }
@@ -148,26 +160,29 @@ export function PriceChartAnnotations({
     };
   }, [activeGroup, profileRequests]);
   const commentPopoverWidth = Math.max(1, Math.min(288, chartRegionWidth - 8));
+  const activeResting = activeCommentGroup
+    ? commentMarkerPresentation(activeCommentGroup.comments)
+    : { width: 24, height: 18, opacity: 0.6 };
   const commentPopoverBelow = activeCommentGroup
-    ? chartRegionHeight - activeCommentGroup.anchorTop >= activeCommentGroup.anchorTop
+    ? activeCommentGroup.top + activeResting.height / 2 >= activeCommentGroup.anchorTop
     : true;
+  const activeHitTop = activeCommentGroup
+    ? activeCommentGroup.top - (44 - activeResting.height) / 2
+    : 4;
+  const activeHitLeft = activeCommentGroup
+    ? activeCommentGroup.left - (44 - activeResting.width) / 2
+    : 4;
   const commentPopoverSpace = activeCommentGroup
-    ? (commentPopoverBelow
-        ? chartRegionHeight - activeCommentGroup.anchorTop
-        : activeCommentGroup.anchorTop) - 12
+    ? (commentPopoverBelow ? chartRegionHeight - activeHitTop : activeHitTop + 44) - 4
     : chartRegionHeight - 8;
   const commentPopoverHeight = Math.max(1, Math.min(176, commentPopoverSpace));
   const commentPopoverLeft = activeCommentGroup
-    ? clampPosition(activeCommentGroup.anchorLeft + 8, commentPopoverWidth, chartRegionWidth)
+    ? clampPosition(activeHitLeft, commentPopoverWidth, chartRegionWidth)
     : 4;
   const commentPopoverTop = activeCommentGroup
-    ? clampPosition(
-        commentPopoverBelow
-          ? activeCommentGroup.anchorTop + 8
-          : activeCommentGroup.anchorTop - commentPopoverHeight - 8,
-        commentPopoverHeight,
-        chartRegionHeight,
-      )
+    ? commentPopoverBelow
+      ? activeHitTop
+      : activeHitTop + 44 - commentPopoverHeight
     : 4;
 
   const cursorPrice =
@@ -190,6 +205,7 @@ export function PriceChartAnnotations({
     dismissTimerRef.current = null;
     pinnedCommentGroupIdRef.current = null;
     setActiveCommentGroupId(null);
+    onCursorTime(null);
     if (
       restoreFocus &&
       activeMarkerRef.current &&
@@ -200,7 +216,24 @@ export function PriceChartAnnotations({
     }
   };
 
-  const activateCommentMarker = (group: PositionedCommentGroup, marker: HTMLButtonElement) => {
+  const activateCommentMarker = (
+    group: PositionedCommentGroup,
+    marker: HTMLButtonElement,
+    intent: "hover" | "focus" | "pin",
+  ) => {
+    const focused = document.activeElement;
+    if (
+      intent === "hover" &&
+      activeCommentGroupId !== null &&
+      activeCommentGroupId !== group.id &&
+      (pinnedCommentGroupIdRef.current !== null ||
+        (focused &&
+          (commentPopoverRef.current?.contains(focused) || activeMarkerRef.current === focused)))
+    )
+      return;
+    if (intent === "pin") pinnedCommentGroupIdRef.current = group.id;
+    else if (intent === "focus" && pinnedCommentGroupIdRef.current !== group.id)
+      pinnedCommentGroupIdRef.current = null;
     if (dismissTimerRef.current !== null) window.clearTimeout(dismissTimerRef.current);
     dismissTimerRef.current = null;
     activeMarkerRef.current = marker;
@@ -212,8 +245,15 @@ export function PriceChartAnnotations({
     if (pinnedCommentGroupIdRef.current !== null || dismissTimerRef.current !== null) return;
     dismissTimerRef.current = window.setTimeout(() => {
       dismissTimerRef.current = null;
-      setActiveCommentGroupId(null);
-    }, 120);
+      const focused = document.activeElement;
+      if (
+        pointerGroupRef.current === activeCommentGroupId ||
+        (focused &&
+          (commentPopoverRef.current?.contains(focused) || activeMarkerRef.current === focused))
+      )
+        return;
+      closeCommentPopover(false);
+    }, 200);
   };
 
   useEffect(() => {
@@ -223,8 +263,7 @@ export function PriceChartAnnotations({
     ) {
       return;
     }
-    pinnedCommentGroupIdRef.current = null;
-    setActiveCommentGroupId(null);
+    closeCommentPopover(false);
   }, [activeCommentGroupId, commentGroupResult]);
 
   useEffect(() => {
@@ -271,7 +310,38 @@ export function PriceChartAnnotations({
         viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
         style={{ opacity: layoutReady ? 1 : 0 }}
       >
-        {cursorX !== undefined && cursorTime !== null && (
+        {series.map((item) => {
+          const latest = item.data[item.data.length - 1];
+          if (!latest) return null;
+          const left = xScale(latest.timestampMs);
+          const top = yScale(latest.price);
+          if (!Number.isFinite(left) || !Number.isFinite(top) || left > plot.x + plot.width)
+            return null;
+          return (
+            <g key={item.id} data-series-id={item.id}>
+              <line
+                data-series-id={item.id}
+                data-testid="price-chart-current-extension"
+                x1={Math.max(plot.x, left)}
+                x2={plot.x + plot.width}
+                y1={top}
+                y2={top}
+                stroke={item.color}
+                strokeWidth={2}
+              />
+              <circle
+                data-series-id={item.id}
+                data-testid="price-chart-current-endpoint"
+                className="price-chart-endpoint-pulse"
+                cx={plot.x + plot.width}
+                cy={top}
+                r={4}
+                fill={item.color}
+              />
+            </g>
+          );
+        })}
+        {!activeCommentGroupId && cursorX !== undefined && cursorTime !== null && (
           <line
             x1={cursorX}
             x2={cursorX}
@@ -282,7 +352,7 @@ export function PriceChartAnnotations({
             pointerEvents="none"
           />
         )}
-        {!isCategorical && cursorY !== undefined && (
+        {!activeCommentGroupId && !isCategorical && cursorY !== undefined && (
           <line
             x1={plot.x}
             x2={plot.x + plot.width}
@@ -303,6 +373,7 @@ export function PriceChartAnnotations({
           className="pointer-events-auto"
           style={{ pointerEvents: layoutReady ? "auto" : "none" }}
           onPointerMove={(event) => {
+            if (activeCommentGroupId) return;
             const svg = event.currentTarget.ownerSVGElement;
             const matrix = svg?.getScreenCTM();
             if (!matrix) return;
@@ -319,7 +390,7 @@ export function PriceChartAnnotations({
       </svg>
       {createPortal(
         <div className="absolute inset-0" style={{ opacity: layoutReady ? 1 : 0 }}>
-          {cursorReadout && (
+          {!activeCommentGroupId && cursorReadout && (
             <>
               <div
                 data-testid="price-chart-x-axis-cursor-label"
@@ -347,28 +418,6 @@ export function PriceChartAnnotations({
             aria-label={t("market.chartComments")}
             className="pointer-events-none absolute inset-0 z-20"
           >
-            <svg
-              data-testid="price-chart-comment-tails"
-              aria-hidden="true"
-              className="pointer-events-none absolute left-0 top-0 overflow-visible"
-              width={chartRegionWidth}
-              height={chartRegionHeight}
-              viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
-              preserveAspectRatio="none"
-            >
-              {positionedCommentGroups.map((group) => (
-                <path
-                  key={group.id}
-                  data-testid="price-chart-comment-tail"
-                  data-anchor-x={group.anchorLeft}
-                  data-anchor-y={group.anchorTop}
-                  data-series-id={group.seriesId}
-                  d={commentTailPath(group)}
-                  className="fill-slate-400/60 stroke-slate-600 dark:fill-slate-500/60 dark:stroke-slate-300"
-                  strokeWidth="1"
-                />
-              ))}
-            </svg>
             {positionedCommentGroups.map((group) => {
               const markerText = t("market.chartCommentMarker", {
                 time: formatCommentTime(group.timestamp),
@@ -376,47 +425,168 @@ export function PriceChartAnnotations({
               });
               const label = group.seriesLabel ? `${group.seriesLabel}: ${markerText}` : markerText;
               const expanded = activeCommentGroupId === group.id;
+              const resting = commentMarkerPresentation(group.comments);
+              const left = expanded ? commentPopoverLeft : group.left;
+              const top = expanded ? commentPopoverTop : group.top;
+              const width = expanded ? commentPopoverWidth : resting.width;
+              const height = expanded ? commentPopoverHeight : resting.height;
+              const transition = geometryChanged || !layoutReady ? "none" : undefined;
               return (
-                <button
-                  key={group.id}
-                  type="button"
-                  data-testid="price-chart-comment-marker"
-                  data-chart-comment-marker="true"
-                  data-series-id={group.seriesId}
-                  data-anchor-x={group.anchorLeft}
-                  data-anchor-y={group.anchorTop}
-                  aria-label={label}
-                  aria-haspopup="dialog"
-                  aria-expanded={expanded}
-                  aria-controls={`price-chart-comments-${group.id}`}
-                  title={label}
-                  className="pointer-events-auto absolute flex h-[18px] w-6 items-center justify-center rounded-full border border-slate-600 bg-slate-400/60 px-1 text-[10px] font-bold leading-none text-slate-950 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-300 dark:bg-slate-500/60 dark:text-white"
-                  style={{
-                    left: group.left,
-                    top: group.top,
-                    pointerEvents: layoutReady ? "auto" : "none",
-                  }}
-                  onPointerEnter={(event) => activateCommentMarker(group, event.currentTarget)}
-                  onPointerLeave={scheduleCommentPopoverDismiss}
-                  onFocus={(event) => {
-                    if (ignoreNextMarkerFocusRef.current) {
-                      ignoreNextMarkerFocusRef.current = false;
-                      return;
-                    }
-                    activateCommentMarker(group, event.currentTarget);
-                  }}
-                  onBlur={scheduleCommentPopoverDismiss}
-                  onClick={(event) => {
-                    if (pinnedCommentGroupIdRef.current === group.id) {
-                      closeCommentPopover(false);
-                    } else {
-                      pinnedCommentGroupIdRef.current = group.id;
-                      activateCommentMarker(group, event.currentTarget);
-                    }
-                  }}
-                >
-                  {group.comments.length > 1 ? group.comments.length : "•"}
-                </button>
+                <div key={group.id} className="contents">
+                  <svg
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute inset-0 overflow-visible ${expanded ? "z-30" : ""}`}
+                    width={chartRegionWidth}
+                    height={chartRegionHeight}
+                    viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
+                  >
+                    <path
+                      data-testid={
+                        expanded ? "price-chart-comment-panel-tail" : "price-chart-comment-tail"
+                      }
+                      data-anchor-x={group.anchorLeft}
+                      data-anchor-y={group.anchorTop}
+                      data-series-id={group.seriesId}
+                      d={commentTailPath({ ...group, left, top }, width, height)}
+                      className="price-chart-comment-tail fill-slate-200 stroke-slate-400 dark:fill-slate-800 dark:stroke-slate-600"
+                      style={{ opacity: expanded ? 1 : resting.opacity, transition }}
+                    />
+                  </svg>
+                  <div
+                    data-testid="price-chart-comment-bubble"
+                    data-expanded={expanded}
+                    data-series-id={group.seriesId}
+                    className={`price-chart-comment-bubble absolute rounded-lg border border-slate-400 bg-slate-200 text-slate-800 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${expanded ? "z-30 shadow-xl" : ""}`}
+                    style={{
+                      left,
+                      top,
+                      width,
+                      height,
+                      opacity: expanded ? 1 : resting.opacity,
+                      transition,
+                      pointerEvents: layoutReady ? "auto" : "none",
+                    }}
+                    onPointerDown={() => {
+                      if (expanded) pinnedCommentGroupIdRef.current = group.id;
+                    }}
+                    onPointerEnter={() => {
+                      pointerGroupRef.current = group.id;
+                      if (dismissTimerRef.current !== null)
+                        window.clearTimeout(dismissTimerRef.current);
+                      dismissTimerRef.current = null;
+                    }}
+                    onPointerLeave={() => {
+                      pointerGroupRef.current = null;
+                      scheduleCommentPopoverDismiss();
+                    }}
+                    onFocusCapture={() => {
+                      if (dismissTimerRef.current !== null)
+                        window.clearTimeout(dismissTimerRef.current);
+                      dismissTimerRef.current = null;
+                    }}
+                    onBlurCapture={scheduleCommentPopoverDismiss}
+                  >
+                    <button
+                      type="button"
+                      data-testid="price-chart-comment-marker"
+                      data-chart-comment-marker="true"
+                      data-series-id={group.seriesId}
+                      data-anchor-x={group.anchorLeft}
+                      data-anchor-y={group.anchorTop}
+                      aria-label={label}
+                      aria-haspopup="dialog"
+                      aria-expanded={expanded}
+                      aria-controls={`price-chart-comments-${group.id}`}
+                      className="absolute flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[10px] font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      style={{
+                        left: group.left - left + resting.width / 2,
+                        top: group.top - top + resting.height / 2,
+                        transform: "translate(-50%, -50%)",
+                        opacity: expanded ? 0 : 1,
+                        pointerEvents: expanded || !layoutReady ? "none" : "auto",
+                      }}
+                      onPointerDown={(event) => {
+                        // Explicit selection owns the pin before touch's default focus.
+                        activateCommentMarker(group, event.currentTarget, "pin");
+                      }}
+                      onPointerEnter={(event) => {
+                        if (event.pointerType !== "touch")
+                          activateCommentMarker(group, event.currentTarget, "hover");
+                      }}
+                      onFocus={(event) => {
+                        if (ignoreNextMarkerFocusRef.current) {
+                          ignoreNextMarkerFocusRef.current = false;
+                          return;
+                        }
+                        activateCommentMarker(group, event.currentTarget, "focus");
+                      }}
+                      onClick={(event) => {
+                        activateCommentMarker(group, event.currentTarget, "pin");
+                      }}
+                    >
+                      {group.comments.length > 1 ? group.comments.length : "•"}
+                    </button>
+                    {expanded && (
+                      <div
+                        ref={commentPopoverRef}
+                        id={`price-chart-comments-${group.id}`}
+                        data-testid="price-chart-comment-popover"
+                        role="dialog"
+                        aria-label={t("market.chartComments")}
+                        className="price-chart-comment-content relative h-full overflow-hidden rounded-lg"
+                        onClick={() => {
+                          pinnedCommentGroupIdRef.current = group.id;
+                        }}
+                      >
+                        <div
+                          role="region"
+                          aria-label={t("market.chartComments")}
+                          tabIndex={0}
+                          className="h-full overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+                        >
+                          <ul className="space-y-3">
+                            {group.comments.map((comment, index) => (
+                              <li
+                                key={comment.id}
+                                className="border-b border-slate-300 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
+                              >
+                                <div className="mb-1 flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                                  <span
+                                    className="min-w-0 flex-1 truncate font-medium"
+                                    data-testid="price-chart-comment-author"
+                                    title={comment.userId}
+                                  >
+                                    {authorProfiles.get(comment.userId)?.displayName.trim() ||
+                                      comment.userDisplayName}
+                                  </span>
+                                  <time className="shrink-0" dateTime={comment.timestamp}>
+                                    {formatCommentTime(Date.parse(comment.timestamp))}
+                                  </time>
+                                  {index === 0 && (
+                                    <button
+                                      type="button"
+                                      aria-label={t("common.close")}
+                                      className="-my-2 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        closeCommentPopover(true);
+                                      }}
+                                    >
+                                      <X aria-hidden="true" className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </div>
+                                <p className="whitespace-pre-wrap break-words text-xs">
+                                  {comment.content}
+                                </p>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               );
             })}
             {commentGroupResult.hiddenCount > 0 && (
@@ -430,113 +600,6 @@ export function PriceChartAnnotations({
               </div>
             )}
           </div>
-          {activeCommentGroup && (
-            <>
-              <svg
-                aria-hidden="true"
-                className="pointer-events-none absolute left-0 top-0 z-30"
-                width={chartRegionWidth}
-                height={chartRegionHeight}
-                viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
-                preserveAspectRatio="none"
-              >
-                <path
-                  data-testid="price-chart-comment-panel-tail"
-                  data-anchor-x={activeCommentGroup.anchorLeft}
-                  data-anchor-y={activeCommentGroup.anchorTop}
-                  d={commentTailPath(
-                    {
-                      ...activeCommentGroup,
-                      left: commentPopoverLeft,
-                      top: commentPopoverTop,
-                    },
-                    commentPopoverWidth,
-                    commentPopoverHeight,
-                  )}
-                  className="fill-white stroke-slate-200 dark:fill-slate-800 dark:stroke-slate-600"
-                />
-              </svg>
-              <div
-                ref={commentPopoverRef}
-                id={`price-chart-comments-${activeCommentGroup.id}`}
-                data-testid="price-chart-comment-popover"
-                role="dialog"
-                aria-label={t("market.chartCommentsAt", {
-                  time: formatCommentTime(activeCommentGroup.timestamp),
-                })}
-                className="pointer-events-auto absolute z-30 flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                style={{
-                  left: commentPopoverLeft,
-                  top: commentPopoverTop,
-                  width: commentPopoverWidth,
-                  height: commentPopoverHeight,
-                  maxHeight: commentPopoverHeight,
-                  pointerEvents: layoutReady ? "auto" : "none",
-                }}
-                onPointerEnter={() => {
-                  if (dismissTimerRef.current !== null)
-                    window.clearTimeout(dismissTimerRef.current);
-                  dismissTimerRef.current = null;
-                }}
-                onPointerLeave={scheduleCommentPopoverDismiss}
-                onFocusCapture={() => {
-                  if (dismissTimerRef.current !== null)
-                    window.clearTimeout(dismissTimerRef.current);
-                  dismissTimerRef.current = null;
-                }}
-                onBlurCapture={scheduleCommentPopoverDismiss}
-              >
-                <div className="flex items-center justify-between gap-2 px-3 pt-2">
-                  <time
-                    className="text-[11px] text-slate-500 dark:text-slate-400"
-                    dateTime={new Date(activeCommentGroup.timestamp).toISOString()}
-                  >
-                    {formatCommentTime(activeCommentGroup.timestamp)}
-                  </time>
-                  <button
-                    type="button"
-                    aria-label={t("common.close")}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-300 dark:hover:bg-slate-700"
-                    onClick={() => closeCommentPopover(true)}
-                  >
-                    <X aria-hidden="true" className="h-4 w-4" />
-                  </button>
-                </div>
-                <div
-                  role="region"
-                  aria-label={t("market.chartCommentsAt", {
-                    time: formatCommentTime(activeCommentGroup.timestamp),
-                  })}
-                  tabIndex={0}
-                  className="min-h-0 overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:focus-visible:ring-blue-300"
-                >
-                  <ul className="space-y-3">
-                    {activeCommentGroup.comments.map((comment) => (
-                      <li
-                        key={comment.id}
-                        className="border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
-                      >
-                        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                          <span
-                            className="truncate font-medium"
-                            data-testid="price-chart-comment-author"
-                            title={comment.userId}
-                          >
-                            {authorProfiles.get(comment.userId)?.displayName.trim() ||
-                              comment.userDisplayName}
-                          </span>
-                          <time className="shrink-0" dateTime={comment.timestamp}>
-                            {formatCommentTime(Date.parse(comment.timestamp))}
-                          </time>
-                        </div>
-                        <p className="whitespace-pre-wrap break-words text-xs">{comment.content}</p>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </>
-          )}
         </div>,
         overlay,
       )}

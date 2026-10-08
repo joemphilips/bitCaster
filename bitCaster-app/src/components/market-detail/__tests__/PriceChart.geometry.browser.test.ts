@@ -1,6 +1,12 @@
 import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { commands, page } from "vitest/browser";
+declare module "vitest/browser" {
+  interface BrowserCommands {
+    setChartReducedMotion: (preference: "reduce" | "no-preference") => Promise<void>;
+  }
+}
 import "@/index.css";
 import i18n from "@/i18n";
 import { PriceChart } from "../PriceChart";
@@ -51,7 +57,14 @@ async function renderFixture(fixture: Fixture, expectedMarkers = 40) {
   await expect
     .poll(() =>
       [...host!.querySelectorAll<HTMLElement>('[data-testid="price-chart-comment-marker"]')].every(
-        (marker) => marker.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+        (marker) =>
+          marker.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ||
+          Boolean(
+            marker
+              .closest('[data-testid="price-chart-comment-bubble"]')
+              ?.querySelector('[data-testid="price-chart-comment-popover"]')
+              ?.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+          ),
       ),
     )
     .toBe(true);
@@ -461,4 +474,242 @@ it("paints one native marker for a coincident run and clears it on replacement",
   await renderFixture(fixture, 0);
   expect(observer!.snapshot().draws).toHaveLength(0);
   expect(host!.querySelector('[data-testid="price-chart-empty-state"]')).not.toBeNull();
+});
+
+function assertCurrentExtensions(fixture: Fixture) {
+  const plot = plotRectangle();
+  const series = fixture.props.outcomes
+    ? fixture.props.outcomes.map((outcome) => ({
+        id: outcome.id,
+        data: fixture.props.outcomePriceHistories![outcome.label]?.data ?? [],
+      }))
+    : [{ id: "primary", data: fixture.props.priceHistory.data }];
+  const populated = series.filter((item) => item.data.length > 0);
+  const lines = [
+    ...host!.querySelectorAll<SVGLineElement>('[data-testid="price-chart-current-extension"]'),
+  ];
+  const endpoints = [
+    ...host!.querySelectorAll<SVGCircleElement>('[data-testid="price-chart-current-endpoint"]'),
+  ];
+  expect(lines).toHaveLength(populated.length);
+  expect(endpoints).toHaveLength(populated.length);
+  for (const item of populated) {
+    const last = item.data[item.data.length - 1];
+    const expected = expectedPointer({
+      ...fixture,
+      anchor: { timestamp: Date.parse(last.timestamp), price: last.price },
+    });
+    const line = lines.find((node) => node.dataset.seriesId === item.id)!;
+    const endpoint = endpoints.find((node) => node.dataset.seriesId === item.id)!;
+    const first = new DOMPoint(line.x1.baseVal.value, line.y1.baseVal.value).matrixTransform(
+      line.getScreenCTM()!,
+    );
+    const end = new DOMPoint(line.x2.baseVal.value, line.y2.baseVal.value).matrixTransform(
+      line.getScreenCTM()!,
+    );
+    const tip = new DOMPoint(endpoint.cx.baseVal.value, endpoint.cy.baseVal.value).matrixTransform(
+      endpoint.getScreenCTM()!,
+    );
+    expect(Math.hypot(first.x - expected.x, first.y - expected.y)).toBeLessThanOrEqual(1);
+    expect(Math.hypot(end.x - (plot.left + plot.width), end.y - expected.y)).toBeLessThanOrEqual(1);
+    expect(Math.hypot(tip.x - end.x, tip.y - end.y)).toBeLessThanOrEqual(0.01);
+  }
+}
+
+it.each([true, false])(
+  "keeps presentation endpoints on confirmed prices through append and resize (binary=%s)",
+  async (binary) => {
+    let fixture = makeFixture({ name: "current-tip", binary, outcomes: 2, pointsPerOutcome: 300 });
+    fixture.props.comments = [];
+    await renderFixture(fixture, 0);
+    assertCurrentExtensions(fixture);
+    fixture = appendFixture(fixture);
+    fixture.props.comments = [];
+    await renderFixture(fixture, 0);
+    assertCurrentExtensions(fixture);
+    fixture = rollingFixture(fixture, 15);
+    fixture.props.comments = [];
+    await renderFixture(fixture, 0);
+    assertCurrentExtensions(fixture);
+    const oldWidth = plotRectangle().width;
+    host!.style.width = "320px";
+    await expect.poll(() => plotRectangle().width).toBeLessThan(oldWidth);
+    assertCurrentExtensions(fixture);
+  },
+);
+
+function edgeFixture(edge: "left" | "right") {
+  const fixture = makeFixture({
+    name: `expansion-${edge}`,
+    binary: true,
+    outcomes: 2,
+    pointsPerOutcome: 300,
+  });
+  const data = [
+    { eventOrder: "first", timestamp: "2026-05-25T10:00:00.000Z", price: 1 },
+    { eventOrder: "last", timestamp: "2026-05-25T11:00:00.000Z", price: 99 },
+  ];
+  const point = data[edge === "left" ? 0 : 1];
+  fixture.props.priceHistory = { timeframe: "all", data };
+  fixture.props.comments = [
+    {
+      ...fixture.props.comments![0],
+      timestamp: point.timestamp,
+      trade: {
+        ...fixture.props.comments![0].trade!,
+        outcomeId: "yes",
+        executedAt: point.timestamp,
+        price: point.price,
+      },
+    },
+  ];
+  fixture.anchor = { timestamp: Date.parse(point.timestamp), price: point.price };
+  return fixture;
+}
+
+it.each(["left", "right"] as const)(
+  "keeps the %s-edge confirmed pointer fixed throughout bubble expansion",
+  async (edge) => {
+    const fixture = edgeFixture(edge);
+    await renderFixture(fixture, 1);
+    const oldWidth = plotRectangle().width;
+    host!.style.width = "320px";
+    await expect.poll(() => plotRectangle().width).toBeLessThan(oldWidth);
+    const marker = host!.querySelector<HTMLButtonElement>(
+      '[data-testid="price-chart-comment-marker"]',
+    )!;
+    const bubble = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-bubble"]')!;
+    const initialWidth = bubble.getBoundingClientRect().width;
+    const hit = marker.getBoundingClientRect();
+    expect(hit.width).toBeGreaterThanOrEqual(44);
+    expect(hit.height).toBeGreaterThanOrEqual(44);
+    expect(marker.hasAttribute("title")).toBe(false);
+    await page.getByTestId("price-chart-comment-marker").hover();
+    const until = performance.now() + 240;
+    let visibleFrames = 0;
+    while (performance.now() < until) {
+      await frame();
+      const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]');
+      if (!card?.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      visibleFrames++;
+      expect(pointerError(fixture)).toBeLessThanOrEqual(1);
+      const region = host!
+        .querySelector<HTMLElement>('[data-testid="price-chart-region"]')!
+        .getBoundingClientRect();
+      const bounds = bubble.getBoundingClientRect();
+      expect(bounds.left).toBeGreaterThanOrEqual(region.left - 1);
+      expect(bounds.right).toBeLessThanOrEqual(region.right + 1);
+      expect(bounds.top).toBeGreaterThanOrEqual(region.top - 1);
+      expect(bounds.bottom).toBeLessThanOrEqual(region.bottom + 1);
+    }
+    expect(visibleFrames).toBeGreaterThan(1);
+    expect(bubble.getBoundingClientRect().width).toBeGreaterThan(initialWidth);
+    const unfocusedShadow = getComputedStyle(bubble).boxShadow;
+    marker.focus();
+    await frame();
+    expect(getComputedStyle(bubble).boxShadow).not.toBe(unfocusedShadow);
+    expect(document.activeElement).toBe(marker);
+    expect(marker.checkVisibility({ opacityProperty: true, visibilityProperty: true })).toBe(false);
+    expect(bubble.querySelectorAll('[data-testid="price-chart-comment-popover"]')).toHaveLength(1);
+    expect(host!.querySelectorAll('[data-testid="price-chart-comment-tail"]')).toHaveLength(0);
+    expect(host!.querySelectorAll('[data-testid="price-chart-comment-panel-tail"]')).toHaveLength(
+      1,
+    );
+    await assertPointerAndStep(fixture);
+  },
+);
+
+it("disables endpoint pulse and bubble motion under the real reduced-motion preference", async () => {
+  const initial = matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "reduce"
+    : "no-preference";
+  try {
+    await commands.setChartReducedMotion("no-preference");
+    const fixture = edgeFixture("right");
+    await renderFixture(fixture, 1);
+    const tip = host!.querySelector<SVGCircleElement>(
+      '[data-testid="price-chart-current-endpoint"]',
+    )!;
+    expect(getComputedStyle(tip).animationName).not.toBe("none");
+    const position = [tip.cx.baseVal.value, tip.cy.baseVal.value];
+    await frame();
+    expect([tip.cx.baseVal.value, tip.cy.baseVal.value]).toEqual(position);
+    await commands.setChartReducedMotion("reduce");
+    expect(matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(true);
+    expect(getComputedStyle(tip).animationName).toBe("none");
+    host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
+    await frame();
+    await frame();
+    const bubble = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-bubble"]')!;
+    const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]')!;
+    expect(
+      getComputedStyle(bubble)
+        .transitionDuration.split(",")
+        .every((value) => Number.parseFloat(value) === 0),
+    ).toBe(true);
+    expect(getComputedStyle(card).animationName).toBe("none");
+    expect(pointerError(fixture)).toBeLessThanOrEqual(1);
+    assertCurrentExtensions(fixture);
+  } finally {
+    await commands.setChartReducedMotion(initial);
+  }
+});
+
+it("preserves a pinned or focused card under real hover over another group", async () => {
+  const fixture = edgeFixture("left");
+  const second = fixture.props.priceHistory.data[1];
+  fixture.props.comments = [
+    fixture.props.comments![0],
+    {
+      ...fixture.props.comments![0],
+      id: "other-comment",
+      content: "Other confirmed comment",
+      timestamp: second.timestamp,
+      trade: {
+        ...fixture.props.comments![0].trade!,
+        executedAt: second.timestamp,
+        price: second.price,
+      },
+    },
+  ];
+  await renderFixture(fixture, 2);
+  const markers = host!.querySelectorAll<HTMLButtonElement>(
+    '[data-testid="price-chart-comment-marker"]',
+  );
+  await page.getByTestId("price-chart-comment-marker").nth(0).hover();
+  await page.getByTestId("price-chart-comment-popover").click();
+  const pinnedCard = host!.querySelector('[data-testid="price-chart-comment-popover"]');
+  await page.getByTestId("price-chart-comment-marker").nth(1).hover();
+  await frame();
+  expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')).toBe(pinnedCard);
+  await assertPointerAndStep(fixture);
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+    .toBeNull();
+  await page.getByTestId("price-chart-comment-marker").nth(0).hover();
+  const focusedCard = host!.querySelector<HTMLElement>(
+    '[data-testid="price-chart-comment-popover"]',
+  )!;
+  const close = focusedCard.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!;
+  close.focus();
+  await page.getByTestId("price-chart-comment-marker").nth(1).hover();
+  await frame();
+  expect(host!.querySelector('[data-testid="price-chart-comment-popover"]')).toBe(focusedCard);
+  expect(document.activeElement).toBe(close);
+  markers[1].focus();
+  await expect
+    .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]')?.textContent)
+    .toContain("Other confirmed comment");
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  try {
+    outside.focus();
+    await page.getByTestId("price-chart-region").hover({ position: { x: 500, y: 210 } });
+    await expect
+      .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
+      .toBeNull();
+  } finally {
+    outside.remove();
+  }
 });

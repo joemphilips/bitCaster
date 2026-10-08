@@ -227,6 +227,10 @@ outcome has traded, only that line is shown; bitCaster does not invent prices
 for outcomes that have not traded. Before any confirmed trade, the market
 shows **No trades yet** or an em dash.
 
+The line continues at the latest confirmed price to the chart edge.
+This extension does not represent a new trade. The endpoint glows gently.
+The chart disables motion when your device requests reduced motion.
+
 When you point at a historical date, the price is the last confirmed trade at
 or before that date. Pointer height does not set the price.
 An outcome with no confirmed trade at or before that date has no available price.
@@ -250,7 +254,10 @@ Trade comments are optional and public inside bitCaster. A comment is shown only
 
 Chart comment bubbles point to the time and price of the associated confirmed
 trade. The pointer stays on that trade when new prices arrive or the chart
-size changes. Hover over, focus, or tap a bubble to read the comment. A comment stays
+size changes. Hover over or focus a bubble to expand it into a comment card.
+Click or tap to keep the card open. Press Escape or use its close button to close it.
+Bubbles become larger and less transparent as their comments receive more likes.
+A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
 

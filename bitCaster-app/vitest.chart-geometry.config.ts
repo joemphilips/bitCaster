@@ -1,4 +1,4 @@
-import { playwright } from "@vitest/browser-playwright";
+import { defineBrowserCommand, playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
@@ -16,6 +16,15 @@ export default mergeConfig(
         enabled: true,
         headless: true,
         viewport: { width: 1280, height: 900 },
+        commands: {
+          setChartReducedMotion: defineBrowserCommand(
+            async ({ page }, reducedMotion: "reduce" | "no-preference") => {
+              if (reducedMotion !== "reduce" && reducedMotion !== "no-preference")
+                throw new Error("Invalid motion preference");
+              await page.emulateMedia({ reducedMotion });
+            },
+          ),
+        },
         instances: [1, 2].map((deviceScaleFactor) => ({
           name: `chart-geometry-dpr${deviceScaleFactor}`,
           browser: "chromium",

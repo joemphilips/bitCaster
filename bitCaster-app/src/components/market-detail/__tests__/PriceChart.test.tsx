@@ -189,6 +189,79 @@ describe("PriceChart", () => {
     expect(nativeChart().data.datasets[0].pointRadius).toBe(0);
   });
 
+  it("extends the latest confirmed price without appending a history point", () => {
+    const history: PriceHistory = {
+      timeframe: "1h",
+      asOf: "2026-05-25T12:00:00Z",
+      receivedAt: 0,
+      data: [{ eventOrder: "first", timestamp: "2026-05-25T11:30:00Z", price: 40 }],
+    };
+    const original = structuredClone(history);
+    const view = render(<PriceChart chartTimeframe="1h" priceHistory={history} />);
+    const extension = screen.getByTestId("price-chart-current-extension");
+    expect(Number(extension.getAttribute("x2"))).toBeGreaterThan(
+      Number(extension.getAttribute("x1")),
+    );
+    expect(extension.getAttribute("y1")).toBe(extension.getAttribute("y2"));
+    expect(screen.getByTestId("price-chart-current-endpoint")).toHaveAttribute(
+      "data-series-id",
+      "primary",
+    );
+    expect(nativeChart().data.datasets.flatMap((dataset) => dataset.data)).toHaveLength(1);
+    expect(history).toEqual(original);
+    const appended: PriceHistory = {
+      ...history,
+      data: [
+        ...history.data,
+        { eventOrder: "second", timestamp: "2026-05-25T11:45:00Z", price: 60 },
+      ],
+    };
+    view.rerender(<PriceChart chartTimeframe="1h" priceHistory={appended} />);
+    expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("60.00%");
+    expect(nativeChart().data.datasets.flatMap((dataset) => dataset.data)).toHaveLength(2);
+    expect(appended.data.map((point) => point.eventOrder)).toEqual(["first", "second"]);
+    expect(screen.getAllByTestId("price-chart-current-endpoint")).toHaveLength(1);
+    const currentTipY = screen.getByTestId("price-chart-current-endpoint").getAttribute("cy");
+    moveCursor(0.5);
+    expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("40.00%");
+    expect(screen.getByTestId("price-chart-current-endpoint")).toHaveAttribute("cy", currentTipY);
+    view.rerender(
+      <PriceChart chartTimeframe="all" priceHistory={{ timeframe: "all", data: [] }} />,
+    );
+    expect(screen.queryByTestId("price-chart-current-extension")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("price-chart-current-endpoint")).not.toBeInTheDocument();
+  });
+
+  it("shows one endpoint for each populated categorical series without pricing an empty outcome", () => {
+    const data = [{ eventOrder: "first", timestamp: "2026-05-25T10:00:00Z", price: 30 }];
+    render(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={{ timeframe: "all", data: [] }}
+        outcomes={[
+          { id: "a", label: "A", odds: null, color: "#112233" },
+          { id: "b", label: "B", odds: null, color: "#445566" },
+          { id: "c", label: "C", odds: null, color: "#778899" },
+        ]}
+        outcomePriceHistories={{
+          A: { timeframe: "all", data },
+          B: {
+            timeframe: "all",
+            data: [{ ...data[0], eventOrder: "b", timestamp: "2026-05-25T11:00:00Z", price: 75 }],
+          },
+          C: { timeframe: "all", data: [] },
+        }}
+      />,
+    );
+    expect(
+      screen
+        .getAllByTestId("price-chart-current-endpoint")
+        .map((endpoint) => endpoint.getAttribute("data-series-id")),
+    ).toEqual(["a", "b"]);
+    expect(screen.getAllByTestId("latest-price-pill")[2]).toHaveTextContent("CPrice unavailable");
+    expect(nativeChart().data.datasets.flatMap((dataset) => dataset.data)).toHaveLength(2);
+  });
+
   it("renders the later connected No Sell on the YES-basis latest-price pill", () => {
     const buyPoint = {
       timestamp: "2026-09-27T20:03:00.000Z",
@@ -322,6 +395,242 @@ describe("PriceChart", () => {
     expect(marker).toHaveFocus();
   });
 
+  it("keeps a hover card open across pointer transfer and while focus stays inside", () => {
+    vi.useFakeTimers();
+    const timestamp = "2026-05-25T10:00:00.000Z";
+    const outside = document.createElement("button");
+    outside.textContent = "Outside chart";
+    document.body.append(outside);
+    const view = render(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={{ timeframe: "all", data: [{ eventOrder: "first", timestamp, price: 50 }] }}
+        comments={[makeComment("hover", timestamp, makeTrade(timestamp))]}
+      />,
+    );
+    try {
+      outside.focus();
+      const marker = screen.getByTestId("price-chart-comment-marker");
+      fireEvent.pointerEnter(marker);
+      expect(outside).toHaveFocus();
+      const dialog = screen.getByRole("dialog");
+      fireEvent.pointerLeave(marker);
+      fireEvent.pointerEnter(dialog);
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      const close = screen.getByRole("button", { name: /^Close$/ });
+      act(() => close.focus());
+      fireEvent.pointerLeave(dialog);
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(close).toHaveFocus();
+      act(() => outside.focus());
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      outside.remove();
+      vi.useRealTimers();
+    }
+  });
+
+  it("pins a tapped card and does not reopen it when Close or Escape restores focus", () => {
+    vi.useFakeTimers();
+    const timestamp = "2026-05-25T10:00:00.000Z";
+    const view = render(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={{ timeframe: "all", data: [{ eventOrder: "first", timestamp, price: 50 }] }}
+        comments={[makeComment("pinned", timestamp, makeTrade(timestamp))]}
+      />,
+    );
+    try {
+      const marker = screen.getByTestId("price-chart-comment-marker");
+      for (const closeWith of ["button", "escape"]) {
+        fireEvent.pointerDown(marker, { pointerType: "touch" });
+        fireEvent.click(marker);
+        const dialog = screen.getByRole("dialog");
+        fireEvent.pointerLeave(marker);
+        fireEvent.pointerLeave(dialog);
+        act(() => vi.advanceTimersByTime(300));
+        expect(screen.getByRole("dialog")).toBe(dialog);
+        const close = screen.getByRole("button", { name: /^Close$/ });
+        act(() => close.focus());
+        if (closeWith === "button") fireEvent.click(close);
+        else fireEvent.keyDown(document, { key: "Escape" });
+        act(() => vi.advanceTimersByTime(300));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(marker).toHaveFocus();
+        fireEvent.pointerMove(marker);
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      }
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  describe("two-group comment ownership", () => {
+    function setupGroups() {
+      const data = [
+        { eventOrder: "a", timestamp: "2026-05-25T10:00:00Z", price: 30 },
+        { eventOrder: "b", timestamp: "2026-05-25T11:00:00Z", price: 70 },
+      ];
+      const outside = document.createElement("button");
+      document.body.append(outside);
+      outside.focus();
+      const view = render(
+        <PriceChart
+          chartTimeframe="all"
+          priceHistory={{ timeframe: "all", data }}
+          comments={data.map((point) =>
+            makeComment(
+              point.eventOrder,
+              point.timestamp,
+              makeTrade(point.timestamp, { price: point.price }),
+            ),
+          )}
+        />,
+      );
+      return { outside, view, markers: screen.getAllByTestId("price-chart-comment-marker") };
+    }
+
+    it.each(["pinned", "close", "region"] as const)(
+      "passive hover preserves A when %s owns it; an explicit click switches to B",
+      (owner) => {
+        vi.useFakeTimers();
+        const { outside, view, markers } = setupGroups();
+        try {
+          if (owner === "pinned") fireEvent.click(markers[0]);
+          else fireEvent.pointerEnter(markers[0]);
+          const cardA = screen.getByRole("dialog");
+          const focusOwner =
+            owner === "close"
+              ? screen.getByRole("button", { name: /^Close$/ })
+              : owner === "region"
+                ? screen.getByRole("region", { name: "Price chart comments" })
+                : outside;
+          act(() => focusOwner.focus());
+          fireEvent.pointerEnter(markers[1]);
+          act(() => vi.advanceTimersByTime(300));
+          expect(screen.getByRole("dialog")).toBe(cardA);
+          expect(cardA).toHaveTextContent("Comment a");
+          expect(focusOwner).toHaveFocus();
+          fireEvent.click(markers[1]);
+          const cardB = screen.getByRole("dialog");
+          expect(cardB).not.toBe(cardA);
+          expect(cardB).toHaveTextContent("Comment b");
+          fireEvent.pointerLeave(markers[1].closest('[data-testid="price-chart-comment-bubble"]')!);
+          act(() => outside.focus());
+          act(() => vi.advanceTimersByTime(300));
+          expect(screen.getByRole("dialog")).toBe(cardB);
+          fireEvent.keyDown(document, { key: "Escape" });
+          expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+          expect(markers[1]).toHaveFocus();
+        } finally {
+          view.unmount();
+          outside.remove();
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it("keyboard focus switches from pinned A to unpinned B without leaving an obsolete pin", () => {
+      vi.useFakeTimers();
+      const { outside, view, markers } = setupGroups();
+      try {
+        fireEvent.click(markers[0]);
+        expect(screen.getByRole("dialog")).toHaveTextContent("Comment a");
+        act(() => markers[1].focus());
+        expect(screen.getByRole("dialog")).toHaveTextContent("Comment b");
+        expect(markers[1]).toHaveFocus();
+        act(() => outside.focus());
+        fireEvent.pointerLeave(markers[1].closest('[data-testid="price-chart-comment-bubble"]')!);
+        act(() => vi.advanceTimersByTime(300));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+        outside.remove();
+        vi.useRealTimers();
+      }
+    });
+
+    it("allows ordinary hover to switch from A to B when neither owns focus or a pin", () => {
+      vi.useFakeTimers();
+      const { outside, view, markers } = setupGroups();
+      try {
+        fireEvent.pointerEnter(markers[0]);
+        expect(screen.getByRole("dialog")).toHaveTextContent("Comment a");
+        fireEvent.pointerLeave(markers[0]);
+        fireEvent.pointerEnter(markers[1]);
+        expect(screen.getByRole("dialog")).toHaveTextContent("Comment b");
+        expect(outside).toHaveFocus();
+        fireEvent.pointerLeave(markers[1].closest('[data-testid="price-chart-comment-bubble"]')!);
+        act(() => vi.advanceTimersByTime(300));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+        outside.remove();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("bounds reaction appearance without changing confirmed anchors or fill ranking", () => {
+    const data = [0, 1, 2].map((index) => ({
+      eventOrder: String(index),
+      timestamp: new Date(Date.parse("2026-05-25T10:00:00Z") + index * 1000).toISOString(),
+      price: 50,
+    }));
+    const comments = data.map((point, index) => ({
+      ...makeComment(String(index), point.timestamp, makeTrade(point.timestamp)),
+      likeCount: [-1, 3, 1_000_000][index],
+    }));
+    const history: PriceHistory = { timeframe: "all", data };
+    const view = render(
+      <PriceChart chartTimeframe="all" priceHistory={history} comments={comments} />,
+    );
+    const bubbles = screen.getAllByTestId("price-chart-comment-bubble");
+    const widths = bubbles.map((bubble) => Number.parseFloat(bubble.style.width));
+    const heights = bubbles.map((bubble) => Number.parseFloat(bubble.style.height));
+    const opacity = bubbles.map((bubble) => Number(bubble.style.opacity));
+    expect(widths[1]).toBeGreaterThan(widths[0]);
+    expect(opacity[1]).toBeGreaterThan(opacity[0]);
+    for (const width of widths) {
+      expect(width).toBeGreaterThanOrEqual(24);
+      expect(width).toBeLessThanOrEqual(36);
+    }
+    for (const height of heights) {
+      expect(height).toBeGreaterThanOrEqual(18);
+      expect(height).toBeLessThanOrEqual(26);
+    }
+    for (const value of opacity) {
+      expect(value).toBeGreaterThanOrEqual(0.6);
+      expect(value).toBeLessThanOrEqual(0.9);
+    }
+    const markers = screen.getAllByTestId("price-chart-comment-marker");
+    const anchors = markers.map((marker) => [
+      marker.getAttribute("data-anchor-x"),
+      marker.getAttribute("data-anchor-y"),
+    ]);
+    view.rerender(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={history}
+        comments={comments.map((comment) => ({ ...comment, likeCount: 2_000_000 }))}
+      />,
+    );
+    expect(
+      screen
+        .getAllByTestId("price-chart-comment-marker")
+        .map((marker) => [
+          marker.getAttribute("data-anchor-x"),
+          marker.getAttribute("data-anchor-y"),
+        ]),
+    ).toEqual(anchors);
+    expect(nativeChart().data.datasets.flatMap((dataset) => dataset.data)).toHaveLength(3);
+  });
+
   it("groups comments by exact trade coordinate and opens a bounded escaped keyboard-accessible list", () => {
     const timestamp = "2026-05-25T10:00:00.000Z";
     const comments: Comment[] = Array.from({ length: 12 }, (_, index) => ({
@@ -369,37 +678,46 @@ describe("PriceChart", () => {
     fireEvent.focus(markers[0]);
 
     const dialog = screen.getByRole("dialog");
-    expect(markers[0]).toHaveClass("bg-slate-400/60");
-    expect(dialog).toHaveClass("bg-white", "dark:bg-slate-800");
+    expect(markers[0]).not.toHaveAttribute("title");
+    expect(dialog.closest('[data-testid="price-chart-comment-bubble"]')).toContainElement(
+      markers[0],
+    );
+    expect(markers[0]).not.toBeVisible();
     const closeButton = screen.getByRole("button", { name: "Close" });
     expect(closeButton).toHaveTextContent("");
     expect(closeButton.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(closeButton.parentElement?.querySelector("time")).toHaveAttribute("datetime", timestamp);
+    expect(dialog.querySelectorAll("time")).toHaveLength(12);
+    expect(dialog.querySelectorAll('[data-testid="price-chart-comment-author"]')).toHaveLength(12);
+    expect(dialog.querySelectorAll('button[aria-label="Close"]')).toHaveLength(1);
     expect(screen.getByTestId("price-chart-comment-panel-tail")).toBeInTheDocument();
     expect(dialog.querySelector("h4")).toBeNull();
-    expect(dialog).toHaveAccessibleName(expect.stringContaining("5/25/26"));
+    expect(dialog).toHaveAccessibleName("Price chart comments");
     expect(dialog).toHaveTextContent("<img src=x onerror=alert(1)>");
     expect(dialog).toHaveTextContent("<script>alert(1)</script>");
     expect(dialog.querySelector("img,script")).toBeNull();
     expect(dialog.querySelectorAll("li")).toHaveLength(12);
-    expect(Number.parseFloat(dialog.style.maxHeight)).toBeLessThanOrEqual(176);
+    expect(
+      Number.parseFloat(
+        (dialog.closest('[data-testid="price-chart-comment-bubble"]') as HTMLElement).style.height,
+      ),
+    ).toBeLessThanOrEqual(176);
     const scrollContainer = dialog.querySelector(".overflow-y-auto");
     expect(scrollContainer).toBeInTheDocument();
     expect(scrollContainer).toHaveAttribute("role", "region");
     expect(scrollContainer).toHaveAttribute("tabindex", "0");
-    expect(scrollContainer).toHaveAccessibleName(/Comments at/);
+    expect(scrollContainer).toHaveAccessibleName("Price chart comments");
     expect(scrollContainer).toHaveClass("focus-visible:ring-2");
     expect(scrollContainer).toContainElement(screen.getByText("Comment 11"));
     act(() => (scrollContainer as HTMLElement).focus());
     expect(scrollContainer).toHaveFocus();
     expect(screen.queryByTestId("price-chart-cursor-tooltip")).not.toBeInTheDocument();
-    expect(screen.getByTestId("price-chart-x-axis-cursor-label")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-chart-x-axis-cursor-label")).not.toBeInTheDocument();
     expect(screen.queryByTestId("price-chart-y-axis-cursor-label")).not.toBeInTheDocument();
     expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("Price unavailable");
 
     fireEvent.pointerDown(markers[1], { pointerType: "touch" });
     fireEvent.click(markers[1]);
-    expect(dialog).toHaveTextContent("Another time group");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Another time group");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
@@ -455,12 +773,15 @@ describe("PriceChart", () => {
       const marker = screen.getByTestId("price-chart-comment-marker");
       fireEvent.click(marker);
       const dialog = screen.getByRole("dialog");
-      expect(dialog).toHaveAccessibleName(/Comments at 5\/25\/26/);
-      expect(dialog.querySelectorAll("time")).toHaveLength(2);
+      expect(dialog).toHaveAccessibleName("Price chart comments");
+      expect(dialog.querySelectorAll("time")).toHaveLength(1);
       for (const time of dialog.querySelectorAll("time")) {
         expect(time).toHaveAttribute("datetime", timestamp);
         expect(time).toHaveTextContent(dateOnly ? /^5\/25\/26$/ : /5\/25\/26, .*\d:\d/);
       }
+      expect(screen.queryByTestId("price-chart-x-axis-cursor-label")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
+      moveCursor(1);
       expect(screen.getByTestId("price-chart-x-axis-cursor-label")).toHaveTextContent(
         dateOnly ? /^5\/25\/26$/ : /5\/25\/26, .*\d:\d/,
       );
@@ -507,7 +828,7 @@ describe("PriceChart", () => {
         avatar: "",
       }),
     );
-    const dialog = screen.getByRole("dialog", { name: /Comments at/ });
+    const dialog = screen.getByRole("dialog", { name: "Price chart comments" });
     expect(dialog.querySelector("h4")).toBeNull();
     expect(dialog.querySelector("img,script")).toBeNull();
     expect(dialog).toHaveTextContent("<img src=x onerror=alert(1)>");
