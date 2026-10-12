@@ -431,6 +431,14 @@
     "./oracleBackupAccess": {
       "types": "./dist/oracleBackupAccess.d.ts",
       "import": "./dist/oracleBackupAccess.js"
+    },
+    "./nostrMediaUpload": {
+      "types": "./dist/nostrMediaUpload.d.ts",
+      "import": "./dist/nostrMediaUpload.js"
+    },
+    "./nostrProfileImageHeader": {
+      "types": "./dist/nostrProfileImageHeader.d.ts",
+      "import": "./dist/nostrProfileImageHeader.js"
     }
   },
   "scripts": {

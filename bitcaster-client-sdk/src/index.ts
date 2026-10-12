@@ -112,3 +112,6 @@ export * from './nostrSignerKey.ts'
 export * from './nostrProfile.ts'
 export * from './bookmarks.ts'
 export * from './likedMarketClose.ts'
+export * from './nostrMediaUpload.ts'
+
+export * from './nostrProfileImageHeader.ts'
