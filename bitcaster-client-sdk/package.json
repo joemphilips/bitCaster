@@ -7,6 +7,10 @@
     "node": ">=22"
   },
   "exports": {
+    "./publicNostrProfileCache": {
+      "types": "./dist/publicNostrProfileCache.d.ts",
+      "import": "./dist/publicNostrProfileCache.js"
+    },
     "./outgoingCashuActivity": {
       "types": "./dist/outgoingCashuActivity.d.ts",
       "import": "./dist/outgoingCashuActivity.js"

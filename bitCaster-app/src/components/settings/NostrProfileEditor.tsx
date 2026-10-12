@@ -272,7 +272,9 @@ export function NostrProfileEditor({
                     >
                       {t("settings.profileImageChoose")}
                     </button>
-                    <p className="mt-2 text-xs text-slate-500">{t("settings.profileImageHint")}</p>
+                    <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                      {t("settings.profileImageHint")}
+                    </p>
                     {busy === "uploading" && (
                       <p role="status">{t("settings.profileImageUploading")}</p>
                     )}

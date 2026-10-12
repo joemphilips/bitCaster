@@ -1,3 +1,5 @@
+import { createPublicNostrProfileCache } from "@bitcaster/client-sdk/publicNostrProfileCache";
+import { queryBrowserProfileRelay } from "./browserProfileRelay";
 /**
  * NDK singleton and helpers for bitCaster.
  *
@@ -365,23 +367,27 @@ export interface PublicNostrProfile {
   avatar: string;
 }
 
-export async function fetchPublicNostrProfile(pubkey: string): Promise<PublicNostrProfile | null> {
+const publicProfileCache = createPublicNostrProfileCache((url, filter, onEvent, signal) =>
+  queryBrowserProfileRelay(url, filter, onEvent, {
+    requireCurrent: () => {},
+    timeoutMs: 5000,
+    signal,
+  }),
+);
+
+export async function fetchPublicNostrProfile(
+  pubkey: string,
+  signal?: AbortSignal,
+): Promise<PublicNostrProfile | null> {
   try {
-    const ndk = getNdk();
-    const user = ndk.getUser({ pubkey });
-    await Promise.race([
-      user.fetchProfile(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
-    ]).catch(() => {});
-    const profile = user.profile;
-    if (!profile) return null;
-    const displayName = typeof profile.displayName === "string" ? profile.displayName.trim() : "";
-    const name = typeof profile.name === "string" ? profile.name.trim() : "";
-    return {
+    const profile = await publicProfileCache.read(
       pubkey,
-      displayName: displayName || name || pubkey.slice(0, 8),
-      avatar: typeof profile.image === "string" ? profile.image.trim() : "",
-    };
+      effectiveRelayUrls(useSettingsStore.getState().relays),
+      signal,
+    );
+    return profile
+      ? { pubkey: profile.pubkey, displayName: profile.displayName, avatar: profile.avatar }
+      : null;
   } catch {
     return null;
   }

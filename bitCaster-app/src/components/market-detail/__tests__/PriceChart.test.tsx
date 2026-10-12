@@ -900,7 +900,7 @@ describe("PriceChart", () => {
     },
   );
 
-  it("loads only opened authors once and preserves the escaped author, text, and written date", async () => {
+  it("requests only opened authors through the shared cache and preserves escaped text and date", async () => {
     const timestamp = "2026-05-25T10:00:00.000Z";
     const author = "a".repeat(64);
     let resolveProfile!: (profile: PublicNostrProfile | null) => void;
@@ -932,7 +932,10 @@ describe("PriceChart", () => {
     const marker = screen.getByTestId("price-chart-comment-marker");
     fireEvent.click(marker);
     expect(screen.getAllByText("aaaaaaaa…aaaaaaaa")).toHaveLength(2);
-    expect(fetchPublicNostrProfile).toHaveBeenCalledExactlyOnceWith(author);
+    expect(fetchPublicNostrProfile).toHaveBeenCalledExactlyOnceWith(
+      author,
+      expect.any(AbortSignal),
+    );
     await act(async () =>
       resolveProfile({
         pubkey: author,
@@ -948,7 +951,9 @@ describe("PriceChart", () => {
     expect(dialog.querySelector("time")).toHaveAttribute("datetime", timestamp);
     fireEvent.keyDown(document, { key: "Escape" });
     await act(async () => fireEvent.click(marker));
-    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(1);
+    // Reopening consults the shared TTL cache; SDK tests prove network deduplication.
+    expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(2);
+    expect(dialog).toHaveTextContent("<img src=x onerror=alert(1)>");
   });
 
   it.each(["missing", "failed"])(

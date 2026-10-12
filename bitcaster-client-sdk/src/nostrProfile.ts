@@ -112,11 +112,15 @@ export function decodeNostrProfileEvent(
     if (!fields) return null
     const text = (key: string): string | undefined =>
       typeof fields[key] === 'string' ? (fields[key] as string) : undefined
+    const displayText = (key: string) => text(key)?.trim() || undefined
     return {
       pubkey: publicKeyHex,
       displayName:
-        text('display_name') ?? text('displayName') ?? text('name') ?? publicKeyHex.slice(0, 8),
-      avatar: text('picture') ?? text('image') ?? '',
+        displayText('display_name') ??
+        displayText('displayName') ??
+        displayText('name') ??
+        publicKeyHex.slice(0, 8),
+      avatar: displayText('picture') ?? displayText('image') ?? '',
       nip05: text('nip05') ?? '',
       // A kind-0 claim is not proof of control of the NIP-05 address.
       nip05verified: false,

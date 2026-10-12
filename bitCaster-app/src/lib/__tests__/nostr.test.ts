@@ -424,43 +424,45 @@ describe("fetchAndStoreNostrProfile", () => {
 
 describe("fetchPublicNostrProfile", () => {
   let nostrModule: typeof import("../nostr");
-  const pubkey = "0123456789abcdef".repeat(4);
-
+  const key = new Uint8Array(32).fill(1);
+  const pubkey = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: "{}" }, key).pubkey;
+  let metadata: Record<string, unknown>;
+  let query: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
-    vi.useFakeTimers();
     vi.resetModules();
-    mocks.getUser.mockReset();
+    metadata = {};
+    mocks.settingsState.relays = [{ url: "wss://profile.example" }];
+    const transport = await import("../browserProfileRelay");
+    query = vi
+      .spyOn(transport, "queryBrowserProfileRelay")
+      .mockImplementation(async (_url, _filter, receive) => {
+        receive(
+          finalizeEvent(
+            { kind: 0, created_at: 1, tags: [], content: JSON.stringify(metadata) },
+            key,
+          ),
+        );
+      });
     nostrModule = await import("../nostr");
   });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
+  afterEach(() => query.mockRestore());
   it.each([123, {}, [], null, undefined, true, "", "  "])(
-    "uses a valid name and empty avatar for malformed public fields %j",
+    "uses a valid name for malformed fields %j",
     async (malformed) => {
-      mocks.getUser.mockReturnValue({
-        fetchProfile: vi.fn().mockResolvedValue(undefined),
-        profile: { displayName: malformed, name: "  Public author  ", image: malformed },
-      });
+      metadata = { displayName: malformed, name: "  Public author  ", image: malformed };
       expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
         pubkey,
         displayName: "Public author",
         avatar: "",
       });
-      expect(mocks.getUser).toHaveBeenCalledExactlyOnceWith({ pubkey });
+      await nostrModule.fetchPublicNostrProfile(pubkey);
+      expect(query).toHaveBeenCalledTimes(1);
     },
   );
-
   it.each([123, {}, [], null, undefined, true, "  "])(
-    "uses the public-key fallback when both public names are malformed or empty %j",
+    "uses public-key fallback for malformed names %j",
     async (malformed) => {
-      mocks.getUser.mockReturnValue({
-        fetchProfile: vi.fn().mockResolvedValue(undefined),
-        profile: { displayName: malformed, name: malformed },
-      });
+      metadata = { displayName: malformed, name: malformed };
       expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
         pubkey,
         displayName: pubkey.slice(0, 8),
@@ -468,16 +470,12 @@ describe("fetchPublicNostrProfile", () => {
       });
     },
   );
-
-  it("preserves the valid preferred name and string avatar", async () => {
-    mocks.getUser.mockReturnValue({
-      fetchProfile: vi.fn().mockResolvedValue(undefined),
-      profile: {
-        displayName: "  <Public author>  ",
-        name: "Secondary name",
-        image: "  https://example.com/avatar.png  ",
-      },
-    });
+  it("preserves the preferred name and avatar", async () => {
+    metadata = {
+      display_name: "  <Public author>  ",
+      name: "Secondary",
+      picture: "  https://example.com/avatar.png  ",
+    };
     expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
       pubkey,
       displayName: "<Public author>",

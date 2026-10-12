@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { confirmedPriceAtOrBefore, TIMEFRAME_WINDOW_MS } from "@/lib/priceHistory";
 import type { Outcome } from "@/types/market";
 import { normalizeOutcomeColor, OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import type { PriceHistory, ChartTimeframe, Comment } from "@/types/market-detail";
-import { PriceChartAnnotations, type ChartProfileRequests } from "./PriceChartAnnotations";
+import { PriceChartAnnotations } from "./PriceChartAnnotations";
 import { PriceChartCanvas, type PriceChartRender } from "./PriceChartCanvas";
 import {
   preparePriceSeries,
@@ -68,7 +68,6 @@ export function PriceChart({
   const [cursorTime, setCursorTime] = useState<number | null>(null);
   const [chartRender, setChartRender] = useState<PriceChartRender | null>(null);
   // Reuse selected-author requests across card changes; annotations prune obsolete authors.
-  const profileRequests = useRef<ChartProfileRequests>(new Map());
   const clock = useMemo(
     () => ({
       asOfMs: priceHistory.asOf ? Date.parse(priceHistory.asOf) : null,
@@ -259,7 +258,6 @@ export function PriceChart({
                 chartRender.series === series &&
                 chartRender.domain === domain
               }
-              profileRequests={profileRequests.current}
               overlay={overlay}
               commentGroupResult={commentGroupResult}
               series={series}

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import type { PriceChartRender } from "./PriceChartCanvas";
 import { confirmedPriceAtOrBefore } from "@/lib/priceHistory";
-import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
+import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
 import type { ChartTimeframe } from "@/types/market-detail";
 import {
   chooseMarkerBodyPosition,
@@ -23,12 +23,9 @@ import {
 
 import "./priceChartAnnotations.css";
 
-export type ChartProfileRequests = Map<string, Promise<PublicNostrProfile | null>>;
-
 interface Props {
   renderState: PriceChartRender | null;
   layoutReady: boolean;
-  profileRequests: ChartProfileRequests;
   overlay: HTMLDivElement | null;
   commentGroupResult: CommentGroupResult;
   series: readonly Series[];
@@ -41,7 +38,6 @@ interface Props {
 export function PriceChartAnnotations({
   renderState,
   layoutReady,
-  profileRequests,
   overlay,
   commentGroupResult,
   series,
@@ -113,10 +109,10 @@ export function PriceChartAnnotations({
     document.addEventListener("pointermove", onPointerMove, true);
     return () => document.removeEventListener("pointermove", onPointerMove, true);
   }, []);
-  const [authorProfiles, setAuthorProfiles] = useState(
-    new Map<string, PublicNostrProfile | null>(),
-  );
   const activeGroup = commentGroupResult.groups.find((group) => group.id === activeCommentGroupId);
+  const authorProfiles = usePublicCommentProfiles(
+    activeGroup?.comments.map((comment) => comment.userId) ?? [],
+  );
   const positionedCommentGroups = useMemo(() => {
     const positioned: PositionedCommentGroup[] = [];
     if (!xScale || !yScale || !plot) return positioned;
@@ -156,49 +152,6 @@ export function PriceChartAnnotations({
   const activeCommentGroup = positionedCommentGroups.find(
     (group) => group.id === activeCommentGroupId,
   );
-  const selectedAuthors = useMemo(
-    () =>
-      new Set(
-        commentGroupResult.groups.flatMap((group) =>
-          group.comments
-            .map((comment) => comment.userId)
-            .filter((author) => /^[0-9a-f]{64}$/.test(author)),
-        ),
-      ),
-    [commentGroupResult],
-  );
-  useEffect(() => {
-    // Range changes release obsolete authors instead of exhausting a chart-lifetime budget.
-    for (const author of profileRequests.keys()) {
-      if (!selectedAuthors.has(author)) profileRequests.delete(author);
-    }
-    setAuthorProfiles(
-      (previous) => new Map([...previous].filter(([author]) => selectedAuthors.has(author))),
-    );
-  }, [selectedAuthors, profileRequests]);
-  useEffect(() => {
-    if (!activeGroup) return undefined;
-    let cancelled = false;
-    const authors = [...new Set(activeGroup.comments.map((comment) => comment.userId))].filter(
-      (author) => selectedAuthors.has(author),
-    );
-    const requests = profileRequests;
-    for (const author of authors) {
-      if (requests.has(author)) continue;
-      requests.set(
-        author,
-        fetchPublicNostrProfile(author).catch(() => null),
-      );
-    }
-    void Promise.all(
-      authors.map(async (author) => [author, (await requests.get(author)) ?? null] as const),
-    ).then((profiles) => {
-      if (!cancelled) setAuthorProfiles(new Map(profiles));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeGroup, profileRequests, selectedAuthors]);
   const plotBounds = plot ?? { x: 0, y: 0, width: chartRegionWidth, height: chartRegionHeight };
   const commentPopoverWidth = Math.max(1, Math.min(288, plotBounds.width - 8));
   const activeResting = activeCommentGroup

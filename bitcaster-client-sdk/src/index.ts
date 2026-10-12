@@ -115,3 +115,5 @@ export * from './likedMarketClose.ts'
 export * from './nostrMediaUpload.ts'
 
 export * from './nostrProfileImageHeader.ts'
+
+export { createPublicNostrProfileCache } from './publicNostrProfileCache.ts'

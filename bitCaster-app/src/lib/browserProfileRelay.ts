@@ -55,6 +55,7 @@ export function queryBrowserProfileRelay(
     const abort = () => finish(false);
     const timer = setTimeout(abort, options.timeoutMs ?? 8_000);
     try {
+      options.signal?.throwIfAborted();
       options.requireCurrent();
       socket = new (options.websocketImplementation ?? WebSocket)(normalizeNostrRelayUrl(url));
       options.signal?.addEventListener("abort", abort, { once: true });
