@@ -133,6 +133,9 @@ total payment or net proceeds before you submit. For example, buying 50 shares a
 costs 15 sats before settlement fees. Those shares pay 50 sats if they win.
 The displayed percentage is a trade price, not a guarantee about the event.
 
+Changing the display language keeps your selected outcome, share amount, and
+unsent comment. Opening another market clears this trade draft.
+
 When the event resolves, winning tokens can be redeemed. Losing tokens have
 no payout. You rely on the oracle to report the result correctly and on the
 mint to honor redemptions. If the mint stops service, trading or redemption

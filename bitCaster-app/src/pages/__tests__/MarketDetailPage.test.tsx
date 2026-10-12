@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import i18n from "@/i18n";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Amount } from "@cashu/cashu-ts";
@@ -951,6 +952,107 @@ describe("MarketDetailPage live market status", () => {
     mocks.settingsState.signerBackupState = "confirmed";
     mocks.createImplicitWalletAndNostrIdentity.mockReset();
     mocks.topUpOverlayProps = null;
+  });
+
+  it("preserves the trade draft across locale changes but clears it on genuine navigation", async () => {
+    const originalLanguage = i18n.language;
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockImplementation(async (id) =>
+      fundedSatYesNoMarket({
+        id,
+        title: id === "condition-other" ? "Other market" : "Will it happen?",
+        state: "open",
+      }),
+    );
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId.endsWith("-Yes") ? askBook(400) : emptyBook,
+    );
+    const view = render(<MarketDetailPage />);
+    try {
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], { target: { value: "3" } });
+      const comment = view.container.querySelector("textarea")!;
+      fireEvent.change(comment, { target: { value: "Keep this draft across languages" } });
+      await screen.findByTestId("fok-preview-ready");
+      const detailCalls = vi.mocked(fetchMarketDetail).mock.calls.length;
+      for (const language of ["ja", "en"]) {
+        await act(async () => {
+          await i18n.changeLanguage(language);
+        });
+        expect(screen.getAllByTestId("trade-amount-input")[0]).toHaveValue(3);
+        expect(view.container.querySelector("textarea")).toHaveValue(
+          "Keep this draft across languages",
+        );
+        expect(fetchMarketDetail).toHaveBeenCalledTimes(detailCalls);
+        expect(screen.getByTestId("fok-preview-ready")).toBeVisible();
+      }
+      mocks.routeParams.id = "condition-other";
+      view.rerender(<MarketDetailPage />);
+      await screen.findByRole("heading", { name: "Other market" });
+      expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      expect(screen.getAllByTestId("trade-amount-input")[0]).toHaveValue(null);
+      expect(view.container.querySelector("textarea")).toHaveValue("");
+    } finally {
+      view.unmount();
+      await act(async () => {
+        await i18n.changeLanguage(originalLanguage);
+      });
+    }
+  });
+
+  it("retranslates an already visible unavailable error without restarting its read", async () => {
+    const originalLanguage = i18n.language;
+    await act(async () => {
+      await i18n.changeLanguage("en");
+    });
+    vi.mocked(fetchMarketDetail).mockRejectedValue(new MarketDetailUnavailableError());
+    const view = render(<MarketDetailPage />);
+    try {
+      await screen.findByText(i18n.t("market.detailsUnavailable"));
+      const reads = vi.mocked(fetchMarketDetail).mock.calls.length;
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(screen.getByText(i18n.t("market.detailsUnavailable"))).toBeVisible();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(reads);
+    } finally {
+      view.unmount();
+      await act(async () => {
+        await i18n.changeLanguage(originalLanguage);
+      });
+    }
+  });
+
+  it("uses the latest language when a pending market read fails without restarting the read", async () => {
+    const originalLanguage = i18n.language;
+    let rejectRead!: (reason: unknown) => void;
+    vi.mocked(fetchMarketDetail).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const view = render(<MarketDetailPage />);
+    try {
+      await waitFor(() => expect(fetchMarketDetail).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        rejectRead(new MarketDetailUnavailableError());
+      });
+      expect(screen.getByText(i18n.t("market.detailsUnavailable"))).toBeVisible();
+    } finally {
+      view.unmount();
+      await act(async () => {
+        await i18n.changeLanguage(originalLanguage);
+      });
+    }
   });
 
   it("refreshes a suppressed empty snapshot through the existing market owner", async () => {

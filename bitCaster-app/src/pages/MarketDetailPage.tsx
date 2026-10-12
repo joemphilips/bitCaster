@@ -1258,7 +1258,7 @@ export function MarketDetailPage() {
     emptyMarketDetailDataState,
   );
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<"unavailable" | "failed" | "preparation-delayed" | null>(null);
   const [detailUnavailable, setDetailUnavailable] = useState(false);
 
   // UI state
@@ -1292,7 +1292,16 @@ export function MarketDetailPage() {
       })
     );
   })();
-  const visibleError = routeTransitioning ? null : error;
+  // Error categories belong to the route. Translation belongs to this render;
+  // changing language must not restart reads or reset an unsent trade draft.
+  const visibleError =
+    routeTransitioning || error === null
+      ? null
+      : error === "preparation-delayed"
+        ? t("market.preparationDelayed")
+        : error === "unavailable"
+          ? t("market.detailsUnavailable")
+          : "Failed to load market. Please check that the mint is running.";
   const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
@@ -1509,11 +1518,7 @@ export function MarketDetailPage() {
           // Optional reconciliation must never replace a valid page with a
           // fatal error. Its failure is intentionally best-effort.
           if (showLoading) {
-            setError(
-              unavailable
-                ? t("market.detailsUnavailable")
-                : "Failed to load market. Please check that the mint is running.",
-            );
+            setError(unavailable ? "unavailable" : "failed");
             setDetailUnavailable(unavailable);
           }
           return unavailable ? "unavailable" : "other";
@@ -1526,7 +1531,7 @@ export function MarketDetailPage() {
       if (options.singleFlight) marketDetailRequestRef.current = { routeId, generation, request };
       return request;
     },
-    [id, invalidatePreviewForMarket, isCurrentRoute, t],
+    [id, invalidatePreviewForMarket, isCurrentRoute],
   );
 
   useEffect(() => {
@@ -1589,7 +1594,7 @@ export function MarketDetailPage() {
       marketDetailRequestRef.current = null;
       setPreparationExpired(true);
       setLoading(false);
-      setError(t("market.preparationDelayed"));
+      setError("preparation-delayed");
     };
     const timer = window.setTimeout(
       expire,
@@ -1599,7 +1604,7 @@ export function MarketDetailPage() {
       ),
     );
     return () => window.clearTimeout(timer);
-  }, [acknowledgedAt, id, isCurrentRoute, market, t]);
+  }, [acknowledgedAt, id, isCurrentRoute, market]);
 
   // Existing unavailable routes retain their bounded recovery. A known new
   // market keeps the preparing state while the same catalogue read reconciles.
