@@ -565,6 +565,14 @@ coordinate is unavailable. Otherwise, it contains `fillId`, `outcomeId`,
 primitive outcome price and time from public trade history. The comment's
 signed `createdAt` stays separate.
 
+When known, `trade.authorTrade` describes the comment author's order intent.
+It contains `side` (`Buy` or `Sell`), `outcomeId` (the selected outcome), and
+`tokenSide` (`Outcome` or `Complement`). Use these fields for the trade sentence.
+They do not replace the primitive price coordinate in `trade.outcomeId` and
+`trade.price`. The two participants in one fill can have different order intents.
+An absent or `null` `authorTrade` means that the intent is unknown. Do not infer
+a buy action or selected token from the price coordinate.
+
 `trade.faceAmountSubunits` gives the size of that linked confirmed fill.
 It is not the complete order size or the user's payment. A `null` value means
 that the size is unknown. The endpoint retains up to 500 comments.

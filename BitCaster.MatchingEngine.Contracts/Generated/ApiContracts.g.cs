@@ -3367,8 +3367,9 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCommentTrade
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCommentTrade(System.DateTimeOffset @executedAt, long? @faceAmountSubunits, System.Guid @fillId, string @outcomeId, int @price, int @priceDenominator)
+        public MarketCommentTrade(MarketCommentAuthorTrade? @authorTrade, System.DateTimeOffset @executedAt, long? @faceAmountSubunits, System.Guid @fillId, string @outcomeId, int @price, int @priceDenominator)
         {
+            this.AuthorTrade = @authorTrade;
             this.FaceAmountSubunits = @faceAmountSubunits;
             this.FillId = @fillId;
             this.OutcomeId = @outcomeId;
@@ -3376,6 +3377,12 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Price = @price;
             this.PriceDenominator = @priceDenominator;
         }
+
+        /// <summary>
+        /// The comment author's order intent for this linked fill. Null means historical intent is unknown.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("authorTrade")]
+        public MarketCommentAuthorTrade? AuthorTrade { get; }
 
         /// <summary>
         /// Linked confirmed fill size in market face-amount subunits. Null means unknown size.
@@ -3412,6 +3419,42 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("priceDenominator")]
         public int PriceDenominator { get; }
+
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCommentAuthorTrade
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCommentAuthorTrade(string @outcomeId, OrderSide @side, TokenSide @tokenSide)
+        {
+            this.Side = @side;
+            this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        /// <summary>
+        /// Primitive outcome selected by the author. This can differ from the chart's price-history route.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 

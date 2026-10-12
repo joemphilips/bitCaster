@@ -1696,6 +1696,8 @@ export interface components {
       trade: components['schemas']['MarketCommentTrade'] | null
     }
     MarketCommentTrade: {
+      /** @description The comment author's order intent for this linked fill. Null means historical intent is unknown. */
+      authorTrade?: components['schemas']['MarketCommentAuthorTrade'] | null
       /**
        * Format: int64
        * @description Linked confirmed fill size in market face-amount subunits. Null means unknown size.
@@ -1723,6 +1725,12 @@ export interface components {
        * @description Market divisibility used as the price denominator.
        */
       priceDenominator: number
+    }
+    MarketCommentAuthorTrade: {
+      side: components['schemas']['OrderSide']
+      /** @description Primitive outcome selected by the author. This can differ from the chart's price-history route. */
+      outcomeId: string
+      tokenSide: components['schemas']['TokenSide']
     }
     MarketCommentsResponse: {
       /** @description Applied source position proven for this snapshot. Treat this value as opaque. */

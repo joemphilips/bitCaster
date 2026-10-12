@@ -576,6 +576,14 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 `priceDenominator` を含みます。座標には、公開取引履歴と同じ primitive outcome の
 価格と時刻を使います。コメントの署名済み `createdAt` は別の値です。
 
+注文の意図が分かる場合、`trade.authorTrade` はコメント投稿者の注文の意図を示します。
+`side`（`Buy` または `Sell`）、`outcomeId`（選択したアウトカム）、
+`tokenSide`（`Outcome` または `Complement`）を含みます。取引の説明文には、
+これらの値を使います。`trade.outcomeId` と `trade.price` の primitive 価格座標を
+置き換える値ではありません。同じ fill の両参加者で、注文の意図が異なる場合があります。
+`authorTrade` がない場合、または `null` の場合、注文の意図は不明です。
+価格座標から購入や選択したトークンを推測しないでください。
+
 `trade.faceAmountSubunits` は、そのコメントに関連する確定 fill の数量です。
 注文全体の数量やユーザーの支払額ではありません。`null` は数量が不明なことを示します。
 この endpoint は最大 500 件のコメントを保持します。完全なコメント履歴ではありません。
