@@ -189,7 +189,9 @@ export function DepositStep({
 
   const continueToMarket = useCallback(() => {
     if (presentation === "detail") return;
-    navigate(`/markets/${conditionId}`);
+    navigate(`/markets/${conditionId}`, {
+      state: { createdMarket: { conditionId, acknowledgedAt: Date.now() } },
+    });
   }, [conditionId, navigate, presentation]);
   const continueToMarketRef = useRef(continueToMarket);
   continueToMarketRef.current = continueToMarket;

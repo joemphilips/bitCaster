@@ -85,6 +85,9 @@ const mocks = vi.hoisted(() => ({
   getSettlementCapabilityAdmissionPolicy: vi.fn(),
   loadRangeMintMetadata: vi.fn(),
   readRangeProofs: vi.fn(),
+  routeLocation: {
+    state: null as null | { createdMarket: { conditionId: string; acknowledgedAt: number } },
+  },
   routeParams: { id: "condition-yesno" } as { id?: string },
   walletScopeId: "wallet-profile-a",
   signerRevision: 0,
@@ -165,6 +168,7 @@ vi.mock("@microsoft/signalr", () => ({
 
 vi.mock("react-router", () => ({
   useNavigate: () => mocks.navigate,
+  useLocation: () => mocks.routeLocation,
   useParams: () => mocks.routeParams,
 }));
 
@@ -840,6 +844,7 @@ describe("fetchMarketDetailWithBooks", () => {
     mocks.confirmedTradeHandlers.length = 0;
     mocks.commentHandlers.length = 0;
     mocks.rejoinHandlers.length = 0;
+    mocks.routeLocation.state = null;
     mocks.routeParams.id = "condition-yesno";
     mocks.walletScopeId = browserWalletScopeIdFromMnemonic(mocks.walletState.mnemonic)!;
     usePendingTradesStore.setState({ byOrderId: {} });
@@ -930,6 +935,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.liveStatusHandlers.length = 0;
     mocks.confirmedTradeHandlers.length = 0;
     mocks.orderBookHandlers.clear();
+    mocks.routeLocation.state = null;
     mocks.routeParams.id = "condition-yesno";
     mocks.walletScopeId = browserWalletScopeIdFromMnemonic(mocks.walletState.mnemonic)!;
     usePendingTradesStore.setState({ byOrderId: {} });
@@ -2436,6 +2442,121 @@ describe("MarketDetailPage live market status", () => {
     expect(fetchOrderBook).not.toHaveBeenCalled();
   });
 
+  it("shows acknowledged creation as pending until catalogue readiness without reload", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.routeLocation.state = {
+        createdMarket: {
+          conditionId: "condition-yesno",
+          acknowledgedAt: Date.now(),
+        },
+      };
+      vi.mocked(fetchMarketDetail)
+        .mockRejectedValueOnce(new Error("not indexed"))
+        .mockResolvedValueOnce(yesNoMarket({ title: "Ready market" }));
+      render(<MarketDetailPage />);
+      expect(screen.getByRole("status")).toHaveTextContent("Preparing your market…");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("Preparing your market…");
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByRole("heading", { name: "Ready market" })).toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("loads a revisited market normally when history retains an expired creation acknowledgement", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.routeLocation.state = {
+        createdMarket: {
+          conditionId: "condition-yesno",
+          acknowledgedAt: Date.now() - 91_000,
+        },
+      };
+      let resolveDetail!: (market: MarketDetail) => void;
+      vi.mocked(fetchMarketDetail).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveDetail = resolve;
+        }),
+      );
+      render(<MarketDetailPage />);
+      expect(screen.getByRole("status")).toHaveTextContent("Loading market...");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("Loading market...");
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      await act(async () => {
+        resolveDetail(yesNoMarket({ title: "Revisited market" }));
+      });
+      expect(screen.getByRole("heading", { name: "Revisited market" })).toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends preparation at the deadline even with a hung read and ignores its late result", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.routeLocation.state = {
+        createdMarket: {
+          conditionId: "condition-yesno",
+          acknowledgedAt: Date.now(),
+        },
+      };
+      let resolveLate!: (market: MarketDetail) => void;
+      vi.mocked(fetchMarketDetail).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveLate = resolve;
+        }),
+      );
+      render(<MarketDetailPage />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(
+        screen.getByText(
+          "Your market is registered, but its details are not ready yet. Retry to check again.",
+        ),
+      ).toBeInTheDocument();
+      await act(async () => {
+        resolveLate(yesNoMarket({ title: "Late market" }));
+      });
+      expect(screen.queryByRole("heading", { name: "Late market" })).not.toBeInTheDocument();
+      vi.mocked(fetchMarketDetail).mockResolvedValueOnce(yesNoMarket({ title: "Retried market" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      });
+      expect(screen.getByRole("heading", { name: "Retried market" })).toBeInTheDocument();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not use a different market acknowledgement for a missing route", async () => {
+    mocks.routeLocation.state = {
+      createdMarket: {
+        conditionId: "another-condition",
+        acknowledgedAt: Date.now(),
+      },
+    };
+    vi.mocked(fetchMarketDetail).mockRejectedValue(new Error("missing"));
+    render(<MarketDetailPage />);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText("Preparing your market…")).not.toBeInTheDocument();
+  });
+
   it("recovers from an initial detail projection miss without manual retry", async () => {
     vi.useFakeTimers();
     try {
@@ -2591,6 +2712,12 @@ describe("MarketDetailPage live market status", () => {
   it("does not retry a stale route after navigation", async () => {
     vi.useFakeTimers();
     try {
+      mocks.routeLocation.state = {
+        createdMarket: {
+          conditionId: "condition-yesno",
+          acknowledgedAt: Date.now(),
+        },
+      };
       vi.mocked(fetchMarketDetail).mockImplementation((conditionId) =>
         conditionId === "condition-yesno"
           ? Promise.reject(new Error("detail projection is still catching up"))
@@ -2603,9 +2730,7 @@ describe("MarketDetailPage live market status", () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(
-        screen.getByText("Failed to load market. Please check that the mint is running."),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("Preparing your market…");
 
       mocks.routeParams.id = "condition-other";
       view.rerender(<MarketDetailPage />);
@@ -3942,12 +4067,12 @@ describe("MarketDetailPage live market status", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "No, create one for me" }));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
+    await waitFor(() => expect(previewCallsBeforeSetup()).toBeGreaterThan(callsBefore));
+    expect(
+      screen.queryByText(
         "Trading identity changed. Review the new price preview and confirm again.",
       ),
-    );
-    await waitFor(() => expect(previewCallsBeforeSetup()).toBeGreaterThan(callsBefore));
+    ).not.toBeInTheDocument();
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 

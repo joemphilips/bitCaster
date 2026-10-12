@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import i18n from "@/i18n";
 import { DepositStep } from "../DepositStep";
@@ -34,6 +34,11 @@ type DepositStepOptions = {
   onCredited?: () => void;
 };
 
+function MarketDestination() {
+  const location = useLocation();
+  return <div data-testid="market-detail-page">{JSON.stringify(location.state)}</div>;
+}
+
 function stepTree(options: DepositStepOptions = {}) {
   return (
     <MemoryRouter initialEntries={["/creator/new"]}>
@@ -51,7 +56,7 @@ function stepTree(options: DepositStepOptions = {}) {
             />
           }
         />
-        <Route path="/markets/:id" element={<div data-testid="market-detail-page" />} />
+        <Route path="/markets/:id" element={<MarketDestination />} />
       </Routes>
     </MemoryRouter>
   );
@@ -350,7 +355,9 @@ describe("DepositStep", () => {
     const call = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(call).toBeDefined();
     act(() => (call?.[0] as () => void)());
-    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("market-detail-page").textContent!)).toEqual({
+      createdMarket: { conditionId: CONDITION_ID, acknowledgedAt: expect.any(Number) },
+    });
     timeoutSpy.mockRestore();
   });
 

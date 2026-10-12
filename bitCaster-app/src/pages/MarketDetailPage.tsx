@@ -20,7 +20,7 @@ import {
   type CanonicalSellHoldingsIdentity,
 } from "@/lib/canonicalSellHoldings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
-import { useParams, useNavigate } from "react-router";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { normalizeUrl } from "@/lib/url";
 import { MarketDetail } from "@/components/market-detail";
@@ -1195,6 +1195,27 @@ function tradeFeeConsentKey(input: {
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Only the successful creation flow supplies this route-local acknowledgement.
+  // It is a presentation hint, never registration or spending authority.
+  const acknowledgement = location.state?.createdMarket as
+    | { conditionId?: string; acknowledgedAt?: number }
+    | undefined;
+  // History keeps route state after a reload or Back navigation. Only a fresh
+  // acknowledgement can own a preparation deadline. Capture this decision for
+  // this navigation so ordinary rerenders cannot remove an active deadline.
+  const acknowledgedAt = useMemo(() => {
+    const timestamp = acknowledgement?.acknowledgedAt;
+    if (acknowledgement?.conditionId !== id || typeof timestamp !== "number") return null;
+    const age = Date.now() - timestamp;
+    return Number.isFinite(timestamp) &&
+      age >= 0 &&
+      age < MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS
+      ? timestamp
+      : null;
+  }, [acknowledgement?.acknowledgedAt, acknowledgement?.conditionId, id, location.key]);
+  const [preparationExpired, setPreparationExpired] = useState(false);
+  const preparingCreation = acknowledgedAt !== null && !preparationExpired;
   const { t } = useTranslation();
   const currentRouteId = id ?? null;
   const activeRouteIdRef = useRef<string | null>(currentRouteId);
@@ -1533,6 +1554,8 @@ export function MarketDetailPage() {
     setPendingTopUpIntent(null);
     setShowNostrAuthModal(false);
     setShowNostrChooser(false);
+    setLazySetupCreating(false);
+    setLazySetupError(null);
     tradeSubmitInFlightRef.current = false;
 
     if (!currentRouteId) {
@@ -1541,6 +1564,7 @@ export function MarketDetailPage() {
       return;
     }
 
+    setPreparationExpired(false);
     setLoading(true);
     setError(null);
     setDetailUnavailable(false);
@@ -1553,20 +1577,44 @@ export function MarketDetailPage() {
     };
   }, [cancelActiveScoreTopUp, currentRouteId, invalidatePreviewForMarket, loadMarket]);
 
-  // Navigation after market creation can outrun the catalogue projection.
-  // Retry only after the error has rendered. First paint still blocks on one
-  // request.
+  // The hub has no catalogue-index readiness event. This temporary bounded
+  // reconciliation follows acknowledged creation only; it does not add a
+  // subscription or a second blocking request before first paint.
   useEffect(() => {
-    if (!id || !error || market || routeTransitioning) return;
+    if (acknowledgedAt === null || market) return;
+    const generation = routeGenerationRef.current;
+    const expire = () => {
+      if (!id || !isCurrentRoute(id, generation)) return;
+      marketLoadRequestTokenRef.current += 1;
+      marketDetailRequestRef.current = null;
+      setPreparationExpired(true);
+      setLoading(false);
+      setError(t("market.preparationDelayed"));
+    };
+    const timer = window.setTimeout(
+      expire,
+      Math.min(
+        MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS,
+        Math.max(0, acknowledgedAt + MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS - Date.now()),
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [acknowledgedAt, id, isCurrentRoute, market, t]);
+
+  // Existing unavailable routes retain their bounded recovery. A known new
+  // market keeps the preparing state while the same catalogue read reconciles.
+  useEffect(() => {
+    if (!id || !error || market || routeTransitioning || preparationExpired) return;
     const generation = routeGenerationRef.current;
     if (!isCurrentRoute(id, generation)) return;
 
     let cancelled = false;
     let attempts = 0;
     let timeoutId: number | null = null;
-    const maxAttempts = detailUnavailable
-      ? MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS
-      : MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS;
+    const maxAttempts =
+      detailUnavailable || preparingCreation
+        ? MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS
+        : MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS;
     const deadline = Date.now() + MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS;
 
     const retry = async () => {
@@ -1581,7 +1629,7 @@ export function MarketDetailPage() {
         result === "stale"
       )
         return;
-      if (detailUnavailable && result !== "unavailable") return;
+      if (detailUnavailable && !preparingCreation && result !== "unavailable") return;
       if (attempts >= maxAttempts) return;
       if (detailUnavailable && Date.now() + MARKET_DETAIL_RECONCILIATION_INTERVAL_MS > deadline)
         return;
@@ -1593,7 +1641,17 @@ export function MarketDetailPage() {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
-  }, [detailUnavailable, error, id, isCurrentRoute, loadMarket, market, routeTransitioning]);
+  }, [
+    detailUnavailable,
+    error,
+    id,
+    isCurrentRoute,
+    loadMarket,
+    market,
+    routeTransitioning,
+    preparationExpired,
+    preparingCreation,
+  ]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted and joined to at least one per-outcome
@@ -2549,21 +2607,31 @@ export function MarketDetailPage() {
   }, [invalidateProtectedTradeAttempt, market, nostrSignerMode]);
 
   const handleCreateImplicitAccount = useCallback(async () => {
+    const expectedNewIdentity = useSettingsStore.getState().nostrSignerMode === "none";
+    const routeId = currentRouteId;
+    const generation = routeGenerationRef.current;
     setLazySetupCreating(true);
     setLazySetupError(null);
     const result = await createImplicitWalletAndNostrIdentity();
+    if (!routeId || !isCurrentRoute(routeId, generation)) return;
     setLazySetupCreating(false);
     if (!result.ok) {
       setLazySetupError(result.error ?? "Could not create wallet");
       return;
     }
     setShowNostrChooser(false);
+    // Setup changes quote ownership. Always invalidate consent, even when the
+    // expected none-to-new transition needs no warning.
     invalidateProtectedTradeAttempt();
-    setTradeSubmitStatus({
-      kind: "info",
-      message: "Trading identity changed. Review the new price preview and confirm again.",
-    });
-  }, [invalidateProtectedTradeAttempt]);
+    setTradeSubmitStatus(
+      expectedNewIdentity
+        ? null
+        : {
+            kind: "info",
+            message: "Trading identity changed. Review the new price preview and confirm again.",
+          },
+    );
+  }, [currentRouteId, invalidateProtectedTradeAttempt, isCurrentRoute]);
 
   // After a successful top-up, close the overlay and place the order once, but
   // only if the wallet proof store now confirms the exact unit/amount captured
@@ -2842,10 +2910,12 @@ export function MarketDetailPage() {
   // current title + the implicit window.location.href.
   const handleShare = useShareMarket({ title: market?.title ?? "" });
 
-  if (routeTransitioning || loading) {
+  if (routeTransitioning || loading || (preparingCreation && !market)) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="text-slate-400 animate-pulse">Loading market...</div>
+        <div role="status" className="text-slate-400 motion-safe:animate-pulse">
+          {preparingCreation ? t("market.preparing") : "Loading market..."}
+        </div>
       </div>
     );
   }
