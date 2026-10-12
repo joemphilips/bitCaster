@@ -36,7 +36,7 @@ export function SeedWordGrid({ words, onChange, disabled, error }: SeedWordGridP
       <legend className="text-sm font-medium text-slate-700 dark:text-slate-200">
         {t("wallet.enterSeedPhrase")}
       </legend>
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
         {t("wallet.seedWordCount")}
         <select
           value={words.length}
@@ -45,7 +45,7 @@ export function SeedWordGrid({ words, onChange, disabled, error }: SeedWordGridP
             const count = Number(event.target.value);
             onChange(Array.from({ length: count }, (_, index) => words[index] ?? ""));
           }}
-          className="rounded border bg-white p-1 dark:bg-slate-800"
+          className="rounded border border-slate-300 bg-white p-1 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
         >
           <option value={12}>12</option>
           <option value={24}>24</option>
@@ -53,7 +53,7 @@ export function SeedWordGrid({ words, onChange, disabled, error }: SeedWordGridP
       </label>
       <div className="grid grid-cols-3 gap-2">
         {words.map((word, index) => (
-          <label key={index} className="min-w-0 text-xs text-slate-500">
+          <label key={index} className="min-w-0 text-xs text-slate-500 dark:text-slate-400">
             {index + 1}
             <input
               ref={(node) => {
