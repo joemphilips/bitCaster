@@ -593,6 +593,22 @@
     "profileEditLoading": "Loading profile editor…",
     "profileEditLoadFailed": "The profile editor could not load. Retry to continue.",
     "profileEditLoadRetry": "Retry loading editor",
+    "profileImageChoose": "Choose image",
+    "profileImagePreview": "Profile image preview",
+    "profileImageHint": "Drop a JPEG, PNG, or WebP image here (up to 5 MiB). Uploads are public on nostr.build. Choose Save profile to publish the image URL.",
+    "profileImageUploading": "Uploading image…",
+    "profileImageCancelled": "Upload cancelled. Choose an image to try again.",
+    "profileImageError": {
+      "invalid-image": "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB and 16 million pixels.",
+      "invalid-authorization": "The image authorization failed. Check your signer and try again.",
+      "invalid-response": "The image host returned an invalid response. Try again or enter an image URL.",
+      "payment-required": "The image host requires payment. Enter an image URL instead.",
+      "rate-limited": "The image host is busy. Wait before trying again.",
+      "http-error": "The image upload failed. Try again or enter an image URL.",
+      "cancelled": "Upload cancelled. Choose an image to try again.",
+      "deadline": "The upload timed out. Try again or enter an image URL.",
+      "network-error": "Could not reach the image host. Check your connection and try again."
+    },
     "profileEditTitle": "Edit public profile",
     "profileEditHint": "Edit your name, description, and picture URL. Other metadata stays unchanged. Another Nostr client can use a separate display name.",
     "profileEditFields": {

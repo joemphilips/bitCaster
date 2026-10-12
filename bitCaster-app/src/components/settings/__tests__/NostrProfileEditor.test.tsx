@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { finalizeEvent } from "nostr-tools/pure";
 import { BrowserProfileError, type BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
+import { NostrMediaUploadError } from "@bitcaster/client-sdk/nostrMediaUpload";
 import { NostrProfileEditor } from "../NostrProfileEditor";
 
 const event = finalizeEvent(
@@ -134,5 +135,143 @@ describe("Nostr profile editor", () => {
       finish(saved);
     });
     expect(screen.queryByTestId("nostr-profile-result")).not.toBeInTheDocument();
+  });
+});
+
+function imageReceipt() {
+  const controller = new AbortController();
+  return {
+    url: "https://blossom.nostr.build/image.png",
+    sha256: "a".repeat(64),
+    size: 3,
+    type: "image/png" as const,
+    uploaded: 1,
+    publicKeyHex: event.pubkey,
+    signal: controller.signal,
+    requireCurrent: vi.fn(),
+    dispose: vi.fn(),
+    controller,
+  };
+}
+const avatar = new File(["synthetic fixture"], "avatar.png", { type: "image/png" });
+
+describe("profile image interaction", () => {
+  async function imageEditor(
+    upload = vi.fn().mockResolvedValue(imageReceipt()),
+    save = vi.fn().mockResolvedValue(saved),
+  ) {
+    const rendered = render(
+      <NostrProfileEditor load={vi.fn().mockResolvedValue(baseline)} save={save} upload={upload} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Canonical"));
+    return { ...rendered, upload, save };
+  }
+  function drop() {
+    fireEvent.drop(screen.getByTestId("profile-image-drop"), { dataTransfer: { files: [avatar] } });
+  }
+  it("routes picker and drop through one uploader and previews only its public URL", async () => {
+    const f = await imageEditor();
+    fireEvent.change(screen.getByLabelText("Choose image"), { target: { files: [avatar] } });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Picture URL")).toHaveValue(
+        "https://blossom.nostr.build/image.png",
+      ),
+    );
+    expect(screen.getByAltText("Profile image preview")).toHaveAttribute(
+      "src",
+      "https://blossom.nostr.build/image.png",
+    );
+    drop();
+    await waitFor(() => expect(f.upload).toHaveBeenCalledTimes(2));
+  });
+  it("retains uploaded receipt for publication retry without uploading twice", async () => {
+    const receipt = imageReceipt();
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(new BrowserProfileError("read-failed"))
+      .mockResolvedValue(saved);
+    const f = await imageEditor(vi.fn().mockResolvedValue(receipt), save);
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await screen.findByRole("alert");
+    expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url);
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await screen.findByText("Profile saved.");
+    expect(f.upload).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0]?.[0]).toEqual({ picture: receipt.url });
+  });
+  it("does not publish an uploaded image after the signer changes", async () => {
+    const receipt = imageReceipt();
+    const f = await imageEditor(vi.fn().mockResolvedValue(receipt));
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    receipt.requireCurrent.mockImplementation(() => {
+      throw new BrowserProfileError("selection-changed");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await screen.findByRole("alert");
+    expect(f.save).not.toHaveBeenCalled();
+  });
+  it("cancels a pending upload, ignores its late receipt, and prevents a second active upload", async () => {
+    let resolve!: (receipt: ReturnType<typeof imageReceipt>) => void;
+    const f = await imageEditor(
+      vi.fn().mockImplementation(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      ),
+    );
+    drop();
+    drop();
+    expect(f.upload).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(f.upload.mock.calls[0]?.[1].aborted).toBe(true);
+    const receipt = imageReceipt();
+    await act(async () => {
+      resolve(receipt);
+    });
+    expect(receipt.dispose).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText("Picture URL")).toHaveValue("");
+    expect(f.save).not.toHaveBeenCalled();
+  });
+  it("keeps the prior picture after an upload failure and permits explicit retry", async () => {
+    const receipt = imageReceipt();
+    const f = await imageEditor(
+      vi
+        .fn()
+        .mockRejectedValueOnce(new NostrMediaUploadError("rate-limited"))
+        .mockResolvedValue(receipt),
+    );
+    fireEvent.change(screen.getByLabelText("Picture URL"), {
+      target: { value: "https://example.com/old.png" },
+    });
+    drop();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Wait before trying again");
+    expect(screen.getByLabelText("Picture URL")).toHaveValue("https://example.com/old.png");
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    expect(f.upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("disposes the retained signer subscription when the editor unmounts", async () => {
+    const receipt = imageReceipt();
+    const f = await imageEditor(vi.fn().mockResolvedValue(receipt));
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    f.unmount();
+    expect(receipt.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("releases an uploaded receipt when the user replaces its URL", async () => {
+    const receipt = imageReceipt();
+    await imageEditor(vi.fn().mockResolvedValue(receipt));
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    fireEvent.change(screen.getByLabelText("Picture URL"), {
+      target: { value: "https://example.com/new.png" },
+    });
+    expect(receipt.dispose).toHaveBeenCalledOnce();
   });
 });

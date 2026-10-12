@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { BasicInfo } from "../BasicInfo";
@@ -24,6 +24,41 @@ const defaultData: WizardStepBasicInfo = {
 const categoryTags = ["politics", "sports", "crypto"];
 
 describe("BasicInfo", () => {
+  it("sends a dropped image through the same thumbnail callback", () => {
+    const onThumbnailUpload = vi.fn();
+    render(
+      <BasicInfo
+        data={defaultData}
+        categoryTags={categoryTags}
+        onThumbnailUpload={onThumbnailUpload}
+      />,
+    );
+    const file = new File(["synthetic"], "thumbnail.png", { type: "image/png" });
+    fireEvent.drop(screen.getByTestId("market-thumbnail-drop"), {
+      dataTransfer: { files: [file] },
+    });
+    expect(onThumbnailUpload).toHaveBeenCalledWith(file);
+  });
+
+  it.each([{ thumbnailLocked: true }, { thumbnailPending: true }])(
+    "ignores drops while thumbnail input is unavailable: %j",
+    (state) => {
+      const onThumbnailUpload = vi.fn();
+      render(
+        <BasicInfo
+          data={defaultData}
+          categoryTags={categoryTags}
+          onThumbnailUpload={onThumbnailUpload}
+          {...state}
+        />,
+      );
+      fireEvent.drop(screen.getByTestId("market-thumbnail-drop"), {
+        dataTransfer: { files: [new File(["synthetic"], "image.png")] },
+      });
+      expect(onThumbnailUpload).not.toHaveBeenCalled();
+    },
+  );
+
   it("disables Next when title and closing date are empty", () => {
     render(<BasicInfo data={defaultData} categoryTags={categoryTags} />);
     const nextBtn = screen.getByRole("button", { name: "Next" });

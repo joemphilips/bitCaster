@@ -590,6 +590,22 @@
     "profileEditLoading": "プロフィール編集画面を読み込み中…",
     "profileEditLoadFailed": "プロフィール編集画面を読み込めませんでした。再試行してください。",
     "profileEditLoadRetry": "編集画面の読み込みを再試行",
+    "profileImageChoose": "画像を選択",
+    "profileImagePreview": "プロフィール画像のプレビュー",
+    "profileImageHint": "JPEG・PNG・WebP画像をここにドロップしてください（5 MiBまで）。画像はnostr.buildで公開されます。「プロフィールを保存」で画像URLを公開します。",
+    "profileImageUploading": "画像をアップロード中…",
+    "profileImageCancelled": "アップロードをキャンセルしました。再試行するには画像を選択してください。",
+    "profileImageError": {
+      "invalid-image": "5 MiB・1600万画素以内の有効なJPEG・PNG・WebP画像を選択してください。",
+      "invalid-authorization": "画像のアップロード認証に失敗しました。署名者を確認して再試行してください。",
+      "invalid-response": "画像ホストの応答が無効です。再試行するか画像URLを入力してください。",
+      "payment-required": "画像ホストが支払いを要求しました。画像URLを入力してください。",
+      "rate-limited": "画像ホストが混雑しています。時間をおいて再試行してください。",
+      "http-error": "画像のアップロードに失敗しました。再試行するか画像URLを入力してください。",
+      "cancelled": "アップロードをキャンセルしました。再試行するには画像を選択してください。",
+      "deadline": "アップロードがタイムアウトしました。再試行するか画像URLを入力してください。",
+      "network-error": "画像ホストに接続できませんでした。接続を確認して再試行してください。"
+    },
     "profileEditTitle": "公開プロフィールを編集",
     "profileEditHint": "名前、自己紹介、画像URLを編集します。その他のメタデータは保持されます。他のNostrクライアントでは別の表示名が使われる場合があります。",
     "profileEditFields": {

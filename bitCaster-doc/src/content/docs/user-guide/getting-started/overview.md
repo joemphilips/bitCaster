@@ -193,7 +193,22 @@ a refresh control. An unavailable relay read is different from an absent profile
 In Nostr Settings, choose **Edit** to change your name, description, and picture URL.
 Choose **Save profile** to publish the changes. Choose **Cancel** to discard an
 unsaved draft. These fields are public. The app publishes standard Nostr profile metadata with your connected
-local key or supported browser extension. It does not host picture uploads.
+local key or supported browser extension.
+
+Choose **Choose image**, or drop one image into the picture area. JPEG, PNG, and
+WebP files can contain up to 5 MiB and 16 million pixels. The browser reduces each
+side to at most 1024 pixels and re-encodes the image without its original metadata.
+The upload goes to the public nostr.build service with your Nostr signer.
+Uploading does not publish the profile. Choose **Save profile** to publish its URL.
+You can still enter an existing HTTPS image URL instead.
+
+Keep this editor open to retry a failed profile publication without uploading the
+image again. Cancel an upload or choose another image if needed. A signer change
+prevents publication of the uploaded image from the old edit session.
+The service can be unavailable or change its retention policy. bitCaster does not
+pay upload fees or guarantee image retention. Replacing a picture does not delete
+the old image from the host or other Nostr clients.
+
 Other metadata stays unchanged. A separate display name set in another client
 can still take priority over the name you edit here.
 

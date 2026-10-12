@@ -60,7 +60,17 @@ export function BasicInfo({
           <label className="block text-sm font-medium text-slate-300 mb-2">
             {t("marketCreation.thumbnail")}
           </label>
-          <div className="flex items-center gap-4">
+          <div
+            className="flex items-center gap-4"
+            data-testid="market-thumbnail-drop"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (!thumbnailLocked && !thumbnailPending && event.dataTransfer.files.length === 1) {
+                onThumbnailUpload?.(event.dataTransfer.files[0]!);
+              }
+            }}
+          >
             <div className="w-28 h-28 rounded-lg border-2 border-dashed border-slate-700 bg-slate-900 flex flex-col items-center justify-center text-slate-500 overflow-hidden">
               {data.imageFile ? (
                 <img
