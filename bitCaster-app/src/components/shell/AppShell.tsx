@@ -50,7 +50,7 @@ export function AppShell({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 relative">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 relative [--shell-header-height:calc(3.5rem+1px)] md:[--shell-header-height:calc(4rem+1px)]">
       {/* Top Navigation - Desktop/Tablet */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 hidden md:block">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

@@ -244,7 +244,14 @@ export function MarketDetail({
             className="order-2 lg:absolute lg:top-6 lg:right-6 lg:bottom-6 lg:w-[380px]"
             data-testid="trading-panel-responsive"
           >
-            <div className="lg:sticky lg:top-6">{tradingPanel}</div>
+            <div
+              role="region"
+              aria-label={t("trade.title")}
+              tabIndex={0}
+              className="lg:sticky lg:top-[calc(var(--shell-header-height,4rem)+1.5rem)] lg:max-h-[calc(100dvh-var(--shell-header-height,4rem)-3rem)] lg:overflow-y-auto lg:overscroll-y-contain focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+            >
+              {tradingPanel}
+            </div>
           </div>
 
           <div className="order-3 mt-6 space-y-6 lg:mr-[404px]">
