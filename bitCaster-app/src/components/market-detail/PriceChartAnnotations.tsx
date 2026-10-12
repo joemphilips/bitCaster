@@ -1,3 +1,5 @@
+import { commentTradePresentation } from "./commentTradePresentation";
+import { layoutChartComments } from "./priceChartCommentLayout";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -7,12 +9,10 @@ import { confirmedPriceAtOrBefore } from "@/lib/priceHistory";
 import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
 import type { ChartTimeframe } from "@/types/market-detail";
 import {
-  chooseMarkerBodyPosition,
   clampPosition,
   commentTailPath,
   commentMarkerPresentation,
   commentPreview,
-  commentLayout,
   createChartTimeFormatter,
   createCommentTimeFormatter,
   formatPercent,
@@ -26,9 +26,11 @@ import "./priceChartAnnotations.css";
 interface Props {
   renderState: PriceChartRender | null;
   layoutReady: boolean;
+  onOverflowHeight: (height: number) => void;
   overlay: HTMLDivElement | null;
   commentGroupResult: CommentGroupResult;
   series: readonly Series[];
+  outcomeLabels: readonly { id: string; label: string }[];
   chartTimeframe: ChartTimeframe;
   isCategorical: boolean;
   cursorTime: number | null;
@@ -38,9 +40,11 @@ interface Props {
 export function PriceChartAnnotations({
   renderState,
   layoutReady,
+  onOverflowHeight,
   overlay,
   commentGroupResult,
   series,
+  outcomeLabels,
   chartTimeframe,
   isCategorical,
   cursorTime,
@@ -76,7 +80,6 @@ export function PriceChartAnnotations({
   const chartRegionWidth = coordinates?.width ?? 0;
   const chartRegionHeight = coordinates?.height ?? 0;
   const previousRenderRef = useRef(renderState);
-  const geometryChanged = previousRenderRef.current !== renderState;
   useLayoutEffect(() => {
     previousRenderRef.current = renderState;
   }, [renderState]);
@@ -89,6 +92,12 @@ export function PriceChartAnnotations({
   const dismissTimerRef = useRef<number | null>(null);
   const pinnedCommentGroupIdRef = useRef<string | null>(null);
   const [activeCommentGroupId, setActiveCommentGroupId] = useState<string | null>(null);
+  // Keep resize/live-update suppression through the overflow-height commit.
+  // Only an actual expand/close interaction re-enables the bubble transition.
+  const geometryChanged = useMemo(
+    () => previousRenderRef.current !== renderState,
+    [renderState, activeCommentGroupId],
+  );
   useEffect(() => {
     let lastPosition: { x: number; y: number } | null = null;
     const onPointerMove = (event: PointerEvent) => {
@@ -113,50 +122,38 @@ export function PriceChartAnnotations({
   const authorProfiles = usePublicCommentProfiles(
     activeGroup?.comments.map((comment) => comment.userId) ?? [],
   );
-  const positionedCommentGroups = useMemo(() => {
-    const positioned: PositionedCommentGroup[] = [];
-    if (!xScale || !yScale || !plot) return positioned;
-    for (const group of commentGroupResult.groups) {
-      const anchorLeft = xScale(group.timestamp);
-      const anchorTop = yScale(group.price);
-      if (
-        anchorLeft === undefined ||
-        anchorTop === undefined ||
-        !Number.isFinite(anchorLeft) ||
-        !Number.isFinite(anchorTop)
-      )
-        continue;
-      const marker = commentMarkerPresentation(group.comments, plot?.width);
-      positioned.push({
-        ...group,
-        anchorLeft,
-        anchorTop,
-        plotLeft: anchorLeft - plot.x,
-        plotTop: anchorTop - plot.y,
-        width: marker.width,
-        height: marker.height,
-        ...chooseMarkerBodyPosition(
-          anchorLeft,
-          anchorTop,
-          chartRegionWidth,
-          chartRegionHeight,
-          positioned,
-          marker.width,
-          marker.height,
-          plot,
-        ),
-      });
-    }
-    return positioned;
-  }, [commentGroupResult, xScale, yScale, plot, chartRegionWidth, chartRegionHeight]);
+  const commentPlacement = useMemo(() => {
+    if (!xScale || !yScale || !plot) return { groups: [], overflowHeight: 0 };
+    return layoutChartComments(
+      commentGroupResult.groups,
+      series,
+      plot,
+      { x: xScale, y: yScale },
+      chartRegionHeight,
+    );
+  }, [commentGroupResult, series, xScale, yScale, plot, chartRegionHeight]);
+  const positionedCommentGroups = commentPlacement.groups;
+  const overflowHeight =
+    commentPlacement.overflowHeight +
+    (commentPlacement.overflowHeight > 0 && commentGroupResult.hiddenCount > 0 ? 24 : 0);
+  useLayoutEffect(() => {
+    onOverflowHeight(overflowHeight);
+  }, [overflowHeight, onOverflowHeight]);
   const activeCommentGroup = positionedCommentGroups.find(
     (group) => group.id === activeCommentGroupId,
   );
   const plotBounds = plot ?? { x: 0, y: 0, width: chartRegionWidth, height: chartRegionHeight };
+  const cardBounds =
+    commentPlacement.overflowHeight > 0
+      ? {
+          ...plotBounds,
+          height: chartRegionHeight + commentPlacement.overflowHeight - plotBounds.y,
+        }
+      : plotBounds;
   const commentPopoverWidth = Math.max(1, Math.min(288, plotBounds.width - 8));
   const activeResting = activeCommentGroup
     ? commentMarkerPresentation(activeCommentGroup.comments, plotBounds.width)
-    : { width: 172, height: 56, opacity: 0.8 };
+    : { width: 172, height: 44, opacity: 0.8 };
   const commentPopoverBelow = activeCommentGroup
     ? activeCommentGroup.top + activeResting.height / 2 >= activeCommentGroup.anchorTop
     : true;
@@ -177,7 +174,7 @@ export function PriceChartAnnotations({
           : activeCommentGroup.top + activeResting.height - commentPopoverHeight
         : plotBounds.y) - plotBounds.y,
       commentPopoverHeight,
-      plotBounds.height,
+      cardBounds.height,
     );
 
   const cursorPrice =
@@ -421,14 +418,6 @@ export function PriceChartAnnotations({
           <div
             ref={commentMarkerLayerRef}
             data-testid="price-chart-comment-markers"
-            style={{
-              visibility:
-                plot &&
-                plot.height + 0.5 <
-                  commentLayout(plot.width, commentGroupResult.groups.length).requiredPlotHeight
-                  ? "hidden"
-                  : undefined,
-            }}
             aria-label={t("market.chartComments")}
             className="pointer-events-none absolute inset-0 z-20"
           >
@@ -513,7 +502,7 @@ export function PriceChartAnnotations({
                       aria-haspopup="dialog"
                       aria-expanded={expanded}
                       aria-controls={`price-chart-comments-${group.id}`}
-                      className="absolute flex min-h-11 items-center rounded-lg px-2 py-1 text-left text-sm leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="absolute flex min-h-11 items-center rounded-lg px-2 py-0.5 text-left text-sm leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                       style={{
                         left: group.left - left,
                         top: group.top - top,
@@ -567,45 +556,72 @@ export function PriceChartAnnotations({
                           className="h-full overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                         >
                           <ul className="space-y-3">
-                            {group.comments.map((comment, index) => (
-                              <li
-                                key={comment.id}
-                                className="border-b border-slate-300 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
-                              >
-                                <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[11px] text-slate-600 dark:text-slate-300">
-                                  <span
-                                    className="col-start-1 row-start-1 min-w-0 truncate font-medium"
-                                    data-testid="price-chart-comment-author"
-                                    title={comment.userId}
-                                  >
-                                    {authorProfiles.get(comment.userId)?.displayName.trim() ||
-                                      comment.userDisplayName}
-                                  </span>
-                                  <time
-                                    className="col-span-2 row-start-2 min-w-0 [overflow-wrap:anywhere]"
-                                    dateTime={comment.timestamp}
-                                  >
-                                    {formatCommentTime(Date.parse(comment.timestamp))}
-                                  </time>
-                                  {index === 0 && (
-                                    <button
-                                      type="button"
-                                      aria-label={t("common.close")}
-                                      className="col-start-2 row-start-1 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        closeCommentPopover(true);
-                                      }}
+                            {group.comments.map((comment, index) => {
+                              const tradeText = commentTradePresentation(
+                                comment,
+                                outcomeLabels,
+                                isCategorical,
+                                locale,
+                              );
+                              const tradeTime =
+                                tradeText?.executedAt ??
+                                comment.trade?.executedAt ??
+                                comment.timestamp;
+                              return (
+                                <li
+                                  key={comment.id}
+                                  className="border-b border-slate-300 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
+                                >
+                                  <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[11px] text-slate-600 dark:text-slate-300">
+                                    <span
+                                      className="col-start-1 row-start-1 min-w-0 truncate font-medium"
+                                      data-testid="price-chart-comment-author"
+                                      title={comment.userId}
                                     >
-                                      <X aria-hidden="true" className="h-4 w-4" />
-                                    </button>
-                                  )}
-                                </div>
-                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-                                  {comment.content}
-                                </p>
-                              </li>
-                            ))}
+                                      {authorProfiles.get(comment.userId)?.displayName.trim() ||
+                                        comment.userDisplayName}
+                                    </span>
+                                    <time
+                                      className="col-span-2 row-start-2 min-w-0 [overflow-wrap:anywhere]"
+                                      dateTime={tradeTime}
+                                    >
+                                      {tradeText
+                                        ? t(
+                                            tradeText.side === "Buy"
+                                              ? "market.chartCommentBought"
+                                              : "market.chartCommentSold",
+                                            {
+                                              shares: tradeText.shares,
+                                              outcome: tradeText.complement
+                                                ? t("market.chartCommentComplement", {
+                                                    outcome: tradeText.outcome,
+                                                  })
+                                                : tradeText.outcome,
+                                              time: formatCommentTime(Date.parse(tradeTime)),
+                                            },
+                                          )
+                                        : formatCommentTime(Date.parse(tradeTime))}
+                                    </time>
+                                    {index === 0 && (
+                                      <button
+                                        type="button"
+                                        aria-label={t("common.close")}
+                                        className="col-start-2 row-start-1 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          closeCommentPopover(true);
+                                        }}
+                                      >
+                                        <X aria-hidden="true" className="h-4 w-4" />
+                                      </button>
+                                    )}
+                                  </div>
+                                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+                                    {comment.content}
+                                  </p>
+                                </li>
+                              );
+                            })}
                           </ul>
                         </div>
                       </div>

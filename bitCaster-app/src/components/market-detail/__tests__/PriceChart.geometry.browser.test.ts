@@ -625,89 +625,164 @@ function edgeFixture(edge: "left" | "right") {
 }
 
 it.each([
-  { language: "en", width: 1000 },
-  { language: "ja", width: 390 },
-])("shows ten selected previews in a $language $width-pixel chart", async ({ language, width }) => {
-  await i18n.changeLanguage(language);
+  { language: "en", width: 1000, binary: true },
+  { language: "ja", width: 390, binary: true },
+  { language: "en", width: 390, binary: false },
+  { language: "ja", width: 1000, binary: false },
+])(
+  "shows ten selected previews in a $language $width-pixel chart",
+  async ({ language, width, binary }) => {
+    await page.viewport(1280, 1400);
+    await i18n.changeLanguage(language);
+    const fixture = makeFixture({
+      name: "dense-previews",
+      binary,
+      outcomes: binary ? 2 : 6,
+      pointsPerOutcome: 300,
+    });
+    const messages =
+      language === "ja"
+        ? [
+            "今後の需要増加に期待しています。",
+            "価格の変化を慎重に見守っています。",
+            "今回の発表で予想が変わりました。",
+            "長期的には成長すると思います。",
+            "まだ不確実な要素が多いと感じます。",
+          ]
+        : [
+            "Demand should grow after this announcement.",
+            "I'm watching the next update closely.",
+            "This changes my earlier prediction.",
+            "The long-term outlook still looks strong.",
+            "There is still considerable uncertainty.",
+          ];
+    fixture.props.comments = fixture.props.comments!.map((comment, index) => ({
+      ...comment,
+      content: messages[index % messages.length],
+    }));
+    await renderFixture(fixture);
+    host!.style.width = `${width}px`;
+    await expect.poll(() => Math.round(host!.getBoundingClientRect().width)).toBe(width);
+    await frame();
+    await frame();
+    const previewNodes = host!.querySelectorAll('[data-testid="price-chart-comment-preview"]');
+    expect(previewNodes).toHaveLength(10);
+    await expect
+      .poll(() =>
+        [...previewNodes].every((preview) => preview.checkVisibility({ visibilityProperty: true })),
+      )
+      .toBe(true);
+    const bodies = [
+      ...host!.querySelectorAll<HTMLElement>('[data-testid="price-chart-comment-bubble"]'),
+    ];
+    const assertPacked = () => {
+      const plot = plotRectangle();
+      const bounds = bodies.map((body) => body.getBoundingClientRect());
+      for (const body of bounds) {
+        expect(body.left).toBeGreaterThanOrEqual(plot.left - 1);
+        expect(body.right).toBeLessThanOrEqual(plot.left + plot.width + 1);
+        expect(body.top).toBeGreaterThanOrEqual(plot.top - 1);
+        expect(body.bottom).toBeLessThanOrEqual(
+          host!.querySelector('[data-testid="price-chart-region"]')!.getBoundingClientRect()
+            .bottom + 1,
+        );
+      }
+      // The approved overflow region follows time in row-major order.
+      const below = bounds.every(
+        (body) => body.top >= host!.querySelector("canvas")!.getBoundingClientRect().bottom,
+      );
+      expect(below).toBe(true);
+      if (below) {
+        const badge = host!
+          .querySelector('[data-testid="price-chart-comment-markers-hidden"]')!
+          .getBoundingClientRect();
+        expect(badge.top).toBeGreaterThanOrEqual(Math.max(...bounds.map((body) => body.bottom)));
+        for (let index = 1; index < bounds.length; index++) {
+          expect(
+            bounds[index].top > bounds[index - 1].top ||
+              (bounds[index].top === bounds[index - 1].top &&
+                bounds[index].left > bounds[index - 1].left),
+          ).toBe(true);
+        }
+        if (width === 390)
+          expect(new Set(bounds.map((body) => Math.round(body.left))).size).toBe(1);
+      }
+      expect(Math.round(host!.querySelector("canvas")!.getBoundingClientRect().height)).toBe(224);
+      for (let first = 0; first < bounds.length; first++) {
+        for (let second = first + 1; second < bounds.length; second++) {
+          const a = bounds[first],
+            b = bounds[second];
+          expect(
+            a.right <= b.left + 0.5 ||
+              b.right <= a.left + 0.5 ||
+              a.bottom <= b.top + 0.5 ||
+              b.bottom <= a.top + 0.5,
+          ).toBe(true);
+        }
+      }
+    };
+    await expect
+      .poll(() => {
+        assertPacked();
+        return true;
+      })
+      .toBe(true);
+
+    const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/${language}-ten-previews-${width}-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+    if (captureDirectory)
+      await page.screenshot({
+        path: `${captureDirectory}/layout-${language}-${width}-plot${plotRectangle().width.toFixed(2)}-height${host!.querySelector('[data-testid="price-chart-region"]')!.getBoundingClientRect().height}-dpr${devicePixelRatio}.png`,
+        element: host!,
+      });
+  },
+);
+
+it("keeps sparse chronological previews near exact anchors above or below the price line", async () => {
+  await page.viewport(1280, 900);
   const fixture = makeFixture({
-    name: "dense-previews",
+    name: "sparse-comments",
     binary: true,
     outcomes: 2,
     pointsPerOutcome: 300,
   });
-  const messages =
-    language === "ja"
-      ? [
-          "今後の需要増加に期待しています。",
-          "価格の変化を慎重に見守っています。",
-          "今回の発表で予想が変わりました。",
-          "長期的には成長すると思います。",
-          "まだ不確実な要素が多いと感じます。",
-        ]
-      : [
-          "Demand should grow after this announcement.",
-          "I'm watching the next update closely.",
-          "This changes my earlier prediction.",
-          "The long-term outlook still looks strong.",
-          "There is still considerable uncertainty.",
-        ];
-  fixture.props.comments = fixture.props.comments!.map((comment, index) => ({
-    ...comment,
-    content: messages[index % messages.length],
+  const base = Date.parse("2026-10-08T00:00:00Z");
+  const data = [30, 45, 60, 40].map((price, index) => ({
+    eventOrder: `sparse-${index}`,
+    timestamp: new Date(base + index * 600_000).toISOString(),
+    price,
+    volume: 1000,
+    source: "fill" as const,
   }));
-  await renderFixture(fixture);
-  host!.style.width = `${width}px`;
-  await expect.poll(() => Math.round(host!.getBoundingClientRect().width)).toBe(width);
-  await frame();
-  await frame();
-  const previewNodes = host!.querySelectorAll('[data-testid="price-chart-comment-preview"]');
-  expect(previewNodes).toHaveLength(10);
-  await expect
-    .poll(() =>
-      [...previewNodes].every((preview) => preview.checkVisibility({ visibilityProperty: true })),
-    )
-    .toBe(true);
+  fixture.props.priceHistory = { timeframe: "all", data };
+  fixture.props.comments = data.map((point, index) => ({
+    ...fixture.props.comments![index],
+    content: `Chronological comment ${index + 1}.`,
+    timestamp: point.timestamp,
+    trade: {
+      ...fixture.props.comments![index].trade!,
+      outcomeId: "yes",
+      executedAt: point.timestamp,
+      price: point.price,
+    },
+  }));
+  await renderFixture(fixture, 4);
+  const plot = plotRectangle();
   const bodies = [
     ...host!.querySelectorAll<HTMLElement>('[data-testid="price-chart-comment-bubble"]'),
-  ];
-  const assertPacked = () => {
-    const plot = plotRectangle();
-    const bounds = bodies.map((body) => body.getBoundingClientRect());
-    for (const body of bounds) {
-      expect(body.left).toBeGreaterThanOrEqual(plot.left - 1);
-      expect(body.right).toBeLessThanOrEqual(plot.left + plot.width + 1);
-      expect(body.top).toBeGreaterThanOrEqual(plot.top - 1);
-      expect(body.bottom).toBeLessThanOrEqual(plot.top + plot.height + 1);
-    }
-    for (let first = 0; first < bounds.length; first++) {
-      for (let second = first + 1; second < bounds.length; second++) {
-        const a = bounds[first],
-          b = bounds[second];
-        expect(
-          a.right <= b.left + 0.5 ||
-            b.right <= a.left + 0.5 ||
-            a.bottom <= b.top + 0.5 ||
-            b.bottom <= a.top + 0.5,
-        ).toBe(true);
-      }
-    }
-  };
-  await expect
-    .poll(() => {
-      assertPacked();
-      return true;
-    })
-    .toBe(true);
-
+  ].map((body) => body.getBoundingClientRect());
+  for (let index = 0; index < bodies.length; index++) {
+    expect(bodies[index].bottom).toBeLessThanOrEqual(plot.top + plot.height);
+    if (index > 0) expect(bodies[index].left).toBeGreaterThan(bodies[index - 1].left);
+  }
   const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
   if (captureDirectory)
     await page.screenshot({
-      path: `${captureDirectory}/${language}-ten-previews-${width}-dpr${devicePixelRatio}.png`,
-      element: host!,
-    });
-  if (captureDirectory)
-    await page.screenshot({
-      path: `${captureDirectory}/layout-${language}-${width}-plot${plotRectangle().width.toFixed(2)}-height${host!.querySelector('[data-testid="price-chart-region"]')!.getBoundingClientRect().height}-dpr${devicePixelRatio}.png`,
+      path: `${captureDirectory}/en-sparse-four-desktop-dpr${devicePixelRatio}.png`,
       element: host!,
     });
 });
@@ -740,6 +815,15 @@ it("converges through wide narrow wide layout without losing the pinned card or 
     await frame();
     await frame();
     expect(region.getBoundingClientRect().height).toBe(settled);
+    for (const bubble of host!.querySelectorAll<HTMLElement>(
+      '[data-testid="price-chart-comment-bubble"]',
+    )) {
+      expect(
+        getComputedStyle(bubble)
+          .transitionDuration.split(",")
+          .every((value) => Number.parseFloat(value) === 0),
+      ).toBe(true);
+    }
   }
   expect(plotRectangle().width).toBe(initialPlotWidth);
 });
@@ -768,7 +852,10 @@ it.each(["no-preference", "reduce"] as const)(
       expect(body.left).toBeGreaterThanOrEqual(plot.left - 1);
       expect(body.right).toBeLessThanOrEqual(plot.left + plot.width + 1);
       expect(body.top).toBeGreaterThanOrEqual(plot.top - 1);
-      expect(body.bottom).toBeLessThanOrEqual(plot.top + plot.height + 1);
+      expect(body.bottom).toBeLessThanOrEqual(
+        host!.querySelector('[data-testid="price-chart-region"]')!.getBoundingClientRect().bottom +
+          1,
+      );
     };
     assertWithinPlot();
     const preview = host!.querySelector<HTMLElement>(
@@ -981,7 +1068,17 @@ it.each(["en", "ja"])(
       language === "ja"
         ? "長い表示名でも閉じる操作を妨げない投稿者"
         : "A deliberately long commenter display name";
-    fixture.props.comments![0] = { ...fixture.props.comments![0], userDisplayName: displayName };
+    fixture.props.comments![0] = {
+      ...fixture.props.comments![0],
+      userDisplayName: displayName,
+      trade: {
+        ...fixture.props.comments![0].trade!,
+        faceAmountSubunits: 12345,
+        priceDenominator: 1000,
+        price: 990,
+        authorTrade: { side: "Sell", outcomeId: "yes", tokenSide: "Complement" },
+      },
+    };
     await renderFixture(fixture, 1);
     // A 320px page also needs its outer content gutters. Exercise the actual smaller plot.
     host!.style.width = "280px";
@@ -1002,6 +1099,9 @@ it.each(["en", "ja"])(
     const button = close.getBoundingClientRect();
     const authorBounds = author.getBoundingClientRect();
     expect(author.textContent).toBe(displayName);
+    expect(card.textContent).toContain(
+      language === "ja" ? "NOを12.345口売却" : "Sold 12.345 NO shares",
+    );
     expect(authorBounds.width).toBeGreaterThanOrEqual(32);
     expect(authorBounds.right).toBeLessThanOrEqual(button.left);
     expect(button.left).toBeGreaterThanOrEqual(bounds.left);

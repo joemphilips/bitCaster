@@ -13,7 +13,6 @@ import {
   createChartAxisTimeFormatter,
   formatPercent,
   groupComments,
-  commentLayout,
 } from "./priceChartModel";
 
 interface PriceChartProps {
@@ -67,7 +66,7 @@ export function PriceChart({
   const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
   const [cursorTime, setCursorTime] = useState<number | null>(null);
   const [chartRender, setChartRender] = useState<PriceChartRender | null>(null);
-  // Reuse selected-author requests across card changes; annotations prune obsolete authors.
+  const [annotationHeight, setAnnotationHeight] = useState(0);
   const clock = useMemo(
     () => ({
       asOfMs: priceHistory.asOf ? Date.parse(priceHistory.asOf) : null,
@@ -148,17 +147,7 @@ export function PriceChart({
     () => groupComments(comments, domain, series, isCategorical),
     [comments, domain, series, isCategorical],
   );
-  const measuredPlot = chartRender?.chart.chartArea;
-  const requiredPlotHeight = measuredPlot
-    ? commentLayout(measuredPlot.width, commentGroupResult.groups.length).requiredPlotHeight
-    : 0;
-  const chartHeight = Math.max(
-    224,
-    Math.ceil(
-      requiredPlotHeight +
-        (measuredPlot && chartRender ? chartRender.chart.height - measuredPlot.height : 0),
-    ),
-  );
+  const chartHeight = 224;
   const hasChartData = domain !== null;
   const formatTimeTick = useMemo(
     () => createChartAxisTimeFormatter(locale, chartTimeframe, domain),
@@ -232,7 +221,7 @@ export function PriceChart({
       <div
         data-testid="price-chart-region"
         className="relative mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden"
-        style={{ height: chartHeight }}
+        style={{ height: chartHeight + (hasChartData ? annotationHeight : 0) }}
       >
         {!hasChartData ? (
           <div
@@ -242,7 +231,7 @@ export function PriceChart({
             {emptyMessage}
           </div>
         ) : (
-          <div data-testid="price-chart-chartjs" className="h-full w-full">
+          <div data-testid="price-chart-chartjs" className="w-full" style={{ height: chartHeight }}>
             <PriceChartCanvas
               series={series}
               domain={domain!}
@@ -252,6 +241,7 @@ export function PriceChart({
             />
             <PriceChartAnnotations
               renderState={chartRender}
+              onOverflowHeight={setAnnotationHeight}
               layoutReady={
                 chartRender !== null &&
                 chartRender.isActive() &&
@@ -261,6 +251,7 @@ export function PriceChart({
               overlay={overlay}
               commentGroupResult={commentGroupResult}
               series={series}
+              outcomeLabels={outcomes ?? []}
               chartTimeframe={chartTimeframe}
               isCategorical={isCategorical}
               cursorTime={cursorTime}

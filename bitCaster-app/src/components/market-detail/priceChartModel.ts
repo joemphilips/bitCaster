@@ -1,3 +1,4 @@
+import { COMMENT_BODY_HEIGHT, COMMENT_BODY_WIDTH } from "./priceChartCommentLayout";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 import { TIMEFRAME_WINDOW_MS } from "@/lib/priceHistory";
 import { normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
@@ -28,34 +29,8 @@ export type PositionedCommentGroup = CommentGroup & {
   height?: number;
 };
 export type CommentGroupResult = { groups: CommentGroup[]; hiddenCount: number };
-const COMMENT_MARKER_WIDTH = 172;
-const COMMENT_MARKER_HEIGHT = 56;
-const COMMENT_LAYOUT_GAP = 8;
-const COMMENT_LAYOUT_PADDING = 4;
-
-/** Shared packing capacity keeps responsive height and actual placement consistent. */
-export function commentLayout(plotWidth: number, groupCount: number) {
-  const width = Math.max(1, Math.min(COMMENT_MARKER_WIDTH, plotWidth - 2 * COMMENT_LAYOUT_PADDING));
-  const columns = Math.max(
-    1,
-    Math.floor(
-      (plotWidth - 2 * COMMENT_LAYOUT_PADDING + COMMENT_LAYOUT_GAP) / (width + COMMENT_LAYOUT_GAP),
-    ),
-  );
-  const rows = Math.ceil(groupCount / columns);
-  return {
-    width,
-    height: COMMENT_MARKER_HEIGHT,
-    columns,
-    requiredPlotHeight:
-      rows === 0
-        ? 0
-        : 2 * COMMENT_LAYOUT_PADDING +
-          rows * COMMENT_MARKER_HEIGHT +
-          (rows - 1) * COMMENT_LAYOUT_GAP,
-  };
-}
-
+const COMMENT_MARKER_WIDTH = COMMENT_BODY_WIDTH;
+const COMMENT_MARKER_HEIGHT = COMMENT_BODY_HEIGHT;
 export function groupComments(
   comments: readonly Comment[],
   xScale: { min: number; max: number } | null,
@@ -251,65 +226,10 @@ export function commentMarkerPresentation(comments: readonly Comment[], availabl
   );
   const weight = Math.min(1, Math.log2(1 + likes) / 6);
   return {
-    width: commentLayout(availableWidth, comments.length).width,
+    width: Math.max(1, Math.min(COMMENT_MARKER_WIDTH, availableWidth - 8)),
     height: COMMENT_MARKER_HEIGHT,
     opacity: 0.8 + 0.2 * weight,
   };
-}
-
-export function chooseMarkerBodyPosition(
-  anchorLeft: number,
-  anchorTop: number,
-  chartWidth: number,
-  chartHeight: number,
-  positioned: readonly PositionedCommentGroup[],
-  width = COMMENT_MARKER_WIDTH,
-  height = COMMENT_MARKER_HEIGHT,
-  bounds = { x: 0, y: 0, width: chartWidth, height: chartHeight },
-): { left: number; top: number } {
-  const { columns } = commentLayout(bounds.width, positioned.length + 1);
-  const rows = Math.max(
-    1,
-    Math.floor(
-      (bounds.height - 2 * COMMENT_LAYOUT_PADDING + COMMENT_LAYOUT_GAP) /
-        (height + COMMENT_LAYOUT_GAP),
-    ),
-  );
-  const candidates: Array<{ left: number; top: number; distance: number }> = [];
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const left =
-        bounds.x +
-        COMMENT_LAYOUT_PADDING +
-        (columns === 1
-          ? (bounds.width - width - 2 * COMMENT_LAYOUT_PADDING) / 2
-          : (column * (bounds.width - width - 2 * COMMENT_LAYOUT_PADDING)) / (columns - 1));
-      const top =
-        bounds.y +
-        COMMENT_LAYOUT_PADDING +
-        (rows === 1
-          ? (bounds.height - height - 2 * COMMENT_LAYOUT_PADDING) / 2
-          : (row * (bounds.height - height - 2 * COMMENT_LAYOUT_PADDING)) / (rows - 1));
-      candidates.push({
-        left,
-        top,
-        distance: Math.hypot(left + width / 2 - anchorLeft, top + height / 2 - anchorTop),
-      });
-    }
-  }
-  candidates.sort((a, b) => a.distance - b.distance || a.top - b.top || a.left - b.left);
-  const free = candidates.find((candidate) =>
-    positioned.every(
-      (item) =>
-        candidate.left + width <= item.left ||
-        candidate.left >= item.left + (item.width ?? width) ||
-        candidate.top + height <= item.top ||
-        candidate.top >= item.top + (item.height ?? height),
-    ),
-  );
-  // The caller hides annotations until responsive plot sizing supplies enough slots.
-  const chosen = free ?? candidates[0];
-  return chosen ? { left: chosen.left, top: chosen.top } : { left: bounds.x, top: bounds.y };
 }
 
 export function commentTailPath(

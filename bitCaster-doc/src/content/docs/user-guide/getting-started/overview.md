@@ -293,9 +293,9 @@ confirmed price when you are not pointing at history.
 
 The order book shows asks (sell orders) above the spread and bids (buy orders)
 below it, with the best prices closest to the spread. Each row combines price,
-cumulative depth, and visual thickness. Longer bars mean more cumulative
-liquidity available at that price or better, normalized across both sides so
-you can compare bid and ask depth at a glance. Market cards and detail pages
+cumulative depth, and visual thickness. Each bar shows the quantity at that
+price. Both sides use the largest visible quantity as their common scale.
+The cumulative value shows the total quantity at that price or better. Market cards and detail pages
 show **Total funding** after receive fees for funded markets. New confirmed
 payments increase it. Trades do not reduce it. It is not current order-book
 liquidity.
@@ -309,15 +309,22 @@ Click or tap to keep the card open. Press Escape or use its close button to clos
 Opening a comment keeps the latest price visible. Move over the chart without
 an open comment to inspect a historical price.
 The chart selects up to ten comments in the period, ranked by their linked
-confirmed trade size. Comments with a known size come first. Each collapsed
-bubble shows about twenty characters of text. The expanded card shows the
-author and date, with scrolling for long text. Likes increase opacity, not size.
+confirmed trade size. Comments with a known size come first. The selected bubbles
+follow confirmed trade time in chronological order. If they cannot fit near their
+trade points, they appear below the plot, from left to right and then top to bottom.
+Narrow screens use one column. Pointers keep the exact trade time and price.
+Each collapsed bubble shows about twenty characters of text. Expanded cards keep
+the same font size and allow scrolling for long text. Likes increase opacity.
 A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
 
-Each expanded chart comment shows its public author, text, and written date. The author
-is the public key that signed the comment. If a public Nostr profile is
+Each expanded chart comment shows its public author and text. When the linked
+trade facts are available, it also shows the author's buy or sell action, exact
+share quantity, selected outcome, and trade time. This describes the linked fill,
+not the whole order. Missing historical facts do not imply a buy. The card uses
+the comment's written date only when trade time is unavailable. The author is
+the public key that signed the comment. If a public Nostr profile is
 available, the app shows its display name. Otherwise, it shows a shortened
 public key. Profile lookup does not block the market page. A profile name is
 display information, not proof of identity.

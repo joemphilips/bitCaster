@@ -18,7 +18,10 @@ import {
 } from "./priceChartBenchmarkFixtures";
 
 // The only stub is optional external profile enrichment. Rendering, scales,
-// ResizeObserver, clocks, browser layout, and clipboard/events are real.
+// ResizeObserver, RAF, performance measurement, browser layout, and events are real.
+// Autonomous timer callbacks are paused during measurement. Explicit fixture asOf
+// updates drive the rolling cutoff identically for each renderer. The geometry
+// suite separately verifies real-clock autonomous expiry.
 vi.mock("@/lib/nostr", () => ({ fetchPublicNostrProfile: vi.fn(async () => null) }));
 
 declare const __P8_CHART_BENCHMARK__: {
@@ -410,6 +413,7 @@ it("records the real chart renderer on fixed P8 workloads", async () => {
   const browser = await cdp().send("Browser.getVersion");
   await stage("browser metadata complete");
   const startedAt = new Date().toISOString();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let failure: string | null = null;
   try {
     if (options.diagnostics.profileStage === null) await commands.startChartProfile();
@@ -431,6 +435,7 @@ it("records the real chart renderer on fixed P8 workloads", async () => {
     failure = error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
+    vi.useRealTimers();
     await stage("writing report");
     await commands.writeChartReport(
       JSON.stringify(
@@ -444,6 +449,7 @@ it("records the real chart renderer on fixed P8 workloads", async () => {
           currentWorkload,
           notes: [
             "Component render under Vite/Vitest; production route bundle sizes are separate evidence.",
+            "Autonomous timeout callbacks are paused; explicit fixture asOf snapshots drive rolling expiry. RAF, CSS animations and performance.now remain real. Dense real-clock expiry readiness is separate evidence.",
             "Heap/DOM counts include the runner isolate. They are not total renderer/GPU memory.",
             "Input fixtures are allocated before baseline memory sampling; no forced GC occurs inside timed actions.",
             "The uPlot baseline records alignment errors. Recharts must pass the independent geometry check.",

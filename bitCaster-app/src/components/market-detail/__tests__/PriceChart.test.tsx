@@ -713,8 +713,8 @@ describe("PriceChart", () => {
       expect(width).toBeLessThanOrEqual(172);
     }
     for (const height of heights) {
-      expect(height).toBeGreaterThanOrEqual(56);
-      expect(height).toBeLessThanOrEqual(56);
+      expect(height).toBeGreaterThanOrEqual(44);
+      expect(height).toBeLessThanOrEqual(44);
     }
     for (const value of opacity) {
       expect(value).toBeGreaterThanOrEqual(0.8);
@@ -2280,4 +2280,37 @@ it("shows a validated categorical price without treating unknown outcomes as nev
   expect(pills[1]).toHaveTextContent("BPrice unavailable");
   expect(pills[2]).toHaveTextContent("CPrice unavailable");
   expect(screen.queryByText("No trades yet")).not.toBeInTheDocument();
+});
+
+it("names the author's selected categorical outcome even when it has no visible history", () => {
+  const executedAt = "2026-05-25T10:00:00Z";
+  render(
+    <PriceChart
+      chartTimeframe="all"
+      priceHistory={{ timeframe: "all", data: [] }}
+      outcomes={[
+        { id: "a", label: "Alpha", odds: null },
+        { id: "b", label: "Beta", odds: null },
+      ]}
+      outcomePriceHistories={{
+        Alpha: {
+          timeframe: "all",
+          data: [{ eventOrder: "fill", timestamp: executedAt, price: 50 }],
+        },
+        Beta: { timeframe: "all", data: [] },
+      }}
+      comments={[
+        makeComment("known-author", executedAt, {
+          ...makeTrade(executedAt, {
+            outcomeId: "a",
+            priceDenominator: 1000,
+            faceAmountSubunits: 12345,
+          }),
+          authorTrade: { side: "Sell", outcomeId: "b", tokenSide: "Complement" },
+        }),
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByTestId("price-chart-comment-marker"));
+  expect(screen.getByRole("dialog")).toHaveTextContent("Sold 12.345 Not Beta shares");
 });
