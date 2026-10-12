@@ -460,7 +460,7 @@ test('manual wallet recovery uses the retained source and blocks the write gate 
     assert.equal(result.pendingCount, 0)
     await dispatch({ method: 'wallet.recover', params: {} }, deps)
     assert.equal((status as { nonRetirementPending: boolean }).nonRetirementPending, false)
-    const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+    const main = await readFile(new URL('../src/daemonRuntime.ts', import.meta.url), 'utf8')
     assert.match(main, /const importRecovery = await recoverDurableWalletProofImports/)
     assert.match(main, /composeStartupCustodyRecovery\(\[[\s\S]*?importRecovery,/)
     assert.match(main, /const blockingPending =[\s\S]*?importRecovery\.pendingCount > 0/)

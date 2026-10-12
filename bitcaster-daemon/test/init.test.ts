@@ -75,7 +75,7 @@ test('fresh init publishes one complete SQLite authority', async () => {
 })
 
 test('retained lifecycle connections start after custody recovery', async () => {
-  const source = await readFile(mainPath, 'utf8')
+  const source = await readFile(join(import.meta.dirname, '..', 'src', 'daemonRuntime.ts'), 'utf8')
   assert.match(source, /startOrderHubWhenReady/)
   assert.match(source, /SignalROrderLifecycleConnection/)
   assert.match(source, /await marketHub\.start\(\)/)
