@@ -263,6 +263,14 @@ describe("useWalletStore", () => {
       expect(useToastStore.getState().toasts).toHaveLength(0);
     });
 
+    it("accepts a valid 24-word phrase", async () => {
+      const words = [...Array(23).fill("abandon"), "art"];
+      const result = await useWalletStore.getState().recoverFromMnemonic(words);
+      expect(result.valid).toBe(true);
+      expect(useWalletStore.getState().mnemonic === words.join(" ")).toBe(true);
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
+    });
+
     it("rejects invalid phrase", async () => {
       const result = await useWalletStore
         .getState()
@@ -287,7 +295,7 @@ describe("useWalletStore", () => {
     it("rejects wrong word count", async () => {
       const result = await useWalletStore.getState().recoverFromMnemonic(["abandon", "abandon"]);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain("12 words");
+      expect(result.error).toContain("12 or 24");
     });
 
     it("hands off a different seed only after activating the new profile", async () => {

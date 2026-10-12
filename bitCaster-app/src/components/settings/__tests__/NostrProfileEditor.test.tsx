@@ -44,9 +44,7 @@ describe("Nostr profile editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
     await screen.findByText(/Profile saved/);
     expect(f.save.mock.calls[0]?.[0]).toEqual({ about: "" });
-    expect(screen.getByTestId("nostr-profile-result")).toHaveTextContent(
-      "Accepted: 1 · Rejected: 1 · No acknowledgment: 1 · Not sent: 0",
-    );
+    expect(screen.getByTestId("nostr-profile-result")).not.toHaveTextContent("Accepted:");
     expect(screen.getByRole("button", { name: "Save profile" })).toBeDisabled();
   });
 

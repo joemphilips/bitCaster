@@ -285,8 +285,8 @@ export const useWalletStore = create<WalletState>()(
       },
 
       recoverFromMnemonic: async (words: string[]) => {
-        if (words.length !== 12) {
-          return { valid: false, error: "Seed phrase must be 12 words" };
+        if (words.length !== 12 && words.length !== 24) {
+          return { valid: false, error: i18n.t("wallet.seedphraseWordCountError") };
         }
         if (!bip39.validate(words)) {
           return { valid: false, error: "Invalid seed phrase" };

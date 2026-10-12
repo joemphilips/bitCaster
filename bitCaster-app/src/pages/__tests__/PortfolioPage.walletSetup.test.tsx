@@ -146,7 +146,7 @@ describe("PortfolioPage wallet setup", () => {
     await userEvent.click(screen.getByRole("button", { name: /get started/i }));
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
 
-    expect(screen.getByLabelText(/enter your seedphrase/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Seed word 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /restore wallet/i })).toBeInTheDocument();
   });
 
@@ -168,7 +168,9 @@ describe("PortfolioPage wallet setup", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /get started/i }));
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), words);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Seed word 1"));
+    await user.paste(words);
     await userEvent.click(screen.getByRole("button", { name: /restore wallet/i }));
 
     await waitFor(() => expect(recoverFromMnemonic).toHaveBeenCalledWith(words.split(" ")));

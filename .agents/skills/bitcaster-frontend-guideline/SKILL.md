@@ -5,6 +5,13 @@ description: Apply bitCaster browser state, durable error, and recovery UX rules
 
 # bitCaster Frontend Guideline
 
+## Interface Copy
+
+- Use concise GUI text that states the action the user must take.
+- Use precise CLI output that supports diagnosis.
+- Keep required recovery actions and material funds warnings in both interfaces.
+- Do not show relay delivery counts for a routine successful profile save.
+
 ## State And Messages
 
 - Show the authoritative state. Do not infer success or failure from a timeout.

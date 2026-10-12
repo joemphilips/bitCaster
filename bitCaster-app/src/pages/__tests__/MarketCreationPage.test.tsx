@@ -200,7 +200,8 @@ describe("MarketCreationPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Create Market" }));
     await user.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    await user.type(screen.getByLabelText(/enter your seedphrase/i), validSeedPhrase);
+    await user.click(screen.getByLabelText("Seed word 1"));
+    await user.paste(validSeedPhrase);
     await user.click(screen.getByRole("button", { name: /restore wallet/i }));
 
     expect(walletState.recoverFromMnemonic).toHaveBeenCalledWith(validSeedPhrase.split(" "));

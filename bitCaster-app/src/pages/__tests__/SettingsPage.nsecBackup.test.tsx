@@ -368,7 +368,7 @@ describe("SettingsPage wallet replacement", () => {
     await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
     const newWords = bip39.generate();
-    fireEvent.change(screen.getByLabelText(/enter your seedphrase/i), {
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
       target: { value: newWords.join(" ") },
     });
     fireEvent.click(
@@ -441,7 +441,7 @@ describe("SettingsPage wallet replacement", () => {
 
     await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
-    fireEvent.change(screen.getByLabelText(/enter your seedphrase/i), {
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
       target: { value: bip39.generate().join(" ") },
     });
     const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
@@ -533,7 +533,7 @@ describe("SettingsPage explicit wallet setup", () => {
     fireEvent.click(setupButton("Create Wallet"));
     fireEvent.click(setupButton("Import Existing Wallet"));
     fireEvent.change(
-      setupElement(() => screen.queryByLabelText("Enter your seedphrase")),
+      setupElement(() => screen.queryByLabelText("Seed word 1")),
       {
         target: { value: words.join(" ") },
       },

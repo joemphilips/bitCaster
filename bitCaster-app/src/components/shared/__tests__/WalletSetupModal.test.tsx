@@ -28,14 +28,14 @@ describe("WalletSetupModal", () => {
     );
 
     expect(screen.getByRole("dialog", { name: "Replace This Wallet" })).toBeInTheDocument();
-    expect(screen.getByText(/does not change your nostr signer/i)).toBeInTheDocument();
+    expect(screen.getByText(/back up your current seed phrase/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create new wallet/i })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /import existing wallet/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace Wallet" })).toBeDisabled();
 
-    await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), validSeedPhrase);
+    fireEvent.change(screen.getByLabelText("Seed word 1"), { target: { value: validSeedPhrase } });
     await userEvent.click(screen.getByRole("button", { name: "Replace Wallet" }));
 
     expect(onImportSeed).toHaveBeenCalledWith(validSeedPhrase.split(" "));
@@ -45,14 +45,14 @@ describe("WalletSetupModal", () => {
     renderWalletSetupModal();
 
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    const textarea = screen.getByLabelText(/enter your seedphrase/i);
+    const textarea = screen.getByLabelText("Seed word 1");
     const restoreButton = screen.getByRole("button", { name: /restore wallet/i });
 
     expect(restoreButton).toBeDisabled();
 
-    await userEvent.type(textarea, "abandon ability able about");
+    fireEvent.change(textarea, { target: { value: "abandon ability able about" } });
 
-    expect(screen.getByText(/seedphrase must be exactly 12 words/i)).toBeInTheDocument();
+    expect(screen.getByText(/enter all 12 or 24 seed words/i)).toBeInTheDocument();
     expect(textarea).toHaveAttribute("aria-invalid", "true");
     expect(textarea).toHaveClass("border-rose-500");
     expect(restoreButton).toBeDisabled();
@@ -62,41 +62,45 @@ describe("WalletSetupModal", () => {
     renderWalletSetupModal();
 
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    const textarea = screen.getByLabelText(/enter your seedphrase/i);
+    const textarea = screen.getByLabelText("Seed word 1");
     const restoreButton = screen.getByRole("button", { name: /restore wallet/i });
 
-    await userEvent.type(textarea, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo abandon");
+    fireEvent.change(textarea, {
+      target: { value: "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo abandon" },
+    });
 
     expect(screen.getByText(/this seedphrase is not valid/i)).toBeInTheDocument();
     expect(textarea).toHaveAttribute("aria-invalid", "true");
     expect(restoreButton).toBeDisabled();
   });
 
-  it("rejects a valid 24-word phrase", async () => {
+  it("accepts a valid 24-word phrase", async () => {
     renderWalletSetupModal();
 
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    const textarea = screen.getByLabelText(/enter your seedphrase/i);
+    const textarea = screen.getByLabelText("Seed word 1");
     const restoreButton = screen.getByRole("button", { name: /restore wallet/i });
     const valid24SeedPhrase = [...Array(23).fill("abandon"), "art"].join(" ");
 
-    await userEvent.type(textarea, valid24SeedPhrase);
+    fireEvent.paste(textarea, { clipboardData: { getData: () => valid24SeedPhrase } });
 
-    expect(screen.getByText(/seedphrase must be exactly 12 words/i)).toBeInTheDocument();
-    expect(restoreButton).toBeDisabled();
+    expect(screen.getAllByRole("textbox")).toHaveLength(24);
+    expect(restoreButton).toBeEnabled();
   });
 
   it("disables seedphrase import and shows the invalid BIP-39 word", async () => {
     renderWalletSetupModal();
 
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    const textarea = screen.getByLabelText(/enter your seedphrase/i);
+    const textarea = screen.getByLabelText("Seed word 1");
     const restoreButton = screen.getByRole("button", { name: /restore wallet/i });
 
-    await userEvent.type(
-      textarea,
-      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon zzzzzzz",
-    );
+    fireEvent.change(textarea, {
+      target: {
+        value:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon zzzzzzz",
+      },
+    });
 
     expect(screen.getByText(/invalid word: zzzzzzz/i)).toBeInTheDocument();
     expect(textarea).toHaveAttribute("aria-invalid", "true");
@@ -108,12 +112,14 @@ describe("WalletSetupModal", () => {
     const { onImportSeed } = renderWalletSetupModal();
 
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    const textarea = screen.getByLabelText(/enter your seedphrase/i);
+    const textarea = screen.getByLabelText("Seed word 1");
     const restoreButton = screen.getByRole("button", { name: /restore wallet/i });
 
-    await userEvent.type(textarea, `  ${validSeedPhrase.toUpperCase()}  `);
+    fireEvent.paste(textarea, {
+      clipboardData: { getData: () => `  ${validSeedPhrase.toUpperCase()}  ` },
+    });
 
-    expect(screen.queryByText(/seedphrase must be exactly 12 words/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/enter all 12 or 24 seed words/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/invalid word:/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/this seedphrase is not valid/i)).not.toBeInTheDocument();
     expect(textarea).toHaveAttribute("aria-invalid", "false");
@@ -122,6 +128,45 @@ describe("WalletSetupModal", () => {
     await userEvent.click(restoreButton);
 
     expect(onImportSeed).toHaveBeenCalledWith(validSeedPhrase.split(" "));
+  });
+
+  it("supports individual words, mode selection and keyboard navigation", async () => {
+    renderWalletSetupModal();
+    await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
+    const first = screen.getByLabelText("Seed word 1");
+    await userEvent.type(first, "abandon ");
+    expect(screen.getByLabelText("Seed word 2")).toHaveFocus();
+    await userEvent.selectOptions(screen.getByRole("combobox"), "24");
+    expect(screen.getAllByRole("textbox")).toHaveLength(24);
+    expect(first).toHaveValue("abandon");
+    expect(screen.getByRole("button", { name: /restore wallet/i })).toBeDisabled();
+  });
+
+  it("rejects oversized paste without importing a truncated phrase", async () => {
+    renderWalletSetupModal();
+    await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
+    const first = screen.getByLabelText("Seed word 1");
+    fireEvent.paste(first, { clipboardData: { getData: () => validSeedPhrase } });
+    fireEvent.paste(first, { clipboardData: { getData: () => validSeedPhrase + " abandon" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("12 or 24");
+    expect(screen.getByRole("button", { name: /restore wallet/i })).toBeDisabled();
+  });
+
+  it("locks replacement fields and dismissal while import is pending", () => {
+    const onClose = vi.fn();
+    render(
+      <WalletSetupModal
+        mode="replace"
+        isCreating
+        onClose={onClose}
+        onCreateNew={vi.fn()}
+        onImportSeed={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Seed word 1")).toBeDisabled();
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("keeps the existing native cancel path available while creation is busy", () => {

@@ -244,7 +244,7 @@ export function NostrProfileEditor({
               <X className="h-4 w-4" />
             </button>
           </div>
-          {result && (
+          {result && result.status !== "saved" && (
             <p className="mt-2 select-text">
               {t("settings.profileEditDelivery", {
                 accepted: result.acceptedRelays.length,

@@ -154,15 +154,16 @@ service can still observe limited account, size, and activity metadata. It
 cannot decrypt or spend your funds.
 
 Like any other cryptocurrency wallet, you are responsible for managing your own
-keys. Back up your 12-word mnemonic and keep it safe.
+keys. Back up your recovery phrase and keep it safe.
 
 Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
-a valid 12-word recovery phrase. Setup does not submit a payment automatically.
+a valid 12-word or 24-word recovery phrase. Enter each word in its numbered field,
+or paste the complete phrase into one field. Setup does not submit a payment automatically.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
-Use the chooser to create a wallet or import a valid 12-word recovery phrase.
+Use the chooser to create a wallet or import a valid 12-word or 24-word recovery phrase.
 This does not change your Nostr signer or submit a payment or order.
 Create Wallet is hidden when a recovery phrase exists, even with no funds or mints.
 Closing setup after creation starts does not remove an already saved recovery phrase.
