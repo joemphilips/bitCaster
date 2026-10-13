@@ -1,3 +1,4 @@
+import { signedCtfRegistrationFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,6 +35,12 @@ import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { deserializeOutputGroups, recoverPreparedWalletSends } from '../src/walletOps.ts'
 import { emptyDaemonState, readState, writeState, type StoredProofAsset } from '../src/state.ts'
 
+const registrations = Object.fromEntries(
+  ['cond1', 'cond2', 'cond3', 'nogain', 'closed', 'exact'].map((name) => [
+    name,
+    signedCtfRegistrationFixture(['A', 'B', 'C'], name),
+  ]),
+)
 const MINT_URL = 'https://mint-a.example'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
@@ -44,8 +51,11 @@ test('wallet.consolidateMarket executes T2 Not-A + Not-B into residual C and bas
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
-      depsForMarket(market('cond2', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(market(registrations.cond2.condition_id, 'pending')),
     )
 
     assert.equal(response.ok, true)
@@ -84,8 +94,11 @@ test('wallet.consolidateMarket executes the existing T1 singleton-plus-top-up pa
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't1' } },
-      depsForMarket(market('cond1', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond1.condition_id}-A`, type: 't1' },
+      },
+      depsForMarket(market(registrations.cond1.condition_id, 'pending')),
     )
 
     assert.equal(response.ok, true)
@@ -110,8 +123,11 @@ test('wallet.consolidateMarket executes T3 partial chain into intermediate and b
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond3-A', type: 't3' } },
-      depsForMarket(market('cond3', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond3.condition_id}-A`, type: 't3' },
+      },
+      depsForMarket(market(registrations.cond3.condition_id, 'pending')),
     )
 
     assert.equal(response.ok, true)
@@ -132,16 +148,46 @@ test('wallet.consolidateMarket refuses non-pending markets with a typed error', 
     await seedWallet([proofRecord(2, 'B|C', 'not-a')])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'closed-A', type: 't2' } },
-      depsForMarket(market('closed', 'closed')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.closed.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(market(registrations.closed.condition_id, 'closed')),
     )
 
     assert.deepEqual(response, {
       ok: false,
       code: 'market-not-pending',
-      error: 'market closed is not pending',
+      error: `market ${registrations.closed.condition_id} is not pending`,
     })
     assertNoProofInternals(response)
+  })
+})
+
+test('wallet.consolidateMarket rejects invalid registration before custody mutation or mint conversion', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'invalid-registration')])
+    const before = await readState()
+    let conversionCalls = 0
+    const deps = depsForMarket(market(registrations.cond2.condition_id, 'pending'))
+    deps.fetchConsolidationCondition = async () =>
+      new Response(JSON.stringify({ ...registrations.cond2, announcements: ['00'] }))
+    deps.ctfConvert = async () => {
+      conversionCalls += 1
+      throw new Error('invalid registration must not convert proofs')
+    }
+    await assert.rejects(
+      dispatch(
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        deps,
+      ),
+      /CTF TLV type is invalid/,
+    )
+    assert.equal(conversionCalls, 0)
+    assert.deepEqual(await readState(), before)
   })
 })
 
@@ -150,14 +196,17 @@ test('wallet.consolidateMarket returns typed no-gain error without mutating proo
     await seedWallet([proofRecord(1, 'B|C', 'nogain-not-a'), proofRecord(1, 'A|C', 'nogain-not-b')])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'nogain-A', type: 't2' } },
-      depsForMarket(market('nogain', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.nogain.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(market(registrations.nogain.condition_id, 'pending')),
     )
 
     assert.deepEqual(response, {
       ok: false,
       code: 'ctf-consolidation-no-gain',
-      error: 'market nogain consolidation has no net collateral gain',
+      error: `market ${registrations.nogain.condition_id} consolidation has no net collateral gain`,
     })
     const persisted = await readState()
     assert.equal(persisted?.wallet.proofs.length, 2)
@@ -174,8 +223,11 @@ test('wallet.consolidateMarket never treats ordinary sat proofs as msat collater
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't1' } },
-      depsForMarket(market('cond1', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond1.condition_id}-A`, type: 't1' },
+      },
+      depsForMarket(market(registrations.cond1.condition_id, 'pending')),
     )
 
     assert.equal(response.ok, true)
@@ -193,9 +245,12 @@ test('wallet.consolidateMarket retains both reservations when the mint result is
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           ctfConvert: async (_mintUrl, _request, outputsByCollection) => {
             const valid = Object.fromEntries(
               Object.entries(outputsByCollection).map(([collection, outputs]) => [
@@ -245,9 +300,12 @@ test('wallet.consolidateMarket retains both reservations after a rejected reques
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           createCashuWallet: () => stateReportingWallet(CheckStateEnum.UNSPENT),
           ctfConvert: async () => {
             throw new MintOperationError(11001, 'definite protocol rejection')
@@ -290,9 +348,12 @@ test('wallet.consolidateMarket keeps reservations when a definite rejection sees
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           createCashuWallet: () => stateReportingWallet(CheckStateEnum.SPENT),
           ctfConvert: async () => {
             throw new MintOperationError(11001, 'definite protocol rejection')
@@ -347,9 +408,12 @@ test('wallet.consolidateMarket blocks a competing wallet send before mint I/O', 
     })
     let mintCalls = 0
     const first = dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't1' } },
       {
-        ...depsForMarket(market('cond1', 'pending')),
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond1.condition_id}-A`, type: 't1' },
+      },
+      {
+        ...depsForMarket(market(registrations.cond1.condition_id, 'pending')),
         ctfConvert: async (_mintUrl, _request, outputsByCollection) => {
           mintCalls += 1
           enteredMint?.()
@@ -371,11 +435,12 @@ test('wallet.consolidateMarket blocks a competing wallet send before mint I/O', 
           params: { amountMsat: 1, mintUrl: MINT_URL, operationId: 'competing-send' },
         },
         {
-          ...depsForMarket(market('cond1', 'pending')),
+          ...depsForMarket(market(registrations.cond1.condition_id, 'pending')),
           createCashuWallet: () => ({
             loadMint: async () => undefined,
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
+            getKeyset: (id) => fakeMintKeys(id ?? outputKeysets()['*']!),
             prepareSwapToSend: async (_amount, proofs) => {
               assert.equal(proofs.length, 0)
               throw new Error('competing send saw no available proofs')
@@ -412,9 +477,12 @@ test('wallet.consolidateMarket rejects forged canonical proof material before mi
     let mintCalls = 0
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           ctfConvert: async () => {
             mintCalls += 1
             throw new Error('forged material reached mint')
@@ -441,9 +509,12 @@ test('wallet.consolidateMarket rejects forged canonical asset metadata before mi
     let mintCalls = 0
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           ctfConvert: async () => {
             mintCalls += 1
             throw new Error('forged asset reached mint')
@@ -462,9 +533,12 @@ test('wallet.consolidateMarket rolls back canonical preparation faults before mi
     let mintCalls = 0
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           injectCustodyFault: (phase) => {
             if (phase === 'before-commit') throw new Error('injected CTF preparation rollback')
           },
@@ -504,7 +578,7 @@ test('wallet.consolidateMarket keeps a finalized result recoverable after commit
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     let beforeCommitCalls = 0
     const deps = {
-      ...depsForMarket(market('cond2', 'pending')),
+      ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
       injectCustodyFault: (phase: 'transaction-opened' | 'before-commit' | 'after-commit') => {
         if (phase === 'before-commit' && ++beforeCommitCalls === 2) {
           throw new Error('injected CTF finalization rollback')
@@ -513,7 +587,10 @@ test('wallet.consolidateMarket keeps a finalized result recoverable after commit
     }
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
         deps,
       ),
       /injected CTF finalization rollback/,
@@ -568,9 +645,12 @@ test('wallet recovery replays durable CTF result after an after-commit fault', a
     let afterCommitCalls = 0
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           injectCustodyFault: (phase) => {
             if (phase === 'after-commit' && ++afterCommitCalls === 2) {
               throw new Error('injected CTF finalization after-commit fault')
@@ -642,9 +722,12 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     await assert.rejects(
       dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
         {
-          ...depsForMarket(market('cond2', 'pending')),
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
           ctfConvert: async () => {
             throw new Error('uncertain mint transport')
           },
@@ -681,7 +764,7 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
         ctfConvert: async (mintUrl, request, outputsByCollection) => {
           ctfConvertCalls += 1
           assert.equal(mintUrl, MINT_URL)
-          assert.equal(request.condition_id, 'cond2')
+          assert.equal(request.condition_id, registrations.cond2.condition_id)
           assert.deepEqual(Object.keys(request.inputs).sort(), ['A|C', 'B|C'])
           assert.deepEqual(Object.keys(request.outputs).sort(), [COLLATERAL_COLLECTION, 'C'])
           assert.deepEqual(Object.keys(outputsByCollection).sort(), [COLLATERAL_COLLECTION, 'C'])
@@ -716,9 +799,12 @@ for (const commitTiming of ['during-retry', 'after-retry'] as const) {
       await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
       await assert.rejects(
         dispatch(
-          { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
           {
-            ...depsForMarket(market('cond2', 'pending')),
+            method: 'wallet.consolidateMarket',
+            params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+          },
+          {
+            ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
             ctfConvert: async () => {
               throw new Error('local response lost after mint commit')
             },
@@ -810,8 +896,11 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
-      depsForMarket(market('cond2', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(market(registrations.cond2.condition_id, 'pending')),
     )
     assert.equal(response.ok, true)
     const completed = await readState()
@@ -864,8 +953,11 @@ test('wallet recovery preserves committed CTF custody when the wallet projection
     const inputs = [proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')]
     await seedWallet(inputs)
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
-      depsForMarket(market('cond2', 'pending')),
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(market(registrations.cond2.condition_id, 'pending')),
     )
     assert.equal(response.ok, true)
     const completed = await readState()
@@ -1006,7 +1098,7 @@ test('wallet recovery preserves committed CTF custody when the wallet projection
 
 test('wallet recovery replays applied conditional custody offline after keyset rotation', async () => {
   await withDaemonHome(async () => {
-    const conditionId = 'ab'.repeat(32)
+    const conditionId = registrations.exact.condition_id
     const keysets = conditionalOutputKeysets(conditionId)
     const records = [
       proofRecord(2, 'B|C', 'conditional-not-a'),
@@ -1144,6 +1236,12 @@ function depsForMarket(marketResponse: unknown, options: { conditionalConditionI
   const keysets =
     conditionalConditionId === undefined ? null : conditionalOutputKeysets(conditionalConditionId)
   return {
+    fetchConsolidationCondition: async (input: Parameters<typeof fetch>[0]) => {
+      const id = String(input).split('/').at(-1)
+      const registration = Object.values(registrations).find((item) => item.condition_id === id)
+      assert.ok(registration, 'fixture must request the intended registered condition')
+      return new Response(JSON.stringify(registration), { status: 200 })
+    },
     getCustodyFence: () => {
       if (activeFence === null) throw new Error('consolidation test custody fence is missing')
       return activeFence
@@ -1385,12 +1483,12 @@ function proofRecord(
 }
 
 function conditionIdForLabel(label: string): string {
-  if (label.startsWith('nogain-')) return 'nogain'
-  if (label.startsWith('t3-') || label === 'ab') return 'cond3'
-  if (label.includes('fee')) return 'cond1'
-  if (label === 'a' || label === 'b') return 'cond1'
-  if (label === 'not-a' || label === 'not-b') return 'cond2'
-  return 'nogain'
+  if (label.startsWith('nogain-')) return registrations.nogain.condition_id
+  if (label.startsWith('t3-') || label === 'ab') return registrations.cond3.condition_id
+  if (label.includes('fee')) return registrations.cond1.condition_id
+  if (label === 'a' || label === 'b') return registrations.cond1.condition_id
+  if (label === 'not-a' || label === 'not-b') return registrations.cond2.condition_id
+  return registrations.nogain.condition_id
 }
 
 function assertWalletProofs(

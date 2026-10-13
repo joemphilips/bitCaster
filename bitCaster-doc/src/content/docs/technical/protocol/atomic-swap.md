@@ -26,6 +26,23 @@ A Participation Score purchase must be a positive multiple of 1,000 msats.
 Each 1,000 msats buys one Score point. Receive fees do not reduce the purchased
 Score. Score points and receipt amounts are separate values.
 
+## Conditional outcome collections
+
+Mint outcome collections use the outcome order in the registered oracle
+announcement. Do not sort the labels to form a mint request. For example, with
+announcement order `Alpha, Beta, Gamma, Delta`, the complement of `Alpha` is
+`Beta|Gamma|Delta`.
+
+Validate the public announcement signatures and the condition registration
+before selecting conditional keysets. Match each keyset to the exact wire
+collection and its collection ID. A valid oracle signature authenticates the
+announcement contents. It does not, by itself, prove which announcements or
+threshold the mint registered. Use the configured mint's registration and any
+existing registered authority for that check.
+
+Keep existing proofs, keyset IDs, and saved signed requests unchanged. Retry an
+unfinished operation with its original request bytes.
+
 ## Order authorization
 
 A wallet authorizes one public FOK attempt with one `PAY_TO_UNLOCK` capability.
@@ -68,6 +85,12 @@ not authorize a refund or deletion of local records. Keep the original operation
 and capability when the response is uncertain. Retry the original request
 without changes.
 
+A successful capability retry does not mean that wallet recovery is complete.
+If no order was submitted, keep recovery active until the authorization reaches
+a terminal result. Do not submit an order only because capability recovery
+succeeded. An unspent authorization can refund after its original expiry, once
+the mint confirms the required recovery facts.
+
 ## Order submission errors
 
 Single-order submission also returns application Problem Details. The `type`
@@ -93,6 +116,16 @@ that rule to every conflict. The SDK retains the original operation for `403`
 and `503` responses. An error does not prove that a refund is complete or
 authorize deletion of wallet records. An exact accepted replay returns the
 prior admission result. Missing and foreign capabilities have the same response.
+A visible order book does not guarantee immediate order admission. Temporary
+quote readiness can return `order-processing-unavailable`. This response alone
+does not prove insufficient liquidity or require more funding. It also does not
+prove that no order was accepted. Retain the original operation and reconcile
+its status. An accepted order can also return this response if its result cannot
+be returned. It can still settle. Do not create a replacement order from this
+response alone. The CLI does not automatically submit the order again after this
+response. Any protocol retry must preserve the original request, consent, and
+authorization expiry.
+
 The shared closed-market check also returns `market-closed` for deposits.
 Framework errors can use another body shape.
 
@@ -127,6 +160,12 @@ not a `market-closed` error. The SDK returns `null` for a status-read `404` and
 `false` for a cancellation `404`. With no registered market, order-list and
 order-book reads still return successful empty data. This is distinct from a
 failed read. Framework errors can use another body shape.
+
+A bound capability does not create an accepted order. Its order-status read
+returns `404` with `order-not-found` until an order is accepted. This response
+does not authorize an early refund. Keep the original authorization and recovery
+rules. After a submission result is committed and available, a later live
+notification failure does not replace that result with a submission error.
 
 ## Market-funding delivery errors
 

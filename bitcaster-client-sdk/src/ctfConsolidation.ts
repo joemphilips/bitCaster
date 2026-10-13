@@ -1,6 +1,11 @@
 import type { CtfConvertRequest, Proof, SerializedBlindedMessage } from '@cashu/cashu-ts'
 import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
-import { canonicalizeOutcomeSet, parseOutcomeSetId } from './outcomeSets.ts'
+import { parseOutcomeSetId } from './outcomeSets.ts'
+import {
+  encodeMintOutcomeCollection,
+  decodeMintOutcomeCollection,
+  type VerifiedCtfConditionRegistration,
+} from './ctfConditionRegistration.ts'
 
 export const COLLATERAL_COLLECTION = '*'
 
@@ -28,6 +33,7 @@ export interface CtfConsolidationParams {
   conditionId: string
   parentCollectionId?: string
   outcomes: string[]
+  registration: VerifiedCtfConditionRegistration
   marketStatus: string
   strategy: CtfConsolidationStrategy
   proofsByCollection: Record<string, Proof[]>
@@ -80,7 +86,17 @@ export function planCtfConsolidation(params: CtfConsolidationParams): CtfConsoli
     return noop(params.strategy, 'unsupported-parent')
   }
 
-  const market = normalizeMarket(params.outcomes, params.proofsByCollection)
+  const registration = params.registration
+  if (
+    !registration ||
+    registration.conditionId !== params.conditionId ||
+    registration.unit !== 'msat' ||
+    registration.canonicalParentCollectionId !== null ||
+    params.outcomes.length !== registration.outcomes.length ||
+    params.outcomes.some((outcome) => !registration.outcomes.includes(outcome))
+  )
+    return noop(params.strategy, 'invalid-market')
+  const market = normalizeMarket(registration.outcomes, params.proofsByCollection)
   if (!market || !params.conditionId) {
     return noop(params.strategy, 'invalid-market')
   }
@@ -172,7 +188,8 @@ function planT1(params: CtfConsolidationParams, market: NormalizedMarket): CtfCo
   const missingOutcome = market.outcomes.find((outcome) => !singletonCollections.includes(outcome))
   if (!missingOutcome) return noop(params.strategy, 'no-matching-inputs')
 
-  const complementCollection = canonicalizeOutcomeSet(
+  const complementCollection = encodeMintOutcomeCollection(
+    market.outcomes,
     market.outcomes.filter((outcome) => outcome !== missingOutcome),
   )
   return buildPlan(params, market, inputProofsByCollection, feeSubunits, [
@@ -367,7 +384,8 @@ function residualCandidates(outcomes: readonly string[]): CandidateOutput[] {
     vector: outcomes.map((_, candidateIndex) => (candidateIndex === index ? 1 : 0)),
   }))
   const complements = outcomes.map((_, index) => ({
-    collection: canonicalizeOutcomeSet(
+    collection: encodeMintOutcomeCollection(
+      outcomes,
       outcomes.filter((_, candidateIndex) => candidateIndex !== index),
     ),
     vector: outcomes.map((_, candidateIndex) => (candidateIndex === index ? 0 : 1)),
@@ -467,7 +485,7 @@ function normalizeMarket(
   rawOutcomes: readonly string[],
   rawProofsByCollection: Record<string, Proof[]>,
 ): NormalizedMarket | null {
-  const outcomes = [...new Set(rawOutcomes.map((outcome) => outcome.trim()))].filter(Boolean).sort()
+  const outcomes = [...rawOutcomes]
   if (outcomes.length < 2 || outcomes.length > 8) return null
 
   const outcomeSet = new Set(outcomes)
@@ -476,7 +494,7 @@ function normalizeMarket(
     const collection =
       rawCollection === COLLATERAL_COLLECTION
         ? COLLATERAL_COLLECTION
-        : canonicalizeOutcomeSet(parseOutcomeSetId(rawCollection))
+        : decodeMintOutcomeCollection(outcomes, rawCollection).join('|')
     if (!collection || proofs.length === 0) continue
     if (
       collection !== COLLATERAL_COLLECTION &&

@@ -290,6 +290,7 @@ vi.mock("@/lib/marketHub", async () => ({
       mocks.commentHandlers.splice(mocks.commentHandlers.indexOf(handler), 1);
     };
   }),
+  onMarketResyncRequired: vi.fn(() => vi.fn()),
   onMarketRejoined: vi.fn((_marketId, handler) => {
     mocks.rejoinHandlers.push(handler);
     return () => {
@@ -478,6 +479,24 @@ function reviewedRangeMintFacts(
   const conditionKeysetIds = keysets.map(({ id }) => id).sort();
 
   return {
+    // This mock supplies already-reviewed metadata; announcement verification
+    // is covered by the SDK registration tests, not bypassed in production.
+    registration: {
+      normalizedMint: mintUrl,
+      conditionId: conditionId,
+      canonicalParentCollectionId: null,
+      unit: "msat" as const,
+      eventId: "browser-fixture-event",
+      outcomes: ["Yes", "No"],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          noncePoint: "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          announcementIdentity: "aa".repeat(32),
+        },
+      ],
+    },
     regular: [
       {
         canonicalMintUrl: mintUrl,
@@ -539,6 +558,20 @@ async function configureRealRangeFeePreview(input: {
   mocks.walletState.activeMintUrl = input.mintUrl;
   mocks.settingsState.nostrSignerMode = "nsec";
   mocks.routeParams.id = input.conditionId;
+  // Snapshot mocks must represent this route. A foreign condition is a real
+  // read failure and correctly retains retry demand in the page.
+  vi.mocked(fetchMarketPriceHistory).mockImplementation(async (_, timeframe) => ({
+    conditionId: input.conditionId,
+    snapshotEventOrder: null,
+    asOf: "2026-09-27T17:00:00Z",
+    outcomes: [],
+    timeframe: timeframe ?? "7d",
+  }));
+  vi.mocked(fetchMarketComments).mockResolvedValue({
+    conditionId: input.conditionId,
+    snapshotEventOrder: null,
+    comments: [],
+  });
   mocks.getSettlementCapabilityAdmissionPolicy.mockReset().mockResolvedValue({
     coordinatorPubkey: "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
   });
@@ -3231,6 +3264,174 @@ describe("MarketDetailPage live market status", () => {
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
+  it("does not restart held or completed fee selection for history and comment updates", async () => {
+    const conditionId = "ba".repeat(32);
+    await configureRealRangeFeePreview({
+      conditionId,
+      mintUrl: "https://display-fee-isolation.example",
+      proofAmounts: [4_096],
+    });
+    const commentSnapshot = (content: string) => ({
+      conditionId,
+      snapshotEventOrder: content,
+      comments: [
+        {
+          commentId: content,
+          authorPubkey: "a".repeat(64),
+          content,
+          createdAt: "2026-09-27T17:00:00Z",
+          trade: null,
+        },
+      ],
+    });
+    vi.mocked(fetchMarketPriceHistory).mockResolvedValue({
+      conditionId,
+      timeframe: "7d",
+      snapshotEventOrder: "history-applied",
+      asOf: "2026-09-27T17:01:00Z",
+      outcomes: [
+        {
+          outcomeId: "Yes",
+          data: [
+            {
+              eventOrder: "history-applied",
+              timestamp: "2026-09-27T16:00:00Z",
+              price: 620,
+              volumeSubunits: 1_000,
+              source: "fill",
+            },
+          ],
+        },
+      ],
+    });
+    let rejectHistory!: (error: Error) => void;
+    vi.mocked(fetchMarketPriceHistory).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectHistory = reject;
+        }),
+    );
+    let releaseComments!: (value: Awaited<ReturnType<typeof fetchMarketComments>>) => void;
+    vi.mocked(fetchMarketComments).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseComments = resolve;
+        }),
+    );
+    let releaseFee!: () => void;
+    const heldFee = new Promise<void>((resolve) => {
+      releaseFee = resolve;
+    });
+    const realPreview = vi.mocked(previewBrowserCtfRangeOrderFees).getMockImplementation()!;
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockImplementationOnce(async (input) => {
+      const result = await realPreview(input);
+      await heldFee;
+      return result;
+    });
+    const view = render(<MarketDetailPage />);
+    try {
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+      await waitFor(() => expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+
+      await act(async () => {
+        rejectHistory(new Error("503"));
+        releaseComments(commentSnapshot("held-fee-comment-applied"));
+      });
+      // Observe the actual applied retry result. No later trade or book event
+      // is injected, and timer scheduling is not a completion witness.
+      await waitFor(() =>
+        expect(screen.getByTestId("chart-latest-price")).toHaveTextContent("62.00%"),
+      );
+      expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("chart-snapshot")).toHaveTextContent("2026-09-27T17:01:00Z");
+      expect(screen.getByTestId("chart-comments")).toHaveTextContent("held-fee-comment-applied");
+      expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        releaseFee();
+        await vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[0]!.value;
+      });
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      expect(mocks.readRangeProofs).toHaveBeenCalledTimes(1);
+
+      vi.mocked(fetchMarketComments).mockResolvedValue(
+        commentSnapshot("completed-fee-comment-applied"),
+      );
+      await act(async () => {
+        for (const handler of mocks.commentHandlers)
+          handler({ conditionId, eventOrder: "comment-2" });
+      });
+      expect(fetchMarketComments).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("chart-comments")).toHaveTextContent(
+        "completed-fee-comment-applied",
+      );
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(1);
+
+      // A genuine ticket change must still revoke consent and select again.
+      fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "2" } });
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      await waitFor(() => expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        await vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[1]!.value;
+      });
+      expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(2);
+      expect(mocks.readRangeProofs).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+    } finally {
+      releaseFee();
+      rejectHistory?.(new Error("fixture cleanup"));
+      releaseComments?.({ conditionId, snapshotEventOrder: null, comments: [] });
+      view.unmount();
+      await Promise.allSettled(
+        vi.mocked(previewBrowserCtfRangeOrderFees).mock.results.map((result) => result.value),
+      );
+    }
+  });
+
+  it("revokes fee consent when an unselected outcome changes with the same selected ticket", async () => {
+    const conditionId = "bc".repeat(32);
+    await configureRealRangeFeePreview({ conditionId, mintUrl: "https://fee-shape.example" });
+    const view = render(<MarketDetailPage />);
+    try {
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+      await waitFor(() => expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[0]!.value;
+      });
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      const original = vi.mocked(previewBrowserCtfRangeOrderFees).mock.calls[0]![0];
+      const changed = {
+        ...original.market,
+        outcomes: original.market.outcomes!.map((outcome) =>
+          outcome.id === "No" ? { ...outcome, label: "Changed unselected outcome" } : outcome,
+        ),
+      };
+      vi.mocked(fetchMarketDetail).mockResolvedValue(changed);
+      // The maintained status callback reloads the authoritative catalogue.
+      // Open stays open; the selected YES ticket and amount remain unchanged.
+      await act(async () => mocks.liveStatusHandlers.at(-1)?.({ conditionId, state: "open" }));
+      await waitFor(() => expect(previewBrowserCtfRangeOrderFees).toHaveBeenCalledTimes(2));
+      const refreshed = vi.mocked(previewBrowserCtfRangeOrderFees).mock.calls[1]![0];
+      expect(refreshed.ticket).toEqual(original.ticket);
+      expect(refreshed.market.outcomes).toEqual(changed.outcomes);
+      await expect(
+        vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[1]!.value,
+      ).rejects.toThrow("engine market disagrees with registered outcome authority");
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      await Promise.allSettled(
+        vi.mocked(previewBrowserCtfRangeOrderFees).mock.results.map((result) => result.value),
+      );
+    }
+  });
+
   it("allows a smaller amount after the FOK preview refuses the oversized request", async () => {
     const conditionId = "bb".repeat(32);
     const mintUrl = "https://phase6-smaller-correction.example";
@@ -3611,7 +3812,11 @@ describe("MarketDetailPage live market status", () => {
 
     await act(async () => {
       pendingReads[0]!();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const index = vi
+        .mocked(previewBrowserCtfRangeOrderFees)
+        .mock.calls.findIndex(([input]) => input.ticket.request.amountSubunits === 2_000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      await vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[index]!.value;
     });
     await waitFor(() => expect(observedFeeFacts).toHaveLength(1));
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
@@ -3619,7 +3824,11 @@ describe("MarketDetailPage live market status", () => {
 
     await act(async () => {
       pendingReads[1]!();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const index = vi
+        .mocked(previewBrowserCtfRangeOrderFees)
+        .mock.calls.findIndex(([input]) => input.ticket.request.amountSubunits === 1_000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      await vi.mocked(previewBrowserCtfRangeOrderFees).mock.results[index]!.value;
     });
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     expect(previewBrowserCtfRangeOrderFees).toHaveBeenLastCalledWith(

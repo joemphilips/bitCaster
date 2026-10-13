@@ -475,6 +475,16 @@ function reviewedMintFacts() {
   const yes = conditionalKeyset(YES_KEYSET_ID, 'YES', YES_COLLECTION_ID)
   const no = conditionalKeyset(NO_KEYSET_ID, 'NO', NO_COLLECTION_ID)
   return {
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: 'msat' as const,
+      eventId: 'test-event',
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [],
+    },
     regular: [regular],
     conditional: [yes, no],
     maxInputs: 64,

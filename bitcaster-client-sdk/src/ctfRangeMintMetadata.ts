@@ -1,3 +1,10 @@
+import { deriveRootCtfOutcomeCollectionId } from './durableCtfRangeOperation.ts'
+import {
+  verifyCtfConditionRegistration,
+  decodeMintOutcomeCollection,
+  type VerifiedCtfConditionRegistration,
+} from './ctfConditionRegistration.ts'
+import type { PersistedRegisteredDlcConditionAuthority } from './managedConditionInventory.ts'
 import { CTF_LISTING_PAGE_SIZE, readCtfListingCursor } from './ctfListing.ts'
 import type { GetInfoResponse, MintKeys, MintKeyset } from '@cashu/cashu-ts'
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
@@ -38,6 +45,11 @@ export interface CtfRangeMintMetadataClient {
     condition_id: string
     registered_at?: number
     keysets: Record<string, string>
+    announcements: string[]
+    threshold: number
+    collateral?: string
+    condition_type?: string
+    parent_collection_id?: string | null
   }>
   getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
 }
@@ -79,6 +91,9 @@ export async function loadCtfRangeMintMetadata(input: {
   readonly conditionId: string
   readonly observedAt: number
   readonly allowInsecureLoopbackHttp: boolean
+  readonly expectedRegistration?:
+    | PersistedRegisteredDlcConditionAuthority
+    | VerifiedCtfConditionRegistration
 }): Promise<CtfRangeMintMetadata> {
   const [info, regularResponse, condition] = await Promise.all([
     input.mint.getInfo(),
@@ -88,11 +103,33 @@ export async function loadCtfRangeMintMetadata(input: {
   if (condition.condition_id !== input.conditionId) {
     throw new Error('mint returned a foreign CTF condition')
   }
+  const registration = verifyCtfConditionRegistration({
+    condition,
+    mintUrl: input.mintUrl,
+    conditionId: input.conditionId,
+    allowInsecureLoopbackHttp: input.allowInsecureLoopbackHttp,
+    expected: input.expectedRegistration,
+  })
   const conditionRegisteredAt = nonNegativeSafeInteger(
     condition.registered_at,
     'mint CTF condition registration time',
   )
-  const conditionKeysetIds = [...new Set(Object.values(condition.keysets))].sort()
+  if (
+    typeof condition.keysets !== 'object' ||
+    condition.keysets === null ||
+    Array.isArray(condition.keysets)
+  )
+    throw new Error('mint condition keyset mapping is invalid')
+  const conditionKeysetEntries = Object.entries(condition.keysets)
+  assertCandidateCount(conditionKeysetEntries, 'mint CTF condition keyset')
+  const conditionKeysetIds = conditionKeysetEntries
+    .map(([collection, id]) => {
+      decodeMintOutcomeCollection(registration.outcomes, collection)
+      return id
+    })
+    .sort()
+  if (new Set(conditionKeysetIds).size !== conditionKeysetIds.length)
+    throw new Error('mint condition keyset mapping contains an alias')
   assertCandidateCount(conditionKeysetIds, 'mint CTF condition keyset')
   conditionKeysetIds.forEach((id) =>
     assertCanonicalNut02V2KeysetId(id, 'mint CTF condition keyset id'),
@@ -105,6 +142,18 @@ export async function loadCtfRangeMintMetadata(input: {
     conditionKeysetIds,
     conditionRegisteredAt,
   )
+  for (const keyset of conditionEntries) {
+    if (
+      keyset.condition_id !== registration.conditionId ||
+      condition.keysets[keyset.outcome_collection] !== keyset.id ||
+      deriveRootCtfOutcomeCollectionId({
+        conditionId: registration.conditionId,
+        outcomeCollection: keyset.outcome_collection,
+      }) !== keyset.outcome_collection_id
+    )
+      throw new Error('mint conditional collection binding is inconsistent')
+    decodeMintOutcomeCollection(registration.outcomes, keyset.outcome_collection)
+  }
   const keyIds = [...new Set([...regularKeysets.map(({ id }) => id), ...conditionKeysetIds])]
   assertCandidateCount(keyIds, 'mint keyset authority')
   const keys = await loadCtfRangeMintKeys(input.mint, keyIds)
@@ -114,6 +163,7 @@ export async function loadCtfRangeMintMetadata(input: {
       input.mintUrl,
       input.allowInsecureLoopbackHttp,
     ),
+    registration,
     regularResponse: regularKeysets,
     conditionEntries,
     conditionKeysetIds,
@@ -198,6 +248,7 @@ function nonNegativeSafeInteger(value: unknown, label: string): number {
 
 function buildLoadedMintMetadata(input: {
   readonly canonicalMintUrl: string
+  readonly registration: VerifiedCtfConditionRegistration
   readonly regularResponse: MintKeyset[]
   readonly conditionEntries: CtfRangeConditionalKeysetMetadata[]
   readonly conditionKeysetIds: string[]
@@ -230,6 +281,7 @@ function buildLoadedMintMetadata(input: {
     throw new Error('mint has no active msat range-order keyset authority')
   }
   return {
+    registration: input.registration,
     regular,
     conditional,
     conditionKeysetIds: input.conditionKeysetIds,
@@ -346,7 +398,7 @@ function settlementLimits(info: GetInfoResponse): {
   }
 }
 
-function assertCandidateCount(values: readonly string[], label: string): void {
+function assertCandidateCount(values: readonly unknown[], label: string): void {
   if (values.length === 0 || values.length > MINT_KEYSET_CANDIDATE_LIMIT) {
     throw new Error(`${label} count is unsupported`)
   }

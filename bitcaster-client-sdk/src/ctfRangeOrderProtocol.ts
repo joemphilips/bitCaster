@@ -1,4 +1,8 @@
 import {
+  encodeMintOutcomeCollection,
+  type VerifiedCtfConditionRegistration,
+} from './ctfConditionRegistration.ts'
+import {
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
@@ -146,6 +150,7 @@ export interface CtfRangeConditionalMintKeyset extends ActiveCtfRangeMintKeyset 
 }
 
 export interface CtfRangeReviewedMintFacts {
+  readonly registration: VerifiedCtfConditionRegistration
   readonly regular: readonly ActiveCtfRangeMintKeyset[]
   readonly conditional: readonly CtfRangeConditionalMintKeyset[]
   readonly maxInputs: number
@@ -203,10 +208,25 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
 }): PersistedCtfRangeOrderPreparation {
   const request = decodeCtfRangeOrderRequest(input.request)
   const coordinatorPublicKey = decodeCoordinatorPublicKey(input.coordinatorPublicKey)
-  const selectedCollection = selectedOutcomeCollection(input.market, request)
-  const complementCollection = complementOutcomeSetId(
-    parseMarketOutcomes(input.market).map(({ label }) => label),
-    selectedCollection,
+  const registration = input.mintFacts.registration
+  if (
+    registration.conditionId !== request.conditionId ||
+    registration.normalizedMint !== request.mintUrl ||
+    registration.unit !== request.collateralUnit ||
+    registration.canonicalParentCollectionId !== null
+  )
+    throw new Error('range preparation registration authority is foreign')
+  const marketOutcomes = parseMarketOutcomes(input.market).map(({ label }) => label)
+  if (
+    marketOutcomes.length !== registration.outcomes.length ||
+    marketOutcomes.some((outcome) => !registration.outcomes.includes(outcome))
+  )
+    throw new Error('engine market disagrees with registered outcome authority')
+  const selectedMembers = selectedOutcomeCollection(input.market, request).split('|')
+  const selectedCollection = encodeMintOutcomeCollection(registration.outcomes, selectedMembers)
+  const complementCollection = encodeMintOutcomeCollection(
+    registration.outcomes,
+    registration.outcomes.filter((outcome) => !selectedMembers.includes(outcome)),
   )
   const { regular, conditional, complement } = selectPreparationKeysets(
     input.mintFacts,

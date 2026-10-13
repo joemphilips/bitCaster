@@ -73,6 +73,11 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Keep static translation data in its own cacheable asset. This does
+          // not defer language setup or add a runtime translation request.
+          if (id.includes("/src/i18n/locales/") && id.endsWith(".json")) {
+            return "translations";
+          }
           // Split chart code from the entry to retain the per-asset precache limit.
           // Both chunks stay in the static module graph and match the precache glob.
           if (

@@ -349,6 +349,24 @@ function persistedPreparation(operationId: string): PersistedCtfRangeOrderPrepar
     },
   ];
   const mintFacts = {
+    // This mock supplies already-reviewed metadata; announcement verification
+    // is covered by the SDK registration tests, not bypassed in production.
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: "msat" as const,
+      eventId: "browser-fixture-event",
+      outcomes: [OUTCOME, COMPLEMENT],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          noncePoint: "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          announcementIdentity: "aa".repeat(32),
+        },
+      ],
+    },
     regular: [
       {
         canonicalMintUrl: MINT_URL,

@@ -1,8 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useMarketDetailSnapshots } from "../useMarketDetailSnapshots";
 import { fetchMarketPriceHistory, fetchMarketComments } from "@/lib/markets";
-import { onConfirmedTradeRecorded, onMarketRejoined } from "@/lib/marketHub";
+import {
+  onConfirmedTradeRecorded,
+  onMarketRejoined,
+  onMarketResyncRequired,
+} from "@/lib/marketHub";
 import {
   decodeMarketPriceHistoryResponse,
   type MarketPriceHistoryResponse,
@@ -15,6 +19,7 @@ vi.mock("@/lib/markets", () => ({
 }));
 vi.mock("@/lib/marketHub", () => ({
   onConfirmedTradeRecorded: vi.fn(() => vi.fn()),
+  onMarketResyncRequired: vi.fn(() => vi.fn()),
   onMarketRejoined: vi.fn(() => vi.fn()),
   onMarketCommentsChanged: vi.fn(() => vi.fn()),
 }));
@@ -67,6 +72,8 @@ function notify(eventOrder: string) {
     >[0]),
   );
 }
+
+afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -226,4 +233,231 @@ describe("history refresh observations", () => {
       }),
     );
   });
+});
+
+it("retains displayed history and retries explicit loss without another control", async () => {
+  const onHistory = vi.fn();
+  const onHistoryStatus = vi.fn();
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onHistoryStatus,
+      onComments: vi.fn(),
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(1));
+  vi.mocked(fetchMarketPriceHistory)
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockResolvedValueOnce(snapshot("2026-10-08T10:10:00Z"));
+  act(() => vi.mocked(onMarketResyncRequired).mock.calls[0][1]("a".repeat(32)));
+  await waitFor(() => expect(onHistoryStatus).toHaveBeenCalledWith("unavailable"));
+  expect(onHistory).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(2));
+  expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
+    market.id,
+    "7d",
+    expect.objectContaining({ refresh: true }),
+  );
+  view.unmount();
+});
+
+it("discards an old route repair response after disposal", async () => {
+  const onHistory = vi.fn();
+  let release!: (value: MarketPriceHistoryResponse) => void;
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onComments: vi.fn(),
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(1));
+  vi.mocked(fetchMarketPriceHistory).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  act(() => vi.mocked(onMarketResyncRequired).mock.calls[0][1]("b".repeat(32)));
+  await waitFor(() => expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(2));
+  view.unmount();
+  await act(async () => release(snapshot("2026-10-08T10:10:00Z")));
+  expect(onHistory).toHaveBeenCalledTimes(1);
+});
+
+it("repairs an ordinary trade hint after 503 without another event, preserving its minimum", async () => {
+  vi.useFakeTimers();
+  const onHistory = vi.fn();
+  const onComments = vi.fn();
+  const onHistoryStatus = vi.fn();
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onComments,
+      onHistoryStatus,
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  try {
+    await act(async () => {});
+    expect(onHistory).toHaveBeenCalledTimes(1);
+    vi.mocked(fetchMarketPriceHistory)
+      .mockRejectedValueOnce(new Error("503"))
+      .mockResolvedValueOnce(snapshot("2026-10-08T10:10:00Z"));
+    vi.mocked(fetchMarketComments).mockRejectedValueOnce(new Error("503"));
+    for (const [, callback] of vi.mocked(onConfirmedTradeRecorded).mock.calls)
+      act(() =>
+        callback({
+          conditionId: market.id,
+          latestConfirmedTrade: { eventOrder: "new-fill" },
+        } as Parameters<typeof callback>[0]),
+      );
+    await act(async () => {});
+    expect(onHistoryStatus).toHaveBeenLastCalledWith("unavailable");
+    expect(onHistory).toHaveBeenCalledTimes(1);
+    // A repeated hint must not restart the failed attempt or erase its delay.
+    notify("new-fill");
+    await act(async () => {});
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(onHistory).toHaveBeenCalledTimes(2);
+    expect(onComments).toHaveBeenCalledTimes(2);
+    expect(onHistoryStatus).toHaveBeenLastCalledWith("ready");
+    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
+      market.id,
+      "7d",
+      expect.objectContaining({ minimumEventOrder: "new-fill", refresh: true }),
+    );
+    expect(fetchMarketComments).toHaveBeenLastCalledWith(
+      market.id,
+      expect.objectContaining({ minimumEventOrder: "new-fill", refresh: true }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(3);
+  } finally {
+    view.unmount();
+  }
+});
+
+it("keeps newer ordinary minima when a control races a held read", async () => {
+  vi.useFakeTimers();
+  const onHistory = vi.fn();
+  let release!: (value: MarketPriceHistoryResponse) => void;
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onComments: vi.fn(),
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  try {
+    await act(async () => {});
+    vi.mocked(fetchMarketPriceHistory).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    notify("older-fill");
+    await act(async () => {});
+    const control = vi.mocked(onMarketResyncRequired).mock.calls[0][1];
+    act(() => control("a".repeat(32)));
+    notify("newer-fill");
+    act(() => control("a".repeat(32)));
+    await act(async () => release(snapshot("2026-10-08T09:00:00Z")));
+    expect(onHistory).toHaveBeenCalledTimes(2);
+    expect(onHistory.mock.calls.some(([value]) => value.asOf === "2026-10-08T09:00:00Z")).toBe(
+      false,
+    );
+    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
+      market.id,
+      "7d",
+      expect.objectContaining({ minimumEventOrder: "newer-fill" }),
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    release?.(snapshot());
+    view.unmount();
+  }
+});
+
+it("retries an initial failed snapshot and stops its pending retry on unmount", async () => {
+  vi.useFakeTimers();
+  const onHistory = vi.fn();
+  vi.mocked(fetchMarketPriceHistory).mockRejectedValueOnce(new Error("503"));
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onComments: vi.fn(),
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  try {
+    await act(async () => {});
+    expect(onHistory).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(onHistory).toHaveBeenCalledTimes(1);
+    vi.mocked(fetchMarketPriceHistory).mockRejectedValueOnce(new Error("503"));
+    notify("last-fill");
+    await act(async () => {});
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(3);
+    expect(onHistory).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+it("applies B when a completed A control repeats during B's held read", async () => {
+  vi.useFakeTimers();
+  const onHistory = vi.fn();
+  const onHistoryStatus = vi.fn();
+  let release!: (value: MarketPriceHistoryResponse) => void;
+  const view = renderHook(() =>
+    useMarketDetailSnapshots({
+      market,
+      timeframe: "7d",
+      onHistory,
+      onHistoryStatus,
+      onComments: vi.fn(),
+      onInvalidateHistory: vi.fn(),
+    }),
+  );
+  try {
+    await act(async () => {});
+    const control = vi.mocked(onMarketResyncRequired).mock.calls[0][1];
+    act(() => control("a".repeat(32)));
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(onHistory).toHaveBeenCalledTimes(2);
+    vi.mocked(fetchMarketPriceHistory).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    act(() => control("b".repeat(32)));
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(3);
+    act(() => control("a".repeat(32)));
+    await act(async () => release(snapshot("2026-10-08T10:20:00Z")));
+    expect(onHistory).toHaveBeenLastCalledWith(snapshot("2026-10-08T10:20:00Z"));
+    expect(onHistoryStatus).toHaveBeenLastCalledWith("ready");
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(3);
+  } finally {
+    release?.(snapshot());
+    view.unmount();
+  }
 });

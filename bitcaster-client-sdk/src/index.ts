@@ -117,3 +117,5 @@ export * from './nostrMediaUpload.ts'
 export * from './nostrProfileImageHeader.ts'
 
 export { createPublicNostrProfileCache } from './publicNostrProfileCache.ts'
+
+export * from './displayResync.ts'

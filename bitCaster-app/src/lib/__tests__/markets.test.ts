@@ -1862,3 +1862,19 @@ describe("SDK snapshot output to browser mapping", () => {
     await expect(fetchMarketComments("condition/one")).rejects.toBeInstanceOf(EngineClientError);
   });
 });
+
+it("passes display repair cancellation to the actual market catalogue request", async () => {
+  const controller = new AbortController();
+  let signal: AbortSignal | null | undefined;
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_url, options) => {
+    signal = options?.signal;
+    return new Promise((_resolve, reject) =>
+      signal?.addEventListener("abort", () => reject(signal?.reason), { once: true }),
+    );
+  });
+  const read = fetchMarketDetail("a".repeat(64), controller.signal);
+  expect(signal).toBe(controller.signal);
+  controller.abort();
+  await expect(read).rejects.toMatchObject({ name: "AbortError" });
+  fetchMock.mockRestore();
+});

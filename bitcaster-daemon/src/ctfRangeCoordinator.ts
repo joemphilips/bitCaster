@@ -1,3 +1,7 @@
+import { isDeepStrictEqual } from 'node:util'
+import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
+import { deserializeOutputGroups } from './walletOps.ts'
 import {
   applyDurableCustodyTransaction,
   assertDurableCustodyArtifactMatchesReference,
@@ -6,6 +10,8 @@ import {
 } from '@bitcaster-market/client-sdk/durableCustody'
 import { bindDurableCustodyProofOperation } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
+  deriveDurableCtfRangeRefundOperationId,
+  deriveRootCtfOutcomeCollectionId,
   classifyDurableCtfRangeRecovery,
   prepareDurableCtfRangeRecoveredResult,
   prepareDurableCtfRangeVerifiedResult,
@@ -32,10 +38,11 @@ import {
   checkCtfRangeInputProofStates,
   type CtfRangeProofStateClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
-import type { Proof } from '@cashu/cashu-ts'
+import type { MintKeys, Proof } from '@cashu/cashu-ts'
 import {
   createCustodyProofSqliteRow,
   createCustodyProofSqliteRowFromMaterial,
+  decodeCustodyProofSqliteRow,
 } from './custodyProofSqliteRow.ts'
 import { commitDaemonCtfRangeSource } from './ctfRangeSourceState.ts'
 import {
@@ -61,6 +68,7 @@ import {
   admitExactAvailableWalletProofsFromDatabase,
   completeCtfRangeRefundProofOperationFromDatabase,
   readDaemonProofOperationFromDatabase,
+  readDaemonWalletProofFromDatabase,
   type CashuProofRecord,
   type StoredProofAsset,
 } from './state.ts'
@@ -78,6 +86,14 @@ interface DaemonCtfRangeBindInput extends DaemonCtfRangeMutationInput {
 
 interface DaemonCtfRangeResidualBindInput extends DaemonCtfRangeBindInput {
   readonly spentSourceProofs: readonly Proof[]
+}
+
+interface RefundCompletion extends DaemonCtfRangeMutationInput {
+  readonly custodyOperationId: string
+  readonly refundOperationId: string
+  readonly refundProofs: readonly CashuProofRecord[]
+  readonly refundAsset: StoredProofAsset
+  readonly refundKeyset: MintKeys
 }
 
 export class DaemonCtfRangeCoordinator {
@@ -355,32 +371,31 @@ export class DaemonCtfRangeCoordinator {
     return this.#recoverStagedResult(loaded, input.resolveKeyset)
   }
 
-  async completeRefund(
-    input: DaemonCtfRangeMutationInput & {
-      readonly custodyOperationId: string
-      readonly refundOperationId: string
-      readonly refundProofs: readonly CashuProofRecord[]
-      readonly refundAsset: StoredProofAsset
-    },
-  ): Promise<void> {
+  async completeRefund(input: RefundCompletion): Promise<void> {
     const loaded = await this.#requireLoaded(input.custodyOperationId)
-    if (loaded.record.operation.state === 'aborted') {
-      await this.#assertFencedExactRefundCompletion(input)
+    if (
+      loaded.record.operation.state === 'aborted' &&
+      (await this.#assertFencedExactRefundCompletion(input))
+    )
       return
-    }
     await withDurableCustodyUnitOfWork(
       this.#storage,
       this.#fence,
       input.observedAtMs,
       (database) => {
+        const store = new DurableCustodySqliteStore(database)
+        const current = requireOperation(store, input.custodyOperationId)
+        const successors = verifiedRefundSuccessors(database, loaded, input)
+        const replay = current.operation.state === 'aborted'
+        if (replay) assertRefundedRangeInputs(database, current)
+        const missing = missingRefundSuccessors(database, current, successors, input, replay)
         completeCtfRangeRefundProofOperationFromDatabase(
           database,
           input.refundOperationId,
           input.refundProofs,
           input.observedAtMs,
         )
-        const store = new DurableCustodySqliteStore(database)
-        const current = requireOperation(store, input.custodyOperationId)
+        store.putProofBatchCas(missing.map((proof) => ({ proof, expectedRevision: null })))
         if (current.operation.result.state !== 'none') {
           throw new Error('daemon CTF range refund conflicts with a settlement result')
         }
@@ -422,12 +437,13 @@ export class DaemonCtfRangeCoordinator {
         } else {
           assertRefundedRangeInputs(database, current)
         }
-        admitExactAvailableWalletProofsFromDatabase(database, {
-          mintUrl: current.operation.custodyContext.normalizedMint,
-          proofs: input.refundProofs,
-          asset: input.refundAsset,
-          nowMs: input.observedAtMs,
-        })
+        if (!replay)
+          admitExactAvailableWalletProofsFromDatabase(database, {
+            mintUrl: current.operation.custodyContext.normalizedMint,
+            proofs: input.refundProofs,
+            asset: input.refundAsset,
+            nowMs: input.observedAtMs,
+          })
       },
       faultOptions(input.injectFault),
     )
@@ -505,36 +521,36 @@ export class DaemonCtfRangeCoordinator {
     return (await this.#requireLoaded(expected.operation.operationId)).record
   }
 
-  async #assertFencedExactRefundCompletion(
-    input: DaemonCtfRangeMutationInput & {
-      readonly custodyOperationId: string
-      readonly refundOperationId: string
-      readonly refundProofs: readonly CashuProofRecord[]
-    },
-  ): Promise<void> {
-    await withDurableCustodyFencedRead(
+  async #assertFencedExactRefundCompletion(input: RefundCompletion): Promise<boolean> {
+    return withDurableCustodyFencedRead(
       this.#storage,
       this.#fence,
       input.observedAtMs,
       (database) => {
-        const current = requireOperation(
+        const loaded = loadDaemonDurableCtfRangeAuthority(
           new DurableCustodySqliteStore(database),
           input.custodyOperationId,
         )
-        if (current.operation.state !== 'aborted' || current.operation.result.state !== 'none') {
+        if (
+          loaded === null ||
+          loaded.record.operation.state !== 'aborted' ||
+          loaded.record.operation.result.state !== 'none'
+        )
           throw new Error('daemon CTF range exact refund authority is not committed')
-        }
         const refund = readDaemonProofOperationFromDatabase(database, input.refundOperationId)
-        if (refund?.state !== 'completed') {
+        if (refund?.state !== 'completed')
           throw new Error('daemon CTF range exact refund journal is not committed')
-        }
         completeCtfRangeRefundProofOperationFromDatabase(
           database,
           input.refundOperationId,
           input.refundProofs,
           input.observedAtMs,
         )
-        assertRefundedRangeInputs(database, current)
+        assertRefundedRangeInputs(database, loaded.record)
+        const successors = verifiedRefundSuccessors(database, loaded, input)
+        return (
+          missingRefundSuccessors(database, loaded.record, successors, input, true).length === 0
+        )
       },
     )
   }
@@ -786,6 +802,183 @@ function assertSameSourceProof(
     actual.storageClass !== expected.storageClass
   ) {
     throw new Error('daemon residual source proof differs from custody authority')
+  }
+}
+
+function verifiedRefundSuccessors(
+  database: Parameters<typeof readDaemonProofOperationFromDatabase>[0],
+  loaded: DaemonDurableCtfRangeAuthority,
+  input: RefundCompletion,
+): CustodyProofSqliteRow[] {
+  const { record, operation } = loaded
+  const refund = readDaemonProofOperationFromDatabase(database, input.refundOperationId)
+  const keyset = input.refundKeyset
+  const classification = offerAssetClassification(operation)
+  const asset: StoredProofAsset =
+    classification.conditionId === null
+      ? { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
+      : {
+          kind: 'Outcome',
+          baseAsset: 'sat',
+          unit: 'msat',
+          conditionId: classification.conditionId,
+          outcomeSetId: classification.outcomeSetId!,
+        }
+  if (
+    refund === null ||
+    refund.operationId !== deriveDurableCtfRangeRefundOperationId(operation.operationId) ||
+    refund.kind !== 'swap-refund' ||
+    refund.mintUrl !== operation.mintUrl ||
+    refund.metadata.purpose !== 'ctf-range-refund' ||
+    refund.metadata.rangeOperationId !== operation.operationId ||
+    refund.metadata.custodyOperationId !== input.custodyOperationId ||
+    refund.metadata.unit !== 'msat' ||
+    refund.metadata.refundKeysetId !== keyset.id ||
+    keyset.unit !== 'msat' ||
+    !isDeepStrictEqual(input.refundAsset, asset) ||
+    refund.inputs.length !== operation.inputs.length ||
+    refund.inputs.some((proof, index) => {
+      const original = operation.inputs[index]!
+      return (
+        proof.id !== original.id ||
+        String(proof.amount) !== original.amount ||
+        proof.secret !== original.secret ||
+        proof.C !== original.C ||
+        proof.witness === undefined ||
+        !isDeepStrictEqual(proof.dleq ?? null, original.dleq) ||
+        (proof.p2pk_e ?? null) !== original.p2pkE
+      )
+    })
+  )
+    throw new Error('daemon CTF range refund authority is foreign')
+  verifyDurableCustodyExactMintProofResult({
+    outputs: Object.fromEntries(
+      Object.entries(deserializeOutputGroups(refund.outputs)).map(([group, outputs]) => [
+        group,
+        outputs.map(serializeDurableCustodyOutput),
+      ]),
+    ),
+    result: { refund: input.refundProofs as Proof[] },
+    keysets: [
+      {
+        canonicalMintUrl: operation.mintUrl,
+        id: keyset.id,
+        unit: keyset.unit,
+        keys: keyset.keys,
+        inputFeePpk: keyset.input_fee_ppk ?? 0,
+        finalExpiry: keyset.final_expiry ?? null,
+        identity:
+          operation.offerAsset.kind === 'regular'
+            ? { kind: 'regular' }
+            : {
+                kind: 'conditional',
+                conditionId: operation.offerAsset.conditionId,
+                outcomeCollection: operation.offerAsset.outcomeCollection,
+                outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+                  conditionId: operation.offerAsset.conditionId,
+                  outcomeCollection: operation.offerAsset.outcomeCollection,
+                }),
+              },
+      },
+    ],
+  })
+  return input.refundProofs.map((proof) =>
+    sourceProofRow(record, operation, proof as Proof, input.observedAtMs),
+  )
+}
+
+function missingRefundSuccessors(
+  database: Parameters<typeof readDaemonProofOperationFromDatabase>[0],
+  record: DurableCustodyRecord,
+  successors: readonly CustodyProofSqliteRow[],
+  input: RefundCompletion,
+  replay: boolean,
+): CustodyProofSqliteRow[] {
+  const store = new DurableCustodySqliteStore(database)
+  const missing: CustodyProofSqliteRow[] = []
+  for (const [index, expected] of successors.entries()) {
+    const existing = store.getProof(record.scope.scopeId, expected.proofId)
+    if (existing !== null) {
+      decodeCustodyProofSqliteRow(existing)
+      if (
+        existing.curve !== expected.curve ||
+        !isDeepStrictEqual(existing.proofBody, expected.proofBody)
+      )
+        throw new Error('daemon CTF range refund successor material is foreign')
+      assertSameSourceProof(existing, expected)
+      if (existing.productBinding !== expected.productBinding)
+        throw new Error('daemon CTF range refund successor binding is foreign')
+      if (!replay) throw new Error('daemon CTF range refund successor already belongs to custody')
+      continue
+    }
+    store.assertProofNotRetired(record.scope.scopeId, expected.proofId)
+    if (replay) {
+      const row = database
+        .prepare(
+          `SELECT proof_id, amount, keyset_id, signature FROM target_wallet_proofs
+        WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+        )
+        .get(record.scope.scopeId, expected.normalizedMint, input.refundProofs[index]!.secret) as
+        | { proof_id: string; amount: number; keyset_id: string; signature: string }
+        | undefined
+      const mirror =
+        row === undefined ? null : readDaemonWalletProofFromDatabase(database, row.proof_id)
+      if (
+        mirror === null ||
+        row === undefined ||
+        String(row.amount) !== String(expected.amount) ||
+        row.keyset_id !== expected.keysetId ||
+        row.signature !== input.refundProofs[index]!.C ||
+        mirror.state !== 'available' ||
+        mirror.reservedBy !== undefined ||
+        mirror.retirement !== undefined ||
+        !isDeepStrictEqual(mirror.asset, input.refundAsset) ||
+        mirror.proof.id !== input.refundProofs[index]!.id ||
+        mirror.proof.secret !== input.refundProofs[index]!.secret ||
+        mirror.proof.C !== input.refundProofs[index]!.C ||
+        String(mirror.proof.amount) !== String(input.refundProofs[index]!.amount) ||
+        !isDeepStrictEqual(mirror.proof.dleq ?? null, input.refundProofs[index]!.dleq ?? null) ||
+        (mirror.proof.p2pk_e ?? null) !== (input.refundProofs[index]!.p2pk_e ?? null) ||
+        (mirror.proof.witness ?? null) !== (input.refundProofs[index]!.witness ?? null)
+      )
+        throw new Error('daemon CTF range refund missing successor lacks exact available mirror')
+    }
+    missing.push(expected)
+  }
+  assertRefundSuccessorsHaveNoCustodyOwners(
+    database,
+    record.scope.scopeId,
+    missing.map((proof) => proof.proofId),
+  )
+  return missing
+}
+
+/** Probe a bounded refund batch once per ownership table, not once per proof. */
+export function assertRefundSuccessorsHaveNoCustodyOwners(
+  database: Parameters<typeof readDaemonProofOperationFromDatabase>[0],
+  scopeId: string,
+  proofIds: readonly string[],
+): void {
+  if (proofIds.length === 0) return
+  if (proofIds.length > 256 || new Set(proofIds).size !== proofIds.length)
+    throw new Error('daemon CTF range refund successor batch is invalid')
+  const placeholders = proofIds.map(() => '?').join(',')
+  // Existing lineage indexes cover the scope, not an individual proof ID.
+  // Batch all IDs so each history table is searched only once per refund.
+  for (const table of [
+    'custody_proof_reservations',
+    'custody_operation_inputs',
+    'custody_proof_lineage',
+    'custody_selected_successors',
+  ]) {
+    if (
+      database
+        .prepare(
+          `SELECT 1 FROM ${table} WHERE scope_id = ? AND proof_id IN (${placeholders}) LIMIT 1`,
+        )
+        .get(scopeId, ...proofIds) !== undefined
+    )
+      throw new Error('daemon CTF range refund successor ownership conflicts')
   }
 }
 

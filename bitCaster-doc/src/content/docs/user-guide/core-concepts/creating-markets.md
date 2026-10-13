@@ -69,6 +69,11 @@ charge another registration fee. If a response is lost, the client checks
 the existing registration before it sends another request.
 A paid mint registration alone does not mean that the market is ready.
 
+After the engine accepts a new market, its detail page can show **Preparing your market…**.
+The page checks for a limited time and shows the market details automatically
+when they become available. You do not need to reload. If the details are still
+unavailable, choose **Retry** to check again.
+
 If the registered image presence differs from the saved creation, the client
 refuses to report completion. Keep the saved creation and its local data.
 Do not pay again or create a replacement market. Automatic image repair is

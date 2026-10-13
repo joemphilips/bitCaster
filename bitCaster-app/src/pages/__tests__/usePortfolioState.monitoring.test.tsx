@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   getAssetMonitoringAssets: vi.fn(),
   portfolioObservers: [] as Array<{
     onRefresh: () => void;
+    onResync?: (token: string) => void;
     conditionSets: string[][];
     disposeCalls: number;
   }>,
@@ -117,9 +118,10 @@ vi.mock("@/lib/markets", () => ({
   }),
 }));
 vi.mock("@/lib/marketHub", () => ({
-  observePortfolioValuations: (onRefresh: () => void) => {
+  observePortfolioValuations: (onRefresh: () => void, onResync?: (token: string) => void) => {
     const observer = {
       onRefresh,
+      onResync,
       conditionSets: [] as string[][],
       disposeCalls: 0,
     };
@@ -471,6 +473,34 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.localFundsState = "available";
     mocks.walletMnemonic = "test mnemonic";
     mocks.signerRevision = 0;
+  });
+
+  it("repairs explicit portfolio loss after a failed read without another notification", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const view = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0),
+    );
+    mocks.getPortfolio
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+    act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
+    expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
+    view.unmount();
+  });
+
+  it("does not clear explicit repair after a building response", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const view = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    mocks.getPortfolio
+      .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+      .mockResolvedValueOnce(completePortfolioResponse());
+    act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
+    view.unmount();
   });
 
   it("retains the last complete display through a building response and a failed refresh", async () => {

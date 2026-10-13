@@ -7,6 +7,38 @@
     "node": ">=22"
   },
   "exports": {
+    "./assetMonitoring": {
+      "types": "./dist/assetMonitoring.d.ts",
+      "import": "./dist/assetMonitoring.js"
+    },
+    "./marketLifecycle": {
+      "types": "./dist/marketLifecycle.d.ts",
+      "import": "./dist/marketLifecycle.js"
+    },
+    "./engineUrlSecurity": {
+      "types": "./dist/engineUrlSecurity.d.ts",
+      "import": "./dist/engineUrlSecurity.js"
+    },
+    "./marketCreationInput": {
+      "types": "./dist/marketCreationInput.d.ts",
+      "import": "./dist/marketCreationInput.js"
+    },
+    "./mintMetadata": {
+      "types": "./dist/mintMetadata.d.ts",
+      "import": "./dist/mintMetadata.js"
+    },
+    "./nostrProfile": {
+      "types": "./dist/nostrProfile.d.ts",
+      "import": "./dist/nostrProfile.js"
+    },
+    "./nostrSignerKey": {
+      "types": "./dist/nostrSignerKey.d.ts",
+      "import": "./dist/nostrSignerKey.js"
+    },
+    "./displayResync": {
+      "types": "./dist/displayResync.d.ts",
+      "import": "./dist/displayResync.js"
+    },
     "./publicNostrProfileCache": {
       "types": "./dist/publicNostrProfileCache.d.ts",
       "import": "./dist/publicNostrProfileCache.js"
@@ -443,6 +475,10 @@
     "./nostrProfileImageHeader": {
       "types": "./dist/nostrProfileImageHeader.d.ts",
       "import": "./dist/nostrProfileImageHeader.js"
+    },
+    "./ctfConditionRegistration": {
+      "types": "./dist/ctfConditionRegistration.d.ts",
+      "import": "./dist/ctfConditionRegistration.js"
     }
   },
   "scripts": {

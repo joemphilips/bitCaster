@@ -8,6 +8,9 @@ namespace BitCaster.MatchingEngine.Contracts.Hubs;
 /// </summary>
 public interface IMarketHubClient
 {
+    /// <summary>Reload the affected display snapshots. A null condition applies to all subscribed conditions.</summary>
+    Task ResyncRequired(MarketResyncRequiredMessage message);
+
     Task OrderBookUpdated(OrderBookSnapshot snapshot);
 
     Task OrderAccepted(OrderAcceptedDelta delta);
@@ -83,3 +86,6 @@ public sealed record MarketStatusChanged(
     string State,
     DateTimeOffset? ClosedAt,
     string? FinalOutcome);
+
+/// <summary>An opaque display repair token. It carries no custody or settlement authority.</summary>
+public sealed record MarketResyncRequiredMessage(string Token, string? ConditionId);

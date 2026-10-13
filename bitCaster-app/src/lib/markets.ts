@@ -657,18 +657,20 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
  */
 export async function fetchEngineCatalogueEntry(
   conditionId: string,
+  signal?: AbortSignal,
 ): Promise<MarketCatalogueEntry | null> {
   try {
     const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`;
     const response = await fetch(url, {
       headers: { Accept: "application/json" },
+      signal,
     });
     if (response.status === 503) throw new MarketDetailUnavailableError();
     if (!response.ok) return null;
     const body: MarketCatalogueResponse = await response.json();
     return body.markets.find((m) => m.conditionId === conditionId) ?? null;
   } catch (error) {
-    if (error instanceof MarketDetailUnavailableError) throw error;
+    if (signal?.aborted || error instanceof MarketDetailUnavailableError) throw error;
     return null;
   }
 }
@@ -715,13 +717,16 @@ function decodeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"] {
  * cause this to throw "Market not found". The page's post-paint missing-entry
  * recovery handles that case without blocking initial render.
  */
-export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
+export async function fetchMarketDetail(
+  conditionId: string,
+  signal?: AbortSignal,
+): Promise<MarketDetail> {
   // First render is engine-first and intentionally narrow: the route shell
   // should not wait on mintd, comments, or price history. Public market
   // outcome order is creator metadata recorded by the engine; mintd keysets
   // are one-vs-rest implementation details and are not an ordered display
   // contract. No retry loop here — one request, no delay.
-  const engineEntry = await fetchEngineCatalogueEntry(conditionId);
+  const engineEntry = await fetchEngineCatalogueEntry(conditionId, signal);
   if (!engineEntry) {
     throw new Error(`Market not found: ${conditionId}`);
   }
@@ -875,10 +880,10 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
   };
 }
 
-export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
+export async function fetchOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBook> {
   const snapshot = await new BitcasterEngineClient({
     baseUrl: window.location.origin,
-  }).getOrderBook(marketId);
+  }).getOrderBook(marketId, signal);
   return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
 }
 

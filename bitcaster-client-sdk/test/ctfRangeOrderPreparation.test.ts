@@ -347,7 +347,7 @@ test('builds, canonically persists, and verifies one exact range preparation rec
         nowUnixSeconds: 20,
         randomId: sequentialId('ambiguous-operation', 'ambiguous-authorization'),
       }),
-    /exact engine order route/,
+    /registered outcome authority/,
   )
 })
 
@@ -1252,6 +1252,16 @@ function reviewedMintFacts() {
     ],
   }
   return {
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: 'msat' as const,
+      eventId: 'test-event',
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [],
+    },
     regular: [
       {
         ...regularKeyset(),
@@ -1439,4 +1449,59 @@ function signBlindedMessage(output: SerializedBlindedMessage): SerializedBlinded
 
 function sumProofAmount(sum: number, proof: Proof): number {
   return sum + Number(proof.amount)
+}
+
+for (const tokenSide of ['Outcome', 'Complement'] as const) {
+  for (const side of ['Buy', 'Sell'] as const) {
+    test(`nonlexical six-outcome ${tokenSide} ${side} selects exact mint wire keysets`, () => {
+      const outcomes = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta']
+      const facts = reviewedMintFacts()
+      facts.registration.outcomes = outcomes
+      const collections = ['Alpha', 'Beta|Gamma|Delta|Epsilon|Zeta']
+      facts.conditional = facts.conditional.map((keyset, index) => ({
+        ...keyset,
+        outcomeCollection: collections[index],
+        outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+          conditionId: CONDITION_ID,
+          outcomeCollection: collections[index],
+        }),
+      }))
+      facts.observation.conditionalKeysets = facts.observation.conditionalKeysets.map(
+        (keyset, index) => ({
+          ...keyset,
+          outcomeCollection: collections[index],
+          outcomeCollectionId: facts.conditional[index].outcomeCollectionId,
+        }),
+      )
+      const prepared = buildPersistedCtfRangeOrderPreparation({
+        request: {
+          ...rangeOrderRequest(),
+          marketId: `${CONDITION_ID}-Alpha`,
+          outcomeId: 'Alpha',
+          tokenSide,
+          side,
+          maxQuotePaymentSubunits: side === 'Buy' ? 2 : null,
+          minQuotePaymentSubunits: side === 'Sell' ? 2 : null,
+        },
+        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+        mintFacts: facts,
+        // The display is deliberately sorted differently. It supplies labels, not wire order.
+        market: { outcomes: [...outcomes].sort().map((label) => ({ id: label, label })) },
+        nowUnixSeconds: 20,
+        randomId: sequentialId('nonlexical-operation', 'nonlexical-authorization'),
+      })
+      const selected = tokenSide === 'Outcome' ? facts.conditional[0] : facts.conditional[1]
+      const complement = tokenSide === 'Outcome' ? facts.conditional[1] : facts.conditional[0]
+      assert.equal((side === 'Buy' ? prepared.receiveKeyset : prepared.offerKeyset).id, selected.id)
+      assert.equal(prepared.complementKeyset.id, complement.id)
+      assert.equal(prepared.complementKeyset.outcomeCollection, complement.outcomeCollection)
+      const bytes = encodePersistedCtfRangeOrderPreparation(prepared)
+      assert.deepEqual(
+        encodePersistedCtfRangeOrderPreparation(
+          decodePersistedCtfRangeOrderPreparationBytes(bytes),
+        ),
+        bytes,
+      )
+    })
+  }
 }

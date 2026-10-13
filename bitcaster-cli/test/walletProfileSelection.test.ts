@@ -83,6 +83,7 @@ test('actual CLI selects distinct wallet profiles for secure import and acknowle
       state: 'completed',
       selectedKeysetCount: 1,
       completedChildCount: 1,
+      retainedOutputProofsImported: 0,
       batchesProcessed: 1,
       gapLimit: 300,
     })
@@ -261,7 +262,10 @@ function mockMintPreload(requestLog: string, fixtureHome: string): string {
     const keyset = ${JSON.stringify(keyset)};
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
-      if (url.origin !== ${JSON.stringify(mintUrl)} || url.search) forbidden();
+      if (url.origin !== ${JSON.stringify(mintUrl)}) forbidden();
+      if (url.pathname === '/v1/conditional_keysets') {
+        if (url.search !== '?limit=100') forbidden();
+      } else if (url.search) forbidden();
       const path = url.pathname;
       const method = init.method ?? 'GET';
       let body;
@@ -269,7 +273,7 @@ function mockMintPreload(requestLog: string, fixtureHome: string): string {
       if (path === '/v1/info' && method === 'GET') body = { name: 'mock mint', nuts: {} };
       else if (path === '/v1/keysets' && method === 'GET') body = { keysets: [{ id: keyset.id, unit: 'msat', active: true, input_fee_ppk: 0 }] };
       else if ((path === '/v1/keys' || path === '/v1/keys/' + keyset.id) && method === 'GET') body = { keysets: [keyset] };
-      else if (path === '/v1/conditional_keysets' && method === 'GET') body = { keysets: [] };
+      else if (path === '/v1/conditional_keysets' && method === 'GET') body = { keysets: [], next_cursor: null };
       else if (path === '/v1/restore' && method === 'POST') {
         const payload = JSON.parse(init.body);
         if (!Array.isArray(payload.outputs) || payload.outputs.some(output => output.id !== keyset.id)) forbidden();

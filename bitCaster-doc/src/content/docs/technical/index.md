@@ -614,6 +614,30 @@ Neither message guarantees that a snapshot is ready. Use its position in the
 next bounded read. Delivery is best effort. Refresh after a reconnect even
 when the last trade price did not change.
 
+Start initial and ordinary event-triggered reads immediately. If a bounded read
+fails, keep its source minimum and retry with capped backoff and jitter until a
+current snapshot is applied. Do not wait for another event. Keep the displayed
+snapshot during repair. Stop retries when the route changes or the read succeeds.
+These retries do not poll a healthy display.
+
+Both hubs can send `ResyncRequired` when display updates need repair. On the
+market hub, `{ token, conditionId }` refreshes the subscribed condition.
+A `null` condition means all currently subscribed conditions. On the authenticated
+order hub, `{ token }` refreshes the current user's pending order status.
+The token is 32 lowercase hexadecimal characters. Treat it as an opaque refresh
+identifier, not an event position. A condition ID is 64 lowercase hexadecimal
+characters. Reject malformed controls.
+
+Keep the existing display while refreshing. Refresh the current order books,
+price history, comments, and affected Portfolio values from their normal APIs.
+Use `refresh=true` for history and comments when no source position is available.
+Complete repair only after the required reads succeed and apply to the current
+route or wallet. Retry failed repair with bounded backoff and jitter, even when
+no later message arrives. Coalesce duplicate requests and retain one follow-up
+when another control arrives during repair. Cancel old route or wallet work.
+Do not poll after successful repair. Keep the reconnect refresh path.
+These controls carry no balance, spending authority, or custody state.
+
 `GET /api/v1/markets/{conditionId}/registration` returns public registration
 facts for one condition. Use it to check a market-creation result when the
 create response may have been lost. A `404` means no registration exists;

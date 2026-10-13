@@ -1,3 +1,6 @@
+import { verifyCtfConditionRegistration } from '@bitcaster-market/client-sdk/ctfConditionRegistration'
+import { readAllocationBoundedJsonResponse } from '@bitcaster-market/client-sdk/boundedJsonResponse'
+import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -301,6 +304,8 @@ class InsufficientParticipationScoreBackingError extends Error {
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
+  /** Transport seam for public mint registration during consolidation. */
+  fetchConsolidationCondition?: typeof globalThis.fetch
   nativeActivitySyncOptions?: NativeActivitySyncOptions
   nativeOracleAccessPorts?: NativeOracleAccessRpcPorts
   nativeOraclePublicationPorts?: NativeOraclePublicationPorts
@@ -1898,11 +1903,13 @@ async function dispatchProtectedOrderSubmit(
       async (requiredScore) => {
         const score = await client.getParticipationScore()
         const plan = planParticipationScoreTopUp(score, requiredScore)
-        const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
-          mintUrl: profile.mintUrl,
-        })
-        const backingError = participationScoreBackingError({ availableScoreMsat, plan })
-        if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+        if (plan.kind === 'needs-top-up') {
+          const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
+            mintUrl: profile.mintUrl,
+          })
+          const backingError = participationScoreBackingError({ availableScoreMsat, plan })
+          if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+        }
         participationScore = await ensureDaemonParticipationScoreForNextMatch({
           client,
           profile,
@@ -3129,6 +3136,18 @@ async function consolidateMarket(input: {
     }
   }
 
+  const conditionResponse = await (input.deps.fetchConsolidationCondition ?? globalThis.fetch)(
+    `${input.mintUrl.replace(/\/$/, '')}/v1/conditions/${encodeURIComponent(conditionId)}`,
+    { signal: AbortSignal.timeout(15_000) },
+  )
+  if (!conditionResponse.ok) throw new Error('mint condition registration is unavailable')
+  const registration = verifyCtfConditionRegistration({
+    condition: await readAllocationBoundedJsonResponse(conditionResponse, 2 * 1024 * 1024),
+    mintUrl: input.mintUrl,
+    conditionId,
+    allowInsecureLoopbackHttp: isLoopbackHttpUrl(input.mintUrl),
+  })
+
   const proofsByCollection = await availableMarketProofs({
     mintUrl: input.mintUrl,
     conditionId,
@@ -3151,6 +3170,7 @@ async function consolidateMarket(input: {
   const outputsByCollection: Record<string, OutputData[]> = {}
   const plan = planCtfConsolidation({
     conditionId,
+    registration,
     parentCollectionId: extractParentCollectionId(market),
     outcomes,
     marketStatus,

@@ -5,6 +5,9 @@ namespace BitCaster.MatchingEngine.Contracts.Hubs;
 /// </summary>
 public interface IOrderHubClient
 {
+    /// <summary>Reload display snapshots for the authenticated current user.</summary>
+    Task ResyncRequired(OrderResyncRequiredMessage message);
+
     /// <summary>
     /// Owner-filtered order lifecycle update. This callback never contains
     /// settlement capability artifacts or bearer proof material.
@@ -31,3 +34,6 @@ public sealed record SettlementGroupStateChangedDelta(
     Guid OrderId,
     string MarketId,
     SettlementGroupSummary SettlementGroup);
+
+/// <summary>An opaque repair token scoped to the authenticated current user.</summary>
+public sealed record OrderResyncRequiredMessage(string Token);

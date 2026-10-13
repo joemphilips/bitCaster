@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createDisplayResyncRepair } from "@bitcaster/client-sdk/displayResync";
 import {
   fetchMarketComments,
   fetchMarketPriceHistory,
@@ -9,6 +10,7 @@ import {
   onConfirmedTradeRecorded,
   onMarketCommentsChanged,
   onMarketRejoined,
+  onMarketResyncRequired,
 } from "@/lib/marketHub";
 import { outcomeSetIdsForMarketBooks, outcomeSetMarketId } from "@/lib/outcomeSets";
 import type { ChartTimeframe, MarketDetail } from "@/types/market-detail";
@@ -38,13 +40,11 @@ function subscribeSnapshot<T>(
 ): () => void {
   const controller = new AbortController();
   let generation = 0;
-  let inFlight = false;
-  let dirty = false;
   let minimumEventOrder = observation?.initialEventOrder;
-  const run = async () => {
-    inFlight = true;
-    do {
-      dirty = false;
+  const repair = createDisplayResyncRepair({
+    initialJitterMs: 250,
+    repair: async (signal) => {
+      signal.throwIfAborted();
       const requestGeneration = generation;
       observation?.onStatus("refreshing");
       try {
@@ -53,18 +53,20 @@ function subscribeSnapshot<T>(
           refresh: true,
           signal: controller.signal,
         });
-        if (!controller.signal.aborted && requestGeneration === generation) {
-          apply(response);
-          observation?.onStatus("ready");
-        }
-      } catch {
-        // An unavailable read must preserve the displayed snapshot.
+        signal.throwIfAborted();
+        controller.signal.throwIfAborted();
+        // A newer demand already owns the next coordinator pass. Never apply
+        // an older response, even when the transport ignores cancellation.
+        if (requestGeneration !== generation) return;
+        apply(response);
+        observation?.onStatus("ready");
+      } catch (error) {
         if (!controller.signal.aborted && requestGeneration === generation)
           observation?.onStatus("unavailable");
+        throw error;
       }
-    } while (dirty && !controller.signal.aborted);
-    inFlight = false;
-  };
+    },
+  });
   const changed = (eventOrder?: string) => {
     if (controller.signal.aborted) return;
     if (eventOrder !== undefined && eventOrder === minimumEventOrder) return;
@@ -73,12 +75,19 @@ function subscribeSnapshot<T>(
       minimumEventOrder = eventOrder;
       observation?.onEventOrder(eventOrder);
     }
-    dirty = true;
     invalidate();
-    if (!inFlight) void run();
+    repair.invalidate();
+  };
+  const resync = (token: string) => {
+    // An ignored duplicate must not invalidate the active read: it owns no
+    // follow-up demand. Scheduling starts in a microtask after this generation.
+    if (controller.signal.aborted || !repair.request(token)) return;
+    generation += 1;
+    invalidate();
   };
   const firstOutcome = outcomeSetIdsForMarketBooks(market)[0];
   const cleanups = [
+    onMarketResyncRequired(market.id, resync),
     onConfirmedTradeRecorded(market.id, (message) => {
       if (message.conditionId === market.id) changed(message.latestConfirmedTrade.eventOrder);
     }),
@@ -93,9 +102,10 @@ function subscribeSnapshot<T>(
       ? [onMarketRejoined(outcomeSetMarketId(market.id, firstOutcome), () => changed())]
       : []),
   ];
-  void run();
+  repair.invalidate();
   return () => {
     controller.abort();
+    void repair.dispose();
     for (const cleanup of cleanups) cleanup();
   };
 }
@@ -146,6 +156,8 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
         ) {
           historySource.current.asOfByRange[inputs.timeframe] = response.asOf;
           latest.current.onHistory(response);
+        } else {
+          throw new Error("History repair does not match the active display scope.");
         }
       },
       () => {
@@ -181,8 +193,9 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
       market,
       (options) => fetchMarketComments(market.id, options),
       (response) => {
-        if (latest.current.market?.id === market.id && response.conditionId === market.id)
-          latest.current.onComments(response);
+        if (latest.current.market?.id !== market.id || response.conditionId !== market.id)
+          throw new Error("Comment repair does not match the active display scope.");
+        latest.current.onComments(response);
       },
       undefined,
       true,

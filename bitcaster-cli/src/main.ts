@@ -10,30 +10,35 @@ import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { BitcasterEngineClient, EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import { ASSET_MONITORING_ASSETS_MAX } from '@bitcaster-market/client-sdk/assetMonitoring'
+import { decodeCtfRangeOrderFeeFacts } from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
+import { isKind89NostrEvent } from '@bitcaster-market/client-sdk/marketLifecycle'
 import {
-  BitcasterEngineClient,
-  ASSET_MONITORING_ASSETS_MAX,
-  decodeCtfRangeOrderFeeFacts,
-  EngineClientError,
-  isKind89NostrEvent,
   isLoopbackHttpUrl,
-  parseSatsToMsat,
-  normalizeMarketCreationInput,
   normalizeEndpointUrl,
+  validateMarketCreateEngineUrl,
+} from '@bitcaster-market/client-sdk/engineUrlSecurity'
+import { parseSatsToMsat } from '@bitcaster-market/client-sdk/marketUnits'
+import {
+  normalizeMarketCreationInput,
+  MAX_MARKET_CREATION_MATURITY_EPOCH,
+} from '@bitcaster-market/client-sdk/marketCreationInput'
+import {
   assertOracleExplanationText,
   ORACLE_EXPLANATION_UTF8_BYTES_MAX,
-  readPublicMintMetadata,
-  validateMarketCreateEngineUrl,
-  MAX_MARKET_CREATION_MATURITY_EPOCH,
-  type MarketCreationInput,
-  type SupportedMarketCreationOutcomeType,
-  type PriceHistoryTimeframe,
-  type MarketSnapshotReadOptions,
-  type PreviewFokOrderCapacityRequest,
-  type PreviewFokOrderRequest,
-  type OrderStatusResponse,
-  type CtfRangeOrderFeeFacts,
-  type AssetMonitoringTimeframe,
+} from '@bitcaster-market/client-sdk/oracleResolutionExplanation'
+import { readPublicMintMetadata } from '@bitcaster-market/client-sdk/mintMetadata'
+import type {
+  MarketCreationInput,
+  SupportedMarketCreationOutcomeType,
+  PriceHistoryTimeframe,
+  MarketSnapshotReadOptions,
+  PreviewFokOrderCapacityRequest,
+  PreviewFokOrderRequest,
+  OrderStatusResponse,
+  CtfRangeOrderFeeFacts,
+  AssetMonitoringTimeframe,
 } from '@bitcaster-market/client-sdk'
 import {
   isWalletPaymentQuote,
@@ -54,7 +59,6 @@ import {
 import { configFilePath, readConfig, updateConfig } from './config.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
-import { readLocalNativeBookmarks } from '@bitcaster-market/daemon/nativeBookmarks'
 import {
   DAEMON_ACTIVITY_PAGE_SIZE_MAX,
   DAEMON_MARKET_WATCH_CONDITIONS_MAX,
@@ -308,6 +312,8 @@ function registerMarketCommand(program: Command): Command {
         return
       }
       if (options.liked) {
+        const { readLocalNativeBookmarks } =
+          await import('@bitcaster-market/daemon/nativeBookmarks')
         const saved = await readLocalNativeBookmarks()
         if (saved.length > DAEMON_MARKET_WATCH_CONDITIONS_MAX)
           throw new Error(

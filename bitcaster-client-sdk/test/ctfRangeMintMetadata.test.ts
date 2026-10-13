@@ -1,3 +1,7 @@
+import { verifyCtfEnumAnnouncement } from '../src/ctfConditionRegistration.ts'
+import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
@@ -7,7 +11,21 @@ import {
 } from '../src/ctfRangeMintMetadata.ts'
 
 const MINT_URL = 'https://mint.example'
-const CONDITION_ID = 'condition-1'
+const ANNOUNCEMENT =
+  'fdd824b0d6e582137fef6dd61d2047b4700104c0e97be005af979e100d8a007cf45d28f562f01d6817fc8f7d6b343d2cb5a6f0c2da87090da93508e26f671e30d50a6d577e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4efdd8224c0001ab5cbc99b45a936368081a43a7f14c9be0a821ba5beba722c27d61cef31a78d96a27e00dfdd80609000203594553024e4f18646961672d6576656e742d31373830393131373537303935'
+const a = verifyCtfEnumAnnouncement(ANNOUNCEMENT)
+const tag = sha256(new TextEncoder().encode('Cashu_condition_id'))
+const CONDITION_ID = bytesToHex(
+  sha256(
+    concatBytes(
+      tag,
+      tag,
+      hexToBytes(a.oraclePublicKey),
+      new TextEncoder().encode(a.eventId),
+      Uint8Array.of(2),
+    ),
+  ),
+)
 const REGULAR_KEYSET_ID = `01${'11'.repeat(32)}`
 const CONDITIONAL_KEYSET_ID = `01${'22'.repeat(32)}`
 const PUBLIC_KEY = `02${'11'.repeat(32)}`
@@ -73,6 +91,9 @@ test('clamps mint limits to durable output and artifact authority bounds', async
 test('rejects foreign conditions and missing exact key responses', async () => {
   const foreign = mint()
   foreign.getCtfCondition = async () => ({
+    announcements: [ANNOUNCEMENT],
+    threshold: 1,
+    collateral: 'msat',
     condition_id: 'foreign',
     registered_at: 0,
     keysets: { YES: CONDITIONAL_KEYSET_ID },
@@ -164,9 +185,15 @@ test('starts conditional keyset discovery at the condition registration time', a
     registered_at: 100,
     condition_id: CONDITION_ID,
     outcome_collection: 'YES',
-    outcome_collection_id: 'collection-yes',
+    outcome_collection_id: deriveRootCtfOutcomeCollectionId({
+      conditionId: CONDITION_ID,
+      outcomeCollection: 'YES',
+    }),
   }
   client.getCtfCondition = async () => ({
+    announcements: [ANNOUNCEMENT],
+    threshold: 1,
+    collateral: 'msat',
     condition_id: CONDITION_ID,
     registered_at: 100,
     keysets: { YES: CONDITIONAL_KEYSET_ID },
@@ -197,6 +224,9 @@ test('finds target keysets after a full same-second page while keeping since fix
   const client = mint()
   const queries: Array<{ since?: number; limit?: number; cursor?: string }> = []
   client.getCtfCondition = async () => ({
+    announcements: [ANNOUNCEMENT],
+    threshold: 1,
+    collateral: 'msat',
     condition_id: CONDITION_ID,
     registered_at: 100,
     keysets: { YES: CONDITIONAL_KEYSET_ID },
@@ -228,7 +258,10 @@ test('finds target keysets after a full same-second page while keeping since fix
           registered_at: 100,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',
-          outcome_collection_id: 'collection-yes',
+          outcome_collection_id: deriveRootCtfOutcomeCollectionId({
+            conditionId: CONDITION_ID,
+            outcomeCollection: 'YES',
+          }),
         },
       ],
     }
@@ -291,7 +324,10 @@ test('rejects missing or invalid conditional keyset registration times', async (
           registered_at: registeredAt,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',
-          outcome_collection_id: 'collection-yes',
+          outcome_collection_id: deriveRootCtfOutcomeCollectionId({
+            conditionId: CONDITION_ID,
+            outcomeCollection: 'YES',
+          }),
         },
       ],
     })
@@ -345,11 +381,17 @@ function mint(regularFee = 100, conditionalFee = regularFee): CtfRangeMintMetada
           registered_at: 0,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',
-          outcome_collection_id: 'collection-yes',
+          outcome_collection_id: deriveRootCtfOutcomeCollectionId({
+            conditionId: CONDITION_ID,
+            outcomeCollection: 'YES',
+          }),
         },
       ],
     }),
     getCtfCondition: async () => ({
+      announcements: [ANNOUNCEMENT],
+      threshold: 1,
+      collateral: 'msat',
       condition_id: CONDITION_ID,
       registered_at: 0,
       keysets: { YES: CONDITIONAL_KEYSET_ID },
@@ -365,3 +407,25 @@ function mint(regularFee = 100, conditionalFee = regularFee): CtfRangeMintMetada
     }),
   }
 }
+
+test('validates every mint collection mapping and rejects duplicate-id aliases', async () => {
+  for (const keysets of [
+    { YES: CONDITIONAL_KEYSET_ID, foreignAlias: CONDITIONAL_KEYSET_ID },
+    { YES: CONDITIONAL_KEYSET_ID, NO: CONDITIONAL_KEYSET_ID },
+    { 'NO|YES': CONDITIONAL_KEYSET_ID },
+  ]) {
+    const client = mint()
+    const original = await client.getCtfCondition(CONDITION_ID)
+    client.getCtfCondition = async () => ({ ...original, keysets })
+    await assert.rejects(
+      loadCtfRangeMintMetadata({
+        mint: client,
+        mintUrl: MINT_URL,
+        conditionId: CONDITION_ID,
+        observedAt: 1000,
+        allowInsecureLoopbackHttp: false,
+      }),
+      /collection|alias/,
+    )
+  }
+})

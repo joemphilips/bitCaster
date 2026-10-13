@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { decodeDurableCustodyScopeId } from '@bitcaster-market/client-sdk'
+import { decodeDurableCustodyScopeId } from '@bitcaster-market/client-sdk/durableCustody'
 import { type DaemonStateSqliteSession, withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 
 export const CUSTODY_SCOPE_LEASE_DURATION_MS = 60_000

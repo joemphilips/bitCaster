@@ -7,7 +7,7 @@ import { normalizeEndpointUrl } from './profile.ts'
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
-} from '@bitcaster-market/client-sdk'
+} from '@bitcaster-market/client-sdk/durableCustody'
 import {
   assertDaemonProfilePlatformSupported,
   assertFreshDaemonProfileInventory,

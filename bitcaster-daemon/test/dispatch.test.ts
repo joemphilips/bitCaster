@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import {
   Amount,
   OutputData,
@@ -2346,72 +2347,154 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       if (priorState) await writeState(priorState)
     })
 
-    await t.test(
-      'order.submit retains a prepared capability after a retryable 409 conflict',
-      async () => {
-        const priorState = await readState()
-        await writeState(backedDaemonState())
-        let markedRejected = false
-        let recoveryTriggers = 0
-        const engine: EngineClientLike = {
-          ...scoreDisabledEngineMethods,
-          async submitOrder() {
-            throw new EngineClientError(
-              409,
-              'Order book changed while submitting order; retry the request.',
-              undefined,
-              'Order book changed while submitting order; retry the request.',
-            )
-          },
-          async getOrderStatus() {
-            return null
-          },
-          async cancelOrder() {
-            throw new Error('cancelOrder unused')
-          },
-          async getOrderBook() {
-            throw new Error('getOrderBook unused')
-          },
-          async queryMarkets() {
-            return { markets: [], nextCursor: null }
-          },
-        }
-
-        const response = await dispatch(
-          {
-            method: 'order.submit',
-            params: withFeeConsent({
-              marketId: 'cond-Bob',
-              outcomeId: 'Bob',
-              side: 'Buy',
-              price: 420,
-              amountSubunits: 1_000,
-              timeInForce: 'FOK',
-            }),
-          },
-          {
-            createEngineClient: () => engine,
-            prepareSettlementCapability: prepareSettlementCapability(
-              'order-retryable',
-              undefined,
-              () => {
-                markedRejected = true
-              },
-            ),
-            triggerSettlementRecovery: () => {
-              recoveryTriggers += 1
-            },
-          },
-        )
-
-        assert.equal(response.ok, false)
-        assert.equal(response.code, undefined)
-        assert.equal(markedRejected, false)
-        assert.equal(recoveryTriggers, 1)
-        assert.deepEqual((await readState())?.orders, {})
-        if (priorState) await writeState(priorState)
+    for (const failure of [
+      {
+        status: 409,
+        code: undefined,
+        detail: 'Order book changed while submitting order; retry the request.',
       },
-    )
+      {
+        status: 503,
+        code: 'order-processing-unavailable',
+        detail: 'Order processing is temporarily unavailable.',
+      },
+    ])
+      await t.test(
+        `order.submit retains a prepared capability after ${failure.status} ${failure.code ?? 'retryable conflict'}`,
+        async () => {
+          const priorState = await readState()
+          await writeState(backedDaemonState())
+          let markedRejected = false
+          let recoveryTriggers = 0
+          const engine: EngineClientLike = {
+            ...scoreDisabledEngineMethods,
+            async submitOrder() {
+              throw new EngineClientError(
+                failure.status,
+                failure.detail,
+                failure.code,
+                failure.detail,
+              )
+            },
+            async getOrderStatus() {
+              return null
+            },
+            async cancelOrder() {
+              throw new Error('cancelOrder unused')
+            },
+            async getOrderBook() {
+              throw new Error('getOrderBook unused')
+            },
+            async queryMarkets() {
+              return { markets: [], nextCursor: null }
+            },
+          }
+
+          const response = await dispatch(
+            {
+              method: 'order.submit',
+              params: withFeeConsent({
+                marketId: 'cond-Bob',
+                outcomeId: 'Bob',
+                side: 'Buy',
+                price: 420,
+                amountSubunits: 1_000,
+                timeInForce: 'FOK',
+              }),
+            },
+            {
+              createEngineClient: () => engine,
+              prepareSettlementCapability: prepareSettlementCapability(
+                'order-retryable',
+                undefined,
+                () => {
+                  markedRejected = true
+                },
+              ),
+              triggerSettlementRecovery: () => {
+                recoveryTriggers += 1
+              },
+            },
+          )
+
+          assert.equal(response.ok, false)
+          assert.equal(response.code, undefined)
+          assert.match(response.error ?? '', /submission is uncertain/)
+          assert.ok(response.clientOrderId)
+          assert.equal(response.operationId, `range:${response.clientOrderId}`)
+          assert.equal(response.orderId, 'order-retryable')
+          assert.equal(markedRejected, false)
+          assert.equal(recoveryTriggers, 1)
+          assert.deepEqual((await readState())?.orders, {})
+          if (priorState) await writeState(priorState)
+        },
+      )
+
+    for (const enabled of [false, true]) {
+      await t.test(
+        `order.submit skips unused Score backing scan when enabled=${enabled}`,
+        async (t) => {
+          const priorState = await readState()
+          await writeState(backedDaemonState())
+          let scans = 0
+          let payments = 0
+          const originalPrepare = DatabaseSync.prototype.prepare
+          t.mock.method(
+            DatabaseSync.prototype,
+            'prepare',
+            function (this: DatabaseSync, sql: string) {
+              if (
+                sql.includes('COALESCE(SUM(amount), 0) AS totalAmount') &&
+                sql.includes('target_wallet_proofs_selection_idx')
+              )
+                scans++
+              return originalPrepare.call(this, sql)
+            },
+          )
+          try {
+            const engine = {
+              ...testOrderEngine(),
+              getParticipationScore: async () => scoreResponse({ enabled, balance: 100 }),
+              submitOrder: async () => ({
+                orderId: 'score-no-top-up',
+                status: 'resting' as const,
+                remainingAmountSubunits: 1_000,
+                fills: [],
+                baseAsset: 'sat',
+                divisibility: 1_000,
+                activeSettlementGroup: null,
+              }),
+            }
+            const response = await dispatch(
+              {
+                method: 'order.submit',
+                params: withFeeConsent({
+                  marketId: 'cond-YES',
+                  outcomeId: 'YES',
+                  side: 'Buy',
+                  price: 420,
+                  amountSubunits: 1_000,
+                  timeInForce: 'FOK',
+                }),
+              },
+              {
+                createEngineClient: () => engine,
+                prepareSettlementCapability: prepareSettlementCapability('score-no-top-up'),
+                createWallet: () => {
+                  payments++
+                  throw new Error('unexpected Score wallet')
+                },
+              },
+            )
+            assert.equal(response.ok, true)
+            assert.equal(scans, 0)
+            assert.equal(payments, 0)
+          } finally {
+            if (priorState) await writeState(priorState)
+          }
+        },
+      )
+    }
 
     await t.test(
       'order.submit checks regular msat Score backing before Score payment or capability admission',

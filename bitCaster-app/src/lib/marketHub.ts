@@ -19,6 +19,7 @@ import { debounce, type DebouncedFunction } from "@/lib/debounce";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
 import type { MarketFundingObservation } from "@/lib/marketFunding";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
+import { decodeMarketResyncRequired } from "@bitcaster/client-sdk/displayResync";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type MarketStatusChanged = components["schemas"]["MarketStatusChanged"];
@@ -245,8 +246,10 @@ type MarketCommentsChangedHandler = (message: MarketCommentsChangedMessage) => v
 type MarketFundingUpdatedHandler = (message: MarketFundingUpdatedMessage) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
+const marketResyncHandlers = new Map<string, Set<(token: string) => void>>();
 type PortfolioValuationObserverState = {
   onRefresh: () => void;
+  onResync?: (token: string) => void;
   conditionHandlers: Map<string, () => void>;
   disposed: boolean;
 };
@@ -382,6 +385,27 @@ function buildConnection(): HubConnection {
       } catch (err) {
         console.warn("[marketHub] ConfirmedTradeRecorded handler threw:", err);
       }
+    }
+  });
+
+  conn.on("ResyncRequired", (payload: unknown) => {
+    let message;
+    try {
+      message = decodeMarketResyncRequired(payload);
+    } catch {
+      return;
+    }
+    for (const [conditionId, handlers] of marketResyncHandlers) {
+      if (message.conditionId !== null && message.conditionId !== conditionId) continue;
+      for (const handler of handlers) handler(message.token);
+    }
+    const observer = _portfolioValuationObserver;
+    if (
+      observer &&
+      !observer.disposed &&
+      (message.conditionId === null || observer.conditionHandlers.has(message.conditionId))
+    ) {
+      observer.onResync?.(message.token);
     }
   });
 
@@ -665,7 +689,10 @@ export interface PortfolioValuationObserver {
  * Observe display invalidations for the current Portfolio page. Condition
  * sets use a separate hub method and never join order-book groups.
  */
-export function observePortfolioValuations(onRefresh: () => void): PortfolioValuationObserver {
+export function observePortfolioValuations(
+  onRefresh: () => void,
+  onResync?: (token: string) => void,
+): PortfolioValuationObserver {
   const previousObserver = _portfolioValuationObserver;
   if (previousObserver) {
     previousObserver.disposed = true;
@@ -674,6 +701,7 @@ export function observePortfolioValuations(onRefresh: () => void): PortfolioValu
 
   const observer: PortfolioValuationObserverState = {
     onRefresh,
+    onResync,
     conditionHandlers: new Map(),
     disposed: false,
   };
@@ -914,6 +942,23 @@ export function onMarketFundingUpdated(
   };
 }
 
+/** Display loss for this currently mounted condition; never performs a hub rejoin. */
+export function onMarketResyncRequired(
+  conditionId: string,
+  handler: (token: string) => void,
+): () => void {
+  let handlers = marketResyncHandlers.get(conditionId);
+  if (!handlers) {
+    handlers = new Set();
+    marketResyncHandlers.set(conditionId, handlers);
+  }
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+    if (handlers.size === 0) marketResyncHandlers.delete(conditionId);
+  };
+}
+
 export function onMarketRejoined(marketId: string, handler: MarketRejoinedHandler): () => void {
   let set = _marketRejoinedHandlers.get(marketId);
   if (!set) {
@@ -951,6 +996,7 @@ export async function disconnect(): Promise<void> {
     notifyOnSuccess: false,
   };
   _appliedPortfolioValuationSet = null;
+  marketResyncHandlers.clear();
   _orderBookHandlers.clear();
   _confirmedTradeRecordedHandlers.clear();
   _marketCommentsChangedHandlers.clear();

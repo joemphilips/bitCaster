@@ -67,7 +67,7 @@ test('bitcaster-cli bin entrypoint is directly executable', async () => {
 
   assert.match(result.stdout, /bitcaster-cli/)
   assert.match(result.stdout, /Commands:/)
-  assert.match(result.stdout, /wallet\s+Manage wallet balance/)
+  assert.match(result.stdout, /wallet\s+Read wallet balances and positions/)
   assert.doesNotMatch(result.stdout, /^\s+trade\s/m)
   await assert.rejects(
     () =>
@@ -1996,7 +1996,7 @@ test('market history exposes every public timeframe and preserves all outcome-se
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-history-'))
   const point = {
     eventOrder: '00000000000000000042',
-    timestamp: '2026-09-01T12:00:00Z',
+    timestamp: '2026-10-02T23:30:00Z',
     price: 420,
     volumeSubunits: 12_500,
     source: 'fill',

@@ -38,7 +38,6 @@ import {
   MarketDetailUnavailableError,
   fetchOrderBook,
   createAuthenticatedBrowserEngineClient,
-  generateNip98Header,
   mapSnapshotToOrderBook,
   deriveCategoricalOdds,
   deriveYesNoOdds,
@@ -71,6 +70,7 @@ import {
   onMarketFundingUpdated,
   onConfirmedTradeRecorded,
   onMarketRejoined,
+  onMarketResyncRequired,
   onOrderCancelled,
   onOrderBookUpdated,
   refreshMarketSnapshot,
@@ -78,6 +78,7 @@ import {
   type MarketStatusChanged,
   type MarketFundingUpdatedMessage,
 } from "@/lib/marketHub";
+import { createDisplayResyncRepair } from "@bitcaster/client-sdk/displayResync";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import type {
   PreviewFokOrderCapacityRequest,
@@ -370,6 +371,8 @@ export async function fetchMarketDetailWithBooks(conditionId: string): Promise<M
 async function fetchMarketOrderBooks(
   conditionId: string,
   detail: MarketDetailType,
+  requireAll = false,
+  signal?: AbortSignal,
 ): Promise<MarketOrderBooksLoad> {
   const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
   if (outcomeSetIds.length === 0) {
@@ -381,19 +384,27 @@ async function fetchMarketOrderBooks(
   }
 
   const entries = (
-    await Promise.all(
+    await Promise.allSettled(
       outcomeSetIds.map(async (outcomeSetId) => {
         try {
           return [
             outcomeSetId,
-            await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
+            await (signal
+              ? fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId), signal)
+              : fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId))),
           ] as const;
-        } catch {
+        } catch (error) {
+          if (requireAll) throw error;
           return null;
         }
       }),
     )
-  ).filter((entry): entry is readonly [string, OrderBook] => entry != null);
+  )
+    .map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    })
+    .filter((entry): entry is readonly [string, OrderBook] => entry != null);
 
   if (entries.length > 0) {
     const fetchedOutcomeSetIds = entries.map(([outcomeSetId]) => outcomeSetId);
@@ -1182,14 +1193,31 @@ export function composeMarketDetail(
 }
 
 function tradeFeeConsentKey(input: {
-  conditionId: string | undefined;
+  market: MarketDetailType;
   mintUrl: string;
   ticket: TradeTicket;
   previewIdentityKey: string;
   selectedSellHoldingVersion: string;
   recoveryInvalidationKey: string;
 }): string {
-  return JSON.stringify(input);
+  const { market, ...consent } = input;
+  return JSON.stringify({
+    ...consent,
+    market: {
+      id: market.id,
+      type: market.type,
+      baseAsset: market.baseAsset,
+      divisibility: market.divisibility,
+      // Preserve the shared parser's raw identity inputs, including its string
+      // and name fallback forms. Price, color, and other display fields do not
+      // change preparation. This key does not validate or normalize outcomes.
+      outcomes: market.outcomes?.map((outcome) =>
+        typeof outcome === "object" && outcome !== null
+          ? { id: outcome.id, label: outcome.label, name: (outcome as { name?: unknown }).name }
+          : outcome,
+      ),
+    },
+  });
 }
 
 export function MarketDetailPage() {
@@ -1459,7 +1487,12 @@ export function MarketDetailPage() {
   // Load market data
   const loadMarket = useCallback(
     (
-      options: { showLoading?: boolean; singleFlight?: boolean } = {},
+      options: {
+        showLoading?: boolean;
+        singleFlight?: boolean;
+        requireAllBooks?: boolean;
+        signal?: AbortSignal;
+      } = {},
     ): Promise<MarketDetailLoadResult> => {
       const routeId = id;
       if (!routeId) return Promise.resolve("stale");
@@ -1471,7 +1504,9 @@ export function MarketDetailPage() {
       }
       const requestToken = ++marketLoadRequestTokenRef.current;
       const isCurrentLoad = () =>
-        isCurrentRoute(routeId, generation) && marketLoadRequestTokenRef.current === requestToken;
+        isCurrentRoute(routeId, generation) &&
+        marketLoadRequestTokenRef.current === requestToken &&
+        !options.signal?.aborted;
       const showLoading = options.showLoading ?? true;
       if (showLoading) setLoading(true);
       if (showLoading) {
@@ -1480,8 +1515,10 @@ export function MarketDetailPage() {
       }
 
       let succeeded = false;
-      const request = fetchMarketDetail(routeId)
-        .then((detail): MarketDetailLoadResult => {
+      const request = (
+        options.signal ? fetchMarketDetail(routeId, options.signal) : fetchMarketDetail(routeId)
+      )
+        .then(async (detail): Promise<MarketDetailLoadResult> => {
           if (!isCurrentLoad() || detail.id !== routeId) return "stale";
           succeeded = true;
           setError(null);
@@ -1491,7 +1528,7 @@ export function MarketDetailPage() {
             detail,
             expectedRouteId: routeId,
           });
-          void fetchMarketOrderBooks(routeId, detail).then((books) => {
+          const applyBooks = (books: MarketOrderBooksLoad) => {
             if (!isCurrentLoad()) return;
             const detailWithBooks = {
               ...detail,
@@ -1509,7 +1546,13 @@ export function MarketDetailPage() {
               ),
               replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
             });
-          });
+          };
+          if (options.requireAllBooks) {
+            applyBooks(await fetchMarketOrderBooks(routeId, detail, true, options.signal));
+            if (!isCurrentLoad()) return "stale";
+          } else {
+            void fetchMarketOrderBooks(routeId, detail).then(applyBooks);
+          }
           return "success";
         })
         .catch((error: unknown): MarketDetailLoadResult => {
@@ -1714,19 +1757,6 @@ export function MarketDetailPage() {
       }),
     );
 
-    const reconcileOwnOrders = debounce(() => {
-      void new BitcasterEngineClient({
-        baseUrl: window.location.origin,
-        authorization: ({ url, method }) => generateNip98Header(url, method),
-      })
-        .listMyOrders(id)
-        .catch((err) => {
-          console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
-        });
-    }, 200);
-    reconcileOwnOrders();
-    cleanups.push(reconcileOwnOrders.cancel);
-
     // SignalR is a best-effort delta channel. Reconnect repair must go
     // through the existing condition-authoritative REST read, once for the
     // page, before the live order-book refreshes are applied.
@@ -1787,7 +1817,6 @@ export function MarketDetailPage() {
         onOrderCancelled(liveMarketId, () => {
           if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshLiveOrderBook();
-          reconcileOwnOrders();
         }),
       );
       cleanups.push(
@@ -1795,7 +1824,6 @@ export function MarketDetailPage() {
           if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshAuthoritativeMarket();
           refreshLiveOrderBook();
-          reconcileOwnOrders();
         }),
       );
       void joinMarket(liveMarketId).catch((err) => {
@@ -1811,6 +1839,26 @@ export function MarketDetailPage() {
       }
     };
   }, [id, invalidatePreviewForMarket, isCurrentRoute, loadMarket, market?.id]);
+
+  useEffect(() => {
+    if (!id || !market || market.id !== id) return;
+    const generation = routeGenerationRef.current;
+    const repair = createDisplayResyncRepair({
+      initialJitterMs: 250,
+      repair: async (signal) => {
+        signal.throwIfAborted();
+        const result = await loadMarket({ showLoading: false, requireAllBooks: true, signal });
+        signal.throwIfAborted();
+        if (!isCurrentRoute(id, generation) || result !== "success")
+          throw new Error("Market display repair is unavailable.");
+      },
+    });
+    const unsubscribe = onMarketResyncRequired(id, (token) => repair.request(token));
+    return () => {
+      unsubscribe();
+      void repair.dispose();
+    };
+  }, [id, market?.id, isCurrentRoute, loadMarket]);
 
   useMarketDetailSnapshots({
     market: market?.id === currentRouteId ? market : null,
@@ -2032,9 +2080,9 @@ export function MarketDetailPage() {
   ]);
   const rangeFeePreviewKey = useMemo(
     () =>
-      protectedTradeTicket && activeMintUrl
+      protectedTradeTicket && activeMintUrl && market
         ? tradeFeeConsentKey({
-            conditionId: market?.id,
+            market,
             mintUrl: activeMintUrl,
             ticket: protectedTradeTicket,
             previewIdentityKey,
@@ -2044,7 +2092,7 @@ export function MarketDetailPage() {
         : null,
     [
       activeMintUrl,
-      market?.id,
+      market,
       protectedTradeTicket,
       previewIdentityKey,
       selectedSellHoldingVersion,
@@ -2060,13 +2108,19 @@ export function MarketDetailPage() {
       ? tradeFeasibilityResult
       : null;
   const feeConsentCurrent = displayedTradeFeeFacts !== null;
+  const feeInputsRef = useRef({ market, protectedTradeTicket });
+  feeInputsRef.current = { market, protectedTradeTicket };
+  const hasTradeSelection = tradeSelection !== null;
 
   useEffect(() => {
+    // The semantic key owns fee invalidation. Read the latest matching inputs
+    // when it changes; unrelated display updates must not cancel custody reads.
+    const { market, protectedTradeTicket } = feeInputsRef.current;
     if (
       !walletReady ||
       !activeMintUrl ||
       !market ||
-      !tradeSelection ||
+      !hasTradeSelection ||
       tradeAmount <= 0 ||
       !protectedTradeTicket ||
       !rangeFeePreviewKey
@@ -2125,14 +2179,12 @@ export function MarketDetailPage() {
   }, [
     walletReady,
     activeMintUrl,
-    market,
-    tradeSelection,
+    hasTradeSelection,
     tradeAmount,
     tradeSide,
     marketDivisibility,
     sellHoldings.status,
     selectedSellAvailableShares,
-    protectedTradeTicket,
     feeFactsRefreshGeneration,
     isCurrentRoute,
     rangeFeePreviewKey,
@@ -2289,7 +2341,7 @@ export function MarketDetailPage() {
         if (submittedWalletId === null) throw new Error("The active wallet is unavailable.");
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
         const exactFeePreviewKey = tradeFeeConsentKey({
-          conditionId: latestMarket.id,
+          market: latestMarket,
           mintUrl: activeMintUrl,
           ticket,
           previewIdentityKey: capturedPreviewIdentityKey,

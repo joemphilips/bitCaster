@@ -1192,3 +1192,66 @@ function mountRecoveringOrder(setStatus = true, strict = false) {
   );
   return { orderId, unmount };
 }
+
+it("retries explicit owner display loss until the authenticated status is applied", async () => {
+  const orderId = "12345678-1234-4234-8234-123456789012";
+  const status = ownedStatus(orderId, "condition-YES", {
+    status: "resting",
+    fills: [],
+    filledAmountSubunits: 0,
+    remainingAmountSubunits: 5000,
+  });
+  mockFetchOrderStatus.mockResolvedValue(status);
+  usePendingTradesStore.getState().add({
+    orderId,
+    walletId,
+    clientOrderId: "repair-order",
+    marketId: "condition-YES",
+    baseAsset: "sat",
+    divisibility: 1000,
+    submittedAt: Date.now(),
+  });
+  const view = renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+  await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledTimes(1));
+  mockFetchOrderStatus
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockResolvedValueOnce(status);
+  act(() => mockUseOrderHub.mock.calls.at(-1)![1].onResyncRequired("c".repeat(32)));
+  await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledTimes(3), { timeout: 2000 });
+  expect(useOrderSettlementObservations.getState().byOrderId[orderId]).toBeDefined();
+  expect(mockRecover).not.toHaveBeenCalled();
+  view.unmount();
+});
+
+it("aborts the actual explicit-loss status request when its wallet scope is disposed", async () => {
+  const orderId = "12345678-1234-4234-8234-123456789013";
+  const status = ownedStatus(orderId, "condition-YES", {
+    status: "resting",
+    fills: [],
+    filledAmountSubunits: 0,
+    remainingAmountSubunits: 5000,
+  });
+  mockFetchOrderStatus.mockResolvedValue(status);
+  usePendingTradesStore.getState().add({
+    orderId,
+    walletId,
+    clientOrderId: "abort-repair",
+    marketId: "condition-YES",
+    baseAsset: "sat",
+    divisibility: 1000,
+    submittedAt: Date.now(),
+  });
+  const view = renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+  await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledTimes(1));
+  let captured!: AbortSignal;
+  mockFetchOrderStatus.mockImplementationOnce((_market, _order, signal: AbortSignal) => {
+    captured = signal;
+    return new Promise((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+    );
+  });
+  act(() => mockUseOrderHub.mock.calls.at(-1)![1].onResyncRequired("d".repeat(32)));
+  await waitFor(() => expect(captured).toBeDefined());
+  view.unmount();
+  expect(captured.aborted).toBe(true);
+});
