@@ -620,6 +620,11 @@ current snapshot is applied. Do not wait for another event. Keep the displayed
 snapshot during repair. Stop retries when the route changes or the read succeeds.
 These retries do not poll a healthy display.
 
+An accepted single-order submission response does not wait for display notifications. Notifications
+can arrive before or after the HTTP response. Use the order status and confirmed
+settlement state to track progress. A display update does not prove settlement.
+If the response is lost, check the original order before submitting another order.
+
 Both hubs can send `ResyncRequired` when display updates need repair. On the
 market hub, `{ token, conditionId }` refreshes the subscribed condition.
 A `null` condition means all currently subscribed conditions. On the authenticated
