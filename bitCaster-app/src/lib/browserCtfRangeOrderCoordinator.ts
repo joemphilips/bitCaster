@@ -120,6 +120,8 @@ import {
   type SettlementCapabilityResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
+  type SubmitOrderOptions,
+  type OrderQuotesRefreshingProgress,
 } from "@bitcaster/client-sdk/engineClient";
 import { decodeSubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
@@ -206,7 +208,11 @@ export interface BrowserCtfRangeEngine {
   createSettlementCapability(
     request: CreateSettlementCapabilityRequest,
   ): Promise<SettlementCapabilityResponse>;
-  submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>;
+  submitOrder(
+    marketId: string,
+    request: SubmitOrderRequest,
+    options?: SubmitOrderOptions,
+  ): Promise<SubmitOrderResponse>;
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>;
   getSettlementCapabilityResultByOperation(
     operationId: string,
@@ -215,6 +221,11 @@ export interface BrowserCtfRangeEngine {
     resultId: string,
     request: { expectedVersion: number },
   ): Promise<SettlementCapabilityResultResponse | null>;
+}
+
+export interface BrowserCtfRangeOrderSubmitControl {
+  readonly signal?: AbortSignal;
+  readonly onQuotesRefreshing?: (progress: OrderQuotesRefreshingProgress) => void;
 }
 
 export interface BrowserCtfRangeOrderCoordinatorDependencies {
@@ -455,17 +466,19 @@ export class BrowserCtfRangeOrderCoordinator {
     this.#createCounterSource = input.createCounterSource ?? createBrowserWalletCounterSource;
   }
 
-  async prepareAndSubmit(input: {
-    readonly seed: Uint8Array;
-    readonly preparation: PersistedCtfRangeOrderPreparation;
-    readonly candidates: readonly Proof[];
-    readonly collateralCandidates: readonly Proof[];
-    readonly maxOutputs: number;
-    readonly comment?: NostrKind1Event | null;
-    readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
-    readonly paidConsolidationFeeSubunits: string;
-    readonly currentFeeFacts: CtfRangeOrderFeeFacts;
-  }): Promise<SubmitOrderResponse> {
+  async prepareAndSubmit(
+    input: BrowserCtfRangeOrderSubmitControl & {
+      readonly seed: Uint8Array;
+      readonly preparation: PersistedCtfRangeOrderPreparation;
+      readonly candidates: readonly Proof[];
+      readonly collateralCandidates: readonly Proof[];
+      readonly maxOutputs: number;
+      readonly comment?: NostrKind1Event | null;
+      readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+      readonly paidConsolidationFeeSubunits: string;
+      readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+    },
+  ): Promise<SubmitOrderResponse> {
     requireFokRequest(input.preparation.request);
     const scope = browserWalletScope(input.seed);
     const completed = await withWalletProfileLock(
@@ -518,6 +531,7 @@ export class BrowserCtfRangeOrderCoordinator {
             completed.operation,
             completed.capabilityRequest,
             input.comment ?? null,
+            input,
           );
         }),
       this.#lockManager,
@@ -1974,6 +1988,7 @@ export class BrowserCtfRangeOrderCoordinator {
     operation: DurableCtfRangeOperation,
     request: CreateSettlementCapabilityRequest,
     comment: NostrKind1Event | null,
+    control: BrowserCtfRangeOrderSubmitControl,
   ): Promise<SubmitOrderResponse> {
     let requested: Awaited<ReturnType<typeof transitionCtfRangePreparation>>;
     try {
@@ -2014,7 +2029,7 @@ export class BrowserCtfRangeOrderCoordinator {
       },
       this.#database,
     );
-    return this.#submitBoundCapability(scope, preparation, capability, bound, comment);
+    return this.#submitBoundCapability(scope, preparation, capability, bound, comment, control);
   }
 
   async #recoverRequestedCapability(
@@ -2103,17 +2118,28 @@ export class BrowserCtfRangeOrderCoordinator {
     capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>,
     bound: Awaited<ReturnType<typeof bindCtfRangePreparationCapability>>,
     comment: NostrKind1Event | null,
+    control: BrowserCtfRangeOrderSubmitControl,
   ): Promise<SubmitOrderResponse> {
     let submitted: SubmitOrderResponse;
     try {
-      submitted = await this.#engine.submitOrder(preparation.request.marketId, {
-        settlementCapability: {
-          artifactId: capability.artifactId,
-          bindingDigest: capability.bindingDigest,
+      submitted = await this.#engine.submitOrder(
+        preparation.request.marketId,
+        {
+          settlementCapability: {
+            artifactId: capability.artifactId,
+            bindingDigest: capability.bindingDigest,
+          },
+          comment,
+          walletId: scope.walletId as WalletId,
         },
-        comment,
-        walletId: scope.walletId as WalletId,
-      });
+        {
+          signal: control.signal,
+          quoteRefreshRetry: {
+            authorizationExpiresAtUnixSeconds: preparation.expiry,
+            onWaiting: control.onQuotesRefreshing,
+          },
+        },
+      );
     } catch (error) {
       if (!this.#isDefinitiveOrderRejection(error)) {
         throw rangeError("order-submission-uncertain");

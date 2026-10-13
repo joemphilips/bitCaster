@@ -1878,10 +1878,14 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         await writeState(backedDaemonState('cond', 1_000_000))
         let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null = null
         let capturedRequest: unknown = null
+        let capturedSubmissionOptions:
+          | import('@bitcaster-market/client-sdk/engineClient').SubmitOrderOptions
+          | undefined
         let capturedPreparation: PrepareSettlementCapabilityInput | null = null
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
-          async submitOrder(_marketId, request) {
+          async submitOrder(_marketId, request, options) {
+            capturedSubmissionOptions = options
             capturedRequest = request
             return {
               orderId: 'order-1',
@@ -1936,6 +1940,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           },
         )
 
+        assert.equal(
+          capturedSubmissionOptions?.quoteRefreshRetry?.authorizationExpiresAtUnixSeconds,
+          1785542400,
+        )
         assert.equal(response.ok, true)
         assert.deepEqual(
           timeline.map(({ phase, outcome }) => [phase, outcome]),
@@ -4026,6 +4034,7 @@ function prepareSettlementCapability(
     await beforeCreateCapability?.(1)
     return {
       operationId: `range:${input.clientOrderId}`,
+      authorizationExpiresAtUnixSeconds: 1785542400,
       markSubmitted: async () => undefined,
       markRejected: async () => onRejected?.(),
       consolidation: { operationIds: [], feeSubunits: 0 },

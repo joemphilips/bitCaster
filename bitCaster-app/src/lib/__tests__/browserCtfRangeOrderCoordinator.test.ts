@@ -74,6 +74,7 @@ import {
   type SettlementCapabilityResultResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
+  type SubmitOrderOptions,
 } from "@bitcaster/client-sdk/engineClient";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -1724,6 +1725,44 @@ describe("browser CTF range order coordinator", () => {
       recoveredOperationIds: [],
       pending: [],
     });
+  });
+
+  it("keeps bound funds recoverable when the user stops quote waiting", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-stop-quote-wait");
+    const controller = new AbortController();
+    const onWaiting = vi.fn(() => controller.abort());
+    const engine = engineMock({
+      onSubmit: async (_request, options) => {
+        expect(options?.signal).toBe(controller.signal);
+        expect(options?.quoteRefreshRetry?.authorizationExpiresAtUnixSeconds).toBe(
+          preparation.expiry,
+        );
+        options?.quoteRefreshRetry?.onWaiting?.({ attempt: 1, remainingMs: 50_000 });
+        options?.signal?.throwIfAborted();
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+        signal: controller.signal,
+        onQuotesRefreshing: onWaiting,
+      }),
+    ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+    expect(onWaiting).toHaveBeenCalledTimes(1);
+    const bound = await readCtfRangePreparation(walletScopeId(), preparation.operationId, database);
+    expect(bound?.lifecycleState).toBe("capability-bound");
+    expect(
+      (await database.proofs.toArray()).every(
+        ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
+      ),
+    ).toBe(true);
+    await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(engine.submitCalls).toBe(1);
+    expect(engine.createCalls).toBe(1);
   });
 
   it("never retries submission after a lost order acknowledgement", async () => {
@@ -3507,7 +3546,7 @@ const restoreSignedRefundOutputs: typeof restoreDurableCtfRangeRefundOutputs = a
 function engineMock(
   input: {
     onCreate?: (request: CreateSettlementCapabilityRequest) => Promise<void>;
-    onSubmit?: (request: SubmitOrderRequest) => Promise<void>;
+    onSubmit?: (request: SubmitOrderRequest, options?: SubmitOrderOptions) => Promise<void>;
     submitFailure?: boolean;
     orderStatus?: OrderStatusResponse | null;
     foreignCapability?: boolean;
@@ -3540,9 +3579,9 @@ function engineMock(
         input.foreignCapability === true ? "ff".repeat(32) : digest,
       );
     },
-    async submitOrder(_marketId, request) {
+    async submitOrder(_marketId, request, options) {
       this.submitCalls += 1;
-      await input.onSubmit?.(request);
+      await input.onSubmit?.(request, options);
       if (input.submitFailure === true) throw new Error("lost acknowledgement");
       const response = { ...submitResponse(), ...input.submitResponse };
       if (input.foreignOrderResponse === true) {

@@ -463,6 +463,7 @@ export class DaemonCtfRangeOrderCoordinator {
       )
       return {
         operationId: operation.operationId,
+        authorizationExpiresAtUnixSeconds: operation.expiry,
         capability,
         markSubmitted: () => this.#markOrderSubmitted(operation.operationId),
         markRejected: () => this.#markOrderSubmissionRejected(operation.operationId),

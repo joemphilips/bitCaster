@@ -95,6 +95,8 @@ export function MarketDetail({
   tradeFeasibility,
   onTradeFeasibilityRetry,
   isTradeSubmitting,
+  quoteRefreshWait,
+  onCancelQuoteRefresh,
   onShare,
   onLoadMoreComments,
   onRelatedMarketClick,
@@ -195,6 +197,8 @@ export function MarketDetail({
       tradeFeasibility={tradeFeasibility}
       onTradeFeasibilityRetry={onTradeFeasibilityRetry}
       isTradeSubmitting={isTradeSubmitting}
+      quoteRefreshWait={quoteRefreshWait}
+      onCancelQuoteRefresh={onCancelQuoteRefresh}
       onTradeSideChange={onTradeSideChange}
       tradeTab={activeTradeTab}
       onTradeTabChange={handleTradeTabChange}
@@ -388,10 +392,13 @@ export function MarketDetail({
                 </p>
               </div>
               <button
-                onClick={onTradeClear}
+                onClick={quoteRefreshWait ? onCancelQuoteRefresh : onTradeClear}
+                disabled={
+                  quoteRefreshWait === "stopping" || (isTradeSubmitting && !quoteRefreshWait)
+                }
                 className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
-                {t("common.cancel")}
+                {t(quoteRefreshWait ? "trade.stopWaiting" : "common.cancel")}
               </button>
               <button
                 onClick={() => {
@@ -426,7 +433,13 @@ export function MarketDetail({
                 <span className="inline-flex items-center justify-center gap-2">
                   {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
                   {isTradeSubmitting
-                    ? t("trade.submittingOrder")
+                    ? t(
+                        quoteRefreshWait === "waiting"
+                          ? "trade.waitingForQuotes"
+                          : quoteRefreshWait === "stopping"
+                            ? "trade.stoppingQuoteWait"
+                            : "trade.submittingOrder",
+                      )
                     : walletReady
                       ? buyNeedsTopUp
                         ? t("trade.topUpWallet")

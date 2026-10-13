@@ -1,3 +1,9 @@
+import { serveOrderSubmission } from './orderSubmissionTransport.ts'
+import { DAEMON_ORDER_SUBMISSION_MEDIA_TYPE } from './protocol.ts'
+import type {
+  SubmitOrderOptions,
+  OrderQuotesRefreshingProgress,
+} from '@bitcaster-market/client-sdk/engineClient'
 import { verifyCtfConditionRegistration } from '@bitcaster-market/client-sdk/ctfConditionRegistration'
 import { readAllocationBoundedJsonResponse } from '@bitcaster-market/client-sdk/boundedJsonResponse'
 import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
@@ -204,7 +210,11 @@ export interface DaemonServerOptions {
 }
 
 export interface EngineClientLike {
-  submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>
+  submitOrder(
+    marketId: string,
+    request: SubmitOrderRequest,
+    options?: SubmitOrderOptions,
+  ): Promise<SubmitOrderResponse>
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
@@ -262,6 +272,8 @@ export interface PrepareSettlementCapabilityInput {
 }
 
 export interface PreparedSettlementCapability {
+  /** Original locally prepared authorization expiry. Never renew on submission. */
+  authorizationExpiresAtUnixSeconds: number
   operationId: string
   capability: SettlementCapabilityResponse
   markSubmitted(): Promise<void>
@@ -304,6 +316,8 @@ class InsufficientParticipationScoreBackingError extends Error {
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
+  orderSubmissionSignal?: AbortSignal
+  onOrderQuotesRefreshing?: (progress: OrderQuotesRefreshingProgress) => void
   /** Transport seam for public mint registration during consolidation. */
   fetchConsolidationCondition?: typeof globalThis.fetch
   nativeActivitySyncOptions?: NativeActivitySyncOptions
@@ -419,13 +433,16 @@ export async function handleRequest(
   if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
+  const wantsSubmission = req.headers.accept === DAEMON_ORDER_SUBMISSION_MEDIA_TYPE
   const wantsWatch = req.headers.accept === DAEMON_WATCH_MEDIA_TYPE
   let command: DaemonCommand
   try {
     command = JSON.parse(
       await readBody(
         req,
-        wantsWatch || !expectedToken ? DAEMON_WATCH_REQUEST_BYTES_MAX : undefined,
+        wantsWatch || wantsSubmission || !expectedToken
+          ? DAEMON_WATCH_REQUEST_BYTES_MAX
+          : undefined,
       ),
     ) as DaemonCommand
   } catch {
@@ -437,6 +454,17 @@ export async function handleRequest(
 
   if (!expectedToken && command.method !== 'health') {
     return writeJson(res, 401, { ok: false, error: 'daemon RPC token is not initialized' })
+  }
+  if (wantsSubmission && command.method !== 'order.submit')
+    return writeJson(res, 400, { ok: false, error: 'Submission streaming requires order.submit' })
+  if (command.method === 'order.submit' && !wantsWatch) {
+    return serveOrderSubmission(req, res, wantsSubmission, (signal, onWaiting) =>
+      dispatch(command, {
+        ...deps,
+        orderSubmissionSignal: signal,
+        onOrderQuotesRefreshing: onWaiting,
+      }),
+    )
   }
   if (isDaemonWatchCommand(command)) {
     if (!wantsWatch)
@@ -1963,10 +1991,20 @@ async function dispatchProtectedOrderSubmit(
         orderId,
       },
       () =>
-        client.submitOrder(request.marketId, {
-          settlementCapability: prepared.capability.reference,
-          comment: signedComment,
-        }),
+        client.submitOrder(
+          request.marketId,
+          {
+            settlementCapability: prepared.capability.reference,
+            comment: signedComment,
+          },
+          {
+            signal: deps.orderSubmissionSignal,
+            quoteRefreshRetry: {
+              authorizationExpiresAtUnixSeconds: prepared.authorizationExpiresAtUnixSeconds,
+              onWaiting: deps.onOrderQuotesRefreshing,
+            },
+          },
+        ),
     )
   } catch (error) {
     if (error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error)) {

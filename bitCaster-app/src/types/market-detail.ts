@@ -367,6 +367,8 @@ export interface MarketDetailProps {
 
   /** True while an order submit is in flight. Disables duplicate confirms. */
   isTradeSubmitting?: boolean;
+  quoteRefreshWait?: "waiting" | "stopping" | null;
+  onCancelQuoteRefresh?: () => void;
 
   /** Called when user shares the market */
   onShare?: () => void;

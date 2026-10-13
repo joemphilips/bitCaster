@@ -1363,6 +1363,8 @@ export function MarketDetailPage() {
     message?: string;
   } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
+  const [quoteRefreshWait, setQuoteRefreshWait] = useState<"waiting" | "stopping" | null>(null);
+  const quoteRefreshAbortRef = useRef<AbortController | null>(null);
   const [rangeFeePreview, setRangeFeePreview] = useState<{
     key: string;
     feeFacts: BrowserCtfRangeOrderFeePreview;
@@ -1594,6 +1596,9 @@ export function MarketDetailPage() {
     setTradeSubmitStatus(null);
     setTradeFeasibility(null);
     setIsTradeSubmitting(false);
+    quoteRefreshAbortRef.current?.abort();
+    quoteRefreshAbortRef.current = null;
+    setQuoteRefreshWait(null);
     setRangeFeePreview(null);
     setTopUpStage("closed");
     setTopUpReason(null);
@@ -1622,6 +1627,7 @@ export function MarketDetailPage() {
     if (routeGenerationRef.current === generation) loadMarket();
     return () => {
       if (routeGenerationRef.current === generation) routeGenerationRef.current += 1;
+      quoteRefreshAbortRef.current?.abort();
     };
   }, [cancelActiveScoreTopUp, currentRouteId, invalidatePreviewForMarket, loadMarket]);
 
@@ -2043,6 +2049,8 @@ export function MarketDetailPage() {
   const previewIdentityRef = useRef<string | null>(null);
   const previewIdentityIsCurrent = previewIdentityRef.current === previewIdentityKey;
   useEffect(() => {
+    if (previewIdentityRef.current !== null && previewIdentityRef.current !== previewIdentityKey)
+      quoteRefreshAbortRef.current?.abort();
     previewIdentityRef.current = previewIdentityKey;
   }, [previewIdentityKey]);
   const fokPreview = useFokOrderPreview({
@@ -2330,6 +2338,7 @@ export function MarketDetailPage() {
 
       const clientOrderId = crypto.randomUUID();
       let reviewedFeeFacts: BrowserCtfRangeOrderFeePreview | null = null;
+      let quoteRefreshController: AbortController | null = null;
       try {
         if (abortIfAttemptStale()) return;
         const signedComment = comment?.trim()
@@ -2366,6 +2375,9 @@ export function MarketDetailPage() {
         }
         if (abortIfAttemptStale()) return;
         reviewedFeeFacts = consentedFeeFacts;
+        quoteRefreshController = new AbortController();
+        quoteRefreshAbortRef.current = quoteRefreshController;
+        setQuoteRefreshWait(null);
         const response = await submitBrowserCtfRangeOrder({
           market: latestMarket,
           ticket,
@@ -2374,6 +2386,11 @@ export function MarketDetailPage() {
           mnemonic: walletState.mnemonic,
           comment: signedComment ?? null,
           consentedFeeFacts,
+          signal: quoteRefreshController.signal,
+          onQuotesRefreshing: () => {
+            if (routeStillActive() && !quoteRefreshController?.signal.aborted)
+              setQuoteRefreshWait("waiting");
+          },
           onScoreTopUpRequired: async (input) => {
             const {
               requiredSats,
@@ -2539,7 +2556,10 @@ export function MarketDetailPage() {
           reviewedFeeIdentityKey: capturedPreviewIdentityKey,
         });
       } finally {
+        if (quoteRefreshAbortRef.current === quoteRefreshController)
+          quoteRefreshAbortRef.current = null;
         if (routeStillActive()) {
+          setQuoteRefreshWait(null);
           tradeSubmitInFlightRef.current = false;
           setIsTradeSubmitting(false);
         }
@@ -3041,6 +3061,11 @@ export function MarketDetailPage() {
         tradeFeasibility={tradeFeasibility}
         onTradeFeasibilityRetry={() => setFeeFactsRefreshGeneration((current) => current + 1)}
         isTradeSubmitting={isTradeSubmitting}
+        quoteRefreshWait={quoteRefreshWait}
+        onCancelQuoteRefresh={() => {
+          setQuoteRefreshWait("stopping");
+          quoteRefreshAbortRef.current?.abort();
+        }}
         onShare={handleShare}
         onTradeSideChange={(side) => {
           tradeInputGenerationRef.current += 1;

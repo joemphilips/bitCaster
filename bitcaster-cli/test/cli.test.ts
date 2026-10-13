@@ -222,7 +222,19 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     authorizationHeaders.push(req.headers.authorization)
     const command = JSON.parse(await readBody(req)) as { method: string }
     received.push(command)
-    writeJson(res, 200, { ok: true, result: { method: command.method } })
+    if (command.method === 'order.submit') {
+      assert.equal(req.headers.accept, 'application/vnd.bitcaster.order-submission+ndjson')
+      res.writeHead(200, { 'content-type': 'application/vnd.bitcaster.order-submission+ndjson' })
+      res.write(
+        JSON.stringify({ type: 'quotes-refreshing', attempt: 1, remainingMs: 58000 }) + '\n',
+      )
+      res.end(
+        JSON.stringify({
+          type: 'result',
+          response: { ok: true, result: { method: command.method } },
+        }) + '\n',
+      )
+    } else writeJson(res, 200, { ok: true, result: { method: command.method } })
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -407,6 +419,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         method: 'wallet.retireCondition',
         params: { conditionId: 'cd'.repeat(32), acknowledge: true },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {
@@ -423,6 +436,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           feeConsent: feeConsent.result,
         },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {
@@ -438,6 +452,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           feeConsent: feeConsent.result,
         },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {

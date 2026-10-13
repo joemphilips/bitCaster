@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import i18n from "@/i18n";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Amount } from "@cashu/cashu-ts";
 import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { CtfRangeMintMetadata } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
@@ -2483,6 +2483,73 @@ describe("MarketDetailPage live market status", () => {
             : "Captured reasoning",
       );
       expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["cancel", "unmount", "route", "signer"] as const)(
+    "stops quote waiting on %s without starting another order",
+    async (action) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      let submissionSignal: AbortSignal | undefined;
+      let finish: (() => void) | undefined;
+      vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+        submissionSignal = input.signal;
+        input.onQuotesRefreshing?.({ attempt: 1, remainingMs: 50_000 });
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        throw new BrowserCtfRangeOrderError(
+          "order-submission-uncertain",
+          "Wallet recovery continues.",
+        );
+      });
+      const view = render(<MarketDetailPage />);
+      try {
+        await screen.findByRole("heading", { name: "Will it happen?" });
+        fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+        fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+          target: { value: "1" },
+        });
+        await screen.findByTestId("fok-preview-ready");
+        await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+        fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+        const waiting = await screen.findByTestId("trade-quotes-refreshing");
+        expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+        expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
+        expect(submissionSignal?.aborted).toBe(false);
+        if (action === "cancel") {
+          fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
+          expect(waiting).toHaveTextContent("Stopping the wait");
+        } else if (action === "unmount") view.unmount();
+        else if (action === "signer") {
+          mocks.signerRevision += 1;
+          view.rerender(<MarketDetailPage />);
+        } else {
+          mocks.routeParams.id = "condition-other";
+          vi.mocked(fetchMarketDetail).mockResolvedValue(
+            fundedSatYesNoMarket({ id: "condition-other", state: "open" }),
+          );
+          view.rerender(<MarketDetailPage />);
+        }
+        expect(submissionSignal?.aborted).toBe(true);
+        expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          finish?.();
+        });
+      }
+      if (action === "cancel") {
+        expect(screen.queryByTestId("trade-quotes-refreshing")).not.toBeInTheDocument();
+        expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
+          "Wallet recovery continues.",
+        );
+      }
     },
   );
 

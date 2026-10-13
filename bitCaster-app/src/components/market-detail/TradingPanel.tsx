@@ -76,6 +76,8 @@ interface TradingPanelProps {
   } | null;
   onTradeFeasibilityRetry?: () => void;
   isTradeSubmitting?: boolean;
+  quoteRefreshWait?: "waiting" | "stopping" | null;
+  onCancelQuoteRefresh?: () => void;
   onTradeSelect?: (selection: TradeSelection) => void;
   onTradeClear?: () => void;
   onAmountChange?: (amount: number) => void;
@@ -899,6 +901,8 @@ export function TradingPanel({
   tradeFeasibility,
   onTradeFeasibilityRetry,
   isTradeSubmitting = false,
+  quoteRefreshWait = null,
+  onCancelQuoteRefresh,
   onTradeSideChange,
   tradeTab: controlledTradeTab,
   onTradeTabChange,
@@ -1336,6 +1340,35 @@ export function TradingPanel({
               isSell={isSell}
               isComplement={selectedTokenIsComplement}
             />
+          )}
+
+          {quoteRefreshWait && (
+            <div
+              role="status"
+              data-testid="trade-quotes-refreshing"
+              className="mb-4 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
+            >
+              <p>
+                {t(
+                  quoteRefreshWait === "waiting"
+                    ? "trade.waitingForQuotes"
+                    : "trade.stoppingQuoteWait",
+                )}
+              </p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                {t("trade.quoteWaitRecovery")}
+              </p>
+              {onCancelQuoteRefresh && (
+                <button
+                  type="button"
+                  className="mt-2 underline disabled:opacity-50"
+                  disabled={quoteRefreshWait === "stopping"}
+                  onClick={onCancelQuoteRefresh}
+                >
+                  {t("trade.stopWaiting")}
+                </button>
+              )}
+            </div>
           )}
 
           {tradeSubmitStatus && (

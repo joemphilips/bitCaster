@@ -238,3 +238,25 @@ The implementation differs. bitCaster currently exposes complementary and mint
 conversion only. It uses one mint conversion for an atomic settlement group. It
 does not use a peer-to-peer settlement exchange or an on-chain operator
 transaction.
+
+## Waiting for fresh quotes
+
+The GUI and CLI can wait when the engine returns the exact
+`order-quotes-refreshing` pre-acceptance problem. The client retries the same
+serialized request and signed comment. It keeps the original capability,
+price limit, fee consent and expiry. It does not prepare a replacement order.
+
+Waiting lasts at most 60 seconds from the first submission and 30 attempts.
+The first delay is one second. Later delays are two seconds. Each request has
+at most ten seconds. A shorter caller timeout stays in effect. A new attempt
+starts only if its full request budget fits before both the wait deadline and
+original authorization expiry.
+
+The GUI shows progress and lets you stop waiting. The CLI shows progress on
+stderr. Press Ctrl-C to stop waiting. Stopping does not release reserved funds
+or prove that the order was never accepted. Check the original order status.
+The wallet keeps its existing recovery and expiry process.
+
+A generic service error, timeout, malformed response or uncertain result stops
+automatic submission. The client reconciles the original operation. Restarting
+the app does not restart this submission loop.

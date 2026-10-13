@@ -1,3 +1,9 @@
+import { runOrderQuoteRefreshRetry, type SubmitOrderOptions } from './orderQuoteRefreshRetry.ts'
+export {
+  OrderQuoteRefreshWaitStopped,
+  type SubmitOrderOptions,
+  type OrderQuotesRefreshingProgress,
+} from './orderQuoteRefreshRetry.ts'
 import {
   decodeMarketPriceHistoryResponse,
   type MarketPriceHistoryValidationContext,
@@ -630,20 +636,48 @@ export class BitcasterEngineClient {
     )
   }
 
-  async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
+  async submitOrder(
+    marketId: string,
+    request: SubmitOrderRequest,
+    options: SubmitOrderOptions = {},
+  ): Promise<SubmitOrderResponse> {
+    // Capture the complete signed protocol body once. Only HTTP authentication changes.
     const bodyText = JSON.stringify(request)
-    const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders`,
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
+    const submit = async (signal?: AbortSignal) => {
+      const response = await this.request(
+        `/api/v1/${encodePathSegment(marketId)}/orders`,
+        {
+          method: 'POST',
+          body: bodyText,
+          headers: { 'content-type': 'application/json' },
+          signal,
+        },
+        bodyText,
+        false,
+        16 * 1024,
+      )
+      return decodeSubmitOrderResponse(
+        await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
+      )
+    }
+    if (options.quoteRefreshRetry !== undefined)
+      return runOrderQuoteRefreshRetry(submit, isOrderQuotesRefreshingError, {
+        ...options,
+        quoteRefreshRetry: options.quoteRefreshRetry,
+      })
+    if (options.requestTimeoutMs === undefined) return submit(options.signal)
+    if (
+      !Number.isSafeInteger(options.requestTimeoutMs) ||
+      options.requestTimeoutMs <= 0 ||
+      options.requestTimeoutMs > 10_000
     )
-    return decodeSubmitOrderResponse(
-      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
+      throw new Error('Order request timeout must be between 1 and 10000 milliseconds')
+    const lifetime = createBoundedRequestLifetime(options.signal, options.requestTimeoutMs)
+    try {
+      return await awaitAbortable(submit(lifetime.signal), lifetime.signal)
+    } finally {
+      lifetime.dispose()
+    }
   }
 
   async previewFokOrder(
@@ -1815,4 +1849,21 @@ function normalizeHeaders(headers: HeadersInit | undefined): Record<string, stri
   }
   if (Array.isArray(headers)) return Object.fromEntries(headers)
   return { ...headers }
+}
+
+/** Only this authenticated endpoint problem permits exact-original resubmission. */
+export function isOrderQuotesRefreshingError(error: unknown): boolean {
+  if (!(error instanceof EngineClientError) || error.status !== 503) return false
+  try {
+    const problem: unknown = JSON.parse(error.detail)
+    if (typeof problem !== 'object' || problem === null || Array.isArray(problem)) return false
+    const value = problem as Record<string, unknown>
+    return (
+      value.type === '/errors/order-quotes-refreshing' &&
+      value.status === 503 &&
+      value.code === 'order-quotes-refreshing'
+    )
+  } catch {
+    return false
+  }
 }

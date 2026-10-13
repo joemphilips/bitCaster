@@ -1,3 +1,9 @@
+import {
+  DAEMON_ORDER_SUBMISSION_MEDIA_TYPE,
+  DAEMON_ORDER_SUBMISSION_FRAME_BYTES_MAX,
+  decodeOrderSubmissionFrame,
+  type OrderSubmissionFrame,
+} from '@bitcaster-market/daemon/protocol'
 import type { DaemonCommand, DaemonResponse } from '@bitcaster-market/daemon/protocol'
 import {
   DAEMON_WATCH_FRAME_BYTES_MAX,
@@ -184,21 +190,26 @@ interface WatchResponse {
   close(): Promise<void>
 }
 
-async function openDaemonWatch(body: string, signal: AbortSignal): Promise<WatchResponse> {
+async function openDaemonWatch(
+  body: string,
+  signal: AbortSignal,
+  mediaType = DAEMON_WATCH_MEDIA_TYPE,
+): Promise<WatchResponse> {
   signal.throwIfAborted()
   const token = await readDaemonRpcToken()
   signal.throwIfAborted()
   const socketPath = daemonSocketPath()
   const headers = {
     'content-type': 'application/json',
-    accept: DAEMON_WATCH_MEDIA_TYPE,
+    accept: mediaType,
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   }
-  if (socketPath !== null) return openDaemonWatchOverSocket(body, socketPath, headers, signal)
+  if (socketPath !== null)
+    return openDaemonWatchOverSocket(body, socketPath, headers, signal, mediaType)
   const response = await fetch(daemonUrl(), { method: 'POST', headers, body, signal })
   if (
     !response.ok ||
-    response.headers.get('content-type')?.split(';')[0] !== DAEMON_WATCH_MEDIA_TYPE ||
+    response.headers.get('content-type')?.split(';')[0] !== mediaType ||
     response.body === null
   ) {
     await response.body?.cancel()
@@ -227,6 +238,7 @@ function openDaemonWatchOverSocket(
   socketPath: string,
   headers: Record<string, string>,
   signal: AbortSignal,
+  mediaType = DAEMON_WATCH_MEDIA_TYPE,
 ): Promise<WatchResponse> {
   return new Promise((resolve, reject) => {
     const req = request(
@@ -240,7 +252,7 @@ function openDaemonWatchOverSocket(
       (response) => {
         if (
           response.statusCode !== 200 ||
-          response.headers['content-type']?.split(';')[0] !== DAEMON_WATCH_MEDIA_TYPE
+          response.headers['content-type']?.split(';')[0] !== mediaType
         ) {
           response.destroy()
           req.destroy()
@@ -262,19 +274,25 @@ function openDaemonWatchOverSocket(
 }
 
 /** Accumulate one bounded byte line, not decoded chunks or an event queue. */
-export async function* readDaemonWatchFrames(
+async function* readBoundedDaemonFrames<T>(
   chunks: AsyncIterable<Uint8Array>,
-): AsyncGenerator<DaemonWatchFrame> {
+  decode: (value: unknown) => T,
+  terminal: (frame: T) => boolean,
+  maxBytes: number,
+  maxFrames = Number.MAX_SAFE_INTEGER,
+  maxTotalBytes = Number.MAX_SAFE_INTEGER,
+): AsyncGenerator<T> {
+  let frameCount = 0
+  let totalBytes = 0
   let line = Buffer.alloc(0)
   let bytes = 0
   const decoder = new TextDecoder('utf-8', { fatal: true })
   const append = (segment: Uint8Array) => {
     const required = bytes + segment.byteLength
-    if (required >= DAEMON_WATCH_FRAME_BYTES_MAX)
-      throw new Error('daemon watch frame exceeds byte limit')
+    if (required >= maxBytes) throw new Error('daemon watch frame exceeds byte limit')
     if (required > line.byteLength) {
       const grown = Buffer.allocUnsafe(
-        Math.min(DAEMON_WATCH_FRAME_BYTES_MAX - 1, Math.max(required, line.byteLength * 2, 8192)),
+        Math.min(maxBytes - 1, Math.max(required, line.byteLength * 2, 8192)),
       )
       line.copy(grown, 0, 0, bytes)
       line = grown
@@ -285,19 +303,22 @@ export async function* readDaemonWatchFrames(
   try {
     for await (const chunk of chunks) {
       if (!(chunk instanceof Uint8Array)) throw new Error('invalid daemon watch bytes')
+      totalBytes += chunk.byteLength
+      if (totalBytes > maxTotalBytes) throw new Error('daemon response exceeds total byte limit')
       let start = 0
       let end = chunk.indexOf(10, start)
       while (end !== -1) {
         append(chunk.subarray(start, end))
-        let frame: DaemonWatchFrame
+        let frame: T
         try {
-          frame = decodeDaemonWatchFrame(JSON.parse(decoder.decode(line.subarray(0, bytes))))
+          frame = decode(JSON.parse(decoder.decode(line.subarray(0, bytes))))
         } catch {
           throw new Error('invalid daemon watch frame')
         }
         bytes = 0
+        if (++frameCount > maxFrames) throw new Error('daemon response exceeds frame count limit')
         yield frame
-        if (frame.type === 'complete' || frame.type === 'error') return
+        if (terminal(frame)) return
         start = end + 1
         end = chunk.indexOf(10, start)
       }
@@ -306,6 +327,68 @@ export async function* readDaemonWatchFrames(
     throw new Error('daemon watch ended without a terminal frame')
   } finally {
     line = Buffer.alloc(0)
+  }
+}
+
+export function readDaemonWatchFrames(
+  chunks: AsyncIterable<Uint8Array>,
+): AsyncGenerator<DaemonWatchFrame> {
+  return readBoundedDaemonFrames(
+    chunks,
+    decodeDaemonWatchFrame,
+    (frame) => frame.type === 'complete' || frame.type === 'error',
+    DAEMON_WATCH_FRAME_BYTES_MAX,
+  )
+}
+
+export function readOrderSubmissionFrames(
+  chunks: AsyncIterable<Uint8Array>,
+): AsyncGenerator<OrderSubmissionFrame> {
+  return readBoundedDaemonFrames(
+    chunks,
+    decodeOrderSubmissionFrame,
+    (frame) => frame.type === 'result',
+    DAEMON_ORDER_SUBMISSION_FRAME_BYTES_MAX,
+    31,
+    2 * DAEMON_ORDER_SUBMISSION_FRAME_BYTES_MAX,
+  )
+}
+
+/** A connection failure never reconnects this mutating request. */
+export async function submitOrderWithProgress(
+  command: Extract<DaemonCommand, { method: 'order.submit' }>,
+  options: {
+    signal?: AbortSignal
+    onWaiting?: (frame: Extract<OrderSubmissionFrame, { type: 'quotes-refreshing' }>) => void
+  } = {},
+): Promise<DaemonResponse> {
+  const controller = new AbortController()
+  const signal = options.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal
+  const body = JSON.stringify(command)
+  if (Buffer.byteLength(body) > DAEMON_WATCH_REQUEST_BYTES_MAX)
+    throw new Error('Order request exceeds byte limit')
+  let stream: WatchResponse | undefined
+  try {
+    // Only a read-only health request may trigger daemon startup/reconnection.
+    const ready = await callDaemon({ method: 'health' }, { signal })
+    if (!ready.ok) throw new Error('Daemon is not ready for order submission')
+    signal.throwIfAborted()
+    try {
+      stream = await openDaemonWatch(body, signal, DAEMON_ORDER_SUBMISSION_MEDIA_TYPE)
+      for await (const frame of readOrderSubmissionFrames(stream.chunks)) {
+        if (frame.type === 'result') return frame.response
+        options.onWaiting?.(frame)
+      }
+      throw new Error('Missing order submission result')
+    } catch {
+      if (signal.aborted) throw signal.reason
+      throw new Error('Order submission is uncertain; check order status before retrying')
+    }
+  } finally {
+    controller.abort()
+    await stream?.close()
   }
 }
 

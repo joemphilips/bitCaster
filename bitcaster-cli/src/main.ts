@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -2530,7 +2531,34 @@ function registerOrderCommand(program: Command): void {
         feeConsent,
         ...(comment === undefined ? {} : { comment }),
       }
-      await printDaemonResult(callDaemon({ method: 'order.submit', params }))
+      const controller = new AbortController()
+      const cancel = () => controller.abort()
+      process.once('SIGINT', cancel)
+      process.once('SIGTERM', cancel)
+      try {
+        await printDaemonResult(
+          submitOrderWithProgress(
+            { method: 'order.submit', params },
+            {
+              signal: controller.signal,
+              onWaiting: () => {
+                process.stderr.write(
+                  'Updating quotes; waiting with the original order. Press Ctrl-C to stop waiting.\n',
+                )
+              },
+            },
+          ),
+        )
+      } catch (error) {
+        if (!controller.signal.aborted) throw error
+        process.stderr.write(
+          'Stopped waiting. The original order and reserved funds may still need recovery. Check order status.\n',
+        )
+        process.exitCode = 130
+      } finally {
+        process.removeListener('SIGINT', cancel)
+        process.removeListener('SIGTERM', cancel)
+      }
     })
 
   order

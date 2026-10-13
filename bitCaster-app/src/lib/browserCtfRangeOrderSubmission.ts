@@ -38,6 +38,7 @@ import {
   browserCtfRangeOrderErrorMessage,
   type BrowserCtfRangeOrderErrorCode,
   type BrowserCtfRangeRecoveryPage,
+  type BrowserCtfRangeOrderSubmitControl,
 } from "./browserCtfRangeOrderCoordinator";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
@@ -102,7 +103,7 @@ let admissionPolicyCache:
     }
   | undefined;
 
-export interface BrowserCtfRangeOrderSubmission {
+export interface BrowserCtfRangeOrderSubmission extends BrowserCtfRangeOrderSubmitControl {
   readonly market: MarketDetail;
   readonly ticket: TradeTicket;
   readonly clientOrderId: string;
@@ -233,6 +234,8 @@ export async function submitBrowserCtfRangeOrder(
       consentedFeeFacts: input.consentedFeeFacts,
       paidConsolidationFeeSubunits: consolidated.paidConsolidationFeeSubunits,
       currentFeeFacts: consolidated.currentFeeFacts,
+      signal: input.signal,
+      onQuotesRefreshing: input.onQuotesRefreshing,
     });
   } catch (error) {
     failed = true;
