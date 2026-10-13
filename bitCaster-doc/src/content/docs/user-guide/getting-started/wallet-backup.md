@@ -209,6 +209,12 @@ CLI profile inspection can stop before a command is sent. If you see
 finish. Then run the command again. The CLI does not repair the profile or
 replay the refused command.
 
+Each inventory check can repeat once if normal SQLite WAL or SHM cleanup
+removes a listed file. This happens before dispatch and keeps the original
+profile identity. A replaced profile,
+invalid permissions, or an invalid schema still causes refusal. This does not
+retry a command or repair the profile.
+
 The command-line wallet can use complete-local privacy mode. This mode can
 omit both encrypted backup and asset monitoring. It keeps complete wallet
 state in its local durable store.

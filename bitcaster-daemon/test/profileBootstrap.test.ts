@@ -500,7 +500,7 @@ test('live RPC token refusals prevent CLI command and watch dispatch', async (t)
 })
 
 for (const kind of ['command', 'watch', 'wait'] as const) {
-  test(`real last-WAL-close refusal stops normal Unix ${kind} without autostart and permits a later explicit call`, async (t) => {
+  test(`real last-WAL-close recheck permits normal Unix ${kind} without command retry or autostart`, async (t) => {
     const directory = await freshProfileDirectory(`rpc-wal-close-${kind}`)
     await bootstrap(directory)
     configureDataDirForTest(() => directory)
@@ -558,9 +558,9 @@ for (const kind of ['command', 'watch', 'wait'] as const) {
         await watch.return(undefined)
       }
     }
-    await assert.rejects(invoke(), schemaError('profile-identity-changed'))
-    assert.equal(inspections, 1, 'refusal must not repeat preflight')
-    assert.equal(transport.requests, 0)
+    await invoke()
+    assert.equal(inspections, 3, 'two initial inventory passes and one post-read inventory')
+    assert.equal(transport.requests, 1)
     assert.equal(transport.spawns, 0)
     const after = await stat(path, { bigint: true })
     assert.equal(before.dev === after.dev && before.ino === after.ino, true)
@@ -570,8 +570,6 @@ for (const kind of ['command', 'watch', 'wait'] as const) {
       ),
       false,
     )
-    await invoke()
-    assert.equal(transport.requests, 1)
     assert.equal(transport.spawns, 0)
     const completedInspections = inspections
     await invoke()
