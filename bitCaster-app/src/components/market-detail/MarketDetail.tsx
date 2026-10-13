@@ -368,7 +368,37 @@ export function MarketDetail({
           data-testid="mobile-trade-bar"
           className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden"
         >
-          {tradeSelection ? (
+          {tradeSelection && quoteRefreshWait ? (
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-xs text-slate-500 dark:text-slate-400">
+                  {tradeSelection.side.toUpperCase()}
+                  {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
+                </p>
+                <div
+                  role="status"
+                  className="mt-1 flex items-start gap-2 text-sm text-slate-900 dark:text-white"
+                >
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                  <p>
+                    {t(
+                      quoteRefreshWait === "waiting"
+                        ? "trade.waitingForQuotes"
+                        : "trade.stoppingQuoteWait",
+                    )}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelQuoteRefresh}
+                disabled={quoteRefreshWait === "stopping"}
+                className="shrink-0 whitespace-nowrap px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 dark:text-slate-400 dark:hover:text-white"
+              >
+                {t("trade.stopWaiting")}
+              </button>
+            </div>
+          ) : tradeSelection ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -392,13 +422,11 @@ export function MarketDetail({
                 </p>
               </div>
               <button
-                onClick={quoteRefreshWait ? onCancelQuoteRefresh : onTradeClear}
-                disabled={
-                  quoteRefreshWait === "stopping" || (isTradeSubmitting && !quoteRefreshWait)
-                }
+                onClick={onTradeClear}
+                disabled={isTradeSubmitting}
                 className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
-                {t(quoteRefreshWait ? "trade.stopWaiting" : "common.cancel")}
+                {t("common.cancel")}
               </button>
               <button
                 onClick={() => {
@@ -433,13 +461,7 @@ export function MarketDetail({
                 <span className="inline-flex items-center justify-center gap-2">
                   {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
                   {isTradeSubmitting
-                    ? t(
-                        quoteRefreshWait === "waiting"
-                          ? "trade.waitingForQuotes"
-                          : quoteRefreshWait === "stopping"
-                            ? "trade.stoppingQuoteWait"
-                            : "trade.submittingOrder",
-                      )
+                    ? t("trade.submittingOrder")
                     : walletReady
                       ? buyNeedsTopUp
                         ? t("trade.topUpWallet")
