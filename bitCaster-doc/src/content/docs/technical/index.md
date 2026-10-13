@@ -735,3 +735,24 @@ These subscriptions receive `ConfirmedTradeRecorded` and
 Refresh the Portfolio response after subscribing, reconnecting, or receiving
 a relevant notification. Coalesce refreshes and respect `429` responses.
 A notification does not guarantee that the next Portfolio read includes it.
+
+## Deployment identity
+
+`GET /api/deployment-identity` returns the running API package identity.
+`GET /deployment-identity` returns the running frontend server package identity.
+Both endpoints are public and require no authentication.
+
+A successful response has exactly three fields: `schemaVersion` is `1`,
+`component` is `api` or `frontend` for the corresponding endpoint, and `buildId`
+is an opaque string of 64 lowercase hexadecimal characters. The server captures
+this identity once at startup. Replacing a file does not change a running
+process's response.
+
+Both success and failure responses use `Cache-Control: no-store`. If the package
+identity is missing or invalid, the endpoint returns HTTP `503` with
+`{"error":"deployment-identity-unavailable"}`. Other server functions can still
+start without this identity.
+
+Use both responses to compare the running packages with an expected deployment.
+This identity does not authorize an operation or prove cryptographic integrity.
+A response does not prove that every server instance uses the same package.

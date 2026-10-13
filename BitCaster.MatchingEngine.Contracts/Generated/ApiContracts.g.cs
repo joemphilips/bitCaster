@@ -29,6 +29,34 @@ namespace BitCaster.MatchingEngine.Contracts
 
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DeploymentIdentityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DeploymentIdentityResponse(string @buildId, string @component, int @schemaVersion)
+        {
+            this.SchemaVersion = @schemaVersion;
+            this.Component = @component;
+            this.BuildId = @buildId;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public int SchemaVersion { get; }
+
+        /// <summary>
+        /// Identifies the API package.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("component")]
+        public string Component { get; }
+
+        /// <summary>
+        /// Opaque identity of the running package.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("buildId")]
+        public string BuildId { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DurableCashuRecipientKind
     {
 
@@ -4148,6 +4176,20 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class Response
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public Response(string @error)
+        {
+            this.Error = @error;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("error")]
+        public string Error { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DurableCashuDeliverySubmissionUnit
     {
 
@@ -4443,12 +4485,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class FileParameter
     {
         public FileParameter(System.IO.Stream data)
-            : this (data, null, null)
+            : this(data, null, null)
         {
         }
 
         public FileParameter(System.IO.Stream data, string? fileName)
-            : this (data, fileName, null)
+            : this(data, fileName, null)
         {
         }
 
@@ -4540,11 +4582,11 @@ namespace BitCaster.MatchingEngine.Contracts
 
 }
 
-#pragma warning restore  108
-#pragma warning restore  114
-#pragma warning restore  472
-#pragma warning restore  612
-#pragma warning restore  649
+#pragma warning restore 108
+#pragma warning restore 114
+#pragma warning restore 472
+#pragma warning restore 612
+#pragma warning restore 649
 #pragma warning restore 1573
 #pragma warning restore 1591
 #pragma warning restore 8073

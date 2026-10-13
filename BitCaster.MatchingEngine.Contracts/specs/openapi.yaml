@@ -11,6 +11,43 @@ servers:
     description: Local development (via Aspire AppHost)
 
 paths:
+  /api/deployment-identity:
+    get:
+      operationId: getDeploymentIdentity
+      summary: Read the running API package identity
+      security: []
+      description: >
+        Returns a startup-captured opaque build identity. This response does not
+        authorize any operation and is not cryptographic attestation.
+      responses:
+        '200':
+          description: The running package has a valid identity
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentIdentityResponse'
+        '503':
+          description: The running package identity is unavailable
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    const: deployment-identity-unavailable
   /api/v1/markets/{conditionId}:
     post:
       operationId: createMarket
@@ -1675,6 +1712,24 @@ components:
       description: Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId.
 
   schemas:
+    DeploymentIdentityResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, component, buildId]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        component:
+          type: string
+          const: api
+          description: Identifies the API package.
+        buildId:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: Opaque identity of the running package.
     Sha256Digest:
       type: string
       pattern: '^[0-9a-f]{64}$'

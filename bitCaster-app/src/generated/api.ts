@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/deployment-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the running API package identity
+         * @description Returns a startup-captured opaque build identity. This response does not authorize any operation and is not cryptographic attestation.
+         */
+        get: operations["getDeploymentIdentity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/markets/{conditionId}": {
         parameters: {
             query?: never;
@@ -627,6 +647,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DeploymentIdentityResponse: {
+            /** @constant */
+            schemaVersion: 1;
+            /**
+             * @description Identifies the API package.
+             * @constant
+             */
+            component: "api";
+            /** @description Opaque identity of the running package. */
+            buildId: string;
+        };
         /** @description Canonical lowercase SHA-256 digest. */
         Sha256Digest: string;
         /** @enum {string} */
@@ -1900,6 +1931,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getDeploymentIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The running package has a valid identity */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentIdentityResponse"];
+                };
+            };
+            /** @description The running package identity is unavailable */
+            503: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        error: "deployment-identity-unavailable";
+                    };
+                };
+            };
+        };
+    };
     createMarket: {
         parameters: {
             query?: never;
