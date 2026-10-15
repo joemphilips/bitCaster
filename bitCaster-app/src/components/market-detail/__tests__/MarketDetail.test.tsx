@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
 import type {
@@ -179,6 +179,70 @@ function feeFacts(): TradeFeeFacts {
 }
 
 describe("MarketDetail", () => {
+  it("keeps mobile wait and Stop through an empty snapshot", () => {
+    const stop = vi.fn();
+    const props = {
+      chartTimeframe: "7d" as const,
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 5,
+      tradePreview: null,
+      tradeSide: "Buy" as const,
+      isTradeSubmitting: true,
+      quoteRefreshWait: "waiting" as const,
+      onCancelQuoteRefresh: stop,
+    };
+    const { rerender } = render(<MarketDetail {...props} market={makeMarket()} />);
+    const bar = screen.getByTestId("mobile-trade-bar");
+    rerender(
+      <MarketDetail
+        {...props}
+        market={makeMarket({
+          orderBook: { bids: [], asks: [], spread: 0 },
+          outcomeOrderBooks: {
+            Yes: { bids: [], asks: [], spread: 0 },
+            No: { bids: [], asks: [], spread: 0 },
+          },
+        })}
+        isFullyEmptyBook
+      />,
+    );
+    expect(screen.getByTestId("mobile-trade-bar")).toBe(bar);
+    expect(bar).toHaveTextContent("Waiting for fresh quotes");
+    fireEvent.click(within(bar).getByRole("button", { name: "Stop waiting" }));
+    expect(stop).toHaveBeenCalledTimes(1);
+    rerender(
+      <MarketDetail
+        {...props}
+        market={makeMarket()}
+        isFullyEmptyBook
+        quoteRefreshWait="stopping"
+      />,
+    );
+    expect(within(bar).getByRole("button", { name: "Stop waiting" })).toBeDisabled();
+  });
+
+  it("preserves mobile selected controls but requires a current preview after empty updates", () => {
+    const props = {
+      market: makeMarket(),
+      chartTimeframe: "7d" as const,
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 5,
+      tradeSide: "Buy" as const,
+      tradeFeeFacts: feeFacts(),
+      feeConsentCurrent: true,
+    };
+    const { rerender } = render(<MarketDetail {...props} tradePreview={readyPreview()} />);
+    const bar = screen.getByTestId("mobile-trade-bar");
+    expect(within(bar).getByRole("button", { name: "Confirm" })).toBeEnabled();
+    rerender(<MarketDetail {...props} isFullyEmptyBook tradePreview={null} />);
+    expect(screen.getByTestId("mobile-trade-bar")).toBe(bar);
+    expect(within(bar).getByRole("button", { name: "Confirm" })).toBeDisabled();
+    rerender(
+      <MarketDetail {...props} isFullyEmptyBook tradeSelection={null} tradePreview={null} />,
+    );
+    expect(screen.queryByTestId("mobile-trade-bar")).not.toBeInTheDocument();
+  });
+
   it("mounts exactly one responsive trading panel", () => {
     tradingPanelMock.mockClear();
     render(

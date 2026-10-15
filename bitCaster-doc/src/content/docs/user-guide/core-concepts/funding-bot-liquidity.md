@@ -85,5 +85,8 @@ every refusal, such as a price limit or an unavailable market.
 It does not buy your shares. Review a new trade preview after funding.
 Funding and trading are separate actions.
 
-When no orders are available, the `BUY` and `SELL` tabs direct you to
-`LIQUIDITY`. The trade form returns when executable orders are available.
+An empty book alone does not show that funding will help. With no selected
+trade, the `BUY` and `SELL` tabs show a neutral empty state. `LIQUIDITY` remains
+available for voluntary funding. An existing selected form and quote wait stay
+visible through empty-book updates. Submission still needs a current preview
+and fee consent.

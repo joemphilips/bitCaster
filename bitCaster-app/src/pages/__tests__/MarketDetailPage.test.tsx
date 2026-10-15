@@ -1557,12 +1557,16 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.queryByTestId("confirm-amm-funding")).not.toBeInTheDocument();
   });
 
-  it("replaces an empty trade preview with Liquidity after all route books load", async () => {
+  it("preserves selected inputs when all loaded route books are empty", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.previewFokOrder.mockResolvedValue(nonfillablePreview());
     let resolveBooks!: (book: OrderBook) => void;
     const books = new Promise<OrderBook>((resolve) => {
       resolveBooks = resolve;
     });
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket());
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
     vi.mocked(fetchOrderBook).mockReturnValue(books);
     mocks.previewFokOrderCapacity.mockResolvedValue({
       status: "ready",
@@ -1584,15 +1588,13 @@ describe("MarketDetailPage live market status", () => {
       resolveBooks(emptyBook);
     });
 
-    expect(await screen.findByTestId("empty-trade-liquidity")).toBeInTheDocument();
-    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("mobile-trade-bar")).not.toBeInTheDocument();
-    expect(screen.queryByText("Checking the current market preview...")).not.toBeInTheDocument();
-    // Newly loaded books invalidate the earlier capacity response. Funding
-    // advice returns only after the current request has completed.
-    const fundingRoute = await screen.findByTestId("open-liquidity-tab");
-    fireEvent.click(fundingRoute);
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-amount-input")).toHaveValue(1);
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.getByTestId("mobile-trade-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("trade-tab-liquidity"));
     expect(screen.getByTestId("trade-tab-liquidity")).toHaveAttribute("aria-selected", "true");
   });
 
@@ -2486,7 +2488,7 @@ describe("MarketDetailPage live market status", () => {
     },
   );
 
-  it.each(["cancel", "unmount", "route", "signer"] as const)(
+  it.each(["cancel", "empty-book", "unmount", "route", "signer"] as const)(
     "stops quote waiting on %s without starting another order",
     async (action) => {
       mocks.walletState.setupComplete = true;
@@ -2523,7 +2525,31 @@ describe("MarketDetailPage live market status", () => {
         expect(waiting).toHaveTextContent("Waiting for fresh quotes");
         expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
         expect(submissionSignal?.aborted).toBe(false);
-        if (action === "cancel") {
+        if (action === "empty-book") {
+          const amount = screen.getByTestId("trade-amount-input");
+          await waitFor(() => {
+            expect(mocks.orderBookHandlers.has("condition-yesno-Yes")).toBe(true);
+            expect(mocks.orderBookHandlers.has("condition-yesno-No")).toBe(true);
+          });
+          await act(async () => {
+            for (const marketId of ["condition-yesno-Yes", "condition-yesno-No"]) {
+              mocks.orderBookHandlers.get(marketId)?.({
+                marketId,
+                bids: [],
+                asks: [],
+                spread: null,
+              });
+            }
+          });
+          expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+          expect(amount).toHaveValue(1);
+          expect(screen.getByTestId("trade-quotes-refreshing")).toBe(waiting);
+          expect(screen.getByTestId("mobile-trade-bar")).toHaveTextContent("Stop waiting");
+          expect(submissionSignal?.aborted).toBe(false);
+          expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+          fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
+          expect(waiting).toHaveTextContent("Stopping the wait");
+        } else if (action === "cancel") {
           fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
           expect(waiting).toHaveTextContent("Stopping the wait");
         } else if (action === "unmount") view.unmount();
@@ -2544,7 +2570,7 @@ describe("MarketDetailPage live market status", () => {
           finish?.();
         });
       }
-      if (action === "cancel") {
+      if (action === "cancel" || action === "empty-book") {
         expect(screen.queryByTestId("trade-quotes-refreshing")).not.toBeInTheDocument();
         expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
           "Wallet recovery continues.",

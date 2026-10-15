@@ -98,10 +98,17 @@ It does not set a market price.
 You can fund the market-making bot after creation. You can add funding more
 than once. This funding is a non-refundable subsidy, not an investment that
 gives you shares, fees, or a right to withdraw. Keep it separate from funding
-your own trading wallet. If there is no available liquidity, the trade form
-directs you to the Liquidity tab. When all outcome books are empty, Buy and
-Sell show that message instead of an order form. A missing or failed book
-request is not treated as an empty market.
+your own trading wallet. An empty order-book snapshot does not prove that more
+funding is needed. When all outcome books are empty and no trade is selected,
+Buy and Sell show a neutral message and a refresh action. A missing or failed
+book request is not treated as an empty market. The Liquidity tab remains
+available for voluntary funding.
+
+If the book becomes empty while a trade is selected, the form and entered
+values stay visible. An active quote wait and its Stop waiting action also stay
+visible. Submission still requires a current preview and fee consent. A current
+preview can suggest funding only when it says that funding may help. Stopping
+the wait does not cancel wallet recovery or release reserved funds.
 
 ### Become an oracle
 

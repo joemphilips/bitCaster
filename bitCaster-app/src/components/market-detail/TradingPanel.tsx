@@ -1158,25 +1158,11 @@ export function TradingPanel({
             </p>
           </div>
         )
-      ) : isFullyEmptyBook ? (
+      ) : isFullyEmptyBook && !tradeSelection ? (
         <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            {t(
-              suppressFundingHint || isTradeSubmitting
-                ? "trade.emptyBookSnapshot"
-                : "trade.emptyBookDescription",
-            )}
+            {t("trade.emptyBookSnapshot")}
           </p>
-          {!(suppressFundingHint || isTradeSubmitting) && (
-            <button
-              type="button"
-              data-testid="open-liquidity-tab"
-              onClick={selectLiquidityTab}
-              className="text-sm text-blue-600 underline dark:text-blue-400"
-            >
-              {t("market.liquidity")}
-            </button>
-          )}
           <button
             type="button"
             data-testid="empty-book-refresh"
@@ -1213,7 +1199,7 @@ export function TradingPanel({
       )}
 
       {/* Trade Form (shown when outcome selected) */}
-      {!tradingDisabled && !isFullyEmptyBook && activeTab !== "Liquidity" && tradeSelection && (
+      {!tradingDisabled && activeTab !== "Liquidity" && tradeSelection && (
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">

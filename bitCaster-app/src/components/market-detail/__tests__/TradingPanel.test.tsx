@@ -204,6 +204,90 @@ function getFeeBreakdownRow(testId: string): HTMLElement {
 }
 
 describe("TradingPanel", () => {
+  it.each(["Buy", "Sell"] as const)(
+    "preserves a selected %s form through empty and restored books with current preview checks",
+    (tradeSide) => {
+      const confirm = vi.fn();
+      const market = makeMarket({ outcomes: makeEmptyBookMarket().outcomes });
+      const props = {
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        sellHoldings: sellHoldings({ Yes: { selectableSubunits: 10_000 } }),
+        onTradeConfirm: confirm,
+      };
+      const { rerender } = render(
+        <TradingPanel {...props} market={market} tradePreview={readyPreview()} />,
+      );
+      const amount = screen.getByTestId("trade-amount-input");
+      const comment = screen.getByRole("textbox");
+      fireEvent.change(comment, { target: { value: "Keep this reasoning" } });
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      rerender(
+        <TradingPanel
+          {...props}
+          market={makeEmptyBookMarket()}
+          isFullyEmptyBook
+          tradePreview={loadingPreview()}
+        />,
+      );
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByRole("textbox")).toBe(comment);
+      expect(comment).toHaveValue("Keep this reasoning");
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("trade-confirm"));
+      expect(confirm).not.toHaveBeenCalled();
+      rerender(<TradingPanel {...props} market={market} tradePreview={readyPreview()} />);
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+    },
+  );
+
+  it.each(["Buy", "Sell"] as const)(
+    "keeps the original %s wait and Stop in place when the book becomes empty",
+    (tradeSide) => {
+      const stop = vi.fn();
+      const props = {
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide,
+        isTradeSubmitting: true,
+        tradePreview: null,
+        quoteRefreshWait: "waiting" as const,
+        onCancelQuoteRefresh: stop,
+      };
+      const { rerender } = render(<TradingPanel {...props} market={makeMarket()} />);
+      const amount = screen.getByTestId("trade-amount-input");
+      const waiting = screen.getByTestId("trade-quotes-refreshing");
+      rerender(<TradingPanel {...props} market={makeEmptyBookMarket()} isFullyEmptyBook />);
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-quotes-refreshing")).toBe(waiting);
+      expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
+      expect(stop).toHaveBeenCalledTimes(1);
+      rerender(
+        <TradingPanel
+          {...props}
+          market={makeEmptyBookMarket()}
+          isFullyEmptyBook
+          quoteRefreshWait="stopping"
+        />,
+      );
+      expect(waiting).toHaveTextContent("Stopping the wait");
+      expect(within(waiting).getByRole("button", { name: "Stop waiting" })).toBeDisabled();
+    },
+  );
+
   it.each(["wallet-recovery", "result-saved", "refresh"] as const)(
     "does not recommend funding an empty snapshot during %s",
     (state) => {
@@ -462,15 +546,15 @@ describe("TradingPanel", () => {
   });
 
   it.each(["Buy", "Sell"] as const)(
-    "shows only a liquidity route for a confirmed empty %s book",
+    "keeps an initial empty %s book neutral with voluntary Liquidity available",
     async (tradeSide) => {
       const user = userEvent.setup();
       render(
         <TradingPanel
           market={makeEmptyBookMarket()}
           isFullyEmptyBook
-          tradeSelection={{ side: "yes" }}
-          tradeAmount={2}
+          tradeSelection={null}
+          tradeAmount={0}
           tradePreview={loadingPreview()}
           tradeSide={tradeSide}
         />,
@@ -481,7 +565,10 @@ describe("TradingPanel", () => {
       expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
       expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
       expect(screen.queryByTestId("fok-preview-loading")).not.toBeInTheDocument();
-      await user.click(screen.getByTestId("open-liquidity-tab"));
+      expect(screen.getByTestId("empty-trade-liquidity")).toHaveTextContent("Refresh the market");
+      expect(screen.getByTestId("empty-trade-liquidity")).not.toHaveTextContent("Add liquidity");
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      await user.click(screen.getByTestId("trade-tab-liquidity"));
       expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
     },
   );

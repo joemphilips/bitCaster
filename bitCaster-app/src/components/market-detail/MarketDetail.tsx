@@ -159,6 +159,10 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
+  const showMobileTradeBar =
+    !isTradingDisabled &&
+    (!isFullyEmptyBook || tradeSelection !== null) &&
+    activeTradeTab !== "Liquidity";
   const previewNeedsAttention =
     !!tradeSelection &&
     tradeAmount > 0 &&
@@ -363,7 +367,7 @@ export function MarketDetail({
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {!isTradingDisabled && !isFullyEmptyBook && activeTradeTab !== "Liquidity" && (
+      {showMobileTradeBar && (
         <div
           data-testid="mobile-trade-bar"
           className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden"

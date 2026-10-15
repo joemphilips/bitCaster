@@ -241,6 +241,12 @@ transaction.
 
 ## Waiting for fresh quotes
 
+For a single order, the server can briefly retry the same order before returning
+`order-quotes-refreshing`. It preserves the original authorization, consent,
+and expiry. This optional wait does not guarantee acceptance or settlement.
+It does not change the client's retry limits below. A disconnect stops further
+retries; it does not cancel an order that was already accepted.
+
 The GUI and CLI can wait when the engine returns the exact
 `order-quotes-refreshing` pre-acceptance problem. The client retries the same
 serialized request and signed comment. It keeps the original capability,
