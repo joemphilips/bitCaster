@@ -17,17 +17,9 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 DDK_DIR="$REPO_ROOT/dlcdevkit"
 OUT_DIR="$REPO_ROOT/bitCaster-app/src/lib/kormir-wasm-pkg"
 FINGERPRINT_FILE="$OUT_DIR/.source-fingerprint"
+source "$HERE/kormir-source-fingerprint.sh"
 
-# Fail loudly if dlcdevkit kormir sources are dirty (index OR worktree): a
-# dirty-tree build would record a clean fingerprint that cannot be trusted.
-# The check script mirrors the same guard so both operations reject ambiguous
-# provenance.  update-index --refresh first so stat-only differences
-# (mtime/ctime) don't produce false positives.
-git -C "$DDK_DIR" update-index -q --refresh
-if ! git -C "$DDK_DIR" diff-index --quiet HEAD -- kormir kormir-wasm; then
-    echo "ERROR: dlcdevkit kormir{,-wasm} working tree is dirty — commit before building/verifying so the provenance fingerprint matches the built sources" >&2
-    exit 1
-fi
+CURRENT="$(kormir_source_fingerprint "$DDK_DIR")"
 
 if [ ! -f "$FINGERPRINT_FILE" ]; then
     echo "error: kormir-wasm-pkg is stale: rebuild with tools/build-kormir-wasm.sh" >&2
@@ -35,8 +27,6 @@ if [ ! -f "$FINGERPRINT_FILE" ]; then
     exit 1
 fi
 
-# Compute current tree hashes for kormir and kormir-wasm directories
-CURRENT="$(git -C "$DDK_DIR" rev-parse HEAD:kormir HEAD:kormir-wasm)"
 RECORDED="$(cat "$FINGERPRINT_FILE")"
 
 if [ "$CURRENT" = "$RECORDED" ]; then

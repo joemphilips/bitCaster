@@ -27,6 +27,17 @@ updates:
       minor-patch:
         update-types: ["minor", "patch"]
 
+  # This deployed server graph is separate from the root npm workspace.
+  # Keep its direct dependency declarations aligned with bitCaster-app.
+  - package-ecosystem: "npm"
+    directory: "/bitCaster-app/server-runtime"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: "cargo"
     directory: "/bitcaster-daemon/native-oracle-helper"
     schedule:
