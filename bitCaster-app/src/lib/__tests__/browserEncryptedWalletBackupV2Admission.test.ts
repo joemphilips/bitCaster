@@ -1277,15 +1277,11 @@ describe("browser encrypted wallet backup V2 admission", () => {
         wallet: foreignWallet,
       }),
     ).rejects.toThrow(/restore mint is foreign/);
-    const withBlsCounter = await createVerified(1, {
-      extraCounterKeysetId: `02${"33".repeat(32)}`,
-    });
     await expect(
-      admitBrowserEncryptedWalletBackupV2Asset({
-        ...fixture.input,
-        verified: withBlsCounter,
+      createVerified(1, {
+        extraCounterKeysetId: `02${"33".repeat(32)}`,
       }),
-    ).rejects.toThrow(/BLS keyset is unsupported/);
+    ).rejects.toThrow(/NUT-13 keyset id is invalid/);
     expect(await database.custodyProofs.count()).toBe(0);
   });
 

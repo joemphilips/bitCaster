@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { signedCtfRegistrationFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -85,41 +89,11 @@ const ROTATED_COORDINATOR_KEY = 'c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = `02${'79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'}`
 const ROTATED_MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
-const ROTATED_MINT_PUBLIC_KEY = '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5'
-const KEYS = {
-  '1': MINT_PUBLIC_KEY,
-  '2': MINT_PUBLIC_KEY,
-  '4': MINT_PUBLIC_KEY,
-  '8': MINT_PUBLIC_KEY,
-  '16': MINT_PUBLIC_KEY,
-  '32': MINT_PUBLIC_KEY,
-  '64': MINT_PUBLIC_KEY,
-  '128': MINT_PUBLIC_KEY,
-  '256': MINT_PUBLIC_KEY,
-  '512': MINT_PUBLIC_KEY,
-  '1024': MINT_PUBLIC_KEY,
-  '2048': MINT_PUBLIC_KEY,
-  '4096': MINT_PUBLIC_KEY,
-  '8192': MINT_PUBLIC_KEY,
-  '16384': MINT_PUBLIC_KEY,
-}
-const ROTATED_KEYS = {
-  '1': ROTATED_MINT_PUBLIC_KEY,
-  '2': ROTATED_MINT_PUBLIC_KEY,
-  '4': ROTATED_MINT_PUBLIC_KEY,
-  '8': ROTATED_MINT_PUBLIC_KEY,
-  '16': ROTATED_MINT_PUBLIC_KEY,
-  '32': ROTATED_MINT_PUBLIC_KEY,
-  '64': ROTATED_MINT_PUBLIC_KEY,
-  '128': ROTATED_MINT_PUBLIC_KEY,
-  '256': ROTATED_MINT_PUBLIC_KEY,
-  '512': ROTATED_MINT_PUBLIC_KEY,
-  '1024': ROTATED_MINT_PUBLIC_KEY,
-  '2048': ROTATED_MINT_PUBLIC_KEY,
-  '4096': ROTATED_MINT_PUBLIC_KEY,
-  '8192': ROTATED_MINT_PUBLIC_KEY,
-  '16384': ROTATED_MINT_PUBLIC_KEY,
-}
+const KEYS = mintDenominationKeys(
+  MINT_PRIVATE_KEY,
+  Array.from({ length: 15 }, (_, index) => (1 << index).toString()),
+)
+const ROTATED_KEYS = mintDenominationKeys(ROTATED_MINT_PRIVATE_KEY, Object.keys(KEYS))
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 2_000
 const OFFER_KEYSET_ID = deriveKeysetId(KEYS, {
@@ -1886,11 +1860,32 @@ for (const acknowledgementLost of [true, false])
         const prepared = await coordinator.prepare(request, client)
         assert.deepEqual(
           observations.map(({ phase }) => phase),
-          ['preparation', 'score-admission', 'capability-admission'],
+          [
+            'preparation-policy-read',
+            'preparation-market-read',
+            'preparation-mint-read',
+            'preparation-mint-authority',
+            'preparation-wallet-source',
+            'preparation-authorization-binding',
+            'preparation-durable-bind',
+            'preparation-exact-request',
+            'preparation',
+            'score-admission',
+            'capability-admission',
+          ],
         )
-        assert.equal(observations[0]!.operationId, prepared.operationId)
-        assert.equal(observations[1]!.outcome, 'unverified')
-        assert.equal(observations[2]!.orderId, prepared.capability.orderId)
+        assert.equal(
+          observations.find(({ phase }) => phase === 'preparation')!.operationId,
+          prepared.operationId,
+        )
+        assert.equal(
+          observations.find(({ phase }) => phase === 'score-admission')!.outcome,
+          'unverified',
+        )
+        assert.equal(
+          observations.find(({ phase }) => phase === 'capability-admission')!.orderId,
+          prepared.capability.orderId,
+        )
         assert.equal(
           observations.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0),
           true,
@@ -4518,7 +4513,7 @@ function fakeMint(
           {
             id: OFFER_KEYSET_ID,
             unit: 'msat',
-            active: true,
+            active: !includeRotatedRegularKeyset(),
             input_fee_ppk: INPUT_FEE_PPK,
             final_expiry: FINAL_EXPIRY,
           },
@@ -4823,8 +4818,15 @@ function signaturesFor(operation: DurableCtfRangeOperation, selection: string) {
 }
 
 function signBlindedOutput(output: SerializedBlindedMessage) {
-  const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
-  const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+  const signature = createBlindSignature(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+    output.id,
+  )
+  const dleq = createDLEQProof(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+  )
   return {
     id: signature.id,
     amount: output.amount,
@@ -4893,10 +4895,12 @@ function conditionalMintKeys(keysetId = RECEIVE_KEYSET_ID): MintKeys {
 }
 
 function signedProof(output: OutputData): Proof {
-  const privateKey =
+  const privateKey = mintDenominationPrivateKey(
     output.blindedMessage.id === ROTATED_OFFER_KEYSET_ID
       ? ROTATED_MINT_PRIVATE_KEY
-      : MINT_PRIVATE_KEY
+      : MINT_PRIVATE_KEY,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     privateKey,

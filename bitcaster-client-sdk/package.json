@@ -479,6 +479,10 @@
     "./ctfConditionRegistration": {
       "types": "./dist/ctfConditionRegistration.d.ts",
       "import": "./dist/ctfConditionRegistration.js"
+    },
+    "./cashuProofAdmission": {
+      "types": "./dist/cashuProofAdmission.d.ts",
+      "import": "./dist/cashuProofAdmission.js"
     }
   },
   "scripts": {

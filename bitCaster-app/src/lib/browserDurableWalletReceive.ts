@@ -1,7 +1,7 @@
+import { requireValidCashuProofs } from "@bitcaster/client-sdk";
 import {
   Amount,
   splitAmount,
-  verifyProofsForReceive,
   type OperationCounters,
   type Proof,
   type ProofState,
@@ -322,14 +322,10 @@ async function prepareBrowserConditionalWalletReceiveOperation(
   ) {
     throw new Error("browser conditional wallet receive keyset is invalid");
   }
-  verifyProofsForReceive(
-    [...proofs],
-    (id) => {
-      if (id !== keyset.id) throw new Error("browser conditional wallet receive keyset is foreign");
-      return keyset;
-    },
-    { requireDleq: true },
-  );
+  requireValidCashuProofs([...proofs], (id) => {
+    if (id !== keyset.id) throw new Error("browser conditional wallet receive keyset is foreign");
+    return keyset;
+  });
   const proofStates = await input.wallet.checkProofsStates(
     proofs.map(({ id, secret }) => ({ id, secret })),
   );

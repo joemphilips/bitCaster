@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from "@bitcaster/client-sdk";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import {
@@ -9,7 +10,6 @@ import {
   deriveConditionalKeysetId,
   deriveKeysetId,
   pointFromHex,
-  verifyProofsForReceive,
   type MintKeyset,
   type Proof,
 } from "@cashu/cashu-ts";
@@ -403,7 +403,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   it("admits only unspent restored value into canonical custody and is retry-safe", async () => {
     const proofs = [restoredProof(0), restoredProof(1), restoredProof(2)];
     expect(keyset.verify()).toBe(true);
-    expect(() => verifyProofsForReceive(proofs, () => keyset, { requireDleq: true })).not.toThrow();
+    expect(() => requireValidCashuProofs(proofs, () => keyset)).not.toThrow();
     wallet.batchRestore.mockResolvedValue({ proofs, lastCounterWithSignature: 2 });
     wallet.groupProofsByState.mockResolvedValue({
       unspent: [proofs[0]],

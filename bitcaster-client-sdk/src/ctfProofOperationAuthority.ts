@@ -1,4 +1,5 @@
-import { isBlsKeyset, pointFromHexAuto, type Proof } from '@cashu/cashu-ts'
+import { requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
+import { pointFromHex, type Proof } from '@cashu/cashu-ts'
 import { sha256 } from '@noble/hashes/sha2.js'
 import {
   DURABLE_CUSTODY_ARTIFACT_DEPTH_LIMIT_MAX,
@@ -20,7 +21,6 @@ import type {
 } from './ctfSplit.ts'
 
 const SECP256K1_SCALAR_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
-const BLS12_381_SCALAR_ORDER = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001n
 
 export type CtfProofOperationCompletion =
   | {
@@ -402,27 +402,24 @@ function validateCompletedProofShape(proof: Proof, context: string): void {
     }
   }
   if (proof.p2pk_e !== undefined) {
-    requireCanonicalCurvePointKind(proof.p2pk_e, 'secp', `${context} P2BK point`)
+    requireCanonicalSecpPoint(proof.p2pk_e, `${context} P2BK point`)
   }
 }
 
 function requireCanonicalCurvePoint(value: unknown, keysetId: string, context: string): string {
-  return requireCanonicalCurvePointKind(value, isBlsKeyset(keysetId) ? 'blsG1' : 'secp', context)
+  requireSupportedCashuKeysetId(keysetId)
+  return requireCanonicalSecpPoint(value, context)
 }
 
-function requireCanonicalCurvePointKind(
-  value: unknown,
-  expectedKind: 'blsG1' | 'secp',
-  context: string,
-): string {
+function requireCanonicalSecpPoint(value: unknown, context: string): string {
   const encoded = requireNonEmptyText(value, context)
-  let point: ReturnType<typeof pointFromHexAuto>
+  let point: ReturnType<typeof pointFromHex>
   try {
-    point = pointFromHexAuto(encoded)
+    point = pointFromHex(encoded)
   } catch {
     throw new Error(`${context} must be a canonical curve point`)
   }
-  if (point.kind !== expectedKind || point.pt.toHex(true) !== encoded) {
+  if (point.toHex(true) !== encoded) {
     throw new Error(`${context} must match the keyset curve and canonical encoding`)
   }
   return encoded
@@ -434,7 +431,8 @@ function requireCanonicalBlindingFactor(value: unknown, keysetId: string, contex
     throw new Error(`${context} must be canonical bounded nonzero lowercase hex`)
   }
   const scalar = BigInt(`0x${encoded}`)
-  const scalarOrder = isBlsKeyset(keysetId) ? BLS12_381_SCALAR_ORDER : SECP256K1_SCALAR_ORDER
+  requireSupportedCashuKeysetId(keysetId)
+  const scalarOrder = SECP256K1_SCALAR_ORDER
   if (scalar >= scalarOrder) {
     throw new Error(`${context} must be below the keyset curve scalar order`)
   }

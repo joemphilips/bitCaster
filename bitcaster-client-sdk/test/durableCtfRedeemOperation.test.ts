@@ -264,3 +264,29 @@ class MemoryCounterSource implements CounterSource {
     this.next = Math.max(this.next, minNext)
   }
 }
+
+test('prepared CTF redeem refuses unsupported inputs before mint loading or state requests', async () => {
+  const prepared = await prepareDurableCtfRedeemOperation(preparation(new MemoryCounterSource()))
+  const operation = structuredClone(prepared.operation)
+  operation.inputs[0]!.id = `02${'ab'.repeat(32)}`
+  let effects = 0
+  await assert.rejects(() =>
+    classifyPreparedDurableCtfRedeemInputs({
+      operation,
+      wallet: {
+        loadMint: async () => {
+          effects++
+        },
+        redeemOutcomeProofs: async () => {
+          effects++
+          return []
+        },
+        checkProofsStates: async () => {
+          effects++
+          return []
+        },
+      },
+    }),
+  )
+  assert.equal(effects, 0)
+})

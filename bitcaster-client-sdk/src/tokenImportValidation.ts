@@ -1,3 +1,4 @@
+import { isLegacyCashuKeysetId } from './cashuProofAdmission.ts'
 import { readCtfListingCursor } from './ctfListing.ts'
 import { getDecodedToken, getDecodedTokenBinary, type Token } from '@cashu/cashu-ts'
 import {
@@ -1046,7 +1047,7 @@ function requireEncodedKeysetId(value: unknown, tokenIndex: number, proofIndex: 
 }
 
 function parseEncodedKeysetId(value: string): ParsedKeysetId {
-  if (isLegacyKeysetId(value)) return { kind: 'exact', value }
+  if (isLegacyCashuKeysetId(value)) return { kind: 'exact', value }
   if (!isLowerHex(value)) fail('invalid_token', 'proof keyset id has invalid encoding or case')
   if (value.length === 16) {
     return { kind: value.startsWith('00') ? 'exact' : 'prefix', value }
@@ -1059,7 +1060,7 @@ function requireCandidateKeysetId(value: unknown, source: TokenImportKeysetSourc
   if (typeof value !== 'string') {
     fail('spoofed_keyset_metadata', `${source} metadata has no keyset id`)
   }
-  if (isLegacyKeysetId(value)) return value
+  if (isLegacyCashuKeysetId(value)) return value
   if (!isLowerHex(value)) {
     fail('spoofed_keyset_metadata', `${source} keyset id has invalid encoding or case`)
   }
@@ -1076,10 +1077,6 @@ function keysetMatches(request: ParsedKeysetId, candidate: string): boolean {
 
 function isLowerHex(value: string): boolean {
   return /^[0-9a-f]+$/.test(value)
-}
-
-function isLegacyKeysetId(value: string): boolean {
-  return value.length === 12 && /^[A-Za-z0-9_-]+$/.test(value)
 }
 
 function canonicalizeMintUrl(value: unknown, allowInsecureLoopbackHttp: boolean): string {

@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   assertDurableCustodyMintOperationAuthority,
@@ -12,7 +13,6 @@ import {
   Mint as CashuMint,
   Wallet as CashuWallet,
   hashToCurve,
-  verifyProofsForReceive,
   type Proof,
   type ProofState,
   type MintKeys,
@@ -809,9 +809,7 @@ async function scanSelectedKeysetBatch(
 }
 
 function verifyRestoredProofs(proofs: readonly Proof[], wallet: RecoveryWallet): void {
-  verifyProofsForReceive([...proofs], (keysetId) => wallet.keyChain.getKeyset(keysetId), {
-    requireDleq: true,
-  })
+  requireValidCashuProofs([...proofs], (keysetId) => wallet.keyChain.getKeyset(keysetId))
 }
 
 async function classifyRestoredProofStates(

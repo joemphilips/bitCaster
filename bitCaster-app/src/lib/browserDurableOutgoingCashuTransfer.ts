@@ -1,4 +1,5 @@
-import { isBlsKeyset, type Proof, type ProofState, type SwapPreview } from "@cashu/cashu-ts";
+import { requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
+import { type Proof, type ProofState, type SwapPreview } from "@cashu/cashu-ts";
 import {
   acknowledgeDurableOutgoingCashuRecipient,
   admitDurableOutgoingCashuToken,
@@ -961,7 +962,8 @@ function outgoingKeysets(
     ),
   ]);
   return [...ids].map((id) => {
-    if (!id || isBlsKeyset(id) || !/^01[0-9a-f]{64}$/.test(id))
+    requireSupportedCashuKeysetId(id);
+    if (!/^01[0-9a-f]{64}$/.test(id))
       throw new Error("browser outgoing transfer supports only V2 keysets");
     const keyset = wallet.getKeyset(id);
     if (

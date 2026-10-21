@@ -1,3 +1,4 @@
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -21,12 +22,7 @@ import {
   type TargetedAssetRecoveryMintRequest,
   type TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
-import {
-  isBlsKeyset,
-  verifyProofsForReceive,
-  type Proof,
-  type Wallet as CashuWallet,
-} from "@cashu/cashu-ts";
+import { type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   admitBrowserReceivedProofsWithHeldProfileLock,
   type AdmitBrowserReceivedProofsInput,
@@ -527,9 +523,7 @@ function verifyExactMintProofs(
   proofs: readonly Proof[],
 ): void {
   for (const proof of proofs) requireProofAsset(input.asset, wallet, proof);
-  verifyProofsForReceive([...proofs], (keysetId) => wallet.getKeyset(keysetId), {
-    requireDleq: true,
-  });
+  requireValidCashuProofs([...proofs], (keysetId) => wallet.getKeyset(keysetId));
 }
 
 async function admitExactMintProofs(
@@ -687,9 +681,7 @@ function requireProofAsset(
   wallet: CashuWallet,
   proof: Proof,
 ): void {
-  if (isBlsKeyset(proof.id)) {
-    throw new Error("targeted asset recovery BLS keyset is unsupported");
-  }
+  requireSupportedCashuKeysetId(proof.id);
   const keyset = wallet.getKeyset(proof.id);
   if (keyset.unit !== asset.unit || !keyset.verify()) {
     throw new Error("targeted asset recovery mint keyset is invalid");
@@ -717,9 +709,7 @@ function requireMintAuthority(
     throw new Error("targeted asset recovery mint is foreign");
   }
   for (const keysetId of new Set(requests.map(({ keysetId }) => keysetId))) {
-    if (isBlsKeyset(keysetId)) {
-      throw new Error("targeted asset recovery BLS keyset is unsupported");
-    }
+    requireSupportedCashuKeysetId(keysetId);
     const keyset = wallet.getKeyset(keysetId);
     if (!keyset.hasKeys || keyset.unit !== input.asset.unit || !keyset.verify()) {
       throw new Error("targeted asset recovery mint keyset is invalid");

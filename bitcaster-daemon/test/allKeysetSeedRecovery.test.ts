@@ -1,3 +1,4 @@
+import { mintDenominationPrivateKey } from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -171,7 +172,7 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
     onRestore(keysetId, start, outputs) {
       appendStart(starts, keysetId, start)
       return keysetId === conditional.id && start === 0
-        ? restoreResponse(outputs.slice(0, 2), [1, 2])
+        ? restoreResponse(outputs.slice(0, 2), [1, 2], true)
         : { outputs: [], signatures: [] }
     },
     onCheckStates(proofs) {
@@ -663,7 +664,10 @@ function conditionalAuthority(
   const conditionId = input.conditionId ?? CONDITION_ID
   const outcomeCollection = 'NO|YES'
   const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({ conditionId, outcomeCollection })
-  const keys = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY }
+  const keys = {
+    '1': MINT_PUBLIC_KEY,
+    '2': '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5',
+  }
   return {
     id: deriveConditionalKeysetId({
       keys,
@@ -804,12 +808,19 @@ function emptyTransport(regular: unknown = { keysets: [] }): AllKeysetSeedRecove
   }
 }
 
-function restoreResponse(outputs: readonly SerializedBlindedMessage[], amounts: readonly number[]) {
+function restoreResponse(
+  outputs: readonly SerializedBlindedMessage[],
+  amounts: readonly number[],
+  distinctDenominations = false,
+) {
   return {
     outputs: outputs.map((output) => ({ ...output, amount: Amount.from(0) })),
     signatures: outputs.map((output, index) => {
-      const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
-      const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+      const privateKey = distinctDenominations
+        ? mintDenominationPrivateKey(MINT_PRIVATE_KEY, String(amounts[index]!))
+        : MINT_PRIVATE_KEY
+      const signature = createBlindSignature(pointFromHex(output.B_), privateKey, output.id)
+      const dleq = createDLEQProof(pointFromHex(output.B_), privateKey)
       return {
         id: output.id,
         amount: Amount.from(amounts[index]!),

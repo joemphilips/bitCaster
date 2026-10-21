@@ -53,3 +53,12 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
     }
   } as unknown as typeof globalThis.IntersectionObserver;
 }
+
+// jsdom uses a different Uint8Array realm from Node's TextEncoder. Keep native
+// UTF-8 encoding and encodeInto behavior, but return bytes owned by this realm.
+const NativeTextEncoder = globalThis.TextEncoder;
+globalThis.TextEncoder = class RealmTextEncoder extends NativeTextEncoder {
+  override encode(input?: string): Uint8Array<ArrayBuffer> {
+    return Uint8Array.from(super.encode(input));
+  }
+};

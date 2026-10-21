@@ -1,3 +1,4 @@
+import { requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
 import type { DurableCustodyMintKeysetAuthority } from './durableCustodyMintResult.ts'
 import {
   prepareCtfVerifiedLosingAuthority,
@@ -13,8 +14,6 @@ import {
   MintOperationError,
   OutputData,
   hashToCurve,
-  hashToCurveBls,
-  isBlsKeyset,
   splitAmount,
   type CounterSource,
   type MintKeys,
@@ -457,6 +456,7 @@ export async function classifyPreparedDurableCtfRedeemInputs(input: {
   if (!input.wallet.checkProofsStates) {
     throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
   }
+  for (const { id } of inputs) requireSupportedCashuKeysetId(id)
   await input.wallet.loadMint()
   const states = await input.wallet.checkProofsStates(
     inputs.map(({ id, secret }) => ({ id, secret })),
@@ -913,6 +913,7 @@ async function resumeCtfRedeem(params: {
     if (losingAuthority !== undefined) return { proofs: [], losing: true }
     // Historical code-only failures still need exact input/output recovery.
   }
+  for (const { id } of entry.inputs) requireSupportedCashuKeysetId(id)
   await params.wallet.loadMint()
   if (!params.wallet.checkProofsStates) {
     throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
@@ -960,7 +961,8 @@ function exactRedeemInputStates(inputs: readonly Proof[], states: readonly Proof
   const expectedYs = new Set(
     inputs.map(({ id, secret }) => {
       const bytes = new TextEncoder().encode(secret)
-      return isBlsKeyset(id) ? hashToCurveBls(bytes).toHex(true) : hashToCurve(bytes).toHex(true)
+      requireSupportedCashuKeysetId(id)
+      return hashToCurve(bytes).toHex(true)
     }),
   )
   if (expectedYs.size !== inputs.length) return false

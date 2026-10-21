@@ -1,3 +1,4 @@
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
 import {
   collectAllEncryptedWalletBackupV2DescriptorPages,
   deserializeDurableCustodyProofArtifact,
@@ -22,13 +23,7 @@ import {
   type EncryptedWalletBackupV2VerifiedProofSet,
   type EncryptedWalletBackupV2VerifiedProofSetSource,
 } from "@bitcaster/client-sdk";
-import {
-  hashToCurve,
-  isBlsKeyset,
-  verifyProofsForReceive,
-  type ProofState,
-  type Wallet as CashuWallet,
-} from "@cashu/cashu-ts";
+import { hashToCurve, type ProofState, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import type { BitcasterDB } from "../stores/proof-db";
 import {
   addProofs,
@@ -650,7 +645,7 @@ function restoreVerificationPort(
   return {
     async resolveKeyset({ mintUrl, unit, keysetId }) {
       requireCurrent(input);
-      if (isBlsKeyset(keysetId)) throw new Error("browser V2 restore BLS keyset is unsupported");
+      requireSupportedCashuKeysetId(keysetId);
       const wallet = await loadWallet();
       if (asset.assetIdentity.startsWith("ctf:")) {
         await wallet.keyChain.loadConditionalKeyset(keysetId);
@@ -668,9 +663,7 @@ function restoreVerificationPort(
     },
     verifyProofs({ proofs, keysets }) {
       requireCurrent(input);
-      verifyProofsForReceive([...proofs], (keysetId) => requiredRestoreKeyset(keysets, keysetId), {
-        requireDleq: true,
-      });
+      requireValidCashuProofs([...proofs], (keysetId) => requiredRestoreKeyset(keysets, keysetId));
       requireCurrent(input);
     },
     async checkProofStates({ proofs }) {
@@ -703,7 +696,7 @@ function expectedProofIdsByY(
 ): ReadonlyMap<string, string> {
   const expected = new Map<string, string>();
   for (const proof of proofs) {
-    if (isBlsKeyset(proof.id)) throw new Error("browser V2 restore BLS keyset is unsupported");
+    requireSupportedCashuKeysetId(proof.id);
     const secret = new TextEncoder().encode(proof.secret);
     const Y = hashToCurve(secret).toHex(true);
     if (expected.has(Y)) throw new Error("browser V2 restore proof-state authority is duplicated");

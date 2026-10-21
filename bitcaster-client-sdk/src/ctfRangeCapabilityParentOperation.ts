@@ -1,6 +1,6 @@
+import { requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
 import {
   OutputData,
-  isBlsKeyset,
   splitAmount,
   type CtfConvertRequest,
   type CtfConvertResponse,
@@ -934,10 +934,11 @@ function wireRequest(
 function placeholderOutputs(
   allocations: readonly CtfRangeCapabilityOutputAllocation[],
 ): SerializedBlindedMessage[] {
+  for (const { keysetId } of allocations) requireSupportedCashuKeysetId(keysetId)
   return allocations.map(({ amount, keysetId }) => ({
     amount: amount as never,
     id: keysetId,
-    B_: isBlsKeyset(keysetId) ? '8'.repeat(96) : `02${'0'.repeat(64)}`,
+    B_: `02${'0'.repeat(64)}`,
   }))
 }
 

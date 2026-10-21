@@ -103,7 +103,7 @@ const mocks = vi.hoisted(() => {
   const getProofOperations = vi.fn(async () => []);
   const admitBrowserReceivedProofs = vi.fn(async () => undefined);
   const requireNewWritePermission = vi.fn(async () => undefined);
-  const verifyProofsForReceive = vi.fn();
+  const requireValidCashuProofs = vi.fn();
   const profileLock = {
     held: false,
     events: [] as string[],
@@ -126,16 +126,16 @@ const mocks = vi.hoisted(() => {
     getProofOperations,
     admitBrowserReceivedProofs,
     requireNewWritePermission,
-    verifyProofsForReceive,
+    requireValidCashuProofs,
     profileLock,
     keysetId,
     alternateKeysetId,
   };
 });
 
-vi.mock("@cashu/cashu-ts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@cashu/cashu-ts")>()),
-  verifyProofsForReceive: mocks.verifyProofsForReceive,
+vi.mock("@bitcaster/client-sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@bitcaster/client-sdk")>()),
+  requireValidCashuProofs: mocks.requireValidCashuProofs,
 }));
 
 vi.mock("@/lib/browserCustodyProofReceive", () => ({
@@ -324,7 +324,7 @@ beforeEach(() => {
   mocks.requireNewWritePermission.mockResolvedValue(undefined);
   mocks.profileLock.held = false;
   mocks.profileLock.events.length = 0;
-  mocks.verifyProofsForReceive.mockReset();
+  mocks.requireValidCashuProofs.mockReset();
   mocks.getWallet.mockClear();
   mocks.getWallet.mockResolvedValue(mocks.wallet);
   mocks.store.getWallet = mocks.getWallet;
@@ -529,7 +529,7 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
   });
 
   it("keeps a mint prepared when shared DLEQ verification rejects its result", async () => {
-    mocks.verifyProofsForReceive.mockImplementationOnce(() => {
+    mocks.requireValidCashuProofs.mockImplementationOnce(() => {
       throw new Error("Token contains proofs with invalid or missing DLEQ");
     });
 
@@ -542,10 +542,9 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
       ),
     ).rejects.toThrow("invalid or missing DLEQ");
 
-    expect(mocks.verifyProofsForReceive).toHaveBeenCalledWith(
+    expect(mocks.requireValidCashuProofs).toHaveBeenCalledWith(
       expect.any(Array),
       expect.any(Function),
-      { requireDleq: true },
     );
     expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
     expect(mocks.addProofs).not.toHaveBeenCalled();

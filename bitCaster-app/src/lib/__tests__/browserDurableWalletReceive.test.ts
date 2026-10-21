@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from "../../../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { bytesToHex } from "@noble/curves/utils.js";
@@ -71,13 +75,7 @@ const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
 });
-const CONDITIONAL_KEYS = {
-  "1": KEYS["1"]!,
-  "2": KEYS["1"]!,
-  "4": KEYS["1"]!,
-  "8": KEYS["1"]!,
-  "10": KEYS["1"]!,
-};
+const CONDITIONAL_KEYS = mintDenominationKeys(PRIVATE_KEY, ["1", "2", "4", "8", "10"]);
 const CONDITIONAL_KEYSET_ID = deriveConditionalKeysetId({
   keys: CONDITIONAL_KEYS,
   unit: "msat",
@@ -1343,10 +1341,13 @@ function wallet(
 function signatureForOutput(output: OutputData) {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    PRIVATE_KEY,
+    mintDenominationPrivateKey(PRIVATE_KEY, output.blindedMessage.amount.toString()),
     output.blindedMessage.id,
   );
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY);
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    mintDenominationPrivateKey(PRIVATE_KEY, output.blindedMessage.amount.toString()),
+  );
   return {
     id: output.blindedMessage.id,
     amount: output.blindedMessage.amount,

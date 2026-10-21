@@ -1,4 +1,5 @@
-import { isBlsKeyset, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
+import { type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
@@ -1537,9 +1538,8 @@ function requireAdmissionAuthority(
   },
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): void {
-  if (verified.counterHighWaterMarks.some(({ keysetId }) => isBlsKeyset(keysetId))) {
-    throw new Error("browser V2 restore BLS keyset is unsupported");
-  }
+  for (const { keysetId } of verified.counterHighWaterMarks)
+    requireSupportedCashuKeysetId(keysetId);
   if (
     verified.proofs.some(({ selectionAuthority }) => selectionAuthority === "live-verified") &&
     input.wallet === undefined
@@ -2263,7 +2263,7 @@ function storedProofs(
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): StoredProof[] {
   return verified.proofs.map(({ proof, asset }) => {
-    if (isBlsKeyset(proof.id)) throw new Error("browser V2 restore BLS keyset is unsupported");
+    requireSupportedCashuKeysetId(proof.id);
     return {
       ...proof,
       mintUrl: input.asset.mintUrl,

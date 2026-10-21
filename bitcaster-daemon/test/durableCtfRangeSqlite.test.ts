@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -68,7 +72,7 @@ const FINAL_EXPIRY = 200
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = `02${'79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'}`
-const MINT_KEYS = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY, '4': MINT_PUBLIC_KEY }
+const MINT_KEYS = mintDenominationKeys(MINT_PRIVATE_KEY, ['1', '2', '4'])
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
@@ -1504,10 +1508,13 @@ function keysetLookup() {
 function signOutput(output: OutputData): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    MINT_PRIVATE_KEY,
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), MINT_PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
+  )
   return output.toProof(
     {
       id: signature.id,
@@ -1755,10 +1762,13 @@ function signaturesFor(operation: DurableCtfRangeOperation, selection: string) {
       const output = OutputData.deserialize(outputData)
       const signature = createBlindSignature(
         pointFromHex(output.blindedMessage.B_),
-        MINT_PRIVATE_KEY,
+        mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
         output.blindedMessage.id,
       )
-      const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), MINT_PRIVATE_KEY)
+      const dleq = createDLEQProof(
+        pointFromHex(output.blindedMessage.B_),
+        mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
+      )
       return {
         id: signature.id,
         amount: output.blindedMessage.amount,

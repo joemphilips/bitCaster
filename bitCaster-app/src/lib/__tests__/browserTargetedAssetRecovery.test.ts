@@ -61,9 +61,9 @@ vi.mock("../../stores/browser-targeted-asset-recovery-attempt-store", () => ({
     }
   },
 }));
-vi.mock("@cashu/cashu-ts", async () => {
-  const actual = await vi.importActual<object>("@cashu/cashu-ts");
-  return { ...actual, verifyProofsForReceive: mocks.verify };
+vi.mock("@bitcaster/client-sdk", async () => {
+  const actual = await vi.importActual<object>("@bitcaster/client-sdk");
+  return { ...actual, requireValidCashuProofs: mocks.verify };
 });
 
 const SEED = new Uint8Array(64).fill(7);

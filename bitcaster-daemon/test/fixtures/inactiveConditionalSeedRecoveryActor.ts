@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from '../../../bitcaster-client-sdk/src/cashuProofAdmission.ts'
 // This parent E2E actor uses real clients. It prints only fixed, public summaries.
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -15,7 +16,6 @@ import {
   MintOperationError,
   NetworkError,
   createEphemeralCounterSource,
-  verifyProofsForReceive,
   type Proof,
 } from '@cashu/cashu-ts'
 import {
@@ -694,9 +694,7 @@ async function recover(metadata: Metadata): Promise<void> {
       true,
       'real payout and authentic fee must conserve exact recovered value',
     )
-    verifyProofsForReceive(redeemed.proofs, (id) => wallet.keyChain.getKeyset(id), {
-      requireDleq: true,
-    })
+    requireValidCashuProofs(redeemed.proofs, (id) => wallet.keyChain.getKeyset(id))
     await assertUnspent(wallet, redeemed.proofs)
     const inputStates = await wallet.checkProofsStates(winner)
     assert.equal(

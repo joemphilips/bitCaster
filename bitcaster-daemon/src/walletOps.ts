@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import {
   Amount,
@@ -6,7 +7,6 @@ import {
   MintOperationError,
   OutputData,
   getDecodedToken,
-  verifyProofsForReceive,
   type CounterRange,
   type CounterSource,
   type CtfConvertRequest,
@@ -2004,15 +2004,11 @@ function verifyConsolidatedResultProofs(
       } as MintKeys,
     ]),
   )
-  verifyProofsForReceive(
-    proofs,
-    (keysetId) => {
-      const keyset = keysets.get(keysetId)
-      if (keyset === undefined) throw new Error('CTF consolidation output keyset is missing')
-      return keyset
-    },
-    { requireDleq: true },
-  )
+  requireValidCashuProofs(proofs, (keysetId) => {
+    const keyset = keysets.get(keysetId)
+    if (keyset === undefined) throw new Error('CTF consolidation output keyset is missing')
+    return keyset
+  })
 }
 
 function assertConsolidatedResultMatchesOutputPlan(

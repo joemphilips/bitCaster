@@ -1,3 +1,4 @@
+import { mintDenominationKeys, mintDenominationPrivateKey } from './support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
@@ -81,14 +82,9 @@ const SECOND_OUTCOME_COLLECTION = 'NO'
 const ROOT_PARENT = '0'.repeat(64)
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
-const KEYS = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY, '4': MINT_PUBLIC_KEY }
+const KEYS = mintDenominationKeys(MINT_PRIVATE_KEY, ['1', '2', '4'])
 const ROTATED_MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
-const ROTATED_MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(ROTATED_MINT_PRIVATE_KEY, true))
-const ROTATED_KEYS = {
-  '1': ROTATED_MINT_PUBLIC_KEY,
-  '2': ROTATED_MINT_PUBLIC_KEY,
-  '4': ROTATED_MINT_PUBLIC_KEY,
-}
+const ROTATED_KEYS = mintDenominationKeys(ROTATED_MINT_PRIVATE_KEY, ['1', '2', '4'])
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 200
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
@@ -347,8 +343,11 @@ function rangeKeysetLookup(): TokenImportKeysetLookup {
 }
 
 function signOutput(output: OutputData, mintPrivateKey = MINT_PRIVATE_KEY): Proof {
-  const mintPublicKey = bytesToHex(secp256k1.getPublicKey(mintPrivateKey, true))
-  const signingKeys = Object.fromEntries(Object.keys(KEYS).map((amount) => [amount, mintPublicKey]))
+  const signingKeys = mintDenominationKeys(mintPrivateKey, Object.keys(KEYS))
+  mintPrivateKey = mintDenominationPrivateKey(
+    mintPrivateKey,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     mintPrivateKey,
@@ -380,14 +379,17 @@ function signaturesFor(operation: DurableCtfRangeOperation, selection: string) {
       const output = OutputData.deserialize(outputData)
       const signature = createBlindSignature(
         pointFromHex(output.blindedMessage.B_),
-        MINT_PRIVATE_KEY,
+        mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
         output.blindedMessage.id,
       )
       return {
         id: signature.id,
         amount: output.blindedMessage.amount,
         C_: signature.C_.toHex(true),
-        dleq: serializeDleq(output.blindedMessage.B_),
+        dleq: serializeDleq(
+          output.blindedMessage.B_,
+          mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
+        ),
       }
     })
 }

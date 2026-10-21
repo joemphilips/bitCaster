@@ -18,7 +18,10 @@ import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperatio
 const SEED = new Uint8Array(64).fill(7)
 const PUBLIC_KEY = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const CONDITION_ID = 'ab'.repeat(32)
-const KEYS = { '1': PUBLIC_KEY, '2': PUBLIC_KEY }
+const KEYS = {
+  '1': PUBLIC_KEY,
+  '2': '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5',
+}
 
 test('validates discovery descriptors from clean product syntax', () => {
   const value = descriptor()
@@ -99,7 +102,7 @@ test('accepts null optional fees and returns detached immutable full authority',
   assert.equal(validated.finalExpiry, null)
   assert.equal(validated.id, raw.id)
   raw.keys['2'] = '03' + '00'.repeat(32)
-  assert.equal(validated.keys['2'], PUBLIC_KEY)
+  assert.equal(validated.keys['2'], KEYS['2'])
   assert.equal(Object.isFrozen(validated), true)
   assert.equal(Object.isFrozen(validated.keys), true)
   assert.throws(() => {

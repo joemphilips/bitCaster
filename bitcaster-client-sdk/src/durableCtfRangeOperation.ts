@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from './cashuProofAdmission.ts'
 import {
   Amount,
   Keyset,
@@ -14,7 +15,6 @@ import {
   recoverCtfRangeProofs,
   selectCtfManifestOutputs,
   signPayToUnlockRefund,
-  verifyProofsForReceive,
   type CtfPoolEntry,
   type CtfRangeManifestMaterial,
   type HasKeysetKeys,
@@ -2065,17 +2065,13 @@ function assertRangeInputProofsCryptographicallyValid(
   mintKeysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>,
 ): void {
   try {
-    verifyProofsForReceive(
-      operation.inputs.map(deserializeProof),
-      (keysetId) => {
-        const keyset = mintKeysets.get(keysetId)
-        if (keyset === undefined) {
-          throw new Error('CTF range input keyset is not pinned')
-        }
-        return { id: keyset.id, keys: keyset.keys }
-      },
-      { requireDleq: true },
-    )
+    requireValidCashuProofs(operation.inputs.map(deserializeProof), (keysetId) => {
+      const keyset = mintKeysets.get(keysetId)
+      if (keyset === undefined) {
+        throw new Error('CTF range input keyset is not pinned')
+      }
+      return { id: keyset.id, keys: keyset.keys }
+    })
   } catch (error) {
     throw new Error('CTF range input proof cryptographic verification failed', { cause: error })
   }

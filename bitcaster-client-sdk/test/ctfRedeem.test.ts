@@ -29,6 +29,9 @@ import type {
 } from '../src/ctfSplit.ts'
 import { DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX } from '../src/durableCustody.ts'
 
+const CTF_KEYSET_ID = '01' + '0b'.repeat(32)
+const REGULAR_KEYSET_ID = '01' + '0c'.repeat(32)
+
 test('isLosingLegError recognizes the mint oracle-not-attested error code', () => {
   assert.equal(
     isLosingLegError(
@@ -82,8 +85,8 @@ test('buildKeysetRedeemOperationId is unambiguous and never contains proof secre
 
 test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', async () => {
   const store = new MemoryProofOperationStore()
-  const inputProofs = [proof('ctf-keyset', 'input-a', 7)]
-  const settledProofs = [proof('regular-keyset', 'regular-a', 7)]
+  const inputProofs = [proof(CTF_KEYSET_ID, 'input-a', 7)]
+  const settledProofs = [proof(REGULAR_KEYSET_ID, 'regular-a', 7)]
   const wallet = new FakeRedeemWallet({ settledProofs })
 
   const result = await redeemOutcomeLegWithOperation({
@@ -119,8 +122,8 @@ test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', asy
 
 test('redeemOutcomeLegWithOperation persists exact NUT-02 fee authority and mints only net value', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'fee-a', 2), proof('ctf-keyset', 'fee-b', 3)]
-  const settled = [proof('regular-keyset', 'fee-net', 3)]
+  const inputs = [proof(CTF_KEYSET_ID, 'fee-a', 2), proof(CTF_KEYSET_ID, 'fee-b', 3)]
+  const settled = [proof(REGULAR_KEYSET_ID, 'fee-net', 3)]
   const wallet = new FakeRedeemWallet({ settledProofs: settled, expectedOutputAmount: 3 })
 
   await redeemOutcomeLegWithOperation({
@@ -146,8 +149,8 @@ test('redeemOutcomeLegWithOperation persists exact NUT-02 fee authority and mint
     inputFeeSubunits: 2,
     netOutputSubunits: 3,
     outcomeInputFeePpk: 600,
-    outcomeKeysetId: 'ctf-keyset',
-    regularKeysetId: 'regular-keyset',
+    outcomeKeysetId: CTF_KEYSET_ID,
+    regularKeysetId: REGULAR_KEYSET_ID,
     unit: 'sat',
     oracleWitness: 'witness',
   })
@@ -168,7 +171,7 @@ test('redeemOutcomeLegWithOperation rejects an uneconomic page before persistenc
         outcome: 'YES',
         unit: 'sat',
         oracleWitness: 'witness',
-        proofs: [proof('ctf-keyset', 'fee-consumed', 1)],
+        proofs: [proof(CTF_KEYSET_ID, 'fee-consumed', 1)],
         outcomeKeyset: outcomeKeyset(1_000),
         regularKeyset: regularKeyset(),
       }),
@@ -193,7 +196,7 @@ test('unsigned refusal retains exact operation and does not call losing callback
     outcome: 'NO',
     unit: 'sat',
     oracleWitness: 'invalid-signatures',
-    proofs: [proof('ctf-keyset', 'retained', 3)],
+    proofs: [proof(CTF_KEYSET_ID, 'retained', 3)],
     outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     onLosingLeg: async () => {
@@ -209,8 +212,8 @@ test('unsigned refusal retains exact operation and does not call losing callback
 
 test('redeemOutcomeLegWithOperation returns a completed exact retry before mint I/O', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'completed-input', 2)]
-  const settled = [proof('regular-keyset', 'completed-output', 2)]
+  const inputs = [proof(CTF_KEYSET_ID, 'completed-input', 2)]
+  const settled = [proof(REGULAR_KEYSET_ID, 'completed-output', 2)]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
     operationId: 'redeem:completed-retry',
@@ -248,7 +251,7 @@ test('redeemOutcomeLegWithOperation returns a completed exact retry before mint 
 
 test('redeemOutcomeLegWithOperation rejects malformed completion before mint I/O', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'malformed-completion-input', 2)]
+  const inputs = [proof(CTF_KEYSET_ID, 'malformed-completion-input', 2)]
   await store.prepareProofOperation({
     operationId: 'redeem:malformed-completion',
     kind: 'ctf-redeem',
@@ -258,8 +261,8 @@ test('redeemOutcomeLegWithOperation rejects malformed completion before mint I/O
     metadata: {
       conditionId: 'condition',
       outcome: 'YES',
-      outcomeKeysetId: 'ctf-keyset',
-      regularKeysetId: 'regular-keyset',
+      outcomeKeysetId: CTF_KEYSET_ID,
+      regularKeysetId: REGULAR_KEYSET_ID,
       unit: 'sat',
       grossInputSubunits: 2,
       inputFeeSubunits: 0,
@@ -298,8 +301,8 @@ test('redeemOutcomeLegWithOperation rejects malformed completion before mint I/O
 
 test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are spent', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'spent-input', 5)]
-  const restored = [proof('regular-keyset', 'restored', 5)]
+  const inputs = [proof(CTF_KEYSET_ID, 'spent-input', 5)]
+  const restored = [proof(REGULAR_KEYSET_ID, 'restored', 5)]
   const wallet = new FakeRedeemWallet({ states: [state(CheckStateEnum.SPENT, 'spent-input')] })
 
   await redeemOutcomeLegWithOperation({
@@ -341,7 +344,7 @@ test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are sp
 
 test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs remain unspent', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'unspent-input', 5)]
+  const inputs = [proof(CTF_KEYSET_ID, 'unspent-input', 5)]
 
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
@@ -358,7 +361,7 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
     restoreOutputGroups: async () => ({}),
   }).catch(() => undefined)
 
-  const settledProofs = [proof('regular-keyset', 'retried', 5)]
+  const settledProofs = [proof(REGULAR_KEYSET_ID, 'retried', 5)]
   const wallet = new FakeRedeemWallet({
     states: [state(CheckStateEnum.UNSPENT, 'unspent-input')],
     settledProofs,
@@ -388,7 +391,10 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
 
 test('redeemOutcomeLegWithOperation does not restore a short spent-state response', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'short-spent-a', 5), proof('ctf-keyset', 'short-spent-b', 5)]
+  const inputs = [
+    proof(CTF_KEYSET_ID, 'short-spent-a', 5),
+    proof(CTF_KEYSET_ID, 'short-spent-b', 5),
+  ]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
     operationId: 'redeem:short-spent',
@@ -435,8 +441,8 @@ test('redeemOutcomeLegWithOperation does not restore a short spent-state respons
 test('redeemOutcomeLegWithOperation does not resubmit a short unspent-state response', async () => {
   const store = new MemoryProofOperationStore()
   const inputs = [
-    proof('ctf-keyset', 'short-unspent-a', 5),
-    proof('ctf-keyset', 'short-unspent-b', 5),
+    proof(CTF_KEYSET_ID, 'short-unspent-a', 5),
+    proof(CTF_KEYSET_ID, 'short-unspent-b', 5),
   ]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
@@ -478,7 +484,7 @@ test('redeemOutcomeLegWithOperation does not resubmit a short unspent-state resp
 
 test('redeemOutcomeLegWithOperation refuses unbound or mixed NUT-07 state vectors', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'state-a', 5), proof('ctf-keyset', 'state-b', 5)]
+  const inputs = [proof(CTF_KEYSET_ID, 'state-a', 5), proof(CTF_KEYSET_ID, 'state-b', 5)]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
     operationId: 'redeem:wrong-Y',
@@ -540,7 +546,7 @@ test('redeemOutcomeLegWithOperation refuses unbound or mixed NUT-07 state vector
 
 test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'witness-bound-input', 5)]
+  const inputs = [proof(CTF_KEYSET_ID, 'witness-bound-input', 5)]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
     operationId: 'redeem:witness-bound',
@@ -557,7 +563,7 @@ test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O
 
   const retryWallet = new FakeRedeemWallet({
     states: [state(CheckStateEnum.UNSPENT, 'witness-bound-input')],
-    settledProofs: [proof('regular-keyset', 'must-not-settle', 5)],
+    settledProofs: [proof(REGULAR_KEYSET_ID, 'must-not-settle', 5)],
   })
   await assert.rejects(
     () =>
@@ -596,7 +602,7 @@ test('redeemOutcomeLegWithOperation rejects an oversized witness before persiste
         outcome: 'YES',
         unit: 'sat',
         oracleWitness: 'w'.repeat(DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX + 1),
-        proofs: [proof('ctf-keyset', 'oversized-witness-input', 1)],
+        proofs: [proof(CTF_KEYSET_ID, 'oversized-witness-input', 1)],
         outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
@@ -623,7 +629,7 @@ test('redeemOutcomeLegWithOperation accepts the exact witness byte boundary', as
         outcome: 'YES',
         unit: 'sat',
         oracleWitness: witness,
-        proofs: [proof('ctf-keyset', 'bounded-witness-input', 1)],
+        proofs: [proof(CTF_KEYSET_ID, 'bounded-witness-input', 1)],
         outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
@@ -639,7 +645,7 @@ test('redeemOutcomeLegWithOperation accepts the exact witness byte boundary', as
 
 test('redeemOutcomeLegWithOperation rejects a legacy record without a witness before mint I/O', async () => {
   const store = new MemoryProofOperationStore()
-  const inputs = [proof('ctf-keyset', 'legacy-input', 1)]
+  const inputs = [proof(CTF_KEYSET_ID, 'legacy-input', 1)]
   await store.prepareProofOperation({
     operationId: 'redeem:legacy',
     kind: 'ctf-redeem',
@@ -649,8 +655,8 @@ test('redeemOutcomeLegWithOperation rejects a legacy record without a witness be
     metadata: {
       conditionId: 'condition',
       outcome: 'YES',
-      outcomeKeysetId: 'ctf-keyset',
-      regularKeysetId: 'regular-keyset',
+      outcomeKeysetId: CTF_KEYSET_ID,
+      regularKeysetId: REGULAR_KEYSET_ID,
       unit: 'sat',
       grossInputSubunits: 1,
       inputFeeSubunits: 0,
@@ -684,7 +690,7 @@ test('redeemOutcomeLegWithOperation rejects a legacy record without a witness be
 
 test('redeemOutcomeLegWithOperation rejects request substitution before mint effects', async () => {
   const store = new MemoryProofOperationStore()
-  const original = [proof('ctf-keyset', 'original-input', 5)]
+  const original = [proof(CTF_KEYSET_ID, 'original-input', 5)]
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
     operationId: 'redeem:authority',
@@ -692,7 +698,7 @@ test('redeemOutcomeLegWithOperation rejects request substitution before mint eff
     proofOperationStore: store,
     conditionId: 'condition',
     outcome: 'YES',
-    outcomeKeysetId: 'ctf-keyset',
+    outcomeKeysetId: CTF_KEYSET_ID,
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: original,
@@ -710,10 +716,10 @@ test('redeemOutcomeLegWithOperation rejects request substitution before mint eff
         proofOperationStore: store,
         conditionId: 'condition',
         outcome: 'YES',
-        outcomeKeysetId: 'ctf-keyset',
+        outcomeKeysetId: CTF_KEYSET_ID,
         unit: 'sat',
         oracleWitness: 'witness',
-        proofs: [proof('ctf-keyset', 'substituted-input', 5)],
+        proofs: [proof(CTF_KEYSET_ID, 'substituted-input', 5)],
         outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
@@ -886,13 +892,13 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
     operationId: 'redeem:failed',
     kind: 'ctf-redeem',
     mintUrl: 'https://mint.example',
-    inputs: [proof('ctf-keyset', 'input', 1)],
+    inputs: [proof(CTF_KEYSET_ID, 'input', 1)],
     outputs: {},
     metadata: {
       conditionId: 'condition',
       outcome: 'YES',
-      outcomeKeysetId: 'ctf-keyset',
-      regularKeysetId: 'regular-keyset',
+      outcomeKeysetId: CTF_KEYSET_ID,
+      regularKeysetId: REGULAR_KEYSET_ID,
       unit: 'sat',
       grossInputSubunits: 1,
       inputFeeSubunits: 0,
@@ -919,7 +925,7 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
         outcome: 'YES',
         unit: 'sat',
         oracleWitness: 'witness',
-        proofs: [proof('ctf-keyset', 'input', 1)],
+        proofs: [proof(CTF_KEYSET_ID, 'input', 1)],
         outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
         restoreOutputGroups: async () => ({}),
@@ -990,7 +996,7 @@ test('timeout then unverified refusal retains frozen outputs for later exact res
     outcomeSetId: 'NO',
     unit: 'sat',
     oracleWitness: '',
-    proofs: [proof('ctf-keyset', 'exact-uncertain-input', 1)],
+    proofs: [proof(CTF_KEYSET_ID, 'exact-uncertain-input', 1)],
     outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
   }
@@ -1024,7 +1030,7 @@ test('timeout then unverified refusal retains frozen outputs for later exact res
     state: 'Failed',
     failureCode: 13015,
   })
-  const restored = [proof('regular-keyset', 'restored-exact-output', 1)]
+  const restored = [proof(REGULAR_KEYSET_ID, 'restored-exact-output', 1)]
   const result = await redeemOutcomeLegWithOperation({
     ...request,
     wallet: new FakeRedeemWallet({
@@ -1060,7 +1066,7 @@ function validRegularKeyset(unit: 'sat' | 'msat'): MintKeys {
 
 function regularKeyset(): MintKeys {
   return {
-    id: 'regular-keyset',
+    id: REGULAR_KEYSET_ID,
     unit: 'sat',
     active: true,
     input_fee_ppk: 0,
@@ -1071,7 +1077,7 @@ function regularKeyset(): MintKeys {
 function outcomeKeyset(inputFeePpk = 0): MintKeys {
   return {
     ...regularKeyset(),
-    id: 'ctf-keyset',
+    id: CTF_KEYSET_ID,
     input_fee_ppk: inputFeePpk,
   }
 }
@@ -1185,3 +1191,50 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
     return failed
   }
 }
+
+test('prepared redeem replay rejects unsupported input IDs before loading or checking the mint', async () => {
+  const store = new MemoryProofOperationStore()
+  const unsupportedId = `02${'ab'.repeat(32)}`
+  const inputs = [proof(unsupportedId, 'unsupported-input', 1)]
+  await store.prepareProofOperation({
+    operationId: 'redeem:unsupported',
+    kind: 'ctf-redeem',
+    mintUrl: 'https://mint.example',
+    inputs,
+    outputs: {},
+    metadata: {
+      conditionId: 'condition',
+      outcome: 'YES',
+      outcomeKeysetId: unsupportedId,
+      regularKeysetId: regularKeyset().id,
+      unit: 'sat',
+      grossInputSubunits: 1,
+      inputFeeSubunits: 0,
+      netOutputSubunits: 1,
+      outcomeInputFeePpk: 0,
+      oracleWitness: 'witness',
+    },
+  })
+  const wallet = new FakeRedeemWallet()
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        mintUrl: 'https://mint.example',
+        operationId: 'redeem:unsupported',
+        wallet,
+        proofOperationStore: store,
+        conditionId: 'condition',
+        outcome: 'YES',
+        unit: 'sat',
+        oracleWitness: 'witness',
+        proofs: inputs,
+        outcomeKeyset: { ...outcomeKeyset(), id: unsupportedId },
+        regularKeyset: regularKeyset(),
+      }),
+    /supported resolved/,
+  )
+  assert.equal(wallet.loadMintCalls, 0)
+  assert.equal(wallet.checkProofStateCalls, 0)
+  assert.equal(wallet.redeemCalls.length, 0)
+  assert.equal(store.records.get('redeem:unsupported')?.state, 'prepared')
+})
