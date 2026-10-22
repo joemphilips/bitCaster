@@ -23,6 +23,24 @@ before reading a request body. This also applies to chunked bodies with no decla
 length. A declared oversized body still receives `413` first. A correctly encoded
 event must still pass signature, request-target, and body-hash validation.
 
+## Sign the request URL
+
+For NIP-98, sign the URL that the client sends. Only the scheme and host ignore
+case. The path and retained query must match exactly, including case, parameter
+order, and percent encoding. For example, `+` differs from `%20`, and `%2f`
+differs from `%2F`. Keep explicit ports unchanged. Malformed percent escapes
+are refused.
+
+URL comparison excludes the decoded parameter names `access_token`, `id`, and
+`negotiateVersion`. These names are case-sensitive; `ID` remains signed.
+Repeated parameter names are refused, including encoded or case aliases such
+as `id` with `i%64` or `ID`. Do not add duplicate transport parameters.
+For OrderHub Bearer or query-token authentication, sign the logical HTTP(S) hub
+URL without `/negotiate`. The same signed URL supports negotiation and the
+WebSocket connection. These exceptions do not permit other URL changes.
+
+See [Authentication](/technical/protocol/authentication/) for the signing flow.
+
 ## Custom clients and automation
 
 Use the CLI as an application interface for a custom GUI or TUI, scripts,
