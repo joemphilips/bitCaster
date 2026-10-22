@@ -1,3 +1,18 @@
+import {
+  requireSignature,
+  decodePins,
+  decodeObjects,
+  decodeBundleIds,
+  nullableHex,
+  objectTuple,
+  sameObjects,
+  sameIds,
+  requirePublicKey,
+  positive,
+  bounded,
+  exactRecord,
+  toHex,
+} from './encryptedWalletBackupReceiptValidation.ts'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
@@ -6,7 +21,6 @@ import {
   digestEncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2ObjectReference,
-  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
 } from './encryptedWalletBackupV2Descriptor.ts'
 import {
   encodeEncryptedWalletBackupV2CurrentHead,
@@ -14,17 +28,12 @@ import {
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
   type EncryptedWalletBackupV2CurrentHead,
 } from './encryptedWalletBackupV2Head.ts'
-import {
-  ENCRYPTED_WALLET_BACKUP_V2_SUPERSEDED_BUNDLE_MAX,
-  requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation,
-} from './encryptedWalletBackupV2Mutation.ts'
+import { requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation } from './encryptedWalletBackupV2Mutation.ts'
 import {
   hexToBytesStrict,
   equalBytes,
-  requireBytes,
   requireLowerHex,
   requireRealm,
-  requireValidXOnlyPublicKey,
 } from './encryptedWalletBackupServerValidation.ts'
 
 export interface EncryptedWalletBackupV2BundleSupersessionReceipt {
@@ -213,27 +222,6 @@ function unsignedReceipt(
   })
 }
 
-function requireSignature(value: unknown): Uint8Array {
-  return new Uint8Array(requireBytes(value, 64, 64, 'receipt signature'))
-}
-
-function decodePins(value: unknown): readonly Pin[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 2)
-    throw new Error('encrypted backup receipt pins are invalid')
-  const pins = value.map((item) => {
-    const record = exactRecord(item, ['keyId', 'publicKey'])
-    const keyId = requireLowerHex(record.keyId, 16, 'receipt key id')
-    const publicKey = requirePublicKey(record.publicKey)
-    return Object.freeze({ keyId, publicKey })
-  })
-  if (
-    new Set(pins.map((item) => item.keyId)).size !== pins.length ||
-    new Set(pins.map((item) => item.publicKey)).size !== pins.length
-  )
-    throw new Error('encrypted backup receipt pins are duplicated')
-  return Object.freeze(pins)
-}
-
 function decodeReceipt(value: unknown): EncryptedWalletBackupV2BundleSupersessionReceipt {
   const record = exactRecord(value, receiptFields)
   const raw = snapshotReceipt(record)
@@ -340,32 +328,6 @@ function snapshotReceipt(record: Record<string, unknown>): Record<string, unknow
   return Object.fromEntries(receiptFields.map((field) => [field, record[field]]))
 }
 
-function decodeObjects(value: unknown): readonly EncryptedWalletBackupV2ObjectReference[] {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX)
-    throw new Error('encrypted backup receipt objects are invalid')
-  const objects = Object.freeze(
-    value.map((item) => {
-      const record = exactRecord(item, ['objectId', 'digest'])
-      return Object.freeze({
-        objectId: requireLowerHex(record.objectId, 16, 'object id'),
-        digest: requireLowerHex(record.digest, 32, 'object digest'),
-      })
-    }),
-  )
-  if (new Set(objects.map((item) => item.objectId)).size !== objects.length)
-    throw new Error('encrypted backup receipt objects are duplicated')
-  return objects
-}
-
-function decodeBundleIds(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_SUPERSEDED_BUNDLE_MAX)
-    throw new Error('encrypted backup receipt superseded bundles are invalid')
-  const ids = value.map((item) => requireLowerHex(item, 16, 'superseded bundle id'))
-  if (ids.some((item, index) => index > 0 && item <= ids[index - 1]!))
-    throw new Error('encrypted backup receipt superseded bundles are invalid')
-  return Object.freeze(ids)
-}
-
 function freezeReceipt(
   value: EncryptedWalletBackupV2BundleSupersessionReceipt,
 ): EncryptedWalletBackupV2BundleSupersessionReceipt {
@@ -375,58 +337,6 @@ function freezeReceipt(
     finalizedObjects: value.finalizedObjects.map((item) => ({ ...item })),
     supersededBundleIds: [...value.supersededBundleIds],
   })
-}
-
-function nullableHex(value: unknown, bytes: number, name: string): string | null {
-  return value === null ? null : requireLowerHex(value, bytes, name)
-}
-function objectTuple(value: EncryptedWalletBackupV2ObjectReference): readonly Uint8Array[] {
-  return [
-    hexToBytesStrict(value.objectId, 16, 'object id'),
-    hexToBytesStrict(value.digest, 32, 'object digest'),
-  ]
-}
-function sameObjects(
-  left: readonly EncryptedWalletBackupV2ObjectReference[],
-  right: readonly EncryptedWalletBackupV2ObjectReference[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (item, index) =>
-        item.objectId === right[index]?.objectId && item.digest === right[index]?.digest,
-    )
-  )
-}
-function sameIds(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((item, index) => item === right[index])
-}
-function requirePublicKey(value: unknown): string {
-  const key = requireLowerHex(value, 32, 'receipt public key')
-  requireValidXOnlyPublicKey(hexToBytesStrict(key, 32, 'receipt public key'), 'receipt public key')
-  return key
-}
-function positive(value: unknown, name: string): number {
-  return bounded(value, 1, name)
-}
-function bounded(value: unknown, min: number, name: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < min)
-    throw new Error(`encrypted backup ${name} is invalid`)
-  return value as number
-}
-function exactRecord(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(value, field))
-  )
-    throw new Error('encrypted backup receipt is invalid')
-  return value as Record<string, unknown>
-}
-function toHex(value: Uint8Array): string {
-  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 const receiptFields = [
@@ -448,7 +358,4 @@ const receiptFields = [
   'signingKeyId',
   'signature',
 ] as const
-interface Pin {
-  readonly keyId: string
-  readonly publicKey: string
-}
+export * from './encryptedWalletBackupOwnerReceipt.ts'

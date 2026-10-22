@@ -1,3 +1,7 @@
+import {
+  decodeEncryptedWalletBackupOwnerBundleSupersessionReceipt,
+  type EncryptedWalletBackupOwnerBundleSupersessionReceipt,
+} from './encryptedWalletBackupOwnerReceipt.ts'
 import { decode } from 'cborg'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
@@ -301,5 +305,88 @@ export function decodeEncryptedWalletBackupOwnerSignedMutationWire(
     requestAuthPublicKey: hex(r[13], 32),
     requestDigest: hex(r[14], 32),
     signature: hex(r[15], 64),
+  })
+}
+
+/** Structural wire parsing does not grant receipt authority. */
+export function encodeEncryptedWalletBackupOwnerBundleSupersessionReceipt(
+  value: unknown,
+): Uint8Array {
+  const receipt = decodeEncryptedWalletBackupOwnerBundleSupersessionReceipt(value)
+  const bytes = encodeCanonicalBackupCbor([
+    3,
+    'bundle-supersession-receipt-wire',
+    3,
+    receipt.kind,
+    bin(receipt.ownerScopeId, 32),
+    receipt.realm,
+    bin(receipt.walletId, 32),
+    receipt.enrollmentEpoch,
+    bin(receipt.requestAuthPublicKey, 32),
+    bin(receipt.mutationId, 16),
+    bin(receipt.requestDigest, 32),
+    receipt.previousHeadVersion,
+    bin(receipt.previousActiveSetDigest, 32),
+    encodeEncryptedWalletBackupOwnerCurrentHead(receipt.resultHead),
+    optionalId(receipt.bundleId),
+    receipt.bundleDescriptorDigest === null ? null : bin(receipt.bundleDescriptorDigest, 32),
+    receipt.finalizedObjects.map((item) => [bin(item.objectId, 16), bin(item.digest, 32)]),
+    receipt.supersededBundleIds.map((id) => bin(id, 16)),
+    bin(receipt.signingKeyId, 16),
+    bin(receipt.signature, 64),
+  ])
+  if (bytes.length > 65536) throw new Error('encrypted backup owner receipt is too large')
+  return bytes
+}
+export function decodeEncryptedWalletBackupOwnerBundleSupersessionReceiptWire(
+  bytes: Uint8Array,
+): EncryptedWalletBackupOwnerBundleSupersessionReceipt {
+  const record = tuple(bytes, [
+    u(3, 3),
+    t('bundle-supersession-receipt-wire'),
+    u(3, 3),
+    t('bundle-supersession-receipt'),
+    b(32),
+    realm,
+    b(32),
+    u(1),
+    b(32),
+    b(16),
+    b(32),
+    u(),
+    b(32),
+    b(1, 65536),
+    nullable(b(16)),
+    nullable(b(32)),
+    a(15),
+    a(256),
+    b(16),
+    b(64),
+  ])
+  return decodeEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+    formatVersion: record[2],
+    kind: record[3],
+    ownerScopeId: hex(record[4], 32),
+    realm: record[5],
+    walletId: hex(record[6], 32),
+    enrollmentEpoch: record[7],
+    requestAuthPublicKey: hex(record[8], 32),
+    mutationId: hex(record[9], 16),
+    requestDigest: hex(record[10], 32),
+    previousHeadVersion: record[11],
+    previousActiveSetDigest: hex(record[12], 32),
+    resultHead: decodeEncryptedWalletBackupOwnerCurrentHeadWire(
+      requireBytes(record[13], 1, 65536, 'result head'),
+    ),
+    bundleId: decodedId(record[14]),
+    bundleDescriptorDigest: record[15] === null ? null : hex(record[15], 32),
+    finalizedObjects: (record[16] as unknown[]).map((item) => {
+      if (!Array.isArray(item) || item.length !== 2)
+        throw new Error('encrypted backup owner receipt object is invalid')
+      return { objectId: hex(item[0], 16), digest: hex(item[1], 32) }
+    }),
+    supersededBundleIds: (record[17] as unknown[]).map((item) => hex(item, 16)),
+    signingKeyId: hex(record[18], 16),
+    signature: hex(record[19], 64),
   })
 }
