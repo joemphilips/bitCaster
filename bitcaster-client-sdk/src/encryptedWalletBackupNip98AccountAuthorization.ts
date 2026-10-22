@@ -1,3 +1,9 @@
+import {
+  decodeEncryptedWalletBackupOwnerAccountRequest,
+  verifyEncryptedWalletBackupOwnerAccountPossession,
+  type EncryptedWalletBackupOwnerAccountAuthorizationPort,
+} from './encryptedWalletBackupOwnerAccount.ts'
+import { deriveEncryptedWalletBackupOwnerScope } from './encryptedWalletBackupOwnerScope.ts'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
@@ -49,7 +55,7 @@ export interface AuthenticatedEncryptedWalletBackupAccountRequest extends Verifi
 export function createEncryptedWalletBackupNip98AccountAuthorizationPort(input: {
   signer: EncryptedWalletBackupNostrEventSigner
   clock?: () => number
-}): EncryptedWalletBackupAccountAuthorizationPort {
+}): EncryptedWalletBackupOwnerAccountAuthorizationPort {
   if (
     typeof input.signer !== 'object' ||
     input.signer === null ||
@@ -61,7 +67,7 @@ export function createEncryptedWalletBackupNip98AccountAuthorizationPort(input: 
   if (typeof clock !== 'function') {
     throw new Error('encrypted backup account clock is invalid')
   }
-  const port: EncryptedWalletBackupAccountAuthorizationPort = {
+  const port: EncryptedWalletBackupOwnerAccountAuthorizationPort = {
     async authorizeBackupAccountOperation(
       operation: Parameters<
         EncryptedWalletBackupAccountAuthorizationPort['authorizeBackupAccountOperation']
@@ -87,6 +93,7 @@ export function createEncryptedWalletBackupNip98AccountAuthorizationPort(input: 
       })
       return {
         scheme: ENCRYPTED_WALLET_BACKUP_NIP98_ACCOUNT_PROFILE,
+        ownerSubject: signed.pubkey,
         authorization,
       }
     },
@@ -372,4 +379,25 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index]! ^ right[index]!
   }
   return difference === 0
+}
+
+/** Strict owner-envelope entry; legacy entry remains separate until consumer cutover. */
+export function authenticateEncryptedWalletBackupNip98OwnerAccountRequest(
+  input: Parameters<typeof authenticateEncryptedWalletBackupNip98AccountRequest>[0],
+) {
+  try {
+    const outer = decodeEncryptedWalletBackupOwnerAccountRequest(input.canonicalRequest)
+    const authenticated = authenticateEncryptedWalletBackupNip98AccountRequest({
+      ...input,
+      canonicalRequest: outer.authorizedRequestBytes,
+    })
+    verifyEncryptedWalletBackupOwnerAccountPossession(outer)
+    return Object.freeze({
+      ...authenticated,
+      ...deriveEncryptedWalletBackupOwnerScope(authenticated),
+      ownerRequest: outer,
+    })
+  } catch {
+    throw new Error('encrypted backup owner account authorization failed')
+  }
 }

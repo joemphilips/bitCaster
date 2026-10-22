@@ -520,3 +520,6 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
     ? typeof (value as PromiseLike<unknown>).then === 'function'
     : false
 }
+
+export * from './encryptedWalletBackupOwnerScope.ts'
+export * from './encryptedWalletBackupOwnerAccount.ts'

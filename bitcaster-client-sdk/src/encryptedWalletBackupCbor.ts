@@ -64,6 +64,23 @@ export function structurallyPreflightEncryptedBackupAccountRequestCbor(bytes: Ui
     throw new Error('account request shape')
 }
 
+/** Bounded outer scan before parsing the embedded legacy authorized intent. */
+export function preflightEncryptedBackupOwnerAccountRequestCbor(bytes: Uint8Array): void {
+  const tuple = scanTuple(bytes, ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES, 2, 16, 4)
+  requireUnsignedField(tuple, 0, 2, 'owner account request version')
+  requireTextField(tuple, 1, 22, 22, 'owner account discriminator')
+  requireBytesField(
+    tuple,
+    2,
+    1,
+    ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES,
+    'authorized account request',
+  )
+  const proof = tuple.children[3]
+  if (!(proof?.major === 2 && proof.value === 64) && !(proof?.major === 7 && proof.value === 22))
+    throw new Error('owner account possession shape')
+}
+
 export function preflightEncryptedBackupAccountIntentCbor(bytes: Uint8Array): void {
   const tuple = scanTuple(bytes, 4_096, 1, 16, 10)
   requireUnsignedField(tuple, 0, 1, 'account intent version')
