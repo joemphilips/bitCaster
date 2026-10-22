@@ -712,6 +712,40 @@ describe("browser wallet counter authority", () => {
       (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
     ).toBe("2");
     expect(fullProofScan).not.toHaveBeenCalled();
+    const context = { mintUrl: "https://mint.example", unit: "sat" };
+    await counters.restoreInContext(context, keysetId, 3, false, () => undefined);
+    const tables = [
+      database.walletCounterAssociations,
+      database.walletCounterCursors,
+      database.custodyProofs,
+      database.custodyProofBackupAuthorities,
+      database.custodyConditionalKeysets,
+      database.encryptedWalletBackupV2DesiredAssets,
+    ];
+    await database.transaction("rw", tables, (tx) =>
+      counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId,
+        expectedNextCounter: 3,
+        nextCounter: 4,
+      }),
+    );
+    expect(
+      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
+    ).toBe("3");
+    await expect(
+      database.transaction("rw", tables, async (tx) => {
+        await counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+          keysetId,
+          expectedNextCounter: 4,
+          nextCounter: 5,
+        });
+        throw new Error("counter journal abort");
+      }),
+    ).rejects.toThrow("counter journal abort");
+    expect(
+      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
+    ).toBe("3");
+    expect(await counters.snapshot()).toEqual({ [keysetId]: 4 });
   });
 
   it("rejects stale profiles and foreign databases", async () => {
@@ -829,5 +863,83 @@ describe("browser wallet counter authority", () => {
     expect(await database.proofs.get("profile-change")).toBeUndefined();
     expect(await database.walletCounterCursors.count()).toBe(0);
     expect(await database.walletCounterAssociations.count()).toBe(0);
+  });
+});
+
+it("scoped speculative counter CAS requires exact current transaction and preserves absent snapshots", async () => {
+  const { database, counters } = createCtfStore();
+  const context = { mintUrl: "https://mint.example", unit: "msat" };
+  await counters.restoreInContext(context, keysetId, 0, false, () => undefined);
+  expect(await counters.readSnapshotInContext(context, keysetId)).toEqual({
+    keysetId,
+    nextCounter: null,
+  });
+  const tables = [
+    database.walletCounterAssociations,
+    database.walletCounterCursors,
+    database.custodyProofs,
+    database.custodyProofBackupAuthorities,
+    database.custodyConditionalKeysets,
+    database.encryptedWalletBackupV2DesiredAssets,
+  ];
+  await expect(
+    database.transaction("rw", tables, async (tx) => {
+      await counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId,
+        expectedNextCounter: null,
+        nextCounter: 3,
+      });
+      throw new Error("joint journal rollback");
+    }),
+  ).rejects.toThrow("joint journal rollback");
+  expect(await counters.readSnapshotInContext(context, keysetId)).toEqual({
+    keysetId,
+    nextCounter: null,
+  });
+  await database.transaction("rw", tables, (tx) =>
+    counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+      keysetId,
+      expectedNextCounter: null,
+      nextCounter: 3,
+    }),
+  );
+  await expect(
+    database.transaction("rw", tables, (tx) =>
+      counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId,
+        expectedNextCounter: null,
+        nextCounter: 4,
+      }),
+    ),
+  ).rejects.toThrow("snapshot changed");
+  expect(await counters.snapshot()).toEqual({ [keysetId]: 3 });
+  await expect(
+    database.transaction("rw", database.walletCounterCursors, (tx) =>
+      counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId,
+        expectedNextCounter: 3,
+        nextCounter: 4,
+      }),
+    ),
+  ).rejects.toThrow("exact current authority");
+  expect(await counters.snapshot()).toEqual({ [keysetId]: 3 });
+});
+
+it("speculative snapshot refuses unclassified recovery and stale profile authority", async () => {
+  const { database } = createCtfStore();
+  let current = true;
+  const counters = new BrowserWalletCounterDexieStore({
+    database,
+    scopeId: ctfScopeId,
+    isCurrentProfile: () => current,
+  });
+  const context = { mintUrl: "https://mint.example", unit: "msat" };
+  await expect(counters.readSnapshotInContext(context, keysetId)).rejects.toMatchObject({
+    code: "recovery_incomplete",
+  });
+  await counters.restoreInContext(context, keysetId, 0, false, () => undefined);
+  current = false;
+  await expect(counters.readSnapshotInContext(context, keysetId)).rejects.toMatchObject({
+    code: "stale_profile",
   });
 });

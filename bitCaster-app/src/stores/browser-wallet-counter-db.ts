@@ -1,3 +1,4 @@
+import Dexie, { type Transaction } from "dexie";
 import type { CounterRange, CounterSource } from "@cashu/cashu-ts";
 import {
   decodeDurableCustodyScopeId,
@@ -42,6 +43,13 @@ export class BrowserWalletCounterError extends Error {
   ) {
     super(message);
     this.name = "BrowserWalletCounterError";
+  }
+}
+
+export class BrowserWalletCounterSnapshotConflictError extends Error {
+  constructor() {
+    super("browser wallet counter snapshot changed");
+    this.name = "BrowserWalletCounterSnapshotConflictError";
   }
 }
 
@@ -335,6 +343,89 @@ export class BrowserWalletCounterDexieStore {
       await this.#advanceDesiredAssetAuthority(association, keysetId);
     }
     return { changed: counterChanged || recoveryChanged || admissionChangesWallet, next };
+  }
+
+  /** Observe one exact scoped authority without reserving a durable range. */
+  async readSnapshotInContext(
+    context: BrowserWalletCounterContextInput,
+    keysetId: string,
+  ): Promise<{ keysetId: string; nextCounter: number | null }> {
+    const association = requireContext(context);
+    const id = requireKeysetId(keysetId);
+    this.#requireCurrentProfile();
+    return this.#database.transaction(
+      "r",
+      [this.#database.walletCounterAssociations, this.#database.walletCounterCursors],
+      async () => {
+        this.#requireCurrentProfile();
+        const row = await this.#database.walletCounterAssociations.get([
+          this.#scopeId,
+          association.normalizedMint,
+          association.unit,
+          id,
+        ]);
+        if (row?.recoveryComplete !== true) this.#throwRecoveryIncomplete();
+        const cursor = await this.#database.walletCounterCursors.get([this.#scopeId, id]);
+        this.#requireCurrentProfile();
+        return {
+          keysetId: id,
+          nextCounter: cursor === undefined ? null : requireCounter(cursor.next),
+        };
+      },
+    );
+  }
+
+  /** Compare and advance inside the caller's exact journal/custody transaction. */
+  async compareAndAdvanceInCurrentTransaction(
+    transaction: Transaction,
+    context: BrowserWalletCounterContextInput,
+    change: { keysetId: string; expectedNextCounter: number | null; nextCounter: number },
+  ): Promise<void> {
+    const required = [
+      this.#database.walletCounterAssociations,
+      this.#database.walletCounterCursors,
+      this.#database.custodyProofs,
+      this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+    ];
+    if (
+      Dexie.currentTransaction !== transaction ||
+      transaction.db !== this.#database ||
+      !transaction.active ||
+      transaction.mode !== "readwrite" ||
+      required.some((table) => !transaction.storeNames.includes(table.name))
+    )
+      throw new Error("browser counter transaction is not exact current authority");
+    try {
+      this.#requireCurrentProfile();
+      const association = requireContext(context);
+      const id = requireKeysetId(change.keysetId);
+      const expected =
+        change.expectedNextCounter === null ? null : requireCounter(change.expectedNextCounter);
+      const next = requireCounter(change.nextCounter);
+      if (next <= (expected ?? 0))
+        throw new BrowserWalletCounterError(
+          "invalid_counter",
+          "browser counter change does not advance",
+        );
+      const row = await this.#database.walletCounterAssociations.get([
+        this.#scopeId,
+        association.normalizedMint,
+        association.unit,
+        id,
+      ]);
+      if (row?.recoveryComplete !== true) this.#throwRecoveryIncomplete();
+      const cursor = await this.#database.walletCounterCursors.get([this.#scopeId, id]);
+      const current = cursor === undefined ? null : requireCounter(cursor.next);
+      if (current !== expected) throw new BrowserWalletCounterSnapshotConflictError();
+      await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId: id, next });
+      await this.#advanceDesiredAssetAuthority(association, id);
+      this.#requireCurrentProfile();
+    } catch (error) {
+      transaction.abort();
+      throw error;
+    }
   }
 
   async snapshot(): Promise<Record<string, number>> {

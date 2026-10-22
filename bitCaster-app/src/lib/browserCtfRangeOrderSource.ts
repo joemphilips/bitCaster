@@ -690,7 +690,10 @@ export function browserRangeRefundProofRows(
   record: DurableCustodyRecord,
   operation: DurableCtfRangeOperation,
   proofs: readonly Proof[],
-  locators: readonly Extract<DurableWalletProofDerivationLocator, { kind: "ctf-range-refund" }>[],
+  locators: readonly Extract<
+    DurableWalletProofDerivationLocator,
+    { kind: "ctf-range-refund" | "nut13" }
+  >[],
   receivedAtMs: number,
 ): StagedBrowserCustodyProof[] {
   if (proofs.length !== locators.length)

@@ -41,11 +41,15 @@ The backup service can be unavailable, refuse an upload, or lose its data.
 A failed upload leaves the affected ecash records, called proofs, in local
 storage. The web app must not discard them as backed up.
 
-Recovery from your phrase can reconstruct deterministic regular proofs and
-selected conditional-token proofs. It does not reconstruct every pending
-operation or refund record. In particular, it does not restore transient
-operation records, range locators, or refund locators. Keep the local wallet
-database until every active operation has a confirmed final result.
+CLI recovery from your phrase scans deterministic regular `msat` proofs by
+default. This includes new ordinary refund outputs after the mint signs them,
+within the selected scan range. It does not reconstruct the refund's operation
+history. Older refunds can still require their saved local records.
+Condition-specific recovery requires the supported discovery route described
+below. The web app uses encrypted backup recovery.
+Keep the local wallet database until every active operation has a confirmed
+final result. Seed recovery does not replace saved retry records for unfinished
+operations.
 Do not clear browser storage to resolve an uncertain payment or trade.
 
 ## What the web app stores

@@ -27,6 +27,7 @@ import {
   type SerializedBlindedSignature,
   type SwapPreview,
 } from "@cashu/cashu-ts";
+import { createSpeculativeCounterTranscript } from "@bitcaster/client-sdk/speculativeCounterTranscript";
 import { deserializeDurableCustodyOutput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -48,6 +49,11 @@ import {
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
   buildDurableCtfRangeRecoveryQuery,
+  createDeterministicDurableCtfRangeRefundOutputsWithLocators,
+  createDurableCtfRangeRefundOperation,
+  prepareDurableSeedDerivedCtfRangeRefund,
+  deriveDurableCtfRangeRefundRequestFingerprint,
+  deriveDurableCtfRangeFeeBounds,
   createDurableCtfRangeResultEnvelope,
   deriveDurableCtfRangeRefundOperationId,
   deriveRootCtfOutcomeCollectionId,
@@ -100,6 +106,8 @@ import {
 } from "../../stores/browser-wallet-counter-db";
 import {
   browserRangeJournalIdentity,
+  browserRangeOperationFromSnapshot,
+  browserCustodySelection,
   browserWalletScope,
   decodeBrowserPersistedSourceResult,
 } from "../browserCtfRangeOrderSource";
@@ -1742,7 +1750,7 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("recovers a late source result after restart and refunds without engine admission", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-source-late-result");
     let now = 20_000;
     const coordinator = createCoordinator(
@@ -1947,7 +1955,7 @@ describe("browser CTF range order coordinator", () => {
   it.each(["source-completion", "capability-requested"] as const)(
     "refunds expired %s without another capability request",
     async (stage) => {
-      const database = createDatabase();
+      const database = createRefundDatabase();
       const preparation = persistedPreparation(`range-expired-${stage}`);
       let now = preparation.expiry * 1_000 - 1_000;
       const engine = engineMock({
@@ -1996,7 +2004,7 @@ describe("browser CTF range order coordinator", () => {
   );
 
   it("refunds an accepted but unsubmitted capability after a policy refusal expires", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-capability-policy-refusal-expiry");
     let now = 20_000;
     let rejectInitialCapability = true;
@@ -2576,8 +2584,9 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("refunds the exact outer authorization after expiry and makes it selectable", async () => {
-    const database = createDatabase();
+    const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
     const preparation = persistedPreparation("range-outer-refund");
+    await initializeRefundCounterFixture(database, preparation);
     let now = 20_000;
     let refundTransportUnavailable = true;
     const wallet = sourceWallet();
@@ -2685,7 +2694,7 @@ describe("browser CTF range order coordinator", () => {
   );
 
   it("reports a cancelled FOK as awaiting authorization expiry, then refunds it", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-cancelled-fok-wait");
     let now = 20_000;
     const wallet = sourceWallet();
@@ -2733,7 +2742,7 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("ends a paused capability attempt after another tab refunds it at expiry", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-expiry-race");
     let now = 20_000;
     let releaseCapability: () => void = () => {};
@@ -2856,7 +2865,7 @@ describe("browser CTF range order coordinator", () => {
 
       const existingPreparation = persistedPreparation(`range-active-resume-refund-${status}`);
       let existingNow = 20_000;
-      const existingDatabase = createDatabase();
+      const existingDatabase = createRefundDatabase();
       const initial = createCoordinator(
         existingDatabase,
         sourceWallet(),
@@ -2926,7 +2935,7 @@ describe("browser CTF range order coordinator", () => {
   );
 
   it("uses exact mint recovery after expiry when the engine result is malformed", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-malformed-engine-result");
     let now = 20_000;
     const engine = engineMock({
@@ -2961,7 +2970,7 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("rolls back outer refund completion and restores the exact refund after restart", async () => {
-    const database = createDatabase();
+    const database = createRefundDatabase();
     const preparation = persistedPreparation("range-outer-refund-rollback");
     let now = 20_000;
     const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
@@ -3255,11 +3264,36 @@ type TestCoordinator = Omit<BrowserCtfRangeOrderCoordinator, "prepareAndSubmit">
   ): ReturnType<BrowserCtfRangeOrderCoordinator["prepareAndSubmit"]>;
 };
 
+const refundCounterFixtureDatabases = new WeakSet<BitcasterDB>();
+function createRefundDatabase(): BitcasterDB {
+  const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
+  refundCounterFixtureDatabases.add(database);
+  return database;
+}
+
+async function initializeRefundCounterFixture(
+  database: BitcasterDB,
+  preparation: PersistedCtfRangeOrderPreparation,
+): Promise<void> {
+  const counters = new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() });
+  for (const id of [preparation.offerKeyset.id, preparation.receiveKeyset.id])
+    await counters.restoreInContext(
+      { mintUrl: preparation.mintUrl, unit: "msat" },
+      id,
+      0,
+      false,
+      () => undefined,
+    );
+}
+
 function createCoordinator(
   database: BitcasterDB,
   wallet: ReturnType<typeof sourceWallet>,
   engine: ReturnType<typeof engineMock>,
   options: {
+    isCurrentRefundProfile?: BrowserCtfRangeOrderCoordinatorDependencies["isCurrentRefundProfile"];
+    observeRefundPrepared?: BrowserCtfRangeOrderCoordinatorDependencies["observeRefundPrepared"];
+    injectRefundPreparationFault?: BrowserCtfRangeOrderCoordinatorDependencies["injectRefundPreparationFault"];
     isDefinitiveOrderRejection?: (error: unknown) => boolean;
     beforeCreateCapability?: BrowserCtfRangeOrderCoordinatorDependencies["beforeCreateCapability"];
     lockManager?: Pick<LockManager, "request">;
@@ -3276,6 +3310,9 @@ function createCoordinator(
   let now = 20_000;
   const coordinator = new BrowserCtfRangeOrderCoordinator({
     database,
+    isCurrentRefundProfile: options.isCurrentRefundProfile,
+    observeRefundPrepared: options.observeRefundPrepared,
+    injectRefundPreparationFault: options.injectRefundPreparationFault,
     wallet,
     engine,
     ...(options.executeSourceConvert === undefined
@@ -3323,8 +3360,10 @@ function createCoordinator(
       })),
   });
   const prepareAndSubmit = coordinator.prepareAndSubmit.bind(coordinator);
-  const testPrepareAndSubmit = (input: TestCoordinatorSubmitInput) =>
-    prepareAndSubmit({
+  const testPrepareAndSubmit = async (input: TestCoordinatorSubmitInput) => {
+    if (refundCounterFixtureDatabases.has(database))
+      await initializeRefundCounterFixture(database, input.preparation);
+    return prepareAndSubmit({
       ...input,
       collateralCandidates: input.collateralCandidates ?? [],
       maxOutputs: input.maxOutputs ?? 256,
@@ -3332,6 +3371,7 @@ function createCoordinator(
       paidConsolidationFeeSubunits: input.paidConsolidationFeeSubunits ?? "0",
       currentFeeFacts: input.currentFeeFacts ?? coordinatorFeeFacts(input.preparation),
     });
+  };
   return Object.assign(coordinator, { prepareAndSubmit: testPrepareAndSubmit }) as TestCoordinator;
 }
 
@@ -4319,3 +4359,468 @@ function localAvailabilityInput(
     isCurrentProfile: () => true,
   };
 }
+
+async function expiredOrdinaryBrowserRefund(options: Parameters<typeof createCoordinator>[3] = {}) {
+  const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
+  const preparation = persistedPreparation("ordinary-browser-refund");
+  await initializeRefundCounterFixture(database, preparation);
+  let now = 20000;
+  const engine = engineMock({ resultFailure: true });
+  const coordinator = createCoordinator(database, sourceWallet(), engine, {
+    now: () => now,
+    createMintRecovery: refundableRecovery(preparation),
+    createCounterSource: (scopeId, mintUrl, unit) =>
+      new BrowserWalletCounterSource({ database, scopeId }, { mintUrl, unit }),
+    executeRefundSwap: async (_url, request) => ({
+      signatures: request.outputs.map(signBlindedMessage),
+    }),
+    ...options,
+  });
+  await coordinator.prepareAndSubmit({
+    seed: SEED,
+    preparation,
+    candidates: [sourceProof(preparation.offerKeyset.id)],
+  });
+  now = preparation.expiry * 1000;
+  return {
+    database,
+    preparation,
+    coordinator,
+    recover: () => coordinator.recoverPage({ seed: SEED, limit: 8 }),
+  };
+}
+
+async function browserRefundMoneyRows(database: BitcasterDB) {
+  const tables = [
+    database.walletCounterAssociations,
+    database.walletCounterCursors,
+    database.proofOperations,
+    database.custodyOperations,
+    database.custodyArtifacts,
+    database.custodyProofs,
+    database.custodyProofBackupAuthorities,
+    database.custodyConditionalKeysets,
+    database.encryptedWalletBackupV2DesiredAssets,
+    database.custodyReservations,
+    database.custodyActiveWork,
+  ];
+  return Object.fromEntries(
+    await Promise.all(
+      tables.map(async (table) => [
+        table.name,
+        (await table.toArray())
+          .map((row) =>
+            JSON.stringify(row, (_key, value) =>
+              typeof value === "bigint" ? value.toString() : value,
+            ),
+          )
+          .sort(),
+      ]),
+    ),
+  );
+}
+
+for (const phase of ["counter-written", "journal-bound"] as const) {
+  it(`ordinary browser refund atomically rolls back ${phase}, including canonical desired revisions`, async () => {
+    let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+    let before: unknown;
+    let swaps = 0;
+    let hits = 0;
+    fixture = await expiredOrdinaryBrowserRefund({
+      observeRefundPrepared: async () => {
+        before = await browserRefundMoneyRows(fixture.database);
+      },
+      injectRefundPreparationFault: (at) => {
+        if (at === phase) {
+          hits++;
+          throw new Error("refund rollback");
+        }
+      },
+      executeRefundSwap: async () => {
+        swaps++;
+        throw new Error("unexpected swap");
+      },
+    });
+    await expect(fixture.recover()).rejects.toThrow("refund rollback");
+    expect(hits).toBe(1);
+    expect(swaps).toBe(0);
+    expect(await browserRefundMoneyRows(fixture.database)).toEqual(before);
+  });
+}
+
+it("ordinary browser refund reconciles a lost commit reply and completes saved nut13 locators", async () => {
+  let drafts = 0;
+  let fault = 0;
+  let swaps = 0;
+  const fixture = await expiredOrdinaryBrowserRefund({
+    observeRefundPrepared: async () => {
+      drafts++;
+    },
+    injectRefundPreparationFault: (phase) => {
+      if (phase === "after-commit" && fault++ === 0) throw new Error("lost refund commit reply");
+    },
+    executeRefundSwap: async (_url, request) => {
+      swaps++;
+      return { signatures: request.outputs.map(signBlindedMessage) };
+    },
+  });
+  const result = await fixture.recover();
+  expect(result.pending).toEqual([]);
+  expect(drafts).toBe(1);
+  expect(swaps).toBe(1);
+  const refund = await fixture.database.proofOperations.get(
+    deriveDurableCtfRangeRefundOperationId(fixture.preparation.operationId),
+  );
+  expect(refund?.state).toBe("completed");
+  const plan = refund!.metadata.refundOutputPlan as {
+    keysetId: string;
+    counterStart: number;
+    counterCount: number;
+  };
+  const authorities = (await fixture.database.custodyProofBackupAuthorities.toArray()).flatMap(
+    (row) => ("derivationLocator" in row && row.derivationLocator?.kind === "nut13" ? [row] : []),
+  );
+  expect(authorities).toHaveLength(plan.counterCount);
+  expect(authorities.map((row) => row.derivationLocator)).toEqual(
+    Array.from({ length: plan.counterCount }, (_, index) => ({
+      schemaVersion: 1,
+      kind: "nut13",
+      keysetId: plan.keysetId,
+      counter: plan.counterStart + index,
+    })),
+  );
+});
+
+it("ordinary browser refund refuses profile loss after drafting without counter or journal writes", async () => {
+  let current = true;
+  let swaps = 0;
+  let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+  let before: unknown;
+  fixture = await expiredOrdinaryBrowserRefund({
+    isCurrentRefundProfile: () => current,
+    observeRefundPrepared: async () => {
+      before = await browserRefundMoneyRows(fixture.database);
+      current = false;
+    },
+    executeRefundSwap: async () => {
+      swaps++;
+      throw new Error("unexpected swap");
+    },
+  });
+  await expect(fixture.recover()).rejects.toThrow("profile changed");
+  expect(swaps).toBe(0);
+  expect(await browserRefundMoneyRows(fixture.database)).toEqual(before);
+});
+
+for (const corruption of ["stripped-plan", "invalid-plan", "signature"] as const) {
+  it(`ordinary browser refund refuses saved ${corruption} before replay I/O`, async () => {
+    let swaps = 0;
+    const fixture = await expiredOrdinaryBrowserRefund({
+      executeRefundSwap: async () => {
+        swaps++;
+        throw new Error("hold exact refund");
+      },
+    });
+    expect((await fixture.recover()).pending).toHaveLength(1);
+    expect(swaps).toBe(1);
+    const id = deriveDurableCtfRangeRefundOperationId(fixture.preparation.operationId);
+    const saved = (await fixture.database.proofOperations.get(id))!;
+    if (corruption === "stripped-plan") delete saved.metadata.refundOutputPlan;
+    else if (corruption === "invalid-plan") saved.metadata.refundOutputPlan = null;
+    else saved.inputs[0]!.witness = { signatures: ["00".repeat(64)] };
+    if (corruption === "signature")
+      saved.metadata.refundRequestFingerprint = deriveDurableCtfRangeRefundRequestFingerprint({
+        inputs: saved.inputs,
+        outputs: saved.outputs.refund!.map(
+          (output) => deserializeDurableCustodyOutput(output).blindedMessage,
+        ),
+      });
+    await fixture.database.proofOperations.put(saved);
+    const before = await browserRefundMoneyRows(fixture.database);
+    fixture.database.close();
+    await fixture.database.open();
+    await expect(fixture.recover()).rejects.toThrow(
+      corruption === "signature"
+        ? "witness"
+        : corruption === "stripped-plan"
+          ? "legacy outputs"
+          : "seed-derived",
+    );
+    expect(swaps).toBe(1);
+    expect(await browserRefundMoneyRows(fixture.database)).toEqual(before);
+  });
+}
+
+it("ordinary browser refund preserves exact legacy output and locator replay without allocating counters", async () => {
+  let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+  let beforeCounters: unknown;
+  let expectedPoints: string[] = [];
+  let swaps = 0;
+  fixture = await expiredOrdinaryBrowserRefund({
+    observeRefundPrepared: async (draft) => {
+      beforeCounters = await fixture.database.walletCounterCursors.toArray();
+      const snapshot = await new BrowserDurableCustodyAdapter(
+        fixture.database,
+      ).readOperationSnapshot(walletScope(), custodyOperationId(fixture.preparation.operationId));
+      expect(snapshot).not.toBeNull();
+      const source = browserRangeOperationFromSnapshot(snapshot!.record, snapshot!.artifacts);
+      const outputs = createDeterministicDurableCtfRangeRefundOutputsWithLocators({
+        seed: SEED,
+        source,
+        refundOperationId: draft.operationId,
+        amount:
+          source.inputs.reduce((sum, proof) => sum + BigInt(proof.amount), 0n) -
+          deriveDurableCtfRangeFeeBounds(source).maximumFee,
+        keyset: fixture.preparation.offerKeyset,
+      });
+      const prepared = createDurableCtfRangeRefundOperation({
+        source,
+        operationId: draft.operationId,
+        refundKeysetId: fixture.preparation.offerKeyset.id,
+        resolveKeysetAsset: () => source.offerAsset,
+        outputs: outputs.map((value) => value.output),
+      });
+      expectedPoints = prepared.request.outputs.map((output) => output.B_).sort();
+      await fixture.database.proofOperations.add({
+        operationId: draft.operationId,
+        kind: "ctf-range-refund",
+        state: "prepared",
+        mintUrl: source.mintUrl,
+        inputs: prepared.request.inputs,
+        outputs: {
+          refund: prepared.operation.outputs.refund!.map((output) => ({
+            ...output,
+            blindedMessage: {
+              ...output.blindedMessage,
+              amount: amountToNumber(output.blindedMessage.amount),
+            },
+          })),
+        },
+        metadata: {
+          ...prepared.operation.metadata,
+          unit: "msat",
+          rangeOperationId: source.operationId,
+          refundRequestFingerprint: deriveDurableCtfRangeRefundRequestFingerprint(prepared.request),
+        },
+        createdAt: 1,
+        updatedAt: 1,
+      });
+    },
+    executeRefundSwap: async (_url, request) => {
+      swaps++;
+      expect(request.outputs.map((output) => output.B_).sort()).toEqual(expectedPoints);
+      return { signatures: request.outputs.map(signBlindedMessage) };
+    },
+  });
+  expect((await fixture.recover()).pending).toEqual([]);
+  expect(swaps).toBe(1);
+  expect(await fixture.database.walletCounterCursors.toArray()).toEqual(beforeCounters);
+  const locators = (await fixture.database.custodyProofBackupAuthorities.toArray()).flatMap(
+    (row) =>
+      "derivationLocator" in row && row.derivationLocator?.kind === "ctf-range-refund"
+        ? [row.derivationLocator]
+        : [],
+  );
+  expect(locators.length).toBeGreaterThan(0);
+});
+
+it("ordinary browser refund shares exactly three counter conflict attempts without mint I/O", async () => {
+  let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+  let drafts = 0;
+  let swaps = 0;
+  fixture = await expiredOrdinaryBrowserRefund({
+    observeRefundPrepared: async (draft) => {
+      drafts++;
+      await new BrowserWalletCounterSource(
+        { database: fixture.database, scopeId: walletScopeId() },
+        { mintUrl: fixture.preparation.mintUrl, unit: "msat" },
+      ).reserve(draft.plan.keysetId, 1);
+    },
+    executeRefundSwap: async () => {
+      swaps++;
+      throw new Error("unexpected swap");
+    },
+  });
+  await expect(fixture.recover()).rejects.toThrow("snapshot changed");
+  expect(drafts).toBe(3);
+  expect(swaps).toBe(0);
+  expect(
+    await fixture.database.proofOperations.get(
+      deriveDurableCtfRangeRefundOperationId(fixture.preparation.operationId),
+    ),
+  ).toBeUndefined();
+});
+
+it("ordinary browser refund refuses owner takeover between draft and commit", async () => {
+  let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+  let before: unknown;
+  let swaps = 0;
+  fixture = await expiredOrdinaryBrowserRefund({
+    observeRefundPrepared: async () => {
+      before = await browserRefundMoneyRows(fixture.database);
+      const scopeRow = (await fixture.database.custodyScopes.get(walletScopeId()))!;
+      const takeoverAt = scopeRow.state.owner!.leaseExpiresAtMs + 1;
+      await new BrowserDurableCustodyAdapter(fixture.database).claimScope(walletScope(), {
+        incarnationId: "competing-refund-owner",
+        observedAtMs: takeoverAt,
+        leaseExpiresAtMs: takeoverAt + 600000,
+      });
+    },
+    executeRefundSwap: async () => {
+      swaps++;
+      throw new Error("unexpected swap");
+    },
+  });
+  await expect(fixture.recover()).rejects.toThrow(/owner|lease|fenc|clock/);
+  expect(swaps).toBe(0);
+  expect(await browserRefundMoneyRows(fixture.database)).toEqual(before);
+});
+
+it("ordinary browser refund lost reply revalidates profile before saved mint I/O and retries exact plan", async () => {
+  let current = true;
+  let drafts = 0;
+  let swaps = 0;
+  let lost = false;
+  const fixture = await expiredOrdinaryBrowserRefund({
+    isCurrentRefundProfile: () => current,
+    observeRefundPrepared: async () => {
+      drafts++;
+    },
+    injectRefundPreparationFault: (phase) => {
+      if (phase === "after-commit" && !lost) {
+        lost = true;
+        current = false;
+        throw new Error("lost response and profile");
+      }
+    },
+    executeRefundSwap: async (_url, request) => {
+      swaps++;
+      return { signatures: request.outputs.map(signBlindedMessage) };
+    },
+  });
+  await expect(fixture.recover()).rejects.toThrow("profile changed");
+  expect(swaps).toBe(0);
+  expect(drafts).toBe(1);
+  const cursors = await fixture.database.walletCounterCursors.toArray();
+  const id = deriveDurableCtfRangeRefundOperationId(fixture.preparation.operationId);
+  const saved = (await fixture.database.proofOperations.get(id))!;
+  expect(saved.state).toBe("prepared");
+  current = true;
+  expect((await fixture.recover()).pending).toEqual([]);
+  expect(swaps).toBe(1);
+  expect(drafts).toBe(1);
+  expect(await fixture.database.walletCounterCursors.toArray()).toEqual(cursors);
+  expect((await fixture.database.proofOperations.get(id))!.outputs).toEqual(saved.outputs);
+});
+
+it("ordinary browser refund selects different committed winner outputs and locators before its CAS", async () => {
+  let fixture: Awaited<ReturnType<typeof expiredOrdinaryBrowserRefund>>;
+  let losing: string[] = [];
+  let winning: string[] = [];
+  let winningStart = 0;
+  let drafts = 0;
+  fixture = await expiredOrdinaryBrowserRefund({
+    observeRefundPrepared: async (draft) => {
+      drafts++;
+      losing = draft.plan.outputs.map((value) => value.blindedMessage.B_).sort();
+      const database = fixture.database;
+      const context = { mintUrl: fixture.preparation.mintUrl, unit: "msat" };
+      const counters = new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() });
+      await counters.reserveInContext(context, draft.plan.keysetId, 5, true);
+      const transcript = createSpeculativeCounterTranscript([
+        await counters.readSnapshotInContext(context, draft.plan.keysetId),
+      ]);
+      const adapter = new BrowserDurableCustodyAdapter(database);
+      const snapshot = (await adapter.readOperationSnapshot(
+        walletScope(),
+        custodyOperationId(fixture.preparation.operationId),
+      ))!;
+      const source = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+      const prepared = await prepareDurableSeedDerivedCtfRangeRefund({
+        seed: SEED,
+        counterSource: transcript.counterSource,
+        source,
+        refundOperationId: draft.operationId,
+        amount:
+          source.inputs.reduce((sum, proof) => sum + BigInt(proof.amount), 0n) -
+          deriveDurableCtfRangeFeeBounds(source).maximumFee,
+        keyset: fixture.preparation.offerKeyset,
+      });
+      winning = prepared.request.outputs.map((output) => output.B_).sort();
+      winningStart = prepared.plan.counterStart;
+      const row = (await database.custodyScopes.get(walletScopeId()))!;
+      const owner = {
+        incarnationId: row.state.owner!.incarnationId,
+        fencingEpoch: row.state.fencingEpoch,
+        observedAtMs: row.state.effectiveClock.highWaterMarkMs,
+      };
+      await database.transaction("rw", database.tables, async (tx) => {
+        await adapter.transactInCurrentTransaction(
+          tx,
+          browserCustodySelection(
+            walletScope(),
+            owner,
+            snapshot.record.operation.operationId,
+            snapshot.record.revision,
+          ),
+          () => undefined,
+        );
+        await counters.compareAndAdvanceInCurrentTransaction(tx, context, transcript.changes()[0]!);
+        await database.proofOperations.add({
+          operationId: draft.operationId,
+          kind: "ctf-range-refund",
+          state: "prepared",
+          mintUrl: source.mintUrl,
+          inputs: prepared.request.inputs,
+          outputs: {
+            refund: prepared.operation.outputs.refund!.map((output) => ({
+              ...output,
+              blindedMessage: {
+                ...output.blindedMessage,
+                amount: amountToNumber(output.blindedMessage.amount),
+              },
+            })),
+          },
+          metadata: {
+            ...prepared.operation.metadata,
+            unit: "msat",
+            rangeOperationId: source.operationId,
+            refundRequestFingerprint: deriveDurableCtfRangeRefundRequestFingerprint(
+              prepared.request,
+            ),
+            refundOutputPlan: prepared.plan,
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      });
+    },
+    executeRefundSwap: async (_url, request) => {
+      expect(request.outputs.map((output) => output.B_).sort()).toEqual(winning);
+      return { signatures: request.outputs.map(signBlindedMessage) };
+    },
+  });
+  expect((await fixture.recover()).pending).toEqual([]);
+  expect(drafts).toBe(1);
+  expect(losing).not.toEqual(winning);
+  const refund = (await fixture.database.proofOperations.get(
+    deriveDurableCtfRangeRefundOperationId(fixture.preparation.operationId),
+  ))!;
+  expect(refund.state).toBe("completed");
+  const plan = refund.metadata.refundOutputPlan as { keysetId: string; counterCount: number };
+  const locators = (await fixture.database.custodyProofBackupAuthorities.toArray()).flatMap(
+    (row) =>
+      "derivationLocator" in row && row.derivationLocator?.kind === "nut13"
+        ? [row.derivationLocator]
+        : [],
+  );
+  expect(locators.map((locator) => locator.counter).sort((a, b) => a - b)).toEqual(
+    Array.from({ length: plan.counterCount }, (_, index) => winningStart + index),
+  );
+  expect(
+    await new BrowserWalletCounterSource(
+      { database: fixture.database, scopeId: walletScopeId() },
+      { mintUrl: fixture.preparation.mintUrl, unit: "msat" },
+    ).snapshot(),
+  ).toMatchObject({ [plan.keysetId]: winningStart + plan.counterCount });
+});

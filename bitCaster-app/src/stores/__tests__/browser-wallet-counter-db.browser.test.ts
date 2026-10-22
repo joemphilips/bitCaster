@@ -342,11 +342,12 @@ describe("browser CTF counter reservation in Chromium IndexedDB", () => {
     });
   });
 
-  it("retains v2 rows in the v20 database and refuses ambiguous nonunique history after reopen", async () => {
+  it("retains v2 rows in the current database and refuses ambiguous nonunique history after reopen", async () => {
     const oldProfile = openDatabase();
+    const configuredVersion = oldProfile.verno;
     await oldProfile.open();
-    expect(oldProfile.verno).toBe(20);
-    const order = request("browser-v20-duplicate-history");
+    expect(oldProfile.verno).toBe(configuredVersion);
+    const order = request("browser-current-duplicate-history");
     const orderIntent = intent(order);
     const firstV2 = preparation(order);
     expect(firstV2.version).toBe(2);
@@ -358,7 +359,7 @@ describe("browser CTF counter reservation in Chromium IndexedDB", () => {
 
     const reopened = openDatabase();
     await reopened.open();
-    expect(reopened.verno).toBe(20);
+    expect(reopened.verno).toBe(configuredVersion);
     const rowsAfterReopen = await reopened.ctfRangePreparations.toArray();
     expect(rowsAfterReopen).toEqual([retained]);
     expect(decodeCtfRangeOrderPreparationFromRecord(rowsAfterReopen[0]!).version).toBe(2);
@@ -377,4 +378,71 @@ describe("browser CTF counter reservation in Chromium IndexedDB", () => {
       "CTF preparation history is ambiguous",
     );
   });
+});
+
+it("native IndexedDB co-commits scoped speculative counter and caller journal, reopens and refuses stale CAS", async () => {
+  const database = openDatabase();
+  const counters = openCounters(database);
+  const context = { mintUrl, unit: "msat" };
+  await counters.restoreInContext(context, offerKeysetId, 11, false, () => undefined);
+  const snapshot = await counters.readSnapshotInContext(context, offerKeysetId);
+  expect(snapshot).toEqual({ keysetId: offerKeysetId, nextCounter: 11 });
+  const candidate = preparation(request("native-speculative-journal"));
+  const identity = browserRangeJournalIdentity(browserWalletScope(seed), candidate, 101);
+  const tables = [
+    database.walletCounterAssociations,
+    database.walletCounterCursors,
+    database.custodyProofs,
+    database.custodyProofBackupAuthorities,
+    database.custodyConditionalKeysets,
+    database.encryptedWalletBackupV2DesiredAssets,
+    database.ctfRangePreparations,
+  ];
+  await expect(
+    database.transaction("rw", tables, async (tx) => {
+      await counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId: offerKeysetId,
+        expectedNextCounter: 11,
+        nextCounter: 13,
+      });
+      await insertCtfRangePreparation(identity, database);
+      throw new Error("native joint abort");
+    }),
+  ).rejects.toThrow("native joint abort");
+  expect(await counters.readSnapshotInContext(context, offerKeysetId)).toEqual(snapshot);
+  expect(await database.ctfRangePreparations.count()).toBe(0);
+  await database.transaction("rw", tables, async (tx) => {
+    await counters.compareAndAdvanceInCurrentTransaction(tx, context, {
+      keysetId: offerKeysetId,
+      expectedNextCounter: 11,
+      nextCounter: 13,
+    });
+    await insertCtfRangePreparation(identity, database);
+  });
+  database.close();
+  const reopened = openDatabase();
+  await reopened.open();
+  expect(await openCounters(reopened).readSnapshotInContext(context, offerKeysetId)).toEqual({
+    keysetId: offerKeysetId,
+    nextCounter: 13,
+  });
+  expect(await reopened.ctfRangePreparations.count()).toBe(1);
+  const competitor = openDatabase();
+  await competitor.open();
+  await openCounters(competitor).reserveInContext(context, offerKeysetId, 1, true);
+  const currentTables = tables.map((table) => reopened.table(table.name));
+  await expect(
+    reopened.transaction("rw", currentTables, (tx) =>
+      openCounters(reopened).compareAndAdvanceInCurrentTransaction(tx, context, {
+        keysetId: offerKeysetId,
+        expectedNextCounter: 13,
+        nextCounter: 15,
+      }),
+    ),
+  ).rejects.toThrow("snapshot changed");
+  expect(await openCounters(reopened).readSnapshotInContext(context, offerKeysetId)).toEqual({
+    keysetId: offerKeysetId,
+    nextCounter: 14,
+  });
+  expect(await reopened.ctfRangePreparations.count()).toBe(1);
 });
