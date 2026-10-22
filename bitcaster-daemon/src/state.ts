@@ -5194,6 +5194,25 @@ function assertValidExactInputs(
   }
 }
 
+/** Validate a prepared exact reservation inside the caller's fenced read or transaction. */
+export function assertExactProofReservationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareProofOperationWithExactReservationFromDatabase>[1],
+): void {
+  const authority = database
+    .prepare(
+      `SELECT operation_id FROM target_proof_operations
+     WHERE scope_id = ? AND operation_id = ? AND normalized_mint = ?
+       AND state = 'prepared' AND reservation_id = ?`,
+    )
+    .get(readScopeId(database), input.operationId, input.mintUrl, input.reservationId)
+  if (!authority) throw new Error('prepared proof operation reservation authority conflicts')
+  assertExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, input.mintUrl, input.reservationId),
+    input,
+  )
+}
+
 function assertExactReservedProofRows(
   reserved: readonly StoredProofRecord[],
   input: PrepareProofOperationInput & {

@@ -1,3 +1,10 @@
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import {
+  withDurableCustodyFencedRead,
+  withDurableCustodyUnitOfWork,
+} from './durableCustodyUnitOfWork.ts'
+import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import { profileDir } from './profile.ts'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
@@ -24,7 +31,6 @@ import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { DurableCustodyProofOperationInput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 import {
   createWallet,
-  createDaemonCounterSource,
   resolveCtfConsolidationInputFees,
   resolveCtfConsolidationOutputKeysets,
   resolveMintKeysByKeyset,
@@ -37,7 +43,12 @@ import {
 import {
   finalizeCompletedProofReservation,
   markProofOperationCompletedFenced,
-  prepareProofOperationWithExactReservation,
+  prepareProofOperationWithExactReservationFromDatabase,
+  readDaemonProofOperationFromDatabase,
+  readDaemonCounterSnapshots,
+  commitDaemonCounterTranscript,
+  DaemonCounterSnapshotConflictError,
+  assertExactProofReservationFromDatabase,
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   getProofOperation,
@@ -101,7 +112,12 @@ export interface WalletProofConsolidationRecoveryResult {
 export interface WalletProofConsolidationInput {
   readonly secrets: WalletOpsSecrets
   readonly mutation: () => FencedStateMutation
-  readonly dependencies?: WalletOpsDependencies
+  readonly dependencies?: WalletOpsDependencies & {
+    readonly injectConsolidationFault?: (phase: 'counter-written' | 'journal-bound') => void
+    readonly observeConsolidationPrepared?: (
+      draft: Readonly<DurableCustodyProofOperationInput>,
+    ) => Promise<void>
+  }
 }
 
 let consolidationQueue: Promise<void> = Promise.resolve()
@@ -135,7 +151,7 @@ async function consolidateWalletProofsUnlocked(
 interface ConsolidationScan {
   readonly input: WalletProofConsolidationInput
   readonly invocationId: string
-  readonly dependencies: WalletOpsDependencies
+  readonly dependencies: NonNullable<WalletProofConsolidationInput['dependencies']>
   readonly wallets: Map<string, ExactProofConsolidationWallet>
   readonly revisit: GroupQueue
   readonly rounds: WalletProofConsolidationRoundResult[]
@@ -314,7 +330,7 @@ interface ConsolidateRoundInput {
   readonly roundIndex: number
   readonly secrets: WalletOpsSecrets
   readonly mutation: () => FencedStateMutation
-  readonly dependencies: WalletOpsDependencies
+  readonly dependencies: NonNullable<WalletProofConsolidationInput['dependencies']>
   readonly wallets: Map<string, ExactProofConsolidationWallet>
 }
 
@@ -341,6 +357,8 @@ interface PreparedManualRound {
 }
 
 async function consolidateOneRound(input: ConsolidateRoundInput): Promise<ConsolidateRoundOutcome> {
+  const saved = await readSavedManualRound(input)
+  if (saved) return resumeManualRound(input, saved)
   const planned = await prepareManualRound(input)
   if ('kind' in planned) return planned
   return executeManualRound(input, planned)
@@ -390,61 +408,188 @@ async function executeManualRound(
   prepared: PreparedManualRound,
 ): Promise<Extract<ConsolidateRoundOutcome, { kind: 'ready' }>> {
   const operationId = manualRoundOperationId(input)
-  const exactOperation = await prepareExactProofConsolidationOperation({
-    operationId,
-    bindingId: input.invocationId,
-    purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
-    mintUrl: input.group.mintUrl,
-    unit: input.group.asset.unit,
-    inputKeysetId: input.group.keysetId,
-    outputKeysetId: prepared.outputKeyset.id,
-    outputKeyset: prepared.outputKeyset,
-    inputs: prepared.exactInputs,
-    conditional: input.group.asset.kind === 'Outcome',
-    inputFeePpk: prepared.inputFeePpk,
-    plannedRound: prepared.plannedRound,
-    seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(input.mutation, {
-      normalizedMint: input.group.mintUrl,
+  const storage = createDaemonStateSqliteSession(profileDir())
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const saved = await readSavedManualRound(input)
+    if (saved) return resumeManualRound(input, saved)
+    const mutation = input.mutation()
+    const transcript = createSpeculativeCounterTranscript(
+      await readDaemonCounterSnapshots({
+        storage,
+        mutation,
+        keysetIds: [prepared.outputKeyset.id],
+        binding: { normalizedMint: input.group.mintUrl, unit: input.group.asset.unit },
+      }),
+    )
+    const exactOperation = await prepareExactProofConsolidationOperation({
+      operationId,
+      bindingId: input.invocationId,
+      purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
+      mintUrl: input.group.mintUrl,
       unit: input.group.asset.unit,
-    }),
-    wallet: prepared.wallet,
-  })
-  const validated = validateExactProofConsolidationOperation(exactOperation, {
+      inputKeysetId: input.group.keysetId,
+      outputKeysetId: prepared.outputKeyset.id,
+      outputKeyset: prepared.outputKeyset,
+      inputs: prepared.exactInputs,
+      conditional: input.group.asset.kind === 'Outcome',
+      inputFeePpk: prepared.inputFeePpk,
+      plannedRound: prepared.plannedRound,
+      seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+      counterSource: transcript.counterSource,
+      wallet: prepared.wallet,
+    })
+    const validated = validateExactProofConsolidationOperation(exactOperation, {
+      purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
+    })
+    const reservationId = `${operationId}:reservation`
+    await input.dependencies.observeConsolidationPrepared?.(structuredClone(exactOperation))
+    let selection: { entry: ProofOperationRecord; recover: boolean }
+    try {
+      const commitMutation = input.mutation()
+      selection = await withDurableCustodyUnitOfWork(
+        storage,
+        commitMutation.fence,
+        commitMutation.observedAtMs,
+        (database) => {
+          const current = readDaemonProofOperationFromDatabase(database, operationId)
+          if (current) {
+            validateSavedManualRound(database, input, current)
+            return { entry: current, recover: true }
+          }
+          commitDaemonCounterTranscript(
+            database,
+            commitMutation.fence.scopeId,
+            { normalizedMint: input.group.mintUrl, unit: input.group.asset.unit },
+            transcript,
+            commitMutation.observedAtMs,
+          )
+          input.dependencies.injectConsolidationFault?.('counter-written')
+          const entry = prepareProofOperationWithExactReservationFromDatabase(
+            database,
+            manualRoundJournalInput(input, exactOperation, validated.outputs, reservationId),
+          )
+          input.dependencies.injectConsolidationFault?.('journal-bound')
+          return { entry, recover: false }
+        },
+        { injectFault: input.dependencies.injectCustodyFault },
+      )
+    } catch (error) {
+      const current = await readSavedManualRound(input)
+      if (current) return resumeManualRound(input, current)
+      if (error instanceof DaemonCounterSnapshotConflictError && attempt < 2) continue
+      throw error
+    }
+    if (selection.recover) return resumeManualRound(input, selection.entry)
+    const proofs = await completeExactProofConsolidationOperation(validated, prepared.wallet, {
+      purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
+    })
+    await completeAndFinalize(operationId, reservationId, proofs, input.group.asset, input.mutation)
+    return manualRoundOutcome(input.group, prepared, operationId, proofs.length)
+  }
+  throw new Error('manual consolidation preparation attempts exhausted')
+}
+
+async function readSavedManualRound(
+  input: ConsolidateRoundInput,
+): Promise<ProofOperationRecord | null> {
+  const mutation = input.mutation()
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const entry = readDaemonProofOperationFromDatabase(database, manualRoundOperationId(input))
+      if (entry) validateSavedManualRound(database, input, entry)
+      return entry
+    },
+    { snapshot: true },
+  )
+}
+
+function validateSavedManualRound(
+  database: import('node:sqlite').DatabaseSync,
+  input: ConsolidateRoundInput,
+  entry: ProofOperationRecord,
+): void {
+  const exact = persistedExactOperation(entry)
+  const validated = validateExactProofConsolidationOperation(exact, {
     purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
   })
-  const reservationId = `${operationId}:reservation`
-  await persistManualRound(input, exactOperation, validated.outputs, reservationId)
-  const proofs = await completeExactProofConsolidationOperation(validated, prepared.wallet, {
-    purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
-  })
-  await completeAndFinalize(operationId, reservationId, proofs, input.group.asset, input.mutation)
-  return manualRoundOutcome(input.group, prepared, operationId, proofs.length)
+  assertJournalMatchesExactOperation(entry, exact, validated.outputs)
+  const asset = persistedAsset(entry)
+  if (
+    entry.operationId !== manualRoundOperationId(input) ||
+    entry.mintUrl !== input.group.mintUrl ||
+    exact.metadata?.bindingId !== input.invocationId ||
+    exact.metadata?.inputKeysetId !== input.group.keysetId ||
+    !isDeepStrictEqual(asset, input.group.asset)
+  )
+    throw new Error('manual consolidation saved round conflicts')
+  if (entry.state === 'prepared')
+    assertExactProofReservationFromDatabase(
+      database,
+      manualRoundJournalInput(
+        input,
+        exact,
+        validated.outputs,
+        metadataText(entry, 'reservationId'),
+      ),
+    )
+  else if (entry.state !== 'completed')
+    throw new Error('manual consolidation saved round has failed')
+}
+
+async function resumeManualRound(
+  input: ConsolidateRoundInput,
+  entry: ProofOperationRecord,
+): Promise<Extract<ConsolidateRoundOutcome, { kind: 'ready' }>> {
+  // Recovery must choose the committed operation, never a speculative caller draft.
+  await recoverOperation(entry, input)
+  const exact = persistedExactOperation(entry)
+  const outputKeysetId = metadataText(entry, 'outputKeysetId')
+  const outputCount = entry.outputs.consolidated?.length ?? 0
+  return {
+    kind: 'ready',
+    result: {
+      operationId: entry.operationId,
+      mintUrl: entry.mintUrl,
+      unit: input.group.asset.unit,
+      asset: input.group.asset,
+      inputKeysetId: input.group.keysetId,
+      outputKeysetId,
+      inputCount: entry.inputs.length,
+      outputCount,
+      fee: Number(exact.metadata?.fees),
+    },
+    outputGroup: {
+      mintUrl: entry.mintUrl,
+      keysetId: outputKeysetId,
+      asset: input.group.asset,
+      proofCount: outputCount,
+    },
+  }
 }
 
 function manualRoundOperationId(input: Pick<ConsolidateRoundInput, 'invocationId' | 'roundIndex'>) {
   return `${WALLET_PROOF_CONSOLIDATION_PURPOSE}:${input.invocationId}:${input.roundIndex}`
 }
 
-async function persistManualRound(
+function manualRoundJournalInput(
   input: ConsolidateRoundInput,
   exactOperation: DurableCustodyProofOperationInput,
   outputs: ReturnType<typeof validateExactProofConsolidationOperation>['outputs'],
   reservationId: string,
-): Promise<void> {
-  await prepareProofOperationWithExactReservation(
-    {
-      operationId: exactOperation.operationId,
-      kind: consolidationKind(exactOperation.kind),
-      mintUrl: input.group.mintUrl,
-      inputs: [...exactOperation.inputs],
-      outputs: { consolidated: serializeOutputDataArray(outputs) },
-      metadata: operationMetadata(exactOperation, input.group.asset, reservationId),
-      reservationId,
-      asset: input.group.asset,
-    },
-    input.mutation(),
-  )
+) {
+  return {
+    operationId: exactOperation.operationId,
+    kind: consolidationKind(exactOperation.kind),
+    mintUrl: input.group.mintUrl,
+    inputs: [...exactOperation.inputs],
+    outputs: { consolidated: serializeOutputDataArray(outputs) },
+    metadata: operationMetadata(exactOperation, input.group.asset, reservationId),
+    reservationId,
+    asset: input.group.asset,
+  }
 }
 
 function manualRoundOutcome(
@@ -506,6 +651,28 @@ async function recoverOperation(
     return
   }
   if (entry.state !== 'prepared') throw new Error('proof consolidation operation has failed')
+  const mutation = input.mutation()
+  await withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const current = readDaemonProofOperationFromDatabase(database, entry.operationId)
+      if (!current || !isDeepStrictEqual(current, entry))
+        throw new Error('proof consolidation saved journal changed')
+      assertExactProofReservationFromDatabase(database, {
+        operationId: entry.operationId,
+        kind: entry.kind,
+        mintUrl: entry.mintUrl,
+        inputs: entry.inputs,
+        outputs: entry.outputs,
+        metadata: entry.metadata,
+        reservationId,
+        asset,
+      })
+    },
+    { snapshot: true },
+  )
   const outcome = await recoverPreparedProofs(entry, validated, asset, input)
   await completeAndFinalize(entry.operationId, reservationId, outcome.proofs, asset, input.mutation)
 }

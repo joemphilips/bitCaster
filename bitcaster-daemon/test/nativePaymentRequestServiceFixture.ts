@@ -46,10 +46,10 @@ const LARGE_ID = deriveKeysetId(LARGE_KEYS, { unit: 'msat', versionByte: 1 })
 const ALTERNATE_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 9])
 const ALTERNATE_KEYS = { '1': bytesToHex(secp256k1.getPublicKey(ALTERNATE_PRIVATE_KEY, true)) }
 const ALTERNATE_ID = deriveKeysetId(ALTERNATE_KEYS, { unit: 'msat', versionByte: 1 })
-function sign(output: OutputData) {
+function sign(output: OutputData, largeId = LARGE_ID) {
   const { id, B_, amount } = output.blindedMessage
   const signingKey =
-    id === LARGE_ID ? mintDenominationPrivateKey(PRIVATE_KEY, amount.toString()) : PRIVATE_KEY
+    id === largeId ? mintDenominationPrivateKey(PRIVATE_KEY, amount.toString()) : PRIVATE_KEY
   const signature = createBlindSignature(pointFromHex(B_), signingKey, id)
   const dleq = createDLEQProof(pointFromHex(B_), signingKey)
   return output.toProof(
@@ -59,7 +59,7 @@ function sign(output: OutputData) {
       C_: signature.C_.toHex(true),
       dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
     },
-    { id, keys: id === LARGE_ID ? LARGE_KEYS : KEYS },
+    { id, keys: id === largeId ? LARGE_KEYS : KEYS },
   )
 }
 export const PROOFS = ['service-input-a', 'service-input-b'].map((secret) =>
@@ -85,8 +85,26 @@ export function assertRedacted(value: unknown) {
 }
 
 export async function serviceFixture(
-  options: { defaultWallet?: boolean; largeDenominations?: boolean } = {},
+  options: { defaultWallet?: boolean; largeDenominations?: boolean; inputFeePpk?: number } = {},
 ) {
+  const inputFeePpk = options.inputFeePpk ?? 0
+  if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0)
+    throw new Error('invalid fixture input fee')
+  const regularId = deriveKeysetId(KEYS, {
+    unit: 'msat',
+    versionByte: 1,
+    input_fee_ppk: inputFeePpk,
+  })
+  const largeId = deriveKeysetId(LARGE_KEYS, {
+    unit: 'msat',
+    versionByte: 1,
+    input_fee_ppk: inputFeePpk,
+  })
+  const alternateId = deriveKeysetId(ALTERNATE_KEYS, {
+    unit: 'msat',
+    versionByte: 1,
+    input_fee_ppk: inputFeePpk,
+  })
   const directory = await mkdtemp(join(tmpdir(), 'native-request-service-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
   const previousFetch = globalThis.fetch
@@ -130,28 +148,35 @@ export async function serviceFixture(
       return {
         keysets: [
           {
-            id: ID,
+            id: regularId,
             unit: 'msat',
             active: !control.alternateKeyset && !options.largeDenominations,
-            input_fee_ppk: 0,
+            input_fee_ppk: inputFeePpk,
           },
           ...(options.largeDenominations
-            ? [{ id: LARGE_ID, unit: 'msat', active: !control.alternateKeyset, input_fee_ppk: 0 }]
+            ? [
+                {
+                  id: largeId,
+                  unit: 'msat',
+                  active: !control.alternateKeyset,
+                  input_fee_ppk: inputFeePpk,
+                },
+              ]
             : []),
           ...(control.alternateKeyset
-            ? [{ id: ALTERNATE_ID, unit: 'msat', active: true, input_fee_ppk: 0 }]
+            ? [{ id: alternateId, unit: 'msat', active: true, input_fee_ppk: inputFeePpk }]
             : []),
         ],
       } as T
     if (endpoint.startsWith('/v1/keys'))
       return {
         keysets: [
-          { id: ID, unit: 'msat', keys: KEYS, input_fee_ppk: 0 },
+          { id: regularId, unit: 'msat', keys: KEYS, input_fee_ppk: inputFeePpk },
           ...(options.largeDenominations
-            ? [{ id: LARGE_ID, unit: 'msat', keys: LARGE_KEYS, input_fee_ppk: 0 }]
+            ? [{ id: largeId, unit: 'msat', keys: LARGE_KEYS, input_fee_ppk: inputFeePpk }]
             : []),
           ...(control.alternateKeyset
-            ? [{ id: ALTERNATE_ID, unit: 'msat', keys: ALTERNATE_KEYS, input_fee_ppk: 0 }]
+            ? [{ id: alternateId, unit: 'msat', keys: ALTERNATE_KEYS, input_fee_ppk: inputFeePpk }]
             : []),
         ],
       } as T
@@ -169,9 +194,9 @@ export async function serviceFixture(
       }
       const signatures = outputs.map((output) => {
         const signingKey =
-          output.id === ALTERNATE_ID
+          output.id === alternateId
             ? ALTERNATE_PRIVATE_KEY
-            : output.id === LARGE_ID
+            : output.id === largeId
               ? mintDenominationPrivateKey(PRIVATE_KEY, String(output.amount))
               : PRIVATE_KEY
         const signature = createBlindSignature(pointFromHex(output.B_), signingKey, output.id)
@@ -191,13 +216,13 @@ export async function serviceFixture(
   const deps: WalletOpsDependencies = {
     createCashuMint: (url) => new Mint(url, { customRequest }),
     getCustodyFence: () => fence,
-    resolveMintKeysetIds: async () => [ID, ...(options.largeDenominations ? [LARGE_ID] : [])],
+    resolveMintKeysetIds: async () => [regularId, ...(options.largeDenominations ? [largeId] : [])],
     resolveTokenImportKeysets: async () => ({
       canonicalMintUrl: MINT,
       freshness: 'fresh',
       regularKeysets: [
-        { keysetId: ID, unit: 'msat', active: !options.largeDenominations },
-        ...(options.largeDenominations ? [{ keysetId: LARGE_ID, unit: 'msat', active: true }] : []),
+        { keysetId: regularId, unit: 'msat', active: !options.largeDenominations },
+        ...(options.largeDenominations ? [{ keysetId: largeId, unit: 'msat', active: true }] : []),
       ],
       conditionalKeysets: [],
     }),
@@ -224,7 +249,7 @@ export async function serviceFixture(
       return Object.fromEntries(
         Object.entries(deserializeOutputGroups(groups)).map(([group, outputs]) => [
           group,
-          control.restore ? outputs.map(sign) : [],
+          control.restore ? outputs.map((output) => sign(output, largeId)) : [],
         ]),
       )
     },
@@ -248,10 +273,11 @@ export async function serviceFixture(
       sign(
         OutputData.createSingleData(
           amount,
-          options.largeDenominations ? LARGE_ID : ID,
+          options.largeDenominations ? largeId : regularId,
           secret,
           19n,
         ),
+        largeId,
       ),
     fence,
     deps,

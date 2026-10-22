@@ -478,7 +478,13 @@ function assertExactProofs(actual: readonly Proof[], expected: readonly Proof[])
     secret,
     C,
   })
-  if (canonical(actual.map(identity)) !== canonical(expected.map(identity))) {
+  const actualIdentities = actual.map((proof) => canonical(identity(proof)))
+  const expectedIdentities = expected.map((proof) => canonical(identity(proof)))
+  if (
+    new Set(actualIdentities).size !== actualIdentities.length ||
+    new Set(expectedIdentities).size !== expectedIdentities.length ||
+    canonical(actualIdentities.sort()) !== canonical(expectedIdentities.sort())
+  ) {
     throw new Error('wallet substituted exact proof consolidation inputs')
   }
 }
