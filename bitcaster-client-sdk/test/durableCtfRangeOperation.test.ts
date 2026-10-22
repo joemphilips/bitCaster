@@ -1,11 +1,13 @@
 import { mintDenominationKeys, mintDenominationPrivateKey } from './support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { secp256k1, schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
   Amount,
+  computePayToUnlockRefundDigest,
   OutputData,
   createBlindSignature,
   createCtfAuthorizationOutputs,
@@ -29,6 +31,8 @@ import {
   createDurableCtfRangeOperation,
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeRefundOperation,
+  prepareDurableSeedDerivedCtfRangeRefund,
+  assertDurableCtfRangeRefundRequestWitness,
   createDurableCtfRangeResultEnvelope,
   decodeDurableCtfRangeOperation,
   decodeDurableCtfRangeResultEnvelopeBytes,
@@ -1890,3 +1894,165 @@ function scopeState(scope: DurableCustodyScope): DurableCustodyScopeState {
     effectiveClock: { highWaterMarkMs: 10 },
   }
 }
+
+for (const conditional of [false, true])
+  for (const start of [0, 19]) {
+    test(`ordinary range refund is plain NUT13 (${conditional ? 'conditional' : 'regular'}, counter ${start})`, async () => {
+      const source = conditional ? ambiguousConditionalFixture() : fixture()
+      const id = source.offerKeysetId
+      let calls = 0
+      const prepared = await prepareDurableSeedDerivedCtfRangeRefund({
+        seed: SEED,
+        source,
+        refundOperationId: deriveDurableCtfRangeRefundOperationId(source.operationId),
+        amount: 3,
+        keyset: { id, keys: KEYS },
+        counterSource: {
+          reserve: async (keysetId, count) => {
+            calls++
+            assert.equal(keysetId, id)
+            assert.equal(count, 2)
+            return { start, count }
+          },
+          advanceToAtLeast: async () => {
+            throw new Error('unexpected advance')
+          },
+          snapshot: async () => ({}),
+        },
+      })
+      assert.equal(calls, 1)
+      assert.equal(prepared.plan.counterStart, start)
+      for (const [index, serialized] of prepared.plan.outputs.entries()) {
+        const output = OutputData.deserialize(serialized)
+        const counter = Buffer.alloc(8)
+        counter.writeBigUInt64BE(BigInt(start + index))
+        const prefix = Buffer.concat([
+          Buffer.from('Cashu_KDF_HMAC_SHA256'),
+          Buffer.from(id, 'hex'),
+          counter,
+        ])
+        const secret = createHmac('sha256', SEED)
+          .update(Buffer.concat([prefix, Buffer.from([0])]))
+          .digest('hex')
+        const r = BigInt(
+          '0x' +
+            createHmac('sha256', SEED)
+              .update(Buffer.concat([prefix, Buffer.from([1])]))
+              .digest('hex'),
+        )
+        assert.equal(new TextDecoder().decode(output.secret), secret)
+        assert.equal(output.blindingFactor, r)
+        assert.equal(
+          output.blindedMessage.B_,
+          hashToCurve(Buffer.from(secret))
+            .add(pointFromHex(MINT_PUBLIC_KEY).multiply(r))
+            .toHex(true),
+        )
+      }
+      assert.deepEqual(
+        prepared.request.outputs,
+        prepared.plan.outputs.map((value) => OutputData.deserialize(value).blindedMessage),
+      )
+      assert.ok(prepared.request.inputs.every((proof) => proof.witness !== undefined))
+    })
+  }
+
+test('ordinary range refund rejects foreign identity and nonpositive amount before allocation', async () => {
+  let calls = 0
+  const source = fixture()
+  const base = {
+    seed: SEED,
+    source,
+    keyset: { id: OFFER_KEYSET, keys: KEYS },
+    counterSource: {
+      reserve: async () => {
+        calls++
+        return { start: 0, count: 1 }
+      },
+      advanceToAtLeast: async () => undefined,
+      snapshot: async () => ({}),
+    },
+  }
+  await assert.rejects(
+    prepareDurableSeedDerivedCtfRangeRefund({ ...base, refundOperationId: 'foreign', amount: 3 }),
+    /identity/,
+  )
+  await assert.rejects(
+    prepareDurableSeedDerivedCtfRangeRefund({
+      ...base,
+      refundOperationId: deriveDurableCtfRangeRefundOperationId(source.operationId),
+      amount: 0,
+    }),
+    /fee-dominated/,
+  )
+  assert.equal(calls, 0)
+})
+
+test('saved refund witness binds exact inputs, outputs and refund key without re-signing', () => {
+  const source = fixture()
+  const outputs = createDeterministicDurableCtfRangeRefundOutputs({
+    seed: SEED,
+    source,
+    refundOperationId: deriveDurableCtfRangeRefundOperationId(source.operationId),
+    amount: 3,
+    keyset: { id: OFFER_KEYSET, keys: KEYS },
+  })
+  const { request } = createDurableCtfRangeRefundOperation({
+    operationId: deriveDurableCtfRangeRefundOperationId(source.operationId),
+    source,
+    refundKeysetId: OFFER_KEYSET,
+    resolveKeysetAsset: () => source.offerAsset,
+    outputs,
+  })
+  assertDurableCtfRangeRefundRequestWitness({ source, request })
+  const altered = structuredClone(request)
+  altered.inputs[0]!.witness = { signatures: ['00'.repeat(64)] }
+  assert.throws(
+    () => assertDurableCtfRangeRefundRequestWitness({ source, request: altered }),
+    /witness/,
+  )
+  const wrongSignature = bytesToHex(
+    schnorr.sign(
+      Buffer.from(computePayToUnlockRefundDigest(request), 'hex'),
+      Uint8Array.from([...new Uint8Array(31), 2]),
+    ),
+  )
+  const wrongRequest = {
+    ...request,
+    inputs: request.inputs.map((proof) => ({
+      ...proof,
+      witness: { signatures: [wrongSignature] },
+    })),
+  }
+  assert.throws(
+    () => assertDurableCtfRangeRefundRequestWitness({ source, request: wrongRequest }),
+    /witness/,
+  )
+
+  assert.throws(
+    () =>
+      assertDurableCtfRangeRefundRequestWitness({
+        source,
+        request: {
+          ...request,
+          outputs: request.outputs.map((value, index) =>
+            index === 0 ? { ...value, B_: MINT_PUBLIC_KEY } : value,
+          ),
+        },
+      }),
+    /witness/,
+  )
+  assert.throws(
+    () =>
+      assertDurableCtfRangeRefundRequestWitness({
+        source,
+        request: {
+          ...request,
+          inputs: request.inputs.map((value, index) =>
+            index === 0 ? { ...value, C: MINT_PUBLIC_KEY } : value,
+          ),
+        },
+      }),
+    /witness/,
+  )
+})

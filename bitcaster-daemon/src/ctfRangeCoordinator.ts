@@ -1,3 +1,7 @@
+import {
+  assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  matchDurableSeedDerivedProofsToPlan,
+} from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import { isDeepStrictEqual } from 'node:util'
 import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
@@ -11,6 +15,7 @@ import {
 import { bindDurableCustodyProofOperation } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
   deriveDurableCtfRangeRefundOperationId,
+  assertDurableCtfRangeRefundRequestWitness,
   deriveRootCtfOutcomeCollectionId,
   classifyDurableCtfRangeRecovery,
   prepareDurableCtfRangeRecoveredResult,
@@ -851,6 +856,23 @@ function verifiedRefundSuccessors(
     })
   )
     throw new Error('daemon CTF range refund authority is foreign')
+  assertDurableCtfRangeRefundRequestWitness({
+    source: operation,
+    request: {
+      inputs: refund.inputs as Proof[],
+      outputs: (deserializeOutputGroups(refund.outputs).refund ?? []).map(
+        (output) => output.blindedMessage,
+      ),
+    },
+  })
+  if (Object.hasOwn(refund.metadata, 'refundOutputPlan')) {
+    const plan = assertDurableSeedDerivedOutputPlanMatchesOutputs({
+      plan: refund.metadata.refundOutputPlan,
+      keysetId: keyset.id,
+      outputs: deserializeOutputGroups(refund.outputs).refund ?? [],
+    })
+    matchDurableSeedDerivedProofsToPlan({ plan, proofs: input.refundProofs as Proof[] })
+  }
   verifyDurableCustodyExactMintProofResult({
     outputs: Object.fromEntries(
       Object.entries(deserializeOutputGroups(refund.outputs)).map(([group, outputs]) => [

@@ -1,3 +1,7 @@
+import {
+  recoverAllDaemonWalletFromSeed,
+  type AllKeysetSeedRecoveryTransport,
+} from '../src/emergencySeedRecovery.ts'
 import { loadCtfRangeMintMetadata } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
 import {
   buildPersistedCtfRangeOrderPreparation,
@@ -52,6 +56,7 @@ import {
 } from '@bitcaster-market/client-sdk'
 import {
   createDeterministicDurableCtfRangeRefundOutputs,
+  createDurableCtfRangeRefundOperation,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
   createDurableCtfRangeResultEnvelope,
@@ -83,6 +88,7 @@ import {
   prepareCtfRangeRefundProofOperationFromDatabase,
   emptyDaemonState,
   readAvailableCanonicalWalletProofPageFromDatabase,
+  readAvailableWalletProofsFenced,
   readState,
   recordOrderStatus,
   recordSubmittedOrder,
@@ -94,9 +100,14 @@ import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
 } from '../src/durableCustodySqliteStore.ts'
+import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import type { EngineClientLike, PrepareSettlementCapabilityInput } from '../src/server.ts'
-import { createDaemonCounterSource, deserializeOutputGroups } from '../src/walletOps.ts'
+import {
+  createDaemonCounterSource,
+  deserializeOutputGroups,
+  serializeOutputDataArray,
+} from '../src/walletOps.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 
 const REGISTERED_CONDITION = signedCtfRegistrationFixture(['YES', 'NO'], 'range-coordinator-test')
@@ -3228,13 +3239,14 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       const refundAmount =
         loaded.operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
         deriveDurableCtfRangeFeeBounds(loaded.operation).maximumFee
-      const outputs = createDeterministicDurableCtfRangeRefundOutputs({
-        seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
-        source: loaded.operation,
-        refundOperationId,
-        amount: refundAmount,
-        keyset: rotatedMintKeys(),
-      })
+      const plan = preparedRefund.metadata.refundOutputPlan as {
+        outputs: ReturnType<typeof OutputData.serialize>[]
+        keysetId: string
+        counterStart: number
+      }
+      assert.equal(plan.keysetId, ROTATED_OFFER_KEYSET_ID)
+      assert.ok(Number.isSafeInteger(plan.counterStart))
+      const outputs = plan.outputs
       assert.equal(preparedRefund.operationId, refundOperationId)
       assert.equal(preparedRefund.metadata.refundKeysetId, ROTATED_OFFER_KEYSET_ID)
       assert.deepEqual(
@@ -3489,7 +3501,7 @@ async function spendRecoveredRefund(
   getFence: () => CustodyScopeFence,
   now: () => number,
 ): Promise<void> {
-  const counterSource = createDaemonCounterSource(
+  let counterSource = createDaemonCounterSource(
     () => ({ fence: getFence(), observedAtMs: now() }),
     { normalizedMint: MINT_URL, unit: 'msat' },
   )
@@ -3566,6 +3578,10 @@ async function spendRecoveredRefund(
     amountMsat: 1000,
     mintUrl: MINT_URL,
     wallet,
+    createWallet: (source) => {
+      counterSource = source
+      return wallet
+    },
     seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
   })
   assert.equal(mintCalls, 1)
@@ -6253,6 +6269,506 @@ test('atomic preparation SQLite lost commit reply reopens the exact receipt with
         Buffer.from(committed.preparations[0]!.preparation_body as Uint8Array),
       )
       assert.deepEqual(await atomicDatabaseSnapshot(directory), committed)
+    },
+  )
+})
+
+async function withExpiredOrdinaryRefund(
+  overrides: DaemonCtfRangeOrderCoordinatorDependencies,
+  run: (context: {
+    directory: string
+    fence: () => CustodyScopeFence
+    coordinator: DaemonCtfRangeOrderCoordinator
+    client: EngineClientLike
+    dependencies: DaemonCtfRangeOrderCoordinatorDependencies
+    source: import('@bitcaster-market/client-sdk/durableCtfRangeOperation').DurableCtfRangeOperation
+    custodyOperationId: string
+  }) => Promise<void>,
+) {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'ordinary-refund-atomic-',
+      incarnationId: 'ordinary-refund-atomic',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let activeFence = fence
+      let nowMs = 10000
+      const ids = ['ordinary-refund-range', 'ordinary-refund-auth']
+      const dependencies: DaemonCtfRangeOrderCoordinatorDependencies = {
+        createMint: () => fakeMint(),
+        createWallet: () => new FakeWallet([sourceProof]),
+        now: () => nowMs,
+        randomId: () => ids.shift()!,
+        executeRefundSwap: async (_url, request) => ({
+          signatures: request.outputs.map(signBlindedOutput),
+        }),
+        ...overrides,
+      }
+      const coordinator = new DaemonCtfRangeOrderCoordinator(
+        directory,
+        () => activeFence,
+        dependencies,
+      )
+      const client = fakeEngineClient(boundCapability)
+      const prepared = await coordinator.prepare(orderRequest(), client)
+      await prepared.markRejected()
+      const db = await openDaemonStateSqlite(directory)
+      const row = db
+        .prepare(
+          "SELECT operation_id AS id FROM custody_operations WHERE semantic_kind='conditional-keyset-swap'",
+        )
+        .get() as { id: string }
+      db.close()
+      const loaded = await new DaemonCtfRangeCoordinator(directory, activeFence).load(row.id)
+      assert.ok(loaded)
+      nowMs = (loaded.operation.expiry + 1) * 1000
+      activeFence = await claimCustodyScopeLease(directory, {
+        scopeId: testScopeId(),
+        incarnationId: 'expired-refund-atomic',
+        observedAtMs: nowMs,
+      })
+      await run({
+        directory,
+        fence: () => activeFence,
+        coordinator,
+        client,
+        dependencies,
+        source: loaded.operation,
+        custodyOperationId: row.id,
+      })
+    },
+  )
+}
+
+async function refundMoneySnapshot(directory: string) {
+  const db = await openDaemonStateSqlite(directory)
+  try {
+    const names = [
+      'target_keyset_counters',
+      'custody_keyset_counters',
+      'target_proof_operations',
+      'target_wallet_proofs',
+      'custody_operations',
+      'custody_artifacts',
+      'custody_proofs',
+      'custody_proof_reservations',
+      'custody_operation_inputs',
+    ]
+    return Object.fromEntries(
+      names.map((name) => [
+        name,
+        db
+          .prepare(`SELECT * FROM ${name}`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    )
+  } finally {
+    db.close()
+  }
+}
+
+for (const phase of ['counter-written', 'journal-bound'] as const) {
+  test(`ordinary range refund rolls back ${phase} with its source locks intact`, async () => {
+    let directory = ''
+    let before: unknown
+    let hit = 0
+    let swaps = 0
+    await withExpiredOrdinaryRefund(
+      {
+        observeRefundPrepared: async () => {
+          before = await refundMoneySnapshot(directory)
+        },
+        injectRefundPreparationFault: (at) => {
+          if (at === phase) {
+            hit++
+            throw new Error('refund atomic rollback')
+          }
+        },
+        executeRefundSwap: async () => {
+          swaps++
+          throw new Error('unexpected swap')
+        },
+      },
+      async (context) => {
+        directory = context.directory
+        const result = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+        assert.equal(result.pending.length, 1)
+        assert.match(result.pending[0]!.error, /refund atomic rollback/)
+        assert.equal(hit, 1)
+        assert.equal(swaps, 0)
+        assert.deepEqual(await refundMoneySnapshot(directory), before)
+      },
+    )
+  })
+}
+
+test('ordinary range refund bounds real counter conflicts to three drafts without swap', async () => {
+  let directory = ''
+  let getFence: () => CustodyScopeFence
+  let observedAt = 0
+  let drafts = 0
+  let swaps = 0
+  await withExpiredOrdinaryRefund(
+    {
+      observeRefundPrepared: async ({ outputs }) => {
+        drafts++
+        await createDaemonCounterSource(() => ({ fence: getFence(), observedAtMs: observedAt }), {
+          normalizedMint: MINT_URL,
+          unit: 'msat',
+        }).reserve(outputs[0]!.blindedMessage.id, 1)
+      },
+      executeRefundSwap: async () => {
+        swaps++
+        throw new Error('unexpected swap')
+      },
+    },
+    async (context) => {
+      directory = context.directory
+      getFence = context.fence
+      observedAt = (context.source.expiry + 1) * 1000
+      const result = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+      assert.equal(result.pending.length, 1)
+      assert.match(result.pending[0]!.error, /counter/)
+      assert.equal(drafts, 3)
+      assert.equal(swaps, 0)
+      const db = await openDaemonStateSqlite(directory)
+      try {
+        assert.equal(
+          (
+            db
+              .prepare("SELECT count(*) AS n FROM target_proof_operations WHERE kind='swap-refund'")
+              .get() as { n: number }
+          ).n,
+          0,
+        )
+      } finally {
+        db.close()
+      }
+    },
+  )
+})
+
+test('ordinary range refund reconciles lost preparation COMMIT reply without a second draft', async () => {
+  let injected = 0
+  let drafts = 0
+  let swaps = 0
+  await withExpiredOrdinaryRefund(
+    {
+      observeRefundPrepared: async () => {
+        drafts++
+      },
+      injectRefundUnitOfWorkFault: (phase) => {
+        if (phase === 'after-commit' && injected++ === 0)
+          throw new Error('refund lost commit reply')
+      },
+      executeRefundSwap: async (_url, request) => {
+        swaps++
+        return { signatures: request.outputs.map(signBlindedOutput) }
+      },
+    },
+    async (context) => {
+      const result = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+      assert.equal(result.pending.length, 0)
+      assert.equal(result.recovered.length, 1)
+      assert.equal(drafts, 1)
+      assert.equal(swaps, 1)
+      const state = await readState()
+      const refund = Object.values(state!.proofOperations).find(
+        (row) => row.kind === 'swap-refund',
+      )!
+      assert.equal(refund.state, 'completed')
+      assert.ok(refund.metadata.refundOutputPlan)
+    },
+  )
+})
+
+for (const corruption of [
+  'signature',
+  'stripped-plan',
+  'invalid-plan',
+  'legacy-control',
+] as const) {
+  test(`ordinary range refund saved ${corruption} is checked before swap`, async () => {
+    let context: Parameters<Parameters<typeof withExpiredOrdinaryRefund>[1]>[0]
+    let swaps = 0
+    let inserted = 0
+    await withExpiredOrdinaryRefund(
+      {
+        observeRefundPrepared: async (draft) => {
+          inserted++
+          const source = context.source
+          const outputs =
+            corruption === 'legacy-control'
+              ? createDeterministicDurableCtfRangeRefundOutputs({
+                  seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
+                  source,
+                  refundOperationId: draft.operationId,
+                  amount:
+                    source.inputs.reduce((sum, proof) => sum + BigInt(proof.amount), 0n) -
+                    deriveDurableCtfRangeFeeBounds(source).maximumFee,
+                  keyset: mintKeys(),
+                })
+              : [...draft.outputs]
+          const prepared = createDurableCtfRangeRefundOperation({
+            operationId: draft.operationId,
+            source,
+            refundKeysetId: OFFER_KEYSET_ID,
+            resolveKeysetAsset: () => source.offerAsset,
+            outputs,
+          })
+          if (corruption === 'signature')
+            prepared.request.inputs[0]!.witness = { signatures: ['00'.repeat(64)] }
+          await withDurableCustodyUnitOfWork(
+            context.directory,
+            context.fence(),
+            (source.expiry + 1) * 1000,
+            (database) =>
+              prepareCtfRangeRefundProofOperationFromDatabase(
+                database,
+                {
+                  operationId: draft.operationId,
+                  kind: 'swap-refund',
+                  mintUrl: MINT_URL,
+                  inputs: prepared.request.inputs,
+                  outputs: {
+                    refund: serializeOutputDataArray(outputs.map(OutputData.deserialize)),
+                  },
+                  metadata: {
+                    ...prepared.operation.metadata,
+                    purpose: 'ctf-range-refund',
+                    rangeOperationId: source.operationId,
+                    custodyOperationId: context.custodyOperationId,
+                    refundKeysetId: OFFER_KEYSET_ID,
+                    ...(corruption === 'invalid-plan'
+                      ? { refundOutputPlan: null }
+                      : corruption === 'signature'
+                        ? { refundOutputPlan: draft.plan }
+                        : {}),
+                  },
+                },
+                (source.expiry + 1) * 1000,
+              ),
+          )
+        },
+        executeRefundSwap: async (_url, request) => {
+          swaps++
+          return { signatures: request.outputs.map(signBlindedOutput) }
+        },
+      },
+      async (value) => {
+        context = value
+        const result = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+        assert.equal(inserted, 1)
+        if (corruption === 'legacy-control') {
+          assert.equal(result.pending.length, 0)
+          assert.equal(swaps, 1)
+        } else {
+          assert.equal(result.pending.length, 1)
+          assert.match(
+            result.pending[0]!.error,
+            corruption === 'signature'
+              ? /witness/
+              : corruption === 'invalid-plan'
+                ? /seed-derived|output plan/
+                : /legacy outputs/,
+          )
+          assert.equal(swaps, 0)
+        }
+      },
+    )
+  })
+}
+
+test('ordinary range refund different committed winner supersedes speculative outputs before CAS', async () => {
+  let context: Parameters<Parameters<typeof withExpiredOrdinaryRefund>[1]>[0]
+  let losing: string[] = []
+  let winning: string[] = []
+  let submitted: string[] = []
+  let observed = 0
+  const points = (outputs: readonly { blindedMessage: { B_: string } }[]) =>
+    outputs.map((value) => value.blindedMessage.B_).sort()
+  await withExpiredOrdinaryRefund(
+    {
+      observeRefundPrepared: async (draft) => {
+        observed++
+        losing = points(draft.outputs)
+        await createDaemonCounterSource(
+          () => ({ fence: context.fence(), observedAtMs: (context.source.expiry + 1) * 1000 }),
+          { normalizedMint: MINT_URL, unit: 'msat' },
+        ).reserve(draft.outputs[0]!.blindedMessage.id, 5)
+        const winner = new DaemonCtfRangeOrderCoordinator(context.directory, context.fence, {
+          ...context.dependencies,
+          observeRefundPrepared: undefined,
+          executeRefundSwap: async (_url, request) => {
+            winning = request.outputs.map((output) => output.B_).sort()
+            throw new Error('winner refund reply unavailable')
+          },
+        })
+        const held = await winner.recover(WALLET_SEED_HEX, context.client)
+        assert.equal(held.pending.length, 1)
+        assert.match(held.pending[0]!.error, /winner refund reply unavailable/)
+      },
+      executeRefundSwap: async (_url, request) => {
+        submitted = request.outputs.map((output) => output.B_).sort()
+        return { signatures: request.outputs.map(signBlindedOutput) }
+      },
+    },
+    async (value) => {
+      context = value
+      const result = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+      assert.equal(result.pending.length, 0)
+      assert.equal(result.recovered.length, 1)
+      assert.equal(observed, 1)
+      assert.notDeepEqual(winning, losing)
+      assert.deepEqual(submitted, winning)
+      const state = await readState()
+      assert.equal(
+        Object.values(state!.proofOperations).filter((row) => row.kind === 'swap-refund').length,
+        1,
+      )
+    },
+  )
+})
+
+test('completed regular range refund is found by the production regular-msat seed scanner in a fresh profile', async () => {
+  const signatures = new Map<string, ReturnType<typeof signBlindedOutput>>()
+  await withExpiredOrdinaryRefund(
+    {
+      executeRefundSwap: async (_url, request) => {
+        const result = request.outputs.map((output) => {
+          const signature = signBlindedOutput(output)
+          signatures.set(output.B_, signature)
+          return signature
+        })
+        return { signatures: result }
+      },
+    },
+    async (context) => {
+      const completed = await context.coordinator.recover(WALLET_SEED_HEX, context.client)
+      assert.equal(completed.pending.length, 0)
+      const originalState = await readState()
+      const refund = Object.values(originalState!.proofOperations).find(
+        (row) => row.kind === 'swap-refund',
+      )!
+      assert.equal(refund.state, 'completed')
+      assert.ok(signatures.size > 0)
+      const originalProofs = refund.resultProofs!.refund
+      const plan = refund.metadata.refundOutputPlan as {
+        counterStart: number
+        counterCount: number
+      }
+      const directory = await mkdtemp(join(tmpdir(), 'completed-refund-seed-scan-'))
+      const previous = process.env.BITCASTER_DAEMON_HOME
+      try {
+        await bootstrapFreshDaemonProfile({
+          directory,
+          engineBaseUrl: 'https://engine.example',
+          mintUrl: MINT_URL,
+          walletSeedHex: WALLET_SEED_HEX,
+          nostrSecretKeyHex: '22'.repeat(32),
+          initializedAtMs: 1,
+        })
+        const profileFence = await claimCustodyScopeLease(directory, {
+          scopeId: testScopeId(),
+          incarnationId: 'completed-refund-seed-scan',
+          observedAtMs: 2,
+        })
+        process.env.BITCASTER_DAEMON_HOME = directory
+        assert.equal(
+          (
+            await readAvailableWalletProofsFenced({
+              mintUrl: MINT_URL,
+              asset: regularAsset(),
+              mutation: { fence: profileFence, observedAtMs: 3 },
+            })
+          ).length,
+          0,
+        )
+        let regularLists = 0
+        let restoreCalls = 0
+        const transport: AllKeysetSeedRecoveryTransport = {
+          wallet: {
+            loadMint: async () => undefined,
+            keyChain: { getKeyset: () => mintKeys(), ensureKeysetKeys: async () => mintKeys() },
+            checkProofsStates: async (proofs) =>
+              proofs.map((proof) => ({ Y: proofY(proof), state: 'UNSPENT' as const })),
+          },
+          listRegularKeysets: async () => {
+            regularLists++
+            return { keysets: [{ ...mintKeys(), active: true }] }
+          },
+          listConditionalKeysets: async () => {
+            throw new Error('default recovery must never list conditions')
+          },
+          getConditionalKeyset: async () => {
+            throw new Error('default recovery must never fetch conditional keysets')
+          },
+          restoreCandidates: async (candidates) => {
+            restoreCalls++
+            const matched = (candidates as SerializedBlindedMessage[]).filter((candidate) =>
+              signatures.has(candidate.B_),
+            )
+            return {
+              outputs: matched,
+              signatures: matched.map((candidate) => signatures.get(candidate.B_)!),
+            }
+          },
+        }
+        const recovered = await recoverAllDaemonWalletFromSeed(
+          {
+            recoveryId: 'completed-regular-refund-scan',
+            mintUrl: MINT_URL,
+            unit: 'msat',
+            walletSeedHex: WALLET_SEED_HEX,
+            disclosureAcknowledged: true,
+          },
+          { directory, getFence: () => profileFence, nowMs: () => 3, transport },
+        )
+        assert.equal(recovered.state, 'completed')
+        assert.equal(regularLists, 1)
+        assert.ok(restoreCalls > 0)
+        assert.deepEqual(recovered.scanPolicy, { version: 1, scope: 'regular-msat', gapLimit: 300 })
+        assert.equal(recovered.scannedRanges.length, 1)
+        assert.equal(recovered.scannedRanges[0]!.keysetId, OFFER_KEYSET_ID)
+        assert.equal(recovered.scannedRanges[0]!.stopReason, 'gap-limit')
+        assert.equal(
+          recovered.scannedRanges[0]!.nextCounter,
+          plan.counterStart + plan.counterCount + 300,
+        )
+        const identity = (proof: { id?: string; amount: unknown; secret: string; C: string }) => ({
+          id: proof.id,
+          amount: amountToNumber(proof.amount as Amount),
+          secret: proof.secret,
+          C: proof.C,
+        })
+        const actual = (
+          await readAvailableWalletProofsFenced({
+            mintUrl: MINT_URL,
+            asset: regularAsset(),
+            mutation: { fence: profileFence, observedAtMs: 3 },
+          })
+        )
+          .map((row) => identity(row.proof))
+          .sort((a, b) => a.secret.localeCompare(b.secret))
+        const expected = originalProofs
+          .map(identity)
+          .sort((a, b) => a.secret.localeCompare(b.secret))
+        assert.deepEqual(actual, expected)
+        const counters = await createDaemonCounterSource(
+          () => ({ fence: profileFence, observedAtMs: 3 }),
+          { normalizedMint: MINT_URL, unit: 'msat' },
+        ).snapshot()
+        assert.equal(counters[OFFER_KEYSET_ID], plan.counterStart + plan.counterCount)
+      } finally {
+        if (previous === undefined) delete process.env.BITCASTER_DAEMON_HOME
+        else process.env.BITCASTER_DAEMON_HOME = previous
+        await rm(directory, { recursive: true, force: true })
+      }
     },
   )
 })

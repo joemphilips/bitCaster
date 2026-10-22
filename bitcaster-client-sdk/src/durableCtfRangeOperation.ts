@@ -1,11 +1,14 @@
 import { requireValidCashuProofs } from './cashuProofAdmission.ts'
 import {
   Amount,
+  splitAmount,
+  type CounterSource,
   Keyset,
   OutputData,
   buildCtfRangeRecoveryQuery,
   classifyCtfSettlementRecovery,
   computeCtfManifestCommitment,
+  computePayToUnlockRefundDigest,
   deriveConditionalKeysetId,
   deriveCtfRangeRecoverySelection,
   deriveSecretAndBlindingFactor,
@@ -25,7 +28,7 @@ import {
   type SerializedOutputData,
   type SwapRequest,
 } from '@cashu/cashu-ts'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { secp256k1, schnorr } from '@noble/curves/secp256k1.js'
 import { hexToBytes } from '@noble/curves/utils.js'
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -67,6 +70,10 @@ import type {
   TokenImportKeysetSource,
 } from './tokenImportValidation.ts'
 import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
+import {
+  reserveAndConstructDurableSeedDerivedOutputs,
+  type DurableSeedDerivedOutputPlan,
+} from './durableSeedDerivedOutputs.ts'
 import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 
 export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 3 as const
@@ -897,6 +904,72 @@ export function createDurableCtfRangeRefundOperation(input: {
     request,
     operation: refundProofOperation(input.operationId, source, refundAsset, outputData, request),
   }
+}
+
+/** Validate saved request signatures without creating replacement witness bytes. */
+export function assertDurableCtfRangeRefundRequestWitness(input: {
+  readonly source: DurableCtfRangeOperation
+  readonly request: SwapRequest
+}): void {
+  const source = decodeDurableCtfRangeOperation(input.source)
+  const digest = computePayToUnlockRefundDigest(input.request)
+  if (input.request.inputs.length !== source.inputs.length)
+    throw new Error('CTF range refund inputs differ from source')
+  for (const [index, proof] of input.request.inputs.entries()) {
+    const observed = { ...serializeProof(proof), witness: null }
+    const expected = { ...source.inputs[index]!, witness: null }
+    const witness: unknown = proof.witness
+    if (
+      canonicalJson(observed) !== canonicalJson(expected) ||
+      !isRecord(witness) ||
+      Object.keys(witness).join('\0') !== 'signatures' ||
+      !Array.isArray(witness.signatures) ||
+      witness.signatures.length !== 1 ||
+      typeof witness.signatures[0] !== 'string' ||
+      !/^[0-9a-f]{128}$/.test(witness.signatures[0]) ||
+      !schnorr.verify(
+        hexToBytes(witness.signatures[0]),
+        hexToBytes(digest),
+        hexToBytes(source.refundKey.publicKey),
+      )
+    )
+      throw new Error('CTF range refund witness differs from exact request authority')
+  }
+}
+
+/** Prepare new refund funds on the ordinary wallet counter authority. */
+export async function prepareDurableSeedDerivedCtfRangeRefund(input: {
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+  readonly source: DurableCtfRangeOperation
+  readonly refundOperationId: string
+  readonly amount: string | bigint | number
+  readonly keyset: HasKeysetKeys
+}): Promise<{
+  readonly operation: DurableCustodyProofOperationInput
+  readonly request: SwapRequest
+  readonly plan: DurableSeedDerivedOutputPlan
+}> {
+  const source = decodeDurableCtfRangeOperation(input.source)
+  if (input.refundOperationId !== deriveDurableCtfRangeRefundOperationId(source.operationId))
+    throw new Error('CTF range refund operation identity is foreign')
+  const amount = Amount.from(input.amount)
+  if (amount.toBigInt() <= 0n) throw new Error('CTF range refund amount is fee-dominated')
+  const amounts = splitAmount(amount, input.keyset.keys).map(amountToNumber)
+  const constructed = await reserveAndConstructDurableSeedDerivedOutputs({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    keyset: input.keyset,
+    amounts,
+  })
+  const prepared = createDurableCtfRangeRefundOperation({
+    operationId: input.refundOperationId,
+    source,
+    refundKeysetId: input.keyset.id,
+    resolveKeysetAsset: (id) => (id === input.keyset.id ? source.offerAsset : undefined),
+    outputs: constructed.plan.outputs,
+  })
+  return { ...prepared, plan: constructed.plan }
 }
 
 export function deriveDurableCtfRangeRefundOperationId(rangeOperationId: string): string {

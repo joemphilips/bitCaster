@@ -58,6 +58,8 @@ import {
   deriveDurableCtfRangeSettledFaceAmount,
   createDurableCtfRangeRefundOperation,
   createDeterministicDurableCtfRangeRefundOutputs,
+  prepareDurableSeedDerivedCtfRangeRefund,
+  assertDurableCtfRangeRefundRequestWitness,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
   toDurableCtfRangeProofOperationInput,
@@ -138,7 +140,14 @@ import type {
   SettlementCapabilityResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { DaemonCtfRangeCoordinator } from './ctfRangeCoordinator.ts'
-import type { DaemonDurableCtfRangeAuthority } from './durableCtfRangeSqlite.ts'
+import {
+  loadDaemonDurableCtfRangeAuthority,
+  type DaemonDurableCtfRangeAuthority,
+} from './durableCtfRangeSqlite.ts'
+import {
+  assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  reconstructDurableSeedDerivedOutputs,
+} from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import {
   createDaemonRangeSourceBinding,
   bindDaemonRangeSourceInTransaction,
@@ -249,6 +258,15 @@ export interface DaemonCtfRangeOrderCoordinatorDependencies {
   readonly now?: () => number
   readonly randomId?: () => string
   readonly restoreOutputs?: typeof restoreOutputGroups
+  readonly observeRefundPrepared?: (
+    draft: Readonly<{
+      operationId: string
+      outputs: readonly import('@cashu/cashu-ts').SerializedOutputData[]
+      plan: import('@bitcaster-market/client-sdk/durableSeedDerivedOutputs').DurableSeedDerivedOutputPlan
+    }>,
+  ) => Promise<void>
+  readonly injectRefundPreparationFault?: (phase: 'counter-written' | 'journal-bound') => void
+  readonly injectRefundUnitOfWorkFault?: (phase: StateSqliteFaultPhase) => void
   readonly injectRangeBindFault?: (phase: StateSqliteFaultPhase) => void
   readonly injectRangeUnitOfWorkFault?: (phase: StateSqliteFaultPhase) => void
   readonly executeRefundSwap?: (
@@ -1565,6 +1583,13 @@ export class DaemonCtfRangeOrderCoordinator {
     assertRangeRefundOperation(refund, custodyOperationId, source)
     const refundKeysetId = readSourceText(refund, 'refundKeysetId')
     const keyset = await loadExactMintKeyset(mint, refundKeysetId)
+    assertSavedRangeRefundDerivation(
+      refund,
+      custodyOperationId,
+      source,
+      walletSeed(walletSeedHex),
+      keyset,
+    )
     if (refund.state === 'completed') {
       await coordinator.completeRefund({
         custodyOperationId,
@@ -1618,64 +1643,137 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     mint: CtfRangeMintLike,
   ): Promise<ProofOperationRecord> {
-    const keyset = await selectRangeRefundKeyset(
-      mint,
-      source,
-      this.#nowSeconds(),
-      this.#dependencies.allowInsecureLoopbackHttp === true,
-    )
+    const operationId = deriveDurableCtfRangeRefundOperationId(source.operationId)
+    const readSaved = () => {
+      const mutation = this.#mutation()
+      return withDurableCustodyFencedRead(
+        this.#storage,
+        mutation.fence,
+        mutation.observedAtMs,
+        (database) => {
+          const saved = readDaemonProofOperationFromDatabase(database, operationId)
+          if (saved !== null) assertRangeRefundOperation(saved, custodyOperationId, source)
+          return saved
+        },
+        { snapshot: true },
+      )
+    }
+    const existing = await readSaved()
+    if (existing !== null) return existing
     const refundAmount =
       source.inputs.reduce((total, proof) => total + Amount.from(proof.amount).toBigInt(), 0n) -
       deriveDurableCtfRangeFeeBounds(source).maximumFee
     if (refundAmount <= 0n) throw new Error('range refund amount is fee-dominated')
-    const operationId = deriveDurableCtfRangeRefundOperationId(source.operationId)
-    const outputs = createDeterministicDurableCtfRangeRefundOutputs({
-      seed: walletSeed(walletSeedHex),
-      source,
-      refundOperationId: operationId,
-      amount: refundAmount,
-      keyset,
-    })
-    const prepared = createDurableCtfRangeRefundOperation({
-      operationId,
-      source,
-      refundKeysetId: keyset.id,
-      resolveKeysetAsset: (id) => (id === keyset.id ? source.offerAsset : undefined),
-      outputs,
-    })
-    const persistedOutputs = outputs.map(OutputData.deserialize)
-    const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        assertRangeRefundSourceLocked(
-          database,
-          mutation.fence.scopeId,
-          custodyOperationId,
-          source.inputs.length,
-        )
-        return prepareCtfRangeRefundProofOperationFromDatabase(
-          database,
-          {
-            operationId: prepared.operation.operationId,
-            kind: 'swap-refund',
-            mintUrl: prepared.operation.mintUrl,
-            inputs: prepared.request.inputs,
-            outputs: { refund: serializeOutputDataArray(persistedOutputs) },
-            metadata: {
-              ...prepared.operation.metadata,
-              purpose: CTF_RANGE_REFUND_PURPOSE,
-              rangeOperationId: source.operationId,
-              custodyOperationId,
-              refundKeysetId: keyset.id,
-            },
-          },
-          mutation.observedAtMs,
-        )
-      },
+    const keyset = structuredClone(
+      await selectRangeRefundKeyset(
+        mint,
+        source,
+        this.#nowSeconds(),
+        this.#dependencies.allowInsecureLoopbackHttp === true,
+      ),
     )
+    const observedSource = await this.#storage.read((database) => {
+      const loaded = loadDaemonDurableCtfRangeAuthority(
+        new DurableCustodySqliteStore(database),
+        custodyOperationId,
+      )
+      if (loaded === null || !isDeepStrictEqual(loaded.operation, source))
+        throw new Error('range refund source authority changed')
+      return loaded.record.revision
+    })
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const mutation = this.#mutation()
+      const transcript = createSpeculativeCounterTranscript(
+        await readDaemonCounterSnapshots({
+          storage: this.#storage,
+          mutation,
+          keysetIds: [keyset.id],
+          binding: { normalizedMint: source.mintUrl, unit: 'msat' },
+        }),
+      )
+      const prepared = await prepareDurableSeedDerivedCtfRangeRefund({
+        seed: walletSeed(walletSeedHex),
+        counterSource: transcript.counterSource,
+        source,
+        refundOperationId: operationId,
+        amount: refundAmount,
+        keyset,
+      })
+      await this.#dependencies.observeRefundPrepared?.(
+        structuredClone({ operationId, outputs: prepared.plan.outputs, plan: prepared.plan }),
+      )
+      try {
+        return await withDurableCustodyUnitOfWork(
+          this.#storage,
+          mutation.fence,
+          mutation.observedAtMs,
+          (database) => {
+            const saved = readDaemonProofOperationFromDatabase(database, operationId)
+            if (saved !== null) {
+              assertRangeRefundOperation(saved, custodyOperationId, source)
+              return saved
+            }
+            const loaded = loadDaemonDurableCtfRangeAuthority(
+              new DurableCustodySqliteStore(database),
+              custodyOperationId,
+            )
+            if (
+              loaded === null ||
+              loaded.record.revision !== observedSource ||
+              !isDeepStrictEqual(loaded.operation, source)
+            )
+              throw new Error('range refund source authority changed')
+            assertRangeRefundSourceLocked(
+              database,
+              mutation.fence.scopeId,
+              custodyOperationId,
+              source.inputs.length,
+            )
+            commitDaemonCounterTranscript(
+              database,
+              mutation.fence.scopeId,
+              { normalizedMint: source.mintUrl, unit: 'msat' },
+              transcript,
+              mutation.observedAtMs,
+            )
+            this.#dependencies.injectRefundPreparationFault?.('counter-written')
+            const record = prepareCtfRangeRefundProofOperationFromDatabase(
+              database,
+              {
+                operationId,
+                kind: 'swap-refund',
+                mintUrl: prepared.operation.mintUrl,
+                inputs: prepared.request.inputs,
+                outputs: {
+                  refund: serializeOutputDataArray(
+                    prepared.plan.outputs.map(OutputData.deserialize),
+                  ),
+                },
+                metadata: {
+                  ...prepared.operation.metadata,
+                  purpose: CTF_RANGE_REFUND_PURPOSE,
+                  rangeOperationId: source.operationId,
+                  custodyOperationId,
+                  refundKeysetId: keyset.id,
+                  refundOutputPlan: prepared.plan,
+                },
+              },
+              mutation.observedAtMs,
+            )
+            this.#dependencies.injectRefundPreparationFault?.('journal-bound')
+            return record
+          },
+          this.#dependencies.injectRefundUnitOfWorkFault === undefined
+            ? {}
+            : { injectFault: this.#dependencies.injectRefundUnitOfWorkFault },
+        )
+      } catch (error) {
+        const saved = await readSaved()
+        if (saved !== null) return saved
+        if (!(error instanceof DaemonCounterSnapshotConflictError) || attempt === 2) throw error
+      }
+    }
+    throw new Error('range refund counter attempts exhausted')
   }
 
   async #executeRefundSwap(
@@ -3522,6 +3620,71 @@ function assertRangeRefundOperation(
     )
   ) {
     throw new Error('range refund operation differs from its source authority')
+  }
+}
+
+function assertSavedRangeRefundDerivation(
+  refund: ProofOperationRecord,
+  custodyOperationId: string,
+  source: DurableCtfRangeOperation,
+  seed: Uint8Array,
+  keyset: MintKeys,
+): void {
+  const outputs = deserializeOutputGroups(refund.outputs).refund ?? []
+  const prepared = createDurableCtfRangeRefundOperation({
+    operationId: refund.operationId,
+    source,
+    refundKeysetId: keyset.id,
+    resolveKeysetAsset: (id) => (id === keyset.id ? source.offerAsset : undefined),
+    outputs: outputs.map(OutputData.serialize),
+  })
+  assertDurableCtfRangeRefundRequestWitness({
+    source,
+    request: {
+      inputs: refund.inputs.map(toProof),
+      outputs: outputs.map((output) => output.blindedMessage),
+    },
+  })
+  const expectedMetadata = {
+    ...prepared.operation.metadata,
+    purpose: CTF_RANGE_REFUND_PURPOSE,
+    rangeOperationId: source.operationId,
+    custodyOperationId,
+    refundKeysetId: keyset.id,
+  }
+  if (Object.hasOwn(refund.metadata, 'refundOutputPlan')) {
+    const plan = assertDurableSeedDerivedOutputPlanMatchesOutputs({
+      plan: refund.metadata.refundOutputPlan,
+      keysetId: keyset.id,
+      outputs,
+    })
+    reconstructDurableSeedDerivedOutputs({
+      seed,
+      keyset,
+      amounts: outputs.map((output) => amountToNumber(output.blindedMessage.amount)),
+      plan,
+    })
+    if (
+      !isDeepStrictEqual(refund.metadata, {
+        ...expectedMetadata,
+        refundOutputPlan: refund.metadata.refundOutputPlan,
+      })
+    )
+      throw new Error('range refund output plan metadata differs')
+  } else {
+    if (!isDeepStrictEqual(refund.metadata, expectedMetadata))
+      throw new Error('range refund legacy metadata differs')
+    const legacy = createDeterministicDurableCtfRangeRefundOutputs({
+      seed,
+      source,
+      refundOperationId: refund.operationId,
+      amount:
+        source.inputs.reduce((sum, proof) => sum + BigInt(proof.amount), 0n) -
+        deriveDurableCtfRangeFeeBounds(source).maximumFee,
+      keyset,
+    })
+    if (!isDeepStrictEqual(legacy, outputs.map(OutputData.serialize)))
+      throw new Error('range refund legacy outputs differ from saved authority')
   }
 }
 
