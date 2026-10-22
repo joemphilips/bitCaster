@@ -6,6 +6,8 @@ import {
   computeConvertFeeSubunits,
   payoffVector,
   planCtfConsolidation,
+  planCtfConsolidationAmounts,
+  materializeCtfConsolidationPlan,
   type CtfConsolidationParams,
 } from '../src/ctfConsolidation.ts'
 
@@ -271,3 +273,34 @@ test('consolidation uses registered wire order independently of display order', 
   assert.deepEqual(result.request.outputs['C|A'], [output('ks-C|A', 10, 'C|A')])
   assert.equal(result.request.outputs['A|C'], undefined)
 })
+
+for (const [strategy, inputs] of [
+  [
+    't1',
+    { A: [proof('ks-A', 10, 'a')], B: [proof('ks-B', 10, 'b')], '*': [proof('ks-base', 1, 'fee')] },
+  ],
+  ['t2', { 'B|C': [proof('ks-B|C', 2, 'na')], 'A|C': [proof('ks-A|C', 2, 'nb')] }],
+  ['t3', { A: [proof('ks-A', 10, 'a')], B: [proof('ks-B', 10, 'b')], C: [proof('ks-C', 10, 'c')] }],
+] as const) {
+  test(`${strategy} pure amount planning preserves the public planner and delays output construction`, () => {
+    const input = params(strategy, inputs)
+    let calls = 0
+    const factory = input.makeOutputs
+    const observed = {
+      ...input,
+      makeOutputs: (value: Parameters<typeof factory>[0]) => {
+        calls++
+        return factory(value)
+      },
+    }
+    const amountPlan = planCtfConsolidationAmounts(observed)
+    assert.equal(calls, 0)
+    assert.equal(amountPlan.kind, 'plan')
+    if (amountPlan.kind !== 'plan') return
+    assert.deepEqual(
+      materializeCtfConsolidationPlan(amountPlan, observed.makeOutputs),
+      planCtfConsolidation(input),
+    )
+    assert.equal(calls, amountPlan.outputs.length)
+  })
+}

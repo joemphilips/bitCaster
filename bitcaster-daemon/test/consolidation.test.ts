@@ -1,5 +1,10 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { signedCtfRegistrationFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,6 +19,7 @@ import {
   deriveConditionalKeysetId,
   deriveKeysetId,
   pointFromHex,
+  hashToCurve,
   type MintKeys,
   type Proof,
 } from '@cashu/cashu-ts'
@@ -21,7 +27,7 @@ import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { COLLATERAL_COLLECTION } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
-import { createDaemonSecrets } from '../src/secrets.ts'
+import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   claimCustodyScopeLease,
@@ -32,7 +38,11 @@ import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
-import { deserializeOutputGroups, recoverPreparedWalletSends } from '../src/walletOps.ts'
+import {
+  createDaemonCounterSource,
+  deserializeOutputGroups,
+  recoverPreparedWalletSends,
+} from '../src/walletOps.ts'
 import { emptyDaemonState, readState, writeState, type StoredProofAsset } from '../src/state.ts'
 
 const registrations = Object.fromEntries(
@@ -194,6 +204,7 @@ test('wallet.consolidateMarket rejects invalid registration before custody mutat
 test('wallet.consolidateMarket returns typed no-gain error without mutating proofs', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(1, 'B|C', 'nogain-not-a'), proofRecord(1, 'A|C', 'nogain-not-b')])
+    const before = await consolidationMoneyRows()
 
     const response = await dispatch(
       {
@@ -210,6 +221,7 @@ test('wallet.consolidateMarket returns typed no-gain error without mutating proo
     })
     const persisted = await readState()
     assert.equal(persisted?.wallet.proofs.length, 2)
+    assert.deepEqual(await consolidationMoneyRows(), before)
     assertNoProofInternals(response)
   })
 })
@@ -1338,25 +1350,23 @@ function market(conditionId: string, status: string): unknown {
 
 function outputKeysets(): Record<string, string> {
   const keysetId = deriveKeysetId(
-    Object.fromEntries(
-      [
-        '1',
-        '2',
-        '4',
-        '8',
-        '16',
-        '32',
-        '64',
-        '128',
-        '256',
-        '512',
-        '1024',
-        '2048',
-        '4096',
-        '8192',
-        '16384',
-      ].map((amount) => [amount, MINT_PUBLIC_KEY]),
-    ),
+    mintDenominationKeys(MINT_PRIVATE_KEY, [
+      '1',
+      '2',
+      '4',
+      '8',
+      '16',
+      '32',
+      '64',
+      '128',
+      '256',
+      '512',
+      '1024',
+      '2048',
+      '4096',
+      '8192',
+      '16384',
+    ]),
     { unit: 'msat', input_fee_ppk: 1, versionByte: 1 },
   )
   return Object.fromEntries(
@@ -1394,33 +1404,36 @@ function fakeMintKeys(id: string): MintKeys {
     unit: 'msat',
     active: true,
     input_fee_ppk: 1,
-    keys: {
-      '1': MINT_PUBLIC_KEY,
-      '2': MINT_PUBLIC_KEY,
-      '4': MINT_PUBLIC_KEY,
-      '8': MINT_PUBLIC_KEY,
-      '16': MINT_PUBLIC_KEY,
-      '32': MINT_PUBLIC_KEY,
-      '64': MINT_PUBLIC_KEY,
-      '128': MINT_PUBLIC_KEY,
-      '256': MINT_PUBLIC_KEY,
-      '512': MINT_PUBLIC_KEY,
-      '1024': MINT_PUBLIC_KEY,
-      '2048': MINT_PUBLIC_KEY,
-      '4096': MINT_PUBLIC_KEY,
-      '8192': MINT_PUBLIC_KEY,
-      '16384': MINT_PUBLIC_KEY,
-    },
+    keys: mintDenominationKeys(MINT_PRIVATE_KEY, [
+      '1',
+      '2',
+      '4',
+      '8',
+      '16',
+      '32',
+      '64',
+      '128',
+      '256',
+      '512',
+      '1024',
+      '2048',
+      '4096',
+      '8192',
+      '16384',
+    ]),
   } as MintKeys
 }
 
 function signedProofFromOutput(output: OutputData): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    MINT_PRIVATE_KEY,
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, String(output.blindedMessage.amount)),
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), MINT_PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, String(output.blindedMessage.amount)),
+  )
   return output.toProof(
     {
       id: signature.id,
@@ -1547,4 +1560,345 @@ async function assertConsolidatedCustody(expected: {
 function assertNoProofInternals(value: unknown): void {
   const text = JSON.stringify(value)
   assert.doesNotMatch(text, /secret-|out-secret-|C-|out-C-|witness|mnemonic|nwc/i)
+}
+
+async function consolidationMoneyRows() {
+  const db = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+  try {
+    const names = db
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'custody_%' OR name LIKE 'target_%') ORDER BY name",
+      )
+      .all() as { name: string }[]
+    return Object.fromEntries(
+      names.map(({ name }) => [
+        name,
+        db
+          .prepare(`SELECT * FROM "${name}"`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    )
+  } finally {
+    db.close()
+  }
+}
+
+function consolidationCounter() {
+  return createDaemonCounterSource(() => ({ fence: activeFence!, observedAtMs: Date.now() }), {
+    normalizedMint: MINT_URL,
+    unit: 'msat',
+  })
+}
+
+for (const strategy of ['t1', 't2', 't3'] as const)
+  for (const conditional of [false, true]) {
+    test(`market consolidation ${strategy} ordinary seed vectors (${conditional ? 'conditional' : 'regular'} keysets), nonzero counters and repeated groups`, async () => {
+      await withDaemonHome(async () => {
+        const condition =
+          registrations[strategy === 't1' ? 'cond1' : strategy === 't3' ? 'cond3' : 'cond2']
+            .condition_id
+        await seedWallet(
+          strategy === 't1'
+            ? [proofRecord(10, 'A', 'a'), proofRecord(10, 'B', 'b'), satRecord(1, 'fee')]
+            : strategy === 't3'
+              ? [
+                  proofRecord(2, 'A', 't3-a'),
+                  proofRecord(2, 'B|C', 't3-not-a'),
+                  proofRecord(1, 'A|B', 'ab'),
+                ]
+              : [proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')],
+        )
+        const ids = conditional ? conditionalOutputKeysets(condition) : outputKeysets()
+        const starts = new Map<string, number>()
+        for (const id of new Set(Object.values(ids))) {
+          await consolidationCounter().reserve(id, 7)
+          starts.set(id, 7)
+        }
+        const seed = Buffer.from((await readSecrets())!.walletSeedHex, 'hex')
+        let checked = 0
+        let expectedPoints: ReturnType<typeof outputPoints> = []
+        let submitted = 0
+        const deps = depsForMarket(
+          market(condition, 'pending'),
+          conditional ? { conditionalConditionId: condition } : {},
+        )
+        const response = await dispatch(
+          {
+            method: 'wallet.consolidateMarket',
+            params: { marketId: `${condition}-A`, type: strategy },
+          },
+          {
+            ...deps,
+            observeMarketConsolidationPrepared: async ({ outputsByCollection }) => {
+              expectedPoints = outputPoints(outputsByCollection)
+              for (const outputs of Object.values(outputsByCollection))
+                for (const output of outputs) {
+                  const id = output.blindedMessage.id
+                  const counter = starts.get(id)!
+                  assert.ok(Number.isSafeInteger(counter))
+                  const encoded = Buffer.alloc(8)
+                  encoded.writeBigUInt64BE(BigInt(counter))
+                  const prefix = Buffer.concat([
+                    Buffer.from('Cashu_KDF_HMAC_SHA256'),
+                    Buffer.from(id, 'hex'),
+                    encoded,
+                  ])
+                  const secret = createHmac('sha256', seed)
+                    .update(Buffer.concat([prefix, Buffer.from([0])]))
+                    .digest('hex')
+                  const factor = createHmac('sha256', seed)
+                    .update(Buffer.concat([prefix, Buffer.from([1])]))
+                    .digest('hex')
+                  assert.equal(output.secret, Buffer.from(secret).toString('hex'))
+                  assert.equal(BigInt('0x' + output.blindingFactor), BigInt('0x' + factor))
+                  const expected = hashToCurve(Buffer.from(secret))
+                    .add(pointFromHex(MINT_PUBLIC_KEY).multiply(BigInt('0x' + factor)))
+                    .toHex(true)
+                  assert.equal(output.blindedMessage.B_, expected)
+                  starts.set(id, counter + 1)
+                  checked++
+                }
+            },
+            ctfConvert: async (...args) => {
+              submitted++
+              assert.deepEqual(
+                outputPoints(
+                  Object.fromEntries(
+                    Object.entries(args[2]).map(([group, outputs]) => [
+                      group,
+                      outputs.map((output) => ({ blindedMessage: output.blindedMessage })),
+                    ]),
+                  ),
+                ),
+                expectedPoints,
+              )
+              assert.deepEqual(
+                outputPoints(
+                  Object.fromEntries(
+                    Object.entries(
+                      (
+                        args[1] as {
+                          outputs: Record<
+                            string,
+                            { id: string; B_: string; amount: number | Amount }[]
+                          >
+                        }
+                      ).outputs,
+                    ).map(([group, outputs]) => [
+                      group,
+                      outputs.map((blindedMessage) => ({ blindedMessage })),
+                    ]),
+                  ),
+                ),
+                expectedPoints,
+              )
+              return deps.ctfConvert(...args)
+            },
+          },
+        )
+        assert.equal(response.ok, true)
+        assert.ok(checked >= 1)
+        assert.equal(submitted, 1)
+        const counters = await consolidationCounter().snapshot()
+        for (const [id, next] of starts) assert.equal(counters[id], next)
+      })
+    })
+  }
+
+test('market consolidation preparation rollback preserves every money row and paired counter', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    const before = await consolidationMoneyRows()
+    let calls = 0
+    let hit = 0
+    await assert.rejects(
+      dispatch(
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
+          injectCustodyFault: (phase) => {
+            if (phase === 'before-commit') {
+              hit++
+              throw new Error('atomic market preparation fault')
+            }
+          },
+          ctfConvert: async () => {
+            calls++
+            throw new Error('unexpected mint')
+          },
+        },
+      ),
+      /atomic market preparation fault/,
+    )
+    assert.equal(hit, 1)
+    assert.equal(calls, 0)
+    assert.deepEqual(await consolidationMoneyRows(), before)
+  })
+})
+
+test('market consolidation counter conflicts share one three-attempt budget and never reach mint', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    let drafts = 0
+    let calls = 0
+    await assert.rejects(
+      dispatch(
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(market(registrations.cond2.condition_id, 'pending')),
+          observeMarketConsolidationPrepared: async ({ outputsByCollection }) => {
+            drafts++
+            const id = Object.values(outputsByCollection)[0]![0]!.blindedMessage.id
+            await consolidationCounter().reserve(id, 1)
+          },
+          ctfConvert: async () => {
+            calls++
+            throw new Error('unexpected mint')
+          },
+        },
+      ),
+      /counter/,
+    )
+    assert.equal(drafts, 3)
+    assert.equal(calls, 0)
+    const db = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+    try {
+      assert.equal(
+        (db.prepare('SELECT COUNT(*) AS n FROM target_proof_operations').get() as { n: number }).n,
+        0,
+      )
+    } finally {
+      db.close()
+    }
+  })
+})
+
+test('market consolidation lost COMMIT reply recovers exact committed outputs without another allocation', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    const base = depsForMarket(market(registrations.cond2.condition_id, 'pending'))
+    let fault = 0
+    let drafts = 0
+    let calls = 0
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      {
+        ...base,
+        createCashuWallet: () => stateReportingWallet(CheckStateEnum.UNSPENT),
+        observeMarketConsolidationPrepared: async () => {
+          drafts++
+        },
+        injectCustodyFault: (phase) => {
+          if (phase === 'after-commit' && fault++ === 0) throw new Error('lost market COMMIT reply')
+        },
+        ctfConvert: async (...args) => {
+          calls++
+          return base.ctfConvert(...args)
+        },
+      },
+    )
+    assert.equal(response.ok, true)
+    assert.equal(drafts, 1)
+    assert.equal(calls, 1)
+    assert.equal(
+      Object.values(await consolidationCounter().snapshot()).reduce((a, b) => a + b, 0),
+      2,
+    )
+  })
+})
+
+test('market consolidation competing committed winner supplies exact saved outputs, never discarded draft', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    const base = depsForMarket(market(registrations.cond2.condition_id, 'pending'))
+    const request = {
+      method: 'wallet.consolidateMarket',
+      params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+    } as const
+    let losing: unknown
+    let winning: unknown
+    let submitted: unknown
+    let observed = 0
+    const response = await dispatch(request, {
+      ...base,
+      createCashuWallet: () => stateReportingWallet(CheckStateEnum.UNSPENT),
+      observeMarketConsolidationPrepared: async ({ outputsByCollection }) => {
+        observed++
+        losing = outputPoints(outputsByCollection)
+        await consolidationCounter().reserve(
+          Object.values(outputsByCollection)[0]![0]!.blindedMessage.id,
+          4,
+        )
+        await assert.rejects(
+          dispatch(request, {
+            ...base,
+            observeMarketConsolidationPrepared: async ({ outputsByCollection: winner }) => {
+              winning = outputPoints(winner)
+            },
+            ctfConvert: async () => {
+              throw new Error('winner mint transport unavailable')
+            },
+          }),
+          /CTF consolidation mint result is uncertain/,
+        )
+      },
+      ctfConvert: async (...args) => {
+        submitted = outputPoints(
+          Object.fromEntries(
+            Object.entries(args[2]).map(([key, values]) => [
+              key,
+              values.map((value) => ({ blindedMessage: value.blindedMessage })),
+            ]),
+          ),
+        )
+        return base.ctfConvert(...args)
+      },
+    })
+    assert.equal(response.ok, true)
+    assert.equal(observed, 1)
+    assert.notDeepEqual(losing, winning)
+    assert.deepEqual(submitted, winning)
+    assert.equal(
+      Object.values(await consolidationCounter().snapshot()).reduce((a, b) => a + b, 0),
+      6,
+    )
+    const db = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+    try {
+      assert.equal(
+        (db.prepare('SELECT COUNT(*) AS n FROM target_proof_operations').get() as { n: number }).n,
+        1,
+      )
+    } finally {
+      db.close()
+    }
+  })
+})
+
+function outputPoints(
+  groups: Record<
+    string,
+    readonly { blindedMessage: { id: string; B_: string; amount: number | Amount } }[]
+  >,
+) {
+  return Object.entries(groups)
+    .flatMap(([collection, outputs]) =>
+      outputs.map(({ blindedMessage }) => [
+        collection,
+        blindedMessage.id,
+        amountToNumber(blindedMessage.amount),
+        blindedMessage.B_,
+      ]),
+    )
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
 }

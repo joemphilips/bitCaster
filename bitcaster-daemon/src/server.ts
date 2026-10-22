@@ -36,7 +36,7 @@ import {
   type NativeOraclePublicationPorts,
 } from './nativeOraclePublicationCoordinator.ts'
 import { publishNativeOracleEvent } from './nativeOraclePublication.ts'
-import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
+import { type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
@@ -104,7 +104,7 @@ import type {
 } from '@bitcaster-market/client-sdk/fokOrderPreview'
 import {
   COLLATERAL_COLLECTION,
-  planCtfConsolidation,
+  planCtfConsolidationAmounts,
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
@@ -3205,8 +3205,7 @@ async function consolidateMarket(input: {
     Object.values(outputKeysetByCollection),
     input.deps,
   )
-  const outputsByCollection: Record<string, OutputData[]> = {}
-  const plan = planCtfConsolidation({
+  const plan = planCtfConsolidationAmounts({
     conditionId,
     registration,
     parentCollectionId: extractParentCollectionId(market),
@@ -3216,13 +3215,6 @@ async function consolidateMarket(input: {
     proofsByCollection,
     inputFeePpkByKeyset,
     outputKeysetByCollection,
-    makeOutputs: ({ collection, amountSubunits, keysetId }) => {
-      const keyset = outputKeysets[keysetId]
-      if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
-      const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
-      outputsByCollection[collection] = [...(outputsByCollection[collection] ?? []), ...outputs]
-      return outputs.map((output) => output.blindedMessage)
-    },
   })
 
   if (plan.kind === 'noop') {
@@ -3258,7 +3250,7 @@ async function consolidateMarket(input: {
         type: input.type,
         mintUrl: input.mintUrl,
         plan,
-        outputsByCollection,
+        outputKeysets,
         secrets: input.secrets,
       },
       input.deps,
