@@ -19,7 +19,7 @@ import NDK, {
   type NDKEvent,
   type NDKConstructorParams,
 } from "@nostr-dev-kit/ndk";
-import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
+import type { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
 import { decodePrivateNostrSignerKey } from "@bitcaster/client-sdk";
 import { setPendingKormirNsec } from "./kormir";
 import { useSettingsStore } from "@/stores/settings";
@@ -409,6 +409,7 @@ export async function connectReadOnly(): Promise<void> {
  * @returns the NDKNWCWallet instance (already assigned to ndk.wallet)
  */
 export async function connectNwcWallet(pairingCode: string): Promise<NDKNWCWallet> {
+  const { NDKNWCWallet } = await import("@nostr-dev-kit/ndk-wallet");
   const ndk = getNdk();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- NDK version mismatch between ndk and ndk-wallet
   const wallet = new NDKNWCWallet(ndk as any, { pairingCode, timeout: 30_000 });

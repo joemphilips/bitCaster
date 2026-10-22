@@ -38,6 +38,9 @@ const mocks = vi.hoisted(() => {
   > = [];
   return {
     settingsState,
+    nwcModuleLoads: vi.fn(),
+    nwcCtor: vi.fn(),
+    nwcReady: undefined as (() => void) | undefined,
     ndkCtor: vi.fn(),
     privateKeySignerCtor: vi.fn(),
     nip07SignerCtor: vi.fn(),
@@ -124,9 +127,20 @@ vi.mock("@nostr-dev-kit/ndk", () => {
   };
 });
 
-vi.mock("@nostr-dev-kit/ndk-wallet", () => ({
-  NDKNWCWallet: class {},
-}));
+vi.mock("@nostr-dev-kit/ndk-wallet", () => {
+  mocks.nwcModuleLoads();
+  return {
+    NDKNWCWallet: class {
+      constructor(ndk: unknown, options: unknown) {
+        mocks.nwcCtor(ndk, options);
+      }
+      once(event: string, ready: () => void) {
+        expect(event).toBe("ready");
+        mocks.nwcReady = ready;
+      }
+    },
+  };
+});
 
 vi.mock("../kormir", () => ({
   setPendingKormirNsec: mocks.setPendingKormirNsecSpy,
@@ -567,5 +581,56 @@ describe("getNdk relay reconciliation", () => {
         outboxRelayUrls: [],
       }),
     );
+  });
+});
+
+function releaseNwcReady() {
+  mocks.nwcReady?.();
+}
+
+describe("optional NWC module boundary", () => {
+  it("loads no wallet on Nostr startup and preserves explicit connection readiness", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    mocks.nwcModuleLoads.mockClear();
+    mocks.nwcCtor.mockClear();
+    mocks.ndkCtor.mockClear();
+    mocks.nwcReady = undefined;
+    let pending: ReturnType<(typeof import("../nostr"))["connectNwcWallet"]> | undefined;
+    try {
+      const nostr = await import("../nostr");
+      expect(mocks.nwcModuleLoads).not.toHaveBeenCalled();
+      expect(mocks.ndkCtor).not.toHaveBeenCalled();
+      let settled = false;
+      pending = nostr.connectNwcWallet("nostr+walletconnect://fixture");
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.dynamicImportSettled();
+      expect(mocks.nwcModuleLoads).toHaveBeenCalledOnce();
+      expect(mocks.nwcCtor).toHaveBeenCalledExactlyOnceWith(nostr.getNdk(), {
+        pairingCode: "nostr+walletconnect://fixture",
+        timeout: 30_000,
+      });
+      expect(mocks.nwcModuleLoads.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.ndkCtor.mock.invocationCallOrder[0]!,
+      );
+      expect(settled).toBe(false);
+      expect(mocks.nwcReady).toBeTypeOf("function");
+      releaseNwcReady();
+      const wallet = await pending;
+      expect(nostr.getNdk().wallet).toBe(wallet);
+      expect(settled).toBe(true);
+    } finally {
+      releaseNwcReady();
+      if (pending) await pending.catch(() => undefined);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });
