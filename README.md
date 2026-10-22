@@ -112,6 +112,7 @@ Run all three services in separate terminals:
 
 ```bash
 # Terminal 1: Start mint
+docker compose --profile setup run --rm --build mintd-setup
 docker compose up mintd
 
 # Terminal 2: Start server
@@ -120,6 +121,21 @@ cd BitCaster.Server && dotnet run
 # Terminal 3: Start frontend
 cd bitCaster-app && npm install && npm run dev
 ```
+
+Run `mintd-setup` only for a new, owned local mint store. It refuses an
+initialized store. The named `mint-work` volume retains the mint state.
+Ordinary `up` and `restart` read the stored configuration without importing it.
+Do not delete a volume or retry with a different signer to fix a startup error.
+The example uses a public test mnemonic and fakewallet. Never use real funds.
+For an old store, stop its writer and review an explicit `config init
+--existing-mint` import with the same signer and a complete configuration.
+Do not import old container-local SQLite files automatically.
+
+For CI, use both Compose files, set `MINT_IMAGE` to a reviewed immutable image,
+and use one unique project name for setup, startup, and cleanup. The CI override
+removes the local mint build. Obtain the reviewed image before running setup.
+Remove only that project's owned volume
+after the check. Do not run `down --volumes` against a developer's project.
 
 ### 5. CDK mint (standalone)
 

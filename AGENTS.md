@@ -92,12 +92,15 @@ When you need to understand a NIP, read the spec from the `nips-protocol/` submo
 ## Local Dev
 
 ```bash
+docker compose --profile setup run --rm --build mintd-setup # first use of a new owned mint store only
 docker compose up -d                 # mint, cashu-me, relay, LNBits, and seed; no matching engine
 cd bitCaster-app && npm run dev      # frontend:5273
 ```
 
 Check `bitCaster-app/.env.example`, `bitCaster-app/vite.config.ts`, and
 `docker-compose.yml` for the current configuration.
+Read the local mint lifecycle guidance in `README.md` before initialization.
+Ordinary restart must not initialize, apply configuration, or reset a store.
 The matching engine is a separate service.
 Run service commands only against authorized local fixtures.
 
