@@ -1,3 +1,5 @@
+import { DatabaseSync } from 'node:sqlite'
+import { withDurableCustodyFencedRead } from '../src/durableCustodyUnitOfWork.ts'
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -36,7 +38,12 @@ import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedCondit
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { createDurableCustodyProofMaterialRecord } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import { DurableWalletProofImportCoordinator } from '../src/durableWalletProofImportCoordinator.ts'
-import { claimDaemonPosition, readNativePositionClaimCustody } from '../src/nativePositionClaim.ts'
+import {
+  claimDaemonPosition,
+  readNativePositionClaimCustody,
+  readRetainedPositionClaimHistory,
+  assertRetainedPositionClaimProof,
+} from '../src/nativePositionClaim.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
@@ -57,7 +64,14 @@ import { dispatch } from '../src/server.ts'
 import { buildDaemonAssetMonitoringHoldings } from '../src/assetMonitoring.ts'
 import { subscribeToDaemonWalletHoldingsCommits } from '../src/stateSqlite.ts'
 import { createDurableCustodyConformancePrepared } from '../../bitcaster-client-sdk/test/support/durableCustodyAdapterConformance.ts'
-import { addAvailableProofs, emptyDaemonState, readState, writeState } from '../src/state.ts'
+import {
+  addAvailableProofs,
+  emptyDaemonState,
+  readState,
+  writeState,
+  readDaemonProofOperationFromDatabase,
+  readDaemonWalletProofFromDatabase,
+} from '../src/state.ts'
 
 test('Remove keeps raw proofs, exact journals and immutable markers through retry, save and reimport', async () => {
   const fixture = await createFixture(3)
@@ -1121,8 +1135,10 @@ test('retained Claim recovery refuses a profile containing a foreign scope', asy
   }
 })
 
-test('retained Claim SQLite cursor pages exact sorted records and filters mint', async () => {
+test('retained Claim SQLite cursor pages exact sorted records and filters mint', async (t) => {
+  const fixtureStarted = performance.now()
   const fixture = await createFixture(1025)
+  const fixtureSetupMs = performance.now() - fixtureStarted
   try {
     const observedAtMs = Date.now()
     const fence = fixture.context.fence
@@ -1139,6 +1155,7 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       recoveryId: 'retained-reader-policy',
       scanPolicy: createSeedRecoveryScanPolicy(),
     }
+    const initializationStarted = performance.now()
     await store.initializeRecoveryRoster({
       ...binding,
       walletScopeId: fence.scopeId,
@@ -1155,6 +1172,7 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
         effectiveClockHighWaterMarkMs: observedAtMs,
       },
     })
+    const jobInitializationMs = performance.now() - initializationStarted
     const expected = Object.values((await readState())!.proofOperations)
       .filter(
         ({ kind, state, failureCode }) =>
@@ -1163,6 +1181,7 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       .map(({ operationId }) => operationId)
       .sort()
     assert.equal(expected.length, 17)
+    const pagesStarted = performance.now()
     const first = await store.readRetainedClaimPage('https://mint.example', '', binding)
     assert.equal(first.length, 16)
     const second = await store.readRetainedClaimPage(
@@ -1186,6 +1205,13 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
     await assert.rejects(
       store.readRetainedClaimPage('https://another-mint.example', '', binding),
       /binding is foreign/,
+    )
+    t.diagnostic(
+      `retained-claim-benchmark ${JSON.stringify({
+        fixtureSetupMs: Number(fixtureSetupMs.toFixed(3)),
+        jobInitializationMs: Number(jobInitializationMs.toFixed(3)),
+        pageReadsMs: Number((performance.now() - pagesStarted).toFixed(3)),
+      })}`,
     )
   } finally {
     await fixture.dispose()
@@ -1884,6 +1910,200 @@ test('retained reader fixture awaits storage and exposes an incomplete authority
         database.prepare('SELECT count(*) AS count FROM seed_recovery_jobs').get()!.count,
         0,
       ),
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+async function retainedReader(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  const storage = createDaemonStateSqliteSession(fixture.directory)
+  await storage.read(() => undefined)
+  const fence = fixture.context.fence
+  const observedAtMs = Date.now()
+  const store = new SeedRecoverySqliteStore({
+    storage,
+    directory: fixture.directory,
+    fence,
+    invocationId: 'retained-validation-reader',
+    observedAtMs,
+  })
+  const binding = {
+    recoveryId: 'retained-validation-job',
+    scanPolicy: createSeedRecoveryScanPolicy(),
+  }
+  await store.initializeRecoveryRoster({
+    ...binding,
+    walletScopeId: fence.scopeId,
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    disclosureAcknowledged: true,
+    keysetIds: [],
+    authority: {
+      walletScopeId: fence.scopeId,
+      incarnationId: fence.incarnationId,
+      fencingEpoch: fence.fencingEpoch,
+      leaseExpiresAtMs: fence.leaseExpiresAtMs,
+      observedAtMs,
+      effectiveClockHighWaterMarkMs: observedAtMs,
+    },
+  })
+  return {
+    storage,
+    store,
+    binding,
+    observedAtMs,
+    readPage: () => store.readRetainedClaimPage('https://mint.example', '', binding),
+  }
+}
+
+test('retained snapshot validates each Claim once and creates fresh contexts on the next read', async () => {
+  const fixture = await createFixture(65)
+  try {
+    const reader = await retainedReader(fixture)
+    let claimReads = 0
+    const prepare = DatabaseSync.prototype.prepare
+    const counted = mock.method(
+      DatabaseSync.prototype,
+      'prepare',
+      function (this: DatabaseSync, sql: string) {
+        if (
+          sql.includes(
+            'SELECT custody_operation_id AS operationId FROM custody_position_claim_links',
+          )
+        )
+          claimReads++
+        return prepare.call(this, sql)
+      },
+    )
+    try {
+      assert.equal((await reader.readPage()).length, 2)
+      assert.equal(claimReads, 2)
+      assert.equal((await reader.readPage()).length, 2)
+      assert.equal(claimReads, 4)
+    } finally {
+      counted.mock.restore()
+    }
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const row = database
+        .prepare(
+          `SELECT a.artifact_id AS id,a.body AS body FROM custody_artifacts a
+        JOIN custody_terminal_mint_rejections r ON r.rejection_artifact_id=a.artifact_id LIMIT 1`,
+        )
+        .get()!
+      const body = Buffer.from(row.body as Uint8Array)
+      body[0] = body[0]! ^ 1
+      database.prepare('UPDATE custody_artifacts SET body=? WHERE artifact_id=?').run(body, row.id)
+    } finally {
+      database.close()
+    }
+    await assert.rejects(reader.readPage(), /durable owner blocker target-wallet-proof-reserved/)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained snapshot keeps every second-proof binding guard after Claim-wide validation', async () => {
+  const fixture = await createFixture(2)
+  try {
+    const reader = await retainedReader(fixture)
+    await withDurableCustodyFencedRead(
+      reader.storage,
+      fixture.context.fence,
+      reader.observedAtMs,
+      (database) => {
+        const rows = database
+          .prepare(
+            "SELECT proof_id,reserved_by FROM target_wallet_proofs WHERE state='locked' ORDER BY proof_id",
+          )
+          .all()
+        assert.equal(rows.length, 2)
+        const target = readDaemonProofOperationFromDatabase(database, String(rows[0]!.reserved_by))!
+        const history = readRetainedPositionClaimHistory(
+          database,
+          fixture.context.fence.scopeId,
+          target,
+        )
+        const first = readDaemonWalletProofFromDatabase(database, String(rows[0]!.proof_id))!
+        const second = readDaemonWalletProofFromDatabase(database, String(rows[1]!.proof_id))!
+        assertRetainedPositionClaimProof(history, first)
+        const invalid = [
+          { ...second, state: 'reserved' },
+          { ...second, reservedBy: 'foreign-reservation' },
+          { ...second, reservedBy: undefined },
+          { ...second, mintUrl: 'https://foreign.example' },
+          { ...second, retirement: {} },
+          { ...second, asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
+          { ...second, asset: { ...second.asset, unit: 'sat' } },
+          { ...second, asset: { ...second.asset, conditionId: 'ff'.repeat(32) } },
+          { ...second, asset: { ...second.asset, outcomeSetId: 'YES' } },
+          { ...second, proof: { ...second.proof, secret: 'foreign-input' } },
+        ]
+        for (const proof of invalid)
+          assert.throws(
+            () => assertRetainedPositionClaimProof(history, proof as never),
+            /retained Claim/,
+          )
+        assertRetainedPositionClaimProof(history, second)
+      },
+      { snapshot: true },
+    )
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const rows = database.prepare('SELECT proof_id FROM custody_proofs ORDER BY proof_id').all()
+      assert.equal(rows.length, 2)
+      database
+        .prepare("UPDATE custody_proofs SET selectability='spent' WHERE proof_id=?")
+        .run(rows[1]!.proof_id)
+    } finally {
+      database.close()
+    }
+    await assert.rejects(reader.readPage(), /durable owner blocker target-wallet-proof-reserved/)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('empty retained page cannot bypass non-Claim ownership and schema rejects null ownership', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const reader = await retainedReader(fixture)
+    const database = await openDaemonStateSqlite(fixture.directory)
+    let proofId: string
+    try {
+      proofId = String(
+        database
+          .prepare("SELECT proof_id FROM target_wallet_proofs WHERE state='locked' LIMIT 1")
+          .get()!.proof_id,
+      )
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              "UPDATE target_wallet_proofs SET state='reserved',reserved_by=NULL WHERE proof_id=?",
+            )
+            .run(proofId),
+        /CHECK constraint failed/,
+      )
+    } finally {
+      database.close()
+    }
+    assert.deepEqual(
+      await reader.store.readRetainedClaimPage('https://mint.example', '\uffff', reader.binding),
+      [],
+    )
+    const next = await openDaemonStateSqlite(fixture.directory)
+    try {
+      next
+        .prepare("UPDATE target_wallet_proofs SET reserved_by='non-Claim-owner' WHERE proof_id=?")
+        .run(proofId)
+    } finally {
+      next.close()
+    }
+    await assert.rejects(
+      reader.store.readRetainedClaimPage('https://mint.example', '\uffff', reader.binding),
+      /durable owner blocker target-wallet-proof-reserved/,
     )
   } finally {
     await fixture.dispose()

@@ -69,11 +69,43 @@ export async function withDurableCustodyFencedRead<T>(
   fence: CustodyScopeFence,
   observedAtMs: number,
   action: (database: DatabaseSync) => T,
+  options: { readonly snapshot?: true } = {},
 ): Promise<T> {
   assertObservationTime(observedAtMs)
+  if (options.snapshot && Object.prototype.toString.call(action) === '[object AsyncFunction]') {
+    throw new DurableCustodyFenceError('custody read snapshot requires a synchronous callback')
+  }
   return storage.read((database) => {
-    requireAuthorizedScopeState(database, fence, observedAtMs)
-    return action(database)
+    if (!options.snapshot) {
+      requireAuthorizedScopeState(database, fence, observedAtMs)
+      return action(database)
+    }
+    // BEGIN must precede the fence query, which establishes this read snapshot.
+    // A failed nested BEGIN must not roll back a transaction owned by the caller.
+    database.exec('BEGIN')
+    try {
+      requireAuthorizedScopeState(database, fence, observedAtMs)
+      const result = action(database)
+      if (
+        result !== null &&
+        (typeof result === 'object' || typeof result === 'function') &&
+        typeof (result as { then?: unknown }).then === 'function'
+      ) {
+        // Refuse the result, but observe a rejection already started by the caller.
+        // This cannot cancel arbitrary work; snapshot callbacks must stay synchronous.
+        void Promise.resolve(result).catch(() => undefined)
+        throw new DurableCustodyFenceError('custody read snapshot requires a synchronous callback')
+      }
+      database.exec('COMMIT')
+      return result
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        /* Preserve the initiating failure. */
+      }
+      throw error
+    }
   })
 }
 

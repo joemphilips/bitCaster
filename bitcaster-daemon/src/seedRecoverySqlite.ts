@@ -54,8 +54,8 @@ import {
 } from './state.ts'
 
 import {
-  assertRetainedPositionClaimHistory,
-  readNativePositionClaimCustody,
+  assertRetainedPositionClaimProof,
+  readRetainedPositionClaimHistory,
 } from './nativePositionClaim.ts'
 
 export interface SeedRecoveryObservedProof {
@@ -119,26 +119,26 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     afterOperationId = '',
     binding: { recoveryId: string; scanPolicy: SeedRecoveryScanPolicy },
   ) {
-    return withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
-        assertRegularPayoutJob(database, this.#fence.scopeId, mintUrl, binding)
-        const rows = database
-          .prepare(
-            `SELECT operation_id FROM target_proof_operations
+    return withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertRegularPayoutJob(database, this.#fence.scopeId, mintUrl, binding)
+      const rows = database
+        .prepare(
+          `SELECT operation_id FROM target_proof_operations
         WHERE scope_id = ? AND normalized_mint = ? AND operation_id > ?
           AND kind = 'ctf-redeem' AND purpose = 'position-claim' AND state = 'failed' AND failure_code = 13015
         ORDER BY operation_id LIMIT 16`,
-          )
-          .all(this.#fence.scopeId, mintUrl, afterOperationId)
-        return rows.map((row) =>
-          readRetainedClaim(database, this.#fence.scopeId, String(row.operation_id)),
         )
-      },
-    )
+        .all(this.#fence.scopeId, mintUrl, afterOperationId)
+      const histories = retainedClaimHistories(
+        database,
+        this.#fence.scopeId,
+        rows.map((row) => String(row.operation_id)),
+      )
+      assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId, histories)
+      return rows.map((row) =>
+        readRetainedClaim(database, this.#fence.scopeId, String(row.operation_id), histories),
+      )
+    })
   }
 
   async commitRetainedClaimPayout(input: {
@@ -154,8 +154,14 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
       this.#fence,
       this.#observedAtMs,
       (database) => {
-        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
-        const retained = readRetainedClaim(database, this.#fence.scopeId, input.operationId)
+        const histories = retainedClaimHistories(database, this.#fence.scopeId, [input.operationId])
+        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId, histories)
+        const retained = readRetainedClaim(
+          database,
+          this.#fence.scopeId,
+          input.operationId,
+          histories,
+        )
         assertRegularPayoutJob(database, this.#fence.scopeId, retained.target.mintUrl, input)
         if (retained.exactAuthority.fingerprint !== input.authorityFingerprint)
           throw new Error('retained payout authority changed')
@@ -263,27 +269,22 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     if (binding.walletScopeId !== this.#fence.scopeId) {
       throw new Error('seed recovery roster scope is foreign')
     }
-    return withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, binding.walletScopeId)
-        const job = readRecoveryJob(database, binding.recoveryId)
-        assertRecoveryJobBinding(job, binding)
-        return {
-          keysetIds: readRecoveryKeysetIds(database, binding.recoveryId),
-          state:
-            job === undefined
-              ? 'absent'
-              : job.discoveryState === 'pending'
-                ? 'pending'
-                : job.state === 'completed'
-                  ? 'completed'
-                  : 'active',
-        }
-      },
-    )
+    return withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertNoRecoveryOwnerBlocker(database, binding.walletScopeId)
+      const job = readRecoveryJob(database, binding.recoveryId)
+      assertRecoveryJobBinding(job, binding)
+      return {
+        keysetIds: readRecoveryKeysetIds(database, binding.recoveryId),
+        state:
+          job === undefined
+            ? 'absent'
+            : job.discoveryState === 'pending'
+              ? 'pending'
+              : job.state === 'completed'
+                ? 'completed'
+                : 'active',
+      }
+    })
   }
 
   async initializeRecoveryJob(
@@ -353,49 +354,39 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     if (input.walletScopeId !== this.#fence.scopeId) {
       throw new Error('seed recovery cursor scope is foreign')
     }
-    return withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
-        const job = readRecoveryJob(database, input.recoveryId)
-        assertRecoveryJobBinding(job, input)
-        const row = database
-          .prepare(
-            `SELECT next_counter AS nextCounter,
+    return withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
+      const job = readRecoveryJob(database, input.recoveryId)
+      assertRecoveryJobBinding(job, input)
+      const row = database
+        .prepare(
+          `SELECT next_counter AS nextCounter,
                 trailing_empty_counters AS trailingEmptyCounters,
                 revision, state, stop_reason AS stopReason
              FROM seed_recovery_keysets WHERE recovery_id = ? AND keyset_id = ?`,
-          )
-          .get(input.recoveryId, input.keysetId) as RecoveryCursorRow | undefined
-        if (row !== undefined && job === undefined) {
-          throw new Error('seed recovery cursor has no job binding')
-        }
-        assertRecoveryChildAccess(job, row)
-        const cursor =
-          row === undefined
-            ? createEmergencySeedRecoveryCursor(input)
-            : validateEmergencySeedRecoveryCursor({
-                schemaVersion: 2,
-                ...input,
-                scanPolicy: policyOfJob(job!),
-                ...row,
-              })
-        return {
-          cursor,
-          counterHighWaterMark: readExactBoundCounter(
-            database,
-            input.walletScopeId,
-            input.keysetId,
-            {
-              normalizedMint: input.mintUrl,
-              unit: input.unit,
-            },
-          ),
-        }
-      },
-    )
+        )
+        .get(input.recoveryId, input.keysetId) as RecoveryCursorRow | undefined
+      if (row !== undefined && job === undefined) {
+        throw new Error('seed recovery cursor has no job binding')
+      }
+      assertRecoveryChildAccess(job, row)
+      const cursor =
+        row === undefined
+          ? createEmergencySeedRecoveryCursor(input)
+          : validateEmergencySeedRecoveryCursor({
+              schemaVersion: 2,
+              ...input,
+              scanPolicy: policyOfJob(job!),
+              ...row,
+            })
+      return {
+        cursor,
+        counterHighWaterMark: readExactBoundCounter(database, input.walletScopeId, input.keysetId, {
+          normalizedMint: input.mintUrl,
+          unit: input.unit,
+        }),
+      }
+    })
   }
 
   async readRecoveryCounterHighWaterMarks(input: {
@@ -411,44 +402,39 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     if (keysetIds.length > 2048 || new Set(keysetIds).size !== keysetIds.length)
       throw new Error('seed recovery keyset bound is invalid')
     const marks = keysetIds.map(() => '?').join(',')
-    return withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, walletScopeId)
-        if (keysetIds.length === 0) return new Map<string, number>()
-        const rows = database
-          .prepare(
-            `SELECT keyset_id AS keysetId FROM target_keyset_counters
+    return withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertNoRecoveryOwnerBlocker(database, walletScopeId)
+      if (keysetIds.length === 0) return new Map<string, number>()
+      const rows = database
+        .prepare(
+          `SELECT keyset_id AS keysetId FROM target_keyset_counters
              WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id IN (${marks})
              UNION
              SELECT keyset_id AS keysetId FROM custody_keyset_counters
              WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id IN (${marks})`,
-          )
-          .all(
-            walletScopeId,
-            mintUrl,
-            unit,
-            ...keysetIds,
-            walletScopeId,
-            mintUrl,
-            unit,
-            ...keysetIds,
-          ) as Array<{
-          keysetId: string
-        }>
-        return new Map(
-          rows.map(({ keysetId }) => [
-            keysetId,
-            readExactBoundCounter(database, walletScopeId, keysetId, {
-              normalizedMint: mintUrl,
-              unit,
-            }),
-          ]),
         )
-      },
-    )
+        .all(
+          walletScopeId,
+          mintUrl,
+          unit,
+          ...keysetIds,
+          walletScopeId,
+          mintUrl,
+          unit,
+          ...keysetIds,
+        ) as Array<{
+        keysetId: string
+      }>
+      return new Map(
+        rows.map(({ keysetId }) => [
+          keysetId,
+          readExactBoundCounter(database, walletScopeId, keysetId, {
+            normalizedMint: mintUrl,
+            unit,
+          }),
+        ]),
+      )
+    })
   }
 
   async readUncoveredCounterBindings(input: {
@@ -457,38 +443,33 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     keysetIds: readonly string[]
   }) {
     if (input.keysetIds.length > 2048) throw new Error('seed recovery keyset bound is invalid')
-    return withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
-        const marks = input.keysetIds.map(() => '?').join(',')
-        const exclude = marks ? `AND keyset_id NOT IN (${marks})` : ''
-        const rows = database
-          .prepare(
-            `SELECT keyset_id FROM target_keyset_counters
+    return withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
+      const marks = input.keysetIds.map(() => '?').join(',')
+      const exclude = marks ? `AND keyset_id NOT IN (${marks})` : ''
+      const rows = database
+        .prepare(
+          `SELECT keyset_id FROM target_keyset_counters
         WHERE scope_id=? AND normalized_mint=? AND unit=? ${exclude}
         UNION SELECT keyset_id FROM custody_keyset_counters
         WHERE scope_id=? AND normalized_mint=? AND unit=? ${exclude} LIMIT 1025`,
-          )
-          .all(
-            this.#fence.scopeId,
-            input.mintUrl,
-            input.unit,
-            ...input.keysetIds,
-            this.#fence.scopeId,
-            input.mintUrl,
-            input.unit,
-            ...input.keysetIds,
-          )
-        return {
-          count: Math.min(rows.length, 1024),
-          capped: rows.length > 1024,
-          diagnostic: rows.length ? ('uncovered-local-counter-bindings' as const) : null,
-        }
-      },
-    )
+        )
+        .all(
+          this.#fence.scopeId,
+          input.mintUrl,
+          input.unit,
+          ...input.keysetIds,
+          this.#fence.scopeId,
+          input.mintUrl,
+          input.unit,
+          ...input.keysetIds,
+        )
+      return {
+        count: Math.min(rows.length, 1024),
+        capped: rows.length > 1024,
+        diagnostic: rows.length ? ('uncovered-local-counter-bindings' as const) : null,
+      }
+    })
   }
 
   async assertRecoveryKeysetMintBindings(input: {
@@ -500,17 +481,12 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     if (walletScopeId !== this.#fence.scopeId) {
       throw new Error('seed recovery counter scope is foreign')
     }
-    await withDurableCustodyFencedRead(
-      this.#storage,
-      this.#fence,
-      this.#observedAtMs,
-      (database) => {
-        assertNoRecoveryOwnerBlocker(database, walletScopeId)
-        for (const keysetId of keysetIds) {
-          assertCounterMintBinding(database, walletScopeId, keysetId, mintUrl)
-        }
-      },
-    )
+    await withRecoveryFencedRead(this.#storage, this.#fence, this.#observedAtMs, (database) => {
+      assertNoRecoveryOwnerBlocker(database, walletScopeId)
+      for (const keysetId of keysetIds) {
+        assertCounterMintBinding(database, walletScopeId, keysetId, mintUrl)
+      }
+    })
   }
 
   async commitRecoveryBatch(raw: EmergencySeedRecoveryCoCommit): Promise<void> {
@@ -794,23 +770,54 @@ function assertExactRecoveryRoster(
   }
 }
 
-function readRetainedClaim(database: DatabaseSync, scopeId: string, operationId: string) {
-  const target = readDaemonProofOperationFromDatabase(database, operationId)
-  if (target === null) throw new Error('retained Claim is missing')
+type RetainedClaimHistory = ReturnType<typeof readRetainedPositionClaimHistory>
+
+// The ordered owner scan needs one current context. Retain only the selected page
+// (at most 16 records) for its later materialization in the same callback.
+function retainedClaimHistories(
+  database: DatabaseSync,
+  scopeId: string,
+  retainIds: readonly string[] = [],
+) {
+  if (retainIds.length > 16) throw new Error('retained Claim validation page exceeds bound')
+  const retained = new Map<string, RetainedClaimHistory>()
+  const selected = new Set(retainIds)
+  let current: RetainedClaimHistory | undefined
+  return (operationId: string): RetainedClaimHistory => {
+    if (current?.target.operationId === operationId) return current
+    const cached = retained.get(operationId)
+    if (cached !== undefined) return cached
+    const target = readDaemonProofOperationFromDatabase(database, operationId)
+    if (target === null) throw new Error('retained Claim is missing')
+    current = readRetainedPositionClaimHistory(database, scopeId, target)
+    if (selected.has(operationId)) retained.set(operationId, current)
+    return current
+  }
+}
+
+function readRetainedClaim(
+  database: DatabaseSync,
+  scopeId: string,
+  operationId: string,
+  histories = retainedClaimHistories(database, scopeId, [operationId]),
+) {
   const rows = database
     .prepare(
       'SELECT proof_id FROM target_wallet_proofs WHERE scope_id = ? AND reserved_by = ? LIMIT 257',
     )
     .all(scopeId, operationId)
-  if (rows.length === 0 || rows.length > 256 || rows.length !== target.inputs.length)
+  if (rows.length === 0 || rows.length > 256)
+    throw new Error('retained Claim predecessor count is invalid')
+  const history = histories(operationId)
+  const target = history.target
+  if (rows.length !== target.inputs.length)
     throw new Error('retained Claim predecessor count is invalid')
   for (const row of rows) {
     const proof = readDaemonWalletProofFromDatabase(database, String(row.proof_id))
     if (proof === null) throw new Error('retained Claim predecessor is missing')
-    assertRetainedPositionClaimHistory(database, scopeId, target, proof)
+    assertRetainedPositionClaimProof(history, proof)
   }
-  const { record, exactAuthority } = readNativePositionClaimCustody(database, { scopeId }, target)
-  return { target, record, exactAuthority }
+  return { target, record: history.record, exactAuthority: history.exactAuthority }
 }
 
 const RECOVERY_OWNER_BLOCKERS = [
@@ -858,20 +865,21 @@ const RECOVERY_OWNER_BLOCKERS = [
   },
 ] as const
 
-function assertNoRecoveryOwnerBlocker(database: DatabaseSync, scopeId: string): void {
+function assertNoRecoveryOwnerBlocker(
+  database: DatabaseSync,
+  scopeId: string,
+  histories = retainedClaimHistories(database, scopeId),
+): void {
   for (const row of database
     .prepare(
-      "SELECT proof_id FROM target_wallet_proofs WHERE scope_id = ? AND state IN ('reserved', 'locked')",
+      "SELECT proof_id FROM target_wallet_proofs WHERE scope_id = ? AND state IN ('reserved', 'locked') ORDER BY reserved_by, proof_id",
     )
     .iterate(scopeId)) {
     try {
       const proof = readDaemonWalletProofFromDatabase(database, String(row.proof_id))
-      const target =
-        proof?.reservedBy === undefined
-          ? null
-          : readDaemonProofOperationFromDatabase(database, proof.reservedBy)
-      if (proof === null || target === null) throw new Error('retained Claim owner is absent')
-      assertRetainedPositionClaimHistory(database, scopeId, target, proof)
+      if (proof === null || proof.reservedBy === undefined)
+        throw new Error('retained Claim owner is absent')
+      assertRetainedPositionClaimProof(histories(proof.reservedBy), proof)
     } catch {
       throw new Error('seed recovery refused: durable owner blocker target-wallet-proof-reserved')
     }
@@ -1369,4 +1377,13 @@ function assertRegularPayoutJob(
   })
   if (job === undefined || job.discoveryState !== 'complete')
     throw new Error('seed recovery payout job absent')
+}
+
+function withRecoveryFencedRead<T>(
+  storage: DaemonStateSqliteSession,
+  fence: CustodyScopeFence,
+  observedAtMs: number,
+  action: (database: DatabaseSync) => T,
+): Promise<T> {
+  return withDurableCustodyFencedRead(storage, fence, observedAtMs, action, { snapshot: true })
 }

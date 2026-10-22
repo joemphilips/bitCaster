@@ -746,27 +746,19 @@ export function readNativePositionClaimCustody(
   return { store, record, exactAuthority: row.artifact }
 }
 
-export function assertRetainedPositionClaimHistory(
+/** Valid only within the caller's current synchronous database snapshot/transaction. */
+export function readRetainedPositionClaimHistory(
   database: DatabaseSync,
   scopeId: string,
   target: ProofOperationRecord,
-  proof: StoredProofRecord,
-): void {
-  if (
-    target.kind !== 'ctf-redeem' ||
-    target.state !== 'Failed' ||
-    target.failureCode !== 13015 ||
-    proof.state !== 'locked' ||
-    proof.reservedBy !== target.operationId ||
-    proof.mintUrl !== target.mintUrl ||
-    proof.retirement !== undefined ||
-    proof.asset.kind !== 'Outcome' ||
-    proof.asset.unit !== 'msat' ||
-    proof.asset.conditionId !== target.metadata.conditionId ||
-    proof.asset.outcomeSetId !== target.metadata.outcomeSetId
-  )
+) {
+  if (target.kind !== 'ctf-redeem' || target.state !== 'Failed' || target.failureCode !== 13015)
     throw new Error('retained Claim history binding is invalid')
-  const { store, record } = readNativePositionClaimCustody(database, { scopeId }, target)
+  const { store, record, exactAuthority } = readNativePositionClaimCustody(
+    database,
+    { scopeId },
+    target,
+  )
   if (record.operation.state !== 'aborted') throw new Error('retained Claim is not aborted')
   const reference = record.operation.terminalMintRejection?.exactRejection
   if (reference === undefined) throw new Error('retained Claim rejection is absent')
@@ -782,6 +774,28 @@ export function assertRetainedPositionClaimHistory(
     exactRejection: rejection.artifact,
   })
   assertClaimPredecessors(store, record, target)
+  return { store, record, exactAuthority, target, scopeId }
+}
+
+export function assertRetainedPositionClaimProof(
+  history: ReturnType<typeof readRetainedPositionClaimHistory>,
+  proof: StoredProofRecord,
+): void {
+  const { target, store, record, scopeId } = history
+  if (
+    target.kind !== 'ctf-redeem' ||
+    target.state !== 'Failed' ||
+    target.failureCode !== 13015 ||
+    proof.state !== 'locked' ||
+    proof.reservedBy !== target.operationId ||
+    proof.mintUrl !== target.mintUrl ||
+    proof.retirement !== undefined ||
+    proof.asset.kind !== 'Outcome' ||
+    proof.asset.unit !== 'msat' ||
+    proof.asset.conditionId !== target.metadata.conditionId ||
+    proof.asset.outcomeSetId !== target.metadata.outcomeSetId
+  )
+    throw new Error('retained Claim history binding is invalid')
   const index = target.inputs.findIndex((input) => isDeepStrictEqual(input, proof.proof))
   const input = record.operation.reservation.inputs[index]
   if (input === undefined || store.getProof(scopeId, input.proofId)?.selectability !== 'retained')
