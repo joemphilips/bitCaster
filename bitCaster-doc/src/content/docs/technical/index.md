@@ -593,6 +593,19 @@ An oracle resolution explanation is separate from paid trade comments.
 It does not supply a confirmed fill coordinate. See
 [market resolution](/user-guide/core-concepts/resolution/).
 
+### Market subscriptions
+
+Invoke `JoinMarket` on the public market hub with an exact registered market ID
+from the API. Authentication is not required. Each connection can hold up to
+200 market subscriptions. This limit is separate from the portfolio subscription
+limit. The connection also has a budget of 200 `JoinMarket` attempts per
+ten-second window. Duplicate, invalid, and unknown market IDs consume this budget.
+
+A successful duplicate join sends a current snapshot without adding another
+subscription. A refused join does not confirm a subscription. Do not use an
+immediate retry loop. Use `LeaveMarket` to release subscriptions that are no
+longer needed. After reconnecting, send `JoinMarket` for the IDs still needed.
+
 ### Refresh comments and price history
 
 The comments endpoint and

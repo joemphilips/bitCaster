@@ -602,6 +602,19 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 確定した約定の座標を提供しません。
 [マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
 
+### マーケットの購読
+
+公開 market hub の `JoinMarket` には、API が返す登録済みの正確なマーケット ID を指定します。
+認証は不要です。接続ごとに最大200件のマーケットを購読できます。
+この上限はポートフォリオの購読上限とは別です。
+また、接続ごとに10秒間の区間につき最大200回の `JoinMarket` 呼び出しを受け付けます。
+重複した ID、不正な ID、未登録の ID を指定した呼び出しも、この回数に含みます。
+
+重複した購読要求が成功すると、購読数を増やさずに現在のスナップショットを返します。
+拒否された購読要求は、購読の成立を意味しません。即時再試行を繰り返さないでください。
+不要になった購読は `LeaveMarket` で解除してください。
+再接続後は、引き続き必要な ID に対して `JoinMarket` を送信してください。
+
 ### コメントと価格履歴の更新
 
 コメント endpoint と `GET /api/v1/markets/{conditionId}/price-history` は、

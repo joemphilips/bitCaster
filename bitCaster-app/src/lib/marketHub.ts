@@ -307,6 +307,9 @@ const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
 const _confirmedTradeRecordedHandlers = new Map<string, Set<ConfirmedTradeRecordedHandler>>();
 const _marketCommentsChangedHandlers = new Map<string, Set<MarketCommentsChangedHandler>>();
 const _marketFundingUpdatedHandlers = new Map<string, Set<MarketFundingUpdatedHandler>>();
+const _acknowledgedMarketJoins = new Set<string>();
+const _marketJoinRequests = new Map<string, Promise<void>>();
+let _marketMembershipGeneration = 0;
 const _marketJoinCounts = new Map<string, number>();
 const _desiredMarketJoins = new Set<string>();
 const _marketSnapshotRequests = new Map<string, MarketSnapshotRefresh>();
@@ -444,8 +447,11 @@ function buildConnection(): HubConnection {
   });
 
   conn.onreconnected(() => {
-    void rejoinMarketsAfterReconnect(conn);
     if (_connection !== conn) return;
+    _marketMembershipGeneration += 1;
+    _acknowledgedMarketJoins.clear();
+    _marketJoinRequests.clear();
+    void rejoinMarketsAfterReconnect(conn);
     _portfolioValuationMembershipGeneration += 1;
     _appliedPortfolioValuationSet = null;
     const desired = _desiredPortfolioValuationSet;
@@ -473,8 +479,9 @@ async function rejoinMarketsAfterReconnect(conn: HubConnection): Promise<void> {
   await Promise.all(
     markets.map(async (marketId) => {
       try {
-        await conn.invoke("JoinMarket", marketId);
-        requestRecoveryRefresh(marketId);
+        await ensureMarketJoined(marketId);
+        if (_connection === conn && _desiredMarketJoins.has(marketId))
+          requestRecoveryRefresh(marketId);
       } catch (err) {
         console.warn("[marketHub] JoinMarket after reconnect failed:", err);
       }
@@ -669,13 +676,37 @@ export async function joinMarket(marketId: string): Promise<void> {
   _desiredMarketJoins.add(marketId);
   if (marketHubDisabledForE2E()) return;
   const currentCount = _marketJoinCounts.get(marketId) ?? 0;
-  if (currentCount > 0) {
-    _marketJoinCounts.set(marketId, currentCount + 1);
-    return;
-  }
-  _marketJoinCounts.set(marketId, 1);
-  const conn = await ensureStarted();
-  await conn.invoke("JoinMarket", marketId);
+  _marketJoinCounts.set(marketId, currentCount + 1);
+  await ensureMarketJoined(marketId);
+}
+
+// References describe component ownership, not server acknowledgment. All owners
+// see the same in-flight result; a refused join remains eligible for explicit retry.
+function ensureMarketJoined(marketId: string): Promise<void> {
+  const pending = _marketJoinRequests.get(marketId);
+  if (pending) return pending;
+  if (_acknowledgedMarketJoins.has(marketId)) return Promise.resolve();
+  const generation = _marketMembershipGeneration;
+  let request!: Promise<void>;
+  request = (async () => {
+    const conn = await ensureStarted();
+    if (!_desiredMarketJoins.has(marketId) || generation !== _marketMembershipGeneration) return;
+    await conn.invoke("JoinMarket", marketId);
+    if (
+      _connection === conn &&
+      generation === _marketMembershipGeneration &&
+      _marketJoinRequests.get(marketId) === request &&
+      _desiredMarketJoins.has(marketId)
+    ) {
+      _acknowledgedMarketJoins.add(marketId);
+    }
+  })();
+  _marketJoinRequests.set(marketId, request);
+  const clear = () => {
+    if (_marketJoinRequests.get(marketId) === request) _marketJoinRequests.delete(marketId);
+  };
+  void request.then(clear, clear);
+  return request;
 }
 
 export interface PortfolioValuationObserver {
@@ -785,10 +816,27 @@ export function refreshMarketSnapshot(marketId: string): Promise<void> {
   refreshState.promise = (async () => {
     const conn = await ensureStarted();
     do {
-      if (!_desiredMarketJoins.has(marketId)) return;
+      if (
+        !_desiredMarketJoins.has(marketId) ||
+        _marketSnapshotRequests.get(marketId) !== refreshState
+      )
+        return;
       refreshState.dirty = false;
+      const generation = _marketMembershipGeneration;
       await conn.invoke("JoinMarket", marketId);
-    } while (refreshState.dirty && _desiredMarketJoins.has(marketId));
+      if (
+        _connection === conn &&
+        generation === _marketMembershipGeneration &&
+        _marketSnapshotRequests.get(marketId) === refreshState &&
+        _desiredMarketJoins.has(marketId)
+      ) {
+        _acknowledgedMarketJoins.add(marketId);
+      }
+    } while (
+      refreshState.dirty &&
+      _desiredMarketJoins.has(marketId) &&
+      _marketSnapshotRequests.get(marketId) === refreshState
+    );
   })();
   _marketSnapshotRequests.set(marketId, refreshState);
   const clearRequest = () => {
@@ -813,6 +861,9 @@ export async function leaveMarket(marketId: string): Promise<void> {
   }
   _marketJoinCounts.delete(marketId);
   _desiredMarketJoins.delete(marketId);
+  _acknowledgedMarketJoins.delete(marketId);
+  _marketJoinRequests.delete(marketId);
+  _marketSnapshotRequests.delete(marketId);
   const conn = ensureConnection();
   if (conn.state !== HubConnectionState.Connected) return;
   try {
@@ -1004,6 +1055,9 @@ export async function disconnect(): Promise<void> {
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();
   _marketSnapshotRequests.clear();
+  _marketMembershipGeneration += 1;
+  _acknowledgedMarketJoins.clear();
+  _marketJoinRequests.clear();
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel();
   _rejoinRefreshers.clear();
   _marketJoinCounts.clear();
