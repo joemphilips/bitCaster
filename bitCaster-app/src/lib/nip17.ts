@@ -289,9 +289,9 @@ export async function subscribeNip17DMs(
         }
 
         onMessage(rumor.content, rumor.pubkey);
-      } catch (e) {
-        // Ignore events we can't decrypt (not for us, or malformed)
-        console.warn("[nip17] Failed to decrypt DM:", (e as Error).message);
+      } catch {
+        // Parser errors can contain decrypted message text.
+        console.warn("[nip17] DM_UNWRAP_FAILED");
       }
     });
 
