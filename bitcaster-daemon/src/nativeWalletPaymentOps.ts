@@ -1,4 +1,11 @@
-import { Amount, type MeltPreview, type MeltQuoteResponse, type Proof } from '@cashu/cashu-ts'
+import {
+  Amount,
+  type CounterSource,
+  type OperationCounters,
+  type MeltPreview,
+  type MeltQuoteResponse,
+  type Proof,
+} from '@cashu/cashu-ts'
 import {
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyWalletId,
@@ -22,7 +29,13 @@ import {
   type WalletOpsSecrets,
 } from './walletOps.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
-import { readAvailableWalletProofsFenced } from './state.ts'
+import {
+  readAvailableWalletProofsFenced,
+  readDaemonCounterSnapshots,
+  DaemonCounterSnapshotConflictError,
+} from './state.ts'
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import type { StateSqliteFaultPhase } from './stateSqlite.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import { withDurableCustodyFencedRead } from './durableCustodyUnitOfWork.ts'
@@ -42,6 +55,10 @@ export interface NativeWalletPaymentWallet extends NativeWalletMeltWallet {
     method: 'bolt11',
     quote: MeltQuoteResponse,
     proofs: readonly Proof[],
+    config?: {
+      readonly keysetId: string
+      readonly onCountersReserved: (range: OperationCounters) => void
+    },
   ): Promise<MeltPreview<MeltQuoteResponse>>
   selectProofsToSend(
     proofs: Proof[],
@@ -82,9 +99,14 @@ export interface NativeWalletPaymentOpsOptions {
   readonly deps?: WalletOpsDependencies
   readonly directory?: string
   readonly now?: () => number
+  readonly observePrepared?: (
+    operation: Readonly<ReturnType<typeof serializeDurableWalletMeltOperation>>,
+  ) => Promise<void>
+  readonly injectPreparationFault?: (phase: StateSqliteFaultPhase) => void
   readonly walletFor?: (
     mintUrl: string,
     unit: 'msat',
+    counterSource?: CounterSource,
   ) => Promise<NativeWalletPaymentWallet> | NativeWalletPaymentWallet
 }
 
@@ -97,6 +119,8 @@ export class NativeWalletPaymentOps {
   readonly #directory: string
   readonly #now: () => number
   readonly #walletFor: NonNullable<NativeWalletPaymentOpsOptions['walletFor']> | undefined
+  readonly #observePrepared: NativeWalletPaymentOpsOptions['observePrepared']
+  readonly #injectPreparationFault: NativeWalletPaymentOpsOptions['injectPreparationFault']
   readonly #coordinator: NativeWalletMeltCoordinator
 
   constructor(options: NativeWalletPaymentOpsOptions) {
@@ -110,6 +134,8 @@ export class NativeWalletPaymentOps {
     this.#directory = options.directory ?? profileDir()
     this.#now = options.now ?? Date.now
     this.#walletFor = options.walletFor
+    this.#observePrepared = options.observePrepared
+    this.#injectPreparationFault = options.injectPreparationFault
     this.#coordinator = new NativeWalletMeltCoordinator(
       this.#directory,
       options.getFence,
@@ -158,16 +184,22 @@ export class NativeWalletPaymentOps {
   /** Prepare and execute one explicitly approved payment, or retry its saved exact operation. */
   async pay(input: NativeWalletPaymentApproval): Promise<NativeWalletPaymentResult> {
     const approval = requirePaymentApproval(input, this.#profile, this.#secrets)
+    const capturedFence = this.#getFence()
+    const requireCurrent = () => assertOperationFence(capturedFence, this.#getFence())
+    if (capturedFence.scopeId !== `custody:wallet:${approval.walletId}`)
+      throw new Error('native wallet payment wallet scope conflicts')
     const saved = await this.#coordinator.readStatus(approval.operationId)
+    requireCurrent()
     if (saved !== null) {
       assertSavedApproval(saved, approval)
       const wallet = isLocallyComplete(saved)
         ? terminalOnlyWallet()
         : await this.#loadedWallet(approval.mintUrl)
+      requireCurrent()
       return this.#execute(approval.operationId, wallet)
     }
 
-    return this.#payNewApproval(approval)
+    return this.#payNewApproval(approval, capturedFence)
   }
 
   /** Return only the validated local operation and approval facts. This method never pays. */
@@ -239,7 +271,12 @@ export class NativeWalletPaymentOps {
     }
   }
 
-  async #payNewApproval(approval: NativeWalletPaymentApproval): Promise<NativeWalletPaymentResult> {
+  async #payNewApproval(
+    approval: NativeWalletPaymentApproval,
+    capturedFence: CustodyScopeFence,
+  ): Promise<NativeWalletPaymentResult> {
+    const requireOperationFence = () => assertOperationFence(capturedFence, this.#getFence())
+    requireOperationFence()
     const wallet = await this.#loadedWallet(approval.mintUrl)
     const quote = await wallet.checkMeltQuote('bolt11', approval.quoteId)
     assertApprovalQuote(approval, quote, this.#now())
@@ -247,7 +284,7 @@ export class NativeWalletPaymentOps {
       mintUrl: approval.mintUrl,
       quote,
       wallet,
-      getFence: this.#getFence,
+      getFence: requireOperationFence,
       now: this.#now,
     })
     const totalWalletDebitMsat = checkedAdd(
@@ -258,13 +295,6 @@ export class NativeWalletPaymentOps {
       throw new Error('native wallet payment exceeds the approved maximum debit')
     }
     assertInputCoverage(selected.inputs, totalWalletDebitMsat)
-    const preview = await wallet.prepareMelt('bolt11', quote, selected.inputs)
-    const operation = serializeDurableWalletMeltOperation({
-      operationId: approval.operationId,
-      mintUrl: approval.mintUrl,
-      unit: 'msat',
-      preview,
-    })
     const approvalContext: NativeWalletMeltApprovalContext = {
       invoice: approval.invoice,
       expiryUnixSeconds: approval.expiryUnixSeconds,
@@ -272,13 +302,134 @@ export class NativeWalletPaymentOps {
       feeReserveMsat: approval.feeReserveMsat,
       quotedSelectedInputFeeMsat: approval.selectedInputFeeMsat,
     }
-    await this.#coordinator.prepare({
-      operation,
-      wallet,
-      approvalContext,
-      approvedMaxDebitMsat: approval.approvedMaxDebitMsat,
-    })
-    return this.#execute(approval.operationId, wallet)
+    const overage =
+      selected.inputs.reduce((total, proof) => total + BigInt(amountToNumber(proof.amount)), 0n) -
+      BigInt(amountToNumber(quote.amount))
+    if (overage === 0n) {
+      let callbacks = 0
+      const preview = await wallet.prepareMelt('bolt11', quote, selected.inputs, {
+        keysetId: wallet.getKeyset().id,
+        onCountersReserved: () => {
+          callbacks += 1
+        },
+      })
+      if (callbacks !== 0 || preview.outputData.length !== 0)
+        throw new Error('native wallet payment no-change plan conflicts')
+      const operation = serializeDurableWalletMeltOperation({
+        operationId: approval.operationId,
+        mintUrl: approval.mintUrl,
+        unit: 'msat',
+        preview,
+      })
+      await this.#observePrepared?.(structuredClone(operation))
+      await this.#coordinator.prepare({
+        operation,
+        wallet,
+        approvalContext,
+        approvedMaxDebitMsat: approval.approvedMaxDebitMsat,
+        operationFence: requireOperationFence(),
+        injectFault: this.#injectPreparationFault,
+      })
+      requireOperationFence()
+      return this.#execute(approval.operationId, wallet)
+    }
+    const selectedKeyset = wallet.getKeyset()
+    const pinned = {
+      id: selectedKeyset.id,
+      unit: selectedKeyset.unit,
+      keys: { ...selectedKeyset.keys },
+      fee: selectedKeyset.fee,
+      expiry: selectedKeyset.expiry,
+      conditional: selectedKeyset.conditional,
+    }
+    if (
+      !/^01[0-9a-f]{64}$/.test(pinned.id) ||
+      pinned.unit !== 'msat' ||
+      pinned.conditional !== undefined ||
+      selectedKeyset.verify?.() !== true
+    )
+      throw new Error('native wallet payment output keyset is invalid')
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transcript = createSpeculativeCounterTranscript(
+        await readDaemonCounterSnapshots({
+          storage: createDaemonStateSqliteSession(this.#directory),
+          mutation: { fence: requireOperationFence(), observedAtMs: this.#now() },
+          keysetIds: [pinned.id],
+          binding: { normalizedMint: approval.mintUrl, unit: 'msat' },
+        }),
+      )
+      const draftWallet = await this.#loadedWallet(approval.mintUrl, transcript.counterSource)
+      const keyset = draftWallet.getKeyset(pinned.id)
+      if (
+        keyset.id !== pinned.id ||
+        keyset.unit !== pinned.unit ||
+        keyset.fee !== pinned.fee ||
+        keyset.expiry !== pinned.expiry ||
+        keyset.conditional !== undefined ||
+        keyset.verify?.() !== true ||
+        JSON.stringify(Object.entries(keyset.keys).sort()) !==
+          JSON.stringify(Object.entries(pinned.keys).sort())
+      )
+        throw new Error('native wallet payment pinned keyset changed')
+      let callbacks = 0
+      let reserved: OperationCounters | undefined
+      const preview = await draftWallet.prepareMelt('bolt11', quote, selected.inputs, {
+        keysetId: pinned.id,
+        onCountersReserved: (range) => {
+          callbacks += 1
+          reserved = range
+        },
+      })
+      const allocations = transcript.allocations()
+      const allocation = allocations[0]
+      const expectedCount = overage > 0n ? Math.max((overage - 1n).toString(2).length, 1) : 0
+      if (
+        preview.outputData.length !== expectedCount ||
+        (expectedCount === 0
+          ? callbacks !== 0 || allocations.length !== 0
+          : callbacks !== 1 ||
+            allocations.length !== 1 ||
+            !allocation ||
+            !reserved ||
+            allocation.keysetId !== pinned.id ||
+            reserved.keysetId !== pinned.id ||
+            allocation.start !== reserved.start ||
+            allocation.count !== reserved.count ||
+            reserved.next !== allocation.start + allocation.count ||
+            reserved.count !== expectedCount) ||
+        preview.outputData.some(
+          (output) =>
+            output.blindedMessage.id !== pinned.id ||
+            amountToNumber(output.blindedMessage.amount) !== 0,
+        )
+      )
+        throw new Error('native wallet payment change counter transcript conflicts')
+      const operation = serializeDurableWalletMeltOperation({
+        operationId: approval.operationId,
+        mintUrl: approval.mintUrl,
+        unit: 'msat',
+        preview,
+      })
+      await this.#observePrepared?.(structuredClone(operation))
+      requireOperationFence()
+      try {
+        await this.#coordinator.prepare({
+          operation,
+          wallet: draftWallet,
+          approvalContext,
+          approvedMaxDebitMsat: approval.approvedMaxDebitMsat,
+          counterTranscript: transcript,
+          operationFence: requireOperationFence(),
+          injectFault: this.#injectPreparationFault,
+        })
+        requireOperationFence()
+        return this.#execute(approval.operationId, draftWallet)
+      } catch (error) {
+        requireOperationFence()
+        if (!(error instanceof DaemonCounterSnapshotConflictError) || attempt === 2) throw error
+      }
+    }
+    throw new Error('native wallet payment preparation exhausted')
   }
 
   async #execute(
@@ -300,14 +451,37 @@ export class NativeWalletPaymentOps {
     }
   }
 
-  async #loadedWallet(mintUrl: string): Promise<NativeWalletPaymentWallet> {
+  async #loadedWallet(
+    mintUrl: string,
+    counterSource?: CounterSource,
+  ): Promise<NativeWalletPaymentWallet> {
     const wallet = this.#walletFor
-      ? await this.#walletFor(mintUrl, 'msat')
-      : (createWallet(mintUrl, this.#secrets, this.#deps, 'sat', 'msat') as CashuWalletLike &
-          NativeWalletPaymentWallet)
+      ? await this.#walletFor(mintUrl, 'msat', counterSource)
+      : (createWallet(
+          mintUrl,
+          this.#secrets,
+          this.#deps,
+          'sat',
+          'msat',
+          undefined,
+          counterSource,
+        ) as CashuWalletLike & NativeWalletPaymentWallet)
     await wallet.loadMint()
     return wallet
   }
+}
+
+function assertOperationFence(
+  captured: CustodyScopeFence,
+  current: CustodyScopeFence,
+): CustodyScopeFence {
+  if (
+    current.scopeId !== captured.scopeId ||
+    current.incarnationId !== captured.incarnationId ||
+    current.fencingEpoch !== captured.fencingEpoch
+  )
+    throw new Error('native wallet payment operation fence changed')
+  return current
 }
 
 async function selectCanonicalInputs(input: {
