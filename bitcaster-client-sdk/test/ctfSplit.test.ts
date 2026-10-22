@@ -2833,3 +2833,106 @@ function feePlanningKeyset(inputFeePpk: number, keys: Record<number, string>) {
     input_fee_ppk: inputFeePpk,
   }
 }
+
+for (const duplicate of [false, true])
+  test(`explicit deterministic regular preparation ${duplicate ? 'rejects duplicate callbacks before journaling' : 'preserves fees and seed-derived send/change'}`, async () => {
+    const store = new MemoryProofOperationStore()
+    const seed = new Uint8Array(64).fill(4)
+    let prepared = 0
+    const wallet = {
+      getKeyset: () => ({ id: REGULAR_KEYSET_ID }),
+      prepareSwapToSend: async (
+        amount: number,
+        inputs: Proof[],
+        config: unknown,
+        outputConfig: unknown,
+      ) => {
+        prepared++
+        const options = config as {
+          includeFees: boolean
+          keysetId: string
+          onCountersReserved: (range: {
+            keysetId: string
+            start: number
+            count: number
+            next: number
+          }) => void
+        }
+        assert.equal(options.includeFees, false)
+        assert.equal(options.keysetId, REGULAR_KEYSET_ID)
+        assert.deepEqual(outputConfig, {
+          send: { type: 'deterministic', counter: 0 },
+          keep: { type: 'deterministic', counter: 0 },
+        })
+        const range = { keysetId: REGULAR_KEYSET_ID, start: 7, count: 2, next: 9 }
+        options.onCountersReserved(range)
+        if (duplicate) {
+          try {
+            options.onCountersReserved(range)
+          } catch {
+            /* cashu-ts safe callback semantics */
+          }
+        }
+        return {
+          amount: Amount.from(amount),
+          fees: Amount.from(1),
+          keysetId: REGULAR_KEYSET_ID,
+          inputs,
+          sendOutputs: [OutputData.createSingleDeterministicData(2, seed, 7, REGULAR_KEYSET_ID)],
+          keepOutputs: [OutputData.createSingleDeterministicData(2, seed, 8, REGULAR_KEYSET_ID)],
+          unselectedProofs: [],
+        }
+      },
+      completeSwap: async () => {
+        throw new Error('mint must not run')
+      },
+    }
+    const request = {
+      mintUrl: 'https://mint.example',
+      baseAsset: 'sat' as const,
+      operationId: 'deterministic-regular',
+      wallet,
+      proofs: [proof(REGULAR_KEYSET_ID, 5, 'regular-deterministic-input')],
+      amountSubunits: 2,
+      proofOperationStore: store,
+      deterministicPreparation: { seed },
+      beforeMintMutation: async () => {
+        throw new Error('controlled dispatch barrier')
+      },
+    }
+    await assert.rejects(
+      splitRegularProofsWithOperation(request),
+      duplicate ? /counter callback count/ : /controlled dispatch barrier/,
+    )
+    assert.equal(prepared, 1)
+    if (duplicate) assert.equal(store.records.size, 0)
+    else {
+      const saved = store.records.get(request.operationId)!
+      assert.equal(saved.metadata.amount, 2)
+      assert.equal(saved.metadata.fees, 1)
+      assert.equal(
+        saved.outputs.send![0]!.secret,
+        Buffer.from(
+          OutputData.createSingleDeterministicData(2, seed, 7, REGULAR_KEYSET_ID).secret,
+        ).toString('hex'),
+      )
+      const pending = {
+        getKeyset: () => {
+          throw new Error('saved recovery must not choose a new keyset')
+        },
+        prepareSwapToSend: wallet.prepareSwapToSend,
+        completeSwap: wallet.completeSwap,
+        checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.PENDING }],
+      }
+      await assert.rejects(
+        splitRegularProofsWithOperation({
+          ...request,
+          proofs: [],
+          wallet: pending,
+          deterministicPreparation: { seed: new Uint8Array() },
+        }),
+        ProofOperationPendingError,
+      )
+      assert.equal(prepared, 1)
+    }
+  })

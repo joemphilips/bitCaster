@@ -1281,12 +1281,19 @@ export async function prepareCompleteSetRegularProofOperationFenced(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
-    (database) => {
-      const operation = prepareExactProofOperation(database, input)
-      upsertCompleteSetRecoveryRoot(database, input.root, 'regular-prepared', mutation.observedAtMs)
-      return operation
-    },
+    (database) =>
+      prepareCompleteSetRegularProofOperationFromDatabase(database, input, mutation.observedAtMs),
   )
+}
+
+export function prepareCompleteSetRegularProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareCompleteSetRegularProofOperationFenced>[0],
+  observedAtMs: number,
+): ProofOperationRecord {
+  const operation = prepareExactProofOperation(database, input)
+  upsertCompleteSetRecoveryRoot(database, input.root, 'regular-prepared', observedAtMs)
+  return operation
 }
 
 export async function prepareCompleteSetCtfProofOperationFenced(
@@ -1301,26 +1308,33 @@ export async function prepareCompleteSetCtfProofOperationFenced(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
-    (database) => {
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
-      if (root !== null && root.state === 'regular-prepared') {
-        throw new Error('complete-set CTF preparation requires a durable handoff')
-      }
-      const operation =
-        root?.state === 'ctf-handoff'
-          ? prepareAdoptedExactProofOperation(database, input)
-          : prepareExactProofOperation(database, input)
-      upsertCompleteSetRecoveryRoot(
-        database,
-        root === null
-          ? { ...input.root, regularOperationId: null, ctfOperationId: input.operationId }
-          : { ...root, ctfOperationId: input.operationId },
-        'ctf-prepared',
-        mutation.observedAtMs,
-      )
-      return operation
-    },
+    (database) =>
+      prepareCompleteSetCtfProofOperationFromDatabase(database, input, mutation.observedAtMs),
   )
+}
+
+export function prepareCompleteSetCtfProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareCompleteSetCtfProofOperationFenced>[0],
+  observedAtMs: number,
+): ProofOperationRecord {
+  const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
+  if (root !== null && root.state === 'regular-prepared') {
+    throw new Error('complete-set CTF preparation requires a durable handoff')
+  }
+  const operation =
+    root?.state === 'ctf-handoff'
+      ? prepareAdoptedExactProofOperation(database, input)
+      : prepareExactProofOperation(database, input)
+  upsertCompleteSetRecoveryRoot(
+    database,
+    root === null
+      ? { ...input.root, regularOperationId: null, ctfOperationId: input.operationId }
+      : { ...root, ctfOperationId: input.operationId },
+    'ctf-prepared',
+    observedAtMs,
+  )
+  return operation
 }
 
 export async function completeRegularSplitWithCompleteSetHandoffFenced(
@@ -1348,7 +1362,7 @@ export async function completeRegularSplitWithCompleteSetHandoffFenced(
         input.regularAuthority.successorAssets,
         input.operationId,
       )
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
       if (root === null) {
         throw new Error('complete-set regular handoff authority is absent')
       }
@@ -1406,7 +1420,7 @@ export async function completeCompleteSetCtfProofOperationFenced(
         input.authority.successorAssets,
         input.operationId,
       )
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
       if (before.state === 'prepared' && (root === null || root.state !== 'ctf-prepared')) {
         throw new Error('complete-set CTF completion authority is absent')
       }
@@ -3865,7 +3879,7 @@ function decodeRecoverableCompleteSetRecoveryRoot(
 
 type CompleteSetRecoveryRootState = 'regular-prepared' | 'ctf-handoff' | 'ctf-prepared'
 
-function readCompleteSetRecoveryRoot(
+export function readCompleteSetRecoveryRootFromDatabase(
   database: DatabaseSync,
   rootOperationId: string,
 ): (CompleteSetRecoveryRoot & { readonly state: CompleteSetRecoveryRootState }) | null {
@@ -3911,7 +3925,7 @@ function upsertCompleteSetRecoveryRoot(
   assertCompleteSetRecoveryRoot(root)
   assertCompleteSetRecoveryRootState(root, state)
   const scopeId = readScopeId(database)
-  const existing = readCompleteSetRecoveryRoot(database, root.rootOperationId)
+  const existing = readCompleteSetRecoveryRootFromDatabase(database, root.rootOperationId)
   if (existing !== null && !sameCompleteSetRecoveryRoot(existing, root)) {
     throw new Error('complete-set recovery root conflicts with durable authority')
   }

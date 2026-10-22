@@ -1,3 +1,4 @@
+import { prepareDeterministicOutgoingCashuSend } from './deterministicOutgoingCashuPreparation.ts'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from './ctfListing.ts'
 import {
   Amount,
@@ -6,6 +7,7 @@ import {
   OutputData as RegularOutputData,
   Wallet as CashuWallet,
   type MintKeys,
+  type OperationCounters,
   type P2PKOptions,
   type Proof,
   type ProofState,
@@ -276,6 +278,7 @@ export interface CtfSplitOptions {
 }
 
 export interface RegularSplitWallet {
+  getKeyset?(keysetId?: string): { id: string }
   prepareSwapToSend?(
     amount: number,
     proofs: Proof[],
@@ -317,6 +320,8 @@ export async function splitRegularProofsWithOperation(params: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
+  /** Opt in for fresh regular outputs. Saved requests retain their exact authority. */
+  deterministicPreparation?: { readonly seed: Uint8Array }
   /** Run after durable preparation and immediately before the mint request. */
   beforeMintMutation?: () => Promise<void>
 }): Promise<RegularProofSplitResult> {
@@ -350,12 +355,43 @@ export async function splitRegularProofsWithOperation(params: {
     throw new Error('Cashu wallet adapter does not support resumable split preparation')
   }
 
-  const preview = await params.wallet.prepareSwapToSend(
-    amountSubunits,
-    normalizedProofs,
-    undefined,
-    { send: { type: 'random' }, keep: { type: 'random' } },
-  )
+  let reservationCallbacks = 0
+  const deterministic = params.deterministicPreparation
+    ? await prepareDeterministicOutgoingCashuSend({
+        amount: amountSubunits,
+        proofs: normalizedProofs,
+        seed: params.deterministicPreparation.seed,
+        wallet: {
+          getKeyset: (id) => {
+            if (!params.wallet.getKeyset)
+              throw new Error('deterministic regular split requires an output keyset')
+            return params.wallet.getKeyset(id)
+          },
+          prepareSwapToSend: (amount, proofs, config, outputs) =>
+            params.wallet.prepareSwapToSend!(
+              amount,
+              proofs,
+              {
+                ...config,
+                onCountersReserved: (reserved: OperationCounters) => {
+                  reservationCallbacks++
+                  config.onCountersReserved(reserved)
+                },
+              },
+              outputs,
+            ),
+        },
+        diagnosticLabel: 'complete-set regular collateral',
+      })
+    : null
+  if (deterministic && reservationCallbacks !== 1)
+    throw new Error('deterministic regular split counter callback count is invalid')
+  const preview =
+    deterministic?.preview ??
+    (await params.wallet.prepareSwapToSend(amountSubunits, normalizedProofs, undefined, {
+      send: { type: 'random' },
+      keep: { type: 'random' },
+    }))
   if (
     (preview.sendOutputs?.length ?? 0) + (preview.keepOutputs?.length ?? 0) >
     DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX

@@ -312,6 +312,12 @@ export interface CtfCollateralOperationAuthority {
   readonly proofOperationStore: CtfProofOperationStore
   readonly beforeMintMutation: () => Promise<void>
   readonly readAvailableProofs: () => Promise<Proof[]>
+  readonly regularCounterSource?: CounterSource
+  readonly prepareRegularSplit?: (input: {
+    readonly wallet: CashuWalletLike
+    readonly proofs: readonly Proof[]
+    readonly amountSubunits: number
+  }) => Promise<Awaited<ReturnType<typeof splitRegularProofsWithOperation>>>
 }
 
 export interface ExecuteCtfConsolidationPlanInput {
@@ -1075,7 +1081,15 @@ export async function splitAvailableMsatProofsForCtfCollateral(
   const proofOperationStore =
     operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
   const existing = await proofOperationStore.getProofOperation(operationId)
-  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
+  const wallet = createWallet(
+    mintUrl,
+    secrets,
+    deps,
+    baseAsset,
+    undefined,
+    undefined,
+    operationAuthority?.regularCounterSource,
+  )
   if (existing) {
     if (existing.state !== 'completed') await wallet.loadMint()
     const split = await splitRegularProofsWithOperation({
@@ -1121,16 +1135,22 @@ export async function splitAvailableMsatProofsForCtfCollateral(
   if (selected.send.length === 0) {
     throw new Error(`insufficient available msat in mint ${mintUrl}`)
   }
-  const split = await splitRegularProofsWithOperation({
-    mintUrl,
-    baseAsset,
-    operationId,
-    wallet,
-    proofs: selected.send,
-    amountSubunits: grossCtfInputSubunits,
-    proofOperationStore,
-    beforeMintMutation: operationAuthority?.beforeMintMutation,
-  })
+  const split = operationAuthority?.prepareRegularSplit
+    ? await operationAuthority.prepareRegularSplit({
+        wallet,
+        proofs: selected.send,
+        amountSubunits: grossCtfInputSubunits,
+      })
+    : await splitRegularProofsWithOperation({
+        mintUrl,
+        baseAsset,
+        operationId,
+        wallet,
+        proofs: selected.send,
+        amountSubunits: grossCtfInputSubunits,
+        proofOperationStore,
+        beforeMintMutation: operationAuthority?.beforeMintMutation,
+      })
   const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
 }
