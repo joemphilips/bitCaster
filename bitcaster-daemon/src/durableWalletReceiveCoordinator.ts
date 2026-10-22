@@ -1,3 +1,4 @@
+import type { SpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -35,7 +36,11 @@ import {
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import type { StateSqliteFaultPhase } from './stateSqlite.ts'
-import { admitExactAvailableWalletProofsFromDatabase, readExactBoundCounter } from './state.ts'
+import {
+  commitDaemonCounterTranscript,
+  DaemonCounterSnapshotConflictError,
+  admitExactAvailableWalletProofsFromDatabase,
+} from './state.ts'
 import type { CashuWalletLike } from './walletOps.ts'
 import {
   NativePaymentRequestReceiptSqlite,
@@ -44,12 +49,19 @@ import {
 
 export interface PreparedDaemonWalletReceive {
   readonly operation: DurableWalletReceiveOperation
+  readonly transcript: SpeculativeCounterTranscript
+  readonly rebuild?: () => Promise<{
+    prepared: PreparedDaemonWalletReceive
+    wallet: CashuWalletLike
+  }>
 }
 
 export interface DaemonWalletReceiveResult {
   readonly proofs: readonly Proof[]
   readonly operationId: string
 }
+
+class ReceiveOperationAbsentError extends Error {}
 
 /** Fenced SQLite coordinator for the SDK's ordinary-wallet receive state machine. */
 export class DaemonDurableWalletReceiveCoordinator {
@@ -84,20 +96,53 @@ export class DaemonDurableWalletReceiveCoordinator {
     readonly wallet: CashuWalletLike
     readonly receipt?: NativePaymentRequestReceiptBinding
   }): Promise<DaemonWalletReceiveResult> {
-    const custodyOperationId = await this.#bind(
-      input.prepared.operation,
-      input.wallet,
-      input.receipt,
-    )
+    let current = input
+    let bound:
+      | { custodyOperationId: string; operationId: string; mode: 'execute' | 'recover' }
+      | undefined
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        bound = await this.#bind(current.prepared, current.wallet, current.receipt)
+        break
+      } catch (error) {
+        // A missing COMMIT reply is not rollback evidence. Reconcile saved authority first.
+        try {
+          bound = await this.#bind(current.prepared, current.wallet, current.receipt, true)
+          break
+        } catch (reconciliationError) {
+          if (!(reconciliationError instanceof ReceiveOperationAbsentError))
+            throw reconciliationError
+          if (
+            !(error instanceof DaemonCounterSnapshotConflictError) ||
+            attempt === 2 ||
+            !current.prepared.rebuild
+          )
+            throw error
+        }
+        current = { ...(await current.prepared.rebuild()), receipt: input.receipt }
+      }
+    }
+    if (!bound) throw new Error('receive preparation did not commit')
+    if (bound.mode === 'recover' && current.wallet.ensureOperableKeysets) {
+      const saved = await this.#loadRecord(bound.custodyOperationId)
+      if (!saved) throw new Error('saved receive operation is missing')
+      const operation = this.#operationFromRecord(saved.record, saved.exactAuthority)
+      await current.wallet.ensureOperableKeysets([
+        ...new Set([
+          ...operation.preview.inputs.map((proof) => proof.id),
+          ...operation.preview.keepOutputs.map((output) => output.blindedMessage.id),
+        ]),
+      ])
+    }
     const result = await this.#run(
-      'execute',
-      input.prepared.operation.operationId,
-      custodyOperationId,
-      input.wallet,
+      bound.mode,
+      bound.operationId,
+      bound.custodyOperationId,
+      current.wallet,
     )
     if (result.state === 'nonterminal')
       throw new Error('daemon wallet receive did not reach a terminal state')
-    return { proofs: result.proofs, operationId: input.prepared.operation.operationId }
+    return { proofs: result.proofs, operationId: bound.operationId }
   }
 
   /** Resume the saved operation. Do not prepare another output range. */
@@ -199,10 +244,12 @@ export class DaemonDurableWalletReceiveCoordinator {
   }
 
   async #bind(
-    operation: DurableWalletReceiveOperation,
+    prepared: PreparedDaemonWalletReceive,
     wallet: CashuWalletLike,
     receipt?: NativePaymentRequestReceiptBinding,
-  ): Promise<string> {
+    existingOnly = false,
+  ): Promise<{ custodyOperationId: string; operationId: string; mode: 'execute' | 'recover' }> {
+    const operation = prepared.operation
     const custody = toDurableCustodyProofOperationInput(operation)
     const authority = prepareDurableCustodyMintOperationAuthority({
       operation: custody,
@@ -225,12 +272,28 @@ export class DaemonDurableWalletReceiveCoordinator {
     })
     const observedAtMs = this.#now()
     const fence = this.#getFence()
-    await withDurableCustodyUnitOfWork(
+    return withDurableCustodyUnitOfWork(
       this.#storage,
       fence,
       observedAtMs,
       (database) => {
         const store = new DurableCustodySqliteStore(database)
+        if (receipt !== undefined) {
+          const receipts = new NativePaymentRequestReceiptSqlite(database)
+          const saved = receipts.assertCandidate(receipt)
+          if (saved !== null) {
+            if (saved.kind !== 'regular') throw new Error('payment request receipt kind is foreign')
+            const retained = requiredRecord(store, saved.operationId)
+            const material = requiredAuthorityArtifact(retained, store)
+            const savedOperation = this.#operationFromRecord(retained, material)
+            receipts.bindRegular(receipt, saved.operationId, savedOperation)
+            return {
+              custodyOperationId: saved.operationId,
+              operationId: savedOperation.operationId,
+              mode: 'recover' as const,
+            }
+          }
+        }
         const existing = store.getOperation(record.operation.operationId)
         if (existing !== null) {
           assertDurableCustodyMintOperationAuthority(existing, authority.exactAuthority)
@@ -240,9 +303,22 @@ export class DaemonDurableWalletReceiveCoordinator {
               record.operation.operationId,
               operation,
             )
-          return
+          return {
+            custodyOperationId: record.operation.operationId,
+            operationId: operation.operationId,
+            mode: 'recover' as const,
+          }
         }
-        assertPersistedCounterRange(database, fence.scopeId, operation)
+        if (existingOnly)
+          throw new ReceiveOperationAbsentError('receive operation was not committed')
+        assertTranscriptRange(prepared)
+        commitDaemonCounterTranscript(
+          database,
+          fence.scopeId,
+          { normalizedMint: operation.mintUrl, unit: receiveUnit(operation) },
+          prepared.transcript,
+          observedAtMs,
+        )
         applyDurableCustodyTransaction(
           new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
           selection(record, owner(fence, observedAtMs), null),
@@ -259,10 +335,14 @@ export class DaemonDurableWalletReceiveCoordinator {
             record.operation.operationId,
             operation,
           )
+        return {
+          custodyOperationId: record.operation.operationId,
+          operationId: operation.operationId,
+          mode: 'execute' as const,
+        }
       },
-      this.#transactionOptions(),
+      existingOnly ? {} : this.#transactionOptions(),
     )
-    return record.operation.operationId
   }
 
   async #run(
@@ -595,21 +675,6 @@ function receiveKeysets(
   })
 }
 
-function assertPersistedCounterRange(
-  database: Parameters<typeof readExactBoundCounter>[0],
-  scopeId: string,
-  operation: DurableWalletReceiveOperation,
-): void {
-  const range = operation.derivationRange
-  if (range === null) throw new Error('daemon wallet receive derivation range is missing')
-  const next = readExactBoundCounter(database, scopeId, range.keysetId, {
-    normalizedMint: operation.mintUrl,
-    unit: receiveUnit(operation),
-  })
-  if (next < range.counterStart + range.counterCount)
-    throw new Error('daemon wallet receive counter authority is incomplete')
-}
-
 function walletScope(fence: CustodyScopeFence): DurableCustodyScope {
   if (!fence.scopeId.startsWith('custody:wallet:'))
     throw new Error('daemon wallet receive scope is foreign')
@@ -732,4 +797,23 @@ function requiredText(value: string | null): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function assertTranscriptRange(prepared: PreparedDaemonWalletReceive): void {
+  const range = prepared.operation.derivationRange
+  const allocations = prepared.transcript.allocations()
+  const allocation = allocations[0]
+  if (
+    !range ||
+    allocations.length !== 1 ||
+    !allocation ||
+    allocation.keysetId !== range.keysetId ||
+    allocation.start !== range.counterStart ||
+    allocation.count !== range.counterCount ||
+    prepared.operation.preview.keepOutputs.some(
+      (output) => output.blindedMessage.id !== range.keysetId,
+    )
+  ) {
+    throw new Error('receive counter transcript does not match output range')
+  }
 }

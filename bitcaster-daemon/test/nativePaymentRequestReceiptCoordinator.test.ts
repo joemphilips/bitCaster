@@ -1,3 +1,6 @@
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import { readDaemonCounterSnapshots } from '../src/state.ts'
+import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
 import { readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -32,7 +35,7 @@ import { DurableWalletProofImportCoordinator } from '../src/durableWalletProofIm
 import { DaemonDurableWalletReceiveCoordinator } from '../src/durableWalletReceiveCoordinator.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import { emptyDaemonState, reserveDaemonKeysetCounter, writeState } from '../src/state.ts'
+import { emptyDaemonState, writeState } from '../src/state.ts'
 import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 
 const MINT = 'https://mint.example'
@@ -185,19 +188,18 @@ for (const phase of ['before-commit', 'after-commit'] as const) {
     try {
       await f.create()
       let fired = false
-      await assert.rejects(
-        f
-          .service({
-            receiveFault: (observed) => {
-              if (!fired && observed === phase) {
-                fired = true
-                throw new Error('bind crash')
-              }
-            },
-          })
-          .receive(message(REGULAR)),
-        /bind crash/,
-      )
+      const received = f
+        .service({
+          receiveFault: (observed) => {
+            if (!fired && observed === phase) {
+              fired = true
+              throw new Error('bind crash')
+            }
+          },
+        })
+        .receive(message(REGULAR))
+      if (phase === 'before-commit') await assert.rejects(received, /bind crash/)
+      else assert.equal((await received)?.state, 'credited')
       const bound = await f.query((db) => ({
         receipts: db.prepare('SELECT count(*) n FROM native_payment_request_receipts').get()!.n,
         operations: db.prepare('SELECT count(*) n FROM custody_operations').get()!.n,
@@ -206,7 +208,7 @@ for (const phase of ['before-commit', 'after-commit'] as const) {
         bound,
         phase === 'before-commit' ? { receipts: 0, operations: 0 } : { receipts: 1, operations: 1 },
       )
-      assert.equal(f.counts.complete, 0)
+      assert.equal(f.counts.complete, phase === 'before-commit' ? 0 : 1)
       if (phase === 'after-commit') {
         assert.equal((await f.service().recover('request')).state, 'credited')
         assert.equal(f.counts.prepared, 1)
@@ -556,12 +558,15 @@ async function fixture() {
         },
         prepareRegular: async ({ proofs }) => {
           counts.prepared++
-          const { start: counterStart } = await reserveDaemonKeysetCounter(
-            REGULAR_ID,
-            2,
-            { fence, observedAtMs: Date.now() },
-            { normalizedMint: MINT, unit: 'msat' },
+          const transcript = createSpeculativeCounterTranscript(
+            await readDaemonCounterSnapshots({
+              storage: createDaemonStateSqliteSession(directory),
+              mutation: { fence, observedAtMs: Date.now() },
+              keysetIds: [REGULAR_ID],
+              binding: { normalizedMint: MINT, unit: 'msat' },
+            }),
           )
+          const { start: counterStart } = await transcript.counterSource.reserve(REGULAR_ID, 2)
           const preview: SwapPreview = {
             amount: Amount.from(2),
             fees: Amount.zero(),
@@ -572,6 +577,7 @@ async function fixture() {
           return {
             wallet,
             prepared: {
+              transcript,
               operation: serializeDurableWalletReceiveOperation({
                 operationId: `wallet-receive:request-${counterStart}`,
                 mintUrl: MINT,

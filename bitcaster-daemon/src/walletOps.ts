@@ -1,3 +1,4 @@
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import {
@@ -116,6 +117,7 @@ import {
   writeDaemonStateToDatabase,
   emptyDaemonState,
   reserveDaemonKeysetCounter,
+  readDaemonCounterSnapshots,
   type FencedStateMutation,
   type ProofOperationRecord,
   type StoredOutputData,
@@ -146,11 +148,13 @@ import { DurableWalletProofImportCoordinator } from './durableWalletProofImportC
 import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 
 export interface CashuWalletLike {
+  ensureOperableKeysets?(ids: string[]): Promise<void>
   loadMint(): Promise<void>
   receive(token: string, config?: { proofsWeHave?: Array<Pick<Proof, 'amount'>> }): Promise<Proof[]>
   prepareSwapToReceive?(
     token: string,
     config?: {
+      keysetId?: string
       proofsWeHave?: Array<Pick<Proof, 'amount'>>
       onCountersReserved?: (range: OperationCounters) => void
     },
@@ -190,7 +194,12 @@ export interface CashuWalletLike {
 }
 
 export interface WalletOpsDependencies {
-  createCashuWallet?: (mintUrl: string, unit?: TokenImportUnit) => CashuWalletLike
+  createCashuMint?: (mintUrl: string) => CashuMint
+  createCashuWallet?: (
+    mintUrl: string,
+    unit?: TokenImportUnit,
+    counterSource?: CounterSource,
+  ) => CashuWalletLike
   getCustodyFence?: () => CustodyScopeFence
   resolveTokenImportKeysets?: ResolveTokenImportKeysets
   ctfConvert?: (
@@ -411,14 +420,42 @@ export async function prepareRegularWalletReceive(input: {
   readonly unit: TokenImportUnit
   readonly secrets: WalletOpsSecrets
   readonly deps: WalletOpsDependencies
+  readonly operationId?: string
 }): Promise<{
   readonly prepared: PreparedDaemonWalletReceive
   readonly wallet: CashuWalletLike
 }> {
   const { mintUrl, unit, secrets, deps } = input
   if (!deps.getCustodyFence) throw new Error('daemon wallet receive requires custody authority')
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', unit)
+  const operationId = input.operationId ?? `wallet-receive:${randomUUID()}`
+  let transcript: ReturnType<typeof createSpeculativeCounterTranscript> | undefined
+  const source: CounterSource = {
+    reserve: async (id, count) => {
+      if (!transcript) throw new Error('receive counter transcript is not attached')
+      return transcript.counterSource.reserve(id, count)
+    },
+    advanceToAtLeast: async (id, next) => {
+      if (!transcript) throw new Error('receive counter transcript is not attached')
+      return transcript.counterSource.advanceToAtLeast(id, next)
+    },
+  }
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', unit, undefined, source)
   await wallet.loadMint()
+  const keysetId = wallet.keysetId ?? wallet.getKeyset?.()?.id
+  if (
+    !keysetId ||
+    !/^01[0-9a-f]{64}$/.test(keysetId) ||
+    wallet.getKeyset?.(keysetId)?.unit !== unit
+  )
+    throw new Error('receive output keyset is invalid')
+  transcript = createSpeculativeCounterTranscript(
+    await readDaemonCounterSnapshots({
+      storage: createDaemonStateSqliteSession(profileDir()),
+      mutation: { fence: deps.getCustodyFence(), observedAtMs: Date.now() },
+      keysetIds: [keysetId],
+      binding: { normalizedMint: mintUrl, unit },
+    }),
+  )
   const receiveMutation = { fence: deps.getCustodyFence(), observedAtMs: Date.now() }
   const proofsWeHave = (
     await readAvailableWalletProofAmountSamplesForReceive({
@@ -431,21 +468,37 @@ export async function prepareRegularWalletReceive(input: {
     throw new Error('cashu wallet does not support durable receive preparation')
   }
   let reserved: OperationCounters | undefined
+  let callbacks = 0
   const preview = await wallet.prepareSwapToReceive(
     input.encodedToken,
     {
       proofsWeHave,
+      keysetId,
       onCountersReserved: (range) => {
+        callbacks += 1
         reserved = range
       },
     },
     { type: 'deterministic', counter: 0 },
   )
-  if (reserved === undefined) {
+  const allocations = transcript.allocations()
+  const allocation = allocations[0]
+  if (
+    callbacks !== 1 ||
+    reserved === undefined ||
+    allocations.length !== 1 ||
+    !allocation ||
+    reserved.keysetId !== keysetId ||
+    allocation.keysetId !== keysetId ||
+    reserved.start !== allocation.start ||
+    reserved.count !== allocation.count ||
+    preview.keepOutputs?.length !== allocation.count ||
+    preview.keepOutputs?.some((output) => output.blindedMessage.id !== keysetId)
+  ) {
     throw new Error('daemon wallet receive did not reserve a deterministic output range')
   }
   const operation = serializeDurableWalletReceiveOperation({
-    operationId: `wallet-receive:${randomUUID()}`,
+    operationId,
     mintUrl,
     unit,
     preview,
@@ -455,7 +508,14 @@ export async function prepareRegularWalletReceive(input: {
       counterCount: reserved.count,
     },
   })
-  return { prepared: { operation }, wallet }
+  return {
+    prepared: {
+      operation,
+      transcript,
+      rebuild: () => prepareRegularWalletReceive({ ...input, operationId }),
+    },
+    wallet,
+  }
 }
 
 /** Recover bounded active ordinary receives without creating a new output plan. */
@@ -2593,17 +2653,19 @@ export function createWallet(
   baseAsset: 'sat',
   exactUnit?: TokenImportUnit,
   counterMutation?: () => FencedStateMutation,
+  counterSource?: CounterSource,
 ): CashuWalletLike {
   const unit = exactUnit ?? defaultCollateralUnit(baseAsset)
-  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
+  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit, counterSource)
   const mutation = counterMutation ?? mutationFromRuntimeFence(deps.getCustodyFence)
   if (!mutation) {
     throw new Error('default Cashu wallet requires a runtime custody fence provider')
   }
-  return new CashuWallet(new CashuMint(mintUrl), {
+  return new CashuWallet(deps.createCashuMint?.(mintUrl) ?? new CashuMint(mintUrl), {
     unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
+    counterSource:
+      counterSource ?? createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
   }) as CashuWalletLike
 }
 

@@ -34,6 +34,9 @@ export const SEED = '11'.repeat(64)
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
+const ALTERNATE_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 9])
+const ALTERNATE_KEYS = { '1': bytesToHex(secp256k1.getPublicKey(ALTERNATE_PRIVATE_KEY, true)) }
+const ALTERNATE_ID = deriveKeysetId(ALTERNATE_KEYS, { unit: 'msat', versionByte: 1 })
 function sign(output: OutputData) {
   const { id, B_, amount } = output.blindedMessage
   const signature = createBlindSignature(pointFromHex(B_), PRIVATE_KEY, id)
@@ -70,7 +73,7 @@ export function assertRedacted(value: unknown) {
     assert.equal(text.includes(secret), false, 'private material in public output')
 }
 
-export async function serviceFixture() {
+export async function serviceFixture(options: { defaultWallet?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'native-request-service-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
   const previousFetch = globalThis.fetch
@@ -97,12 +100,63 @@ export async function serviceFixture() {
     observedAtMs: Date.now(),
   })
   const counts = { prepared: 0, swaps: 0, restores: 0 }
+  const swapRequests: string[] = []
   const control = {
     failAfterMintEffect: false,
+    alternateKeyset: false,
     state: CheckStateEnum.UNSPENT as CheckStateEnum,
     restore: false,
   }
+  const customRequest = async <T>(args: RequestOptions): Promise<T> => {
+    const endpoint = new URL(args.endpoint).pathname
+    if (endpoint === '/v1/info')
+      return { name: 'mock mint', nuts: { '12': { supported: true } } } as T
+    if (endpoint === '/v1/keysets')
+      return {
+        keysets: [
+          { id: ID, unit: 'msat', active: !control.alternateKeyset, input_fee_ppk: 0 },
+          ...(control.alternateKeyset
+            ? [{ id: ALTERNATE_ID, unit: 'msat', active: true, input_fee_ppk: 0 }]
+            : []),
+        ],
+      } as T
+    if (endpoint.startsWith('/v1/keys'))
+      return {
+        keysets: [
+          { id: ID, unit: 'msat', keys: KEYS, input_fee_ppk: 0 },
+          ...(control.alternateKeyset
+            ? [{ id: ALTERNATE_ID, unit: 'msat', keys: ALTERNATE_KEYS, input_fee_ppk: 0 }]
+            : []),
+        ],
+      } as T
+    if (endpoint === '/v1/checkstate') {
+      const { Ys } = args.requestBody as { Ys: string[] }
+      return { states: Ys.map((Y) => ({ Y, state: control.state, witness: null })) } as T
+    }
+    if (endpoint === '/v1/swap') {
+      counts.swaps++
+      swapRequests.push(JSON.stringify(args.requestBody))
+      const { outputs } = args.requestBody as {
+        outputs: Array<{ id: string; amount: number; B_: string }>
+      }
+      const signatures = outputs.map((output) => {
+        const signingKey = output.id === ALTERNATE_ID ? ALTERNATE_PRIVATE_KEY : PRIVATE_KEY
+        const signature = createBlindSignature(pointFromHex(output.B_), signingKey, output.id)
+        const dleq = createDLEQProof(pointFromHex(output.B_), signingKey)
+        return {
+          id: output.id,
+          amount: output.amount,
+          C_: signature.C_.toHex(true),
+          dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+        }
+      })
+      if (control.failAfterMintEffect) throw new Error(`mint failure ${PROOFS[0]!.secret}`)
+      return { signatures } as T
+    }
+    throw new Error('unexpected mint endpoint')
+  }
   const deps: WalletOpsDependencies = {
+    createCashuMint: (url) => new Mint(url, { customRequest }),
     getCustodyFence: () => fence,
     resolveMintKeysetIds: async () => [ID],
     resolveTokenImportKeysets: async () => ({
@@ -111,46 +165,16 @@ export async function serviceFixture() {
       regularKeysets: [{ keysetId: ID, unit: 'msat', active: true }],
       conditionalKeysets: [],
     }),
-    createCashuWallet: () => {
-      const customRequest = async <T>(args: RequestOptions): Promise<T> => {
-        const endpoint = new URL(args.endpoint).pathname
-        if (endpoint === '/v1/info')
-          return { name: 'mock mint', nuts: { '12': { supported: true } } } as T
-        if (endpoint === '/v1/keysets')
-          return { keysets: [{ id: ID, unit: 'msat', active: true, input_fee_ppk: 0 }] } as T
-        if (endpoint === '/v1/keys')
-          return { keysets: [{ id: ID, unit: 'msat', keys: KEYS, input_fee_ppk: 0 }] } as T
-        if (endpoint === '/v1/checkstate') {
-          const { Ys } = args.requestBody as { Ys: string[] }
-          return { states: Ys.map((Y) => ({ Y, state: control.state, witness: null })) } as T
-        }
-        if (endpoint === '/v1/swap') {
-          counts.swaps++
-          const { outputs } = args.requestBody as {
-            outputs: Array<{ id: string; amount: number; B_: string }>
-          }
-          const signatures = outputs.map((output) => {
-            const signature = createBlindSignature(pointFromHex(output.B_), PRIVATE_KEY, output.id)
-            const dleq = createDLEQProof(pointFromHex(output.B_), PRIVATE_KEY)
-            return {
-              id: output.id,
-              amount: output.amount,
-              C_: signature.C_.toHex(true),
-              dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
-            }
-          })
-          if (control.failAfterMintEffect) throw new Error(`mint failure ${PROOFS[0]!.secret}`)
-          return { signatures } as T
-        }
-        throw new Error('unexpected mint endpoint')
-      }
+    createCashuWallet: (_mint, _unit, counterSource) => {
       const wallet = new Wallet(new Mint(MINT, { customRequest }), {
         unit: 'msat',
         bip39seed: Buffer.from(SEED, 'hex'),
-        counterSource: createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
-          normalizedMint: MINT,
-          unit: 'msat',
-        }),
+        counterSource:
+          counterSource ??
+          createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
+            normalizedMint: MINT,
+            unit: 'msat',
+          }),
       })
       const prepare = wallet.prepareSwapToReceive.bind(wallet)
       wallet.prepareSwapToReceive = async (...args) => {
@@ -169,6 +193,7 @@ export async function serviceFixture() {
       )
     },
   }
+  if (options.defaultWallet) delete deps.createCashuWallet
   const createOps = () =>
     new NativePaymentRequestOps({
       profile,
@@ -183,11 +208,13 @@ export async function serviceFixture() {
   })
   return {
     directory,
+    fence,
     deps,
     ops,
     createOps,
     nprofile,
     counts,
+    swapRequests,
     control,
     requestCount: () =>
       withDaemonStateSqliteTransaction(directory, (db) =>
