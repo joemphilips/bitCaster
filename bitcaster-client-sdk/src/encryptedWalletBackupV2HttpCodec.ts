@@ -416,3 +416,7 @@ function requireRetryAfter(
     throw new Error('encrypted backup v2 retry value is invalid')
   return value
 }
+
+export * from './encryptedWalletBackupOwnerHttpCodec.ts'
+
+export * from './encryptedWalletBackupOwnerDiscoveryError.ts'

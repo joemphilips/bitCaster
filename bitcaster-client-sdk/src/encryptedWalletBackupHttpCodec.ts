@@ -108,8 +108,7 @@ export function decodeEncryptedWalletBackupHttpResponse(
     throw new Error('account response does not match request')
   const result = requireResult(decoded[4])
   const lifecycle = requireLifecycle(decoded[6])
-  if (result === 'committed' && lifecycle !== committedLifecycle(input.operation))
-    throw new Error('account lifecycle does not match operation')
+  requireEncryptedWalletBackupAccountResultLifecycle(input.operation, result, lifecycle)
   return Object.freeze({
     operation: input.operation,
     result,
@@ -215,6 +214,19 @@ function requireRetryAfter(
     throw new Error('retry-after is invalid')
   return value as number
 }
+/** Shared result semantics only; callers must bind the authenticated request separately. */
+export function requireEncryptedWalletBackupAccountResultLifecycle(
+  operation: EncryptedWalletBackupHttpOperation,
+  result: 'committed' | 'conflict',
+  lifecycle: 'active' | 'revoked' | 'deleted',
+): void {
+  requireOperation(operation)
+  requireResult(result)
+  requireLifecycle(lifecycle)
+  if (result === 'committed' && lifecycle !== committedLifecycle(operation))
+    throw new Error('account lifecycle does not match operation')
+}
+
 function committedLifecycle(
   operation: EncryptedWalletBackupHttpOperation,
 ): 'active' | 'revoked' | 'deleted' {
@@ -224,3 +236,5 @@ function committedLifecycle(
       ? 'revoked'
       : 'deleted'
 }
+
+export * from './encryptedWalletBackupOwnerAccountHttp.ts'

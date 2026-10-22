@@ -1,3 +1,4 @@
+import { encodeGroupObjects, decodeGroupObjects } from './encryptedWalletBackupUploadObjects.ts'
 import {
   decodeCurrentInventoryEntries,
   type EncryptedWalletBackupV2CurrentInventoryEntry,
@@ -9,11 +10,7 @@ import {
   preflightEncryptedWalletBackupV2CborTuple,
   type EncryptedWalletBackupV2CborTuplePreflight,
 } from './encryptedWalletBackupV2Cbor.ts'
-import {
-  decodeEncryptedWalletBackupV2BundleObjectWire,
-  encodeEncryptedWalletBackupV2BundleObjectWire,
-  type EncryptedWalletBackupV2BundleObjectWire,
-} from './encryptedWalletBackupV2Bundle.ts'
+import { type EncryptedWalletBackupV2BundleObjectWire } from './encryptedWalletBackupV2Bundle.ts'
 import {
   decodeEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
@@ -52,7 +49,6 @@ export const ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES =
   ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES
 const PAGE_MAX_BYTES = 65_536
 const RECEIPT_MAX_BYTES = 65_536
-const OBJECT_WIRE_MAX_BYTES = 300_000
 export const ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES = 60_000 as const
 
 const UPLOAD_GROUP_PREFLIGHT = tuplePreflight(
@@ -326,74 +322,6 @@ export function decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(
     signingKeyId: toHex(requireBytes(tuple[17], 16, 16, 'receipt key id')),
     signature: toHex(requireBytes(tuple[18], 64, 64, 'receipt signature')),
   })
-}
-
-function encodeGroupObjects(
-  value: unknown,
-  envelope: EncryptedWalletBackupV2SignedBundleSupersessionMutation,
-): readonly Uint8Array[] {
-  if (!Array.isArray(value)) throw new Error('encrypted backup v2 upload objects are invalid')
-  const added = envelope.mutation.addedBundle
-  if (added === null) {
-    if (value.length !== 0) throw new Error('encrypted backup v2 removal group has objects')
-    return Object.freeze([])
-  }
-  if (value.length !== added.objects.length)
-    throw new Error('encrypted backup v2 upload objects are invalid')
-  return Object.freeze(value.map((item, index) => encodeOrderedObject(item, added, index)))
-}
-
-function decodeGroupObjects(
-  value: unknown,
-  envelope: EncryptedWalletBackupV2SignedBundleSupersessionMutation,
-): EncryptedWalletBackupV2BundleObjectWire[] {
-  if (!Array.isArray(value)) throw new Error('encrypted backup v2 upload objects are invalid')
-  const added = envelope.mutation.addedBundle
-  if (added === null) {
-    if (value.length !== 0) throw new Error('encrypted backup v2 removal group has objects')
-    return []
-  }
-  if (
-    value.length !== added.objects.length ||
-    value.length > ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX
-  )
-    throw new Error('encrypted backup v2 upload objects are invalid')
-  return value.map((item, index) => {
-    const object = decodeEncryptedWalletBackupV2BundleObjectWire(
-      requireBytes(item, 1, OBJECT_WIRE_MAX_BYTES, 'bundle object wire'),
-      added,
-    )
-    assertObjectOrder(object, added, index)
-    return object
-  })
-}
-
-function encodeOrderedObject(
-  value: unknown,
-  descriptor: EncryptedWalletBackupV2BundleDescriptor,
-  index: number,
-): Uint8Array {
-  const wire = encodeEncryptedWalletBackupV2BundleObjectWire(value, descriptor)
-  assertObjectOrder(
-    decodeEncryptedWalletBackupV2BundleObjectWire(wire, descriptor),
-    descriptor,
-    index,
-  )
-  return wire
-}
-
-function assertObjectOrder(
-  object: EncryptedWalletBackupV2BundleObjectWire,
-  descriptor: EncryptedWalletBackupV2BundleDescriptor,
-  index: number,
-): void {
-  const expected = descriptor.objects[index]
-  if (
-    expected === undefined ||
-    object.objectId !== expected.objectId ||
-    object.digest !== expected.digest
-  )
-    throw new Error('encrypted backup v2 upload object order is invalid')
 }
 
 function encodeSignedMutation(
@@ -740,3 +668,5 @@ function array(minimum: number, maximum: number) {
 }
 
 export * from './encryptedWalletBackupOwnerServiceCodec.ts'
+
+export * from './encryptedWalletBackupOwnerUpload.ts'

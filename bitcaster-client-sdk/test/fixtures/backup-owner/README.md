@@ -13,3 +13,10 @@ only a vector input. Production uses fresh runtime randomness.
 authorized inner request, possession preimage/digest/signature, and complete
 outer request. The SDK test compares complete bytes, not only a round trip.
 Encryption, wallet identity and request-key derivation stay unchanged.
+
+Run `node test/fixtures/backup-owner/generate-http.mjs` to reproduce
+`http-vectors.json`. This generator uses its own CBOR encoder. It reads the
+independent account and request vectors. It does not import an SDK encoder.
+The vectors fix the owner HTTP envelope, error, discovery refusal, and account
+result bytes. Ciphertext object and signed mutation formats keep their existing
+independent vectors.

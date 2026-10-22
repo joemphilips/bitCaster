@@ -349,3 +349,5 @@ export type EncryptedWalletBackupV2ServerEnrollment =
       requestAuthPublicKey: string
       enrollmentEpoch: number
     }>
+
+export * from './encryptedWalletBackupOwnerDelegatedServerCodec.ts'
