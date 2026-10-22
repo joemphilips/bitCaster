@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { useEncryptedWalletBackupDriver } from "../useEncryptedWalletBackupDriver";
 import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
+import { advanceNostrSignerRevision } from "@/lib/nostrSignerRevision";
 
 const mocks = vi.hoisted(() => ({
   mnemonic: "alpha beta gamma",
@@ -180,4 +181,17 @@ it("recreates a terminal driver on Retry and ignores callbacks from the stopped 
   expect(result.current.recoveryStatus).toEqual({ kind: "ready" });
   expect(mocks.driver.resumeAfterRecovery).not.toHaveBeenCalled();
   unmount();
+});
+
+it("aborts and replaces the driver when the authenticated signer session changes", async () => {
+  const { rerender } = renderHook(() => useEncryptedWalletBackupDriver(true));
+  const previousInput = mocks.input!;
+  const previousSignal = previousInput.signal as AbortSignal;
+
+  act(() => advanceNostrSignerRevision());
+  rerender();
+
+  await waitFor(() => expect(previousSignal.aborted).toBe(true));
+  expect(mocks.driver.stop).toHaveBeenCalled();
+  expect(mocks.input).not.toBe(previousInput);
 });

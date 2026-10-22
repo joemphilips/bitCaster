@@ -161,6 +161,8 @@ function AppRoutes() {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
+  // Keep the legacy ownerless driver gated until owner-aware routes and local
+  // authority stores are connected. Signer revisions still cancel stale work.
   const walletBackupRecovery = useEncryptedWalletBackupDriver(
     nostrSignerReady && nostrSignerMode !== "none",
   );

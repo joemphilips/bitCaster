@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   activeBrowserWalletScopeId,
   browserWalletDatabaseName,
@@ -17,6 +17,8 @@ import {
   type BrowserEncryptedWalletBackupV2RuntimeDriver,
 } from "@/lib/encryptedWalletBackupDriver";
 import { toSeed } from "@/lib/bip39";
+import { captureBrowserEncryptedWalletBackupOwnerSession } from "@/lib/browserEncryptedWalletBackupOwnerSession";
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { db } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 
@@ -33,6 +35,11 @@ export function useEncryptedWalletBackupDriver(
 ): EncryptedWalletBackupDriverState {
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const configuration = useMemo(() => resolveEncryptedWalletBackupConfiguration(), []);
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+    getNostrSignerRevision,
+  );
   const [recoveryStatus, setRecoveryStatus] =
     useState<BrowserEncryptedWalletBackupV2RecoveryStatus>(() =>
       nostrSignerReady && mnemonic && configuration !== null
@@ -51,6 +58,7 @@ export function useEncryptedWalletBackupDriver(
     const controller = new AbortController();
     let driver: BrowserEncryptedWalletBackupV2RuntimeDriver | undefined;
     let unregister: (() => void) | undefined;
+    let disposeOwnerSession: (() => void) | undefined;
     try {
       const words = mnemonic.trim().split(/\s+/).filter(Boolean);
       if (words.length === 0) return;
@@ -58,18 +66,19 @@ export function useEncryptedWalletBackupDriver(
       const scopeId = browserWalletScopeIdFromSeed(seed);
       const database = db;
       if (database.name !== browserWalletDatabaseName(scopeId)) return;
-      const isCurrentProfile = () =>
+      const isCurrentWalletProfile = () =>
         useWalletStore.getState().mnemonic === mnemonic &&
         activeBrowserWalletScopeId() === scopeId &&
         db === database &&
         database.name === browserWalletDatabaseName(scopeId);
+      const ownerSession = captureBrowserEncryptedWalletBackupOwnerSession({
+        isCurrentProfile: isCurrentWalletProfile,
+        signal: controller.signal,
+      });
+      disposeOwnerSession = ownerSession.dispose;
+      const isCurrentProfile = ownerSession.isCurrent;
       const onRecoveryStatusChange = (status: BrowserEncryptedWalletBackupV2RecoveryStatus) => {
-        if (
-          controller.signal.aborted ||
-          generationRef.current !== generation ||
-          !isCurrentProfile()
-        )
-          return;
+        if (!isCurrentProfile() || generationRef.current !== generation) return;
         setRecoveryStatus((previous) => {
           if (previous.kind !== status.kind) return status;
           switch (status.kind) {
@@ -86,8 +95,13 @@ export function useEncryptedWalletBackupDriver(
       };
       if (!nostrSignerReady) {
         // Missing signers do not block an unenrolled wallet. Project the existing read-only guard.
-        void readNoDriverStatus(database, scopeId).then(onRecoveryStatusChange);
-        return () => controller.abort();
+        void readNoDriverStatus(database, scopeId).then((status) => {
+          if (ownerSession.isCurrent()) onRecoveryStatusChange(status);
+        });
+        return () => {
+          ownerSession.dispose();
+          controller.abort();
+        };
       }
       onRecoveryStatusChange({ kind: "preparing", reason: "authentication" });
       driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
@@ -95,7 +109,7 @@ export function useEncryptedWalletBackupDriver(
         database,
         scopeId,
         seed,
-        signal: controller.signal,
+        signal: ownerSession.signal,
         isCurrentProfile,
         onRecoveryStatusChange,
         loadWallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
@@ -108,10 +122,11 @@ export function useEncryptedWalletBackupDriver(
     return () => {
       if (generationRef.current === generation) driverRef.current = null;
       unregister?.();
+      disposeOwnerSession?.();
       controller.abort();
       driver?.stop();
     };
-  }, [configuration, mnemonic, nostrSignerReady, restart]);
+  }, [configuration, mnemonic, nostrSignerReady, restart, signerRevision]);
 
   const retryRecovery = useCallback(() => {
     switch (recoveryStatus.kind) {
