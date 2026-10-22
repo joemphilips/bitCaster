@@ -1,6 +1,6 @@
 import { DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX } from './durableCustody.ts'
 
-const DURABLE_SEED_DERIVED_COUNTER_MAX = 2_147_483_647
+export const DURABLE_SEED_DERIVED_COUNTER_MAX = 2_147_483_647
 
 export function isCanonicalModernNut02KeysetId(value: unknown): value is string {
   return typeof value === 'string' && /^(?:01|02)[0-9a-f]{64}$/.test(value)

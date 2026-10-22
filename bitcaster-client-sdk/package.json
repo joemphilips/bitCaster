@@ -115,6 +115,10 @@
       "types": "./dist/durableSeedDerivedOutputs.d.ts",
       "import": "./dist/durableSeedDerivedOutputs.js"
     },
+    "./speculativeCounterTranscript": {
+      "types": "./dist/speculativeCounterTranscript.d.ts",
+      "import": "./dist/speculativeCounterTranscript.js"
+    },
     "./durableSeedDerivedProofLineage": {
       "types": "./dist/durableSeedDerivedProofLineage.d.ts",
       "import": "./dist/durableSeedDerivedProofLineage.js"
