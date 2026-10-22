@@ -1238,3 +1238,90 @@ test('prepared redeem replay rejects unsupported input IDs before loading or che
   assert.equal(wallet.redeemCalls.length, 0)
   assert.equal(store.records.get('redeem:unsupported')?.state, 'prepared')
 })
+
+for (const uneconomic of [false, true])
+  test(`deterministic redemption ${uneconomic ? 'does not allocate for uneconomic inputs' : 'binds exact seed-derived outputs and preserves saved recovery'}`, async () => {
+    const { mintDenominationKeys } = await import('./support/mintDenominationKeys.ts')
+    const { OutputData } = await import('@cashu/cashu-ts')
+    const keys = mintDenominationKeys(new Uint8Array(32).fill(1), ['1', '2', '4', '8'])
+    const regular = {
+      id: deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 }),
+      unit: 'msat',
+      active: true,
+      input_fee_ppk: 0,
+      keys,
+    }
+    const store = new MemoryProofOperationStore()
+    const original = store.prepareProofOperation.bind(store)
+    store.prepareProofOperation = async (draft) => {
+      await original(draft)
+      throw new Error('prepared boundary')
+    }
+    const seed = new Uint8Array(64).fill(7)
+    const allocations: Array<[string, number]> = []
+    const wallet = new FakeRedeemWallet()
+    const inputs = [proof(CTF_KEYSET_ID, 'deterministic-input', uneconomic ? 1 : 8)]
+    const params = {
+      mintUrl: 'https://mint.example',
+      operationId: 'redeem:deterministic',
+      wallet,
+      proofOperationStore: store,
+      conditionId: 'condition',
+      outcome: 'YES',
+      unit: 'msat',
+      oracleWitness: 'witness',
+      proofs: inputs,
+      outcomeKeyset: { id: CTF_KEYSET_ID, unit: 'msat', input_fee_ppk: 1000 },
+      regularKeyset: regular,
+      deterministicPreparation: {
+        seed,
+        counterSource: {
+          reserve: async (id: string, count: number) => {
+            allocations.push([id, count])
+            return { start: 13, count, next: 13 + count }
+          },
+          advanceToAtLeast: async () => {
+            throw new Error('advance forbidden')
+          },
+        },
+      },
+    }
+    await assert.rejects(
+      redeemOutcomeLegWithOperation(params),
+      uneconomic ? UneconomicCtfRedeemError : /prepared boundary/,
+    )
+    assert.equal(wallet.redeemCalls.length, 0)
+    if (uneconomic) {
+      assert.deepEqual(allocations, [])
+      assert.equal(store.records.size, 0)
+      return
+    }
+    assert.deepEqual(allocations, [[regular.id, 3]])
+    const saved = store.records.get(params.operationId)!
+    assert.equal(saved.metadata.inputFeeSubunits, 1)
+    assert.equal(saved.metadata.netOutputSubunits, 7)
+    assert.deepEqual(
+      saved.outputs.regular!.map(({ blindedMessage }) => blindedMessage),
+      [4, 2, 1].map((amount, index) => {
+        const message = OutputData.createSingleDeterministicData(
+          amount,
+          seed,
+          13 + index,
+          regular.id,
+        ).blindedMessage
+        return { ...message, amount: Number(message.amount) }
+      }),
+    )
+    wallet.checkProofsStates = async () => [state(CheckStateEnum.PENDING, 'deterministic-input')]
+    await assert.rejects(
+      redeemOutcomeLegWithOperation({
+        ...params,
+        regularKeyset: undefined,
+        outcomeKeyset: undefined,
+        deterministicPreparation: { ...params.deterministicPreparation, seed: new Uint8Array() },
+      }),
+      /still pending at the mint/,
+    )
+    assert.equal(allocations.length, 1)
+    assert.equal(store.prepareCalls, 1)
+  })

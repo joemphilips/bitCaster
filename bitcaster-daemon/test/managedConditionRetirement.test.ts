@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -36,6 +40,7 @@ import {
   readState,
   writeState,
 } from '../src/state.ts'
+import { createDaemonCounterSource } from '../src/walletOps.ts'
 import { retireDaemonConditionInventory } from '../src/managedConditionRetirement.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { readProfile } from '../src/profile.ts'
@@ -46,7 +51,8 @@ const CTF_KEYSET_ID = canonicalTestKeysetId('managed-retirement:ctf')
 const REGULAR_KEY = bytesToHex(
   secp256k1.getPublicKey(Uint8Array.from([...new Uint8Array(31), 1]), true),
 )
-const REGULAR_KEYS = { 1: REGULAR_KEY, 2: REGULAR_KEY, 4: REGULAR_KEY }
+const REGULAR_ROOT = Uint8Array.from([...new Uint8Array(31), 1])
+const REGULAR_KEYS = mintDenominationKeys(REGULAR_ROOT, ['1', '2', '4'])
 const REGULAR_KEYSET_ID = deriveKeysetId(REGULAR_KEYS, {
   unit: 'msat',
   versionByte: 1,
@@ -54,7 +60,8 @@ const REGULAR_KEYSET_ID = deriveKeysetId(REGULAR_KEYS, {
 })
 after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))))
 
-test('daemon previews then atomically retires one verified condition inventory', async () => {
+async function createRetirementFixture(count = 65) {
+  const previous = process.env.BITCASTER_DAEMON_HOME
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-retirement-'))
   roots.push(root)
   const directory = join(root, 'profile')
@@ -87,7 +94,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     { kind: 89, created_at: 1_900_000_000, tags: [['e', '44'.repeat(32)]], content: 'AQ==' },
     oraclePrivateKey,
   )
-  const inputs = Array.from({ length: 65 }, (_, index) =>
+  const inputs = Array.from({ length: count }, (_, index) =>
     proof(CTF_KEYSET_ID, `conditional-input-${index.toString().padStart(3, '0')}`, 1),
   )
   await addAvailableProofs('https://mint.example', inputs, {
@@ -149,6 +156,37 @@ test('daemon previews then atomically retires one verified condition inventory',
       resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
     },
   }
+
+  return {
+    directory,
+    fence,
+    oraclePrivateKey,
+    oraclePublicKey,
+    signature,
+    profile,
+    wallet,
+    common,
+    conditionId,
+    dispose: async () => {
+      if (previous === undefined) delete process.env.BITCASTER_DAEMON_HOME
+      else process.env.BITCASTER_DAEMON_HOME = previous
+      await rm(root, { recursive: true, force: true })
+    },
+  }
+}
+
+test('daemon previews then atomically retires one verified condition inventory', async () => {
+  const {
+    directory,
+    fence,
+    oraclePrivateKey,
+    oraclePublicKey,
+    signature,
+    profile,
+    wallet,
+    common,
+    conditionId,
+  } = await createRetirementFixture()
 
   assert.deepEqual(await retireDaemonConditionInventory({ ...common, acknowledge: false }), {
     conditionId,
@@ -580,8 +618,9 @@ async function assertManagedRedeemCompletionIsTerminal(input: {
 }
 
 class FakeRetirementWallet {
+  requests: Array<Array<{ id: string; amount: string; B_: string }>> = []
   redeemCalls = 0
-  private readonly error: unknown
+  error: unknown
 
   constructor(error?: unknown) {
     this.error = error
@@ -610,10 +649,19 @@ class FakeRetirementWallet {
     inputs: Proof[]
     outputs: OutputDataLike[]
   }): Promise<Proof[]> {
+    this.requests.push(
+      options.outputs.map(({ blindedMessage }) => ({
+        ...blindedMessage,
+        amount: String(blindedMessage.amount),
+      })),
+    )
     this.redeemCalls += 1
     if (this.error !== undefined) throw this.error
-    const privateKey = Uint8Array.from([...new Uint8Array(31), 1])
     const result = options.outputs.map((output) => {
+      const privateKey = mintDenominationPrivateKey(
+        REGULAR_ROOT,
+        String(output.blindedMessage.amount),
+      )
       const signature = createBlindSignature(
         pointFromHex(output.blindedMessage.B_),
         privateKey,
@@ -669,3 +717,260 @@ function taggedHash(tag: string, message: Uint8Array): Uint8Array {
   const tagHash = sha256(utf8ToBytes(tag))
   return sha256(concatBytes(tagHash, tagHash, message))
 }
+
+async function retirementFundFacts(directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return Object.fromEntries(
+      [
+        'target_wallet_proofs',
+        'target_keyset_counters',
+        'custody_keyset_counters',
+        'target_proof_operations',
+        'custody_operations',
+        'custody_proofs',
+        'custody_proof_reservations',
+        'custody_artifacts',
+      ].map((table) => [
+        table,
+        database
+          .prepare(`SELECT * FROM ${table}`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    )
+  } finally {
+    database.close()
+  }
+}
+
+for (const phase of ['before-commit', 'after-commit'] as const)
+  test(`retirement atomic preparation ${phase} keeps exact owner authority and paired counters`, async () => {
+    const fixture = await createRetirementFixture(3)
+    try {
+      const before = await retirementFundFacts(fixture.directory)
+      let intent: string | undefined
+      let injected = 0
+      const run = retireDaemonConditionInventory({
+        ...fixture.common,
+        acknowledge: true,
+        walletDependencies: {
+          ...fixture.common.walletDependencies,
+          injectCustodyFault: (at) => {
+            if (at === phase && injected === 0) {
+              injected++
+              throw new Error('retirement preparation fault')
+            }
+          },
+        },
+      })
+      if (phase === 'before-commit') {
+        await assert.rejects(run, /retirement preparation fault/)
+        assert.deepEqual(await retirementFundFacts(fixture.directory), before)
+        assert.equal(fixture.wallet.redeemCalls, 0)
+        const database = await openDaemonStateSqlite(fixture.directory)
+        try {
+          const owner = database
+            .prepare(
+              'SELECT state, revision, retirement_intent_id FROM daemon_managed_condition_inventory',
+            )
+            .get()!
+          assert.equal(owner.state, 'retiring')
+          assert.equal(owner.revision, 1)
+          intent = String(owner.retirement_intent_id)
+          assert.ok(intent.length > 0)
+        } finally {
+          database.close()
+        }
+      } else {
+        assert.equal((await run).state, 'retired')
+        const saved = await retirementFundFacts(fixture.directory)
+        assert.equal(saved.target_keyset_counters!.length, 1)
+        assert.equal(saved.custody_keyset_counters!.length, 1)
+        assert.equal(saved.target_proof_operations!.length, 1)
+      }
+      assert.equal(injected, 1)
+      assert.equal(
+        (await retireDaemonConditionInventory({ ...fixture.common, acknowledge: true })).state,
+        'retired',
+      )
+      assert.equal(fixture.wallet.redeemCalls, 1)
+      const database = await openDaemonStateSqlite(fixture.directory)
+      try {
+        const owner = database
+          .prepare(
+            'SELECT state, revision, retirement_intent_id FROM daemon_managed_condition_inventory',
+          )
+          .get()!
+        assert.equal(owner.state, 'retired')
+        assert.equal(owner.revision, 2)
+        if (intent !== undefined) assert.equal(owner.retirement_intent_id, intent)
+      } finally {
+        database.close()
+      }
+      // Final inventory revision is newer than the saved page's bind revision.
+      const after = await retirementFundFacts(fixture.directory)
+      await retireDaemonConditionInventory({ ...fixture.common, acknowledge: true })
+      assert.deepEqual(await retirementFundFacts(fixture.directory), after)
+      assert.equal(fixture.wallet.redeemCalls, 1)
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+for (const conflicts of [1, 3])
+  test(`retirement ${conflicts} counter conflicts keep one pinned budget and exact fee`, async () => {
+    const fixture = await createRetirementFixture(3)
+    try {
+      let drafts = 0
+      const source = createDaemonCounterSource(
+        () => ({ fence: fixture.fence, observedAtMs: Date.now() }),
+        { normalizedMint: fixture.profile.mintUrl, unit: 'msat' },
+      )
+      const run = retireDaemonConditionInventory({
+        ...fixture.common,
+        acknowledge: true,
+        walletDependencies: {
+          ...fixture.common.walletDependencies,
+          observeRedeemPrepared: async (owner, draft) => {
+            assert.equal(owner, 'retirement')
+            assert.equal(draft.metadata!.regularKeysetId, REGULAR_KEYSET_ID)
+            assert.equal(draft.metadata!.netOutputSubunits, 3)
+            assert.equal(draft.metadata!.inputFeeSubunits, 0)
+            drafts++
+            if (drafts <= conflicts) await source.reserve(REGULAR_KEYSET_ID, 1)
+          },
+        },
+      })
+      if (conflicts === 3) {
+        await assert.rejects(run, /counter snapshot/)
+        assert.equal(fixture.wallet.redeemCalls, 0)
+        assert.equal(
+          (await retirementFundFacts(fixture.directory)).target_proof_operations!.length,
+          0,
+        )
+      } else {
+        assert.equal((await run).state, 'retired')
+        assert.equal(fixture.wallet.redeemCalls, 1)
+      }
+      assert.equal(drafts, conflicts === 3 ? 3 : 2)
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+test('retirement differing saved winner submits exact saved outputs and does not bind twice', async () => {
+  const fixture = await createRetirementFixture(3)
+  try {
+    let drafts = 0
+    let losing: string[] = []
+    let winning: string[] = []
+    let failure: unknown
+    const result = await retireDaemonConditionInventory({
+      ...fixture.common,
+      acknowledge: true,
+      walletDependencies: {
+        ...fixture.common.walletDependencies,
+        observeRedeemPrepared: async (_owner, draft) => {
+          drafts++
+          losing = draft.outputs.regular!.map(({ blindedMessage }) => blindedMessage.B_)
+          await createDaemonCounterSource(
+            () => ({ fence: fixture.fence, observedAtMs: Date.now() }),
+            { normalizedMint: fixture.profile.mintUrl, unit: 'msat' },
+          ).reserve(REGULAR_KEYSET_ID, 1)
+          fixture.wallet.error = new Error('winner controlled transport refusal')
+          await assert.rejects(
+            retireDaemonConditionInventory({ ...fixture.common, acknowledge: true }),
+            /winner controlled/,
+          )
+          winning = fixture.wallet.requests[0]!.map(({ B_ }) => B_)
+          assert.notDeepEqual(winning, losing)
+          fixture.wallet.error = undefined
+        },
+      },
+    }).catch((error: unknown) => {
+      failure = error
+      return null
+    })
+    assert.equal(drafts, 1)
+    assert.equal(fixture.wallet.redeemCalls, 2)
+    assert.deepEqual(
+      fixture.wallet.requests[1]!.map(({ B_ }) => B_),
+      winning,
+    )
+    assert.notDeepEqual(
+      fixture.wallet.requests[1]!.map(({ B_ }) => B_),
+      losing,
+    )
+    if (failure !== undefined) throw failure
+    assert.equal(result!.state, 'retired')
+    assert.equal((await retirementFundFacts(fixture.directory)).target_proof_operations!.length, 1)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+for (const corrupt of ['historical', 'reservation', 'owner'] as const)
+  test(`retirement prepared ${corrupt === 'historical' ? 'historical outputs recover without current keyset selection' : `foreign ${corrupt} refuses before metadata`}`, async () => {
+    const fixture = await createRetirementFixture(3)
+    try {
+      fixture.wallet.error = new Error('controlled initial transport timeout')
+      await assert.rejects(
+        retireDaemonConditionInventory({ ...fixture.common, acknowledge: true }),
+        /controlled initial/,
+      )
+      const saved = await retirementFundFacts(fixture.directory)
+      assert.equal(saved.target_proof_operations!.length, 1)
+      const initial = fixture.wallet.requests[0]
+      fixture.wallet.error = undefined
+      let metadata = 0
+      fixture.wallet.mint.getKeys = async () => {
+        metadata++
+        throw new Error('current keys must not be selected')
+      }
+      fixture.wallet.mint.getKeySets = async () => {
+        metadata++
+        throw new Error('current keysets must not be selected')
+      }
+      if (corrupt !== 'historical') {
+        const database = await openDaemonStateSqlite(fixture.directory)
+        try {
+          if (corrupt === 'reservation')
+            database
+              .prepare(
+                "UPDATE target_wallet_proofs SET reserved_by = 'foreign-operation' WHERE state = 'reserved'",
+              )
+              .run()
+          else
+            database
+              .prepare(
+                "UPDATE daemon_managed_condition_inventory SET retirement_intent_id = 'foreign-owner-intent'",
+              )
+              .run()
+        } finally {
+          database.close()
+        }
+        const before = await retirementFundFacts(fixture.directory)
+        await assert.rejects(
+          retireDaemonConditionInventory({ ...fixture.common, acknowledge: true }),
+          /reservation|incomplete|owner authority/,
+        )
+        assert.deepEqual(await retirementFundFacts(fixture.directory), before)
+        assert.equal(fixture.wallet.redeemCalls, 1)
+      } else {
+        assert.equal(
+          (await retireDaemonConditionInventory({ ...fixture.common, acknowledge: true })).state,
+          'retired',
+        )
+        assert.equal(fixture.wallet.redeemCalls, 2)
+        assert.deepEqual(fixture.wallet.requests[1], initial)
+        const after = await retirementFundFacts(fixture.directory)
+        assert.deepEqual(after.target_keyset_counters, saved.target_keyset_counters)
+        assert.deepEqual(after.custody_keyset_counters, saved.custody_keyset_counters)
+      }
+      assert.equal(metadata, 0)
+    } finally {
+      await fixture.dispose()
+    }
+  })

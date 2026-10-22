@@ -1,3 +1,9 @@
+import { DAEMON_PROFILE_DATABASE } from '../src/profileSchema.ts'
+import { DatabaseSync } from 'node:sqlite'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { readActivityForWallet, readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -24,6 +30,7 @@ import {
   OutputData,
   getDecodedToken,
   type RequestOptions,
+  type CounterSource,
   hashToCurve,
   pointFromHex,
   type MintKeys,
@@ -59,7 +66,7 @@ import {
 const MINT = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const KEY = bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true))
-const KEYS = Object.fromEntries([1, 2, 4, 8, 16, 32, 64].map((amount) => [amount, KEY]))
+const KEYS = mintDenominationKeys(PRIVATE_KEY, ['1', '2', '4', '8', '16', '32', '64'])
 const REGULAR_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 })
 const CONDITION_ID = deriveDlcConditionId({
   eventId: 'position-claim-fixture',
@@ -212,7 +219,7 @@ for (const metadata of [
             : (fixture.wallet.keysets.get(id) ?? keyset(REGULAR_ID)),
         ],
       })
-      if (metadata !== 'omitted') {
+      if (metadata !== 'omitted' && metadata !== 'changed-active-id') {
         await assert.rejects(
           claimDaemonPosition(fixture.common),
           /regular .*keyset|regular output keyset/,
@@ -231,6 +238,7 @@ for (const metadata of [
         const authority = custody.authority as {
           keysets: Array<{ id: string; inputFeePpk: number; finalExpiry: number }>
         }
+        if (metadata === 'changed-active-id') assert.equal(lookups, 1)
         const saved = authority.keysets.find(({ id }) => id === regular.id)!
         assert.equal(saved.inputFeePpk, 37)
         assert.equal(saved.finalExpiry, 2_000_000_000)
@@ -870,8 +878,7 @@ test('stale fence, foreign reservation, and changed target refuse without partia
         'refused completion must keep custody unchanged',
       )
       const calls = fixture.wallet.requests.length
-      if (change === 'stale') await assert.rejects(claimDaemonPosition(fixture.common))
-      else assert.equal((await claimDaemonPosition(fixture.common)).legs[0]?.state, 'pending')
+      await assert.rejects(claimDaemonPosition(fixture.common))
       assert.equal(fixture.wallet.requests.length, calls)
     } finally {
       await fixture.dispose()
@@ -1228,10 +1235,13 @@ function keyset(id: string): MintKeys {
 function signOutput(output: OutputDataLike, authority = keyset(REGULAR_ID)): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    PRIVATE_KEY,
+    mintDenominationPrivateKey(PRIVATE_KEY, String(output.blindedMessage.amount)),
     authority.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    mintDenominationPrivateKey(PRIVATE_KEY, String(output.blindedMessage.amount)),
+  )
   return output.toProof(
     {
       id: authority.id,
@@ -1269,10 +1279,9 @@ function conditionalKeyset(conditionId: string, outcome: string, input_fee_ppk: 
 }
 
 async function sendClaimProceeds(fixture: Awaited<ReturnType<typeof createFixture>>) {
-  const wallet = fixture.regularMint.wallet(fixture)
   const sent = await sendWalletToken(4, fixture.common.profile, fixture.common.secrets, {
     getCustodyFence: () => fixture.common.fence,
-    createCashuWallet: () => wallet,
+    createCashuWallet: (_mint, _unit, source) => fixture.regularMint.wallet(fixture, source),
   })
   assert.equal(fixture.regularMint.effects, 1)
   return sent
@@ -1326,14 +1335,14 @@ async function inspectClaim(fixture: Awaited<ReturnType<typeof createFixture>>, 
 async function receiveClaimProceeds(token: string, mint: RegularMintTransport) {
   const recipient = await createFixture('33'.repeat(64))
   try {
-    const wallet = mint.wallet(recipient)
+    let wallet: Wallet
     const result = await receiveWalletToken(
       token,
       recipient.common.profile,
       recipient.common.secrets,
       {
         getCustodyFence: () => recipient.common.fence,
-        createCashuWallet: () => wallet,
+        createCashuWallet: (_mint, _unit, source) => (wallet = mint.wallet(recipient, source)),
         resolveMintKeysetIds: async () => [REGULAR_ID],
         resolveTokenImportKeysets: async () => ({
           canonicalMintUrl: MINT,
@@ -1355,13 +1364,13 @@ async function receiveClaimProceeds(token: string, mint: RegularMintTransport) {
       'Recipient credit must differ from consumed token',
     )
     assert.equal(
-      (await wallet.checkProofsStates(consumed)).every(
+      (await wallet!.checkProofsStates(consumed)).every(
         ({ state }) => state === CheckStateEnum.SPENT,
       ),
       true,
     )
     assert.equal(
-      (await wallet.checkProofsStates(credited)).every(
+      (await wallet!.checkProofsStates(credited)).every(
         ({ state }) => state === CheckStateEnum.UNSPENT,
       ),
       true,
@@ -1379,7 +1388,7 @@ async function receiveClaimProceeds(token: string, mint: RegularMintTransport) {
 class RegularMintTransport {
   readonly spent = new Set<string>()
   effects = 0
-  wallet(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  wallet(fixture: Awaited<ReturnType<typeof createFixture>>, source?: CounterSource) {
     const customRequest = async <T>({ endpoint, requestBody }: RequestOptions): Promise<T> => {
       const route = new URL(endpoint).pathname
       if (route === '/v1/info')
@@ -1409,8 +1418,15 @@ class RegularMintTransport {
           'Fake mint must reject spent inputs',
         )
         const signatures = body.outputs.map(({ id, amount, B_ }) => {
-          const signature = createBlindSignature(pointFromHex(B_), PRIVATE_KEY, id)
-          const dleq = createDLEQProof(pointFromHex(B_), PRIVATE_KEY)
+          const signature = createBlindSignature(
+            pointFromHex(B_),
+            mintDenominationPrivateKey(PRIVATE_KEY, String(amount)),
+            id,
+          )
+          const dleq = createDLEQProof(
+            pointFromHex(B_),
+            mintDenominationPrivateKey(PRIVATE_KEY, String(amount)),
+          )
           return {
             id,
             amount,
@@ -1427,10 +1443,12 @@ class RegularMintTransport {
     return new Wallet(new Mint(MINT, { customRequest }), {
       unit: 'msat',
       bip39seed: Buffer.from(fixture.common.secrets.walletSeedHex, 'hex'),
-      counterSource: createDaemonCounterSource(
-        () => ({ fence: fixture.common.fence, observedAtMs: Date.now() }),
-        { normalizedMint: MINT, unit: 'msat' },
-      ),
+      counterSource:
+        source ??
+        createDaemonCounterSource(
+          () => ({ fence: fixture.common.fence, observedAtMs: Date.now() }),
+          { normalizedMint: MINT, unit: 'msat' },
+        ),
     })
   }
 }
@@ -1578,6 +1596,262 @@ test('native real producer sat evidence stays unverified for msat Claim while va
       (await inspectClaim(fixture, result.legs[0]!.operationId)).record.operation.state,
       'reconciled',
     )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+async function claimFundFacts(directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return Object.fromEntries(
+      [
+        'target_wallet_proofs',
+        'target_keyset_counters',
+        'custody_keyset_counters',
+        'target_proof_operations',
+        'custody_operations',
+        'custody_proofs',
+        'custody_proof_reservations',
+        'custody_artifacts',
+        'custody_position_claim_links',
+      ].map((table) => [
+        table,
+        database
+          .prepare(`SELECT * FROM ${table}`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    )
+  } finally {
+    database.close()
+  }
+}
+
+for (const phase of ['before-commit', 'after-commit'] as const)
+  test(`Claim atomic preparation ${phase} preserves paired counters and complete custody binding`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.add(`atomic-${phase}`, CURRENT_ID)
+      const before = await claimFundFacts(fixture.directory)
+      let injected = 0
+      const deps = {
+        ...fixture.common.walletDependencies,
+        injectCustodyFault: (at: string) => {
+          if (at === phase && injected === 0) {
+            injected++
+            throw new Error('preparation commit fault')
+          }
+        },
+      }
+      if (phase === 'before-commit') {
+        await assert.rejects(
+          claimDaemonPosition({ ...fixture.common, walletDependencies: deps }),
+          /preparation commit fault/,
+        )
+        assert.deepEqual(await claimFundFacts(fixture.directory), before)
+        assert.equal(fixture.wallet.requests.length, 0)
+      } else {
+        const result = await claimDaemonPosition({ ...fixture.common, walletDependencies: deps })
+        assert.equal(result.legs[0]!.state, 'completed')
+        const saved = await claimFundFacts(fixture.directory)
+        assert.equal(saved.target_keyset_counters!.length, 1)
+        assert.equal(saved.custody_keyset_counters!.length, 1)
+        assert.equal(saved.custody_position_claim_links!.length, 1)
+        assert.equal(fixture.wallet.requests.length, 1)
+      }
+      assert.equal(injected, 1)
+      await claimDaemonPosition(fixture.common)
+      assert.equal(fixture.wallet.requests.length, 1)
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+for (const conflicts of [1, 3])
+  test(`Claim ${conflicts} preparation counter conflicts use one bounded pinned-keyset budget`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.add(`cas-${conflicts}`, CURRENT_ID)
+      const drafts: unknown[] = []
+      let selections = 0
+      const originalSelection = fixture.wallet.mint.getKeySets
+      fixture.wallet.mint.getKeySets = async () => {
+        selections++
+        if (selections > 1) throw new Error('counter retry must not select new active keysets')
+        return originalSelection()
+      }
+      const source = createDaemonCounterSource(
+        () => ({ fence: fixture.common.fence, observedAtMs: Date.now() }),
+        { normalizedMint: MINT, unit: 'msat' },
+      )
+      const run = claimDaemonPosition({
+        ...fixture.common,
+        walletDependencies: {
+          ...fixture.common.walletDependencies,
+          observeRedeemPrepared: async (_owner, draft) => {
+            const id = draft.metadata!.regularKeysetId
+            assert.equal(id, REGULAR_ID)
+            assert.equal(draft.metadata!.inputFeeSubunits, 1)
+            assert.equal(draft.metadata!.netOutputSubunits, 7)
+            drafts.push(draft)
+            if (drafts.length <= conflicts) await source.reserve(REGULAR_ID, 1)
+          },
+        },
+      })
+      if (conflicts === 3) {
+        await assert.rejects(run, /counter snapshot/)
+        assert.equal(fixture.wallet.requests.length, 0)
+        assert.equal((await claimFundFacts(fixture.directory)).target_proof_operations!.length, 0)
+      } else {
+        assert.equal((await run).legs[0]!.state, 'completed')
+        assert.equal(fixture.wallet.requests.length, 1)
+      }
+      assert.equal(drafts.length, conflicts === 3 ? 3 : 2)
+      assert.equal(selections, 1)
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+test('Claim competing saved output authority wins before the losing draft can dispatch', async () => {
+  const fixture = await createFixture()
+  try {
+    await fixture.add('saved-winner-input', CURRENT_ID)
+    let observed = 0
+    let losing: unknown
+    let winning: unknown
+    const result = await claimDaemonPosition({
+      ...fixture.common,
+      walletDependencies: {
+        ...fixture.common.walletDependencies,
+        observeRedeemPrepared: async (_owner, draft) => {
+          observed++
+          losing = draft.outputs.regular!.map(({ blindedMessage }) => blindedMessage.B_)
+          await createDaemonCounterSource(
+            () => ({ fence: fixture.common.fence, observedAtMs: Date.now() }),
+            { normalizedMint: MINT, unit: 'msat' },
+          ).reserve(REGULAR_ID, 1)
+          fixture.wallet.error = new Error('winner mint reply not accepted')
+          const winner = await claimDaemonPosition(fixture.common)
+          assert.equal(winner.legs[0]!.state, 'pending')
+          winning = fixture.wallet.requests[0]!.outputs.map(({ B_ }) => B_)
+          assert.notDeepEqual(winning, losing)
+          fixture.wallet.error = undefined
+        },
+      },
+    })
+    assert.equal(observed, 1)
+    assert.equal(fixture.wallet.requests.length, 2)
+    assert.deepEqual(
+      fixture.wallet.requests[1]!.outputs.map(({ B_ }) => B_),
+      winning,
+    )
+    assert.notDeepEqual(
+      fixture.wallet.requests[1]!.outputs.map(({ B_ }) => B_),
+      losing,
+    )
+    assert.equal(result.legs[0]!.state, 'completed')
+    assert.equal((await claimFundFacts(fixture.directory)).custody_position_claim_links!.length, 1)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+for (const when of ['saved-entry', 'lost-commit'] as const)
+  test(`Claim ${when} corrupt reservation propagates before new metadata or generic pending`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.add('corrupt-saved-input', CURRENT_ID)
+      const corrupt = async () => {
+        const database = await openDaemonStateSqlite(fixture.directory)
+        try {
+          database
+            .prepare(
+              "UPDATE target_wallet_proofs SET reserved_by = 'foreign-operation' WHERE secret = 'corrupt-saved-input'",
+            )
+            .run()
+        } finally {
+          database.close()
+        }
+      }
+      if (when === 'saved-entry') {
+        fixture.wallet.error = new Error('controlled transport timeout')
+        const pending = await claimDaemonPosition(fixture.common)
+        assert.equal(pending.legs[0]!.state, 'pending')
+        await corrupt()
+        fixture.wallet.mint.getKeys = async () => {
+          throw new Error('metadata must not run')
+        }
+        fixture.wallet.mint.getKeySets = async () => {
+          throw new Error('metadata must not run')
+        }
+        const before = await claimFundFacts(fixture.directory)
+        await assert.rejects(
+          claimDaemonPosition(fixture.common),
+          /reservation|canonical|custody|input/i,
+        )
+        assert.deepEqual(await claimFundFacts(fixture.directory), before)
+        assert.equal(fixture.wallet.requests.length, 1)
+      } else {
+        let injected = 0
+        await assert.rejects(
+          claimDaemonPosition({
+            ...fixture.common,
+            walletDependencies: {
+              ...fixture.common.walletDependencies,
+              injectCustodyFault: (phase) => {
+                if (phase === 'after-commit' && injected++ === 0) {
+                  // COMMIT completed; corrupt the exact target reservation before its lost reply.
+                  const database = new DatabaseSync(
+                    join(fixture.directory, DAEMON_PROFILE_DATABASE),
+                  )
+                  try {
+                    database
+                      .prepare(
+                        "UPDATE target_wallet_proofs SET reserved_by = 'foreign-operation' WHERE secret = 'corrupt-saved-input'",
+                      )
+                      .run()
+                  } finally {
+                    database.close()
+                  }
+                  throw new Error('lost corrupt commit reply')
+                }
+              },
+            },
+          }),
+          /reservation|canonical|custody|input/i,
+        )
+        assert.equal(fixture.wallet.requests.length, 0)
+      }
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+test('Claim missing custody link is partial authority and cannot become pending or allocate', async () => {
+  const fixture = await createFixture()
+  try {
+    await fixture.add('partial-link', CURRENT_ID)
+    fixture.wallet.error = new Error('controlled pending transport')
+    assert.equal((await claimDaemonPosition(fixture.common)).legs[0]!.state, 'pending')
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(database.prepare('DELETE FROM custody_position_claim_links').run().changes, 1)
+    } finally {
+      database.close()
+    }
+    const before = await claimFundFacts(fixture.directory)
+    fixture.wallet.mint.getKeys = async () => {
+      throw new Error('metadata must not run')
+    }
+    fixture.wallet.mint.getKeySets = async () => {
+      throw new Error('metadata must not run')
+    }
+    await assert.rejects(claimDaemonPosition(fixture.common), /custody|canonical|link/i)
+    assert.equal(fixture.wallet.requests.length, 1)
+    assert.deepEqual(await claimFundFacts(fixture.directory), before)
   } finally {
     await fixture.dispose()
   }

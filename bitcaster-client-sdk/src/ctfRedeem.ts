@@ -500,6 +500,7 @@ interface RedeemOutcomeLegWithOperationParams {
   proofs: Proof[]
   outcomeKeyset?: CtfRedeemInputKeysetAuthority
   regularKeyset?: MintKeys
+  deterministicPreparation?: { readonly seed: Uint8Array; readonly counterSource: CounterSource }
   restoreOutputGroups?: RestoreOutputGroups
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
 }
@@ -601,7 +602,21 @@ async function prepareAndExecuteCtfRedeem(
   if (netOutputSubunits <= 0) {
     throw new UneconomicCtfRedeemError(grossInputSubunits, inputFeeSubunits)
   }
-  const outputData = OutputData.createRandomData(Amount.from(netOutputSubunits), regularKeyset)
+  const outputData =
+    params.deterministicPreparation === undefined
+      ? OutputData.createRandomData(Amount.from(netOutputSubunits), regularKeyset)
+      : [
+          ...(
+            await reserveAndConstructDurableSeedDerivedOutputs({
+              seed: params.deterministicPreparation.seed,
+              counterSource: params.deterministicPreparation.counterSource,
+              keyset: regularKeyset,
+              amounts: splitAmount(BigInt(netOutputSubunits), { ...regularKeyset.keys }).map(
+                amountToNumber,
+              ),
+            })
+          ).outputData,
+        ]
 
   await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,

@@ -1,3 +1,4 @@
+import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparation.ts'
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof, MintKeys } from '@cashu/cashu-ts'
 import type { DatabaseSync } from 'node:sqlite'
@@ -6,7 +7,6 @@ import {
   buildKeysetRedeemOperationId,
   canonicalProofOperationMintIdentity,
   getActiveRegularKeyset,
-  redeemOutcomeLegWithOperation,
   type AuthenticatedCtfRedeemTerminalEvidence,
   type RedeemWallet,
 } from '@bitcaster-market/client-sdk/ctfRedeem'
@@ -213,8 +213,16 @@ async function executeLeg(
     outcomeCollection: operation.metadata.outcomeSetId as string,
   })
   const asset = positionAsset(position)
-  const wallet = fencedClaimWallet(input, operation.mintUrl, operation.operationId, asset)
-  const store = claimOperationStore(input, operation.operationId, asset, wallet)
+  const preparation = createSpeculativeRedeemPreparation({
+    operationId: operation.operationId,
+    mintUrl: operation.mintUrl,
+    seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+    fence: input.fence,
+    wallet: fencedClaimWallet(input, operation.mintUrl, operation.operationId, asset),
+  })
+  const wallet = preparation.wallet
+  const store = claimOperationStore(input, operation.operationId, asset, wallet, preparation)
+  await store.getProofOperation(operation.operationId)
   try {
     const resolution = operation.metadata.oracleResolutionContext as
       | ConditionOracleResolutionContext
@@ -232,7 +240,7 @@ async function executeLeg(
               wallet,
             ),
           ])
-    const result = await redeemOutcomeLegWithOperation({
+    const result = await preparation.run({
       mintUrl: operation.mintUrl,
       operationId: operation.operationId,
       wallet,
@@ -259,7 +267,7 @@ async function executeLeg(
       ),
     }
   } catch (error) {
-    const persisted = await readProofOperationFenced(operation.operationId, mutation(input))
+    const persisted = await store.getProofOperation(operation.operationId)
     if (
       persisted === null ||
       (persisted.state !== 'prepared' &&
@@ -346,6 +354,7 @@ function claimOperationStore(
   operationId: string,
   asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
   wallet: RedeemWallet,
+  preparation: ReturnType<typeof createSpeculativeRedeemPreparation>,
 ): CtfProofOperationStore {
   const authority = claimAuthority(operationId, asset)
   return {
@@ -392,6 +401,7 @@ function claimOperationStore(
     },
     prepareProofOperation: async (operation) => {
       const keysets = await claimKeysets(operation, asset, wallet)
+      await input.walletDependencies?.observeRedeemPrepared?.('claim', structuredClone(operation))
       const context = mutation(input)
       const prepared = await prepareProofOperationWithExactReservation(
         {
@@ -453,9 +463,10 @@ function claimOperationStore(
             )
             .run(context.fence.scopeId, operationId, record.operation.operationId)
         },
-        undefined,
+        preparation.beforePrepare,
         input.walletDependencies?.injectCustodyFault,
       )
+      preparation.prepared()
       await assertPreparedProofOperationDispatchFenced(operationId, authority, mutation(input))
       return prepared as CtfProofOperationRecord
     },

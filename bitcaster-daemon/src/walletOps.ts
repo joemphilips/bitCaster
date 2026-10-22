@@ -1,3 +1,4 @@
+import type { CtfPrepareProofOperationInput } from '@bitcaster-market/client-sdk/ctfSplit'
 import { retryOutgoingPreparation } from './speculativeWalletSendPreparation.ts'
 import { prepareSpeculativeWalletReceive } from './speculativeWalletReceivePreparation.ts'
 import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
@@ -229,6 +230,10 @@ export interface WalletOpsDependencies {
   ) => Promise<Record<string, Proof[]>>
   resolveMintKeysetIds?: (mintUrl: string) => Promise<string[]>
   resolveConditionKeysetIds?: (mintUrl: string, conditionId: string) => Promise<string[]>
+  observeRedeemPrepared?: (
+    owner: 'claim' | 'retirement',
+    draft: Readonly<CtfPrepareProofOperationInput>,
+  ) => Promise<void>
   injectCustodyFault?: (phase: StateSqliteFaultPhase) => void
   injectReclaimFault?: (phase: 'counter-written' | 'journal-bound') => void
   injectSendFault?: (
