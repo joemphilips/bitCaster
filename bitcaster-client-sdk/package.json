@@ -323,6 +323,10 @@
       "types": "./dist/durableWalletProofTransition.d.ts",
       "import": "./dist/durableWalletProofTransition.js"
     },
+    "./seedRecoveryScanPolicy": {
+      "types": "./dist/seedRecoveryScanPolicy.d.ts",
+      "import": "./dist/seedRecoveryScanPolicy.js"
+    },
     "./emergencySeedRecovery": {
       "types": "./dist/emergencySeedRecovery.d.ts",
       "import": "./dist/emergencySeedRecovery.js"
