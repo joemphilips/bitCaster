@@ -18,6 +18,11 @@ A declared body length above the endpoint limit receives `413` before
 authentication. For an admitted request, streamed bodies and bodies larger than
 their declared length also receive `413` when they exceed the endpoint limit.
 
+Protected Nostr endpoints can reject missing or malformed credentials with `401`
+before reading a request body. This also applies to chunked bodies with no declared
+length. A declared oversized body still receives `413` first. A correctly encoded
+event must still pass signature, request-target, and body-hash validation.
+
 ## Custom clients and automation
 
 Use the CLI as an application interface for a custom GUI or TUI, scripts,
