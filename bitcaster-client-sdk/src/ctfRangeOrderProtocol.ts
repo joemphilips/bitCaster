@@ -474,7 +474,7 @@ export function createCtfRangeOrderPreparationKeysetResolver(
     mintUrl === preparation.mintUrl ? keysets.get(keysetId) : undefined
 }
 
-function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
+export function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   const request = exactRecord(value, REQUEST_FIELDS, 'range preparation request')
   const conditionId = requireText(request.conditionId, 'range preparation request condition id')
   const marketId = requireText(request.marketId, 'range preparation request market id')
@@ -1091,3 +1091,16 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false
   return left.every((value, index) => value === right[index])
 }
+
+export {
+  createCtfRangePreparationIntent,
+  deriveCounterCtfRangeIdentity,
+  planCounterCtfRangePreparation,
+  createCounterCtfRangePreparation,
+  decodeCounterCtfRangePreparation,
+  encodeCounterCtfRangePreparation,
+  decodeCounterCtfRangePreparationBytes,
+  reconstructCtfRangePreparation,
+  type CtfRangePreparationIntent,
+  type CounterCtfRangePreparation,
+} from './ctfRangeOrderCounterPreparation.ts'
