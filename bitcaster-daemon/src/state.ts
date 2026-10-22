@@ -26,6 +26,10 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import type { Proof } from '@cashu/cashu-ts'
 import {
+  type SpeculativeCounterTranscript,
+  type SpeculativeCounterSnapshot,
+} from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import {
   completedProofAuthorityDigest,
   type CtfProofOperationCompletion,
 } from '@bitcaster-market/client-sdk/ctfSplit'
@@ -460,6 +464,86 @@ export interface CounterBinding {
   readonly unit: 'sat' | 'msat'
 }
 
+export class DaemonCounterSnapshotConflictError extends Error {
+  constructor() {
+    super('daemon CTF preparation counter snapshot changed')
+    this.name = 'DaemonCounterSnapshotConflictError'
+  }
+}
+
+export async function readDaemonCounterSnapshots(input: {
+  readonly storage: DaemonStateSqliteSession
+  readonly mutation: FencedStateMutation
+  readonly keysetIds: readonly string[]
+  readonly binding: CounterBinding
+}): Promise<readonly SpeculativeCounterSnapshot[]> {
+  const keysetIds = [...new Set(input.keysetIds)]
+  if (keysetIds.length === 0 || keysetIds.length > 256) {
+    throw new Error('daemon CTF preparation counter keyset set is invalid')
+  }
+  return withDurableCustodyFencedRead(
+    input.storage,
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) =>
+      keysetIds.map((keysetId) => ({
+        keysetId,
+        nextCounter: readExactBoundCounterSnapshot(
+          database,
+          input.mutation.fence.scopeId,
+          keysetId,
+          input.binding,
+        ),
+      })),
+  )
+}
+
+/** Compare and advance paired counter authorities inside the source transaction. */
+export function commitDaemonCounterTranscript(
+  database: DatabaseSync,
+  scopeId: string,
+  binding: CounterBinding,
+  transcript: SpeculativeCounterTranscript,
+  updatedAtMs: number,
+): void {
+  const snapshots = transcript.snapshots()
+  const changes = transcript.changes()
+  const snapshotsByKeyset = new Map(snapshots.map((snapshot) => [snapshot.keysetId, snapshot]))
+  if (snapshotsByKeyset.size !== snapshots.length) {
+    throw new Error('daemon CTF preparation counter transcript is invalid')
+  }
+  const changesByKeyset = new Map(changes.map((change) => [change.keysetId, change]))
+  if (changesByKeyset.size !== changes.length) {
+    throw new Error('daemon CTF preparation counter transcript is invalid')
+  }
+  for (const snapshot of snapshots) {
+    const current = readExactBoundCounterSnapshot(database, scopeId, snapshot.keysetId, binding)
+    if (current !== snapshot.nextCounter) throw new DaemonCounterSnapshotConflictError()
+  }
+  for (const change of changes) {
+    const snapshot = snapshotsByKeyset.get(change.keysetId)
+    if (snapshot === undefined || change.expectedNextCounter !== snapshot.nextCounter) {
+      throw new Error('daemon CTF preparation counter transcript is invalid')
+    }
+    if (change.nextCounter <= (change.expectedNextCounter ?? 0)) {
+      throw new Error('daemon CTF preparation counter transcript is invalid')
+    }
+    if (change.nextCounter > DAEMON_COUNTER_MAX_NEXT) {
+      throw new Error('daemon CTF preparation counter exceeds its range')
+    }
+  }
+  for (const change of changes) {
+    writeExactBoundCounter(
+      database,
+      scopeId,
+      change.keysetId,
+      binding,
+      change.nextCounter,
+      updatedAtMs,
+    )
+  }
+}
+
 export async function reserveDaemonKeysetCounter(
   keysetId: string,
   count: number,
@@ -630,6 +714,15 @@ export function readExactBoundCounter(
   keysetId: string,
   binding: CounterBinding,
 ): number {
+  return readExactBoundCounterSnapshot(database, scopeId, keysetId, binding) ?? 0
+}
+
+function readExactBoundCounterSnapshot(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  binding: CounterBinding,
+): number | null {
   assertCounterMintBinding(database, scopeId, keysetId, binding.normalizedMint)
   const target = database
     .prepare(
@@ -647,7 +740,7 @@ export function readExactBoundCounter(
     .get(scopeId, binding.normalizedMint, binding.unit, keysetId) as
     | { nextCounter: number }
     | undefined
-  if (target === undefined && custody === undefined) return 0
+  if (target === undefined && custody === undefined) return null
   if (target === undefined || custody === undefined || target.nextCounter !== custody.nextCounter) {
     throw new Error('daemon keyset counter authority is one-sided or mismatched')
   }
@@ -835,12 +928,14 @@ export async function prepareCtfConsolidationProofOperationWithExactReservation(
   mutation: FencedStateMutation,
   afterPrepare?: (database: DatabaseSync, operation: ProofOperationRecord) => void,
   injectFault?: (phase: StateSqliteFaultPhase) => void,
+  beforePrepare?: (database: DatabaseSync) => void,
 ): Promise<ProofOperationRecord> {
   return withDurableCustodyUnitOfWork(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
     (database) => {
+      beforePrepare?.(database)
       const operation = prepareCtfExactProofOperation(database, input)
       afterPrepare?.(database, operation)
       return operation

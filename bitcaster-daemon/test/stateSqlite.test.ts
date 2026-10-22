@@ -9,6 +9,7 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import {
   bindRangePreparationCapability,
   encodeCanonicalRangePreparation,
@@ -18,14 +19,18 @@ import {
 } from '../src/ctfRangeOrderJournalSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
+import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { createDaemonCounterSource } from '../src/walletOps.ts'
 import {
+  createDaemonStateSqliteSession,
   openDaemonStateSqlite,
   subscribeToDaemonWalletHoldingsCommits,
   withDaemonStateSqliteTransaction,
 } from '../src/stateSqlite.ts'
 import {
   advanceDaemonKeysetCounter,
+  commitDaemonCounterTranscript,
+  DaemonCounterSnapshotConflictError,
   AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL,
   assertPreparedProofOperationDispatchFenced,
   completeCompleteSetCtfProofOperationFenced,
@@ -43,6 +48,7 @@ import {
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
+  readDaemonCounterSnapshots,
   readExactBoundCounter,
   readState,
   recordDiscoveredOrder,
@@ -575,6 +581,123 @@ test('keyset counter rows reserve adjacent ranges and advance monotonically', as
       [CONCURRENT_KEYSET_ID]: 3,
       [COUNTER_KEYSET_ID]: 9,
       [MAXIMUM_BATCH_KEYSET_ID]: 256,
+    })
+  })
+})
+
+test('speculative counter transcript commits paired keysets atomically and rejects stale snapshots', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-transcript')
+    const storage = createDaemonStateSqliteSession(home)
+    const keysetIds = [COUNTER_KEYSET_ID, SHARED_KEYSET_ID]
+    const snapshots = await readDaemonCounterSnapshots({
+      storage,
+      mutation,
+      keysetIds,
+      binding: COUNTER_BINDING,
+    })
+    assert.deepEqual(
+      snapshots.map(({ nextCounter }) => nextCounter),
+      [null, null],
+    )
+    const first = createSpeculativeCounterTranscript(snapshots)
+    const stale = createSpeculativeCounterTranscript(snapshots)
+    await first.counterSource.reserve(COUNTER_KEYSET_ID, 1)
+    await first.counterSource.reserve(SHARED_KEYSET_ID, 2)
+    await stale.counterSource.reserve(COUNTER_KEYSET_ID, 1)
+    await stale.counterSource.reserve(SHARED_KEYSET_ID, 2)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      database.exec(`
+        CREATE TRIGGER reject_second_transcript_keyset
+        BEFORE INSERT ON target_keyset_counters
+        WHEN NEW.keyset_id = '${SHARED_KEYSET_ID}'
+        BEGIN SELECT RAISE(ABORT, 'injected second keyset failure'); END;
+      `)
+    } finally {
+      database.close()
+    }
+
+    await assert.rejects(
+      () =>
+        withDurableCustodyUnitOfWork(
+          storage,
+          mutation.fence,
+          mutation.observedAtMs,
+          (transaction) =>
+            commitDaemonCounterTranscript(
+              transaction,
+              mutation.fence.scopeId,
+              COUNTER_BINDING,
+              first,
+              mutation.observedAtMs,
+            ),
+        ),
+      /injected second keyset failure/,
+    )
+    await storage.read((afterRollback) => {
+      assert.equal(
+        readExactBoundCounter(
+          afterRollback,
+          mutation.fence.scopeId,
+          COUNTER_KEYSET_ID,
+          COUNTER_BINDING,
+        ),
+        0,
+      )
+      assert.equal(
+        readExactBoundCounter(
+          afterRollback,
+          mutation.fence.scopeId,
+          SHARED_KEYSET_ID,
+          COUNTER_BINDING,
+        ),
+        0,
+      )
+    })
+    await storage.transaction((cleanup) =>
+      cleanup.exec('DROP TRIGGER reject_second_transcript_keyset'),
+    )
+    await withDurableCustodyUnitOfWork(
+      storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (transaction) =>
+        commitDaemonCounterTranscript(
+          transaction,
+          mutation.fence.scopeId,
+          COUNTER_BINDING,
+          first,
+          mutation.observedAtMs,
+        ),
+    )
+    await assert.rejects(
+      () =>
+        withDurableCustodyUnitOfWork(
+          storage,
+          mutation.fence,
+          mutation.observedAtMs,
+          (transaction) =>
+            commitDaemonCounterTranscript(
+              transaction,
+              mutation.fence.scopeId,
+              COUNTER_BINDING,
+              stale,
+              mutation.observedAtMs,
+            ),
+        ),
+      (error: unknown) => error instanceof DaemonCounterSnapshotConflictError,
+    )
+    await storage.read((final) => {
+      assert.equal(
+        readExactBoundCounter(final, mutation.fence.scopeId, COUNTER_KEYSET_ID, COUNTER_BINDING),
+        1,
+      )
+      assert.equal(
+        readExactBoundCounter(final, mutation.fence.scopeId, SHARED_KEYSET_ID, COUNTER_BINDING),
+        2,
+      )
     })
   })
 })

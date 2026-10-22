@@ -127,6 +127,10 @@ import {
   validateCtfRangeConsolidationOperation,
   validateCtfRangeConsolidationProofs,
 } from '@bitcaster-market/client-sdk/ctfRangeConsolidationOperation'
+import {
+  createSpeculativeCounterTranscript,
+  type SpeculativeCounterTranscript,
+} from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
@@ -151,7 +155,10 @@ import { profileDir } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
   CTF_RANGE_REFUND_PURPOSE,
+  commitDaemonCounterTranscript,
+  DaemonCounterSnapshotConflictError,
   getProofOperation,
+  readDaemonCounterSnapshots,
   prepareCtfConsolidationProofOperationWithExactReservation,
   prepareProofOperationWithExactReservation,
   prepareCtfRangeRefundProofOperationFromDatabase,
@@ -187,7 +194,6 @@ import {
   type StateSqliteFaultPhase,
 } from './stateSqlite.ts'
 import {
-  createDaemonCounterSource,
   deserializeOutputGroups,
   restoreOutputGroups,
   serializeOutputDataArray,
@@ -244,6 +250,7 @@ export interface DaemonCtfRangeOrderCoordinatorDependencies {
   readonly randomId?: () => string
   readonly restoreOutputs?: typeof restoreOutputGroups
   readonly injectRangeBindFault?: (phase: StateSqliteFaultPhase) => void
+  readonly injectRangeUnitOfWorkFault?: (phase: StateSqliteFaultPhase) => void
   readonly executeRefundSwap?: (
     mintUrl: string,
     request: SwapRequest,
@@ -1964,10 +1971,12 @@ type PreparedSource =
   | {
       readonly mode: 'same-keyset-swap'
       readonly operation: DurableCustodyProofOperationInput
+      readonly transcript: SpeculativeCounterTranscript
     }
   | {
       readonly mode: 'mixed-source-ctf-convert'
       readonly operation: DurableCustodyProofOperationInput
+      readonly transcript: SpeculativeCounterTranscript
     }
 
 type SourceWallet = () => Promise<CtfRangeWalletLike>
@@ -2001,6 +2010,7 @@ async function prepareOrResumeSource(
         walletSeedHex,
         wallet,
         planned.selection.plan,
+        dependencies,
       )
       if (selected === null) throw new Error('daemon range source plan is not executable')
       return selected
@@ -2025,6 +2035,7 @@ async function prepareOrResumeSource(
       round,
       sourceConsolidationId(authority.preparation.sourceOperationId, round),
       plannedRound,
+      dependencies,
     )
     round += 1
   }
@@ -2277,28 +2288,51 @@ async function completeSelectedSource(
   walletSeedHex: string,
   wallet: SourceWallet,
   plan: CtfRangeCapabilitySourcePlan,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<SourceResult | null> {
   switch (plan.kind) {
     case 'mixed-source-ctf-convert': {
-      const operation = await prepareCtfRangeMixedSourceOperation({
-        preparation: authority.preparationInput,
-        seed: walletSeed(walletSeedHex),
-        counterSource: sourceCounterSource(authority),
-        plan,
-      })
       return completeNewSource(
         authority,
-        { mode: 'mixed-source-ctf-convert', operation },
+        async () => {
+          const transcript = await sourceCounterTranscript(authority, [
+            authority.preparationInput.offerKeyset.id,
+            authority.preparationInput.receiveKeyset.id,
+          ])
+          const operation = await prepareCtfRangeMixedSourceOperation({
+            preparation: authority.preparationInput,
+            seed: walletSeed(walletSeedHex),
+            counterSource: transcript.counterSource,
+            plan,
+          })
+          return { mode: 'mixed-source-ctf-convert', operation, transcript }
+        },
         walletSeedHex,
         wallet,
+        dependencies,
       )
     }
     case 'same-keyset-swap': {
-      const source = await prepareSourceOperation(authority, walletSeedHex, await wallet(), [
-        ...plan.inputs,
-      ])
-      if (source === null) throw new Error('daemon has insufficient exact range-order funds')
-      return completeNewSource(authority, source, walletSeedHex, wallet)
+      return completeNewSource(
+        authority,
+        async () => {
+          const transcript = await sourceCounterTranscript(authority, [
+            authority.preparationInput.offerKeyset.id,
+          ])
+          const source = await prepareSourceOperation(
+            authority,
+            walletSeedHex,
+            await wallet(),
+            [...plan.inputs],
+            transcript,
+          )
+          if (source === null) throw new Error('daemon has insufficient exact range-order funds')
+          return { ...source, transcript }
+        },
+        walletSeedHex,
+        wallet,
+        dependencies,
+      )
     }
     // Collateral-only conversion cannot stand in for held shares, so a Sell
     // with too few shares is refused rather than split from cash.
@@ -2376,11 +2410,40 @@ async function resumeExistingConsolidations(
 
 async function completeNewSource(
   authority: PreparedMintAuthority,
-  source: PreparedSource,
+  prepare: () => Promise<PreparedSource>,
   walletSeedHex: string,
   wallet: SourceWallet,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<SourceResult> {
-  await persistPreparedSource(authority, source)
+  let source: PreparedSource | undefined
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existing = await getProofOperation(authority.preparation.sourceOperationId)
+    if (existing !== null) {
+      return resumeExistingSource(existing, authority, walletSeedHex, wallet, dependencies)
+    }
+    source = await prepare()
+    let wasAlreadyCommitted: boolean
+    try {
+      wasAlreadyCommitted = await persistPreparedSource(authority, source, dependencies)
+    } catch (error) {
+      const committed = await getProofOperation(authority.preparation.sourceOperationId)
+      if (committed !== null) {
+        return resumeExistingSource(committed, authority, walletSeedHex, wallet, dependencies)
+      }
+      if (!(error instanceof DaemonCounterSnapshotConflictError)) throw error
+      if (attempt === 2) {
+        throw new Error('daemon CTF source preparation contention; retry the exact request')
+      }
+      continue
+    }
+    if (wasAlreadyCommitted) {
+      const committed = await getProofOperation(authority.preparation.sourceOperationId)
+      if (committed === null) throw new Error('range source operation is missing')
+      return resumeExistingSource(committed, authority, walletSeedHex, wallet, dependencies)
+    }
+    break
+  }
+  if (source === undefined) throw new Error('daemon CTF source preparation was not constructed')
   const result = await completePreparedSource(source, authority, walletSeedHex, wallet)
   await stageSourceResult(authority, result)
   return result
@@ -2430,22 +2493,30 @@ async function prepareSourceOperation(
   walletSeedHex: string,
   wallet: CtfRangeWalletLike,
   candidates: Proof[],
+  transcript: SpeculativeCounterTranscript,
 ): Promise<PreparedSource | null> {
   const operation = await prepareCtfRangeSourceOperation({
     preparation: authority.preparationInput,
     seed: walletSeed(walletSeedHex),
-    counterSource: sourceCounterSource(authority),
+    counterSource: transcript.counterSource,
     wallet,
     candidates,
   })
-  return operation === null ? null : { mode: 'same-keyset-swap', operation }
+  return operation === null ? null : { mode: 'same-keyset-swap', operation, transcript }
 }
 
-function sourceCounterSource(authority: PreparedMintAuthority) {
-  return createDaemonCounterSource(authority.mutation, {
-    normalizedMint: authority.preparation.mintUrl,
-    unit: 'msat',
+async function sourceCounterTranscript(
+  authority: PreparedMintAuthority,
+  keysetIds: readonly string[],
+): Promise<SpeculativeCounterTranscript> {
+  const mutation = authority.mutation()
+  const snapshots = await readDaemonCounterSnapshots({
+    storage: createDaemonStateSqliteSession(profileDir()),
+    mutation,
+    keysetIds,
+    binding: { normalizedMint: authority.preparation.mintUrl, unit: 'msat' },
   })
+  return createSpeculativeCounterTranscript(snapshots)
 }
 
 async function availableSourceProofs(
@@ -2533,41 +2604,83 @@ async function consolidateSourceProofs(
   round: number,
   operationId: string,
   planned: ProofConsolidationRound,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<void> {
   if (inputs.length < 2) {
     throw new Error('mint range input cap cannot support proof consolidation')
   }
-  const operation = await prepareCtfRangeConsolidationOperation({
-    operationId,
-    rangeOperationId: authority.preparation.operationId,
-    mintUrl: authority.preparation.mintUrl,
-    keysetId: authority.preparation.offerKeysetId,
-    outputKeyset: authority.preparationInput.offerKeyset,
-    inputs,
-    conditional: authority.preparationInput.side === 'Sell',
-    inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
-    plannedRound: planned,
-    seed: walletSeed(walletSeedHex),
-    counterSource: createDaemonCounterSource(authority.mutation, {
-      normalizedMint: authority.preparation.mintUrl,
-      unit: 'msat',
-    }),
-    wallet,
-  })
-  await persistAndCompleteConsolidation(authority, wallet, round, operation)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existing = await getProofOperation(operationId)
+    if (existing !== null) {
+      await resumeConsolidationOperation(existing, authority, wallet, dependencies)
+      return
+    }
+    const transcript = await sourceCounterTranscript(authority, [
+      authority.preparationInput.offerKeyset.id,
+    ])
+    const operation = await prepareCtfRangeConsolidationOperation({
+      operationId,
+      rangeOperationId: authority.preparation.operationId,
+      mintUrl: authority.preparation.mintUrl,
+      keysetId: authority.preparation.offerKeysetId,
+      outputKeyset: authority.preparationInput.offerKeyset,
+      inputs,
+      conditional: authority.preparationInput.side === 'Sell',
+      inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
+      plannedRound: planned,
+      seed: walletSeed(walletSeedHex),
+      counterSource: transcript.counterSource,
+      wallet,
+    })
+    let persisted: Awaited<ReturnType<typeof persistPreparedConsolidation>>
+    try {
+      persisted = await persistPreparedConsolidation(
+        authority,
+        round,
+        operation,
+        transcript,
+        dependencies,
+      )
+    } catch (error) {
+      const committed = await getProofOperation(operationId)
+      if (committed !== null) {
+        await resumeConsolidationOperation(committed, authority, wallet, dependencies)
+        return
+      }
+      if (!(error instanceof DaemonCounterSnapshotConflictError)) throw error
+      if (attempt === 2) {
+        throw new Error('daemon CTF source preparation contention; retry the exact request')
+      }
+      continue
+    }
+    if (persisted.wasAlreadyCommitted) {
+      const committed = await getProofOperation(operationId)
+      if (committed === null) throw new Error('range consolidation operation is missing')
+      await resumeConsolidationOperation(committed, authority, wallet, dependencies)
+      return
+    }
+    const result = await completeCtfRangeConsolidationOperation(persisted.validated, wallet)
+    await finalizeRangeConsolidation(authority, operationId, [...result])
+    return
+  }
 }
 
-async function persistAndCompleteConsolidation(
+async function persistPreparedConsolidation(
   authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
   round: number,
   operation: ReturnType<typeof validateCtfRangeConsolidationOperation>['operation'],
-): Promise<void> {
+  transcript: SpeculativeCounterTranscript,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<{
+  readonly validated: ReturnType<typeof validateCtfRangeConsolidationOperation>
+  readonly wasAlreadyCommitted: boolean
+}> {
   const validated = validateCtfRangeConsolidationOperation(operation)
   const operationId = operation.operationId
   const reservationId = sourceConsolidationReservationId(operationId)
   const mutation = authority.mutation()
   const binding = rangePreparationBinding(authority, operation, reservationId, mutation)
+  let existingOperation = false
   await prepareCtfConsolidationProofOperationWithExactReservation(
     {
       operationId,
@@ -2592,6 +2705,14 @@ async function persistAndCompleteConsolidation(
     },
     mutation,
     (database) => {
+      if (existingOperation) return
+      commitDaemonCounterTranscript(
+        database,
+        mutation.fence.scopeId,
+        { normalizedMint: authority.preparation.mintUrl, unit: 'msat' },
+        transcript,
+        mutation.observedAtMs,
+      )
       bindDaemonRangeSourceInTransaction(
         database,
         binding,
@@ -2608,9 +2729,12 @@ async function persistAndCompleteConsolidation(
         reservationId,
       })
     },
+    dependencies.injectRangeUnitOfWorkFault,
+    (database) => {
+      existingOperation = readDaemonProofOperationFromDatabase(database, operationId) !== null
+    },
   )
-  const result = await completeCtfRangeConsolidationOperation(validated, wallet)
-  await finalizeRangeConsolidation(authority, operationId, [...result])
+  return { validated, wasAlreadyCommitted: existingOperation }
 }
 
 async function finalizeRangeConsolidation(
@@ -2785,12 +2909,13 @@ function custodyKeysetAuthority(
 async function persistPreparedSource(
   authority: PreparedMintAuthority,
   source: PreparedSource,
-): Promise<void> {
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<boolean> {
   switch (source.mode) {
     case 'same-keyset-swap':
-      return persistPreparedSameKeysetSource(authority, source.operation)
+      return persistPreparedSameKeysetSource(authority, source, dependencies)
     case 'mixed-source-ctf-convert':
-      return persistPreparedMixedSource(authority, source.operation)
+      return persistPreparedMixedSource(authority, source, dependencies)
     default:
       return assertNeverSourceMode(source)
   }
@@ -2798,12 +2923,15 @@ async function persistPreparedSource(
 
 async function persistPreparedSameKeysetSource(
   authority: PreparedMintAuthority,
-  operation: DurableCustodyProofOperationInput,
-): Promise<void> {
+  source: Extract<PreparedSource, { readonly mode: 'same-keyset-swap' }>,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<boolean> {
+  const operation = source.operation
   const reservationId = sourceReservationId(authority.preparation.operationId)
   const mutation = authority.mutation()
   const asset = authority.offerAsset
   const binding = rangePreparationBinding(authority, operation, reservationId, mutation)
+  let existingOperation = false
   await prepareProofOperationWithExactReservation(
     {
       operationId: authority.preparation.sourceOperationId,
@@ -2824,6 +2952,14 @@ async function persistPreparedSameKeysetSource(
     },
     mutation,
     (database) => {
+      if (existingOperation) return
+      commitDaemonCounterTranscript(
+        database,
+        mutation.fence.scopeId,
+        { normalizedMint: authority.preparation.mintUrl, unit: 'msat' },
+        source.transcript,
+        mutation.observedAtMs,
+      )
       bindDaemonRangeSourceInTransaction(
         database,
         binding,
@@ -2839,7 +2975,14 @@ async function persistPreparedSameKeysetSource(
         reservationId,
       })
     },
+    (database) => {
+      existingOperation =
+        readDaemonProofOperationFromDatabase(database, authority.preparation.sourceOperationId) !==
+        null
+    },
+    dependencies.injectRangeUnitOfWorkFault,
   )
+  return existingOperation
 }
 
 /**
@@ -2849,8 +2992,10 @@ async function persistPreparedSameKeysetSource(
  */
 async function persistPreparedMixedSource(
   authority: PreparedMintAuthority,
-  operation: DurableCustodyProofOperationInput,
-): Promise<void> {
+  source: Extract<PreparedSource, { readonly mode: 'mixed-source-ctf-convert' }>,
+  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
+): Promise<boolean> {
+  const operation = source.operation
   const preparation = authority.preparationInput
   const reservationId = sourceReservationId(authority.preparation.operationId)
   const mutation = authority.mutation()
@@ -2866,6 +3011,7 @@ async function persistPreparedMixedSource(
     throw new Error('mixed range source offered input count is invalid')
   }
   const collateralAsset = assetForKeyset(preparation.receiveKeyset)
+  let existingOperation = false
   await prepareCtfConsolidationProofOperationWithExactReservation(
     {
       operationId: authority.preparation.sourceOperationId,
@@ -2890,6 +3036,14 @@ async function persistPreparedMixedSource(
     },
     mutation,
     (database) => {
+      if (existingOperation) return
+      commitDaemonCounterTranscript(
+        database,
+        mutation.fence.scopeId,
+        { normalizedMint: authority.preparation.mintUrl, unit: 'msat' },
+        source.transcript,
+        mutation.observedAtMs,
+      )
       bindDaemonRangeMixedSourceInTransaction(
         database,
         binding,
@@ -2903,7 +3057,14 @@ async function persistPreparedMixedSource(
         reservationId,
       })
     },
+    dependencies.injectRangeUnitOfWorkFault,
+    (database) => {
+      existingOperation =
+        readDaemonProofOperationFromDatabase(database, authority.preparation.sourceOperationId) !==
+        null
+    },
   )
+  return existingOperation
 }
 
 async function completePreparedSource(

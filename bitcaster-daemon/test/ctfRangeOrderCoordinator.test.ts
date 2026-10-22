@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import test from 'node:test'
 import {
@@ -77,6 +78,7 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, type CustodyScopeFence } from '../src/profileFencing.ts'
 import {
   reserveDaemonCtfPreparation,
+  reserveDaemonKeysetCounter,
   completeCtfRangeRefundProofOperationFromDatabase,
   prepareCtfRangeRefundProofOperationFromDatabase,
   emptyDaemonState,
@@ -244,6 +246,607 @@ test('fresh preparation refuses foreign returned binding authority and lost owne
     })
   }
 })
+
+test('daemon fence takeover during an uncommitted preview prevents source counters and reservations', async () => {
+  const proof = cashProof(8_192)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-preview-fence-',
+      incarnationId: 'source-preview-fence-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let notifyPreviewStarted!: () => void
+      let releasePreview!: () => void
+      const previewStarted = new Promise<void>((resolve) => {
+        notifyPreviewStarted = resolve
+      })
+      const previewGate = new Promise<void>((resolve) => {
+        releasePreview = resolve
+      })
+      const wallet = new FakeWallet([proof])
+      wallet.beforePrepareSwap = async () => {
+        notifyPreviewStarted()
+        await previewGate
+      }
+      let capabilityCalls = 0
+      const client = fakeEngineClient((request) => {
+        capabilityCalls += 1
+        return boundCapability(request)
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('source-preview-fence'),
+      })
+      const preparing = coordinator.prepare(orderRequest(), client)
+      let startupTimeout: ReturnType<typeof setTimeout>
+      await Promise.race([
+        previewStarted,
+        new Promise<never>((_, reject) => {
+          startupTimeout = setTimeout(
+            () => reject(new Error('source preview did not reach the barrier')),
+            5_000,
+          )
+        }),
+      ])
+      clearTimeout(startupTimeout!)
+      const beforeTakeover = await openDaemonStateSqlite(directory)
+      const countersBefore = {
+        target: beforeTakeover
+          .prepare('SELECT keyset_id, next_counter FROM target_keyset_counters ORDER BY keyset_id')
+          .all(),
+        custody: beforeTakeover
+          .prepare('SELECT keyset_id, next_counter FROM custody_keyset_counters ORDER BY keyset_id')
+          .all(),
+      }
+      beforeTakeover.close()
+      await claimCustodyScopeLease(directory, {
+        scopeId: fence.scopeId,
+        incarnationId: 'source-preview-fence-successor',
+        observedAtMs: fence.leaseExpiresAtMs,
+      })
+      releasePreview()
+      await assert.rejects(preparing, /stale or expired authority/)
+      assert.equal(wallet.completeCalls, 0)
+      assert.equal(capabilityCalls, 0)
+      const state = await readState()
+      assert.equal(state?.wallet.proofs[0]?.state, 'available')
+      assert.equal(
+        state?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source'],
+        undefined,
+      )
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        assert.deepEqual(
+          database
+            .prepare(
+              'SELECT keyset_id, next_counter FROM target_keyset_counters ORDER BY keyset_id',
+            )
+            .all(),
+          countersBefore.target,
+        )
+        assert.deepEqual(
+          database
+            .prepare(
+              'SELECT keyset_id, next_counter FROM custody_keyset_counters ORDER BY keyset_id',
+            )
+            .all(),
+          countersBefore.custody,
+        )
+        assert.equal(
+          database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()?.count,
+          0,
+        )
+      } finally {
+        database.close()
+      }
+    },
+  )
+})
+
+test('daemon discards a failed source draft without committing its counter transcript', async () => {
+  const proof = cashProof(8_192)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-draft-failure-',
+      incarnationId: 'source-draft-failure-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const readCounters = async () => {
+        const database = await openDaemonStateSqlite(directory)
+        try {
+          const rows = (table: 'target_keyset_counters' | 'custody_keyset_counters') =>
+            database
+              .prepare(
+                `SELECT normalized_mint, unit, keyset_id, next_counter FROM ${table}
+                 ORDER BY normalized_mint, unit, keyset_id`,
+              )
+              .all()
+              .map((row) => Object.values(row as Record<string, unknown>))
+          return {
+            target: rows('target_keyset_counters'),
+            custody: rows('custody_keyset_counters'),
+          }
+        } finally {
+          database.close()
+        }
+      }
+      let countersAtPreview: Awaited<ReturnType<typeof readCounters>> | undefined
+      const wallet = new FakeWallet([proof])
+      wallet.beforePrepareSwap = async () => {
+        countersAtPreview = await readCounters()
+        throw new Error('source draft preview failed')
+      }
+      let capabilityCalls = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('source-draft-failure'),
+      })
+      await assert.rejects(
+        coordinator.prepare(
+          orderRequest(),
+          fakeEngineClient((request) => {
+            capabilityCalls += 1
+            return boundCapability(request)
+          }),
+        ),
+        /source draft preview failed/,
+      )
+      assert.ok(countersAtPreview)
+      assert.deepEqual(await readCounters(), countersAtPreview)
+      assert.equal(wallet.completeCalls, 0)
+      assert.equal(capabilityCalls, 0)
+      const state = await readState()
+      assert.equal(
+        state?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source'],
+        undefined,
+      )
+      assert.equal(state?.wallet.proofs[0]?.state, 'available')
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        assert.equal(
+          database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()?.count,
+          0,
+        )
+      } finally {
+        database.close()
+      }
+    },
+  )
+})
+
+test('daemon rebuilds a source draft after a counter conflict and commits after the reserved range', async () => {
+  const proof = cashProof(8_192)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-counter-conflict-',
+      incarnationId: 'source-counter-conflict-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([proof])
+      let committedReservation: { start: number; count: number } | undefined
+      let retryStart: number | undefined
+      wallet.beforePrepareSwap = async () => {
+        if (wallet.prepareSwapDrafts.length !== 0) {
+          const database = await openDaemonStateSqlite(directory)
+          try {
+            const row = database
+              .prepare(
+                `SELECT next_counter FROM target_keyset_counters
+                 WHERE normalized_mint=? AND unit=? AND keyset_id=?`,
+              )
+              .get(MINT_URL, 'msat', OFFER_KEYSET_ID) as { next_counter: number } | undefined
+            assert.ok(row)
+            retryStart = row.next_counter
+          } finally {
+            database.close()
+          }
+          return
+        }
+        committedReservation = await reserveDaemonKeysetCounter(
+          OFFER_KEYSET_ID,
+          1,
+          { fence, observedAtMs: 10_000 },
+          { normalizedMint: MINT_URL, unit: 'msat' },
+        )
+      }
+      const client = fakeEngineClient(boundCapability)
+      const preview = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => {
+          throw new Error('fee preview must not create a wallet')
+        },
+        now: () => 10_000,
+        randomId: randomIds('source-counter-conflict-preview'),
+      })
+      const consent = await preview.previewFeeFacts(orderRequest(), client)
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('source-counter-conflict'),
+      })
+
+      const prepared = await coordinator.prepare(orderRequest(), client, undefined, consent)
+
+      assert.equal(prepared.operationId, await counterRangeId(directory))
+      assert.equal(wallet.prepareSwapDrafts.length, 2)
+      assert.ok(committedReservation)
+      assert.deepEqual(wallet.prepareSwapDrafts[0]!.inputSecrets, [proof.secret])
+      assert.deepEqual(wallet.prepareSwapDrafts[1]!.inputSecrets, [proof.secret])
+      assert.ok(wallet.prepareSwapDrafts[0]!.sendBlindedMessages.length > 0)
+      assert.ok(wallet.prepareSwapDrafts[1]!.sendBlindedMessages.length > 0)
+      assert.ok(wallet.prepareSwapDrafts[0]!.keepBlindedMessages.length > 0)
+      assert.ok(wallet.prepareSwapDrafts[1]!.keepBlindedMessages.length > 0)
+      assert.ok(retryStart !== undefined)
+      assert.equal(
+        retryStart,
+        committedReservation.start + committedReservation.count,
+        'the retry snapshots the cursor immediately after the concurrent committed range',
+      )
+      assert.deepEqual(
+        wallet.prepareSwapDrafts[0]!.sendBlindedMessages,
+        wallet.prepareSwapDrafts[1]!.sendBlindedMessages,
+        'authorization outputs remain fixed across retries',
+      )
+      const sourceOperationId = `${prepared.operationId}:source`
+      const persisted = (await readState())?.proofOperations[sourceOperationId]
+      assert.ok(persisted)
+      const reservation = await openDaemonStateSqlite(directory)
+      try {
+        const committedCounter = reservation
+          .prepare(
+            `SELECT next_counter FROM target_keyset_counters
+             WHERE normalized_mint=? AND unit=? AND keyset_id=?`,
+          )
+          .get(MINT_URL, 'msat', OFFER_KEYSET_ID) as { next_counter: number }
+        assert.ok(committedCounter)
+        assert.equal(
+          committedCounter.next_counter,
+          retryStart + persisted.outputs.keep!.length,
+          'the winning source range starts at the retry snapshot and advances by exactly its keep-output allocation',
+        )
+      } finally {
+        reservation.close()
+      }
+      assert.deepEqual(
+        persisted.outputs.keep?.map((output) => output.blindedMessage.B_),
+        wallet.prepareSwapDrafts[1]!.keepBlindedMessages,
+        'the exact rebuilt change outputs are the ones persisted',
+      )
+      assert.equal(wallet.completeCalls, 1)
+      await assertCounterAuthorityPairs(directory)
+    },
+  )
+})
+
+test('daemon same-operation source race replays the exact committed journal once', async () => {
+  const proof = cashProof(8_192)
+  let concurrentNextCounter = 0
+  let concurrentOutputs: unknown
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-same-operation-race-',
+      incarnationId: 'source-same-operation-race-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([proof])
+      let callbacks = 0
+      let timedOut = false
+      let releaseCallbacks!: () => void
+      const callbackGate = new Promise<void>((resolve) => {
+        releaseCallbacks = resolve
+      })
+      const repeatedIds = ['source-same-operation-operation', 'source-same-operation-authorization']
+      let randomIdCall = 0
+      const beforeCreateCapability = async () => {
+        callbacks += 1
+        if (callbacks === 2) {
+          clearTimeout(timeout)
+          releaseCallbacks()
+        }
+        await callbackGate
+        throw new Error('stop after source commit')
+      }
+      const timeout = setTimeout(() => {
+        timedOut = true
+        releaseCallbacks()
+      }, 5_000)
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => repeatedIds[randomIdCall++ % repeatedIds.length]!,
+      })
+      let capabilityCalls = 0
+      const client = fakeEngineClient((request) => {
+        capabilityCalls += 1
+        return boundCapability(request)
+      })
+      const databaseBefore = await openDaemonStateSqlite(directory)
+      let counterBefore: number
+      try {
+        const row = databaseBefore
+          .prepare(
+            `SELECT next_counter FROM target_keyset_counters
+             WHERE normalized_mint=? AND unit=? AND keyset_id=?`,
+          )
+          .get(MINT_URL, 'msat', OFFER_KEYSET_ID) as { next_counter: number } | undefined
+        counterBefore = row?.next_counter ?? 0
+      } finally {
+        databaseBefore.close()
+      }
+      const results = await Promise.allSettled([
+        coordinator.prepare(orderRequest(), client, beforeCreateCapability),
+        coordinator.prepare(orderRequest(), client, beforeCreateCapability),
+      ])
+      clearTimeout(timeout)
+
+      assert.equal(timedOut, false, 'both same-operation calls must reach the post-commit barrier')
+      assert.equal(callbacks, 2)
+      assert.deepEqual(
+        results.map((result) => result.status),
+        ['rejected', 'rejected'],
+      )
+      for (const result of results) {
+        assert.equal(result.status, 'rejected')
+        if (result.status === 'rejected') {
+          assert.match(String(result.reason), /stop after source commit/)
+        }
+      }
+      assert.equal(wallet.prepareSwapDrafts.length, 2)
+      assert.deepEqual(
+        wallet.prepareSwapDrafts[0]!.keepBlindedMessages,
+        wallet.prepareSwapDrafts[1]!.keepBlindedMessages,
+        'the duplicate operation starts from the same snapshot and reconstructs the same draft',
+      )
+      assert.equal(wallet.completeCalls, 1)
+      assert.equal(capabilityCalls, 0)
+
+      const source = (await readState())?.proofOperations[
+        `${await counterRangeId(directory)}:source`
+      ]
+      assert.ok(source)
+      assert.equal(source.state, 'completed')
+      concurrentOutputs = source.outputs
+      const databaseAfter = await openDaemonStateSqlite(directory)
+      try {
+        const row = databaseAfter
+          .prepare(
+            `SELECT next_counter FROM target_keyset_counters
+             WHERE normalized_mint=? AND unit=? AND keyset_id=?`,
+          )
+          .get(MINT_URL, 'msat', OFFER_KEYSET_ID) as { next_counter: number }
+        assert.ok(row)
+        assert.ok(row.next_counter > counterBefore)
+        concurrentNextCounter = row.next_counter
+      } finally {
+        databaseAfter.close()
+      }
+      await assertCounterAuthorityPairs(directory)
+    },
+  )
+
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-same-operation-control-',
+      incarnationId: 'source-same-operation-control-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([proof])
+      const repeatedIds = ['source-same-operation-operation', 'source-same-operation-authorization']
+      let randomIdCall = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => repeatedIds[randomIdCall++ % repeatedIds.length]!,
+      })
+      await assert.rejects(
+        coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability), async () => {
+          throw new Error('stop after source commit')
+        }),
+        /stop after source commit/,
+      )
+      const source = (await readState())?.proofOperations[
+        `${await counterRangeId(directory)}:source`
+      ]
+      assert.ok(source)
+      assert.deepEqual(source.outputs, concurrentOutputs)
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        const row = database
+          .prepare(
+            `SELECT next_counter FROM target_keyset_counters
+             WHERE normalized_mint=? AND unit=? AND keyset_id=?`,
+          )
+          .get(MINT_URL, 'msat', OFFER_KEYSET_ID) as { next_counter: number }
+        assert.ok(row)
+        assert.equal(
+          concurrentNextCounter,
+          row.next_counter,
+          'racing identical calls commit the same single allocation as one ordinary call',
+        )
+      } finally {
+        database.close()
+      }
+    },
+  )
+})
+
+for (const faultPhase of ['before-commit', 'after-commit'] as const) {
+  test(`daemon source journal ${faultPhase} fault rolls back or replays the exact transaction`, async () => {
+    const proof = cashProof(8_192)
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-source-journal-transaction-',
+        incarnationId: `source-journal-${faultPhase}`,
+        proofs: [proof],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        const readCounters = async () => {
+          const database = await openDaemonStateSqlite(directory)
+          try {
+            return {
+              target: database
+                .prepare(
+                  `SELECT normalized_mint, unit, keyset_id, next_counter
+                   FROM target_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+                )
+                .all(),
+              custody: database
+                .prepare(
+                  `SELECT normalized_mint, unit, keyset_id, next_counter
+                   FROM custody_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+                )
+                .all(),
+            }
+          } finally {
+            database.close()
+          }
+        }
+        let countersBeforeSourceTransaction: Awaited<ReturnType<typeof readCounters>> | undefined
+        let countersAtLostCommitReply: Awaited<ReturnType<typeof readCounters>> | undefined
+        const wallet = new FakeWallet([proof])
+        wallet.checkProofsStates = async (proofs) =>
+          proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
+        wallet.beforePrepareSwap = async () => {
+          countersBeforeSourceTransaction = await readCounters()
+        }
+        let injected = false
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => fakeMint(),
+          createWallet: () => wallet,
+          now: () => 10_000,
+          randomId: randomIds(`source-journal-${faultPhase}`),
+          injectRangeUnitOfWorkFault: (phase) => {
+            if (!injected && phase === faultPhase) {
+              injected = true
+              if (phase === 'after-commit') {
+                const committed = new DatabaseSync(join(directory, 'daemon-state.sqlite'))
+                try {
+                  countersAtLostCommitReply = {
+                    target: committed
+                      .prepare(
+                        `SELECT normalized_mint, unit, keyset_id, next_counter
+                         FROM target_keyset_counters
+                         ORDER BY normalized_mint, unit, keyset_id`,
+                      )
+                      .all(),
+                    custody: committed
+                      .prepare(
+                        `SELECT normalized_mint, unit, keyset_id, next_counter
+                         FROM custody_keyset_counters
+                         ORDER BY normalized_mint, unit, keyset_id`,
+                      )
+                      .all(),
+                  }
+                } finally {
+                  committed.close()
+                }
+              }
+              throw new Error(`source transaction ${faultPhase} fault`)
+            }
+          },
+        })
+        const client = fakeEngineClient(boundCapability)
+
+        if (faultPhase === 'before-commit') {
+          await assert.rejects(coordinator.prepare(orderRequest(), client), /before-commit fault/)
+          assert.ok(countersBeforeSourceTransaction)
+          assert.deepEqual(await readCounters(), countersBeforeSourceTransaction)
+        } else {
+          await coordinator.prepare(orderRequest(), client)
+          assert.ok(injected, 'the source transaction commit reply fault must run')
+          assert.deepEqual(await readCounters(), countersAtLostCommitReply)
+        }
+
+        const sourceOperationId = `${await counterRangeId(directory)}:source`
+        const state = await readState()
+        const sourceOperation = state?.proofOperations[sourceOperationId]
+        const database = await openDaemonStateSqlite(directory)
+        try {
+          const sourceLinks = database
+            .prepare(
+              `SELECT source_operation_id AS sourceOperationId, reservation_id AS reservationId
+               FROM daemon_ctf_range_sources WHERE range_operation_id = ?`,
+            )
+            .all(await counterRangeId(directory)) as Array<{
+            sourceOperationId: string
+            reservationId: string
+          }>
+          const reservedInput = database
+            .prepare(
+              `SELECT state, reserved_by AS reservedBy FROM target_wallet_proofs
+               WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+            )
+            .get(fence.scopeId, MINT_URL, proof.secret) as
+            | { state: string; reservedBy: string | null }
+            | undefined
+          if (faultPhase === 'before-commit') {
+            assert.equal(sourceOperation, undefined)
+            assert.deepEqual(sourceLinks, [])
+            assert.equal(reservedInput?.state, 'available')
+            assert.equal(reservedInput?.reservedBy, null)
+            assert.equal(
+              database.prepare('SELECT count(*) AS count FROM custody_operations').get()?.count,
+              0,
+            )
+            assert.equal(
+              database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()
+                ?.count,
+              0,
+            )
+          } else {
+            assert.ok(sourceOperation)
+            assert.equal(sourceOperation.state, 'completed')
+            assert.equal(sourceLinks.length, 1)
+            assert.equal(sourceLinks[0]?.sourceOperationId, sourceOperationId)
+            assert.ok(sourceLinks[0]?.reservationId)
+            assert.equal(
+              reservedInput,
+              undefined,
+              'successful exact replay completes the source and consumes its target proof',
+            )
+            assert.ok(Object.values(sourceOperation.outputs).some((outputs) => outputs.length > 0))
+            assert.equal(wallet.prepareSwapDrafts.length, 1)
+            assert.equal(wallet.completeCalls, 1)
+            const targetCounters = database
+              .prepare(
+                `SELECT normalized_mint, unit, keyset_id, next_counter
+                 FROM target_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+              )
+              .all()
+            const custodyCounters = database
+              .prepare(
+                `SELECT normalized_mint, unit, keyset_id, next_counter
+                 FROM custody_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+              )
+              .all()
+            assert.deepEqual(targetCounters, custodyCounters)
+          }
+        } finally {
+          database.close()
+        }
+        assert.equal(injected, true)
+      },
+    )
+  })
+}
 
 test('daemon retries the exact capability request after its acknowledgement is lost', async (t) => {
   const originalBind = DaemonCtfRangeCoordinator.prototype.bindPreparedSource
@@ -806,6 +1409,7 @@ test('daemon accepts exact fee consent and refuses changed source fees before mi
       const prepared = await coordinator.prepare(orderRequest(), client, undefined, consent)
       assert.equal(prepared.operationId, await counterRangeId(directory))
       assert.equal(wallet.completeCalls, 1)
+      await assertCounterAuthorityPairs(directory)
     },
   )
 
@@ -3091,6 +3695,7 @@ test('daemon binds a conditional source to range custody without consolidation',
         fakeEngineClient(boundCapability),
       )
       assert.equal(wallet.completeCalls, 1)
+      await assertCounterAuthorityPairs(directory)
       await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
     },
   )
@@ -3139,6 +3744,7 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
         feeSubunits: 1,
       })
       assert.equal(wallet.completeCalls, 2)
+      await assertCounterAuthorityPairs(directory)
       await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
       assert.equal(
         (await readState())?.proofOperations[
@@ -3306,6 +3912,7 @@ test('daemon prepares a full held-share Sell from exact shares plus fee cash', a
       assert.equal(mint.convertRequests.length, 1)
       assert.deepEqual(convertInputTotals(mint.convertRequests[0]!), { YES: 1_000, '*': 64 })
       assert.equal(capabilityCalls, 1)
+      await assertCounterAuthorityPairs(directory)
       assert.deepEqual(await walletSummary(), {
         availableShares: 0,
         availableCash: 63,
@@ -4146,6 +4753,40 @@ async function assertSourceCustodyIdentity(
   }
 }
 
+async function assertCounterAuthorityPairs(directory: string): Promise<void> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const target = database
+      .prepare(
+        `SELECT normalized_mint, unit, keyset_id, next_counter
+         FROM target_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all() as Array<{
+      normalized_mint: string
+      unit: string
+      keyset_id: string
+      next_counter: number
+    }>
+    const custody = database
+      .prepare(
+        `SELECT normalized_mint, unit, keyset_id, next_counter
+         FROM custody_keyset_counters ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all() as typeof target
+    const tuples = (rows: typeof target) =>
+      rows.map(({ normalized_mint, unit, keyset_id, next_counter }) => [
+        normalized_mint,
+        unit,
+        keyset_id,
+        next_counter,
+      ])
+    assert.ok(target.length > 0)
+    assert.deepEqual(tuples(target), tuples(custody))
+  } finally {
+    database.close()
+  }
+}
+
 async function retainedSuccessorRows(
   directory: string,
   proofs: readonly Proof[],
@@ -4394,6 +5035,12 @@ function outcomeAsset(): StoredProofAsset {
 class FakeWallet {
   readonly #lostAcknowledgementState: 'SPENT' | 'UNSPENT' | null
   completeCalls = 0
+  readonly prepareSwapDrafts: Array<{
+    inputSecrets: string[]
+    sendBlindedMessages: string[]
+    keepBlindedMessages: string[]
+  }> = []
+  beforePrepareSwap?: () => Promise<void>
   beforeCompleteConditionalSwap?: () => Promise<void>
   #observedStateAfterLostAcknowledgement: 'SPENT' | 'UNSPENT' | null = null
 
@@ -4420,6 +5067,17 @@ class FakeWallet {
       keep: { type: 'custom'; data: OutputData[] } | { type: 'random' }
     },
   ): Promise<SwapPreview> {
+    await this.beforePrepareSwap?.()
+    if (outputConfig.send.type === 'custom') {
+      this.prepareSwapDrafts.push({
+        inputSecrets: proofs.map(({ secret }) => secret),
+        sendBlindedMessages: outputConfig.send.data.map(({ blindedMessage: { B_ } }) => B_),
+        keepBlindedMessages:
+          outputConfig.keep.type === 'custom'
+            ? outputConfig.keep.data.map(({ blindedMessage: { B_ } }) => B_)
+            : [],
+      })
+    }
     assert.equal(
       config.includeFees,
       false,
