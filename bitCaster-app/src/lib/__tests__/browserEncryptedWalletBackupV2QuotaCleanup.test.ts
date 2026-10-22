@@ -16,9 +16,13 @@ import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "../browserEncryptedWalletBackupV2QuotaCleanup";
 import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
 import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
+import { encodeEncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
+import { digestEncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
+import { ownerReachabilitySnapshot } from "./ownerReachabilityFixture";
 
 const scopeId = browserWalletScope(new Uint8Array(64).fill(9)).scopeId;
 const SEED = new Uint8Array(64).fill(9);
+const OWNER_SCOPE_ID = "ab".repeat(32);
 const KEYSET_ID = deriveKeysetId(
   { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" },
   { unit: "msat", versionByte: 1 },
@@ -78,7 +82,7 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps protected assets and removes the largest eligible cache exactly", async () => {
+  it("does not treat a legacy V2 receipt as owner-bound quota deletion authority", async () => {
     database = new BitcasterDB(browserWalletDatabaseName(scopeId));
     const protectedCandidate = await candidate(database, "protected", "11", 1);
     const small = await candidate(database, "small", "22", 2);
@@ -98,15 +102,15 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
         write,
         lockManager: immediateLockManager(),
       }),
-    ).resolves.toEqual({ result: "written", evictedLocalAssetKey: "largest" });
-    expect(write).toHaveBeenCalledTimes(2);
-    expect(await database.custodyProofs.get([scopeId, largest.proofs[0]!.proofId])).toBeUndefined();
+    ).rejects.toThrow(/quota/);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(await database.custodyProofs.get([scopeId, largest.proofs[0]!.proofId])).toBeDefined();
     expect(
       await database.custodyProofBackupAuthorities.get([scopeId, largest.proofs[0]!.proofId]),
-    ).toBeUndefined();
+    ).toBeDefined();
     expect(
       (await database.proofs.toArray()).some((proof) => proof.secret.startsWith("33".repeat(31))),
-    ).toBe(false);
+    ).toBe(true);
     expect(await database.custodyProofs.get([scopeId, small.proofs[0]!.proofId])).toBeDefined();
     expect(
       await database.custodyProofs.get([scopeId, protectedCandidate.proofs[0]!.proofId]),
@@ -116,7 +120,140 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     ).toBeDefined();
   });
 
-  it("preserves completed-removal markers while evicting an eligible cache", async () => {
+  it("evicts only after the selected owner's fresh collected head matches the exact candidate", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "fresh-head", "34", 4);
+    eligible.mockResolvedValue([victim]);
+    const loadCurrentOwnerReachabilityEvidence = vi.fn(async () =>
+      ownerReachabilitySnapshot({
+        ownerScopeId: OWNER_SCOPE_ID,
+        descriptor: victim.descriptor,
+        enrollmentEpoch: victim.receipt.enrollmentEpoch,
+      }),
+    );
+    const write = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(quotaError())
+      .mockResolvedValueOnce("written");
+
+    const outcome = await retryBrowserEncryptedWalletBackupV2QuotaWrite({
+      database,
+      scopeId,
+      ownerScopeId: OWNER_SCOPE_ID,
+      loadCurrentOwnerReachabilityEvidence,
+      isCurrentProfile: () => true,
+      write,
+      lockManager: immediateLockManager(),
+    }).then(
+      (value) => value,
+      (error: unknown) => error,
+    );
+    expect(loadCurrentOwnerReachabilityEvidence).toHaveBeenCalledOnce();
+    expect(outcome).toMatchObject({ result: "written", evictedLocalAssetKey: "fresh-head" });
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeUndefined();
+    expect(write).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses quota eviction when the captured profile becomes stale during head fetch", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "stale-head", "45", 5);
+    eligible.mockResolvedValue([victim]);
+    let currentProfile = true;
+    const write = vi.fn().mockRejectedValueOnce(quotaError());
+
+    await expect(
+      retryBrowserEncryptedWalletBackupV2QuotaWrite({
+        database,
+        scopeId,
+        ownerScopeId: OWNER_SCOPE_ID,
+        loadCurrentOwnerReachabilityEvidence: async () => {
+          const snapshot = await ownerReachabilitySnapshot({
+            ownerScopeId: OWNER_SCOPE_ID,
+            descriptor: victim.descriptor,
+            enrollmentEpoch: victim.receipt.enrollmentEpoch,
+          });
+          currentProfile = false;
+          return snapshot;
+        },
+        isCurrentProfile: () => currentProfile,
+        write,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/profile is stale/);
+    expect(write).toHaveBeenCalledOnce();
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeDefined();
+  });
+
+  it("refuses owner evidence whose collected head omits the exact local descriptor", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "wrong-head", "46", 6);
+    eligible.mockResolvedValue([victim]);
+    const otherDescriptor = {
+      ...victim.descriptor,
+      assetLocator: "89".repeat(32),
+    };
+    const write = vi.fn().mockRejectedValueOnce(quotaError());
+
+    await expect(
+      retryBrowserEncryptedWalletBackupV2QuotaWrite({
+        database,
+        scopeId,
+        ownerScopeId: OWNER_SCOPE_ID,
+        loadCurrentOwnerReachabilityEvidence: () =>
+          ownerReachabilitySnapshot({
+            ownerScopeId: OWNER_SCOPE_ID,
+            descriptor: otherDescriptor,
+            enrollmentEpoch: victim.receipt.enrollmentEpoch,
+            keyHandle: undefined,
+          }),
+        isCurrentProfile: () => true,
+        write,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/quota/);
+    expect(write).toHaveBeenCalledOnce();
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeDefined();
+  });
+
+  it("rechecks the descriptor inside the delete transaction after async owner collection", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "changed-local", "47", 7);
+    eligible.mockResolvedValue([victim]);
+    const write = vi.fn().mockRejectedValueOnce(quotaError());
+
+    await expect(
+      retryBrowserEncryptedWalletBackupV2QuotaWrite({
+        database,
+        scopeId,
+        ownerScopeId: OWNER_SCOPE_ID,
+        loadCurrentOwnerReachabilityEvidence: async () => {
+          const snapshot = await ownerReachabilitySnapshot({
+            ownerScopeId: OWNER_SCOPE_ID,
+            descriptor: victim.descriptor,
+            enrollmentEpoch: victim.receipt.enrollmentEpoch,
+          });
+          await database!.encryptedWalletBackupV2ActiveDescriptors.put({
+            ...(await database!.encryptedWalletBackupV2ActiveDescriptors.get([
+              scopeId,
+              victim.receipt.realm,
+              victim.receipt.walletId,
+              victim.receipt.enrollmentEpoch,
+              victim.receipt.bundleId,
+            ]))!,
+            custodyRevision: "2",
+          });
+          return snapshot;
+        },
+        isCurrentProfile: () => true,
+        write,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/cache changed/);
+    expect(write).toHaveBeenCalledOnce();
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeDefined();
+  });
+
+  it("preserves completed-removal markers and proofs when only legacy V2 evidence exists", async () => {
     database = new BitcasterDB(browserWalletDatabaseName(scopeId));
     const victim = await candidate(database, "victim", "66", 6);
     const marker = completedRemovalMarker();
@@ -131,11 +268,11 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
         write: vi.fn().mockRejectedValueOnce(quotaError()).mockResolvedValueOnce("written"),
         lockManager: immediateLockManager(),
       }),
-    ).resolves.toEqual({ result: "written", evictedLocalAssetKey: "victim" });
+    ).rejects.toThrow(/quota/);
     expect(await database.custodyProofBackupAuthorities.get([scopeId, marker.proofId])).toEqual(
       marker,
     );
-    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeUndefined();
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeDefined();
   });
 
   it("fails stale profiles before cache deletion", async () => {
@@ -158,7 +295,7 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeDefined();
   });
 
-  it("does not evict a second cache when the one retry also exceeds quota", async () => {
+  it("does not retry a quota write when legacy evidence cannot authorize eviction", async () => {
     database = new BitcasterDB(browserWalletDatabaseName(scopeId));
     const victim = await candidate(database, "victim", "55", 5);
     eligible.mockResolvedValue([victim]);
@@ -174,9 +311,9 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
         write,
         lockManager: immediateLockManager(),
       }),
-    ).rejects.toBe(second);
+    ).rejects.toThrow(/quota/);
     expect(eligible).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(1);
   });
 
   it("keeps terminal reimport operation and artifact counts bounded across eviction cycles", async () => {
@@ -226,13 +363,15 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
           proofs: await database.custodyProofs.toArray(),
         } as unknown as BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
       ]);
-      await retryBrowserEncryptedWalletBackupV2QuotaWrite({
-        database,
-        scopeId,
-        isCurrentProfile: () => true,
-        lockManager: immediateLockManager(),
-        write: vi.fn().mockRejectedValueOnce(quotaError()).mockResolvedValueOnce("written"),
-      });
+      await expect(
+        retryBrowserEncryptedWalletBackupV2QuotaWrite({
+          database,
+          scopeId,
+          isCurrentProfile: () => true,
+          lockManager: immediateLockManager(),
+          write: vi.fn().mockRejectedValueOnce(quotaError()).mockResolvedValueOnce("written"),
+        }),
+      ).rejects.toThrow(/quota/);
       expect(await database.custodyOperations.count()).toBe(retainedOperationCount);
       expect(await database.custodyArtifacts.count()).toBe(retainedArtifactCount);
     }
@@ -370,6 +509,66 @@ async function candidate(
   } as unknown as BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset;
 }
 
+async function ownerAuthorizedCandidate(
+  database: BitcasterDB,
+  localAssetKey: string,
+  secretPart: string,
+  receivedAtMs: number,
+) {
+  const base = await candidate(database, localAssetKey, secretPart, receivedAtMs);
+  const keyHandle = await import("@bitcaster/client-sdk/encryptedWalletBackupV2Keys").then(
+    ({ createEncryptedWalletBackupV2KeyHandle }) =>
+      createEncryptedWalletBackupV2KeyHandle({
+        seed: new Uint8Array(64).fill(0x17),
+        realm: "backup.example",
+        runtime: crypto,
+      }),
+  );
+  const desired = (await database.encryptedWalletBackupV2DesiredAssets.get([
+    scopeId,
+    localAssetKey,
+  ]))!;
+  const descriptor = {
+    formatVersion: 2 as const,
+    realm: "backup.example",
+    walletId: keyHandle.walletId,
+    bundleId: `${receivedAtMs.toString(16).padStart(2, "0")}`.repeat(16),
+    assetLocator: `${(receivedAtMs + 32).toString(16).padStart(2, "0")}`.repeat(32),
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    payloadCommitment: "56".repeat(32),
+    objects: [{ objectId: "67".repeat(16), digest: "78".repeat(32) }],
+  };
+  const receipt = {
+    scopeId,
+    realm: descriptor.realm,
+    walletId: descriptor.walletId,
+    enrollmentEpoch: 1,
+    localAssetKey,
+    assetLocator: descriptor.assetLocator,
+    custodyRevision: descriptor.custodyRevision.toString(),
+    bundleId: descriptor.bundleId,
+    bundleDescriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(descriptor),
+    canonicalSignedMutation: new Uint8Array([1]),
+    canonicalSignedReceipt: new Uint8Array([2]),
+  };
+  await database.encryptedWalletBackupV2AssetReceipts.put(receipt);
+  await database.encryptedWalletBackupV2ActiveDescriptors.put({
+    scopeId,
+    realm: descriptor.realm,
+    walletId: descriptor.walletId,
+    enrollmentEpoch: 1,
+    bundleId: descriptor.bundleId,
+    assetLocator: descriptor.assetLocator,
+    declaredAmount: descriptor.declaredAmount.toString(),
+    custodyRevision: descriptor.custodyRevision.toString(),
+    payloadCommitment: descriptor.payloadCommitment,
+    objectCount: descriptor.objects.length,
+    canonicalDescriptor: encodeEncryptedWalletBackupV2BundleDescriptor(descriptor),
+  });
+  return { ...base, desired, receipt, descriptor };
+}
+
 function quotaError(): Error {
   return Object.assign(new Error("quota"), { name: "QuotaExceededError" });
 }
@@ -412,9 +611,13 @@ function completedRemovalMarker() {
 function immediateLockManager(): Pick<LockManager, "request"> {
   return {
     request: async <T>(
-      _name: string,
-      options: LockOptions | LockGrantedCallback<T>,
+      name: string,
+      optionsOrCallback: LockOptions | LockGrantedCallback<T>,
       callback?: LockGrantedCallback<T>,
-    ) => (typeof options === "function" ? options(null) : callback!(null)),
+    ) => {
+      const invoke = typeof optionsOrCallback === "function" ? optionsOrCallback : callback!;
+      const mode = typeof optionsOrCallback === "function" ? "exclusive" : optionsOrCallback.mode;
+      return invoke({ name, mode } as Lock);
+    },
   };
 }

@@ -318,6 +318,7 @@ export const useWalletStore = create<WalletState>()(
             await handoffBrowserEncryptedWalletBackupV2Seed({
               database: oldDatabase,
               scopeId: oldScopeId,
+              ownerScopeId: null,
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
                 const pendingTrades = usePendingTradesStore.getState();

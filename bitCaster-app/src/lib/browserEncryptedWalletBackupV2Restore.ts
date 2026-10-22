@@ -506,6 +506,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
       await retryBrowserEncryptedWalletBackupV2QuotaWrite({
         database: input.database,
         scopeId: input.scopeId,
+        ownerScopeId: null,
         isCurrentProfile: input.isCurrentProfile,
         protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
         lockManager: input.lockManager,
@@ -537,6 +538,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     await retryBrowserEncryptedWalletBackupV2QuotaWrite({
       database: input.database,
       scopeId: input.scopeId,
+      ownerScopeId: null,
       isCurrentProfile: input.isCurrentProfile,
       protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
       lockManager: input.lockManager,

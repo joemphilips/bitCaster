@@ -9,12 +9,25 @@ import {
   type BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
 } from "./browserEncryptedWalletBackupV2SeedHandoff";
 import { withWalletProfileLock } from "./walletProfileLock";
+import { encryptedWalletBackupV2WalletLockName } from "./encryptedWalletBackupDriver";
+import { requireBrowserEncryptedWalletBackupOwnerReachability } from "./browserEncryptedWalletBackupOwnerDeletion";
+import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
+import {
+  decodeEncryptedWalletBackupV2BundleDescriptorWire,
+  digestEncryptedWalletBackupV2BundleDescriptor,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
 
 export interface BrowserEncryptedWalletBackupV2QuotaWriteInput<T> {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly isCurrentProfile: () => boolean;
   readonly protectedLocalAssetKeys?: readonly string[];
+  /** Explicit owner selected by the backup adapter. Null keeps legacy v2 evidence non-authorizing. */
+  readonly ownerScopeId?: string | null;
+  /** Fetch fresh SDK-issued reachability evidence for one exact candidate under the profile lock. */
+  readonly loadCurrentOwnerReachabilityEvidence?: (
+    candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+  ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
   readonly write: () => Promise<T>;
   readonly lockManager?: Pick<LockManager, "request">;
 }
@@ -45,8 +58,67 @@ async function evictOneEligibleCache<T>(
   requireCurrent(input);
   return withWalletProfileLock(
     input.scopeId,
-    () =>
-      input.database.transaction(
+    async () => {
+      requireCurrent(input);
+      const candidates = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input);
+      const protectedLocalAssetKeys = new Set(input.protectedLocalAssetKeys);
+      const ordered = [...candidates]
+        .filter(({ desired }) => !protectedLocalAssetKeys.has(desired.localAssetKey))
+        .sort((left, right) => {
+          const difference = proofBytes(right) - proofBytes(left);
+          return difference === 0
+            ? left.desired.localAssetKey.localeCompare(right.desired.localAssetKey)
+            : difference;
+        });
+      for (const candidate of ordered) {
+        const localAssetKey = await evictCandidateWithCurrentOwnerEvidence(input, candidate);
+        if (localAssetKey !== null) return localAssetKey;
+      }
+      return null;
+    },
+    input.lockManager,
+  );
+}
+
+async function evictCandidateWithCurrentOwnerEvidence<T>(
+  input: BrowserEncryptedWalletBackupV2QuotaWriteInput<T>,
+  candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+): Promise<string | null> {
+  if (input.ownerScopeId == null || input.loadCurrentOwnerReachabilityEvidence === undefined)
+    return null;
+  const manager = input.lockManager ?? globalThis.navigator?.locks;
+  if (manager === undefined) return null;
+  return manager.request(
+    encryptedWalletBackupV2WalletLockName({
+      realm: candidate.receipt.realm,
+      walletId: candidate.receipt.walletId,
+    }),
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (lock === null) return null;
+      requireCurrent(input);
+      let snapshot: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
+      try {
+        snapshot = await input.loadCurrentOwnerReachabilityEvidence!(candidate);
+        requireBrowserEncryptedWalletBackupOwnerReachability({
+          ownerScopeId: input.ownerScopeId!,
+          evidence: snapshot.evidence,
+          collectedHeadEvidence: snapshot.collectedHeadEvidence,
+          context: {
+            realm: candidate.receipt.realm,
+            walletId: candidate.receipt.walletId,
+            enrollmentEpoch: candidate.receipt.enrollmentEpoch,
+          },
+          expectedBundleId: candidate.receipt.bundleId,
+          expectedAssetLocator: candidate.receipt.assetLocator,
+          expectedCustodyRevision: candidate.receipt.custodyRevision,
+          expectedBundleDescriptor: candidate.descriptor,
+        });
+      } catch {
+        return null;
+      }
+      requireCurrent(input);
+      return input.database.transaction(
         "rw",
         [
           input.database.proofs,
@@ -64,11 +136,7 @@ async function evictOneEligibleCache<T>(
         ],
         async () => {
           requireCurrent(input);
-          const candidate = selectCandidate(
-            await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input),
-            new Set(input.protectedLocalAssetKeys),
-          );
-          if (candidate === undefined) return null;
+          await requireCandidateStillCurrent(input.database, input.scopeId, candidate);
           const proofs = await exactCurrentProofs(input.database, candidate);
           const authorities = await exactCurrentProofAuthorities(input.database, proofs);
           const secrets = proofs.map(proofSecret);
@@ -89,9 +157,57 @@ async function evictOneEligibleCache<T>(
           requireCurrent(input);
           return candidate.desired.localAssetKey;
         },
-      ),
-    input.lockManager,
+      );
+    },
   );
+}
+
+async function requireCandidateStillCurrent(
+  database: BitcasterDB,
+  scopeId: string,
+  candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+): Promise<void> {
+  const [desired, receipt, descriptor] = await Promise.all([
+    database.encryptedWalletBackupV2DesiredAssets.get([scopeId, candidate.desired.localAssetKey]),
+    database.encryptedWalletBackupV2AssetReceipts.get([
+      candidate.receipt.scopeId,
+      candidate.receipt.realm,
+      candidate.receipt.walletId,
+      candidate.receipt.enrollmentEpoch,
+      candidate.receipt.localAssetKey,
+    ]),
+    database.encryptedWalletBackupV2ActiveDescriptors.get([
+      candidate.receipt.scopeId,
+      candidate.receipt.realm,
+      candidate.receipt.walletId,
+      candidate.receipt.enrollmentEpoch,
+      candidate.receipt.bundleId,
+    ]),
+  ]);
+  if (
+    desired === undefined ||
+    desired.scopeId !== scopeId ||
+    desired.localAssetKey !== candidate.desired.localAssetKey ||
+    desired.custodyRevision !== candidate.receipt.custodyRevision ||
+    desired.syncState !== "acknowledged" ||
+    desired.desiredAction !== "replace" ||
+    receipt === undefined ||
+    descriptor === undefined ||
+    receipt.bundleId !== candidate.receipt.bundleId ||
+    receipt.assetLocator !== candidate.receipt.assetLocator ||
+    receipt.custodyRevision !== candidate.receipt.custodyRevision ||
+    receipt.bundleDescriptorDigest !== candidate.receipt.bundleDescriptorDigest ||
+    descriptor.assetLocator !== candidate.receipt.assetLocator ||
+    descriptor.custodyRevision !== candidate.receipt.custodyRevision ||
+    digestEncryptedWalletBackupV2BundleDescriptor(
+      decodeEncryptedWalletBackupV2BundleDescriptorWire(descriptor.canonicalDescriptor, {
+        realm: candidate.receipt.realm,
+        walletId: candidate.receipt.walletId,
+      }),
+    ) !== candidate.receipt.bundleDescriptorDigest
+  ) {
+    throw new Error("browser V2 quota cache changed");
+  }
 }
 
 async function releasableTerminalReimports(
@@ -193,20 +309,6 @@ function isTerminalReimport(record: ReturnType<typeof decodeDurableCustodyRecord
     record.operation.binding.stage === "receive" &&
     /:reimport:[A-Za-z0-9-]{1,64}$/.test(record.operation.binding.activityId)
   );
-}
-
-function selectCandidate(
-  candidates: readonly BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset[],
-  protectedLocalAssetKeys: ReadonlySet<string>,
-): BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset | undefined {
-  return candidates
-    .filter(({ desired }) => !protectedLocalAssetKeys.has(desired.localAssetKey))
-    .sort((left, right) => {
-      const byteDifference = proofBytes(right) - proofBytes(left);
-      return byteDifference === 0
-        ? left.desired.localAssetKey.localeCompare(right.desired.localAssetKey)
-        : byteDifference;
-    })[0];
 }
 
 async function exactCurrentProofs(

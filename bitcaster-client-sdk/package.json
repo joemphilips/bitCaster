@@ -175,6 +175,10 @@
       "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
       "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
     },
+    "./encryptedWalletBackupOwnerDeletionAuthority": {
+      "types": "./dist/encryptedWalletBackupOwnerDeletionAuthority.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerDeletionAuthority.js"
+    },
     "./encryptedWalletBackupV2RequestProof": {
       "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
       "import": "./dist/encryptedWalletBackupV2RequestProof.js"

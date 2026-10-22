@@ -35,6 +35,7 @@ import {
   listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets,
   listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts,
 } from "../browserEncryptedWalletBackupV2SeedHandoff";
+import { ownerReachabilitySnapshot } from "./ownerReachabilityFixture";
 
 const databases: BitcasterDB[] = [];
 let sequence = 0;
@@ -903,7 +904,7 @@ it("refuses seed handoff when an accepted wallet lock is unavailable", async () 
   expect(covered.database.isOpen()).toBe(true);
 });
 
-it("uses the scoped active-proof index without reading spent history", async () => {
+it("checks the scoped active-proof index but refuses legacy ownerless receipt deletion", async () => {
   const covered = await coveredFixture();
   await covered.database.custodyProofs.bulkPut(
     Array.from({ length: 1_024 }, (_, index) => ({
@@ -913,7 +914,83 @@ it("uses the scoped active-proof index without reading spent history", async () 
     })),
   );
   expect(covered.database.custodyProofs.schema.idxByName["[scopeId+selectability]"]).toBeDefined();
-  await expect(handoff(covered)).resolves.toBeUndefined();
+  await expect(handoff(covered)).rejects.toThrow(/backup owner evidence is unavailable/);
+  expect(covered.database.isOpen()).toBe(true);
+});
+
+it("hands off only after the selected owner proves the exact current collected head", async () => {
+  const covered = await coveredFixture();
+  const [candidate] = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+  });
+  expect(candidate).toBeDefined();
+  const ownerScopeId = "ac".repeat(32);
+  const invalidateOldProfile = vi.fn();
+  const activateNewProfile = vi.fn(async () => undefined);
+
+  await expect(
+    handoffBrowserEncryptedWalletBackupV2Seed({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      ownerScopeId,
+      loadCurrentOwnerReachabilityEvidence: async () =>
+        ownerReachabilitySnapshot({
+          ownerScopeId,
+          descriptor: candidate!.descriptor,
+          enrollmentEpoch: candidate!.receipt.enrollmentEpoch,
+          keyHandle: covered.keyHandle,
+        }),
+      isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
+      lockManager: immediateLockManager(),
+      invalidateOldProfile,
+      activateNewProfile,
+      restoreOldProfile: vi.fn(async () => undefined),
+    }),
+  ).resolves.toBeUndefined();
+  expect(invalidateOldProfile).toHaveBeenCalledOnce();
+  expect(activateNewProfile).toHaveBeenCalledOnce();
+});
+
+it("does not hand off when the captured profile becomes stale during head collection", async () => {
+  const covered = await coveredFixture();
+  const [candidate] = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+  });
+  expect(candidate).toBeDefined();
+  const ownerScopeId = "ad".repeat(32);
+  let current = true;
+  const invalidateOldProfile = vi.fn();
+
+  await expect(
+    handoffBrowserEncryptedWalletBackupV2Seed({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      ownerScopeId,
+      loadCurrentOwnerReachabilityEvidence: async () => {
+        const snapshot = await ownerReachabilitySnapshot({
+          ownerScopeId,
+          descriptor: candidate!.descriptor,
+          enrollmentEpoch: candidate!.receipt.enrollmentEpoch,
+          keyHandle: covered.keyHandle,
+        });
+        current = false;
+        return snapshot;
+      },
+      isCurrentProfile: () => current,
+      assertNoPendingOrders: () => undefined,
+      lockManager: immediateLockManager(),
+      invalidateOldProfile,
+      activateNewProfile: vi.fn(async () => undefined),
+      restoreOldProfile: vi.fn(async () => undefined),
+    }),
+  ).rejects.toThrow(/profile is stale/);
+  expect(invalidateOldProfile).not.toHaveBeenCalled();
+  expect(covered.database.isOpen()).toBe(true);
 });
 
 it("keeps the committed new activation when old-cache deletion fails", async () => {

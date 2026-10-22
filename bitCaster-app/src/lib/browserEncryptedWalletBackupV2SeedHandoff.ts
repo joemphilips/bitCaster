@@ -11,6 +11,8 @@ import {
   encodeEncryptedWalletBackupV2CurrentHead,
   type EncryptedWalletBackupV2BundleDescriptor,
 } from "@bitcaster/client-sdk";
+import { requireBrowserEncryptedWalletBackupOwnerReachability } from "./browserEncryptedWalletBackupOwnerDeletion";
+import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
 import { browserWalletDatabaseName } from "./browserWalletProfile";
 import { encryptedWalletBackupV2WalletLockName } from "./encryptedWalletBackupDriver";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -506,6 +508,12 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
   readonly isCurrentProfile: () => boolean;
   /** Check app-level unfinished orders after async eligibility checks and before invalidation. */
   readonly assertNoPendingOrders: () => void;
+  /** Selected owner identity from the adapter. Null means no owner-bound authority is available. */
+  readonly ownerScopeId?: string | null;
+  /** SDK-issued current-head reachability evidence, keyed by exact bundle id. */
+  readonly loadCurrentOwnerReachabilityEvidence?: (
+    candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+  ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly invalidateOldProfile: () => void;
   readonly activateNewProfile: () => Promise<void>;
@@ -648,7 +656,12 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
 }
 
 async function requireWholeWalletSeedHandoffEligibility(
-  input: BrowserEncryptedWalletBackupV2CacheEligibilityInput,
+  input: BrowserEncryptedWalletBackupV2CacheEligibilityInput & {
+    readonly ownerScopeId?: string | null;
+    readonly loadCurrentOwnerReachabilityEvidence?: (
+      candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+    ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
+  },
 ): Promise<void> {
   await requireNoActiveLocalWork(input.database, input.scopeId);
   const desiredRows = await readDesiredRows(input.database, input.scopeId);
@@ -663,6 +676,26 @@ async function requireWholeWalletSeedHandoffEligibility(
     );
   }
   await requireExactActiveProofCoverage(input.database, input.scopeId, eligible);
+  for (const candidate of eligible) {
+    if (input.ownerScopeId == null || input.loadCurrentOwnerReachabilityEvidence === undefined) {
+      throw new Error("backup owner evidence is unavailable");
+    }
+    const snapshot = await input.loadCurrentOwnerReachabilityEvidence(candidate);
+    requireBrowserEncryptedWalletBackupOwnerReachability({
+      ownerScopeId: input.ownerScopeId ?? null,
+      evidence: snapshot.evidence,
+      collectedHeadEvidence: snapshot.collectedHeadEvidence,
+      context: {
+        realm: candidate.receipt.realm,
+        walletId: candidate.receipt.walletId,
+        enrollmentEpoch: candidate.receipt.enrollmentEpoch,
+      },
+      expectedBundleId: candidate.receipt.bundleId,
+      expectedAssetLocator: candidate.receipt.assetLocator,
+      expectedCustodyRevision: candidate.receipt.custodyRevision,
+      expectedBundleDescriptor: candidate.descriptor,
+    });
+  }
   requireCapturedDatabase(input);
 }
 
