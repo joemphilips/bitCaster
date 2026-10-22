@@ -497,6 +497,43 @@ export class DurableOutgoingCashuSqliteStore {
     readonly amountMsat: number
     readonly purchasedTotalEpoch: number
   } {
+    return this.#selectParticipationScoreDelivery(input, true)
+  }
+
+  resolveParticipationScoreDelivery(input: {
+    readonly scopeId: string
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotal: number
+    readonly accountSubject: string
+    readonly mintUrl: string
+    readonly nowMs: number
+    readonly requireExactRequest?: boolean
+  }): {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotalEpoch: number
+  } {
+    return this.#selectParticipationScoreDelivery(input, false)
+  }
+
+  #selectParticipationScoreDelivery(
+    input: {
+      readonly scopeId: string
+      readonly transferId: string
+      readonly amountMsat: number
+      readonly purchasedTotal: number
+      readonly accountSubject: string
+      readonly mintUrl: string
+      readonly nowMs: number
+      readonly requireExactRequest?: boolean
+    },
+    commit: boolean,
+  ): {
+    readonly transferId: string
+    readonly amountMsat: number
+    readonly purchasedTotalEpoch: number
+  } {
     assertPurchasedTotal(input.purchasedTotal)
     assertTransferId(input.transferId)
     assertParticipationScoreAmount(input.amountMsat)
@@ -517,11 +554,11 @@ export class DurableOutgoingCashuSqliteStore {
       }
       if (current === null) {
         if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
-        this.#deleteParticipationScorePointer(input.scopeId, pointer)
+        if (commit) this.#deleteParticipationScorePointer(input.scopeId, pointer)
       } else {
         if (current.transfer.deliveryState !== 'recipient-acknowledged') return pointer
         if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
-        this.#retireParticipationScorePointer(input.scopeId, pointer, current)
+        if (commit) this.#retireParticipationScorePointer(input.scopeId, pointer, current)
       }
     } else if (input.requireExactRequest === true) {
       const current = this.get(input.scopeId, input.transferId)
@@ -537,6 +574,12 @@ export class DurableOutgoingCashuSqliteStore {
         })
       }
     }
+    if (!commit)
+      return {
+        transferId: input.transferId,
+        amountMsat: input.amountMsat,
+        purchasedTotalEpoch: input.purchasedTotal,
+      }
     const inserted = this.#database
       .prepare(
         `INSERT INTO daemon_participation_score_delivery_pointers (

@@ -911,7 +911,7 @@ export async function prepareProofOperationWithExactReservation(
     mutation.observedAtMs,
     (database) => {
       beforePrepare?.(database)
-      const operation = prepareExactProofOperation(database, input)
+      const operation = prepareProofOperationWithExactReservationFromDatabase(database, input)
       afterPrepare?.(database, operation)
       return operation
     },
@@ -2083,6 +2083,17 @@ function admitExactSuccessorGroups(
       nowMs,
     })
   }
+}
+
+/** Synchronous exact writer for a provider owner that already holds the fenced transaction. */
+export function prepareProofOperationWithExactReservationFromDatabase(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): ProofOperationRecord {
+  return prepareExactProofOperation(database, input)
 }
 
 function prepareExactProofOperation(

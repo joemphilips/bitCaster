@@ -22,6 +22,8 @@ async function fixture() {
       amountMsat: 2,
       mintUrl: MINT,
       seed: Buffer.from(SEED, 'hex'),
+      createWallet: (source) =>
+        createWallet(MINT, { walletSeedHex: SEED }, f.deps, 'sat', 'msat', undefined, source),
       wallet,
     })
     assert.equal(transfer.deliveryState, 'delivery-pending')

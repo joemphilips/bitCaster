@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,13 +38,20 @@ export const SEED = '11'.repeat(64)
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
+const LARGE_KEYS = mintDenominationKeys(
+  PRIVATE_KEY,
+  Array.from({ length: 15 }, (_, index) => String(2 ** index)),
+)
+const LARGE_ID = deriveKeysetId(LARGE_KEYS, { unit: 'msat', versionByte: 1 })
 const ALTERNATE_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 9])
 const ALTERNATE_KEYS = { '1': bytesToHex(secp256k1.getPublicKey(ALTERNATE_PRIVATE_KEY, true)) }
 const ALTERNATE_ID = deriveKeysetId(ALTERNATE_KEYS, { unit: 'msat', versionByte: 1 })
 function sign(output: OutputData) {
   const { id, B_, amount } = output.blindedMessage
-  const signature = createBlindSignature(pointFromHex(B_), PRIVATE_KEY, id)
-  const dleq = createDLEQProof(pointFromHex(B_), PRIVATE_KEY)
+  const signingKey =
+    id === LARGE_ID ? mintDenominationPrivateKey(PRIVATE_KEY, amount.toString()) : PRIVATE_KEY
+  const signature = createBlindSignature(pointFromHex(B_), signingKey, id)
+  const dleq = createDLEQProof(pointFromHex(B_), signingKey)
   return output.toProof(
     {
       id,
@@ -48,7 +59,7 @@ function sign(output: OutputData) {
       C_: signature.C_.toHex(true),
       dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
     },
-    { id, keys: KEYS },
+    { id, keys: id === LARGE_ID ? LARGE_KEYS : KEYS },
   )
 }
 export const PROOFS = ['service-input-a', 'service-input-b'].map((secret) =>
@@ -73,7 +84,9 @@ export function assertRedacted(value: unknown) {
     assert.equal(text.includes(secret), false, 'private material in public output')
 }
 
-export async function serviceFixture(options: { defaultWallet?: boolean } = {}) {
+export async function serviceFixture(
+  options: { defaultWallet?: boolean; largeDenominations?: boolean } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), 'native-request-service-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
   const previousFetch = globalThis.fetch
@@ -116,7 +129,15 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
     if (endpoint === '/v1/keysets')
       return {
         keysets: [
-          { id: ID, unit: 'msat', active: !control.alternateKeyset, input_fee_ppk: 0 },
+          {
+            id: ID,
+            unit: 'msat',
+            active: !control.alternateKeyset && !options.largeDenominations,
+            input_fee_ppk: 0,
+          },
+          ...(options.largeDenominations
+            ? [{ id: LARGE_ID, unit: 'msat', active: !control.alternateKeyset, input_fee_ppk: 0 }]
+            : []),
           ...(control.alternateKeyset
             ? [{ id: ALTERNATE_ID, unit: 'msat', active: true, input_fee_ppk: 0 }]
             : []),
@@ -126,6 +147,9 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
       return {
         keysets: [
           { id: ID, unit: 'msat', keys: KEYS, input_fee_ppk: 0 },
+          ...(options.largeDenominations
+            ? [{ id: LARGE_ID, unit: 'msat', keys: LARGE_KEYS, input_fee_ppk: 0 }]
+            : []),
           ...(control.alternateKeyset
             ? [{ id: ALTERNATE_ID, unit: 'msat', keys: ALTERNATE_KEYS, input_fee_ppk: 0 }]
             : []),
@@ -144,7 +168,12 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
         outputs: Array<{ id: string; amount: number; B_: string }>
       }
       const signatures = outputs.map((output) => {
-        const signingKey = output.id === ALTERNATE_ID ? ALTERNATE_PRIVATE_KEY : PRIVATE_KEY
+        const signingKey =
+          output.id === ALTERNATE_ID
+            ? ALTERNATE_PRIVATE_KEY
+            : output.id === LARGE_ID
+              ? mintDenominationPrivateKey(PRIVATE_KEY, String(output.amount))
+              : PRIVATE_KEY
         const signature = createBlindSignature(pointFromHex(output.B_), signingKey, output.id)
         const dleq = createDLEQProof(pointFromHex(output.B_), signingKey)
         return {
@@ -162,11 +191,14 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
   const deps: WalletOpsDependencies = {
     createCashuMint: (url) => new Mint(url, { customRequest }),
     getCustodyFence: () => fence,
-    resolveMintKeysetIds: async () => [ID],
+    resolveMintKeysetIds: async () => [ID, ...(options.largeDenominations ? [LARGE_ID] : [])],
     resolveTokenImportKeysets: async () => ({
       canonicalMintUrl: MINT,
       freshness: 'fresh',
-      regularKeysets: [{ keysetId: ID, unit: 'msat', active: true }],
+      regularKeysets: [
+        { keysetId: ID, unit: 'msat', active: !options.largeDenominations },
+        ...(options.largeDenominations ? [{ keysetId: LARGE_ID, unit: 'msat', active: true }] : []),
+      ],
       conditionalKeysets: [],
     }),
     createCashuWallet: (_mint, _unit, counterSource) => {
@@ -212,6 +244,15 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
   })
   return {
     directory,
+    mintProof: (amount: number, secret: string) =>
+      sign(
+        OutputData.createSingleData(
+          amount,
+          options.largeDenominations ? LARGE_ID : ID,
+          secret,
+          19n,
+        ),
+      ),
     fence,
     deps,
     ops,

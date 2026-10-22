@@ -1,3 +1,8 @@
+import { OutgoingPreparationRetryError } from '../src/speculativeWalletSendPreparation.ts'
+const testSendCounterSources = new WeakMap<
+  object,
+  (source: import('@cashu/cashu-ts').CounterSource) => void
+>()
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -239,15 +244,48 @@ function withTestSeed(
       }
       if (property === 'execute') {
         return (input: Omit<Parameters<typeof target.execute>[0], 'seed'>) =>
-          target.execute({ ...input, seed: TEST_SEED })
+          target.execute({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       if (property === 'executeParticipationScore') {
         return (input: Omit<Parameters<typeof target.executeParticipationScore>[0], 'seed'>) =>
-          target.executeParticipationScore({ ...input, seed: TEST_SEED })
+          target.executeParticipationScore({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       if (property === 'executeMarketFundingTransfer') {
         return (input: Omit<Parameters<typeof target.executeMarketFundingTransfer>[0], 'seed'>) =>
-          target.executeMarketFundingTransfer({ ...input, seed: TEST_SEED })
+          target.executeMarketFundingTransfer({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       const value: unknown = Reflect.get(target, property, target)
       return typeof value === 'function' ? value.bind(target) : value
@@ -1876,13 +1914,21 @@ test('durable send rejects a mint result that differs from its persisted determi
   }
 })
 
-test('failed deterministic preparation does not reuse its reserved counter range', async () => {
+test('failed deterministic preparation leaves its private counter range uncommitted', async () => {
   const fixture = await createFixture()
   try {
-    const wallet = fixture.wallet(async () => ({
-      keep: fixture.keepProofs,
-      send: fixture.sendProofs,
-    }))
+    let completed = 0
+    const wallet = fixture.wallet(async () => {
+      completed++
+      return { keep: fixture.keepProofs, send: fixture.sendProofs }
+    })
+    const authorities = () =>
+      withDurableCustodyUnitOfWork(fixture.directory, fixture.fence, Date.now(), (db) =>
+        ['target_keyset_counters', 'custody_keyset_counters'].map((table) =>
+          db.prepare(`SELECT * FROM ${table}`).all(),
+        ),
+      )
+    const beforeAuthorities = await authorities()
     const prepare = wallet.prepareSwapToSend
     let failFirstPreparation = true
     const ranges: OperationCounters[] = []
@@ -1920,7 +1966,8 @@ test('failed deterministic preparation does not reuse its reserved counter range
       /counter reservation conflicts with the output plan/,
     )
     assert.equal(await fixture.transfer('outgoing-failed-deterministic-prepare'), null)
-    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    assert.equal(completed, 0)
+    assert.deepEqual(await authorities(), beforeAuthorities)
 
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-after-failed-deterministic-prepare',
@@ -1929,18 +1976,19 @@ test('failed deterministic preparation does not reuse its reserved counter range
       wallet,
     })
     assert.equal(transfer.deliveryState, 'delivery-pending')
+    assert.equal(completed, 1)
     assert.deepEqual(
       ranges.map(({ start, count }) => ({ start, count })),
       [
         { start: 0, count: 4 },
-        { start: 4, count: 4 },
+        { start: 0, count: 4 },
       ],
     )
     assert.deepEqual(transfer.keepProofDerivationLocators, [
-      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 6 },
-      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 7 },
+      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 2 },
+      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 3 },
     ])
-    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 8)
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
   } finally {
     await fixture.close()
   }
@@ -2890,7 +2938,8 @@ test('market funding stores the head with its custody operation and rejects a st
             throw new Error('stale initial attempt has no predecessor')
           },
         }),
-      /head changed|successor|predecessor/,
+      (error: unknown) =>
+        error instanceof OutgoingPreparationRetryError && error.reason === 'funding-successor',
     )
     assert.equal(mintCalls, 1)
     assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 1)
@@ -2913,7 +2962,14 @@ test('native funding exact begin retry needs no new debit consent or mint swap',
     })
     const deps = {
       getCustodyFence: () => fixture.fence,
-      createCashuWallet: () => activeWallet,
+      createCashuWallet: (
+        _mint: string,
+        _unit: string,
+        source?: import('@cashu/cashu-ts').CounterSource,
+      ) => {
+        if (source) testSendCounterSources.get(activeWallet)!(source)
+        return activeWallet
+      },
     }
     const client = {
       getDurableRecipientDeliveryStatus: async (deliveryId: string) =>
@@ -2979,6 +3035,18 @@ test('native funding exact begin retry needs no new debit consent or mint swap',
     })
     const retry = await deliverMarketFundingCashu({ ...common, attempt })
     assert.deepEqual(retry, first)
+    assert.equal(mintCalls, 1)
+    assert.equal(posts, 1)
+    const competing = await deliverMarketFundingCashu({
+      ...common,
+      attempt: {
+        ...attempt,
+        newAttemptId: '55555555-5555-4555-8555-555555555555',
+        requestedAmount: '7000',
+      },
+    })
+    assert.deepEqual(competing, first)
+    assert.equal(await fixture.transfer('55555555-5555-4555-8555-555555555555'), null)
     assert.equal(mintCalls, 1)
     assert.equal(posts, 1)
     const secondAttempt = {
@@ -3320,14 +3388,14 @@ async function createFixture(
       outputProofs.set(output.blindedMessage.B_, signedProof(output, selectedKeys, proofPrivateKey))
     for (const output of outputPlan.keepOutputs)
       outputProofs.set(output.blindedMessage.B_, signedProof(output, selectedKeys, proofPrivateKey))
-    const counterSource = createDaemonCounterSource(
+    let counterSource: import('@cashu/cashu-ts').CounterSource = createDaemonCounterSource(
       () => ({ fence: counterFence, observedAtMs: Date.now() }),
       {
         normalizedMint: mintUrl,
         unit,
       },
     )
-    return {
+    const result = {
       loadMint: async () => {},
       receive: async () => [],
       send: async () => ({ keep: [], send: [] }),
@@ -3423,6 +3491,10 @@ async function createFixture(
         verify: () => true,
       }),
     }
+    testSendCounterSources.set(result, (source) => {
+      counterSource = source
+    })
+    return result
   }
   const addAvailableProof = async (mintUrl: string, proof: Proof) => {
     await addAvailableProofs(mintUrl, [proof], { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
@@ -3978,7 +4050,7 @@ for (const partial of [false, true]) {
         unselectedProofs: proofs.filter((proof) => proof.id !== FEE_KEYSET_ID),
       })
       const keyset = (id?: string) => ({
-        id: id ?? KEYSET_ID,
+        id: id ?? FEE_KEYSET_ID,
         unit: 'msat',
         keys: KEYS,
         fee: id === FEE_KEYSET_ID ? 500 : 0,
@@ -4008,7 +4080,7 @@ for (const partial of [false, true]) {
         successorOutputs,
         proofState: () => CheckStateEnum.UNSPENT,
       })
-      reclaimWallet.getKeyset = keyset
+      reclaimWallet.getKeyset = (id?: string) => keyset(id ?? KEYSET_ID)
       reclaimWallet.prepareSwapToReceive = async (token, config) => {
         config?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 20, count: successors.length })
         return {
