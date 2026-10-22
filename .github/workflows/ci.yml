@@ -16,6 +16,25 @@ env:
   DOTNET_VERSION: 10.0.x
 
 jobs:
+  secret-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check new secret candidates
+        env:
+          SCAN_EVENT: ${{ github.event_name }}
+          SCAN_HEAD: ${{ github.sha }}
+        run: >-
+          python3 tools/security-audit/incremental_secrets.py
+          --repo . --event-name "$SCAN_EVENT" --event-path "$GITHUB_EVENT_PATH"
+          --head "$SCAN_HEAD"
+
   formatting:
     runs-on: ubuntu-latest
     timeout-minutes: 10
