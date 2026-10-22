@@ -18,7 +18,7 @@
     "test:server": "node --test server-tests/*.node-test.mjs",
     "test:nut16-browser": "vitest run --config vitest.browser.config.ts",
     "test:watch": "vitest",
-    "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts && openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o ../bitcaster-client-sdk/src/generated/api.ts"
+    "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts && openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o ../bitcaster-client-sdk/src/generated/api.ts && prettier --write ../bitcaster-client-sdk/src/generated/api.ts"
   },
   "dependencies": {
     "@cashu/cashu-ts": "file:../cashu-ts",
