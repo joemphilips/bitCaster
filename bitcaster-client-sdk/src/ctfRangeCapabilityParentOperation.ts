@@ -1,3 +1,4 @@
+import { reconstructCtfRangePreparation } from './ctfRangeOrderCounterPreparation.ts'
 import { requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
 import {
   OutputData,
@@ -27,7 +28,6 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import {
-  prepareCtfRangeOrderAuthorization,
   type ActiveCtfRangeMintKeyset,
   type CtfRangeOrderPreparation,
 } from './ctfRangeOrderPreparation.ts'
@@ -134,10 +134,7 @@ export class CtfRangeCapabilityParentPreparationContext {
     }
     const cached = this.#materialized.get(operationId)
     if (cached !== undefined) return cached
-    const materialized = prepareCtfRangeOrderAuthorization({
-      seed: this.#seed,
-      ...withoutRequest(preparation),
-    })
+    const materialized = reconstructCtfRangePreparation(preparation, this.#seed)
     this.#materialized.set(operationId, materialized)
     return materialized
   }
@@ -1199,11 +1196,6 @@ function authorizationAmounts(preparation: PersistedCtfRangeOrderPreparation): s
   const amounts = planPersistedCtfRangeOrderAuthorization(preparation).authorizationAmounts
   authorizationAmountCache.set(preparation, amounts)
   return amounts
-}
-
-function withoutRequest(preparation: PersistedCtfRangeOrderPreparation) {
-  const { version: _, request: _request, ...input } = preparation
-  return input
 }
 
 function mintKeys(keyset: ActiveCtfRangeMintKeyset): MintKeys {

@@ -8,12 +8,16 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils.js'
 import {
   decodeCtfRangeOrderRequest,
+  decodeCtfRangeOrderPreparationFromRecord,
   decodePersistedCtfRangeOrderPreparation,
+  decodePersistedCtfRangeOrderPreparationV2,
   planPersistedCtfRangeOrderAuthorization,
   type CtfRangeOrderRequest,
   type PersistedCtfRangeOrderPreparation,
+  type PersistedCtfRangeOrderPreparationV2,
 } from './ctfRangeOrderProtocol.ts'
 import {
+  decodeCtfRangeOrderPreparationIdentity,
   CTF_RANGE_ORDER_FEE_CONSENT_BYTES_MAX,
   decodeCtfRangeOrderPreparationArtifact,
   encodeCtfRangeOrderPreparationArtifact,
@@ -40,7 +44,7 @@ export interface CtfRangePreparationIntent {
 }
 
 export interface CounterCtfRangePreparation extends Omit<
-  PersistedCtfRangeOrderPreparation,
+  PersistedCtfRangeOrderPreparationV2,
   'version'
 > {
   readonly version: 3
@@ -171,13 +175,13 @@ export function planCounterCtfRangePreparation(preparation: PersistedCtfRangeOrd
 
 /** The caller must atomically retain this receipt with both reserved ranges. */
 export function createCounterCtfRangePreparation(input: {
-  preparation: PersistedCtfRangeOrderPreparation
+  preparation: PersistedCtfRangeOrderPreparationV2
   intent: CtfRangePreparationIntent
   seed: Uint8Array
   offerCounterStart: number
   receiveCounterStart: number
 }): CounterCtfRangePreparation {
-  const base = decodePersistedCtfRangeOrderPreparation(input.preparation)
+  const base = decodePersistedCtfRangeOrderPreparationV2(input.preparation)
   const { intent, digest } = decodeIntent(input.intent)
   requireSeedScope(input.seed, intent.scopeId)
   const counts = planCounterCtfRangePreparation(base)
@@ -211,7 +215,7 @@ export function decodeCounterCtfRangePreparation(value: unknown): CounterCtfRang
   if (input.version !== 3) fail()
   const baseInput: Record<string, unknown> = { ...input, version: 2 }
   for (const field of EXTRA_FIELDS) delete baseInput[field]
-  const base = decodePersistedCtfRangeOrderPreparation(baseInput)
+  const base = decodePersistedCtfRangeOrderPreparationV2(baseInput)
   const { intent, digest } = decodeIntent(input.preparationIntent)
   if (
     input.preparationIntentDigest !== digest ||
@@ -309,4 +313,81 @@ function requireSeedScope(seed: Uint8Array, scopeId: string): void {
     }) !== scopeId
   )
     fail()
+}
+
+/** A bounded provider result. Providers retain ownership of transaction and fencing. */
+export function selectCtfRangePreparationForIntent<
+  T extends import('./ctfRangeOrderJournal.ts').CtfRangeOrderPreparationRecord & {
+    readonly consolidateProofs: boolean
+  },
+>(rows: readonly T[], intentValue: CtfRangePreparationIntent): T | null {
+  const wanted = decodeIntent(intentValue)
+  if (rows.length > 32) throw new Error('CTF preparation history exceeds its limit')
+  const matches: T[] = []
+  for (const row of rows) {
+    const { consolidateProofs: _policy, ...sdkRecord } = row
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(sdkRecord)
+    if (
+      row.scopeId !== wanted.intent.scopeId ||
+      row.clientOrderId !== wanted.intent.request.clientOrderId ||
+      typeof row.consolidateProofs !== 'boolean'
+    )
+      fail()
+    const actual = createCtfRangePreparationIntent({
+      scopeId: row.scopeId,
+      request: preparation.request,
+      feeConsentBytes: row.feeConsentBytes,
+      consolidateProofs: row.consolidateProofs,
+    })
+    if (preparation.version === 3 && actual.digest !== preparation.preparationIntentDigest) fail()
+    if (actual.digest === wanted.digest) matches.push(row)
+  }
+  if (rows.length > 1) throw new Error('CTF preparation history is ambiguous')
+  if (matches.length === 1) return matches[0]!
+  if (rows.length > 0) throw new Error('CTF preparation intent conflicts with its retained receipt')
+  return null
+}
+
+export function assertCounterPreparationRecordBinding(
+  preparation: CounterCtfRangePreparation,
+  record: import('./ctfRangeOrderJournal.ts').CtfRangeOrderPreparationRecord,
+): void {
+  if (
+    preparation.preparationIntent.scopeId !== record.scopeId ||
+    preparation.preparationIntent.feeConsentHex !==
+      (record.feeConsentBytes === null ? null : bytesToHex(record.feeConsentBytes))
+  )
+    fail()
+}
+
+/** Creates the existing journal identity; storage adds its own lifecycle and revision. */
+export function counterCtfRangePreparationIdentity(
+  value: CounterCtfRangePreparation,
+  createdAtMs: number,
+): import('./ctfRangeOrderJournal.ts').CtfRangeOrderPreparationIdentity {
+  const preparation = decodeCounterCtfRangePreparation(value)
+  return decodeCtfRangeOrderPreparationIdentity({
+    scopeId: preparation.preparationIntent.scopeId,
+    rangeOperationId: preparation.operationId,
+    sourceOperationId: preparation.sourceOperationId,
+    authorizationId: preparation.authorizationId,
+    clientOrderId: preparation.request.clientOrderId,
+    orderRouteId: preparation.request.marketId,
+    normalizedMint: preparation.mintUrl,
+    conditionId: preparation.conditionId,
+    unit: 'msat',
+    tokenSide: preparation.request.tokenSide,
+    side: preparation.side,
+    priceSubunits: preparation.priceNumerator,
+    amountSubunits: preparation.amountSubunits,
+    minimumFillAmountSubunits: preparation.request.minimumFillAmountSubunits,
+    divisibility: preparation.divisibility,
+    authorizationExpiresAtUnixSeconds: preparation.expiry,
+    preparationBytes: encodeCounterCtfRangePreparation(preparation),
+    feeConsentBytes:
+      preparation.preparationIntent.feeConsentHex === null
+        ? null
+        : hexToBytes(preparation.preparationIntent.feeConsentHex),
+    createdAtMs,
+  })
 }

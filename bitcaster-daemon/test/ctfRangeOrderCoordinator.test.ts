@@ -1,3 +1,17 @@
+import { loadCtfRangeMintMetadata } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
+import {
+  buildPersistedCtfRangeOrderPreparation,
+  deriveCounterCtfRangeIdentity,
+  createCtfRangePreparationIntent,
+  decodeCtfRangeOrderPreparationFromRecord,
+  encodePersistedCtfRangeOrderPreparation,
+  selectCtfRangePreparationForIntent,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import {
+  readRangePreparationHistoryByClientOrderId,
+  toSdkRangePreparationRecord,
+} from '../src/ctfRangeOrderJournalSqlite.ts'
+
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -62,6 +76,7 @@ import { createCtfRangeRecoveryLoop } from '../src/ctfRangeRecoveryLoop.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, type CustodyScopeFence } from '../src/profileFencing.ts'
 import {
+  reserveDaemonCtfPreparation,
   completeCtfRangeRefundProofOperationFromDatabase,
   prepareCtfRangeRefundProofOperationFromDatabase,
   emptyDaemonState,
@@ -72,7 +87,7 @@ import {
   writeState,
   type StoredProofAsset,
 } from '../src/state.ts'
-import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { createDaemonStateSqliteSession, openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
@@ -363,7 +378,11 @@ test('daemon retries the exact capability request after its acknowledgement is l
         committed?.wallet.proofs.reduce((total, { proof }) => total + Number(proof.amount), 0),
         7_690,
       )
-      assert.equal(committed?.proofOperations['range-operation-1:source']?.state, 'completed')
+      assert.equal(
+        committed?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source']
+          ?.state,
+        'completed',
+      )
       assert.deepEqual(committed?.orders, {})
 
       const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -419,7 +438,7 @@ test('daemon retries the exact capability request after its acknowledgement is l
       )
       await assert.rejects(
         restarted.prepare({ ...orderRequest(), maxQuotePaymentSubunits: 501 }, client),
-        /foreign/,
+        /intent conflicts/,
       )
       assert.equal(posted.length, 2)
 
@@ -535,7 +554,9 @@ test(
           nowMs += timers[0]!.delayMs
           const finished = await pass(timers.shift()!.callback)
           assert.deepEqual(finished.pending, [])
-          assert.deepEqual(finished.recovered, ['range-operation-retry-wake:source'])
+          assert.deepEqual(finished.recovered, [
+            (await counterRangeId(directory, 'client-order-1')) + ':source',
+          ])
           assert.equal(timers.length, 0)
           assert.equal(posted.length, 2)
           assert.equal(wallet.completeCalls, 1)
@@ -783,7 +804,7 @@ test('daemon accepts exact fee consent and refuses changed source fees before mi
       const consent = await previewCoordinator.previewFeeFacts(orderRequest(), client)
       assert.equal(consent.sourcePreparationFeeSubunits, '1')
       const prepared = await coordinator.prepare(orderRequest(), client, undefined, consent)
-      assert.equal(prepared.operationId, 'range-fee-consent-operation')
+      assert.equal(prepared.operationId, await counterRangeId(directory))
       assert.equal(wallet.completeCalls, 1)
     },
   )
@@ -1048,7 +1069,8 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
         /mint swap acknowledgement lost/,
       )
       const interrupted = await readState()
-      const consolidationId = 'range-operation-consolidated:source:consolidation:0'
+      const consolidationId =
+        (await counterRangeId(directory, 'client-order-1')) + ':source:consolidation:0'
       assert.equal(interrupted?.proofOperations[consolidationId]?.state, 'prepared')
       assert.equal(
         interrupted?.wallet.proofs.filter(({ state: proofState }) => proofState === 'reserved')
@@ -1092,7 +1114,8 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
       assert.equal(recovered?.proofOperations[consolidationId]?.state, 'completed')
       assert.equal(recovered?.proofOperations[consolidationId]?.metadata.fees, 1)
       assert.equal(
-        recovered?.proofOperations['range-operation-consolidated:source']?.state,
+        recovered?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source']
+          ?.state,
         'completed',
       )
       assert.deepEqual(recovered?.orders, {})
@@ -1189,7 +1212,9 @@ test('daemon refuses a higher cumulative fee after a committed consolidation bef
       assert.match(result.pending[0]!.error, /fee consent does not match/)
       assert.equal(wallet.completeCalls, 1)
       assert.equal(
-        (await readState())?.proofOperations['range-fee-rise-operation:source'],
+        (await readState())?.proofOperations[
+          (await counterRangeId(directory, 'client-order-1')) + ':source'
+        ],
         undefined,
       )
     },
@@ -1301,7 +1326,8 @@ test('daemon keeps source reservations after a definite exact replay rejection a
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.state, 'reserved')
       assert.equal(
-        state?.proofOperations['range-operation-expired-rejection:source']?.state,
+        state?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source']
+          ?.state,
         'prepared',
       )
       assert.deepEqual(state?.orders, {})
@@ -1323,7 +1349,7 @@ test('daemon keeps source reservations after a definite exact replay rejection a
             `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
              WHERE range_operation_id = ?`,
           )
-          .get('range-operation-expired-rejection')
+          .get(await counterRangeId(directory))
         assert.equal(preparation?.lifecycle, 'prepared')
       } finally {
         database.close()
@@ -1436,7 +1462,11 @@ test('daemon applies a late exact source result and refunds locally without capa
       assert.equal(orderCalls, 0)
 
       const state = await readState()
-      assert.equal(state?.proofOperations['range-operation-late-source:source']?.state, 'completed')
+      assert.equal(
+        state?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source']
+          ?.state,
+        'completed',
+      )
       assert.ok(
         Object.values(state?.proofOperations ?? {}).some(
           ({ state: operationState, metadata }) =>
@@ -1451,7 +1481,7 @@ test('daemon applies a late exact source result and refunds locally without capa
             `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
              WHERE range_operation_id = ?`,
           )
-          .get('range-operation-late-source')
+          .get(await counterRangeId(directory))
         assert.equal(terminal?.lifecycle, 'terminal')
       } finally {
         database.close()
@@ -1518,14 +1548,14 @@ test('daemon routes an expired capability-requested journal to local refund with
           `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
            WHERE range_operation_id = ?`,
         )
-        .get('range-operation-expired-capability')
+        .get(await counterRangeId(directory))
       pendingDatabase.close()
       assert.equal(pending?.lifecycle, 'capability-requested')
 
       nowMs = 29_000
       crossExpiryDuringExactRequestRead = true
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-expired-capability:source'],
+        recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
         pending: [],
       })
       assert.ok(recoveryFenceReads >= 2)
@@ -1692,7 +1722,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
         observedAtMs: nowMs,
       })
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-rejected:source'],
+        recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
         pending: [],
       })
 
@@ -1944,7 +1974,7 @@ for (const acknowledgementLost of [true, false])
         const interrupted = await coordinator.recover(WALLET_SEED_HEX, client)
         if (!acknowledgementLost) {
           assert.deepEqual(interrupted, {
-            recovered: ['range-operation-result:source'],
+            recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
             pending: [],
           })
           const completion = observations.filter(({ phase }) => phase === 'result-completion')
@@ -1995,7 +2025,7 @@ for (const acknowledgementLost of [true, false])
 
         result = engineResult(prepared, loaded.operation, selection.selection)
         assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-          recovered: ['range-operation-result:source'],
+          recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
           pending: [],
         })
         assert.equal(acknowledgementCalls, 1)
@@ -2378,7 +2408,7 @@ for (const persistedStage of [false, true])
         }
 
         assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-          recovered: ['range-operation-mint-recovery:source'],
+          recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
           pending: [],
         })
         const selectedObservations = observations.slice(applicationStart)
@@ -2459,7 +2489,7 @@ for (const persistedStage of [false, true])
         crashPrefix.close()
         const retryStart = observations.length
         assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-          recovered: ['range-operation-mint-recovery:source'],
+          recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
           pending: [],
         })
         const retry = observations.slice(retryStart)
@@ -2642,7 +2672,7 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
         dependencies,
       )
       assert.deepEqual(await restarted.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-refund:source'],
+        recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
         pending: [],
       })
       assert.equal(refundRequests.length, 1, 'restart must not submit a second refund request')
@@ -2804,7 +2834,7 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       assert.match(deferredRepair.pending[0]!.error, /temporary refund metadata unavailable/)
       repairMetadataUnavailable = false
       assert.deepEqual(await legacyRecovery.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-refund:source'],
+        recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
         pending: [],
       })
       const metadataCalls = mint.calls.getKeys
@@ -2975,7 +3005,12 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
           const interrupted = await readState()
           assert.equal(interrupted?.wallet.proofs.length, 1)
           assert.equal(interrupted?.wallet.proofs[0]?.state, 'reserved')
-          assert.equal(interrupted?.proofOperations['range-staged:source']?.state, 'prepared')
+          assert.equal(
+            interrupted?.proofOperations[
+              (await counterRangeId(directory, 'client-order-1')) + ':source'
+            ]?.state,
+            'prepared',
+          )
           const database = await openDaemonStateSqlite(directory)
           try {
             assert.equal(
@@ -3098,13 +3133,17 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
       )
 
       assert.deepEqual(prepared.consolidation, {
-        operationIds: ['range-operation-conditional:source:consolidation:0'],
+        operationIds: [
+          (await counterRangeId(directory, 'client-order-1')) + ':source:consolidation:0',
+        ],
         feeSubunits: 1,
       })
       assert.equal(wallet.completeCalls, 2)
       await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
       assert.equal(
-        (await readState())?.proofOperations['range-operation-conditional:source']?.state,
+        (await readState())?.proofOperations[
+          (await counterRangeId(directory, 'client-order-1')) + ':source'
+        ]?.state,
         'completed',
       )
       await assertSeedAbsentFromArtifacts(directory)
@@ -3158,14 +3197,16 @@ test('daemon prepares a real retained successor through a fresh range preparatio
         },
         engine,
       )
-      const firstSource = (await readState())?.proofOperations['range-retained-producer:source']
+      const firstSource = (await readState())?.proofOperations[
+        (await counterRangeId(directory, 'client-retained-producer')) + ':source'
+      ]
       assert.equal(firstSource?.state, 'completed')
       const retainedSuccessors = firstSource?.resultProofs?.keep ?? []
       assert.ok(retainedSuccessors.length > 0)
       await assertSourceCustodyIdentity(
         directory,
         'ctf-range-conditional-source',
-        'range-retained-producer:source',
+        (await counterRangeId(directory, 'client-retained-producer')) + ':source',
       )
       const beforeFollowUp = await retainedSuccessorRows(directory, retainedSuccessors)
       assert.ok(
@@ -3178,7 +3219,10 @@ test('daemon prepares a real retained successor through a fresh range preparatio
       let checkedFollowUpReservation = false
       wallet.beforeCompleteConditionalSwap = async () => {
         const preparedState = await readState()
-        const preparedSource = preparedState?.proofOperations['range-retained-follow-up:source']
+        const preparedSource =
+          preparedState?.proofOperations[
+            (await counterRangeId(directory, 'client-retained-follow-up')) + ':source'
+          ]
         assert.equal(preparedSource?.state, 'prepared')
         const retainedSecrets = new Set(retainedSuccessors.map(({ secret }) => secret))
         assert.ok(
@@ -3187,7 +3231,7 @@ test('daemon prepares a real retained successor through a fresh range preparatio
         )
         await assertExactTargetAndCanonicalReservations(
           directory,
-          'range-retained-follow-up:source',
+          (await counterRangeId(directory, 'client-retained-follow-up')) + ':source',
           preparedSource!.inputs,
         )
         checkedFollowUpReservation = true
@@ -3205,7 +3249,9 @@ test('daemon prepares a real retained successor through a fresh range preparatio
         },
         engine,
       )
-      const followUpSource = (await readState())?.proofOperations['range-retained-follow-up:source']
+      const followUpSource = (await readState())?.proofOperations[
+        (await counterRangeId(directory, 'client-retained-follow-up')) + ':source'
+      ]
       assert.equal(followUpSource?.state, 'completed')
       assert.equal(checkedFollowUpReservation, true)
       const retainedSecrets = new Set(retainedSuccessors.map(({ secret }) => secret))
@@ -3216,7 +3262,7 @@ test('daemon prepares a real retained successor through a fresh range preparatio
       await assertSourceCustodyIdentity(
         directory,
         'ctf-range-conditional-source',
-        'range-retained-follow-up:source',
+        (await counterRangeId(directory, 'client-retained-follow-up')) + ':source',
       )
       assert.equal(wallet.completeCalls, 2)
     },
@@ -5169,3 +5215,386 @@ async function assertSeedAbsentFromArtifacts(directory: string): Promise<void> {
     database.close()
   }
 }
+
+async function atomicPreparationInput(
+  directory: string,
+  fence: CustodyScopeFence,
+  clientOrderId = 'atomic-request',
+) {
+  const { walletSeedHex: _seed, consolidateProofs: _policy, ...request } = orderRequest()
+  request.clientOrderId = clientOrderId
+  const candidate = buildPersistedCtfRangeOrderPreparation({
+    request,
+    coordinatorPublicKey: COORDINATOR_KEY,
+    mintFacts: await loadCtfRangeMintMetadata({
+      mint: fakeMint(),
+      mintUrl: MINT_URL,
+      conditionId: CONDITION_ID,
+      observedAt: 10,
+      allowInsecureLoopbackHttp: false,
+    }),
+    market: {
+      outcomes: [
+        { id: 'yes-id', label: 'YES' },
+        { id: 'no-id', label: 'NO' },
+      ],
+    },
+    nowUnixSeconds: 10,
+    randomId: randomIds(clientOrderId),
+  })
+  const { intent } = createCtfRangePreparationIntent({
+    scopeId: fence.scopeId,
+    request,
+    feeConsentBytes: null,
+    consolidateProofs: false,
+  })
+  return {
+    storage: createDaemonStateSqliteSession(directory),
+    mutation: { fence, observedAtMs: 10000 },
+    intent,
+    candidate,
+    seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
+  }
+}
+
+async function atomicDatabaseSnapshot(directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return {
+      target: database.prepare('SELECT * FROM target_keyset_counters ORDER BY keyset_id').all(),
+      custody: database.prepare('SELECT * FROM custody_keyset_counters ORDER BY keyset_id').all(),
+      preparations: database
+        .prepare('SELECT * FROM daemon_ctf_range_preparations ORDER BY range_operation_id')
+        .all(),
+      fence: database.prepare('SELECT * FROM custody_scope_state').all(),
+    }
+  } finally {
+    database.close()
+  }
+}
+
+for (const fault of ['first-cursor', 'receipt'])
+  test(`atomic preparation SQLite rolls back ${fault} failure`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'ctf-atomic-',
+        incarnationId: 'atomic-fault-incarnation',
+        proofs: [],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        const input = await atomicPreparationInput(directory, fence)
+        const before = await atomicDatabaseSnapshot(directory)
+        const database = await openDaemonStateSqlite(directory)
+        database.exec(
+          fault === 'first-cursor'
+            ? `CREATE TRIGGER atomic_abort AFTER INSERT ON target_keyset_counters BEGIN SELECT RAISE(ABORT,'atomic injected'); END`
+            : `CREATE TRIGGER atomic_abort AFTER INSERT ON daemon_ctf_range_preparations BEGIN SELECT RAISE(ABORT,'atomic injected'); END`,
+        )
+        try {
+          await assert.rejects(reserveDaemonCtfPreparation(input), /atomic injected/)
+        } finally {
+          database.exec('DROP TRIGGER atomic_abort')
+          database.close()
+        }
+        assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+      },
+    )
+  })
+
+test('atomic preparation SQLite concurrent allocation, reopen replay, exhausted replay and intent conflict', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'ctf-atomic-',
+      incarnationId: 'atomic-success-incarnation',
+      proofs: [],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const input = await atomicPreparationInput(directory, fence)
+      const [first, retry] = await Promise.all([
+        reserveDaemonCtfPreparation(input),
+        reserveDaemonCtfPreparation({
+          ...input,
+          storage: createDaemonStateSqliteSession(directory),
+        }),
+      ])
+      assert.deepEqual(first, retry)
+      const receipt = decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(first))
+      assert.equal(receipt.version, 3)
+      const another = await atomicPreparationInput(directory, fence, 'atomic-other')
+      const second = decodeCtfRangeOrderPreparationFromRecord(
+        toSdkRangePreparationRecord(await reserveDaemonCtfPreparation(another)),
+      )
+      assert.equal(second.version, 3)
+      if (receipt.version !== 3 || second.version !== 3) throw new Error('expected v3')
+      assert.equal(second.offerCounterStart, receipt.offerCounterStart + receipt.offerCounterCount)
+      assert.equal(
+        second.receiveCounterStart,
+        receipt.receiveCounterStart + receipt.receiveCounterCount,
+      )
+      const distinct = await Promise.all(
+        ['third', 'fourth'].map(async (id) =>
+          reserveDaemonCtfPreparation(await atomicPreparationInput(directory, fence, id)),
+        ),
+      )
+      const distinctReceipts = distinct
+        .map((row) => decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(row)))
+        .sort((left, right) =>
+          left.version === 3 && right.version === 3
+            ? left.offerCounterStart - right.offerCounterStart
+            : 0,
+        )
+      assert.equal(distinctReceipts[0]!.version, 3)
+      assert.equal(distinctReceipts[1]!.version, 3)
+      if (distinctReceipts[0]!.version !== 3 || distinctReceipts[1]!.version !== 3)
+        throw new Error('expected v3')
+      assert.equal(
+        distinctReceipts[1]!.offerCounterStart,
+        distinctReceipts[0]!.offerCounterStart + distinctReceipts[0]!.offerCounterCount,
+      )
+      assert.equal(
+        distinctReceipts[1]!.receiveCounterStart,
+        distinctReceipts[0]!.receiveCounterStart + distinctReceipts[0]!.receiveCounterCount,
+      )
+
+      const database = await openDaemonStateSqlite(directory)
+      database.exec(
+        'UPDATE target_keyset_counters SET next_counter=2147483648; UPDATE custody_keyset_counters SET next_counter=2147483648;',
+      )
+      database.close()
+      const before = await atomicDatabaseSnapshot(directory)
+      assert.deepEqual(
+        await reserveDaemonCtfPreparation({
+          ...input,
+          storage: createDaemonStateSqliteSession(directory),
+        }),
+        first,
+      )
+      const changed = { ...input, intent: { ...input.intent, consolidateProofs: true } }
+      await assert.rejects(reserveDaemonCtfPreparation(changed), /conflicts/)
+      await assert.rejects(
+        reserveDaemonCtfPreparation(
+          await atomicPreparationInput(directory, fence, 'exhausted-new'),
+        ),
+        /Invalid counter/,
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+    },
+  )
+})
+
+test('atomic preparation SQLite stale fence and one-sided authority do not create a receipt', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'ctf-atomic-',
+      incarnationId: 'atomic-stale-incarnation',
+      proofs: [],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const input = await atomicPreparationInput(directory, fence)
+      const before = await atomicDatabaseSnapshot(directory)
+      await assert.rejects(
+        reserveDaemonCtfPreparation({
+          ...input,
+          mutation: {
+            ...input.mutation,
+            fence: { ...fence, fencingEpoch: fence.fencingEpoch + 1 },
+          },
+        }),
+        /stale or expired authority/,
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+      const database = await openDaemonStateSqlite(directory)
+      database
+        .prepare(
+          'INSERT INTO target_keyset_counters(scope_id,normalized_mint,unit,keyset_id,next_counter,updated_at_ms) VALUES(?,?,?,?,?,?)',
+        )
+        .run(fence.scopeId, MINT_URL, 'msat', input.candidate.offerKeyset.id, 1, 10000)
+      database.close()
+      const mismatched = await atomicDatabaseSnapshot(directory)
+      await assert.rejects(reserveDaemonCtfPreparation(input), /one-sided/)
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), mismatched)
+    },
+  )
+})
+
+test('atomic preparation SQLite terminal history replays exactly and changed intent conflicts', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'ctf-atomic-',
+      incarnationId: 'atomic-history-incarnation',
+      proofs: [],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const input = await atomicPreparationInput(directory, fence)
+      const first = await reserveDaemonCtfPreparation(input)
+      const database = await openDaemonStateSqlite(directory)
+      database
+        .prepare(
+          "UPDATE daemon_ctf_range_preparations SET lifecycle_state='terminal' WHERE range_operation_id=?",
+        )
+        .run(first.rangeOperationId)
+      const rows = readRangePreparationHistoryByClientOrderId(
+        database,
+        fence.scopeId,
+        input.intent.request.clientOrderId,
+      )
+      database.close()
+      const before = await atomicDatabaseSnapshot(directory)
+      const replay = await reserveDaemonCtfPreparation(input)
+      assert.equal(replay.lifecycleState, 'terminal')
+      assert.equal(replay.rangeOperationId, first.rangeOperationId)
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+      assert.throws(
+        () => selectCtfRangePreparationForIntent([rows[0]!, rows[0]!], input.intent),
+        /ambiguous/,
+      )
+      const differentIntent = {
+        ...rows[0]!,
+        rangeOperationId: input.candidate.operationId,
+        sourceOperationId: input.candidate.sourceOperationId,
+        authorizationId: input.candidate.authorizationId,
+        preparationBytes: encodePersistedCtfRangeOrderPreparation(input.candidate),
+        consolidateProofs: true,
+      }
+      for (const [matchingState, differentState] of [
+        ['terminal', 'prepared'],
+        ['prepared', 'terminal'],
+      ] as const) {
+        assert.throws(
+          () =>
+            selectCtfRangePreparationForIntent(
+              [
+                { ...rows[0]!, lifecycleState: matchingState },
+                { ...differentIntent, lifecycleState: differentState },
+              ],
+              input.intent,
+            ),
+          /ambiguous/,
+        )
+      }
+      assert.throws(
+        () => selectCtfRangePreparationForIntent(Array(33).fill(rows[0]), input.intent),
+        /limit/,
+      )
+      await assert.rejects(
+        reserveDaemonCtfPreparation({
+          ...input,
+          intent: { ...input.intent, consolidateProofs: true },
+        }),
+        /conflicts/,
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+    },
+  )
+})
+
+test('atomic preparation SQLite preserves and replays an existing v2 receipt without allocating', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'ctf-atomic-',
+      incarnationId: 'atomic-legacy-incarnation',
+      proofs: [],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const input = await atomicPreparationInput(directory, fence)
+      const first = await reserveDaemonCtfPreparation(input)
+      const database = await openDaemonStateSqlite(directory)
+      database
+        .prepare(
+          'UPDATE daemon_ctf_range_preparations SET range_operation_id=?,source_operation_id=?,authorization_id=?,preparation_body=? WHERE range_operation_id=?',
+        )
+        .run(
+          input.candidate.operationId,
+          input.candidate.sourceOperationId,
+          input.candidate.authorizationId,
+          encodePersistedCtfRangeOrderPreparation(input.candidate),
+          first.rangeOperationId,
+        )
+      database.close()
+      const before = await atomicDatabaseSnapshot(directory)
+      const replay = await reserveDaemonCtfPreparation({
+        ...input,
+        storage: createDaemonStateSqliteSession(directory),
+      })
+      assert.equal(replay.rangeOperationId, input.candidate.operationId)
+      assert.equal(
+        decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(replay)).version,
+        2,
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+      await assert.rejects(
+        reserveDaemonCtfPreparation({
+          ...input,
+          intent: { ...input.intent, consolidateProofs: true },
+        }),
+        /conflicts/,
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), before)
+    },
+  )
+})
+
+async function counterRangeId(
+  directory: string,
+  clientOrderId = 'client-order-1',
+): Promise<string> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const rows = readRangePreparationHistoryByClientOrderId(database, testScopeId(), clientOrderId)
+    assert.equal(rows.length, 1)
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(
+      toSdkRangePreparationRecord(rows[0]!),
+    )
+    assert.equal(preparation.version, 3)
+    if (preparation.version !== 3) throw new Error('expected v3 preparation')
+    const identity = deriveCounterCtfRangeIdentity(
+      Buffer.from(WALLET_SEED_HEX, 'hex'),
+      preparation.offerKeyset.id,
+      preparation.offerCounterStart,
+    )
+    assert.equal(rows[0]!.rangeOperationId, identity.operationId)
+    return identity.operationId
+  } finally {
+    database.close()
+  }
+}
+
+test('atomic preparation SQLite lost commit reply reopens the exact receipt without another allocation', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'ctf-atomic-',
+      incarnationId: 'atomic-lost-reply-incarnation',
+      proofs: [],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const input = await atomicPreparationInput(directory, fence)
+      const storage = {
+        ...input.storage,
+        transaction: async <T>(
+          ...args: Parameters<typeof input.storage.transaction<T>>
+        ): Promise<T> => {
+          await input.storage.transaction<T>(...args)
+          throw new Error('lost commit reply')
+        },
+      }
+      await assert.rejects(reserveDaemonCtfPreparation({ ...input, storage }), /lost commit reply/)
+      const committed = await atomicDatabaseSnapshot(directory)
+      assert.equal(committed.preparations.length, 1)
+      const replay = await reserveDaemonCtfPreparation({
+        ...input,
+        storage: createDaemonStateSqliteSession(directory),
+      })
+      assert.deepEqual(
+        Buffer.from(replay.preparationBytes),
+        Buffer.from(committed.preparations[0]!.preparation_body as Uint8Array),
+      )
+      assert.deepEqual(await atomicDatabaseSnapshot(directory), committed)
+    },
+  )
+})

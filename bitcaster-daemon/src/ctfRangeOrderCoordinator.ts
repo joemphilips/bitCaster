@@ -1,3 +1,5 @@
+import { readRangePreparationHistoryByClientOrderId } from './ctfRangeOrderJournalSqlite.ts'
+import { reserveDaemonCtfPreparation } from './state.ts'
 import { deriveDurableCustodyProofId } from '@bitcaster-market/client-sdk/durableCustody'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -47,7 +49,6 @@ import {
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
   completeCtfRangeOrderAuthorization,
-  prepareCtfRangeOrderAuthorization,
   type ActiveCtfRangeMintKeyset,
   type CtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderPreparation'
@@ -76,6 +77,10 @@ import {
   type CtfRangeMintClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
 import {
+  createCtfRangePreparationIntent,
+  selectCtfRangePreparationForIntent,
+  reconstructCtfRangePreparation,
+  type PersistedCtfRangeOrderPreparationV2,
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeOrderPreparationKeysetResolver,
   createCtfRangeSettlementCapabilityRequest,
@@ -84,7 +89,6 @@ import {
   settlementCapabilityV1WorkFacts,
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
-  encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
   exactCtfRangeOrderPreparationMintKeysets,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeConditionalMintKeyset,
@@ -163,10 +167,8 @@ import {
 import {
   appendRangePreparationConsolidation,
   bindRangePreparationCapability,
-  insertRangePreparation,
   linkRangePreparationSource,
   pageActiveRangePreparations,
-  readActiveRangePreparationByClientOrderId,
   readRangePreparation,
   toSdkRangePreparationRecord,
   transitionRangePreparation,
@@ -929,6 +931,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const { preparationInput, metadata, mint } = await this.#buildNewMintAuthority(request, client)
     const durablePreparation = await this.#persistPreparation(
       preparationInput,
+      request.walletSeedHex,
       request.consolidateProofs,
       consentBytes,
     )
@@ -947,7 +950,7 @@ export class DaemonCtfRangeOrderCoordinator {
     request: PrepareSettlementCapabilityInput,
     client: EngineClientLike,
   ): Promise<{
-    readonly preparationInput: PersistedPreparationInput
+    readonly preparationInput: PersistedCtfRangeOrderPreparationV2
     readonly metadata: LoadedMintMetadata
     readonly mint: CtfRangeMintLike
   }> {
@@ -994,77 +997,56 @@ export class DaemonCtfRangeOrderCoordinator {
     request: PrepareSettlementCapabilityInput,
     consentBytes: Uint8Array | null,
   ): Promise<PersistedPreparationInput | null> {
-    const observedAtMs = this.#nowMs()
+    const { intent } = createCtfRangePreparationIntent({
+      scopeId: this.#getFence().scopeId,
+      request: persistedOrderRequest(request),
+      feeConsentBytes: consentBytes,
+      consolidateProofs: request.consolidateProofs,
+    })
     return withDurableCustodyFencedRead(
       this.#storage,
       this.#getFence(),
-      observedAtMs,
+      this.#nowMs(),
       (database) => {
-        const record = readActiveRangePreparationByClientOrderId(
-          database,
-          this.#getFence().scopeId,
-          request.clientOrderId,
+        const record = selectCtfRangePreparationForIntent(
+          readRangePreparationHistoryByClientOrderId(
+            database,
+            intent.scopeId,
+            intent.request.clientOrderId,
+          ),
+          intent,
         )
         if (record === null) return null
-        if (record.consolidateProofs !== request.consolidateProofs) {
-          throw new Error('daemon CTF range preparation policy conflicts with its journal')
-        }
-        assertSameFeeConsent(record.feeConsentBytes, consentBytes)
-        return preparationFromJournal(record, persistedOrderRequest(request))
+        if (record.lifecycleState === 'terminal')
+          throw new Error('CTF preparation has already completed')
+        return preparationFromJournal(record, intent.request)
       },
     )
   }
 
   async #persistPreparation(
-    input: PersistedPreparationInput,
+    input: PersistedCtfRangeOrderPreparationV2,
+    walletSeedHex: string,
     consolidateProofs: boolean,
     consentBytes: Uint8Array | null,
   ): Promise<PersistedPreparationInput> {
     const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const existing = readActiveRangePreparationByClientOrderId(
-          database,
-          mutation.fence.scopeId,
-          input.request.clientOrderId,
-        )
-        if (existing !== null) {
-          if (existing.consolidateProofs !== consolidateProofs) {
-            throw new Error('daemon CTF range preparation policy conflicts with its journal')
-          }
-          assertSameFeeConsent(existing.feeConsentBytes, consentBytes)
-          return preparationFromJournal(existing, input.request)
-        }
-        return preparationFromJournal(
-          insertRangePreparation(database, {
-            scopeId: mutation.fence.scopeId,
-            rangeOperationId: input.operationId,
-            sourceOperationId: input.sourceOperationId,
-            authorizationId: input.authorizationId,
-            clientOrderId: input.request.clientOrderId,
-            orderRouteId: input.request.marketId,
-            normalizedMint: input.mintUrl,
-            conditionId: input.conditionId,
-            unit: 'msat',
-            tokenSide: input.request.tokenSide,
-            side: input.side,
-            priceSubunits: input.priceNumerator,
-            amountSubunits: input.amountSubunits,
-            minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
-            consolidateProofs,
-            divisibility: input.divisibility,
-            authorizationExpiresAtUnixSeconds: input.expiry,
-            preparationBytes: encodeCanonicalRangePreparation(input),
-            feeConsentBytes: consentBytes,
-            createdAtMs: mutation.observedAtMs,
-          }),
-          input.request,
-        )
-      },
-    )
+    const { intent } = createCtfRangePreparationIntent({
+      scopeId: mutation.fence.scopeId,
+      request: input.request,
+      feeConsentBytes: consentBytes,
+      consolidateProofs,
+    })
+    const record = await reserveDaemonCtfPreparation({
+      storage: this.#storage,
+      mutation,
+      intent,
+      candidate: input,
+      seed: walletSeed(walletSeedHex),
+    })
+    if (record.lifecycleState === 'terminal')
+      throw new Error('CTF preparation has already completed')
+    return preparationFromJournal(record, input.request)
   }
 
   async #activeRangePreparations(
@@ -1883,10 +1865,7 @@ function preparedMintAuthority(
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   return {
-    preparation: prepareCtfRangeOrderAuthorization({
-      seed: walletSeed(walletSeedHex),
-      ...withoutRequest(preparationInput),
-    }),
+    preparation: reconstructCtfRangePreparation(preparationInput, walletSeed(walletSeedHex)),
     preparationInput,
     lookup: ctfRangeOrderPreparationKeysetLookup(preparationInput),
     observation: metadata.observation,
@@ -1926,23 +1905,10 @@ function persistedOrderRequest(
   return structuredClone(request) as PersistedPreparationInput['request']
 }
 
-function assertSameFeeConsent(persisted: Uint8Array | null, supplied: Uint8Array | null): void {
-  if (!isDeepStrictEqual(persisted, supplied)) {
-    throw new Error('daemon CTF range fee consent conflicts with its journal')
-  }
-}
-
 function requireFokOrder(timeInForce: unknown): asserts timeInForce is 'FOK' {
   if (timeInForce !== 'FOK') {
     throw new Error('public range orders require FOK')
   }
-}
-
-function withoutRequest(
-  input: PersistedPreparationInput,
-): Omit<PersistedPreparationInput, 'request' | 'version'> {
-  const { request: _, version: __, ...preparation } = input
-  return preparation
 }
 
 async function loadEngineMarket(client: EngineClientLike, conditionId: string): Promise<unknown> {
@@ -1968,10 +1934,7 @@ function persistedMintAuthority(
   storage: DaemonStateSqliteSession,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
-  const preparation = prepareCtfRangeOrderAuthorization({
-    seed: walletSeed(walletSeedHex),
-    ...withoutRequest(input),
-  })
+  const preparation = reconstructCtfRangePreparation(input, walletSeed(walletSeedHex))
   return {
     preparation,
     preparationInput: input,

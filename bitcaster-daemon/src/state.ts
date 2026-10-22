@@ -1,7 +1,24 @@
+import {
+  createCounterCtfRangePreparation,
+  planCounterCtfRangePreparation,
+  selectCtfRangePreparationForIntent,
+  counterCtfRangePreparationIdentity,
+  type CtfRangePreparationIntent,
+  type PersistedCtfRangeOrderPreparationV2,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import {
+  deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyWalletId,
+  deriveDurableCustodyScopeId,
+} from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  insertRangePreparation,
+  readRangePreparationHistoryByClientOrderId,
+  type RangePreparationRecord,
+} from './ctfRangeOrderJournalSqlite.ts'
 import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
 import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
-import { deriveDurableCustodyArtifactFingerprint } from '@bitcaster-market/client-sdk/durableCustody'
 import { requireCtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { createHash } from 'node:crypto'
@@ -42,6 +59,7 @@ import {
   createDaemonStateSqliteSession,
   openDaemonStateSqlite,
   withDaemonStateSqliteTransaction,
+  type DaemonStateSqliteSession,
   type StateSqliteFaultPhase,
 } from './stateSqlite.ts'
 import {
@@ -478,6 +496,75 @@ export async function reserveDaemonKeysetCounter(
         mutation.observedAtMs,
         binding,
       ),
+  )
+}
+
+/** Commits both counter authorities and the actual preparation receipt under one fence. */
+export async function reserveDaemonCtfPreparation(input: {
+  storage: DaemonStateSqliteSession
+  mutation: FencedStateMutation
+  intent: CtfRangePreparationIntent
+  candidate: PersistedCtfRangeOrderPreparationV2
+  seed: Uint8Array
+}): Promise<RangePreparationRecord> {
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(input.seed),
+  })
+  if (scopeId !== input.mutation.fence.scopeId || scopeId !== input.intent.scopeId)
+    throw new Error('CTF preparation scope is foreign')
+  return withDurableCustodyUnitOfWork(
+    input.storage,
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => {
+      const replay = selectCtfRangePreparationForIntent(
+        readRangePreparationHistoryByClientOrderId(
+          database,
+          scopeId,
+          input.intent.request.clientOrderId,
+        ),
+        input.intent,
+      )
+      if (replay !== null) return replay
+      const candidate = input.candidate
+      const counts = planCounterCtfRangePreparation(candidate)
+      const binding = { normalizedMint: candidate.mintUrl, unit: 'msat' as const }
+      const offerStart = readExactBoundCounter(database, scopeId, candidate.offerKeyset.id, binding)
+      const receiveStart = readExactBoundCounter(
+        database,
+        scopeId,
+        candidate.receiveKeyset.id,
+        binding,
+      )
+      const preparation = createCounterCtfRangePreparation({
+        preparation: candidate,
+        intent: input.intent,
+        seed: input.seed,
+        offerCounterStart: offerStart,
+        receiveCounterStart: receiveStart,
+      })
+      writeExactBoundCounter(
+        database,
+        scopeId,
+        candidate.offerKeyset.id,
+        binding,
+        offerStart + counts.offerCount,
+        input.mutation.observedAtMs,
+      )
+      writeExactBoundCounter(
+        database,
+        scopeId,
+        candidate.receiveKeyset.id,
+        binding,
+        receiveStart + counts.receiveCount,
+        input.mutation.observedAtMs,
+      )
+      return insertRangePreparation(database, {
+        ...counterCtfRangePreparationIdentity(preparation, input.mutation.observedAtMs),
+        consolidateProofs: preparation.preparationIntent.consolidateProofs,
+      })
+    },
   )
 }
 
