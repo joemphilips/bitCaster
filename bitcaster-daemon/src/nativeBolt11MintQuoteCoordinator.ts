@@ -1,5 +1,5 @@
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
-import type { MintPreview, MintQuoteBolt11Response, Proof } from '@cashu/cashu-ts'
+import type { CounterSource, MintPreview, MintQuoteBolt11Response, Proof } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
   type DurableCustodyOwnerAuthorization,
@@ -46,7 +46,14 @@ import {
 } from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { createDaemonStateSqliteSession, type StateSqliteFaultPhase } from './stateSqlite.ts'
-import { admitExactAvailableWalletProofsFromDatabase, readExactBoundCounter } from './state.ts'
+import {
+  admitExactAvailableWalletProofsFromDatabase,
+  readExactBoundCounter,
+  readDaemonCounterSnapshots,
+  commitDaemonCounterTranscript,
+  DaemonCounterSnapshotConflictError,
+} from './state.ts'
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import { NativeBolt11MintQuoteSqliteStore } from './nativeBolt11MintQuoteSqlite.ts'
 
 const QUOTE_RECOVERY_ERROR = 'native BOLT11 mint quote recovery failed'
@@ -99,6 +106,7 @@ export interface NativeBolt11MintQuoteWallet {
     amountMsat: number,
     quote: MintQuoteBolt11Response,
     config: {
+      readonly keysetId: string
       readonly onCountersReserved: (range: NativeBolt11MintCounterRange) => void
     },
   ): Promise<MintPreview<{ quote: string; expiry?: number | null }>>
@@ -166,7 +174,11 @@ export type NativeBolt11MintQuoteRecoveryItem =
 export interface NativeBolt11MintQuoteCoordinatorOptions {
   readonly directory: string
   readonly getFence: () => CustodyScopeFence
-  readonly walletFor: (mintUrl: string, unit: 'msat') => Promise<NativeBolt11MintQuoteWallet>
+  readonly walletFor: (
+    mintUrl: string,
+    unit: 'msat',
+    counterSource?: CounterSource,
+  ) => Promise<NativeBolt11MintQuoteWallet>
   readonly restoreExactOutputs: (input: {
     readonly mintUrl: string
     readonly unit: string
@@ -210,6 +222,17 @@ export class NativeBolt11MintQuoteCoordinator {
   }): Promise<NativeBolt11MintQuoteView> {
     let stage: NativeBolt11MintQuoteCreateStage = 'validate-input'
     try {
+      const capturedFence = this.#getFence()
+      const requireOperationFence = () => {
+        const current = this.#getFence()
+        if (
+          current.scopeId !== capturedFence.scopeId ||
+          current.incarnationId !== capturedFence.incarnationId ||
+          current.fencingEpoch !== capturedFence.fencingEpoch
+        )
+          throw new Error('native BOLT11 mint operation fence changed')
+        return current
+      }
       requirePositiveAmount(input.amountMsat)
       const mintUrl = canonicalMintUrl(input.mintUrl)
       stage = 'load-wallet'
@@ -229,81 +252,175 @@ export class NativeBolt11MintQuoteCoordinator {
         observedState: response.state,
       })
 
-      let reservedRange: NativeBolt11MintCounterRange | null = null
-      stage = 'prepare-output'
-      const preview = await wallet.prepareMint('bolt11', input.amountMsat, response, {
-        onCountersReserved: (range) => {
-          if (reservedRange !== null) {
-            throw new Error('native BOLT11 mint counter range was reserved more than once')
-          }
-          reservedRange = decodeCounterRange(range)
-        },
-      })
-      stage = 'validate-output'
-      assertPreparedMintPlan(preview, quote, reservedRange)
-      stage = 'serialize-operation'
-      const operation = serializeDurableWalletMintOperation({
-        operationId: quote.walletMintOperationId,
-        mintUrl,
-        unit: 'msat',
-        preview,
-      })
-      const boundQuote = bindDurableBolt11MintQuoteOperation(quote, operation)
-      const custodyOperation = toDurableCustodyProofOperationInput(operation)
-      stage = 'prepare-authority'
-      const authority = prepareDurableCustodyMintOperationAuthority({
-        operation: custodyOperation,
-        keysets: mintKeysets(custodyOperation, wallet),
-      })
-      const fence = this.#getFence()
-      const scope = walletScope(fence)
-      stage = 'create-custody-record'
-      const record = createDurableCustodyProofOperation({
-        scope,
-        operation: custodyOperation,
-        facts: authority.facts,
-        inventoryAccountId: null,
-        exactBoundary: {
-          method: 'POST',
-          path: '/v1/mint/bolt11',
-          idempotencyKey: operation.operationId,
-          requestBody: authority.exactRequest,
-          output: authority.exactOutput,
-          privateMaterial: authority.exactAuthority,
-        },
-      })
-      const observedAtMs = this.#now()
-      stage = 'persist-quote'
-      await withDurableCustodyUnitOfWork(
-        this.#storage,
-        fence,
-        observedAtMs,
-        (database) => {
-          assertPersistedCounterRange(database, scope.scopeId, operation, reservedRange!)
-          const transaction = new DurableCustodyTransactionSqlite(
-            database,
-            scope.scopeId,
+      const selectedKeyset = wallet.getKeyset()
+      const pinnedKeyset = selectedKeyset && {
+        id: selectedKeyset.id,
+        unit: selectedKeyset.unit,
+        fee: selectedKeyset.fee,
+        expiry: selectedKeyset.expiry,
+        conditional: selectedKeyset.conditional,
+        keys: { ...selectedKeyset.keys },
+      }
+      if (
+        !pinnedKeyset ||
+        !isV2KeysetId(pinnedKeyset.id) ||
+        pinnedKeyset.unit !== 'msat' ||
+        selectedKeyset?.verify?.() !== true ||
+        pinnedKeyset.conditional !== undefined
+      ) {
+        throw new Error('native BOLT11 mint output keyset is invalid')
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const transcript = createSpeculativeCounterTranscript(
+          await readDaemonCounterSnapshots({
+            storage: this.#storage,
+            mutation: { fence: requireOperationFence(), observedAtMs: this.#now() },
+            keysetIds: [pinnedKeyset.id],
+            binding: { normalizedMint: mintUrl, unit: 'msat' },
+          }),
+        )
+        const draftWallet = await this.#loadedWallet(mintUrl, transcript.counterSource)
+        const draftKeyset = draftWallet.getKeyset(pinnedKeyset.id)
+        if (
+          !draftKeyset ||
+          draftKeyset.id !== pinnedKeyset.id ||
+          draftKeyset.unit !== pinnedKeyset.unit ||
+          draftKeyset.fee !== pinnedKeyset.fee ||
+          draftKeyset.expiry !== pinnedKeyset.expiry ||
+          draftKeyset.conditional !== undefined ||
+          draftKeyset.verify?.() !== true ||
+          JSON.stringify(Object.entries(draftKeyset.keys).sort()) !==
+            JSON.stringify(Object.entries(pinnedKeyset.keys).sort())
+        )
+          throw new Error('native BOLT11 mint pinned keyset changed')
+        let reservationCallbacks = 0
+        let reservedRange: NativeBolt11MintCounterRange | null = null
+        stage = 'prepare-output'
+        const preview = await draftWallet.prepareMint('bolt11', input.amountMsat, response, {
+          keysetId: pinnedKeyset.id,
+          onCountersReserved: (range) => {
+            reservationCallbacks += 1
+            if (reservedRange !== null) {
+              throw new Error('native BOLT11 mint counter range was reserved more than once')
+            }
+            reservedRange = decodeCounterRange(range)
+          },
+        })
+        stage = 'validate-output'
+        assertPreparedMintPlan(preview, quote, reservedRange)
+        const allocations = transcript.allocations()
+        const allocation = allocations[0]
+        if (
+          reservationCallbacks !== 1 ||
+          allocations.length !== 1 ||
+          !allocation ||
+          allocation.keysetId !== pinnedKeyset.id ||
+          allocation.start !== reservedRange!.start ||
+          allocation.count !== reservedRange!.count
+        ) {
+          throw new Error('native BOLT11 mint counter transcript conflicts')
+        }
+        stage = 'serialize-operation'
+        const operation = serializeDurableWalletMintOperation({
+          operationId: quote.walletMintOperationId,
+          mintUrl,
+          unit: 'msat',
+          preview,
+        })
+        const boundQuote = bindDurableBolt11MintQuoteOperation(quote, operation)
+        const custodyOperation = toDurableCustodyProofOperationInput(operation)
+        stage = 'prepare-authority'
+        const authority = prepareDurableCustodyMintOperationAuthority({
+          operation: custodyOperation,
+          keysets: mintKeysets(custodyOperation, {
+            getKeyset: (id) =>
+              id === pinnedKeyset.id ? { ...pinnedKeyset, verify: () => true } : undefined,
+          }),
+        })
+        const fence = requireOperationFence()
+        const scope = walletScope(fence)
+        stage = 'create-custody-record'
+        const record = createDurableCustodyProofOperation({
+          scope,
+          operation: custodyOperation,
+          facts: authority.facts,
+          inventoryAccountId: null,
+          exactBoundary: {
+            method: 'POST',
+            path: '/v1/mint/bolt11',
+            idempotencyKey: operation.operationId,
+            requestBody: authority.exactRequest,
+            output: authority.exactOutput,
+            privateMaterial: authority.exactAuthority,
+          },
+        })
+        const observedAtMs = this.#now()
+        stage = 'persist-quote'
+        try {
+          const committedQuote = await withDurableCustodyUnitOfWork(
+            this.#storage,
+            fence,
             observedAtMs,
+            (database) => {
+              const saved = new NativeBolt11MintQuoteSqliteStore(database).get(
+                scope.scopeId,
+                quote.quoteRecordId,
+              )
+              if (saved !== null) {
+                const loaded = loadQuoteWithCustody(database, scope.scopeId, saved)
+                assertSameRemoteQuote(loaded.quote, quote)
+                return loaded.quote
+              }
+              if (
+                new DurableCustodySqliteStore(database).getOperationByRetainedOperationKey(
+                  scope.scopeId,
+                  quote.walletMintOperationId,
+                ) !== null
+              )
+                throw new Error('native BOLT11 mint quote binding is incomplete')
+              commitDaemonCounterTranscript(
+                database,
+                scope.scopeId,
+                { normalizedMint: mintUrl, unit: 'msat' },
+                transcript,
+                observedAtMs,
+              )
+              const transaction = new DurableCustodyTransactionSqlite(
+                database,
+                scope.scopeId,
+                observedAtMs,
+              )
+              applyDurableCustodyTransaction(
+                transaction,
+                selection(record, owner(fence, observedAtMs), null),
+                (selected) =>
+                  bindDurableCustodyProofOperation(selected, record, {
+                    requestBody: authority.exactRequest,
+                    output: authority.exactOutput,
+                    privateMaterial: authority.exactAuthority,
+                  }),
+              )
+              new NativeBolt11MintQuoteSqliteStore(database).insert({
+                scopeId: scope.scopeId,
+                custodyOperationId: record.operation.operationId,
+                quote: boundQuote,
+              })
+              return boundQuote
+            },
+            this.#transactionOptions(),
           )
-          applyDurableCustodyTransaction(
-            transaction,
-            selection(record, owner(fence, observedAtMs), null),
-            (selected) =>
-              bindDurableCustodyProofOperation(selected, record, {
-                requestBody: authority.exactRequest,
-                output: authority.exactOutput,
-                privateMaterial: authority.exactAuthority,
-              }),
-          )
-          new NativeBolt11MintQuoteSqliteStore(database).insert({
-            scopeId: scope.scopeId,
-            custodyOperationId: record.operation.operationId,
-            quote: boundQuote,
-          })
-        },
-        this.#transactionOptions(),
-      )
-      return toView(boundQuote)
+          return toView(committedQuote)
+        } catch (error) {
+          requireOperationFence()
+          const saved = await this.#loadQuote(quote.quoteRecordId, quote.walletMintOperationId)
+          if (saved !== null) {
+            assertSameRemoteQuote(saved.quote, quote)
+            return toView(saved.quote)
+          }
+          if (!(error instanceof DaemonCounterSnapshotConflictError) || attempt === 2) throw error
+        }
+      }
+      throw new Error('native BOLT11 mint preparation exhausted')
     } catch (error) {
       writeNativeBolt11MintQuoteCreateDiagnostic(stage, error)
       throw error
@@ -624,14 +741,27 @@ export class NativeBolt11MintQuoteCoordinator {
     )
   }
 
-  async #loadQuote(quoteRecordId: string): Promise<LoadedQuote | null> {
+  async #loadQuote(
+    quoteRecordId: string,
+    retainedOperationId?: string,
+  ): Promise<LoadedQuote | null> {
     const fence = this.#getFence()
     return withDurableCustodyFencedRead(this.#storage, fence, this.#now(), (database) => {
       const quoteRecord = new NativeBolt11MintQuoteSqliteStore(database).get(
         fence.scopeId,
         quoteRecordId,
       )
-      if (quoteRecord === null) return null
+      if (quoteRecord === null) {
+        if (
+          retainedOperationId !== undefined &&
+          new DurableCustodySqliteStore(database).getOperationByRetainedOperationKey(
+            fence.scopeId,
+            retainedOperationId,
+          ) !== null
+        )
+          throw new Error('native BOLT11 mint quote binding is incomplete')
+        return null
+      }
       return loadQuoteWithCustody(database, fence.scopeId, quoteRecord)
     })
   }
@@ -666,8 +796,11 @@ export class NativeBolt11MintQuoteCoordinator {
     )
   }
 
-  async #loadedWallet(mintUrl: string): Promise<NativeBolt11MintQuoteWallet> {
-    const wallet = await this.#walletFor(mintUrl, 'msat')
+  async #loadedWallet(
+    mintUrl: string,
+    counterSource?: CounterSource,
+  ): Promise<NativeBolt11MintQuoteWallet> {
+    const wallet = await this.#walletFor(mintUrl, 'msat', counterSource)
     if (canonicalMintUrl(wallet.mint.mintUrl) !== mintUrl) {
       throw new Error('native BOLT11 mint wallet URL conflicts')
     }
@@ -731,7 +864,7 @@ function loadQuoteWithCustody(
 
 function mintKeysets(
   operation: ReturnType<typeof toDurableCustodyProofOperationInput>,
-  wallet: NativeBolt11MintQuoteWallet,
+  wallet: Pick<NativeBolt11MintQuoteWallet, 'getKeyset'>,
 ) {
   const ids = new Set(
     Object.values(operation.outputs).flatMap((outputs) =>
@@ -763,18 +896,22 @@ function mintKeysets(
   })
 }
 
-function assertPersistedCounterRange(
-  database: Parameters<typeof readExactBoundCounter>[0],
-  scopeId: string,
-  operation: DurableWalletMintOperation,
-  range: NativeBolt11MintCounterRange | null,
+function assertSameRemoteQuote(
+  saved: DurableBolt11MintQuote,
+  expected: DurableBolt11MintQuote,
 ): void {
-  if (range === null) throw new Error('native BOLT11 mint counter range is missing')
-  const next = readExactBoundCounter(database, scopeId, range.keysetId, {
-    normalizedMint: operation.mintUrl,
-    unit: 'msat',
-  })
-  if (next < range.next) throw new Error('native BOLT11 mint counter authority is incomplete')
+  for (const key of [
+    'quoteRecordId',
+    'walletMintOperationId',
+    'mintUrl',
+    'unit',
+    'requestedAmount',
+    'quoteId',
+    'invoiceRequest',
+    'expiryUnixSeconds',
+  ] as const) {
+    if (saved[key] !== expected[key]) throw new Error('native BOLT11 mint saved quote conflicts')
+  }
 }
 
 function assertPreparedMintPlan(

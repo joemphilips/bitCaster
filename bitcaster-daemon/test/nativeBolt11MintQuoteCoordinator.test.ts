@@ -7,6 +7,7 @@ import test from 'node:test'
 import { bytesToHex } from '@noble/curves/utils.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
+  Mint as CashuMint,
   MintOperationError,
   OutputData,
   createBlindSignature,
@@ -14,6 +15,7 @@ import {
   deriveKeysetId,
   pointFromHex,
   type Proof,
+  type CounterSource,
 } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
@@ -35,8 +37,9 @@ import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DurableCustodyTransactionSqlite } from '../src/durableCustodyTransactionSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
 import { NativeBolt11MintQuoteSqliteStore } from '../src/nativeBolt11MintQuoteSqlite.ts'
+import { createWallet } from '../src/walletOps.ts'
 import { readAvailableWalletProofsFenced, reserveDaemonKeysetCounter } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 
@@ -60,7 +63,7 @@ test('commits quote and exact custody authority before invoice disclosure', asyn
       /injected quote commit failure/,
     )
     assert.deepEqual(await fixture.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
-    assert.equal(await fixture.counter(), 1)
+    assert.equal(await fixture.counter(), 0)
 
     const view = await fixture.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
     assert.equal(view.invoiceRequest, 'lnbc-quote-2')
@@ -252,7 +255,7 @@ test('rejects a foreign prepared quote or non-msat quote before mint I/O', async
       assert.equal(fixture.calls.prepare, scenario.prepareCalls)
       assert.equal(fixture.calls.check, 0)
       assert.equal(fixture.calls.complete, 0)
-      if (scenario.prepareCalls === 1) assert.equal(await fixture.counter(), 1)
+      if (scenario.prepareCalls === 1) assert.equal(await fixture.counter(), 0)
       assert.deepEqual(await fixture.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
     } finally {
       await fixture.close()
@@ -320,7 +323,173 @@ test('advances the generic active-work cursor across non-quote work and unpaid p
   }
 })
 
-async function createFixture() {
+test('real default wallet quote rolls back counters and binds counter zero then nonzero', async () => {
+  const f = await createFixture(true)
+  try {
+    const before = await f.facts()
+    await assert.rejects(
+      f
+        .coordinator({
+          injectFault: (phase) => {
+            if (phase === 'before-commit') throw new Error('atomic rollback')
+          },
+        })
+        .create({ mintUrl: MINT_URL, amountMsat: 1 }),
+      /atomic rollback/,
+    )
+    assert.equal(await f.counter(), 0)
+    assert.deepEqual(await f.facts(), before)
+    assert.deepEqual(await f.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
+    await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    assert.equal(await f.counter(), 1)
+    await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    assert.equal(await f.counter(), 2)
+  } finally {
+    await f.close()
+  }
+})
+
+test('real default quote retains one remote response across exactly three CAS conflicts', async () => {
+  const f = await createFixture(true)
+  try {
+    f.observeDraft(async () => {
+      await reserveDaemonKeysetCounter(
+        KEYSET_ID,
+        1,
+        { fence: f.fence, observedAtMs: 20 },
+        { normalizedMint: MINT_URL, unit: 'msat' },
+      )
+    })
+    await assert.rejects(
+      f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 }),
+      /counter snapshot/,
+    )
+    assert.equal(f.calls.quote, 1)
+    assert.equal(f.calls.prepare, 3)
+    assert.equal(await f.counter(), 3)
+    assert.deepEqual(await f.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+test('quote creation reconciles lost COMMIT reply without a second allocation', async () => {
+  const f = await createFixture(true)
+  try {
+    let injected = 0
+    const result = await f
+      .coordinator({
+        injectFault: (phase) => {
+          if (phase === 'after-commit') {
+            injected += 1
+            throw new Error('lost COMMIT reply')
+          }
+        },
+      })
+      .create({ mintUrl: MINT_URL, amountMsat: 1 })
+    assert.equal(result.quoteId, 'quote-1')
+    assert.equal(injected, 1)
+    assert.equal(f.calls.quote, 1)
+    assert.equal(await f.counter(), 1)
+    assert.deepEqual(await f.counts(), { quotes: 1, operations: 1, active: 1, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+test('competing saved quote wins with its own outputs rather than the losing transcript', async () => {
+  const f = await createFixture(true)
+  try {
+    let winner: Awaited<ReturnType<ReturnType<typeof f.coordinator>['create']>> | undefined
+    f.observeDraft(async () => {
+      f.observeDraft(undefined)
+      await reserveDaemonKeysetCounter(
+        KEYSET_ID,
+        1,
+        { fence: f.fence, observedAtMs: 20 },
+        { normalizedMint: MINT_URL, unit: 'msat' },
+      )
+      f.reuseLastQuote()
+      winner = await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    })
+    const result = await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    assert.deepEqual(result, winner)
+    assert.equal(f.draftPoints.length, 2)
+    assert.notDeepEqual(f.draftPoints[0], f.draftPoints[1])
+    const bodies = await f.savedArtifactBodies()
+    for (const point of f.draftPoints[1]!) assert.ok(bodies.includes(point))
+    for (const point of f.draftPoints[0]!) assert.ok(!bodies.includes(point))
+    assert.equal(await f.counter(), 2)
+    assert.deepEqual(await f.counts(), { quotes: 1, operations: 1, active: 1, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+test('quote refuses repeated reservation callbacks without durable allocation', async () => {
+  const f = await createFixture()
+  try {
+    f.duplicateReservation()
+    await assert.rejects(
+      f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 }),
+      /counter range was reserved more than once|counter transcript conflicts/,
+    )
+    assert.equal(await f.counter(), 0)
+    assert.deepEqual(await f.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+test('corrupt competing saved authority refuses instead of accepting or retrying a draft', async () => {
+  const f = await createFixture(true)
+  try {
+    f.observeDraft(async () => {
+      f.observeDraft(undefined)
+      f.reuseLastQuote()
+      await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+      await f.corruptSavedArtifact()
+    })
+    await assert.rejects(f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 }))
+    assert.equal(f.calls.prepare, 2)
+    assert.equal(await f.counter(), 1)
+    assert.deepEqual(await f.counts(), { quotes: 1, operations: 1, active: 1, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+test('quote permits renewed lease with unchanged operation identity', async () => {
+  const f = await createFixture(true)
+  try {
+    f.observeDraft(async () => {
+      f.setFence(await renewCustodyScopeLease(f.directory, f.fence, 50))
+    })
+    await f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    assert.equal(await f.counter(), 1)
+  } finally {
+    await f.close()
+  }
+})
+
+test('quote refuses changed operation fence after drafting without committing private outputs', async () => {
+  const f = await createFixture(true)
+  try {
+    f.observeDraft(async () => {
+      f.setFence({ ...f.fence, scopeId: 'foreign' })
+    })
+    await assert.rejects(
+      f.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 }),
+      /operation fence changed/,
+    )
+    assert.equal(await f.counter(), 0)
+    assert.deepEqual(await f.counts(), { quotes: 0, operations: 0, active: 0, proofs: 0 })
+  } finally {
+    await f.close()
+  }
+})
+
+async function createFixture(realWallet = false) {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-native-bolt11-coordinator-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = directory
@@ -338,13 +507,16 @@ async function createFixture() {
     walletId,
     scopeId: deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId }),
   }
-  const fence = await claimCustodyScopeLease(directory, {
+  let fence = await claimCustodyScopeLease(directory, {
     scopeId: initialized.walletScopeId,
     incarnationId: 'native-bolt11-coordinator-test',
     observedAtMs: 2,
   })
+  const draftPoints: string[][] = []
+  let afterDraft: (() => Promise<void>) | undefined
   let quoteNumber = 0
   let currentTime = 10
+  let duplicateReservation = false
   let duplicateMint = false
   let restoreValid = true
   let nextQuoteCreationError: string | null = null
@@ -391,19 +563,22 @@ async function createFixture() {
           next: number
         }) => void
       },
+      source?: CounterSource,
     ) => {
       calls.prepare += 1
-      const reserved = await reserveDaemonKeysetCounter(
-        KEYSET_ID,
-        1,
-        { fence, observedAtMs: ++currentTime },
-        { normalizedMint: MINT_URL, unit: 'msat' },
-      )
+      if (!source) throw new Error('fixture requires speculative counter source')
+      const reserved = await source.reserve(KEYSET_ID, 1)
       config.onCountersReserved({
         keysetId: KEYSET_ID,
         ...reserved,
         next: reserved.start + reserved.count,
       })
+      if (duplicateReservation)
+        config.onCountersReserved({
+          keysetId: KEYSET_ID,
+          ...reserved,
+          next: reserved.start + reserved.count,
+        })
       const output = OutputData.createSingleData(
         amountMsat,
         KEYSET_ID,
@@ -436,7 +611,9 @@ async function createFixture() {
       return [proofForOutput(output)]
     },
     getKeyset: (id?: string) =>
-      id === KEYSET_ID ? { id, unit: 'msat', keys: KEYS, fee: 0, verify: () => true } : undefined,
+      id === undefined || id === KEYSET_ID
+        ? { id: KEYSET_ID, unit: 'msat', keys: KEYS, fee: 0, verify: () => true }
+        : undefined,
   }
   const restoreExactOutputs = async (input: {
     mintUrl: string
@@ -470,11 +647,46 @@ async function createFixture() {
     new NativeBolt11MintQuoteCoordinator({
       directory,
       getFence: () => fence,
-      walletFor: async (mintUrl, unit) => {
+      walletFor: async (mintUrl, unit, source) => {
         calls.walletFor += 1
         assert.equal(mintUrl, MINT_URL)
         assert.equal(unit, 'msat')
-        return wallet
+        if (!realWallet)
+          return {
+            ...wallet,
+            prepareMint: async (method, amount, quote, config) => {
+              const preview = await wallet.prepareMint(method, amount, quote, config, source)
+              await afterDraft?.()
+              return preview
+            },
+          }
+        const mint = new CashuMint(MINT_URL)
+        mint.getInfo = async () => ({
+          nuts: { '4': { methods: [{ method: 'bolt11', unit: 'msat' }], disabled: false } },
+        })
+        mint.getKeySets = async () => ({
+          keysets: [{ id: KEYSET_ID, unit: 'msat', active: true, input_fee_ppk: 0 }],
+        })
+        mint.getKeys = async () => ({ keysets: [{ id: KEYSET_ID, unit: 'msat', keys: KEYS }] })
+        const actual = createWallet(
+          MINT_URL,
+          { walletSeedHex: WALLET_SEED_HEX },
+          { getCustodyFence: () => fence, createCashuMint: () => mint },
+          'sat',
+          'msat',
+          undefined,
+          source,
+        )
+        actual.createMintQuoteBolt11 = wallet.createMintQuoteBolt11
+        const prepare = actual.prepareMint!.bind(actual)
+        actual.prepareMint = async (...args) => {
+          const preview = await prepare(...args)
+          calls.prepare += 1
+          draftPoints.push(preview.outputData.map((output) => output.blindedMessage.B_))
+          await afterDraft?.()
+          return preview
+        }
+        return actual as unknown as import('../src/nativeBolt11MintQuoteCoordinator.ts').NativeBolt11MintQuoteWallet
       },
       restoreExactOutputs,
       now: () => ++currentTime,
@@ -484,6 +696,41 @@ async function createFixture() {
     directory,
     scope,
     fence,
+    duplicateReservation: () => {
+      duplicateReservation = true
+    },
+    corruptSavedArtifact: async () => {
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        database
+          .prepare("UPDATE custody_artifacts SET body = ? WHERE artifact_kind = 'private-material'")
+          .run(Buffer.from('{}'))
+      } finally {
+        database.close()
+      }
+    },
+    draftPoints,
+    savedArtifactBodies: async () => {
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        return database
+          .prepare('SELECT body FROM custody_artifacts')
+          .all()
+          .map((row) => Buffer.from(row.body as Uint8Array).toString('utf8'))
+          .join('\n')
+      } finally {
+        database.close()
+      }
+    },
+    reuseLastQuote: () => {
+      quoteNumber -= 1
+    },
+    setFence: (value: typeof fence) => {
+      fence = value
+    },
+    observeDraft: (value: (() => Promise<void>) | undefined) => {
+      afterDraft = value
+    },
     calls,
     coordinator,
     setState: (quoteId: string, state: 'UNPAID' | 'PAID' | 'ISSUED') =>
@@ -507,17 +754,44 @@ async function createFixture() {
       active: await countScoped(directory, 'SELECT count(*) AS count FROM custody_active_work'),
       proofs: await countScoped(directory, 'SELECT count(*) AS count FROM custody_proofs'),
     }),
+    facts: async () => {
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        return Object.fromEntries(
+          [
+            'target_keyset_counters',
+            'custody_keyset_counters',
+            'custody_artifacts',
+            'custody_operation_artifact_links',
+            'custody_operations',
+            'custody_active_work',
+            'daemon_bolt11_mint_quotes',
+          ].map((table) => [
+            table,
+            database
+              .prepare(`SELECT * FROM ${table}`)
+              .all()
+              .map((row) => JSON.stringify(row))
+              .sort(),
+          ]),
+        )
+      } finally {
+        database.close()
+      }
+    },
     counter: async () => {
       const database = await openDaemonStateSqlite(directory)
       try {
         return (
-          database
-            .prepare(
-              `SELECT next_counter AS count FROM custody_keyset_counters
+          (
+            database
+              .prepare(
+                `SELECT next_counter AS count FROM custody_keyset_counters
                WHERE scope_id = ? AND normalized_mint = ? AND unit = 'msat' AND keyset_id = ?`,
-            )
-            .get(scope.scopeId, MINT_URL, KEYSET_ID) as { count: number }
-        ).count
+              )
+              .get(scope.scopeId, MINT_URL, KEYSET_ID) as { count: number }
+          )?.count ?? 0
+        )
       } finally {
         database.close()
       }

@@ -34,16 +34,20 @@ import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import {
   admitExactAvailableWalletProofsFromDatabase,
   readAvailableWalletProofsFenced,
-  reserveDaemonKeysetCounter,
 } from '../src/state.ts'
 
 const MINT_URL = 'https://mint.example'
 const WALLET_SEED_HEX = '31'.repeat(64)
-const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
-const KEYS = Object.fromEntries(
-  ['1', '1024', '2048'].map((amount) => [
+const PRIVATE_KEYS = Object.fromEntries(
+  ['1', '1024', '2048'].map((amount, index) => [
     amount,
-    bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)),
+    Uint8Array.from([...new Uint8Array(31), index + 7]),
+  ]),
+)
+const KEYS = Object.fromEntries(
+  Object.entries(PRIVATE_KEYS).map(([amount, key]) => [
+    amount,
+    bytesToHex(secp256k1.getPublicKey(key, true)),
   ]),
 )
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1, input_fee_ppk: 1 })
@@ -181,7 +185,7 @@ test('recovery skips valid mint work and advances the shared active-work cursor'
       directory: fixture.directory,
       getFence: () => fixture.fence,
       now: fixture.nextTime,
-      walletFor: async () => ({
+      walletFor: async (_mintUrl, _unit, source) => ({
         mint: { mintUrl: MINT_URL },
         loadMint: async () => undefined,
         createMintQuoteBolt11: async (amountMsat) => {
@@ -196,12 +200,8 @@ test('recovery skips valid mint work and advances the shared active-work cursor'
           }
         },
         prepareMint: async (_method, amountMsat, quote, config) => {
-          const range = await reserveDaemonKeysetCounter(
-            KEYSET_ID,
-            1,
-            { fence: fixture.fence, observedAtMs: fixture.nextTime() },
-            { normalizedMint: MINT_URL, unit: 'msat' },
-          )
+          assert.ok(source)
+          const range = await source.reserve(KEYSET_ID, 1)
           config.onCountersReserved({
             keysetId: KEYSET_ID,
             ...range,
@@ -224,8 +224,8 @@ test('recovery skips valid mint work and advances the shared active-work cursor'
         checkMintQuote: async (quote) => ({ quote, state: 'UNPAID' as const }),
         completeMint: async () => [],
         getKeyset: (id) =>
-          id === KEYSET_ID
-            ? { id, unit: 'msat', keys: KEYS, fee: 1, verify: () => true }
+          id === undefined || id === KEYSET_ID
+            ? { id: KEYSET_ID, unit: 'msat', keys: KEYS, fee: 1, verify: () => true }
             : undefined,
       }),
       restoreExactOutputs: async () => [],
@@ -490,10 +490,13 @@ function custodyMaterial(proof: Proof): DurableCustodyProofMaterial {
 function signedProof(output: OutputData, amount = Number(output.blindedMessage.amount)): Proof {
   const blinded = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    PRIVATE_KEY,
+    PRIVATE_KEYS[String(amount)]!,
     KEYSET_ID,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    PRIVATE_KEYS[String(amount)]!,
+  )
   return output.toProof(
     {
       id: KEYSET_ID,
