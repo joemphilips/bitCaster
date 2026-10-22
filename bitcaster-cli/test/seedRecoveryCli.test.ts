@@ -47,6 +47,37 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     assert.doesNotMatch(result.stdout, /walletSeedHex/)
     assert.doesNotMatch(result.stdout, new RegExp(seed))
 
+    const defaults = [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--wallet-seed-hex-file',
+      seedPath,
+      '--recovery-id',
+      'policy-default',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ]
+    const defaultResult = await runCli(home, defaults)
+    assert.equal(defaultResult.code, 0)
+    assert.match(defaultResult.stdout, /"scope": "regular-msat"/)
+    assert.match(defaultResult.stdout, /"gapLimit": 300/)
+    const deeper = await runCli(home, [...defaults, '--gap-limit', '701'])
+    assert.equal(deeper.code, 0)
+    assert.match(deeper.stdout, /"gapLimit": 701/)
+    for (const value of ['0', '-1', '1.5', '01', '2147483649']) {
+      assert.notEqual((await runCli(home, [...defaults, '--gap-limit', value])).code, 0)
+    }
+    const condition = await runCli(home, [
+      ...defaults.map((value) => (value === seedPath ? join(home, 'absent-phrase') : value)),
+      '--condition-id',
+      'ab'.repeat(32),
+    ])
+    assert.notEqual(condition.code, 0)
+    assert.match(condition.stderr, /condition recovery requires approved mint discovery filter/)
+    assert.doesNotMatch(condition.stderr, /ENOENT/)
+
     const offline = await recoveryCli(home, seedPath, false)
     assert.notEqual(offline.code, 0)
     assert.doesNotMatch(`${offline.stdout}\n${offline.stderr}`, /daemon not reachable/i)

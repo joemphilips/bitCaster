@@ -219,8 +219,17 @@ The command-line wallet can use complete-local privacy mode. This mode can
 omit both encrypted backup and asset monitoring. It keeps complete wallet
 state in its local durable store.
 
-The CLI also keeps broad emergency NUT-09/NUT-13 recovery. Use it when the
-backup service is unavailable or when you need seed recovery. It scans regular
-keysets. It uses counter-zero discovery to select non-expired CTF keysets, and
-then scans the selected keysets fully. Each keyset uses the standard
-300-counter gap limit.
+Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when the backup
+service is unavailable. The command scans regular `msat` keysets only. It does
+not list conditional keysets. The default `--gap-limit` is 300. Set a larger
+gap to scan farther after the last verified signature. Each request has at most
+300 counters, and each invocation processes at most four batches.
+
+A recovery job binds its scope and gap limit. Retry with the same values. Use a
+new recovery ID for a deeper scan. The result reports scanned ranges and local
+counter bindings not covered by this scan. A completed scan does not prove
+that the wallet has no other funds. A gap can hide later outputs.
+
+Condition-scoped recovery is not available yet. `--condition-id` refuses before
+reading the phrase file or changing the recovery job. Stop the old client
+before seed recovery. Seed recovery does not restore live authorizations.

@@ -41,6 +41,7 @@ import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts
 import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
 import {
   DAEMON_PROFILE_DATABASE,
+  captureProfileSchemaManifest,
   ProfileSchemaRefusalError,
   validateDaemonProfileSchema,
 } from '../src/profileSchema.ts'
@@ -733,7 +734,7 @@ for (const kind of ['command', 'watch'] as const) {
   })
 }
 
-for (const version of [10, 13, 14]) {
+for (const version of [10, 13, 14, 15]) {
   test(`native custody cutover refuses schema version ${version} without changing profile bytes or modes`, async () => {
     const directory = join(await freshRoot(`claim-old-schema-${version}`), 'profile')
     await bootstrap(directory)
@@ -771,7 +772,7 @@ test('a missing Activity display table is refused without schema repair', async 
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
-  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 15)
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 16)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))
@@ -1612,3 +1613,67 @@ function installUnixRpcMock(t: TestContext, firstErrorCode?: string) {
   })
   return observed
 }
+
+test('exact v15 recovery jobs remain byte-identical and cannot enter a v16 writer', async () => {
+  const directory = await freshProfileDirectory('retained-v15-recovery')
+  await bootstrap(directory)
+  const path = join(directory, DAEMON_PROFILE_DATABASE)
+  const database = new DatabaseSync(path)
+  try {
+    database.exec(`PRAGMA foreign_keys=OFF;
+      DROP TRIGGER profile_schema_marker_no_update;
+      DROP TRIGGER profile_schema_marker_no_delete;
+      DROP TRIGGER seed_recovery_jobs_no_rebind;
+      DROP TRIGGER seed_recovery_keysets_no_rekey;
+      DROP TABLE seed_recovery_keysets;
+      DROP TABLE seed_recovery_jobs;
+      DROP TABLE profile_schema_marker;`)
+    database.exec(
+      await readFile(new URL('./fixtures/seed-recovery-v15.sql', import.meta.url), 'utf8'),
+    )
+    database
+      .prepare('INSERT INTO profile_schema_marker VALUES (1, ?, 15, 1)')
+      .run('bitcaster-daemon-profile')
+    const scope = database.prepare('SELECT scope_id AS id FROM custody_scopes LIMIT 1').get() as {
+      id: string
+    }
+    database
+      .prepare(
+        `INSERT INTO seed_recovery_jobs VALUES (?, ?, ?, 1, ?, 'msat', 'active', 0, 1, 0, 0, 1, 1)`,
+      )
+      .run('retained-v1-job', scope.id, 'retained-v1-invocation', 'https://mint.example')
+    database
+      .prepare(`INSERT INTO seed_recovery_keysets VALUES (?, ?, 300, 0, 1, 'active')`)
+      .run('retained-v1-job', `01${'a'.repeat(64)}`)
+    database.exec('PRAGMA user_version=15')
+    const current = getFinalProfileSchemaManifest()
+    const markers = current.markers.map((marker) =>
+      marker.name === 'schema-identity'
+        ? {
+            ...marker,
+            expectedRows: [
+              { singleton: 1, schemaName: 'bitcaster-daemon-profile', schemaVersion: 15 },
+            ],
+          }
+        : marker,
+    )
+    const old = captureProfileSchemaManifest(database, {
+      applicationId: current.applicationId,
+      userVersion: 15,
+      markers,
+    })
+    assert.equal(
+      createHash('sha256').update(JSON.stringify(old)).digest('hex'),
+      'fc13f1764e4b4add56c62e74441fe4d10bd3e53f95ed4ee4c837732e648edd9f',
+    )
+  } finally {
+    database.close()
+  }
+  const before = await snapshotDirectory(directory)
+  await assert.rejects(
+    validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()),
+    ProfileSchemaRefusalError,
+  )
+  await assert.rejects(readBootstrappedProfileSecrets(directory), ProfileSchemaRefusalError)
+  assert.deepEqual(await snapshotDirectory(directory), before)
+})

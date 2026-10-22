@@ -1,8 +1,14 @@
 // Re-authored from the ordinary emergency recovery cursor at 7e1385c.
+import {
+  createSeedRecoveryScanPolicy,
+  validateSeedRecoveryScanPolicy,
+  type SeedRecoveryScanPolicy,
+} from './seedRecoveryScanPolicy.ts'
+import { DURABLE_SEED_DERIVED_COUNTER_MAX } from './durableSeedDerivedPolicy.ts'
 import { advanceSeedScanCursor, classifySeedRecoveryMintState } from './seedRecoveryCore.ts'
 import { decodeCanonicalMintOrigin, decodeDurableCustodyScopeId } from './durableCustody.ts'
 
-export const EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION = 1 as const
+export const EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION = 2 as const
 export const EMERGENCY_SEED_RECOVERY_BATCH_SIZE = 300 as const
 export const EMERGENCY_SEED_RECOVERY_GAP_LIMIT = 300 as const
 declare const validatedRecoveryCoCommit: unique symbol
@@ -18,7 +24,14 @@ export interface EmergencySeedRecoveryCursor {
   trailingEmptyCounters: number
   revision: number
   state: 'active' | 'completed'
+  scanPolicy: SeedRecoveryScanPolicy
+  stopReason: null | 'gap-limit' | 'counter-exhausted'
 }
+
+export type LegacyEmergencySeedRecoveryCursor = Omit<
+  EmergencySeedRecoveryCursor,
+  'schemaVersion' | 'scanPolicy' | 'stopReason'
+> & { schemaVersion: 1 }
 
 export interface EmergencySeedRecoveryBatchObservation {
   expectedRevision: number
@@ -71,6 +84,7 @@ export function createEmergencySeedRecoveryCursor(input: {
   mintUrl: string
   unit: string
   keysetId: string
+  scanPolicy?: SeedRecoveryScanPolicy
 }): EmergencySeedRecoveryCursor {
   if (input.unit !== 'msat') {
     throw new Error('emergency seed recovery unit must be msat')
@@ -78,6 +92,11 @@ export function createEmergencySeedRecoveryCursor(input: {
   return validateEmergencySeedRecoveryCursor({
     schemaVersion: EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION,
     ...input,
+    scanPolicy:
+      input.scanPolicy === undefined
+        ? createSeedRecoveryScanPolicy()
+        : validateSeedRecoveryScanPolicy(input.scanPolicy),
+    stopReason: null,
     nextCounter: 0,
     trailingEmptyCounters: 0,
     revision: 0,
@@ -90,7 +109,10 @@ export function advanceEmergencySeedRecoveryCursor(
   observation: EmergencySeedRecoveryBatchObservation,
 ): EmergencySeedRecoveryCursor {
   const cursor = validateEmergencySeedRecoveryCursor(input)
-  if (!safeNonnegativeInteger(observation.scanThroughCounter)) {
+  if (
+    !safeNonnegativeInteger(observation.scanThroughCounter) ||
+    observation.scanThroughCounter > DURABLE_SEED_DERIVED_COUNTER_MAX + 1
+  ) {
     throw new Error('emergency seed recovery scan-through counter is invalid')
   }
   if (cursor.state !== 'active' && observation.scanThroughCounter <= cursor.nextCounter) {
@@ -112,16 +134,22 @@ export function advanceEmergencySeedRecoveryCursor(
     },
     EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
   )
+  if (advanced.nextCounter > DURABLE_SEED_DERIVED_COUNTER_MAX + 1)
+    throw new Error('seed recovery counter range exhausted')
+  const stopReason =
+    advanced.nextCounter === DURABLE_SEED_DERIVED_COUNTER_MAX + 1
+      ? 'counter-exhausted'
+      : advanced.consecutiveEmptyOutputs >= cursor.scanPolicy.gapLimit &&
+          advanced.nextCounter >= observation.scanThroughCounter
+        ? 'gap-limit'
+        : null
   return {
     ...cursor,
     nextCounter: advanced.nextCounter,
     trailingEmptyCounters: advanced.consecutiveEmptyOutputs,
     revision: cursor.revision + 1,
-    state:
-      advanced.consecutiveEmptyOutputs >= EMERGENCY_SEED_RECOVERY_GAP_LIMIT &&
-      advanced.nextCounter >= observation.scanThroughCounter
-        ? 'completed'
-        : 'active',
+    state: stopReason === null ? 'active' : 'completed',
+    stopReason,
   }
 }
 
@@ -177,7 +205,8 @@ export function validateEmergencySeedRecoveryCoCommit(
     next.recoveryId !== expected.recoveryId ||
     next.mintUrl !== expected.mintUrl ||
     next.unit !== expected.unit ||
-    next.keysetId !== expected.keysetId
+    next.keysetId !== expected.keysetId ||
+    JSON.stringify(next.scanPolicy) !== JSON.stringify(expected.scanPolicy)
   ) {
     throw new Error('emergency seed recovery co-commit scope is foreign')
   }
@@ -217,7 +246,10 @@ export function validateEmergencySeedRecoveryCoCommit(
     'scanThroughCounter',
   ])
   const observation = value.observation as unknown as EmergencySeedRecoveryBatchObservation
-  if (!safeNonnegativeInteger(observation.scanThroughCounter)) {
+  if (
+    !safeNonnegativeInteger(observation.scanThroughCounter) ||
+    observation.scanThroughCounter > DURABLE_SEED_DERIVED_COUNTER_MAX + 1
+  ) {
     throw new Error('emergency seed recovery scan-through counter is invalid')
   }
   if (
@@ -265,7 +297,10 @@ export function classifyEmergencySeedRecoveryProof(
   }
 }
 
-export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySeedRecoveryCursor {
+function validateCursor(
+  value: unknown,
+  legacy: boolean,
+): EmergencySeedRecoveryCursor | LegacyEmergencySeedRecoveryCursor {
   if (!isRecord(value)) {
     throw new Error('emergency seed recovery cursor is invalid')
   }
@@ -280,6 +315,7 @@ export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySe
     'trailingEmptyCounters',
     'revision',
     'state',
+    ...(legacy ? [] : ['scanPolicy', 'stopReason']),
   ]
   if (
     Object.keys(value).length !== fields.length ||
@@ -287,7 +323,7 @@ export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySe
   ) {
     throw new Error('emergency seed recovery cursor contains foreign fields')
   }
-  if (value.schemaVersion !== EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION) {
+  if (value.schemaVersion !== (legacy ? 1 : EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION)) {
     throw new Error('emergency seed recovery schema is unsupported')
   }
   for (const [label, text] of [
@@ -321,14 +357,65 @@ export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySe
   if ((value.trailingEmptyCounters as number) > (value.nextCounter as number)) {
     throw new Error('emergency seed recovery cursor counters are inconsistent')
   }
+  if (value.state !== 'active' && value.state !== 'completed')
+    throw new Error('emergency seed recovery state is invalid')
+  if (legacy) {
+    if (value.state === 'completed' && (value.trailingEmptyCounters as number) < 300)
+      throw new Error('legacy recovery completion is inconsistent')
+    return structuredClone(value) as unknown as LegacyEmergencySeedRecoveryCursor
+  }
+  const scanPolicy = validateSeedRecoveryScanPolicy(value.scanPolicy)
+  const exhausted = value.nextCounter === DURABLE_SEED_DERIVED_COUNTER_MAX + 1
   if (
-    (value.state !== 'active' && value.state !== 'completed') ||
+    (value.nextCounter as number) > DURABLE_SEED_DERIVED_COUNTER_MAX + 1 ||
+    (value.state === 'active' && (value.stopReason !== null || exhausted)) ||
     (value.state === 'completed' &&
-      (value.trailingEmptyCounters as number) < EMERGENCY_SEED_RECOVERY_GAP_LIMIT)
+      (exhausted
+        ? value.stopReason !== 'counter-exhausted'
+        : value.stopReason !== 'gap-limit' ||
+          (value.trailingEmptyCounters as number) < scanPolicy.gapLimit))
   ) {
     throw new Error('emergency seed recovery completion state is inconsistent')
   }
-  return structuredClone(value) as unknown as EmergencySeedRecoveryCursor
+  return { ...structuredClone(value), scanPolicy } as unknown as EmergencySeedRecoveryCursor
+}
+
+export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySeedRecoveryCursor {
+  return validateCursor(value, false) as EmergencySeedRecoveryCursor
+}
+
+/** Retained evidence only. A missing policy must never enter the new writer. */
+export function validateLegacyEmergencySeedRecoveryCursor(
+  value: unknown,
+): LegacyEmergencySeedRecoveryCursor {
+  return validateCursor(value, true) as LegacyEmergencySeedRecoveryCursor
+}
+
+/** Counts requests only; does not allocate counters or perform transport I/O. */
+export function planEmergencySeedRecoveryBatchCount(
+  input: EmergencySeedRecoveryCursor,
+  scanThroughCounter: number,
+): number {
+  const cursor = validateEmergencySeedRecoveryCursor(input)
+  if (
+    !safeNonnegativeInteger(scanThroughCounter) ||
+    scanThroughCounter > DURABLE_SEED_DERIVED_COUNTER_MAX + 1
+  )
+    throw new Error('seed recovery scan-through bound is invalid')
+  if (
+    cursor.nextCounter === DURABLE_SEED_DERIVED_COUNTER_MAX + 1 ||
+    (cursor.state === 'completed' && cursor.nextCounter >= scanThroughCounter)
+  )
+    return 0
+  const boundary =
+    cursor.nextCounter < scanThroughCounter
+      ? scanThroughCounter - cursor.nextCounter
+      : cursor.scanPolicy.gapLimit - cursor.trailingEmptyCounters
+  return Math.min(
+    EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
+    DURABLE_SEED_DERIVED_COUNTER_MAX + 1 - cursor.nextCounter,
+    boundary,
+  )
 }
 
 export const decodeEmergencySeedRecoveryCursor = validateEmergencySeedRecoveryCursor
@@ -379,6 +466,8 @@ function emergencySeedRecoveryCursorsEqual(
     left.nextCounter === right.nextCounter &&
     left.trailingEmptyCounters === right.trailingEmptyCounters &&
     left.revision === right.revision &&
-    left.state === right.state
+    left.state === right.state &&
+    left.stopReason === right.stopReason &&
+    JSON.stringify(left.scanPolicy) === JSON.stringify(right.scanPolicy)
   )
 }

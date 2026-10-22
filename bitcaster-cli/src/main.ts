@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
@@ -1623,7 +1624,7 @@ function registerWalletCommand(program: Command): void {
 
   wallet
     .command('recover-seed')
-    .description('Recover deterministic regular and selected CTF proofs from the wallet seed.')
+    .description('Recover regular msat proofs from the wallet seed with an explicit gap limit.')
     .requiredOption(
       '--wallet-seed-hex-file <path>',
       'Owner-only file containing the 64-byte wallet seed as lowercase hex',
@@ -1633,7 +1634,9 @@ function registerWalletCommand(program: Command): void {
       'Stable recovery job id. Reuse it for later invocations until recovery completes',
     )
     .requiredOption('--mint <url>', 'Canonical mint origin')
-    .requiredOption('--unit <unit>', 'Product mint unit: msat')
+    .option('--unit <unit>', 'Product mint unit: msat', 'msat')
+    .option('--condition-id <id>', 'Selected condition (requires approved mint discovery support)')
+    .option('--gap-limit <count>', 'Consecutive unsigned positions before stopping', '300')
     .option(
       '--acknowledge-seed-disclosure',
       'Acknowledge that recovery discloses deterministic proof candidates to the mint',
@@ -1646,6 +1649,8 @@ function registerWalletCommand(program: Command): void {
         recoveryId: string
         mint: string
         unit: string
+        conditionId?: string
+        gapLimit: string
         acknowledgeSeedDisclosure?: boolean
         dryRun?: boolean
       }) => {
@@ -1655,6 +1660,14 @@ function registerWalletCommand(program: Command): void {
         if (options.unit !== 'msat') {
           throwUsage('wallet recover-seed unit must be msat')
         }
+        if (!/^[1-9][0-9]*$/.test(options.gapLimit))
+          throwUsage('recover-seed gap limit must be a positive integer')
+        const scanPolicy = createSeedRecoveryScanPolicy({
+          conditionId: options.conditionId,
+          gapLimit: Number(options.gapLimit),
+        })
+        if (scanPolicy.scope === 'condition')
+          throwUsage('condition recovery requires approved mint discovery filter')
         if (isDryRun(options)) {
           printDryRun({
             recoveryId: options.recoveryId,
@@ -1662,6 +1675,7 @@ function registerWalletCommand(program: Command): void {
             unit: options.unit,
             walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
             disclosureAcknowledged: true,
+            scanPolicy,
           })
           return
         }
@@ -1676,6 +1690,8 @@ function registerWalletCommand(program: Command): void {
           '--unit',
           options.unit,
           '--acknowledge-seed-disclosure',
+          '--gap-limit',
+          String(scanPolicy.gapLimit),
         ])
       },
     )

@@ -1,4 +1,8 @@
 import {
+  validateSeedRecoveryScanPolicy,
+  type SeedRecoveryScanPolicy,
+} from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
+import {
   creditedProofAmountMsat,
   writeNativeRecoveredClaimActivity,
 } from './nativeCompletedActivity.ts'
@@ -65,6 +69,7 @@ export interface SeedRecoveryJobFinalization {
   readonly walletScopeId: string
   readonly mintUrl: string
   readonly unit: 'sat' | 'msat'
+  readonly scanPolicy: SeedRecoveryScanPolicy
   readonly disclosureAcknowledged: true
   readonly discoveryCompleted: true
   readonly authority: EmergencySeedRecoveryLeaseAuthority
@@ -75,6 +80,7 @@ export interface SeedRecoveryRosterInitialization {
   readonly walletScopeId: string
   readonly mintUrl: string
   readonly unit: 'sat' | 'msat'
+  readonly scanPolicy: SeedRecoveryScanPolicy
   readonly disclosureAcknowledged: true
   readonly keysetIds: readonly string[]
   readonly authority: EmergencySeedRecoveryLeaseAuthority
@@ -82,7 +88,7 @@ export interface SeedRecoveryRosterInitialization {
 
 export interface SeedRecoveryRoster {
   readonly keysetIds: readonly string[]
-  readonly state: 'absent' | 'active' | 'completed'
+  readonly state: 'absent' | 'pending' | 'active' | 'completed'
 }
 
 export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
@@ -108,13 +114,18 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     this.#injectFault = input.injectFault
   }
 
-  async readRetainedClaimPage(mintUrl: string, afterOperationId = '') {
+  async readRetainedClaimPage(
+    mintUrl: string,
+    afterOperationId = '',
+    binding: { recoveryId: string; scanPolicy: SeedRecoveryScanPolicy },
+  ) {
     return withDurableCustodyFencedRead(
       this.#storage,
       this.#fence,
       this.#observedAtMs,
       (database) => {
         assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
+        assertRegularPayoutJob(database, this.#fence.scopeId, mintUrl, binding)
         const rows = database
           .prepare(
             `SELECT operation_id FROM target_proof_operations
@@ -131,6 +142,8 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
   }
 
   async commitRetainedClaimPayout(input: {
+    readonly recoveryId: string
+    readonly scanPolicy: SeedRecoveryScanPolicy
     readonly operationId: string
     readonly authorityFingerprint: string
     readonly proofs: readonly Proof[]
@@ -143,6 +156,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
       (database) => {
         assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
         const retained = readRetainedClaim(database, this.#fence.scopeId, input.operationId)
+        assertRegularPayoutJob(database, this.#fence.scopeId, retained.target.mintUrl, input)
         if (retained.exactAuthority.fingerprint !== input.authorityFingerprint)
           throw new Error('retained payout authority changed')
         const verified = prepareDurableCustodyVerifiedMintResult({
@@ -243,6 +257,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     readonly walletScopeId: string
     readonly mintUrl: string
     readonly unit: 'sat' | 'msat'
+    readonly scanPolicy: SeedRecoveryScanPolicy
   }): Promise<SeedRecoveryRoster> {
     const binding = { ...input }
     if (binding.walletScopeId !== this.#fence.scopeId) {
@@ -258,9 +273,35 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
         assertRecoveryJobBinding(job, binding)
         return {
           keysetIds: readRecoveryKeysetIds(database, binding.recoveryId),
-          state: job === undefined ? 'absent' : job.state === 'completed' ? 'completed' : 'active',
+          state:
+            job === undefined
+              ? 'absent'
+              : job.discoveryState === 'pending'
+                ? 'pending'
+                : job.state === 'completed'
+                  ? 'completed'
+                  : 'active',
         }
       },
+    )
+  }
+
+  async initializeRecoveryJob(
+    raw: Omit<SeedRecoveryRosterInitialization, 'keysetIds'>,
+  ): Promise<void> {
+    const input = validateRecoveryRosterInitialization({ ...raw, keysetIds: [] })
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertRecoveryAuthority(input, this.#fence, this.#observedAtMs)
+        assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
+        const existing = readRecoveryJob(database, input.recoveryId)
+        assertRecoveryJobBinding(existing, input)
+        if (existing === undefined) insertActiveRecoveryJob(database, input, this.#invocationId)
+      },
+      { injectFault: this.#injectFault },
     )
   }
 
@@ -303,6 +344,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     walletScopeId: string
     mintUrl: string
     unit: 'sat' | 'msat'
+    scanPolicy: SeedRecoveryScanPolicy
     keysetId: string
   }): Promise<{
     readonly cursor: EmergencySeedRecoveryCursor
@@ -323,7 +365,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
           .prepare(
             `SELECT next_counter AS nextCounter,
                 trailing_empty_counters AS trailingEmptyCounters,
-                revision, state
+                revision, state, stop_reason AS stopReason
              FROM seed_recovery_keysets WHERE recovery_id = ? AND keyset_id = ?`,
           )
           .get(input.recoveryId, input.keysetId) as RecoveryCursorRow | undefined
@@ -335,8 +377,9 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
           row === undefined
             ? createEmergencySeedRecoveryCursor(input)
             : validateEmergencySeedRecoveryCursor({
-                schemaVersion: 1,
+                schemaVersion: 2,
                 ...input,
+                scanPolicy: policyOfJob(job!),
                 ...row,
               })
         return {
@@ -359,26 +402,40 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     readonly walletScopeId: string
     readonly mintUrl: string
     readonly unit: 'sat' | 'msat'
+    readonly keysetIds: readonly string[]
   }): Promise<ReadonlyMap<string, number>> {
-    const { walletScopeId, mintUrl, unit } = input
+    const { walletScopeId, mintUrl, unit, keysetIds } = input
     if (walletScopeId !== this.#fence.scopeId) {
       throw new Error('seed recovery counter scope is foreign')
     }
+    if (keysetIds.length > 2048 || new Set(keysetIds).size !== keysetIds.length)
+      throw new Error('seed recovery keyset bound is invalid')
+    const marks = keysetIds.map(() => '?').join(',')
     return withDurableCustodyFencedRead(
       this.#storage,
       this.#fence,
       this.#observedAtMs,
       (database) => {
         assertNoRecoveryOwnerBlocker(database, walletScopeId)
+        if (keysetIds.length === 0) return new Map<string, number>()
         const rows = database
           .prepare(
             `SELECT keyset_id AS keysetId FROM target_keyset_counters
-             WHERE scope_id = ? AND normalized_mint = ? AND unit = ?
+             WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id IN (${marks})
              UNION
              SELECT keyset_id AS keysetId FROM custody_keyset_counters
-             WHERE scope_id = ? AND normalized_mint = ? AND unit = ?`,
+             WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id IN (${marks})`,
           )
-          .all(walletScopeId, mintUrl, unit, walletScopeId, mintUrl, unit) as Array<{
+          .all(
+            walletScopeId,
+            mintUrl,
+            unit,
+            ...keysetIds,
+            walletScopeId,
+            mintUrl,
+            unit,
+            ...keysetIds,
+          ) as Array<{
           keysetId: string
         }>
         return new Map(
@@ -390,6 +447,46 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
             }),
           ]),
         )
+      },
+    )
+  }
+
+  async readUncoveredCounterBindings(input: {
+    mintUrl: string
+    unit: string
+    keysetIds: readonly string[]
+  }) {
+    if (input.keysetIds.length > 2048) throw new Error('seed recovery keyset bound is invalid')
+    return withDurableCustodyFencedRead(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
+        const marks = input.keysetIds.map(() => '?').join(',')
+        const exclude = marks ? `AND keyset_id NOT IN (${marks})` : ''
+        const rows = database
+          .prepare(
+            `SELECT keyset_id FROM target_keyset_counters
+        WHERE scope_id=? AND normalized_mint=? AND unit=? ${exclude}
+        UNION SELECT keyset_id FROM custody_keyset_counters
+        WHERE scope_id=? AND normalized_mint=? AND unit=? ${exclude} LIMIT 1025`,
+          )
+          .all(
+            this.#fence.scopeId,
+            input.mintUrl,
+            input.unit,
+            ...input.keysetIds,
+            this.#fence.scopeId,
+            input.mintUrl,
+            input.unit,
+            ...input.keysetIds,
+          )
+        return {
+          count: Math.min(rows.length, 1024),
+          capped: rows.length > 1024,
+          diagnostic: rows.length ? ('uncovered-local-counter-bindings' as const) : null,
+        }
       },
     )
   }
@@ -445,6 +542,14 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     assertRecoveryAuthority(input, this.#fence, this.#observedAtMs)
     assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
     const existing = readRecoveryRows(database, input)
+    const actualBound = readExactBoundCounter(
+      database,
+      input.walletScopeId,
+      input.expectedCursor.keysetId,
+      { normalizedMint: input.expectedCursor.mintUrl, unit: input.expectedCursor.unit },
+    )
+    if (input.observation.scanThroughCounter < actualBound)
+      throw new Error('seed recovery scan-through authority is stale')
     assertRecoveryCursorCas(input.expectedCursor, existing.cursor)
     const counterMinimum =
       input.observation.lastCounterWithSignature === null
@@ -476,7 +581,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
     const existing = readRecoveryJob(database, input.recoveryId)
     assertRecoveryJobBinding(existing, input)
-    if (existing?.state === 'completed') {
+    if (existing?.discoveryState === 'complete') {
       assertExactRecoveryRoster(database, input)
       return
     }
@@ -487,17 +592,17 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
         database
           .prepare(
             `INSERT OR IGNORE INTO seed_recovery_keysets (
-               recovery_id, keyset_id, next_counter,
+               recovery_id, keyset_id, scan_policy_version, scan_scope, condition_selector, gap_limit, stop_reason, next_counter,
                trailing_empty_counters, revision, state
-             ) VALUES (?, ?, 0, 0, 0, 'active')`,
+             ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, 0, 0, 'active')`,
           )
-          .run(input.recoveryId, keysetId).changes,
+          .run(input.recoveryId, keysetId, ...policyValues(input.scanPolicy)).changes,
       )
     }
-    if (existing !== undefined && inserted > 0) {
+    if (existing === undefined || existing.discoveryState === 'pending') {
       database
         .prepare(
-          `UPDATE seed_recovery_jobs SET revision = revision + 1, updated_at_ms = ?
+          `UPDATE seed_recovery_jobs SET discovery_state='complete', revision = revision + 1, updated_at_ms = ?
            WHERE recovery_id = ? AND state = 'active'`,
         )
         .run(this.#observedAtMs, input.recoveryId)
@@ -570,9 +675,15 @@ type RecoveryJobRow = {
   readonly state: string
   readonly scanOffset: number
   readonly revision: number
+  readonly policyVersion: number
+  readonly scanScope: string
+  readonly conditionSelector: string
+  readonly gapLimit: number
+  readonly discoveryState: string
 }
 
 type RecoveryCursorRow = {
+  readonly stopReason: string | null
   readonly nextCounter: number
   readonly trailingEmptyCounters: number
   readonly revision: number
@@ -628,12 +739,13 @@ function readRecoveryRows(
     walletScopeId: input.walletScopeId,
     mintUrl: input.expectedCursor.mintUrl,
     unit: input.expectedCursor.unit,
+    scanPolicy: input.expectedCursor.scanPolicy,
   })
   const cursor = database
     .prepare(
       `SELECT next_counter AS nextCounter,
          trailing_empty_counters AS trailingEmptyCounters,
-         revision, state
+         revision, state, stop_reason AS stopReason
        FROM seed_recovery_keysets
        WHERE recovery_id = ? AND keyset_id = ?`,
     )
@@ -641,7 +753,9 @@ function readRecoveryRows(
   if (cursor !== undefined && job === undefined) {
     throw new Error('seed recovery cursor has no job binding')
   }
-  if (job?.state === 'completed') {
+  if (job === undefined || job.discoveryState !== 'complete' || cursor === undefined)
+    throw new Error('seed recovery job roster is not complete')
+  if (job.state === 'completed') {
     throw new Error('seed recovery job is already completed')
   }
   return { job, cursor }
@@ -652,7 +766,8 @@ function readRecoveryJob(database: DatabaseSync, recoveryId: string): RecoveryJo
     .prepare(
       `SELECT scope_id AS scopeId, normalized_mint AS mintUrl, unit,
           disclosure_acknowledged AS disclosureAcknowledged, state,
-          scan_offset AS scanOffset, revision
+          scan_offset AS scanOffset, revision, scan_policy_version AS policyVersion,
+          scan_scope AS scanScope, condition_selector AS conditionSelector, gap_limit AS gapLimit, discovery_state AS discoveryState
        FROM seed_recovery_jobs WHERE recovery_id = ?`,
     )
     .get(recoveryId) as RecoveryJobRow | undefined
@@ -774,14 +889,17 @@ function assertRecoveryJobBinding(
     readonly walletScopeId: string
     readonly mintUrl: string
     readonly unit: string
+    readonly scanPolicy: SeedRecoveryScanPolicy
   },
 ): void {
+  const policy = validateSeedRecoveryScanPolicy(input.scanPolicy)
   if (
     job !== undefined &&
     (job.scopeId !== input.walletScopeId ||
       job.mintUrl !== input.mintUrl ||
       job.unit !== input.unit ||
-      job.disclosureAcknowledged !== 1)
+      job.disclosureAcknowledged !== 1 ||
+      JSON.stringify(policyOfJob(job)) !== JSON.stringify(policy))
   ) {
     throw new Error('seed recovery job binding is foreign')
   }
@@ -807,6 +925,7 @@ function validateRecoveryJobFinalization(
     'unit',
     'disclosureAcknowledged',
     'discoveryCompleted',
+    'scanPolicy',
     'authority',
   ]
   if (
@@ -853,6 +972,7 @@ function validateRecoveryJobFinalization(
     unit: input.unit,
     disclosureAcknowledged: true,
     discoveryCompleted: true,
+    scanPolicy: validateSeedRecoveryScanPolicy(input.scanPolicy),
     authority: Object.freeze({ ...input.authority }),
   })
 }
@@ -868,6 +988,7 @@ function validateRecoveryRosterInitialization(
     'unit',
     'disclosureAcknowledged',
     'keysetIds',
+    'scanPolicy',
     'authority',
   ]
   if (
@@ -896,6 +1017,7 @@ function validateRecoveryRosterInitialization(
     unit: input.unit,
     disclosureAcknowledged: input.disclosureAcknowledged,
     discoveryCompleted: true,
+    scanPolicy: validateSeedRecoveryScanPolicy(input.scanPolicy),
     authority: input.authority,
   })
   return Object.freeze({
@@ -905,6 +1027,7 @@ function validateRecoveryRosterInitialization(
     unit: base.unit,
     disclosureAcknowledged: true,
     keysetIds: Object.freeze(keysetIds),
+    scanPolicy: base.scanPolicy,
     authority: base.authority,
   })
 }
@@ -914,6 +1037,21 @@ function assertRecoveryJobCanFinalize(
   job: RecoveryJobRow,
   input: SeedRecoveryJobFinalization,
 ): void {
+  if (job.discoveryState !== 'complete') throw new Error('seed recovery discovery is pending')
+  const children = database
+    .prepare(
+      'SELECT keyset_id AS id,next_counter AS next FROM seed_recovery_keysets WHERE recovery_id=?',
+    )
+    .all(input.recoveryId) as { id: string; next: number }[]
+  for (const child of children)
+    if (
+      child.next <
+      readExactBoundCounter(database, input.walletScopeId, child.id, {
+        normalizedMint: input.mintUrl,
+        unit: input.unit,
+      })
+    )
+      throw new Error('seed recovery child is below retained bound')
   const active = database
     .prepare(
       `SELECT 1 FROM seed_recovery_keysets
@@ -936,9 +1074,9 @@ function insertEmptyCompletedRecoveryJob(
     .prepare(
       `INSERT INTO seed_recovery_jobs (
          recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
+         normalized_mint, unit, scan_policy_version, scan_scope, condition_selector, gap_limit, discovery_state, state, scan_offset, revision, imported_proofs,
          ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 1, ?, ?, 'completed', 0, 1, 0, 0, ?, ?)`,
+       ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'complete', 'completed', 0, 1, 0, 0, ?, ?)`,
     )
     .run(
       input.recoveryId,
@@ -946,6 +1084,7 @@ function insertEmptyCompletedRecoveryJob(
       invocationId,
       input.mintUrl,
       input.unit,
+      ...policyValues(input.scanPolicy),
       observedAtMs,
       observedAtMs,
     )
@@ -960,9 +1099,9 @@ function insertActiveRecoveryJob(
     .prepare(
       `INSERT INTO seed_recovery_jobs (
          recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
+         normalized_mint, unit, scan_policy_version, scan_scope, condition_selector, gap_limit, discovery_state, state, scan_offset, revision, imported_proofs,
          ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 0, 0, 0, 0, ?, ?)`,
+       ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'pending', 'active', 0, 0, 0, 0, ?, ?)`,
     )
     .run(
       input.recoveryId,
@@ -970,6 +1109,7 @@ function insertActiveRecoveryJob(
       invocationId,
       input.mintUrl,
       input.unit,
+      ...policyValues(input.scanPolicy),
       input.authority.observedAtMs,
       input.authority.observedAtMs,
     )
@@ -985,7 +1125,8 @@ function assertRecoveryCursorCas(
       (existing.revision !== expected.revision ||
         existing.nextCounter !== expected.nextCounter ||
         existing.trailingEmptyCounters !== expected.trailingEmptyCounters ||
-        existing.state !== expected.state))
+        existing.state !== expected.state ||
+        existing.stopReason !== expected.stopReason))
   ) {
     throw new Error('seed recovery cursor CAS is stale')
   }
@@ -1089,7 +1230,10 @@ function assertSelectableProof(
     proof.unit !== input.expectedCursor.unit ||
     proof.keysetId !== input.expectedCursor.keysetId ||
     proof.nut07State !== 'UNSPENT' ||
-    proof.selectability !== 'selectable'
+    proof.selectability !== 'selectable' ||
+    (input.expectedCursor.scanPolicy.scope === 'regular-msat'
+      ? proof.conditionId !== null
+      : proof.conditionId !== input.expectedCursor.scanPolicy.conditionId)
   ) {
     throw new Error('seed recovery selectable proof is foreign')
   }
@@ -1111,10 +1255,7 @@ function writeRecoveryProgress(
   context: { readonly invocationId: string; readonly observedAtMs: number },
 ): void {
   const job = existing.job
-  if (job === undefined) {
-    insertRecoveryProgress(database, input, imported, ignored, context)
-    return
-  }
+  if (job === undefined) throw new Error('seed recovery bound job is absent')
   updateRecoveryProgress(
     database,
     input,
@@ -1123,49 +1264,6 @@ function writeRecoveryProgress(
     ignored,
     context,
   )
-}
-
-function insertRecoveryProgress(
-  database: DatabaseSync,
-  input: EmergencySeedRecoveryCoCommit,
-  imported: number,
-  ignored: number,
-  context: { readonly invocationId: string; readonly observedAtMs: number },
-): void {
-  database
-    .prepare(
-      `INSERT INTO seed_recovery_jobs (
-         recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
-         ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 0, 1, ?, ?, ?, ?)`,
-    )
-    .run(
-      input.recoveryJobId,
-      input.walletScopeId,
-      context.invocationId,
-      input.expectedCursor.mintUrl,
-      input.expectedCursor.unit,
-      imported,
-      ignored,
-      context.observedAtMs,
-      context.observedAtMs,
-    )
-  database
-    .prepare(
-      `INSERT INTO seed_recovery_keysets (
-         recovery_id, keyset_id, next_counter,
-         trailing_empty_counters, revision, state
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      input.recoveryJobId,
-      input.expectedCursor.keysetId,
-      input.nextCursor.nextCounter,
-      input.nextCursor.trailingEmptyCounters,
-      input.nextCursor.revision,
-      input.nextCursor.state,
-    )
 }
 
 function updateRecoveryProgress(
@@ -1197,13 +1295,15 @@ function updateRecoveryProgress(
       ? database
           .prepare(
             `INSERT INTO seed_recovery_keysets (
-               recovery_id, keyset_id, next_counter,
+               recovery_id, keyset_id, scan_policy_version, scan_scope, condition_selector, gap_limit, stop_reason, next_counter,
                trailing_empty_counters, revision, state
-             ) VALUES (?, ?, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             input.recoveryJobId,
             input.expectedCursor.keysetId,
+            ...policyValues(input.expectedCursor.scanPolicy),
+            input.nextCursor.stopReason,
             input.nextCursor.nextCounter,
             input.nextCursor.trailingEmptyCounters,
             input.nextCursor.revision,
@@ -1212,13 +1312,14 @@ function updateRecoveryProgress(
       : database
           .prepare(
             `UPDATE seed_recovery_keysets SET next_counter = ?, trailing_empty_counters = ?,
-               revision = ?, state = ? WHERE recovery_id = ? AND keyset_id = ? AND revision = ?`,
+               revision = ?, state = ?, stop_reason = ? WHERE recovery_id = ? AND keyset_id = ? AND revision = ?`,
           )
           .run(
             input.nextCursor.nextCounter,
             input.nextCursor.trailingEmptyCounters,
             input.nextCursor.revision,
             input.nextCursor.state,
+            input.nextCursor.stopReason,
             input.recoveryJobId,
             input.expectedCursor.keysetId,
             input.expectedCursor.revision,
@@ -1230,4 +1331,42 @@ function updateRecoveryProgress(
 
 function batchKey(recoveryId: string, keysetId: string): string {
   return `${recoveryId}\u0000${keysetId}`
+}
+
+function policyValues(raw: SeedRecoveryScanPolicy): readonly [number, string, string, number] {
+  const policy = validateSeedRecoveryScanPolicy(raw)
+  return [
+    policy.version,
+    policy.scope,
+    policy.scope === 'condition' ? policy.conditionId : '',
+    policy.gapLimit,
+  ]
+}
+function policyOfJob(job: RecoveryJobRow): SeedRecoveryScanPolicy {
+  if (job.policyVersion !== 1 || (job.scanScope === 'regular-msat' && job.conditionSelector !== ''))
+    throw new Error('seed recovery legacy or invalid policy')
+  return validateSeedRecoveryScanPolicy({
+    version: job.policyVersion,
+    scope: job.scanScope,
+    gapLimit: job.gapLimit,
+    ...(job.scanScope === 'condition' ? { conditionId: job.conditionSelector } : {}),
+  })
+}
+function assertRegularPayoutJob(
+  database: DatabaseSync,
+  scopeId: string,
+  mintUrl: string,
+  input: { recoveryId: string; scanPolicy: SeedRecoveryScanPolicy },
+) {
+  const policy = validateSeedRecoveryScanPolicy(input.scanPolicy)
+  if (policy.scope !== 'regular-msat') throw new Error('seed recovery payout scope is not regular')
+  const job = readRecoveryJob(database, input.recoveryId)
+  assertRecoveryJobBinding(job, {
+    walletScopeId: scopeId,
+    mintUrl,
+    unit: 'msat',
+    scanPolicy: policy,
+  })
+  if (job === undefined || job.discoveryState !== 'complete')
+    throw new Error('seed recovery payout job absent')
 }

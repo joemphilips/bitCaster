@@ -1,10 +1,14 @@
+import {
+  createSeedRecoveryScanPolicy,
+  validateSeedRecoveryScanPolicy,
+  type SeedRecoveryScanPolicy,
+} from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   assertDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
-import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -18,7 +22,7 @@ import {
   type MintKeys,
 } from '@cashu/cashu-ts'
 import {
-  EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
+  planEmergencySeedRecoveryBatchCount,
   classifyEmergencySeedRecoveryProof,
   commitEmergencySeedRecoveryBatch,
   createEmergencySeedRecoveryCoCommit,
@@ -27,12 +31,9 @@ import {
   type EmergencySeedRecoveryLeaseAuthority,
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
 import {
-  CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT,
   bindExactSeedRecoveryResponse,
   bindRetainedOutputRecoveryResponse,
-  bindConditionalKeysetSeedRecoveryResponse,
   planExactSeedRecoveryBatch,
-  planConditionalKeysetSeedRecoveryPage,
   validateConditionalKeysetSeedRecoveryAuthority,
   validateConditionalKeysetSeedRecoveryDescriptor,
   type ConditionalKeysetSeedRecoveryAuthority,
@@ -66,7 +67,19 @@ export interface WalletSeedRecoveryResult {
   readonly completedChildCount: number
   readonly batchesProcessed: number
   readonly retainedOutputProofsImported?: number
-  readonly gapLimit: 300
+  readonly gapLimit: number
+  readonly scanPolicy: SeedRecoveryScanPolicy
+  readonly scannedRanges: readonly {
+    keysetId: string
+    startCounter: 0
+    nextCounter: number
+    stopReason: EmergencySeedRecoveryCursor['stopReason']
+  }[]
+  readonly uncoveredLocalCounterBindings: {
+    count: number
+    capped: boolean
+    diagnostic: 'uncovered-local-counter-bindings' | null
+  }
 }
 
 export interface OfflineDaemonSeedRecoveryInput {
@@ -75,6 +88,7 @@ export interface OfflineDaemonSeedRecoveryInput {
   readonly unit: 'sat' | 'msat'
   readonly walletSeedHexFile: string
   readonly disclosureAcknowledged: true
+  readonly scanPolicy?: SeedRecoveryScanPolicy
   /** Test-only mint transport. Production uses cashu-ts. */
   readonly transport?: AllKeysetSeedRecoveryTransport
 }
@@ -85,6 +99,7 @@ export interface AllKeysetSeedRecoveryRequest {
   readonly unit: 'sat' | 'msat'
   readonly walletSeedHex: string
   readonly disclosureAcknowledged: true
+  readonly scanPolicy?: SeedRecoveryScanPolicy
 }
 
 interface RecoveryWallet {
@@ -115,7 +130,7 @@ interface RecoveryWallet {
 export interface AllKeysetSeedRecoveryTransport {
   readonly wallet: RecoveryWallet
   listRegularKeysets(): Promise<unknown>
-  listConditionalKeysets(): Promise<unknown>
+  listConditionalKeysets(conditionId: string): Promise<unknown>
   getConditionalKeyset(id: string): Promise<unknown>
   restoreCandidates(outputs: readonly unknown[]): Promise<unknown>
 }
@@ -130,6 +145,7 @@ const CUSTODY_LEASE_RENEW_INTERVAL_MS = 20_000
 export async function runOfflineDaemonSeedRecovery(
   input: OfflineDaemonSeedRecoveryInput,
 ): Promise<WalletSeedRecoveryResult> {
+  assertRegularProductionPolicy(recoveryPolicy(input))
   assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
@@ -195,6 +211,7 @@ function recoverOfflineSeed(
       mintUrl: input.mintUrl,
       unit: input.unit,
       walletSeedHex,
+      scanPolicy: recoveryPolicy(input),
       disclosureAcknowledged: input.disclosureAcknowledged,
     },
     {
@@ -218,6 +235,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
   authority: EmergencySeedRecoveryLeaseAuthority
   store: SeedRecoverySqliteStore
   batches: readonly ExplicitSeedRecoveryBatch[]
+  scanPolicy?: SeedRecoveryScanPolicy
 }): Promise<EmergencySeedRecoveryCursor> {
   assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
@@ -226,6 +244,25 @@ export async function runExplicitEmergencySeedRecovery(input: {
   if (input.batches.length === 0 || input.batches.length > 4) {
     throw new Error('seed recovery requires between one and four explicit batches')
   }
+  const scanPolicy = recoveryPolicy(input)
+  const binding = {
+    recoveryId: input.recoveryId,
+    walletScopeId: input.walletScopeId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    scanPolicy,
+  }
+  const roster = await input.store.readRecoveryRoster(binding)
+  if (roster.state === 'absent' || roster.state === 'pending') {
+    await input.store.initializeRecoveryRoster({
+      ...binding,
+      disclosureAcknowledged: true,
+      keysetIds: [input.keysetId],
+      authority: input.authority,
+    })
+  } else if (!roster.keysetIds.includes(input.keysetId)) {
+    throw new Error('seed recovery keyset is outside the pinned roster')
+  }
   let cursor = (
     await input.store.readRecoveryStart({
       recoveryId: input.recoveryId,
@@ -233,6 +270,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
       mintUrl: input.mintUrl,
       unit: input.unit,
       keysetId: input.keysetId,
+      scanPolicy,
     })
   ).cursor
   for (const [batchIndex, batch] of input.batches.entries()) {
@@ -282,8 +320,11 @@ export async function recoverAllDaemonWalletFromSeed(
     readonly nowMs?: () => number
     readonly invocationId?: () => string
     readonly storage?: DaemonStateSqliteSession
+    readonly _allowConditionFixture?: true
   },
 ): Promise<WalletSeedRecoveryResult> {
+  const policy = recoveryPolicy(input)
+  if (!deps._allowConditionFixture) assertRegularProductionPolicy(policy)
   assertProductRecoveryUnit(input.unit)
   assertWalletSeedHex(input.walletSeedHex)
   const seed = Uint8Array.from(Buffer.from(input.walletSeedHex, 'hex'))
@@ -292,22 +333,44 @@ export async function recoverAllDaemonWalletFromSeed(
     assertRecoverySeedScope(seed, fence)
     const observedAtMs = (deps.nowMs ?? Date.now)()
     const store = createRecoveryStore(deps, fence, observedAtMs)
+    await store.initializeRecoveryJob({
+      recoveryId: input.recoveryId,
+      walletScopeId: fence.scopeId,
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      scanPolicy: policy,
+      disclosureAcknowledged: true,
+      authority: recoveryAuthorityFromFence(fence, observedAtMs),
+    })
+    const retainedRoster = await store.readRecoveryRoster({
+      recoveryId: input.recoveryId,
+      walletScopeId: fence.scopeId,
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      scanPolicy: policy,
+    })
+    if (retainedRoster.state === 'completed')
+      return finalizeRecoveryResult(
+        input,
+        deps,
+        store,
+        fence,
+        retainedRoster.keysetIds.map((id) => ({ kind: 'regular' as const, id, unit: input.unit })),
+        0,
+      )
     const selected = await selectRecoveryKeysets(
       input,
       deps.transport,
       store,
       fence,
-      seed,
       Math.floor(observedAtMs / 1000),
     )
     await initializeRecoveryRoster(input, deps, store, fence, selected)
-    await initializeRecoveryWallet(deps.transport.wallet, selected)
-    const retainedOutputProofsImported = await recoverRetainedClaimOutputs(
-      input,
-      deps,
-      store,
-      fence,
-    )
+    await initializeRecoveryWallet(deps.transport.wallet, selected, policy)
+    const retainedOutputProofsImported =
+      policy.scope === 'condition'
+        ? 0
+        : await recoverRetainedClaimOutputs(input, deps, store, fence)
     const batchesProcessed = await scanSelectedKeysets(input, deps, store, fence, seed, selected)
     return {
       ...(await finalizeRecoveryResult(input, deps, store, fence, selected, batchesProcessed)),
@@ -328,7 +391,10 @@ async function recoverRetainedClaimOutputs(
   let after = ''
   let imported = 0
   for (let pageNumber = 0; pageNumber < 64; pageNumber += 1) {
-    const page = await store.readRetainedClaimPage(input.mintUrl, after)
+    const page = await store.readRetainedClaimPage(input.mintUrl, after, {
+      recoveryId: input.recoveryId,
+      scanPolicy: recoveryPolicy(input),
+    })
     if (page.length === 0) return imported
     for (const retained of page) {
       const outputs = deserializeOutputGroups(retained.target.outputs).regular ?? []
@@ -367,6 +433,8 @@ async function recoverRetainedClaimOutputs(
       assertRecoveryOwnerUnchanged(fence, live)
       store.setAuthority(live, (deps.nowMs ?? Date.now)())
       imported += await store.commitRetainedClaimPayout({
+        recoveryId: input.recoveryId,
+        scanPolicy: recoveryPolicy(input),
         operationId: retained.target.operationId,
         authorityFingerprint: retained.exactAuthority.fingerprint,
         proofs,
@@ -378,7 +446,15 @@ async function recoverRetainedClaimOutputs(
     after = page[page.length - 1]!.target.operationId
     if (page.length < 16) return imported
   }
-  if ((await store.readRetainedClaimPage(input.mintUrl, after)).length === 0) return imported
+  if (
+    (
+      await store.readRetainedClaimPage(input.mintUrl, after, {
+        recoveryId: input.recoveryId,
+        scanPolicy: recoveryPolicy(input),
+      })
+    ).length === 0
+  )
+    return imported
   throw new Error('retained payout recovery record bound exceeded')
 }
 
@@ -401,49 +477,61 @@ async function selectRecoveryKeysets(
   transport: AllKeysetSeedRecoveryTransport,
   store: SeedRecoverySqliteStore,
   fence: CustodyScopeFence,
-  seed: Uint8Array,
   observedUnixSeconds: number,
 ): Promise<readonly SelectedRecoveryKeyset[]> {
-  const highWaters = await store.readRecoveryCounterHighWaterMarks({
-    walletScopeId: fence.scopeId,
-    mintUrl: input.mintUrl,
-    unit: input.unit,
-  })
+  const policy = recoveryPolicy(input)
   const roster = await store.readRecoveryRoster({
     recoveryId: input.recoveryId,
     walletScopeId: fence.scopeId,
     mintUrl: input.mintUrl,
     unit: input.unit,
+    scanPolicy: policy,
   })
-  const [regularRaw, conditionalRaw] = await Promise.all([
-    transport.listRegularKeysets(),
-    transport.listConditionalKeysets(),
-  ])
-  const regular = decodeRegularKeysets(regularRaw, input.unit)
-  const conditional = decodeConditionalKeysets(conditionalRaw, input.unit)
+  const regular =
+    policy.scope === 'regular-msat'
+      ? decodeRegularKeysets(await transport.listRegularKeysets(), input.unit)
+      : []
+  const conditional =
+    policy.scope === 'condition'
+      ? decodeConditionalKeysets(
+          await transport.listConditionalKeysets(policy.conditionId),
+          input.unit,
+        )
+      : []
+  if (
+    policy.scope === 'condition' &&
+    conditional.some((row) => row.conditionId !== policy.conditionId)
+  )
+    throw new Error('seed recovery condition listing is foreign')
+  const listed = new Set([...regular, ...conditional].map((row) => row.id))
+  if (roster.keysetIds.some((id) => !listed.has(id)))
+    throw new Error('seed recovery pinned scoped authority is absent')
+  const rosterIds = new Set(roster.keysetIds)
+  const pin = roster.state === 'active' || roster.state === 'completed'
+  const selectedRegular = pin ? regular.filter((row) => rosterIds.has(row.id)) : regular
+  const eligible = conditional.filter((row) =>
+    pin ? rosterIds.has(row.id) : row.finalExpiry === null || row.finalExpiry > observedUnixSeconds,
+  )
+  const ids = [...selectedRegular, ...eligible].map((row) => row.id)
+  if (ids.length > 2048) throw new Error('seed recovery selected roster exceeds bound')
   await store.assertRecoveryKeysetMintBindings({
     walletScopeId: fence.scopeId,
     mintUrl: input.mintUrl,
-    keysetIds: [...regular, ...conditional].map(({ id }) => id),
+    keysetIds: ids,
   })
-  assertListedRecoveryAuthority(highWaters, roster.keysetIds, regular, conditional)
-  const rosterKeysetIds = new Set(roster.keysetIds)
-  const eligibleConditional = conditional.filter(
-    ({ id, finalExpiry }) =>
-      rosterKeysetIds.has(id) || finalExpiry === null || finalExpiry > observedUnixSeconds,
-  )
-  const discovered =
-    roster.state === 'absent'
-      ? await discoverConditionalKeysets(eligibleConditional, transport, seed)
-      : new Set<string>()
-  const selectedRegular =
-    roster.state === 'absent' ? regular : regular.filter(({ id }) => rosterKeysetIds.has(id))
-  return await selectAndLoadConditionalKeysets(
+  // Scope high-water checks to listed selected IDs. Unclassified counters stay uncovered.
+  const highWaters = await store.readRecoveryCounterHighWaterMarks({
+    walletScopeId: fence.scopeId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    keysetIds: ids,
+  })
+  return selectAndLoadConditionalKeysets(
     selectedRegular,
-    eligibleConditional,
+    eligible,
     highWaters,
-    discovered,
-    rosterKeysetIds,
+    new Set(eligible.map((row) => row.id)),
+    rosterIds,
     transport,
   )
 }
@@ -467,9 +555,10 @@ function decodeConditionalKeysets(
   const rows = decodeKeysetList(value, 'conditional').map(
     validateConditionalKeysetSeedRecoveryDescriptor,
   )
-  const selected = rows.filter((row) => row.unit === unit)
-  assertV2UniqueIds(selected, 'conditional')
-  return selected
+  if (rows.some((row) => row.unit !== unit))
+    throw new Error('seed recovery condition listing has a foreign unit')
+  assertV2UniqueIds(rows, 'conditional')
+  return rows
 }
 
 function decodeKeysetList(value: unknown, label: string): readonly Record<string, unknown>[] {
@@ -505,53 +594,6 @@ function asKeysetKeys(value: unknown): { readonly keys: unknown } {
   const keys = (value as { keys?: unknown }).keys
   if (keys === undefined) throw new Error('conditional keyset keys are invalid')
   return { keys }
-}
-
-function assertListedRecoveryAuthority(
-  highWaters: ReadonlyMap<string, number>,
-  rosterKeysetIds: readonly string[],
-  regular: readonly RegularKeysetDescriptor[],
-  conditional: readonly ConditionalKeysetSeedRecoveryDescriptor[],
-): void {
-  const listed = new Set([...regular, ...conditional].map(({ id }) => id))
-  const required = new Set([
-    ...rosterKeysetIds,
-    ...[...highWaters].filter(([, counter]) => counter > 0).map(([keysetId]) => keysetId),
-  ])
-  for (const keysetId of required) {
-    if (!listed.has(keysetId)) {
-      throw new Error(
-        'seed recovery local counter authority is absent from complete keyset listings',
-      )
-    }
-  }
-}
-
-async function discoverConditionalKeysets(
-  keysets: readonly ConditionalKeysetSeedRecoveryDescriptor[],
-  transport: AllKeysetSeedRecoveryTransport,
-  seed: Uint8Array,
-): Promise<ReadonlySet<string>> {
-  if (keysets.length === 0) return new Set()
-  const discovered = new Set<string>()
-  let cursor: { nextKeysetIndex: number; nextCounter: number } | null = null
-  do {
-    const page = planConditionalKeysetSeedRecoveryPage({
-      seed,
-      keysets,
-      maxOutputs: CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT,
-      cursor,
-    })
-    const binding = bindConditionalKeysetSeedRecoveryResponse({
-      candidates: page.candidates,
-      response: await transport.restoreCandidates(
-        page.candidates.map(({ blindedOutput }) => blindedOutput),
-      ),
-    })
-    for (const id of binding.discoveredKeysetIds) discovered.add(id)
-    cursor = page.nextCursor
-  } while (cursor !== null)
-  return discovered
 }
 
 async function selectAndLoadConditionalKeysets(
@@ -612,8 +654,9 @@ async function initializeRecoveryRoster(
 async function initializeRecoveryWallet(
   wallet: RecoveryWallet,
   selected: readonly SelectedRecoveryKeyset[],
+  policy: SeedRecoveryScanPolicy,
 ): Promise<void> {
-  await wallet.loadMint()
+  if (policy.scope === 'regular-msat') await wallet.loadMint()
   for (const keyset of selected) {
     if (keyset.kind === 'regular') {
       await wallet.keyChain.ensureKeysetKeys(keyset.id)
@@ -730,6 +773,7 @@ function recoveryRosterInput(
     mintUrl: input.mintUrl,
     unit: input.unit,
     disclosureAcknowledged: true as const,
+    scanPolicy: recoveryPolicy(input),
     keysetIds,
     authority: recoveryAuthorityFromFence(fence, observedAtMs),
   }
@@ -746,6 +790,7 @@ function recoveryStartInput(
     mintUrl: input.mintUrl,
     unit: input.unit,
     keysetId: recoveryKeysetId(keyset),
+    scanPolicy: recoveryPolicy(input),
   }
 }
 
@@ -764,11 +809,13 @@ async function scanSelectedKeysetBatch(
   if (start.cursor.state !== 'active' && start.cursor.nextCounter >= start.counterHighWaterMark) {
     return { state: 'completed' }
   }
+  const count = planEmergencySeedRecoveryBatchCount(start.cursor, start.counterHighWaterMark)
+  if (count === 0) return { state: 'completed' }
   const candidates = planExactSeedRecoveryBatch({
     seed,
     keysetId: recoveryKeysetId(keyset),
     startCounter: start.cursor.nextCounter,
-    count: EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
+    count,
   })
   const restored = bindExactSeedRecoveryResponse({
     candidates,
@@ -789,7 +836,7 @@ async function scanSelectedKeysetBatch(
       observation: {
         expectedRevision: start.cursor.revision,
         startCounter: start.cursor.nextCounter,
-        requestedCount: EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
+        requestedCount: count,
         lastCounterWithSignature: restored.lastCounterWithSignature,
         scanThroughCounter: start.counterHighWaterMark,
       },
@@ -868,6 +915,7 @@ async function commitSelectedBatch(
     authority: recoveryAuthorityFromFence(live, observedAtMs),
     store,
     batches: [batch],
+    scanPolicy: recoveryPolicy(input),
   })
 }
 
@@ -896,6 +944,7 @@ async function finalizeRecoveryResult(
       unit: input.unit,
       disclosureAcknowledged: true,
       discoveryCompleted: true,
+      scanPolicy: recoveryPolicy(input),
       authority: recoveryAuthorityFromFence(live, observedAtMs),
     })
   }
@@ -905,7 +954,19 @@ async function finalizeRecoveryResult(
     selectedKeysetCount: selected.length,
     completedChildCount,
     batchesProcessed,
-    gapLimit: 300,
+    gapLimit: recoveryPolicy(input).gapLimit,
+    scanPolicy: recoveryPolicy(input),
+    scannedRanges: children.map(({ cursor }) => ({
+      keysetId: cursor.keysetId,
+      startCounter: 0 as const,
+      nextCounter: cursor.nextCounter,
+      stopReason: cursor.stopReason,
+    })),
+    uncoveredLocalCounterBindings: await store.readUncoveredCounterBindings({
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      keysetIds: selected.map(recoveryKeysetId),
+    }),
   }
 }
 
@@ -969,17 +1030,9 @@ function createAllKeysetRecoveryTransport(
   return {
     wallet,
     listRegularKeysets: () => mint.getKeySets(),
-    listConditionalKeysets: async () => ({
-      keysets: await collectCtfListing({
-        fetchPage: async (cursor) => {
-          const page = await mint.getConditionalKeysets({ limit: CTF_LISTING_PAGE_SIZE, cursor })
-          return { items: page.keysets, next_cursor: page.next_cursor }
-        },
-        getId: (keyset) => keyset.id,
-        maxRecords: 10_000,
-        maxPages: 100,
-      }),
-    }),
+    listConditionalKeysets: async () => {
+      throw new Error('condition recovery requires approved mint discovery filter')
+    },
     async getConditionalKeyset(id) {
       const keys = await mint.getKeys(id)
       const keyset = keys.keysets.find((candidate) => candidate.id === id)
@@ -1118,4 +1171,16 @@ function assertRecoveryOwnerUnchanged(start: CustodyScopeFence, live: CustodySco
   ) {
     throw new Error('seed recovery fence owner or epoch changed during mint I/O')
   }
+}
+
+function recoveryPolicy(input: {
+  readonly scanPolicy?: SeedRecoveryScanPolicy
+}): SeedRecoveryScanPolicy {
+  return input.scanPolicy === undefined
+    ? createSeedRecoveryScanPolicy()
+    : validateSeedRecoveryScanPolicy(input.scanPolicy)
+}
+export function assertRegularProductionPolicy(policy: SeedRecoveryScanPolicy): void {
+  if (validateSeedRecoveryScanPolicy(policy).scope !== 'regular-msat')
+    throw new Error('condition recovery requires approved mint discovery filter')
 }

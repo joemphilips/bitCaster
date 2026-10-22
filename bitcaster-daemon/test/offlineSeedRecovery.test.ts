@@ -170,14 +170,18 @@ test('offline seed recovery scans and commits a clean profile', async () => {
         disclosureAcknowledged: true,
         transport: emptyTransport(`01${'a'.repeat(64)}`),
       })
-      assert.deepEqual(result, {
-        recoveryId: 'clean-recovery',
-        state: 'completed',
-        selectedKeysetCount: 1,
-        completedChildCount: 1,
-        batchesProcessed: 1,
-        gapLimit: 300,
-      })
+      assert.equal(result.state, 'completed')
+      assert.equal(result.selectedKeysetCount, 1)
+      assert.equal(result.batchesProcessed, 1)
+      assert.equal(result.scanPolicy.scope, 'regular-msat')
+      assert.deepEqual(result.scannedRanges, [
+        {
+          keysetId: `01${'a'.repeat(64)}`,
+          startCounter: 0,
+          nextCounter: 300,
+          stopReason: 'gap-limit',
+        },
+      ])
     })
   } finally {
     await removeRecoveryTemp(directory)
@@ -225,7 +229,7 @@ test('offline recovery imports only unspent change after operation and proof pay
       },
       async onRestore(outputs) {
         restoreCalls += 1
-        assert.equal(outputs.length, 300)
+        assert.equal(outputs.length, restoreCalls === 1 ? 4 : 300)
         const candidates = outputs as readonly SerializedBlindedMessage[]
         assert.equal(candidates[0]?.id, keyset.id)
         if (restoreCalls === 1) {
@@ -596,3 +600,30 @@ async function withDaemonHome(directory: string, run: () => Promise<void>): Prom
     else process.env.BITCASTER_DAEMON_HOME = previous
   }
 }
+
+test('condition recovery refuses before phrase, profile, lock, or mint access', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-condition-refusal-'))
+  try {
+    await assert.rejects(
+      () =>
+        runOfflineDaemonSeedRecovery({
+          walletSeedHexFile: join(directory, 'absent-phrase'),
+          recoveryId: 'condition-unapproved',
+          mintUrl: 'https://mint.example',
+          unit: 'msat',
+          disclosureAcknowledged: true,
+          scanPolicy: {
+            version: 1,
+            scope: 'condition',
+            conditionId: 'ab'.repeat(32),
+            gapLimit: 300,
+          },
+        }),
+      /condition recovery requires approved mint discovery filter/,
+    )
+    const { readdir } = await import('node:fs/promises')
+    assert.deepEqual(await readdir(directory), [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

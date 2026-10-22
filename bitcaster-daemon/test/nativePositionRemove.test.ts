@@ -1,4 +1,9 @@
 import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
+import {
   prepareDurableCustodyExactArtifact,
   deriveDurableCustodyScopeId,
   readPreparedDurableCustodyArtifactBytes,
@@ -40,7 +45,11 @@ import { previewDaemonPositionRemove, removeDaemonPosition } from '../src/native
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readProfile } from '../src/profile.ts'
-import { openDaemonStateSqlite, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
+import {
+  createDaemonStateSqliteSession,
+  openDaemonStateSqlite,
+  type StateSqliteFaultPhase,
+} from '../src/stateSqlite.ts'
 import { readWalletBalanceFromDatabase } from '../src/walletBalance.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DurableCustodyTransactionSqlite } from '../src/durableCustodyTransactionSqlite.ts'
@@ -741,8 +750,10 @@ async function createFixture(
     outcomeCount: 2,
     oraclePublicKeys: [publicKey],
   })
-  const key = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries(Array.from({ length: 13 }, (_, power) => [2 ** power, key]))
+  const keys = mintDenominationKeys(
+    privateKey,
+    Array.from({ length: 13 }, (_, power) => String(2 ** power)),
+  )
   const regularId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 })
   const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
     conditionId,
@@ -768,8 +779,15 @@ async function createFixture(
     const secret = `losing-secret-${index}`
     if (imported) {
       const output = OutputData.createSingleData(8, id, secret, BigInt(index + 1))
-      const signature = createBlindSignature(pointFromHex(output.blindedMessage.B_), privateKey, id)
-      const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
+      const signature = createBlindSignature(
+        pointFromHex(output.blindedMessage.B_),
+        mintDenominationPrivateKey(privateKey, '8'),
+        id,
+      )
+      const dleq = createDLEQProof(
+        pointFromHex(output.blindedMessage.B_),
+        mintDenominationPrivateKey(privateKey, '8'),
+      )
       const proof = output.toProof(
         {
           id,
@@ -1092,7 +1110,10 @@ test('retained Claim recovery refuses a profile containing a foreign scope', asy
       observedAtMs: Date.now(),
     })
     await assert.rejects(
-      store.readRetainedClaimPage('https://mint.example'),
+      store.readRetainedClaimPage('https://mint.example', '', {
+        recoveryId: 'foreign-scope',
+        scanPolicy: createSeedRecoveryScanPolicy(),
+      }),
       /daemon profile SQLite schema does not match/,
     )
   } finally {
@@ -1103,11 +1124,36 @@ test('retained Claim recovery refuses a profile containing a foreign scope', asy
 test('retained Claim SQLite cursor pages exact sorted records and filters mint', async () => {
   const fixture = await createFixture(1025)
   try {
+    const observedAtMs = Date.now()
+    const fence = fixture.context.fence
+    const storage = createDaemonStateSqliteSession(fixture.directory)
+    await storage.read(() => undefined)
     const store = new SeedRecoverySqliteStore({
+      storage,
       directory: fixture.directory,
-      fence: fixture.context.fence,
+      fence,
       invocationId: 'retained-cursor-test',
-      observedAtMs: Date.now(),
+      observedAtMs,
+    })
+    const binding = {
+      recoveryId: 'retained-reader-policy',
+      scanPolicy: createSeedRecoveryScanPolicy(),
+    }
+    await store.initializeRecoveryRoster({
+      ...binding,
+      walletScopeId: fence.scopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+      disclosureAcknowledged: true,
+      keysetIds: [],
+      authority: {
+        walletScopeId: fence.scopeId,
+        incarnationId: fence.incarnationId,
+        fencingEpoch: fence.fencingEpoch,
+        leaseExpiresAtMs: fence.leaseExpiresAtMs,
+        observedAtMs,
+        effectiveClockHighWaterMarkMs: observedAtMs,
+      },
     })
     const expected = Object.values((await readState())!.proofOperations)
       .filter(
@@ -1117,11 +1163,12 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       .map(({ operationId }) => operationId)
       .sort()
     assert.equal(expected.length, 17)
-    const first = await store.readRetainedClaimPage('https://mint.example')
+    const first = await store.readRetainedClaimPage('https://mint.example', '', binding)
     assert.equal(first.length, 16)
     const second = await store.readRetainedClaimPage(
       'https://mint.example',
       first.at(-1)!.target.operationId,
+      binding,
     )
     assert.equal(second.length, 1)
     assert.deepEqual(
@@ -1129,10 +1176,17 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       expected,
     )
     assert.deepEqual(
-      await store.readRetainedClaimPage('https://mint.example', second[0]!.target.operationId),
+      await store.readRetainedClaimPage(
+        'https://mint.example',
+        second[0]!.target.operationId,
+        binding,
+      ),
       [],
     )
-    assert.deepEqual(await store.readRetainedClaimPage('https://another-mint.example'), [])
+    await assert.rejects(
+      store.readRetainedClaimPage('https://another-mint.example', '', binding),
+      /binding is foreign/,
+    )
   } finally {
     await fixture.dispose()
   }
@@ -1231,7 +1285,10 @@ async function recoverHistoricalClaimPayout(
   )
   const privateKey = Uint8Array.from([...new Uint8Array(31), 1])
   const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries(Array.from({ length: 13 }, (_, power) => [2 ** power, publicKey]))
+  const keys = mintDenominationKeys(
+    privateKey,
+    Array.from({ length: 13 }, (_, power) => String(2 ** power)),
+  )
   const regular = {
     id: deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 }),
     unit: 'msat',
@@ -1392,8 +1449,15 @@ async function recoverHistoricalClaimPayout(
         outputs: matches,
         signatures: matches.map((output) => {
           const point = pointFromHex(output.B_)
-          const signature = createBlindSignature(point, privateKey, regular.id)
-          const dleq = createDLEQProof(point, privateKey)
+          const signature = createBlindSignature(
+            point,
+            mintDenominationPrivateKey(privateKey, String(output.amount)),
+            regular.id,
+          )
+          const dleq = createDLEQProof(
+            point,
+            mintDenominationPrivateKey(privateKey, String(output.amount)),
+          )
           return {
             id: regular.id,
             amount: Number(output.amount),
@@ -1776,6 +1840,50 @@ test('native Remove rechecks original frozen intended scope rather than mutable 
     assert.equal(
       (await readState())!.wallet.proofs.some(({ retirement }) => retirement !== undefined),
       false,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained reader fixture awaits storage and exposes an incomplete authority rejection', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const storage = createDaemonStateSqliteSession(fixture.directory)
+    await storage.read(() => undefined)
+    const observedAtMs = Date.now()
+    const fence = fixture.context.fence
+    const store = new SeedRecoverySqliteStore({
+      storage,
+      directory: fixture.directory,
+      fence,
+      invocationId: 'retained-invalid-authority',
+      observedAtMs,
+    })
+    await assert.rejects(
+      store.initializeRecoveryRoster({
+        recoveryId: 'invalid-authority',
+        scanPolicy: createSeedRecoveryScanPolicy(),
+        walletScopeId: fence.scopeId,
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        disclosureAcknowledged: true,
+        keysetIds: [],
+        authority: {
+          walletScopeId: fence.scopeId,
+          incarnationId: fence.incarnationId,
+          fencingEpoch: fence.fencingEpoch,
+          leaseExpiresAtMs: fence.leaseExpiresAtMs,
+          observedAtMs,
+        } as never,
+      }),
+      /finalization authority is invalid/,
+    )
+    await storage.read((database) =>
+      assert.equal(
+        database.prepare('SELECT count(*) AS count FROM seed_recovery_jobs').get()!.count,
+        0,
+      ),
     )
   } finally {
     await fixture.dispose()

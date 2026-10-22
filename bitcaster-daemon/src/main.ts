@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import {
+  createSeedRecoveryScanPolicy,
+  type SeedRecoveryScanPolicy,
+} from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -57,7 +61,7 @@ switch (command) {
   bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
   bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
-                         --recovery-id <id> --mint <url> --unit <msat>
+                         --recovery-id <id> --mint <url> [--unit msat] [--gap-limit 300]
                          --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
 `)
@@ -70,10 +74,13 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   unit: 'sat' | 'msat'
   walletSeedHexFile: string
   disclosureAcknowledged: true
+  scanPolicy: SeedRecoveryScanPolicy
 } {
   let recoveryId: string | undefined
   let mintUrl: string | undefined
-  let unit: 'sat' | 'msat' | undefined
+  let unit: 'sat' | 'msat' = 'msat'
+  let conditionId: string | undefined
+  let gapLimitText = '300'
   let walletSeedHexFile: string | undefined
   let disclosureAcknowledged = false
   for (let index = 0; index < args.length; index += 1) {
@@ -87,19 +94,26 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     else if (option === '--mint') mintUrl = value
     else if (option === '--unit' && value === 'msat') unit = value
     else if (option === '--unit') throw new Error('recover-seed unit must be msat')
+    else if (option === '--condition-id') conditionId = value
+    else if (option === '--gap-limit') gapLimitText = value
     else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
     else throw new Error(`Unknown recover-seed option: ${option}`)
   }
   if (!disclosureAcknowledged) {
     throw new Error('recover-seed requires --acknowledge-seed-disclosure')
   }
-  if (unit === undefined) throw new Error('recover-seed unit must be msat')
+  if (!/^[1-9][0-9]*$/.test(gapLimitText))
+    throw new Error('recover-seed gap limit must be a positive integer')
+  const scanPolicy = createSeedRecoveryScanPolicy({ conditionId, gapLimit: Number(gapLimitText) })
+  if (scanPolicy.scope === 'condition')
+    throw new Error('condition recovery requires approved mint discovery filter')
   return {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
     mintUrl: requiredArg(mintUrl, '--mint'),
     unit,
     walletSeedHexFile: requiredArg(walletSeedHexFile, '--wallet-seed-hex-file'),
     disclosureAcknowledged: true,
+    scanPolicy,
   }
 }
 

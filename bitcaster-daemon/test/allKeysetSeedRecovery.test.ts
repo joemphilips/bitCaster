@@ -1,3 +1,4 @@
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { mintDenominationPrivateKey } from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -50,6 +51,9 @@ test('all-keyset recovery finalizes only after complete empty listings', async (
       batchesProcessed: 0,
       gapLimit: 300,
       retainedOutputProofsImported: 0,
+      scanPolicy: createSeedRecoveryScanPolicy(),
+      scannedRanges: [],
+      uncoveredLocalCounterBindings: { count: 0, capped: false, diagnostic: null },
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
@@ -74,17 +78,22 @@ test('all-keyset recovery rejects non-V2 regular authority before wallet restore
   }
 })
 
-test('all-keyset recovery fails closed when a local high-water keyset is absent', async () => {
+test('all-keyset recovery reports an uncovered local binding without global fallback', async () => {
   const fixture = await recoveryFixture('high-water')
   try {
     await withDaemonHome(fixture.directory, () =>
       advanceDaemonKeysetCounter(V2_ID, 1, fixture.mutation, MSAT_RECOVERY_COUNTER_BINDING),
     )
-    await assert.rejects(
-      () =>
-        recoverAllDaemonWalletFromSeed(request(fixture), dependencies(fixture, emptyTransport())),
-      /absent from complete keyset listings/,
+    const result = await recoverAllDaemonWalletFromSeed(
+      request(fixture),
+      dependencies(fixture, emptyTransport()),
     )
+    assert.equal(result.state, 'completed')
+    assert.deepEqual(result.uncoveredLocalCounterBindings, {
+      count: 1,
+      capped: false,
+      diagnostic: 'uncovered-local-counter-bindings',
+    })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -158,13 +167,6 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
     regular: [{ id: regular.id, unit: 'msat' }],
     conditional: [conditionalDescriptor(conditional)],
     regularKeys: [regular],
-    onRestoreCandidates(outputs) {
-      const output = outputs[7] as { id: string; amount: unknown; B_: string }
-      return {
-        outputs: [output],
-        signatures: [{ id: output.id, amount: Amount.from(1), C_: MINT_PUBLIC_KEY }],
-      }
-    },
     onConditionalFetch(id) {
       fetched.push(id)
       return conditional
@@ -179,23 +181,24 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
       return [...proofs].reverse().map((proof) => proofState(proof, CheckStateEnum.UNSPENT))
     },
   })
+  transport.wallet.loadMint = async () => {
+    throw new Error('condition recovery must not load the global mint')
+  }
   try {
     const result = await recoverAllDaemonWalletFromSeed(
-      request(fixture, 'msat'),
-      dependencies(fixture, transport),
+      {
+        ...request(fixture, 'msat'),
+        scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+      },
+      { ...dependencies(fixture, transport), _allowConditionFixture: true },
     )
     assert.deepEqual(fetched, [conditional.id])
-    assert.deepEqual(starts.get(regular.id), [0])
+    assert.equal(starts.has(regular.id), false)
     assert.deepEqual(starts.get(conditional.id), [0, 300])
-    assert.deepEqual(result, {
-      recoveryId: 'all-empty',
-      state: 'completed',
-      selectedKeysetCount: 2,
-      completedChildCount: 2,
-      batchesProcessed: 3,
-      gapLimit: 300,
-      retainedOutputProofsImported: 0,
-    })
+    assert.equal(result.selectedKeysetCount, 1)
+    assert.equal(result.completedChildCount, 1)
+    assert.equal(result.batchesProcessed, 2)
+
     await withDaemonHome(fixture.directory, async () => {
       const available = await readAvailableWalletProofsFenced({
         mintUrl: 'https://mint.example',
@@ -218,42 +221,29 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
   }
 })
 
-test('conditional discovery skips expired and unmatched keysets without fetching keys', async () => {
-  const fixture = await recoveryFixture('conditional-filter')
-  const eligible = conditionalAuthority({ conditionId: 'bc'.repeat(32), finalExpiry: 10 })
-  const expired = conditionalAuthority({ conditionId: 'cd'.repeat(32), finalExpiry: 1 })
-  let outputCount = 0
-  let fetchCount = 0
+test('condition fixture refuses an unrelated listing without global fallback', async () => {
+  const fixture = await recoveryFixture('condition-foreign')
+  let regularCalls = 0
   const transport = recoveryTransport({
-    conditional: [conditionalDescriptor(eligible), conditionalDescriptor(expired)],
-    onRestoreCandidates(outputs) {
-      outputCount += outputs.length
-      assert.equal(
-        outputs.every((output) => (output as { id: string }).id === eligible.id),
-        true,
-      )
-      return { outputs: [], signatures: [] }
-    },
-    onConditionalFetch() {
-      fetchCount += 1
-      throw new Error('unmatched conditional keysets must not fetch keys')
-    },
+    conditional: [conditionalDescriptor(conditionalAuthority({ conditionId: 'bc'.repeat(32) }))],
   })
+  transport.listRegularKeysets = async () => {
+    regularCalls++
+    throw new Error('global fallback')
+  }
   try {
-    await withDaemonHome(fixture.directory, () =>
-      advanceDaemonKeysetCounter(expired.id, 1, fixture.mutation, {
-        normalizedMint: 'https://mint.example',
-        unit: 'msat',
-      }),
+    await assert.rejects(
+      () =>
+        recoverAllDaemonWalletFromSeed(
+          {
+            ...request(fixture),
+            scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+          },
+          { ...dependencies(fixture, transport), _allowConditionFixture: true },
+        ),
+      /condition listing is foreign/,
     )
-    const result = await recoverAllDaemonWalletFromSeed(
-      request(fixture, 'msat'),
-      dependencies(fixture, transport, 2_000),
-    )
-    assert.equal(outputCount, 300)
-    assert.equal(fetchCount, 0)
-    assert.equal(result.selectedKeysetCount, 0)
-    assert.equal(result.state, 'completed')
+    assert.equal(regularCalls, 0)
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -267,10 +257,6 @@ test('regular recovery refuses a keyset counter alias before scan or roster writ
   const transport = recoveryTransport({
     regular: [{ id: regular.id, unit: regular.unit }],
     regularKeys: [regular],
-    onRestoreCandidates() {
-      restoreCalls += 1
-      return { outputs: [], signatures: [] }
-    },
   })
   transport.wallet.loadMint = async () => {
     loadedMint = true
@@ -284,10 +270,12 @@ test('regular recovery refuses a keyset counter alias before scan or roster writ
     )
     assert.equal(restoreCalls, 0)
     assert.equal(loadedMint, false)
-    assert.deepEqual(
-      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
-      before,
-    )
+    const after = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    assert.deepEqual(after.targetCounters, before.targetCounters)
+    assert.deepEqual(after.custodyCounters, before.custodyCounters)
+    assert.deepEqual(after.recoveryKeysets, before.recoveryKeysets)
+    assert.equal(after.recoveryJobs.length, 1)
+    assert.equal(after.recoveryJobs[0]!.discovery_state, 'pending')
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -301,10 +289,6 @@ test('conditional recovery refuses an alias before unmatched discovery or roster
   let loadedMint = false
   const transport = recoveryTransport({
     conditional: [conditionalDescriptor(conditional)],
-    onRestoreCandidates() {
-      restoreCalls += 1
-      return { outputs: [], signatures: [] }
-    },
     onConditionalFetch() {
       fetchedKeys += 1
       throw new Error('unmatched conditional keysets must not fetch keys')
@@ -318,16 +302,24 @@ test('conditional recovery refuses an alias before unmatched discovery or roster
     const before = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
     await assert.rejects(
       () =>
-        recoverAllDaemonWalletFromSeed(request(fixture, 'msat'), dependencies(fixture, transport)),
+        recoverAllDaemonWalletFromSeed(
+          {
+            ...request(fixture, 'msat'),
+            scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+          },
+          { ...dependencies(fixture, transport), _allowConditionFixture: true },
+        ),
       /another mint URL/,
     )
     assert.equal(restoreCalls, 0)
     assert.equal(fetchedKeys, 0)
     assert.equal(loadedMint, false)
-    assert.deepEqual(
-      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
-      before,
-    )
+    const after = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    assert.deepEqual(after.targetCounters, before.targetCounters)
+    assert.deepEqual(after.custodyCounters, before.custodyCounters)
+    assert.deepEqual(after.recoveryKeysets, before.recoveryKeysets)
+    assert.equal(after.recoveryJobs.length, 1)
+    assert.equal(after.recoveryJobs[0]!.discovery_state, 'pending')
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -353,10 +345,13 @@ test('local conditional counter authority selects a keyset without a discovery m
       },
     })
     const result = await recoverAllDaemonWalletFromSeed(
-      request(fixture, 'msat'),
-      dependencies(fixture, transport),
+      {
+        ...request(fixture, 'msat'),
+        scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+      },
+      { ...dependencies(fixture, transport), _allowConditionFixture: true },
     )
-    assert.deepEqual(starts, [0])
+    assert.deepEqual(starts, [0, 1])
     assert.equal(result.selectedKeysetCount, 1)
     assert.equal(result.state, 'completed')
   } finally {
@@ -387,15 +382,10 @@ test('a pending child consumes one attempt while another child completes', async
     )
     assert.deepEqual(starts.get(pendingKeyset.id), [0])
     assert.deepEqual(starts.get(otherKeyset.id), [0])
-    assert.deepEqual(result, {
-      recoveryId: 'all-empty',
-      state: 'active',
-      selectedKeysetCount: 2,
-      completedChildCount: 1,
-      batchesProcessed: 2,
-      gapLimit: 300,
-      retainedOutputProofsImported: 0,
-    })
+    assert.equal(result.state, 'active')
+    assert.equal(result.selectedKeysetCount, 2)
+    assert.equal(result.completedChildCount, 1)
+    assert.equal(result.batchesProcessed, 2)
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -406,13 +396,6 @@ test('a durable roster resumes a pending conditional child without rediscovery',
   const conditional = conditionalAuthority()
   const first = recoveryTransport({
     conditional: [conditionalDescriptor(conditional)],
-    onRestoreCandidates(outputs) {
-      const output = outputs[0] as SerializedBlindedMessage
-      return {
-        outputs: [output],
-        signatures: [{ id: output.id, amount: Amount.from(1), C_: MINT_PUBLIC_KEY }],
-      }
-    },
     onConditionalFetch: () => conditional,
     onRestore(_keysetId, _start, outputs) {
       return restoreResponse(outputs.slice(0, 1), [1])
@@ -421,18 +404,17 @@ test('a durable roster resumes a pending conditional child without rediscovery',
   })
   try {
     const pending = await recoverAllDaemonWalletFromSeed(
-      request(fixture, 'msat'),
-      dependencies(fixture, first),
+      {
+        ...request(fixture, 'msat'),
+        scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+      },
+      { ...dependencies(fixture, first), _allowConditionFixture: true },
     )
     assert.equal(pending.state, 'active')
 
     const starts: number[] = []
     const resumed = recoveryTransport({
       conditional: [conditionalDescriptor(conditional)],
-      expectDiscovery: false,
-      onRestoreCandidates() {
-        throw new Error('a durable roster must not repeat discovery')
-      },
       onConditionalFetch: () => conditional,
       onRestore(_keysetId, start) {
         starts.push(start)
@@ -440,8 +422,11 @@ test('a durable roster resumes a pending conditional child without rediscovery',
       },
     })
     const completed = await recoverAllDaemonWalletFromSeed(
-      request(fixture, 'msat'),
-      dependencies(fixture, resumed),
+      {
+        ...request(fixture, 'msat'),
+        scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
+      },
+      { ...dependencies(fixture, resumed), _allowConditionFixture: true },
     )
     assert.deepEqual(starts, [0])
     assert.equal(completed.state, 'completed')
@@ -711,7 +696,6 @@ function recoveryTransport(input: {
   conditional?: readonly Record<string, unknown>[]
   regularKeys?: readonly MintKeys[]
   onEnsureKeysetKeys?: (id: string) => MintKeys
-  onRestoreCandidates?: (outputs: readonly unknown[]) => unknown
   onConditionalFetch?: (id: string) => ReturnType<typeof conditionalAuthority>
   onRestore?: (
     keysetId: string,
@@ -719,11 +703,9 @@ function recoveryTransport(input: {
     outputs: readonly SerializedBlindedMessage[],
   ) => unknown
   onCheckStates?: (proofs: readonly Proof[]) => ReturnType<typeof proofState>[]
-  expectDiscovery?: boolean
 }): AllKeysetSeedRecoveryTransport {
   const keys = new Map((input.regularKeys ?? []).map((keyset) => [keyset.id, keyset]))
   const starts = new Map<string, number>()
-  let discoveryPending = input.expectDiscovery ?? (input.conditional?.length ?? 0) > 0
   const wallet = {
     async loadMint() {},
     keyChain: {
@@ -760,10 +742,6 @@ function recoveryTransport(input: {
       return input.onConditionalFetch(id)
     },
     async restoreCandidates(outputs) {
-      if (discoveryPending) {
-        discoveryPending = false
-        return input.onRestoreCandidates?.(outputs) ?? { outputs: [], signatures: [] }
-      }
       const keysetId = (outputs[0] as SerializedBlindedMessage).id
       const start = starts.get(keysetId) ?? 0
       starts.set(keysetId, start + outputs.length)
@@ -797,7 +775,7 @@ function emptyTransport(regular: unknown = { keysets: [] }): AllKeysetSeedRecove
       return regular
     },
     async listConditionalKeysets() {
-      return { keysets: [] }
+      throw new Error('regular recovery must not list conditional keysets')
     },
     async getConditionalKeyset() {
       throw new Error('empty recovery must not fetch conditional keys')
@@ -833,3 +811,166 @@ function restoreResponse(
     }),
   }
 }
+
+test('a reopened job pins scope and gap, while a new job can scan deeper', async () => {
+  const fixture = await recoveryFixture('policy-reopen')
+  let calls = 0
+  const transport = emptyTransport({ keysets: [{ id: V2_ID, unit: 'msat' }] })
+  transport.restoreCandidates = async (outputs) => {
+    calls++
+    assert.equal(outputs.length, calls === 1 ? 7 : 11)
+    return { outputs: [], signatures: [] }
+  }
+  const original = {
+    ...request(fixture),
+    scanPolicy: createSeedRecoveryScanPolicy({ gapLimit: 7 }),
+  }
+  try {
+    const first = await recoverAllDaemonWalletFromSeed(original, dependencies(fixture, transport))
+    assert.equal(first.scannedRanges[0]!.nextCounter, 7)
+    const forbidden = emptyTransport()
+    forbidden.listRegularKeysets = async () => {
+      throw new Error('completed retry must not use transport')
+    }
+    const resumed = await recoverAllDaemonWalletFromSeed(original, dependencies(fixture, forbidden))
+    assert.equal(resumed.batchesProcessed, 0)
+    assert.deepEqual(resumed.scannedRanges, first.scannedRanges)
+    await assert.rejects(
+      () =>
+        recoverAllDaemonWalletFromSeed(
+          { ...original, scanPolicy: createSeedRecoveryScanPolicy({ gapLimit: 11 }) },
+          dependencies(fixture, forbidden),
+        ),
+      /binding is foreign/,
+    )
+    await assert.rejects(
+      () =>
+        recoverAllDaemonWalletFromSeed(
+          {
+            ...original,
+            scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID, gapLimit: 7 }),
+          },
+          { ...dependencies(fixture, forbidden), _allowConditionFixture: true },
+        ),
+      /binding is foreign/,
+    )
+    const deeper = await recoverAllDaemonWalletFromSeed(
+      {
+        ...original,
+        recoveryId: 'deeper-job',
+        scanPolicy: createSeedRecoveryScanPolicy({ gapLimit: 11 }),
+      },
+      { ...dependencies(fixture, transport), invocationId: () => 'deeper-invocation' },
+    )
+    assert.equal(deeper.scannedRanges[0]!.nextCounter, 11)
+    assert.equal(calls, 2)
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('selected condition fixture scans beyond counter zero with its explicit larger gap', async () => {
+  const fixture = await recoveryFixture('condition-deeper')
+  const conditional = conditionalAuthority()
+  const starts: number[] = []
+  const counts: number[] = []
+  const transport = recoveryTransport({
+    conditional: [conditionalDescriptor(conditional)],
+    onConditionalFetch: () => conditional,
+    onRestore(_id, start, outputs) {
+      starts.push(start)
+      counts.push(outputs.length)
+      return start === 300
+        ? restoreResponse(outputs.slice(100, 101), [1])
+        : { outputs: [], signatures: [] }
+    },
+    onCheckStates: (proofs) => proofs.map((proof) => proofState(proof, CheckStateEnum.SPENT)),
+  })
+  transport.wallet.loadMint = async () => {
+    throw new Error('global mint access')
+  }
+  transport.listRegularKeysets = async () => {
+    throw new Error('global listing')
+  }
+  try {
+    const result = await recoverAllDaemonWalletFromSeed(
+      {
+        ...request(fixture),
+        scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID, gapLimit: 701 }),
+      },
+      { ...dependencies(fixture, transport), _allowConditionFixture: true },
+    )
+    assert.deepEqual(starts, [0, 300, 600, 900])
+    assert.deepEqual(counts, [300, 300, 300, 202])
+    assert.equal(result.state, 'completed')
+    assert.equal(result.scannedRanges[0]!.nextCounter, 1102)
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(
+        (
+          database
+            .prepare('SELECT next_counter AS next FROM target_keyset_counters WHERE keyset_id=?')
+            .get(conditional.id) as { next: number }
+        ).next,
+        401,
+      )
+      assert.equal(
+        (
+          database.prepare('SELECT count(*) AS count FROM custody_proofs').get() as {
+            count: number
+          }
+        ).count,
+        0,
+      )
+    } finally {
+      database.close()
+    }
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('failed discovery keeps an explicit policy declaration and exact retry publishes one roster', async () => {
+  const fixture = await recoveryFixture('discovery-fault')
+  const input = { ...request(fixture), scanPolicy: createSeedRecoveryScanPolicy({ gapLimit: 9 }) }
+  let listingCalls = 0
+  const broken = emptyTransport()
+  broken.listRegularKeysets = async () => {
+    listingCalls++
+    throw new Error('injected discovery failure')
+  }
+  try {
+    await assert.rejects(
+      recoverAllDaemonWalletFromSeed(input, dependencies(fixture, broken)),
+      /injected discovery failure/,
+    )
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(
+        database.prepare('SELECT discovery_state AS state FROM seed_recovery_jobs').get()!.state,
+        'pending',
+      )
+      assert.equal(
+        database.prepare('SELECT count(*) AS count FROM seed_recovery_keysets').get()!.count,
+        0,
+      )
+    } finally {
+      database.close()
+    }
+    await assert.rejects(
+      recoverAllDaemonWalletFromSeed(
+        { ...input, scanPolicy: createSeedRecoveryScanPolicy({ gapLimit: 10 }) },
+        dependencies(fixture, broken),
+      ),
+      /binding is foreign/,
+    )
+    assert.equal(listingCalls, 1)
+    const result = await recoverAllDaemonWalletFromSeed(
+      input,
+      dependencies(fixture, emptyTransport()),
+    )
+    assert.equal(result.state, 'completed')
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})

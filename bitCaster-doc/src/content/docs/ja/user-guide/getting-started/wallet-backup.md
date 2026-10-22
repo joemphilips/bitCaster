@@ -225,8 +225,18 @@ SQLite が一覧にある WAL または SHM を通常の処理で削除した場
 では、暗号化バックアップと資産監視の両方を省略できます。完全なウォレット状態は、
 ローカルの永続ストアに保持します。
 
-CLI には、広範な緊急 NUT-09/NUT-13 recovery もあります。バックアップサービスが
-利用できない場合や、シード復元が必要な場合に使用してください。通常の keyset を
-走査します。counter-zero discovery で期限切れでない CTF keyset を選択してから、
-選択した keyset を完全に走査します。各 keyset には標準の 300-counter gap limit を
-使用します。
+バックアップサービスが利用できない場合は、`wallet recover-seed` で緊急の
+NUT-09/NUT-13 recovery を実行できます。通常の `msat` keyset だけを走査します。
+conditional keyset の一覧は取得しません。`--gap-limit` の既定値は 300 です。
+最後に検証した署名の後をさらに走査する場合は、この値を増やしてください。
+1 回の要求は最大 300 counter、1 回の実行は最大 4 batch です。
+
+recovery job は scope と gap limit を固定します。再試行では同じ値を指定して
+ください。より深く走査する場合は、新しい recovery ID を使用してください。
+結果には走査範囲と、この走査で確認できなかったローカル counter binding を表示します。
+走査が完了しても、他の資金がないことの証明にはなりません。gap の後に output が
+残る場合があります。
+
+condition を指定した recovery はまだ利用できません。`--condition-id` は、
+phrase file の読み取りと recovery job の変更の前に拒否します。seed recovery の
+前に古い client を停止してください。live authorization は復元しません。
