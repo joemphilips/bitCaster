@@ -1,3 +1,13 @@
+import {
+  decodeBundleSet,
+  objectCount,
+  cursor,
+  positive,
+  bounded,
+  exactRecord,
+  equalBytes,
+  toHex,
+} from './encryptedWalletBackupAuthorityValidation.ts'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
@@ -240,35 +250,6 @@ export function decodeEncryptedWalletBackupV2CurrentHead(
   })
 }
 
-function decodeBundleSet(
-  value: readonly EncryptedWalletBackupV2BundleDescriptor[],
-  context: { readonly realm: string; readonly walletId: string },
-): readonly EncryptedWalletBackupV2BundleDescriptor[] {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX)
-    throw new Error('encrypted backup v2 active bundles are invalid')
-  const bundles = value.map((bundle) =>
-    decodeEncryptedWalletBackupV2BundleDescriptor(bundle, context),
-  )
-  const assets = new Set<string>()
-  const objects = new Set<string>()
-  for (let index = 0; index < bundles.length; index += 1) {
-    const bundle = bundles[index]!
-    if (index > 0 && bundle.bundleId <= bundles[index - 1]!.bundleId)
-      throw new Error('encrypted backup v2 active bundles are unordered or duplicated')
-    if (assets.has(bundle.assetLocator))
-      throw new Error('encrypted backup v2 asset locator is duplicated')
-    assets.add(bundle.assetLocator)
-    for (const object of bundle.objects) {
-      if (objects.has(object.objectId))
-        throw new Error('encrypted backup v2 object id is duplicated')
-      objects.add(object.objectId)
-    }
-  }
-  if (objects.size > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_OBJECT_REFERENCE_MAX)
-    throw new Error('encrypted backup v2 active object count is invalid')
-  return Object.freeze(bundles)
-}
-
 function assertHeadMatches(
   head: EncryptedWalletBackupV2CurrentHead,
   bundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
@@ -348,9 +329,7 @@ export function digestEncryptedWalletBackupV2ActiveSetPairs(input: {
       .digest(),
   )
 }
-function objectCount(bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]): number {
-  return bundles.reduce((count, bundle) => count + bundle.objects.length, 0)
-}
+
 export function encodeEncryptedWalletBackupV2CurrentHead(
   head: EncryptedWalletBackupV2CurrentHead,
 ): Uint8Array {
@@ -365,33 +344,5 @@ export function encodeEncryptedWalletBackupV2CurrentHead(
     hexToBytesStrict(head.activeSetDigest, 32, 'active set digest'),
   ])
 }
-function cursor(value: unknown): string | null {
-  return value === null ? null : requireLowerHex(value, 16, 'bundle cursor')
-}
-function positive(value: unknown, name: string): number {
-  return bounded(value, 1, Number.MAX_SAFE_INTEGER, name)
-}
-function bounded(value: unknown, min: number, max: number, name: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)
-    throw new Error(`encrypted backup v2 ${name} is invalid`)
-  return value
-}
-function exactRecord(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value))
-    throw new Error('encrypted backup v2 record is invalid')
-  const record = value as Record<string, unknown>
-  if (
-    Object.keys(record).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(record, field))
-  )
-    throw new Error('encrypted backup v2 record is invalid')
-  return record
-}
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return (
-    left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
-  )
-}
-function toHex(value: Uint8Array): string {
-  return Array.from(value, (item) => item.toString(16).padStart(2, '0')).join('')
-}
+
+export * from './encryptedWalletBackupOwnerHead.ts'

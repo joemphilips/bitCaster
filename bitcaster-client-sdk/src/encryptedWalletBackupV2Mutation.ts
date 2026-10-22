@@ -1,3 +1,8 @@
+import {
+  requireExactAssetReplacement,
+  decodeSupersededBundleIds,
+  requireMutationMode,
+} from './encryptedWalletBackupAuthorityValidation.ts'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
@@ -202,29 +207,6 @@ function snapshotPreparationInput(input: {
   }
 }
 
-function requireExactAssetReplacement(
-  addedBundle: EncryptedWalletBackupV2BundleDescriptor | null,
-  supersededBundleIds: readonly string[],
-  currentBundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
-): void {
-  const superseded = supersededBundleIds
-  const currentIds = new Set(currentBundles.map((bundle) => bundle.bundleId))
-  if (superseded.some((bundleId) => !currentIds.has(bundleId)))
-    throw new Error('encrypted backup mutation predecessor is not current')
-  if (addedBundle === null) return
-  const matching = currentBundles.filter(
-    (bundle) => bundle.assetLocator === addedBundle.assetLocator,
-  )
-  if (matching.length === 0) {
-    if (superseded.length !== 0)
-      throw new Error('encrypted backup mutation addition has a predecessor')
-    return
-  }
-  if (matching.length !== 1 || superseded.length !== 1 || superseded[0] !== matching[0]!.bundleId) {
-    throw new Error('encrypted backup mutation replacement predecessor is invalid')
-  }
-}
-
 function decodeEnvelope(
   value: unknown,
   expected?: MutationScope,
@@ -329,30 +311,11 @@ function decodeMutationContext(value: Record<string, unknown>): MutationContext 
   })
 }
 
-function decodeSupersededBundleIds(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_SUPERSEDED_BUNDLE_MAX)
-    throw new Error('encrypted backup superseded bundles are invalid')
-  const bundleIds = value.map((item) => requireLowerHex(item, 16, 'superseded bundle id'))
-  if (bundleIds.some((item, index) => index > 0 && item <= bundleIds[index - 1]!))
-    throw new Error('encrypted backup superseded bundles are invalid')
-  return Object.freeze(bundleIds)
-}
-
 function decodeAddedBundle(
   value: unknown,
   context: MutationScope,
 ): EncryptedWalletBackupV2BundleDescriptor | null {
   return value === null ? null : decodeEncryptedWalletBackupV2BundleDescriptor(value, context)
-}
-
-function requireMutationMode(
-  addedBundle: EncryptedWalletBackupV2BundleDescriptor | null,
-  supersededBundleIds: readonly string[],
-): void {
-  if (addedBundle === null && supersededBundleIds.length === 0)
-    throw new Error('encrypted backup mutation is a no-op')
-  if (addedBundle !== null && supersededBundleIds.includes(addedBundle.bundleId))
-    throw new Error('encrypted backup mutation supersedes its added bundle')
 }
 
 function mutationDigest(
@@ -549,3 +512,5 @@ interface KeyContext {
   readonly walletId: string
   readonly requestAuthPublicKey: string
 }
+
+export * from './encryptedWalletBackupOwnerMutation.ts'
