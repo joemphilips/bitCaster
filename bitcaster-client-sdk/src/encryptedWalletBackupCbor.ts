@@ -219,3 +219,30 @@ function headerLength(value: number): number {
   if (value <= 0xffff_ffff) return 5
   return 9
 }
+
+/** Shape-only, bounded owner proof scan; semantic decoder owns purpose checks. */
+export function preflightEncryptedBackupOwnerProofCbor(bytes: Uint8Array): void {
+  const tuple = scanTuple(bytes, 4096, 2, 32, 16)
+  requireUnsignedField(tuple, 0, 2, 'owner proof version')
+  requireTextField(tuple, 1, 26, 26, 'owner proof discriminator')
+  requireTextField(tuple, 2, 6, 15, 'owner proof purpose')
+  const owner = tuple.children[3]
+  if (!(owner?.major === 2 && owner.value === 32) && !(owner?.major === 7 && owner.value === 22))
+    throw new Error('owner proof scope')
+  requireTextField(tuple, 4, 1, 64, 'realm')
+  requireBytesField(tuple, 5, 32, 32, 'wallet')
+  requireBytesField(tuple, 6, 32, 32, 'key')
+  requireUnsignedField(tuple, 7, undefined, 'epoch')
+  requireTextField(tuple, 8, 3, 6, 'method')
+  requireTextField(tuple, 9, 1, 2048, 'url')
+  requireUnsignedField(tuple, 10, undefined, 'issued')
+  requireUnsignedField(tuple, 11, undefined, 'expires')
+  requireBytesField(tuple, 12, 16, 16, 'nonce')
+  requireUnsignedField(tuple, 13, undefined, 'payload length')
+  requireBytesField(tuple, 14, 32, 32, 'payload digest')
+  requireBytesField(tuple, 15, 64, 64, 'signature')
+}
+
+export function preflightEncryptedBackupOwnerDiscoveryCbor(bytes: Uint8Array): void {
+  scanTuple(bytes, 16384, 4, 200, 9)
+}

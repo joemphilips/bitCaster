@@ -129,10 +129,11 @@ export function verifyEncryptedWalletBackupRequestProofEvidence(input: {
   if (
     proof.method !== requireMethod(input.expectedMethod) ||
     proof.url !== requireHttpsUrl(input.expectedUrl) ||
-    proof.expiresAtUnixSeconds <= proof.issuedAtUnixSeconds ||
-    proof.expiresAtUnixSeconds - proof.issuedAtUnixSeconds > 60 ||
-    proof.issuedAtUnixSeconds > now + 30 ||
-    now > proof.expiresAtUnixSeconds ||
+    !isEncryptedWalletBackupRequestFresh(
+      proof.issuedAtUnixSeconds,
+      proof.expiresAtUnixSeconds,
+      now,
+    ) ||
     proof.payloadLength !== payload.byteLength ||
     proof.payloadDigest !== bytesToHex(sha256(payload)) ||
     !schnorr.verify(
@@ -343,4 +344,13 @@ function requireInteger(
   if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum)
     throw new Error(`${name} is invalid`)
   return value as number
+}
+
+/** Shared inclusive time predicate. Callers validate safe nonnegative integers first. */
+export function isEncryptedWalletBackupRequestFresh(
+  issued: number,
+  expires: number,
+  now: number,
+): boolean {
+  return expires > issued && expires - issued <= 60 && issued <= now + 30 && now <= expires
 }
