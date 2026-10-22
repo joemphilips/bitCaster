@@ -6,6 +6,18 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+## Request body limits
+
+Requests with a body can receive `429` before authentication when concurrent
+upload capacity is full. Valid credentials do not bypass this limit. Reduce
+simultaneous requests and follow the endpoint's retry and recovery rules.
+This refusal uses `limitCode: "request-body-concurrency"` and `Retry-After: 1`.
+The one-second delay is a retry hint, not a promise that capacity will be free.
+
+A declared body length above the endpoint limit receives `413` before
+authentication. For an admitted request, streamed bodies and bodies larger than
+their declared length also receive `413` when they exceed the endpoint limit.
+
 ## Custom clients and automation
 
 Use the CLI as an application interface for a custom GUI or TUI, scripts,
