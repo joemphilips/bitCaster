@@ -1,10 +1,25 @@
 import type { CounterRange, CounterSource } from "@cashu/cashu-ts";
-import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import {
+  decodeDurableCustodyScopeId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from "@bitcaster/client-sdk/durableCustody";
 import { isCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
+import {
+  counterCtfRangePreparationIdentity,
+  createCounterCtfRangePreparation,
+  planCounterCtfRangePreparation,
+  type CtfRangePreparationIntent,
+  type PersistedCtfRangeOrderPreparationV2,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { advanceBrowserV2DesiredAssetsForCounter } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  insertCtfRangePreparationInTransaction,
+  readCtfRangePreparationForIntentInTransaction,
+} from "./ctf-range-order-db";
 import type { BitcasterDB } from "./proof-db";
 
 export const BROWSER_WALLET_COUNTER_ASSOCIATION_MAX = 256;
@@ -33,6 +48,11 @@ export class BrowserWalletCounterError extends Error {
 export interface BrowserWalletCounterAdvanceResult {
   readonly changed: boolean;
   readonly next: number;
+}
+
+export interface BrowserCtfPreparationReservationResult {
+  readonly record: import("@bitcaster/client-sdk/ctfRangeOrderJournal").CtfRangeOrderPreparationRecord;
+  readonly replayed: boolean;
 }
 
 export interface BrowserWalletCounterDexieProfile {
@@ -92,6 +112,125 @@ export class BrowserWalletCounterDexieStore {
         const row = await this.#ensureAssociation(association, id);
         if (requireRecoveryComplete && !row.recoveryComplete) this.#throwRecoveryIncomplete();
         return this.#reserveInTransaction(association, id, count);
+      },
+    );
+  }
+
+  /** Atomically reserve both CTF output ranges and retain their replay receipt. */
+  async reserveCtfPreparationInContext(input: {
+    readonly context: BrowserWalletCounterContextInput;
+    readonly preparation: PersistedCtfRangeOrderPreparationV2;
+    readonly intent: CtfRangePreparationIntent;
+    readonly seed: Uint8Array;
+    readonly createdAtMs: number;
+  }): Promise<BrowserCtfPreparationReservationResult> {
+    const association = requireContext(input.context);
+    const intentScopeId = input.intent.scopeId;
+    if (intentScopeId !== this.#scopeId) {
+      throw new BrowserWalletCounterError(
+        "foreign_database",
+        "CTF preparation intent belongs to another wallet profile",
+      );
+    }
+    const seedScopeId = deriveDurableCustodyScopeId({
+      scopeKind: "wallet",
+      walletId: deriveDurableCustodyWalletId(input.seed),
+    });
+    if (seedScopeId !== this.#scopeId) {
+      throw new BrowserWalletCounterError(
+        "foreign_database",
+        "CTF preparation seed belongs to another wallet profile",
+      );
+    }
+    const preparation = input.preparation;
+    const offerKeysetId = requireKeysetId(preparation.offerKeyset.id);
+    const receiveKeysetId = requireKeysetId(preparation.receiveKeyset.id);
+    if (offerKeysetId === receiveKeysetId) {
+      throw new BrowserWalletCounterError("invalid_keyset", "CTF keysets must be distinct");
+    }
+    if (
+      association.normalizedMint !== normalizeUrl(preparation.mintUrl) ||
+      association.unit !== parseCashuProofUnit(preparation.offerKeyset.unit) ||
+      association.unit !== parseCashuProofUnit(preparation.receiveKeyset.unit)
+    ) {
+      throw new BrowserWalletCounterError("invalid_unit", "CTF counter context is inconsistent");
+    }
+    this.#requireCurrentProfile();
+    return this.#database.transaction(
+      "rw",
+      [
+        this.#database.walletCounterAssociations,
+        this.#database.walletCounterCursors,
+        this.#database.custodyProofs,
+        this.#database.custodyProofBackupAuthorities,
+        this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.ctfRangePreparations,
+      ],
+      async (transaction) => {
+        this.#requireCurrentProfile();
+        const replay = await readCtfRangePreparationForIntentInTransaction(
+          transaction,
+          input.intent,
+          this.#database,
+        );
+        if (replay !== null) return { record: replay, replayed: true };
+
+        const counts = planCounterCtfRangePreparation(preparation);
+        const keysets = [offerKeysetId, receiveKeysetId] as const;
+        const associationRows = await Promise.all(
+          keysets.map((keysetId) =>
+            this.#database.walletCounterAssociations.get([
+              this.#scopeId,
+              association.normalizedMint,
+              association.unit,
+              keysetId,
+            ]),
+          ),
+        );
+        if (associationRows.some((row) => row?.recoveryComplete !== true)) {
+          this.#throwRecoveryIncomplete();
+        }
+        const currentValues = await Promise.all(
+          keysets.map((keysetId) => this.#currentNext(keysetId)),
+        );
+        const offerStart = currentValues[0]!;
+        const receiveStart = currentValues[1]!;
+        const offerNext = offerStart + counts.offerCount;
+        const receiveNext = receiveStart + counts.receiveCount;
+        if (!Number.isSafeInteger(offerNext) || !Number.isSafeInteger(receiveNext)) {
+          throw new BrowserWalletCounterError("invalid_counter", "CTF counter range is invalid");
+        }
+
+        // The SDK validates both bounded ranges and seed-derived receipt bindings
+        // before any database row is written.
+        const receipt = createCounterCtfRangePreparation({
+          preparation,
+          intent: input.intent,
+          seed: input.seed,
+          offerCounterStart: offerStart,
+          receiveCounterStart: receiveStart,
+        });
+        const identity = counterCtfRangePreparationIdentity(receipt, input.createdAtMs);
+        this.#requireCurrentProfile();
+        const record = await insertCtfRangePreparationInTransaction(
+          transaction,
+          identity,
+          this.#database,
+        );
+        await this.#database.walletCounterCursors.put({
+          scopeId: this.#scopeId,
+          keysetId: offerKeysetId,
+          next: offerNext,
+        });
+        await this.#database.walletCounterCursors.put({
+          scopeId: this.#scopeId,
+          keysetId: receiveKeysetId,
+          next: receiveNext,
+        });
+        await this.#advanceDesiredAssetAuthority(association, offerKeysetId);
+        await this.#advanceDesiredAssetAuthority(association, receiveKeysetId);
+        return { record, replayed: false };
       },
     );
   }

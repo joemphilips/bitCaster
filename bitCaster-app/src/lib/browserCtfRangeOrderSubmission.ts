@@ -23,7 +23,14 @@ import {
   composeCtfRangeOrderFeeFacts,
   type CtfRangeOrderFeeFacts,
 } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
-import { planPersistedCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import {
+  createCtfRangePreparationIntent,
+  decodeCtfRangeOrderPreparationFromRecord,
+  planPersistedCtfRangeOrderAuthorization,
+  reconstructCtfRangePreparation,
+  type PersistedCtfRangeOrderPreparation,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type { DurableCtfRangeAsset } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { toSeed } from "@/lib/bip39";
@@ -41,7 +48,12 @@ import {
   type BrowserCtfRangeOrderSubmitControl,
 } from "./browserCtfRangeOrderCoordinator";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
-import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
+import {
+  readCtfRangePreparation,
+  readCtfRangePreparationForIntent,
+} from "@/stores/ctf-range-order-db";
+import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
+import { db } from "@/stores/proof-db";
 import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages";
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
@@ -165,7 +177,60 @@ export async function submitBrowserCtfRangeOrder(
   const seed = toSeed(words);
   const scopeId = browserWalletScopeIdFromMnemonic(input.mnemonic);
   if (scopeId === null) throw new Error("The wallet profile is unavailable.");
-  const { engine, preparation, maxOutputs } = await loadBrowserRangePreparation(input);
+  const request = buildBrowserRangeOrderRequest(input);
+  const preparationIntent = createCtfRangePreparationIntent({
+    scopeId,
+    request,
+    feeConsentBytes: encodeCtfRangeOrderFeeConsentArtifact(input.consentedFeeFacts),
+    consolidateProofs: true,
+  });
+  const retained = await readCtfRangePreparationForIntent(preparationIntent.intent);
+  let engine: ReturnType<typeof createAuthenticatedBrowserEngineClient>;
+  let preparation: PersistedCtfRangeOrderPreparation;
+  let initialMaxOutputs: number | undefined;
+  let sourceCountersReady = false;
+  if (retained !== null) {
+    preparation = decodeCtfRangeOrderPreparationFromRecord(retained);
+    reconstructCtfRangePreparation(preparation, seed);
+    engine = createAuthenticatedBrowserEngineClient();
+  } else {
+    const loaded = await loadBrowserRangePreparation(input, request);
+    engine = loaded.engine;
+    const basePreparation = loaded.preparation;
+    if (basePreparation.version !== 2) throw new Error("new browser preparation must be version 2");
+    try {
+      for (const keyset of [basePreparation.offerKeyset, basePreparation.receiveKeyset]) {
+        await ensureWalletKeysetCounterReady({
+          scopeId,
+          mintUrl: basePreparation.mintUrl,
+          unit: "msat",
+          keyset,
+          ...conditionalCounterAsset(keyset),
+        });
+      }
+    } catch {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+      );
+    }
+    const counterStore = new BrowserWalletCounterDexieStore({
+      database: db,
+      scopeId,
+      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+    });
+    const reservation = await counterStore.reserveCtfPreparationInContext({
+      context: { mintUrl: basePreparation.mintUrl, unit: "msat" },
+      preparation: basePreparation,
+      intent: preparationIntent.intent,
+      seed,
+      createdAtMs: Date.now(),
+    });
+    preparation = decodeCtfRangeOrderPreparationFromRecord(reservation.record);
+    reconstructCtfRangePreparation(preparation, seed);
+    sourceCountersReady = !reservation.replayed;
+    initialMaxOutputs = reservation.replayed ? undefined : loaded.maxOutputs;
+  }
   const coordinator = createBrowserCtfRangeCoordinator(
     engine,
     input.mnemonic,
@@ -178,62 +243,43 @@ export async function submitBrowserCtfRangeOrder(
   });
   let failed = false;
   try {
-    const asset = browserRangeSourceAsset(preparation);
-    try {
-      await ensureWalletKeysetCounterReady({
-        scopeId,
-        mintUrl: preparation.mintUrl,
-        unit: "msat",
-        keyset: preparation.offerKeyset,
-        ...(asset.kind === "conditional"
-          ? {
-              conditionalAsset: {
-                conditionId: asset.conditionId,
-                outcomeCollection: asset.outcomeCollection,
-              },
-            }
-          : {}),
-      });
-    } catch {
-      throw new BrowserCtfRangeOrderError(
-        "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-      );
-    }
-    if (preparation.side === "Sell") {
-      try {
-        await ensureWalletKeysetCounterReady({
-          scopeId,
-          mintUrl: preparation.mintUrl,
-          unit: "msat",
-          keyset: preparation.receiveKeyset,
-        });
-      } catch {
-        throw new BrowserCtfRangeOrderError(
-          "source-preparation-failed",
-          "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-        );
-      }
-    }
-    const consolidated = await consolidateBrowserRangeSource({
-      coordinator,
-      seed,
-      preparation,
-      maxOutputs,
-      mnemonic: input.mnemonic,
-      scopeId,
-      consentedFeeFacts: input.consentedFeeFacts,
-    });
     return await coordinator.prepareAndSubmit({
       seed,
       preparation,
-      candidates: consolidated.candidates,
-      collateralCandidates: consolidated.collateralCandidates,
-      maxOutputs,
+      loadSourceInputs: async () => {
+        const maxOutputs = initialMaxOutputs ?? (await loadCurrentSourceMaxOutputs(preparation));
+        if (!sourceCountersReady) {
+          try {
+            for (const keyset of [preparation.offerKeyset, preparation.receiveKeyset]) {
+              await ensureWalletKeysetCounterReady({
+                scopeId,
+                mintUrl: preparation.mintUrl,
+                unit: "msat",
+                keyset,
+                ...conditionalCounterAsset(keyset),
+              });
+            }
+            sourceCountersReady = true;
+          } catch {
+            throw new BrowserCtfRangeOrderError(
+              "source-preparation-failed",
+              "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+            );
+          }
+        }
+        const consolidated = await consolidateBrowserRangeSource({
+          coordinator,
+          seed,
+          preparation,
+          maxOutputs,
+          mnemonic: input.mnemonic,
+          scopeId,
+          consentedFeeFacts: input.consentedFeeFacts,
+        });
+        return { ...consolidated, maxOutputs };
+      },
       comment: input.comment ?? null,
       consentedFeeFacts: input.consentedFeeFacts,
-      paidConsolidationFeeSubunits: consolidated.paidConsolidationFeeSubunits,
-      currentFeeFacts: consolidated.currentFeeFacts,
       signal: input.signal,
       onQuotesRefreshing: input.onQuotesRefreshing,
     });
@@ -290,7 +336,7 @@ export async function submitBrowserCtfRangeOrder(
 interface BrowserRangeSourceInput {
   readonly coordinator: BrowserCtfRangeOrderCoordinator;
   readonly seed: Uint8Array;
-  readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
   readonly mnemonic: string;
   readonly scopeId: string;
   readonly maxOutputs: number;
@@ -516,7 +562,7 @@ async function executeConsolidationRounds(
 
 function assertApprovedConsolidationFee(
   input: {
-    readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    readonly preparation: PersistedCtfRangeOrderPreparation;
     readonly maxOutputs: number;
     readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   },
@@ -532,7 +578,7 @@ function assertApprovedConsolidationFee(
 
 function assertApprovedFeeFacts(
   input: {
-    readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    readonly preparation: PersistedCtfRangeOrderPreparation;
     readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   },
   committedFeeSubunits: string,
@@ -553,7 +599,7 @@ function assertApprovedFeeFacts(
 }
 
 function browserFeeFacts(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
   plan: Extract<
     CtfRangeCapabilitySourcePlan,
     { kind: "same-keyset-swap" | "mixed-source-ctf-convert" }
@@ -580,7 +626,7 @@ function browserFeeFacts(
 }
 
 function browserBoundedFeeFacts(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
   plan: ReadyRangeSourcePlan,
   maxOutputs: number,
 ): CtfRangeOrderFeeFacts {
@@ -624,7 +670,7 @@ function requireFeeAmount(value: string, label: string): string {
 }
 
 function browserPreparationAsset(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
 ): DurableCtfRangeAsset {
   const asset = browserRangeSourceAsset(preparation);
   return asset.kind === "regular"
@@ -638,13 +684,13 @@ function browserPreparationAsset(
 }
 
 function selectedRangeSourceProofs(
-  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>; scopeId: string },
+  input: { preparation: PersistedCtfRangeOrderPreparation; scopeId: string },
   amounts: readonly string[],
 ) {
   return selectCanonicalRangeProofAmounts(input, amounts);
 }
 
-function rangeSourceAsset(preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>) {
+function rangeSourceAsset(preparation: PersistedCtfRangeOrderPreparation) {
   if (preparation.side === "Buy") {
     return createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: preparation.mintUrl,
@@ -701,9 +747,7 @@ export class BrowserCtfRangeScoreTopUpCancelledError extends Error {
   }
 }
 
-function rangeSourceRequiredAmount(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
-): bigint {
+function rangeSourceRequiredAmount(preparation: PersistedCtfRangeOrderPreparation): bigint {
   return BigInt(
     planCtfRangeOrderAuthorization({
       side: preparation.side,
@@ -718,19 +762,31 @@ function rangeSourceRequiredAmount(
   );
 }
 
-async function loadBrowserRangePreparation(input: {
-  readonly market: MarketDetail;
-  readonly ticket: TradeTicket;
-  readonly clientOrderId: string;
-  readonly mintUrl: string;
-}) {
-  if (input.ticket.request.timeInForce !== "FOK") {
-    throw new BrowserCtfRangeOrderError(
-      "invalid-order-type",
-      browserCtfRangeOrderErrorMessage("invalid-order-type"),
-    );
-  }
-  const bounds = decodeOrderQuotePaymentBounds(input.ticket.request.side, input.ticket.request);
+function conditionalCounterAsset(keyset: PersistedCtfRangeOrderPreparation["offerKeyset"]) {
+  const conditional = keyset as typeof keyset & {
+    readonly conditionId?: unknown;
+    readonly outcomeCollection?: unknown;
+  };
+  return typeof conditional.conditionId === "string" &&
+    typeof conditional.outcomeCollection === "string"
+    ? {
+        conditionalAsset: {
+          conditionId: conditional.conditionId,
+          outcomeCollection: conditional.outcomeCollection,
+        },
+      }
+    : {};
+}
+
+async function loadBrowserRangePreparation(
+  input: {
+    readonly market: MarketDetail;
+    readonly ticket: TradeTicket;
+    readonly clientOrderId: string;
+    readonly mintUrl: string;
+  },
+  request = buildBrowserRangeOrderRequest(input),
+) {
   const engine = createAuthenticatedBrowserEngineClient();
   const mint = new CashuMint(input.mintUrl) as unknown as CtfRangeMintMetadataClient;
   const [policy, mintFacts] = await Promise.all([
@@ -744,20 +800,7 @@ async function loadBrowserRangePreparation(input: {
     }),
   ]);
   const preparation = buildBrowserCtfRangeOrderPreparation({
-    request: {
-      ...input.ticket.request,
-      ...bounds,
-      clientOrderId: input.clientOrderId,
-      marketId: input.ticket.marketId,
-      conditionId: input.market.id,
-      minimumFillAmountSubunits: input.market.divisibility,
-      baseAsset: "sat",
-      collateralUnit: "msat",
-      divisibility: input.market.divisibility,
-      timeInForce: "FOK",
-      expiresAt: null,
-      mintUrl: input.mintUrl,
-    },
+    request,
     policy,
     mintFacts,
     market: input.market,
@@ -765,6 +808,67 @@ async function loadBrowserRangePreparation(input: {
     randomId: () => crypto.randomUUID(),
   });
   return { engine, preparation, maxOutputs: mintFacts.maxOutputs };
+}
+
+function buildBrowserRangeOrderRequest(input: {
+  readonly market: MarketDetail;
+  readonly ticket: TradeTicket;
+  readonly clientOrderId: string;
+  readonly mintUrl: string;
+}) {
+  if (input.ticket.request.timeInForce !== "FOK") {
+    throw new BrowserCtfRangeOrderError(
+      "invalid-order-type",
+      browserCtfRangeOrderErrorMessage("invalid-order-type"),
+    );
+  }
+  const bounds = decodeOrderQuotePaymentBounds(input.ticket.request.side, input.ticket.request);
+  return {
+    ...input.ticket.request,
+    ...bounds,
+    clientOrderId: input.clientOrderId,
+    marketId: input.ticket.marketId,
+    conditionId: input.market.id,
+    minimumFillAmountSubunits: input.market.divisibility,
+    baseAsset: "sat" as const,
+    collateralUnit: "msat" as const,
+    divisibility: input.market.divisibility,
+    timeInForce: "FOK" as const,
+    expiresAt: null,
+    mintUrl: input.mintUrl,
+  };
+}
+
+async function loadCurrentSourceMaxOutputs(
+  preparation: PersistedCtfRangeOrderPreparation,
+): Promise<number> {
+  const facts = await loadCachedMintMetadata({
+    mint: new CashuMint(preparation.mintUrl) as unknown as CtfRangeMintMetadataClient,
+    mintUrl: preparation.mintUrl,
+    conditionId: preparation.conditionId,
+    observedAt: Math.floor(Date.now() / 1_000),
+    allowInsecureLoopbackHttp: isLoopbackMint(preparation.mintUrl),
+  });
+  const expectedIds = [
+    preparation.offerKeyset.id,
+    preparation.receiveKeyset.id,
+    preparation.complementKeyset.id,
+  ].sort();
+  const currentIds = facts.regular
+    .map(({ id }) => id)
+    .concat(facts.conditional.map(({ id }) => id))
+    .filter((id) => expectedIds.includes(id))
+    .sort();
+  if (
+    currentIds.length !== expectedIds.length ||
+    currentIds.some((id, index) => id !== expectedIds[index])
+  ) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "The mint keysets changed while this order was being prepared. Start a new order to continue.",
+    );
+  }
+  return facts.maxOutputs;
 }
 
 function loadCachedAdmissionPolicy(
@@ -783,7 +887,7 @@ function loadCachedAdmissionPolicy(
 }
 
 async function loadBrowserRangeConsolidationPlan(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
   scopeId: string,
   candidates?: readonly Proof[],
 ) {
@@ -820,7 +924,7 @@ type BrowserRangeSourceSelection =
 type BrowserRangeSourcePolicy = "cash-funded-preferred" | "fee-funded-only";
 
 async function loadBrowserRangeSourceSelection(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
   scopeId: string,
   maxOutputs: number,
   policy: BrowserRangeSourcePolicy,
@@ -872,7 +976,7 @@ async function loadBrowserRangeSourceSelection(
 }
 
 async function loadCollateralCandidates(
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  preparation: PersistedCtfRangeOrderPreparation,
   scopeId: string,
   policy: BrowserRangeSourcePolicy,
 ): Promise<readonly Proof[]> {
@@ -895,7 +999,7 @@ async function loadCollateralCandidates(
 }
 
 async function selectCanonicalRangeProofAmounts(
-  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>; scopeId: string },
+  input: { preparation: PersistedCtfRangeOrderPreparation; scopeId: string },
   amounts: readonly string[],
 ) {
   if (amounts.length < 1 || amounts.length > 256) {

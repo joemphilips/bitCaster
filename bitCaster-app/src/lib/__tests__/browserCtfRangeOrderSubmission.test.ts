@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   buildPreparation: vi.fn(),
   candidates: [{ id: "regular-keyset", amount: 10_000, secret: "secret", C: "02" }],
   coordinatorInput: null as unknown,
+  sourceInputs: [] as unknown[],
   engine: {
     getSettlementCapabilityAdmissionPolicy: vi.fn(),
   },
@@ -51,6 +52,7 @@ const mocks = vi.hoisted(() => ({
   recordMessage: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
   counterReady: vi.fn(),
+  scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
 }));
@@ -64,13 +66,23 @@ vi.mock("@bitcaster/client-sdk/ctfRangeMintMetadata", () => ({
   loadCtfRangeMintMetadata: mocks.loadMintMetadata,
 }));
 
+vi.mock("@bitcaster/client-sdk/ctfRangeOrderProtocol", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@bitcaster/client-sdk/ctfRangeOrderProtocol")>();
+  return {
+    ...actual,
+    decodeCtfRangeOrderPreparationFromRecord: (record: unknown) => record,
+    reconstructCtfRangePreparation: () => ({}),
+  };
+});
+
 vi.mock("@bitcaster/client-sdk/ctfRangeSourceOperation", () => ({
   planCtfRangeSourceConsolidation: mocks.planConsolidation,
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
-  browserWalletScopeIdFromMnemonic: () => "custody:wallet:scope-1",
-  activeBrowserWalletScopeId: () => "custody:wallet:scope-1",
+  browserWalletScopeIdFromMnemonic: () => mocks.scopeId,
+  activeBrowserWalletScopeId: () => mocks.scopeId,
 }));
 
 vi.mock("@/stores/proof-db", () => ({
@@ -80,6 +92,16 @@ vi.mock("@/stores/proof-db", () => ({
 
 vi.mock("@/stores/ctf-range-order-db", () => ({
   readCtfRangePreparation: mocks.readPreparation,
+  readCtfRangePreparationForIntent: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/stores/browser-wallet-counter-db", () => ({
+  BrowserWalletCounterDexieStore: class {
+    reserveCtfPreparationInContext = vi.fn(async ({ preparation }: { preparation: unknown }) => ({
+      record: preparation,
+      replayed: false,
+    }));
+  },
 }));
 
 vi.mock("@/stores/ctf-range-order-messages", () => ({
@@ -161,7 +183,13 @@ describe("submitBrowserCtfRangeOrder", () => {
     });
     mocks.consolidateRound.mockResolvedValue(undefined);
     mocks.getWalletForMnemonicUnit.mockResolvedValue(mocks.wallet);
-    mocks.prepareAndSubmit.mockResolvedValue({ orderId: "order-1" });
+    mocks.sourceInputs = [];
+    mocks.prepareAndSubmit.mockImplementation(
+      async (input: { loadSourceInputs?: () => Promise<unknown> }) => {
+        if (input.loadSourceInputs) mocks.sourceInputs.push(await input.loadSourceInputs());
+        return { orderId: "order-1" };
+      },
+    );
     mocks.recoverPage.mockReset();
     mocks.recoverClientOrder.mockReset();
     mocks.readPreparation.mockResolvedValue(null);
@@ -181,7 +209,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     mocks.readPreparation.mockResolvedValue({ lifecycleState: "prepared" });
     const wakes: string[] = [];
-    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+    const stopWake = listenForBrowserCtfRangeRecoveryWake(mocks.scopeId, () => {
       wakes.push("wake");
     });
 
@@ -197,7 +225,7 @@ describe("submitBrowserCtfRangeOrder", () => {
 
   it("does not wake for a successful or terminal active attempt", async () => {
     const wakes: string[] = [];
-    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+    const stopWake = listenForBrowserCtfRangeRecoveryWake(mocks.scopeId, () => {
       wakes.push("wake");
     });
 
@@ -228,11 +256,11 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrls: ["https://mint.example"],
       }),
     );
-    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+    const stopWake = listenForBrowserCtfRangeRecoveryWake(mocks.scopeId, () => {
       void recovery();
     });
 
-    publishBrowserCtfRangeRecoveryWake({ scopeId: "custody:wallet:scope-1" });
+    publishBrowserCtfRangeRecoveryWake({ scopeId: mocks.scopeId });
     await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(mocks.recoverPage).toHaveBeenCalledOnce());
     expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
@@ -380,12 +408,12 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidates: mocks.candidates,
+        loadSourceInputs: expect.any(Function),
         preparation: expect.objectContaining({ operationId: "range-operation" }),
       }),
     );
     expect(mocks.counterReady).toHaveBeenCalledWith({
-      scopeId: "custody:wallet:scope-1",
+      scopeId: mocks.scopeId,
       mintUrl: "https://mint.example",
       unit: "msat",
       keyset: expect.objectContaining({ id: "regular-keyset" }),
@@ -396,7 +424,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     expect(mocks.getBoundedCanonicalRangeProofsForKeyset).toHaveBeenCalledWith(
       "https://mint.example",
       expect.objectContaining({
-        scopeId: "custody:wallet:scope-1",
+        scopeId: mocks.scopeId,
         keysetId: "regular-keyset",
         asset: { kind: "regular" },
       }),
@@ -446,12 +474,16 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidates: [offered],
-        collateralCandidates: [cash],
-        maxOutputs,
-        currentFeeFacts: preview,
+        loadSourceInputs: expect.any(Function),
       }),
     );
+    expect(mocks.sourceInputs[0]).toEqual({
+      candidates: [offered],
+      collateralCandidates: [cash],
+      maxOutputs,
+      paidConsolidationFeeSubunits: "0",
+      currentFeeFacts: preview,
+    });
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
   });
 
@@ -522,7 +554,7 @@ describe("submitBrowserCtfRangeOrder", () => {
 
       expect(mocks.recoverFundedAsset).toHaveBeenCalledTimes(offeredAssetRecoveries);
       expect(mocks.consolidateRound).not.toHaveBeenCalled();
-      expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+      expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
     },
   );
 
@@ -556,9 +588,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
     expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidates: [held],
-        collateralCandidates: [cash],
-        maxOutputs: 256,
+        loadSourceInputs: expect.any(Function),
       }),
     );
   });
@@ -616,15 +646,18 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        collateralCandidates: [],
-        paidConsolidationFeeSubunits: "1",
-        currentFeeFacts: feeFacts("Sell", {
-          source: "1",
-          consolidation: "0",
-          sourceMode: "conditional-keyset-swap",
-        }),
+        loadSourceInputs: expect.any(Function),
       }),
     );
+    expect(mocks.sourceInputs[0]).toMatchObject({
+      collateralCandidates: [],
+      paidConsolidationFeeSubunits: "1",
+      currentFeeFacts: feeFacts("Sell", {
+        source: "1",
+        consolidation: "0",
+        sourceMode: "conditional-keyset-swap",
+      }),
+    });
   });
 
   it("refuses source output plans that exceed the current authenticated bound", async () => {
@@ -975,7 +1008,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       });
 
       expect(mocks.counterReady).toHaveBeenCalledWith({
-        scopeId: "custody:wallet:scope-1",
+        scopeId: mocks.scopeId,
         mintUrl: "https://mint.example",
         unit: "msat",
         keyset: expect.objectContaining({ id: "conditional-keyset" }),
@@ -1151,9 +1184,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidates: expect.arrayContaining([expect.objectContaining({ id: "regular-keyset" })]),
-        collateralCandidates: [],
-        maxOutputs: 256,
+        loadSourceInputs: expect.any(Function),
       }),
     );
   });
@@ -1197,7 +1228,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     ).rejects.toMatchObject({ code: "source-preparation-failed" });
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it("does not mutate proofs when the displayed consolidation fee is stale", async () => {
@@ -1235,7 +1266,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     ).rejects.toThrow("Wallet proof fees changed");
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1260,7 +1291,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     ).rejects.toMatchObject({ code: "source-preparation-failed" });
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it("stops before another mint call when replanning exceeds the approved fee", async () => {
@@ -1290,7 +1321,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
 
     expect(mocks.consolidateRound).toHaveBeenCalledOnce();
-    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it("reuses bounded recent mint metadata for the same condition", async () => {
@@ -1374,7 +1405,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     });
     expect(mocks.recordMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        scopeId: "custody:wallet:scope-1",
+        scopeId: mocks.scopeId,
         operationId: "range-2",
         revision: 2,
         code: "recovery-pending",

@@ -228,6 +228,14 @@ export interface BrowserCtfRangeOrderSubmitControl {
   readonly onQuotesRefreshing?: (progress: OrderQuotesRefreshingProgress) => void;
 }
 
+interface BrowserCtfRangeSourceInputs {
+  readonly candidates: readonly Proof[];
+  readonly collateralCandidates: readonly Proof[];
+  readonly maxOutputs: number;
+  readonly paidConsolidationFeeSubunits: string;
+  readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+}
+
 export interface BrowserCtfRangeOrderCoordinatorDependencies {
   readonly wallet:
     | BrowserCtfRangeWallet
@@ -470,18 +478,19 @@ export class BrowserCtfRangeOrderCoordinator {
     input: BrowserCtfRangeOrderSubmitControl & {
       readonly seed: Uint8Array;
       readonly preparation: PersistedCtfRangeOrderPreparation;
-      readonly candidates: readonly Proof[];
-      readonly collateralCandidates: readonly Proof[];
-      readonly maxOutputs: number;
+      readonly candidates?: readonly Proof[];
+      readonly collateralCandidates?: readonly Proof[];
+      readonly maxOutputs?: number;
+      readonly loadSourceInputs?: () => Promise<BrowserCtfRangeSourceInputs>;
       readonly comment?: NostrKind1Event | null;
       readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
-      readonly paidConsolidationFeeSubunits: string;
-      readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+      readonly paidConsolidationFeeSubunits?: string;
+      readonly currentFeeFacts?: CtfRangeOrderFeeFacts;
     },
   ): Promise<SubmitOrderResponse> {
     requireFokRequest(input.preparation.request);
     const scope = browserWalletScope(input.seed);
-    const completed = await withWalletProfileLock(
+    let completed = await withWalletProfileLock(
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
@@ -489,25 +498,55 @@ export class BrowserCtfRangeOrderCoordinator {
             database: this.#database,
             scopeId: scope.scopeId,
           });
-          const source = await this.#prepareAndPersistSource(
-            {
-              ...input,
-            },
-            scope,
-            owner,
-          );
-          const completed = await this.#completeAndBindSource(
+          const resumed = await this.#resumePreparedSourceForSubmit(
             input.preparation,
             input.seed,
-            source.operation,
-            source.custodyOperationId,
             scope,
             owner,
           );
-          return completed;
+          return resumed;
         }),
       this.#lockManager,
     );
+    if (completed === null) {
+      // Source planning may recover or consolidate proofs. Those paths take
+      // the same profile lock, so load them outside the lock and recheck the
+      // durable source operation before admitting any result.
+      const sourceInputs = input.loadSourceInputs
+        ? await input.loadSourceInputs()
+        : requireDirectSourceInputs(input);
+      completed = await withWalletProfileLock(
+        scope.scopeId,
+        () =>
+          this.#withScopeOwner(scope, async (owner) => {
+            await requireBrowserWalletNewWritePermission({
+              database: this.#database,
+              scopeId: scope.scopeId,
+            });
+            const resumed = await this.#resumePreparedSourceForSubmit(
+              input.preparation,
+              input.seed,
+              scope,
+              owner,
+            );
+            if (resumed !== null) return resumed;
+            const source = await this.#prepareAndPersistSource(
+              { ...input, ...sourceInputs },
+              scope,
+              owner,
+            );
+            return this.#completeAndBindSource(
+              input.preparation,
+              input.seed,
+              source.operation,
+              source.custodyOperationId,
+              scope,
+              owner,
+            );
+          }),
+        this.#lockManager,
+      );
+    }
     if (Math.floor(this.#now() / 1_000) >= input.preparation.expiry) {
       throw rangeError("order-attempt-ended");
     }
@@ -1526,6 +1565,106 @@ export class BrowserCtfRangeOrderCoordinator {
       case "applied":
         await this.#requireAppliedOuter(scope, preparation.operationId);
         return false;
+      default:
+        throw rangeError("recovery-pending");
+    }
+  }
+
+  /** Resume the exact persisted source before the caller loads current mint limits or proofs. */
+  async #resumePreparedSourceForSubmit(
+    preparation: PersistedCtfRangeOrderPreparation,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+  ): Promise<{
+    operation: DurableCtfRangeOperation;
+    capabilityRequest: CreateSettlementCapabilityRequest;
+  } | null> {
+    const journal = await readCtfRangePreparation(
+      scope.scopeId,
+      preparation.operationId,
+      this.#database,
+    );
+    if (journal?.lifecycleState === "terminal") throw rangeError("order-attempt-ended");
+    const sourceCustodyOperationId = browserSourceCustodyOperationId(
+      scope,
+      preparation.sourceOperationId,
+    );
+    const snapshot = await this.#custody.readOperationSnapshot(scope, sourceCustodyOperationId);
+    if (snapshot === null) {
+      if (journal !== null && journal.lifecycleState !== "prepared") {
+        throw rangeError("recovery-pending");
+      }
+      return null;
+    }
+    const source = browserSourceOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+    switch (snapshot.record.operation.result.state) {
+      case "none": {
+        const decision = await this.#classifyUncertainSource(preparation, source);
+        switch (decision.kind) {
+          case "replay-exact-persisted-operation":
+            return this.#completeAndBindSource(
+              preparation,
+              seed,
+              source,
+              sourceCustodyOperationId,
+              scope,
+              owner,
+            );
+          case "restore-exact-persisted-outputs": {
+            const result = await this.#restoreExactSource(preparation, seed, source);
+            const staged = await this.#stageSourceResult(
+              scope,
+              owner,
+              preparation,
+              source,
+              snapshot.record,
+              result,
+            );
+            return this.#applySourceAndBindRange(
+              scope,
+              owner,
+              preparation,
+              seed,
+              source,
+              staged,
+              result,
+            );
+          }
+          case "remain-pending":
+            throw rangeError("recovery-pending");
+          case "reuse-completed":
+          case "fail":
+            throw new Error("range source recovery journal state is inconsistent");
+          default:
+            return assertNever(decision);
+        }
+      }
+      case "verified-staged": {
+        const result = browserSourceResultFromSnapshot(snapshot.record, snapshot.artifacts);
+        return this.#applySourceAndBindRange(
+          scope,
+          owner,
+          preparation,
+          seed,
+          source,
+          snapshot.record,
+          result,
+        );
+      }
+      case "applied": {
+        await this.#requireAppliedOuter(scope, preparation.operationId);
+        const outer = await this.#custody.readOperationSnapshot(
+          scope,
+          browserCustodyOperationId(scope, preparation.operationId),
+        );
+        if (outer === null) throw rangeError("recovery-pending");
+        const operation = browserRangeOperationFromSnapshot(outer.record, outer.artifacts);
+        return {
+          operation,
+          capabilityRequest: createCtfRangeSettlementCapabilityRequest(preparation, operation),
+        };
+      }
       default:
         throw rangeError("recovery-pending");
     }
@@ -2852,6 +2991,32 @@ function rangeError(
   const error = new BrowserCtfRangeOrderError(code, browserCtfRangeOrderErrorMessage(code));
   if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause });
   return error;
+}
+
+function requireDirectSourceInputs(input: {
+  readonly candidates?: readonly Proof[];
+  readonly collateralCandidates?: readonly Proof[];
+  readonly maxOutputs?: number;
+  readonly paidConsolidationFeeSubunits?: string;
+  readonly currentFeeFacts?: CtfRangeOrderFeeFacts;
+  readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+}): BrowserCtfRangeSourceInputs {
+  if (
+    input.candidates === undefined ||
+    input.collateralCandidates === undefined ||
+    input.maxOutputs === undefined ||
+    input.paidConsolidationFeeSubunits === undefined ||
+    input.currentFeeFacts === undefined
+  ) {
+    throw rangeError("source-preparation-failed");
+  }
+  return {
+    candidates: input.candidates,
+    collateralCandidates: input.collateralCandidates,
+    maxOutputs: input.maxOutputs,
+    paidConsolidationFeeSubunits: input.paidConsolidationFeeSubunits,
+    currentFeeFacts: input.currentFeeFacts,
+  };
 }
 
 function isMintRecoveredRangeResult(value: unknown): boolean {

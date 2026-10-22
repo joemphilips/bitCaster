@@ -1,0 +1,380 @@
+import Dexie from "dexie";
+import { afterEach, describe, expect, it } from "vitest";
+import { deriveConditionalKeysetId, deriveKeysetId } from "@cashu/cashu-ts";
+import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
+  buildPersistedCtfRangeOrderPreparation,
+  createCtfRangePreparationIntent,
+  decodeCtfRangeOrderPreparationFromRecord,
+  decodeCounterCtfRangePreparationBytes,
+  type CtfRangeOrderRequest,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import { mintDenominationKeys } from "../../../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts";
+import { browserRangeJournalIdentity, browserWalletScope } from "@/lib/browserCtfRangeOrderSource";
+import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
+import { BrowserWalletCounterDexieStore } from "../browser-wallet-counter-db";
+import { insertCtfRangePreparation, readCtfRangePreparationForIntent } from "../ctf-range-order-db";
+import { BitcasterDB } from "../proof-db";
+
+const seed = new Uint8Array(64).fill(31);
+const scopeId = deriveDurableCustodyScopeId({
+  scopeKind: "wallet",
+  walletId: deriveDurableCustodyWalletId(seed),
+});
+const databaseName = browserWalletDatabaseName(scopeId);
+const mintUrl = "https://mint.example";
+const conditionId = "ab".repeat(32);
+const outcome = "YES";
+const complement = "NO";
+const mintPrivateKey = Uint8Array.from([...new Uint8Array(31), 1]);
+const inputFeePpk = 100;
+const finalExpiry = 1_000;
+const mintKeys = mintDenominationKeys(
+  mintPrivateKey,
+  Array.from({ length: 21 }, (_, index) => (1 << index).toString()),
+);
+const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
+  conditionId,
+  outcomeCollection: outcome,
+});
+const complementCollectionId = deriveRootCtfOutcomeCollectionId({
+  conditionId,
+  outcomeCollection: complement,
+});
+const regularKeysetId = deriveKeysetId(mintKeys, {
+  unit: "msat",
+  input_fee_ppk: inputFeePpk,
+  expiry: finalExpiry,
+  versionByte: 1,
+});
+const offerKeysetId = regularKeysetId;
+const receiveKeysetId = deriveConditionalKeysetId({
+  keys: mintKeys,
+  unit: "msat",
+  input_fee_ppk: inputFeePpk,
+  final_expiry: finalExpiry,
+  conditionId,
+  outcomeCollectionId,
+});
+const coordinatorPublicKey = "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+const databases: BitcasterDB[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    databases.splice(0).map(async (database) => {
+      const name = database.name;
+      database.close();
+      await Dexie.delete(name);
+    }),
+  );
+});
+
+function openDatabase(): BitcasterDB {
+  const database = new BitcasterDB(databaseName);
+  databases.push(database);
+  return database;
+}
+
+function openCounters(database: BitcasterDB): BrowserWalletCounterDexieStore {
+  return new BrowserWalletCounterDexieStore({ database, scopeId });
+}
+
+async function markCountersReady(database: BitcasterDB): Promise<void> {
+  await database.walletCounterAssociations.bulkPut(
+    [offerKeysetId, receiveKeysetId].map((keysetId) => ({
+      scopeId,
+      normalizedMint: mintUrl,
+      unit: "msat" as const,
+      keysetId,
+      recoveryComplete: true,
+    })),
+  );
+}
+
+function request(clientOrderId = "browser-native-ctf-retry"): CtfRangeOrderRequest {
+  return {
+    clientOrderId,
+    marketId: `${conditionId}-${outcome}`,
+    conditionId,
+    outcomeId: "yes-id",
+    tokenSide: "Outcome",
+    side: "Buy",
+    price: 2,
+    maxQuotePaymentSubunits: 2,
+    minQuotePaymentSubunits: null,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    baseAsset: "sat",
+    collateralUnit: "msat",
+    divisibility: 1_000,
+    timeInForce: "FOK",
+    expiresAt: null,
+    mintUrl,
+  };
+}
+
+function preparation(requestValue = request(), idPrefix = 0) {
+  const conditionalKeysets = [
+    {
+      keysetId: receiveKeysetId,
+      conditionId,
+      unit: "msat" as const,
+      inputFeePpk,
+      finalExpiry,
+      outcomeCollection: outcome,
+      outcomeCollectionId,
+      registeredAt: 10,
+      keys: mintKeys,
+    },
+    {
+      keysetId: deriveConditionalKeysetId({
+        keys: mintKeys,
+        unit: "msat",
+        input_fee_ppk: inputFeePpk,
+        final_expiry: finalExpiry,
+        conditionId,
+        outcomeCollectionId: complementCollectionId,
+      }),
+      conditionId,
+      unit: "msat" as const,
+      inputFeePpk,
+      finalExpiry,
+      outcomeCollection: complement,
+      outcomeCollectionId: complementCollectionId,
+      registeredAt: 10,
+      keys: mintKeys,
+    },
+  ];
+  let generatedId = 0;
+  return buildPersistedCtfRangeOrderPreparation({
+    request: requestValue,
+    coordinatorPublicKey,
+    mintFacts: {
+      registration: {
+        normalizedMint: mintUrl,
+        conditionId,
+        canonicalParentCollectionId: null,
+        unit: "msat",
+        eventId: "browser-indexeddb-fixture",
+        outcomes: [outcome, complement],
+        threshold: 1,
+        oracles: [
+          {
+            oraclePublicKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            noncePoint: coordinatorPublicKey,
+            announcementIdentity: "aa".repeat(32),
+          },
+        ],
+      },
+      regular: [
+        {
+          canonicalMintUrl: mintUrl,
+          id: regularKeysetId,
+          unit: "msat",
+          active: true,
+          keys: mintKeys,
+          inputFeePpk,
+          finalExpiry,
+        },
+      ],
+      conditional: conditionalKeysets.map(({ keysetId, ...keyset }) => ({
+        ...keyset,
+        canonicalMintUrl: mintUrl,
+        id: keysetId,
+        active: true as const,
+      })),
+      maxInputs: 64,
+      maxPoolEntries: 128,
+      observation: {
+        canonicalMintUrl: mintUrl,
+        freshness: "fresh",
+        observedAt: 20,
+        maxExpirySeconds: finalExpiry,
+        conditionKeysetIds: [receiveKeysetId, conditionalKeysets[1]!.keysetId],
+        conditionalKeysets,
+      },
+    },
+    market: {
+      outcomes: [
+        { id: "yes-id", label: outcome },
+        { id: "no-id", label: complement },
+      ],
+    },
+    nowUnixSeconds: 20,
+    randomId: () =>
+      `00000000-0000-4000-8000-${(idPrefix + generatedId++).toString(16).padStart(12, "0")}`,
+  });
+}
+
+function intent(requestValue = request()) {
+  return createCtfRangePreparationIntent({
+    scopeId,
+    request: requestValue,
+    feeConsentBytes: null,
+    consolidateProofs: true,
+  }).intent;
+}
+
+function reservationInput(requestValue = request()) {
+  const selectedPreparation = preparation(requestValue);
+  return {
+    context: { mintUrl, unit: "msat" },
+    preparation: selectedPreparation,
+    intent: intent(requestValue),
+    seed,
+    createdAtMs: 100,
+  } as const;
+}
+
+describe("browser CTF counter reservation in Chromium IndexedDB", () => {
+  it("uses the browser IndexedDB provider rather than fake-indexeddb", () => {
+    expect(window.indexedDB).toBeDefined();
+    expect(Dexie.dependencies.indexedDB).toBe(window.indexedDB);
+    expect(window.indexedDB.constructor.name).toBe("IDBFactory");
+  });
+
+  it("rolls back the receipt and first cursor when the second cursor write fails", async () => {
+    const database = openDatabase();
+    await markCountersReady(database);
+    await database.walletCounterCursors.bulkPut([
+      { scopeId, keysetId: offerKeysetId, next: 0 },
+      { scopeId, keysetId: receiveKeysetId, next: 0 },
+    ]);
+    database.walletCounterCursors.hook("updating", (_mods, _key, row) => {
+      if (row.keysetId === receiveKeysetId) throw new Error("second cursor write failed");
+    });
+
+    await expect(
+      openCounters(database).reserveCtfPreparationInContext(reservationInput()),
+    ).rejects.toThrow("second cursor write failed");
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: 0,
+    });
+    expect(await database.walletCounterCursors.get([scopeId, receiveKeysetId])).toMatchObject({
+      next: 0,
+    });
+
+    database.close();
+    const reopened = openDatabase();
+    await reopened.open();
+    expect(await reopened.ctfRangePreparations.count()).toBe(0);
+    expect(await reopened.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: 0,
+    });
+  });
+
+  it("rolls back both ranges when receipt insertion fails", async () => {
+    const database = openDatabase();
+    await markCountersReady(database);
+    await database.walletCounterCursors.bulkPut([
+      { scopeId, keysetId: offerKeysetId, next: 0 },
+      { scopeId, keysetId: receiveKeysetId, next: 0 },
+    ]);
+    database.ctfRangePreparations.hook("creating", () => {
+      throw new Error("receipt insert failed");
+    });
+
+    await expect(
+      openCounters(database).reserveCtfPreparationInContext(reservationInput()),
+    ).rejects.toThrow("receipt insert failed");
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: 0,
+    });
+    expect(await database.walletCounterCursors.get([scopeId, receiveKeysetId])).toMatchObject({
+      next: 0,
+    });
+  });
+
+  it("replays the exact receipt after closing and reopening the real database", async () => {
+    const database = openDatabase();
+    await markCountersReady(database);
+    const counters = openCounters(database);
+    const input = reservationInput();
+    const first = await counters.reserveCtfPreparationInContext(input);
+    const decoded = decodeCounterCtfRangePreparationBytes(first.record.preparationBytes);
+    expect(first.replayed).toBe(false);
+    expect(decoded.version).toBe(3);
+    expect(await database.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: decoded.offerCounterCount,
+    });
+    expect(await database.walletCounterCursors.get([scopeId, receiveKeysetId])).toMatchObject({
+      next: decoded.receiveCounterCount,
+    });
+
+    database.close();
+    const reopened = openDatabase();
+    await reopened.open();
+    const replay = await openCounters(reopened).reserveCtfPreparationInContext(input);
+    expect(replay).toEqual({ record: first.record, replayed: true });
+    expect(await reopened.ctfRangePreparations.count()).toBe(1);
+    expect(await reopened.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: decoded.offerCounterCount,
+    });
+    expect(await reopened.walletCounterCursors.get([scopeId, receiveKeysetId])).toMatchObject({
+      next: decoded.receiveCounterCount,
+    });
+  });
+
+  it("serializes concurrent identical submissions to one receipt and one pair of ranges", async () => {
+    const database = openDatabase();
+    await markCountersReady(database);
+    const counters = openCounters(database);
+    const input = reservationInput();
+    const results = await Promise.all([
+      counters.reserveCtfPreparationInContext(input),
+      counters.reserveCtfPreparationInContext(input),
+    ]);
+    expect(results.map(({ replayed }) => replayed).sort()).toEqual([false, true]);
+    expect(results[0]!.record).toEqual(results[1]!.record);
+    expect(await database.ctfRangePreparations.count()).toBe(1);
+    const decoded = decodeCounterCtfRangePreparationBytes(results[0]!.record.preparationBytes);
+    expect(await database.walletCounterCursors.get([scopeId, offerKeysetId])).toMatchObject({
+      next: decoded.offerCounterCount,
+    });
+    expect(await database.walletCounterCursors.get([scopeId, receiveKeysetId])).toMatchObject({
+      next: decoded.receiveCounterCount,
+    });
+  });
+
+  it("retains v2 rows in the v20 database and refuses ambiguous nonunique history after reopen", async () => {
+    const oldProfile = openDatabase();
+    await oldProfile.open();
+    expect(oldProfile.verno).toBe(20);
+    const order = request("browser-v20-duplicate-history");
+    const orderIntent = intent(order);
+    const firstV2 = preparation(order);
+    expect(firstV2.version).toBe(2);
+    const retained = await insertCtfRangePreparation(
+      browserRangeJournalIdentity(browserWalletScope(seed), firstV2, 100),
+      oldProfile,
+    );
+    oldProfile.close();
+
+    const reopened = openDatabase();
+    await reopened.open();
+    expect(reopened.verno).toBe(20);
+    const rowsAfterReopen = await reopened.ctfRangePreparations.toArray();
+    expect(rowsAfterReopen).toEqual([retained]);
+    expect(decodeCtfRangeOrderPreparationFromRecord(rowsAfterReopen[0]!).version).toBe(2);
+    await expect(readCtfRangePreparationForIntent(orderIntent, reopened)).resolves.toEqual(
+      retained,
+    );
+
+    const secondV2 = preparation(order, 1);
+    expect(secondV2.version).toBe(2);
+    const duplicate = await insertCtfRangePreparation(
+      browserRangeJournalIdentity(browserWalletScope(seed), secondV2, 101),
+      reopened,
+    );
+    expect(await reopened.ctfRangePreparations.toArray()).toEqual([retained, duplicate]);
+    await expect(readCtfRangePreparationForIntent(orderIntent, reopened)).rejects.toThrow(
+      "CTF preparation history is ambiguous",
+    );
+  });
+});

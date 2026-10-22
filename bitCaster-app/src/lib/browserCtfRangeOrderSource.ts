@@ -55,6 +55,7 @@ import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   ctfRangeOrderPreparationKeysetLookup,
   encodePersistedCtfRangeOrderPreparation,
+  reconstructCtfRangePreparation,
   type CtfRangeConditionalMintKeyset,
   exactCtfRangeOrderPreparationMintKeysets,
   type PersistedCtfRangeOrderPreparation,
@@ -402,9 +403,15 @@ export function completeBrowserRangeOperation(input: {
   proofs: readonly Proof[];
   allowInsecureLoopbackHttp: boolean;
 }): DurableCtfRangeOperation {
-  const { version: _, request: _request, ...authority } = input.preparation;
+  const authorization =
+    input.preparation.version === 3
+      ? reconstructCtfRangePreparation(input.preparation, input.seed)
+      : (() => {
+          const { version: _, request: _request, ...authority } = input.preparation;
+          return prepareCtfRangeOrderAuthorization({ seed: input.seed, ...authority });
+        })();
   return completeCtfRangeOrderAuthorization({
-    preparation: prepareCtfRangeOrderAuthorization({ seed: input.seed, ...authority }),
+    preparation: authorization,
     inputs: input.proofs,
     keysetLookup: ctfRangeOrderPreparationKeysetLookup(input.preparation),
     expiryObservation: input.preparation.expiryObservation,

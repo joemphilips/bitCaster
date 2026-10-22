@@ -1052,6 +1052,94 @@ describe("browser CTF range order coordinator", () => {
     ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
   });
 
+  it("loads source inputs outside a queued exclusive profile lock", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-source-loader-lock");
+    const lockManager = queuedLockManager();
+    const loaderLockEntered: string[] = [];
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), { lockManager });
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
+        loadSourceInputs: async () => {
+          await lockManager.request(
+            `bitcaster:wallet-profile:${walletScopeId()}`,
+            { mode: "exclusive" },
+            async () => {
+              loaderLockEntered.push("entered");
+            },
+          );
+          return {
+            candidates: [sourceProof(preparation.offerKeyset.id)],
+            collateralCandidates: [],
+            maxOutputs: 64,
+            paidConsolidationFeeSubunits: "0",
+            currentFeeFacts: coordinatorFeeFacts(preparation),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
+    expect(loaderLockEntered).toEqual(["entered"]);
+  }, 5_000);
+
+  it("rechecks durable source state after unlocked loading races another submit", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-source-loader-race");
+    const lockManager = queuedLockManager();
+    const sourcePreparationCalls: number[] = [];
+    const stopBeforeCapability = new Error("source was durably prepared");
+    let releaseLoader!: () => void;
+    let loaderStarted!: () => void;
+    const loaderGate = new Promise<void>((resolve) => {
+      releaseLoader = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      loaderStarted = resolve;
+    });
+    const coordinator = createCoordinator(
+      database,
+      sourceWallet({ onPrepare: () => sourcePreparationCalls.push(1) }),
+      engineMock(),
+      {
+        lockManager,
+        beforeCreateCapability: async () => {
+          throw stopBeforeCapability;
+        },
+      },
+    );
+    const first = coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      consentedFeeFacts: coordinatorFeeFacts(preparation),
+      loadSourceInputs: async () => {
+        loaderStarted();
+        await loaderGate;
+        return {
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+          collateralCandidates: [],
+          maxOutputs: 64,
+          paidConsolidationFeeSubunits: "0",
+          currentFeeFacts: coordinatorFeeFacts(preparation),
+        };
+      },
+    });
+    await started;
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
+      }),
+    ).rejects.toBe(stopBeforeCapability);
+    releaseLoader();
+    await expect(first).rejects.toBe(stopBeforeCapability);
+    expect(sourcePreparationCalls).toHaveLength(1);
+  }, 10_000);
+
   it("keeps the source prepared when Score funding fails and never creates during recovery", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-score-funding-failed");
@@ -2422,6 +2510,7 @@ describe("browser CTF range order coordinator", () => {
     });
 
     expect(locks).toEqual([
+      { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
       { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
       { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
     ]);
@@ -4043,6 +4132,28 @@ function immediateLockManager(): Pick<LockManager, "request"> {
   return {
     request: (async (_name: string, _options: LockOptions, callback: (lock: Lock) => unknown) =>
       callback({ name: "test", mode: "exclusive" } as Lock)) as LockManager["request"],
+  };
+}
+
+function queuedLockManager(): Pick<LockManager, "request"> {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    request: (async (name: string, _options: LockOptions, callback: (lock: Lock) => unknown) => {
+      const previous = tails.get(name) ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => gate);
+      tails.set(name, tail);
+      await previous;
+      try {
+        return await callback({ name, mode: "exclusive" } as Lock);
+      } finally {
+        release();
+        if (tails.get(name) === tail) tails.delete(name);
+      }
+    }) as LockManager["request"],
   };
 }
 
