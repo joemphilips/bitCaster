@@ -25,6 +25,9 @@ event must still pass signature, request-target, and body-hash validation.
 
 ## Sign the request URL
 
+For REST requests, the signed `method` tag must match the HTTP verb exactly,
+including case. For example, sign `GET`, not `get`, for a `GET` request.
+
 For NIP-98, sign the URL that the client sends. Only the scheme and host ignore
 case. The path and retained query must match exactly, including case, parameter
 order, and percent encoding. For example, `+` differs from `%20`, and `%2f`
