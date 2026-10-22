@@ -1,3 +1,9 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
+import type { CustodyScopeFence } from '../src/profileFencing.ts'
+import { prepareSpeculativeWalletReceive } from '../src/speculativeWalletReceivePreparation.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -6,7 +12,6 @@ import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import test from 'node:test'
 import { bytesToHex } from '@noble/curves/utils.js'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   Amount,
   CheckStateEnum,
@@ -68,13 +73,10 @@ import { replaceDaemonSigner, DaemonSignerEditError } from '../src/secrets.ts'
 
 const MINT_URL = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
-const KEY = bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true))
-const KEYS = { '1': KEY, '2': KEY, '4': KEY, '8': KEY, '128': KEY }
-const MSAT_KEYS = Object.fromEntries(
-  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].map((amount) => [
-    String(amount),
-    KEY,
-  ]),
+const KEYS = mintDenominationKeys(PRIVATE_KEY, ['1', '2', '4', '8', '128'])
+const MSAT_KEYS = mintDenominationKeys(
+  PRIVATE_KEY,
+  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].map(String),
 )
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
 const MSAT_KEYSET_ID = deriveKeysetId(MSAT_KEYS, { unit: 'msat', versionByte: 1 })
@@ -165,8 +167,7 @@ test('pending bearer transfer does not block signer replacement or change its au
 
 function testMintAuthority(privateKeyLastByte: number) {
   const privateKey = Uint8Array.from([...new Uint8Array(31), privateKeyLastByte])
-  const key = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries([1, 2, 4, 8, 128].map((amount) => [String(amount), key]))
+  const keys = mintDenominationKeys(privateKey, ['1', '2', '4', '8', '128'])
   return {
     keysetId: deriveKeysetId(keys, { unit: 'msat', versionByte: 1 }),
     keys,
@@ -195,9 +196,47 @@ type TestCoordinator = Omit<
   ): ReturnType<DaemonDurableOutgoingCashuCoordinator['executeMarketFundingTransfer']>
 }
 
-function withTestSeed(coordinator: DaemonDurableOutgoingCashuCoordinator): TestCoordinator {
+function withTestSeed(
+  coordinator: DaemonDurableOutgoingCashuCoordinator,
+  reclaimContext: { directory: string; getFence: () => CustodyScopeFence },
+): TestCoordinator {
   return new Proxy(coordinator, {
     get(target, property) {
+      if (property === 'reclaim') {
+        return (input: Parameters<typeof target.reclaim>[0]) =>
+          target.reclaim({
+            ...input,
+            prepareReceive:
+              input.prepareReceive ??
+              ((encodedToken, operationId) =>
+                prepareSpeculativeWalletReceive({
+                  encodedToken,
+                  operationId,
+                  mintUrl: MINT_URL,
+                  unit: 'msat',
+                  directory: reclaimContext.directory,
+                  getFence: reclaimContext.getFence,
+                  createWallet: (source) => ({
+                    ...input.wallet,
+                    prepareSwapToReceive: async (token, config, output) => {
+                      // Old fixtures inject output construction. Allocate their range through
+                      // the new private source instead of pretending it was pre-reserved.
+                      const preview = await input.wallet.prepareSwapToReceive!(
+                        token,
+                        { ...config, onCountersReserved: undefined },
+                        output,
+                      )
+                      const range = await source.reserve(
+                        preview.keysetId,
+                        preview.keepOutputs!.length,
+                      )
+                      config?.onCountersReserved?.({ keysetId: preview.keysetId, ...range })
+                      return preview
+                    },
+                  }),
+                })),
+          })
+      }
       if (property === 'execute') {
         return (input: Omit<Parameters<typeof target.execute>[0], 'seed'>) =>
           target.execute({ ...input, seed: TEST_SEED })
@@ -3252,7 +3291,7 @@ async function createFixture(
         return { send: restore('send'), keep: restore('keep') }
       }),
   })
-  const coordinator = withTestSeed(coordinatorCore)
+  const coordinator = withTestSeed(coordinatorCore, { directory, getFence: () => fence })
   const outgoingTransferAbortRestore = new Map<'insert' | 'update', () => void>()
   const wallet = (
     complete: () => Promise<{ keep: Proof[]; send: Proof[] }>,
@@ -3754,6 +3793,7 @@ async function createFixture(
           },
           () => nowMs,
         ),
+        { directory, getFence: () => currentFence },
       ),
     advanceCounter: async (minimum: number) =>
       advanceDaemonKeysetCounter(
@@ -3808,12 +3848,16 @@ function signedProof(
   keys: Record<string, string> = KEYS,
   privateKey: Uint8Array = PRIVATE_KEY,
 ): Proof {
+  const denominationKey = mintDenominationPrivateKey(
+    privateKey,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    privateKey,
+    denominationKey,
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), denominationKey)
   const proof = output.toProof(
     {
       id: output.blindedMessage.id,

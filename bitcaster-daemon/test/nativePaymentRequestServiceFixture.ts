@@ -101,9 +101,11 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
   })
   const counts = { prepared: 0, swaps: 0, restores: 0 }
   const swapRequests: string[] = []
+  const proofStateRequests: string[] = []
   const control = {
     failAfterMintEffect: false,
     alternateKeyset: false,
+    beforeSwap: undefined as (() => Promise<void>) | undefined,
     state: CheckStateEnum.UNSPENT as CheckStateEnum,
     restore: false,
   }
@@ -130,10 +132,12 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
         ],
       } as T
     if (endpoint === '/v1/checkstate') {
+      proofStateRequests.push(JSON.stringify(args.requestBody))
       const { Ys } = args.requestBody as { Ys: string[] }
       return { states: Ys.map((Y) => ({ Y, state: control.state, witness: null })) } as T
     }
     if (endpoint === '/v1/swap') {
+      await control.beforeSwap?.()
       counts.swaps++
       swapRequests.push(JSON.stringify(args.requestBody))
       const { outputs } = args.requestBody as {
@@ -215,6 +219,7 @@ export async function serviceFixture(options: { defaultWallet?: boolean } = {}) 
     nprofile,
     counts,
     swapRequests,
+    proofStateRequests,
     control,
     requestCount: () =>
       withDaemonStateSqliteTransaction(directory, (db) =>

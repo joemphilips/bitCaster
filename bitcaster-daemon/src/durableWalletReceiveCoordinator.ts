@@ -1,4 +1,7 @@
-import type { SpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import {
+  assertTranscriptRange,
+  type PreparedDaemonWalletReceive,
+} from './speculativeWalletReceivePreparation.ts'
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -47,14 +50,7 @@ import {
   type NativePaymentRequestReceiptBinding,
 } from './nativePaymentRequestReceiptSqlite.ts'
 
-export interface PreparedDaemonWalletReceive {
-  readonly operation: DurableWalletReceiveOperation
-  readonly transcript: SpeculativeCounterTranscript
-  readonly rebuild?: () => Promise<{
-    prepared: PreparedDaemonWalletReceive
-    wallet: CashuWalletLike
-  }>
-}
+export type { PreparedDaemonWalletReceive } from './speculativeWalletReceivePreparation.ts'
 
 export interface DaemonWalletReceiveResult {
   readonly proofs: readonly Proof[]
@@ -797,23 +793,4 @@ function requiredText(value: string | null): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function assertTranscriptRange(prepared: PreparedDaemonWalletReceive): void {
-  const range = prepared.operation.derivationRange
-  const allocations = prepared.transcript.allocations()
-  const allocation = allocations[0]
-  if (
-    !range ||
-    allocations.length !== 1 ||
-    !allocation ||
-    allocation.keysetId !== range.keysetId ||
-    allocation.start !== range.counterStart ||
-    allocation.count !== range.counterCount ||
-    prepared.operation.preview.keepOutputs.some(
-      (output) => output.blindedMessage.id !== range.keysetId,
-    )
-  ) {
-    throw new Error('receive counter transcript does not match output range')
-  }
 }

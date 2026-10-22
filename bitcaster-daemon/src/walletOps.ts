@@ -1,4 +1,4 @@
-import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import { prepareSpeculativeWalletReceive } from './speculativeWalletReceivePreparation.ts'
 import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import {
@@ -82,7 +82,6 @@ import {
   type ResolveTokenImportKeysets,
   type TokenImportUnit,
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
-import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
 import {
   redactedTransferMetadata,
   type DurableOutgoingCashuTransfer,
@@ -117,7 +116,6 @@ import {
   writeDaemonStateToDatabase,
   emptyDaemonState,
   reserveDaemonKeysetCounter,
-  readDaemonCounterSnapshots,
   type FencedStateMutation,
   type ProofOperationRecord,
   type StoredOutputData,
@@ -231,6 +229,7 @@ export interface WalletOpsDependencies {
   resolveMintKeysetIds?: (mintUrl: string) => Promise<string[]>
   resolveConditionKeysetIds?: (mintUrl: string, conditionId: string) => Promise<string[]>
   injectCustodyFault?: (phase: StateSqliteFaultPhase) => void
+  injectReclaimFault?: (phase: 'counter-written' | 'journal-bound') => void
 }
 
 export interface WalletOpsSecrets {
@@ -428,94 +427,23 @@ export async function prepareRegularWalletReceive(input: {
   const { mintUrl, unit, secrets, deps } = input
   if (!deps.getCustodyFence) throw new Error('daemon wallet receive requires custody authority')
   const operationId = input.operationId ?? `wallet-receive:${randomUUID()}`
-  let transcript: ReturnType<typeof createSpeculativeCounterTranscript> | undefined
-  const source: CounterSource = {
-    reserve: async (id, count) => {
-      if (!transcript) throw new Error('receive counter transcript is not attached')
-      return transcript.counterSource.reserve(id, count)
-    },
-    advanceToAtLeast: async (id, next) => {
-      if (!transcript) throw new Error('receive counter transcript is not attached')
-      return transcript.counterSource.advanceToAtLeast(id, next)
-    },
-  }
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', unit, undefined, source)
-  await wallet.loadMint()
-  const keysetId = wallet.keysetId ?? wallet.getKeyset?.()?.id
-  if (
-    !keysetId ||
-    !/^01[0-9a-f]{64}$/.test(keysetId) ||
-    wallet.getKeyset?.(keysetId)?.unit !== unit
-  )
-    throw new Error('receive output keyset is invalid')
-  transcript = createSpeculativeCounterTranscript(
-    await readDaemonCounterSnapshots({
-      storage: createDaemonStateSqliteSession(profileDir()),
-      mutation: { fence: deps.getCustodyFence(), observedAtMs: Date.now() },
-      keysetIds: [keysetId],
-      binding: { normalizedMint: mintUrl, unit },
-    }),
-  )
-  const receiveMutation = { fence: deps.getCustodyFence(), observedAtMs: Date.now() }
-  const proofsWeHave = (
-    await readAvailableWalletProofAmountSamplesForReceive({
-      mintUrl,
-      unit,
-      mutation: receiveMutation,
-    })
-  ).map(({ amount }) => ({ amount: Amount.from(amount) }))
-  if (!wallet.prepareSwapToReceive) {
-    throw new Error('cashu wallet does not support durable receive preparation')
-  }
-  let reserved: OperationCounters | undefined
-  let callbacks = 0
-  const preview = await wallet.prepareSwapToReceive(
-    input.encodedToken,
-    {
-      proofsWeHave,
-      keysetId,
-      onCountersReserved: (range) => {
-        callbacks += 1
-        reserved = range
-      },
-    },
-    { type: 'deterministic', counter: 0 },
-  )
-  const allocations = transcript.allocations()
-  const allocation = allocations[0]
-  if (
-    callbacks !== 1 ||
-    reserved === undefined ||
-    allocations.length !== 1 ||
-    !allocation ||
-    reserved.keysetId !== keysetId ||
-    allocation.keysetId !== keysetId ||
-    reserved.start !== allocation.start ||
-    reserved.count !== allocation.count ||
-    preview.keepOutputs?.length !== allocation.count ||
-    preview.keepOutputs?.some((output) => output.blindedMessage.id !== keysetId)
-  ) {
-    throw new Error('daemon wallet receive did not reserve a deterministic output range')
-  }
-  const operation = serializeDurableWalletReceiveOperation({
-    operationId,
+  return prepareSpeculativeWalletReceive({
+    encodedToken: input.encodedToken,
     mintUrl,
     unit,
-    preview,
-    derivationRange: {
-      keysetId: reserved.keysetId,
-      counterStart: reserved.start,
-      counterCount: reserved.count,
-    },
+    operationId,
+    directory: profileDir(),
+    getFence: deps.getCustodyFence,
+    createWallet: (source) => createWallet(mintUrl, secrets, deps, 'sat', unit, undefined, source),
+    proofsWeHave: async () =>
+      (
+        await readAvailableWalletProofAmountSamplesForReceive({
+          mintUrl,
+          unit,
+          mutation: { fence: deps.getCustodyFence!(), observedAtMs: Date.now() },
+        })
+      ).map(({ amount }) => ({ amount: Amount.from(amount) })),
   })
-  return {
-    prepared: {
-      operation,
-      transcript,
-      rebuild: () => prepareRegularWalletReceive({ ...input, operationId }),
-    },
-    wallet,
-  }
 }
 
 /** Recover bounded active ordinary receives without creating a new output plan. */
@@ -1097,7 +1025,23 @@ export async function reclaimDurableOutgoingCashuTransfer(
   }
   const wallet = createWallet(transfer.mintUrl, secrets, deps, 'sat', 'msat')
   await wallet.loadMint()
-  return redactedTransferMetadata(await coordinator.reclaim({ transferId, wallet }))
+  return redactedTransferMetadata(
+    await coordinator.reclaim({
+      transferId,
+      wallet,
+      prepareReceive: (encodedToken, operationId) =>
+        prepareSpeculativeWalletReceive({
+          encodedToken,
+          operationId,
+          mintUrl: transfer.mintUrl,
+          unit: 'msat',
+          directory: profileDir(),
+          getFence: deps.getCustodyFence!,
+          createWallet: (source) =>
+            createWallet(transfer.mintUrl, secrets, deps, 'sat', 'msat', undefined, source),
+        }),
+    }),
+  )
 }
 
 export async function splitAvailableMsatProofsForCtfCollateral(
