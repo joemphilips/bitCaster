@@ -636,29 +636,34 @@ export function browserRangeSuccessorProofRows(
   operation: DurableCtfRangeOperation,
   result: DurableCtfRangeRecoveredResult,
   receivedAtMs: number,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
 ): StagedBrowserCustodyProof[] {
-  return mapDurableCtfRangeSuccessorProofs({ record, operation, result }, (authority) => ({
-    proof: createBrowserCustodyProofRow({
-      scopeId: record.scope.scopeId,
-      normalizedMint: operation.mintUrl,
-      unit: "msat",
-      proof: deserializeDurableCustodyProofArtifact({
-        schemaVersion: 1,
-        id: authority.proof.id,
-        amount: Amount.from(authority.proof.amount).toString(),
-        secret: authority.proof.secret,
-        C: authority.proof.C,
-        dleq: authority.proof.dleq,
-        p2pkE: authority.proof.p2pkE,
-        witness: authority.proof.witness,
+  return mapDurableCtfRangeSuccessorProofs(
+    { record, operation, result, preparation, seed },
+    (authority) => ({
+      proof: createBrowserCustodyProofRow({
+        scopeId: record.scope.scopeId,
+        normalizedMint: operation.mintUrl,
+        unit: "msat",
+        proof: deserializeDurableCustodyProofArtifact({
+          schemaVersion: 1,
+          id: authority.proof.id,
+          amount: Amount.from(authority.proof.amount).toString(),
+          secret: authority.proof.secret,
+          C: authority.proof.C,
+          dleq: authority.proof.dleq,
+          p2pkE: authority.proof.p2pkE,
+          witness: authority.proof.witness,
+        }),
+        asset: browserProofAsset(authority.classification),
+        receivedAtMs,
       }),
-      asset: browserProofAsset(authority.classification),
-      receivedAtMs,
+      expectedRevision: null,
+      derivationLocator: authority.derivationLocator,
+      conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
     }),
-    expectedRevision: null,
-    derivationLocator: authority.derivationLocator,
-    conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
-  }));
+  );
 }
 
 export function browserRangeStoredProofs(

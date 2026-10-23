@@ -1,3 +1,9 @@
+import { reconstructCtfRangePreparation } from './ctfRangeOrderCounterPreparation.ts'
+import { completeCtfRangeOrderAuthorization } from './ctfRangeOrderPreparation.ts'
+import {
+  decodePersistedCtfRangeOrderPreparation,
+  ctfRangeOrderPreparationKeysetLookup,
+} from './ctfRangeOrderProtocol.ts'
 import { OutputData, type ProofState } from '@cashu/cashu-ts'
 import {
   assertDurableCtfRangeCustodyAuthority,
@@ -13,6 +19,8 @@ import {
   canonicalDurableCustodyKeysetIdentity,
   createDurableCustodyArtifactReference,
   decodeDurableCustodyRecord,
+  deriveDurableCustodyWalletId,
+  prepareDurableCustodyExactArtifact,
   DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
   type DurableCustodyArtifactReference,
   type DurableCustodyExactArtifact,
@@ -20,6 +28,7 @@ import {
 } from './durableCustody.ts'
 import {
   createDurableCustodyProofMaterialRecord,
+  deserializeDurableCustodyProofArtifact,
   type DurableCustodyProofMaterial,
   type DurableCustodyProofMaterialRecord,
 } from './durableCustodyProofMaterial.ts'
@@ -41,7 +50,7 @@ export interface NormalizedDurableCtfRangeSuccessorProof {
   readonly dleqState: 'not-present' | 'verified'
   readonly derivationLocator: Extract<
     DurableWalletProofDerivationLocator,
-    { kind: 'ctf-range-manifest' }
+    { kind: 'ctf-range-manifest' | 'nut13' }
   >
   readonly classification: {
     readonly conditionId: string | null
@@ -193,6 +202,8 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
     readonly record: DurableCustodyRecord
     readonly operation: DurableCtfRangeOperation
     readonly result: DurableCtfRangeRecoveredResult
+    readonly preparation: unknown
+    readonly seed: Uint8Array
   },
   mapProof: (proof: NormalizedDurableCtfRangeSuccessorProof) => T,
 ): T[] {
@@ -206,6 +217,7 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
   }
   const record = decodeDurableCustodyRecord(input.record)
   const operation = assertDurableCtfRangeCustodyAuthority(record, input.operation)
+  const locators = rangeSuccessorLocators(record, operation, input.preparation, input.seed)
   const selected = requireSelectedSuccessors(record)
   if (
     input.result.operationId !== operation.operationId ||
@@ -223,11 +235,11 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
     for (const proof of proofs) {
       const normalized = normalizeSuccessorProof(
         record,
-        operation,
         proof,
         asset,
         bindings,
         manifestIndexes,
+        locators,
       )
       if (byId.has(normalized.material.proofId)) {
         throw new Error('CTF range successor proof is duplicated')
@@ -247,7 +259,6 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
 
 function normalizeSuccessorProof(
   record: DurableCustodyRecord,
-  operation: DurableCtfRangeOperation,
   proof: DurableCtfRangeRecoveredResult['receive'][number],
   asset: DurableCtfRangeAsset,
   bindings: ReadonlyMap<
@@ -255,6 +266,7 @@ function normalizeSuccessorProof(
     DurableCustodyRecord['operation']['verification']['keysetBindings'][number]
   >,
   manifestIndexes: ReadonlyMap<string, number>,
+  locators: readonly NormalizedDurableCtfRangeSuccessorProof['derivationLocator'][],
 ): NormalizedDurableCtfRangeSuccessorProof {
   const normalizedProof: DurableCustodyProofMaterial = {
     id: proof.id,
@@ -287,12 +299,7 @@ function normalizeSuccessorProof(
     material,
     keysetFingerprint: binding.keysetFingerprint,
     dleqState: dleqState(material.dleqPresence),
-    derivationLocator: Object.freeze({
-      schemaVersion: 1,
-      kind: 'ctf-range-manifest',
-      rangeOperationId: operation.operationId,
-      manifestIndex,
-    }),
+    derivationLocator: locators[manifestIndex]!,
     classification: classifyAsset(asset),
   }
 }
@@ -407,4 +414,69 @@ function sameTextArray(left: readonly string[] | null, right: readonly string[])
 
 function assertNever(value: never): never {
   throw new Error(`unhandled durable CTF range custody value: ${String(value)}`)
+}
+
+/** Reconstruct only the exact persisted preparation; never infer provenance from current cursors. */
+function rangeSuccessorLocators(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  value: unknown,
+  seed: Uint8Array,
+): readonly NormalizedDurableCtfRangeSuccessorProof['derivationLocator'][] {
+  if (
+    record.scope.scopeKind !== 'wallet' ||
+    record.scope.walletId !== deriveDurableCustodyWalletId(seed)
+  )
+    throw new Error('CTF range successor seed scope is foreign')
+  const preparation = decodePersistedCtfRangeOrderPreparation(value)
+  const reconstructed = reconstructCtfRangePreparation(preparation, seed)
+  if (
+    reconstructed.authorizationOutputs.length !== operation.inputs.length ||
+    reconstructed.authorizationOutputs.some((output, index) => {
+      const proof = operation.inputs[index]!
+      return (
+        new TextDecoder().decode(output.secret) !== proof.secret ||
+        output.blindedMessage.id !== proof.id ||
+        output.blindedMessage.amount.toString() !== proof.amount
+      )
+    })
+  )
+    throw new Error('CTF range successor authorization preparation is foreign')
+  const expected = completeCtfRangeOrderAuthorization({
+    preparation: reconstructed,
+    inputs: operation.inputs.map((proof) =>
+      deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...proof }),
+    ),
+    keysetLookup: ctfRangeOrderPreparationKeysetLookup(preparation),
+    expiryObservation: preparation.expiryObservation,
+    allowInsecureLoopbackHttp: operation.mintUrl.startsWith('http://'),
+  })
+  if (
+    prepareDurableCustodyExactArtifact(expected).fingerprint !==
+    prepareDurableCustodyExactArtifact(operation).fingerprint
+  )
+    throw new Error('CTF range successor exact preparation differs from operation')
+  let receive = 0
+  let change = 0
+  return Object.freeze(
+    operation.manifest.entries.map((entry, manifestIndex) => {
+      if (preparation.version === 2)
+        return Object.freeze({
+          schemaVersion: 1 as const,
+          kind: 'ctf-range-manifest' as const,
+          rangeOperationId: operation.operationId,
+          manifestIndex,
+        })
+      const counter =
+        entry.role === 'receive'
+          ? preparation.receiveCounterStart + receive++
+          : preparation.offerCounterStart + 2 * reconstructed.authorizationOutputs.length + change++
+      return Object.freeze({
+        schemaVersion: 1 as const,
+        kind: 'nut13' as const,
+        keysetId: entry.id,
+        counter,
+      })
+    }),
+  )
 }

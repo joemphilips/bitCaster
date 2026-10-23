@@ -1,3 +1,5 @@
+import { readRangePreparation, toSdkRangePreparationRecord } from './ctfRangeOrderJournalSqlite.ts'
+import { decodeCtfRangeOrderPreparationFromRecord } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
   matchDurableSeedDerivedProofsToPlan,
@@ -283,6 +285,7 @@ export class DaemonCtfRangeCoordinator {
 
   async applyStaged(
     input: DaemonCtfRangeMutationInput & {
+      readonly seed: Uint8Array
       readonly custodyOperationId: string
       readonly resolveKeyset: DurableCtfRangeKeysetResolver
     },
@@ -295,11 +298,20 @@ export class DaemonCtfRangeCoordinator {
       return this.#requireFencedExactApplied(loaded.record, input.observedAtMs)
     }
     const result = await this.#recoverStagedResult(loaded, input.resolveKeyset)
+    const journal = await this.#storage.read((database) =>
+      readRangePreparation(database, loaded.record.scope.scopeId, loaded.operation.operationId),
+    )
+    if (journal === null) throw new Error('range successor preparation is missing')
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(
+      toSdkRangePreparationRecord(journal),
+    )
     const successors = prepareSuccessorProofRows(
       loaded.record,
       loaded.operation,
       result,
       input.observedAtMs,
+      preparation,
+      input.seed,
     )
     await withDurableCustodyUnitOfWork(
       this.#storage,
@@ -309,6 +321,16 @@ export class DaemonCtfRangeCoordinator {
         const store = new DurableCustodySqliteStore(database)
         const current = requireOperation(store, input.custodyOperationId)
         if (current.operation.result.state === 'applied') return
+        const currentJournal = readRangePreparation(
+          database,
+          current.scope.scopeId,
+          loaded.operation.operationId,
+        )
+        if (
+          currentJournal === null ||
+          !isDeepStrictEqual(currentJournal.preparationBytes, journal.preparationBytes)
+        )
+          throw new Error('range successor preparation changed before completion')
         const exactStaged = matchDurableCtfRangeExactStagedResult(
           current,
           requireDurableCtfRangeStagedResultAuthority(loaded.record),
@@ -630,16 +652,21 @@ function prepareSuccessorProofRows(
   operation: DurableCtfRangeOperation,
   result: DurableCtfRangeRecoveredResult,
   nowMs: number,
+  preparation: unknown,
+  seed: Uint8Array,
 ): PreparedSuccessorProof[] {
   if (record.scope.scopeKind !== 'wallet') {
     throw new Error('daemon CTF range successor scope is foreign')
   }
-  return mapDurableCtfRangeSuccessorProofs({ record, operation, result }, (authority) => ({
-    proof: successorProofRow(record, authority, nowMs),
-    expectedRevision: null,
-    walletProof: successorWalletProof(authority),
-    walletAsset: successorWalletAsset(authority),
-  }))
+  return mapDurableCtfRangeSuccessorProofs(
+    { record, operation, result, preparation, seed },
+    (authority) => ({
+      proof: successorProofRow(record, authority, nowMs),
+      expectedRevision: null,
+      walletProof: successorWalletProof(authority),
+      walletAsset: successorWalletAsset(authority),
+    }),
+  )
 }
 
 interface PreparedSuccessorProof {

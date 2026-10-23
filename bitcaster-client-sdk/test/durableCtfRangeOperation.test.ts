@@ -1,3 +1,4 @@
+import { signedOwnerRangeFixture } from './support/signedOwnerRangeFixture.ts'
 import { mintDenominationKeys, mintDenominationPrivateKey } from './support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
@@ -69,6 +70,7 @@ import type { TokenImportKeysetLookup } from '../src/tokenImportValidation.ts'
 import { bindDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
 import {
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
   resolveDurableCustodyProofOperationFacts,
   type DurableCustodyScope,
   type DurableCustodyScopeState,
@@ -418,8 +420,8 @@ function recoveryFor(
   }
 }
 
-async function factsFor(operation: DurableCtfRangeOperation, requireDleq = true) {
-  const keysets = mintKeysetsFor(operation)
+async function factsFor(operation: DurableCtfRangeOperation, requireDleq = true, keys = KEYS) {
+  const keysets = mintKeysetsFor(operation, keys)
   return resolveDurableCustodyProofOperationFacts({
     operation: toDurableCtfRangeProofOperationInput(operation),
     resolveMintKeys: async () =>
@@ -438,7 +440,7 @@ async function factsFor(operation: DurableCtfRangeOperation, requireDleq = true)
   })
 }
 
-function mintKeysetsFor(operation: DurableCtfRangeOperation) {
+function mintKeysetsFor(operation: DurableCtfRangeOperation, keys = KEYS) {
   return new Map(
     [operation.keysetAuthority.offer, operation.keysetAuthority.receive].map((authority) => [
       authority.keysetId,
@@ -446,7 +448,7 @@ function mintKeysetsFor(operation: DurableCtfRangeOperation) {
         canonicalMintUrl: operation.mintUrl,
         id: authority.keysetId,
         unit: authority.unit,
-        keys: KEYS,
+        keys,
         inputFeePpk: authority.inputFeePpk,
         finalExpiry: authority.finalExpiry,
       },
@@ -758,7 +760,7 @@ test('shared range custody binding and NUT-07 helpers preserve exact authority',
 })
 
 test('shared range custody mapping is exact and rejects over-bound results before mapping', async () => {
-  const { operation, prepared, staged } = await stagedSharedRangeResult()
+  const { operation, prepared, staged, preparation, seed } = await stagedSharedRangeResult()
   assert.equal(
     deriveDurableCtfRangeSettledFaceAmount(operation, prepared.result),
     prepared.result.receive.reduce((total, proof) => total + Number(proof.amount), 0),
@@ -768,7 +770,7 @@ test('shared range custody mapping is exact and rejects over-bound results befor
     prepared.resultFingerprint,
   )
   const successors = mapDurableCtfRangeSuccessorProofs(
-    { record: staged, operation, result: prepared.result },
+    { record: staged, operation, result: prepared.result, preparation, seed },
     (proof) => proof,
   )
   assert.deepEqual(
@@ -778,8 +780,11 @@ test('shared range custody mapping is exact and rejects over-bound results befor
   assert.deepEqual(
     successors.map(({ classification }) => classification),
     [
-      { conditionId: CONDITION_ID, outcomeSetId: OUTCOME_COLLECTION },
-      { conditionId: null, outcomeSetId: null },
+      ...prepared.result.receive.map(() => ({
+        conditionId: CONDITION_ID,
+        outcomeSetId: OUTCOME_COLLECTION,
+      })),
+      ...prepared.result.change.map(() => ({ conditionId: null, outcomeSetId: null })),
     ],
   )
   let oversizedMapCalls = 0
@@ -789,6 +794,8 @@ test('shared range custody mapping is exact and rejects over-bound results befor
         {
           record: staged,
           operation,
+          preparation,
+          seed,
           result: {
             ...prepared.result,
             receive: Array.from({ length: 513 }, () => prepared.result.receive[0]!),
@@ -821,9 +828,12 @@ test('shared range custody mapping is exact and rejects over-bound results befor
     let invalidMapCalls = 0
     assert.throws(
       () =>
-        mapDurableCtfRangeSuccessorProofs({ record: staged, operation, result }, () => {
-          invalidMapCalls += 1
-        }),
+        mapDurableCtfRangeSuccessorProofs(
+          { record: staged, operation, result, preparation, seed },
+          () => {
+            invalidMapCalls += 1
+          },
+        ),
       /duplicated|foreign|outside the manifest/,
     )
     assert.equal(invalidMapCalls, 0)
@@ -831,7 +841,8 @@ test('shared range custody mapping is exact and rejects over-bound results befor
 })
 
 test('shared range custody applied replay uses persisted authority without remapping', async () => {
-  const { operation, prepared, adapter, staged } = await stagedSharedRangeResult()
+  const { operation, prepared, adapter, staged, preparation, seed } =
+    await stagedSharedRangeResult()
   adapter.run((transaction) =>
     transaction.applyVerifiedResult({
       operationId: staged.operation.operationId,
@@ -860,7 +871,7 @@ test('shared range custody applied replay uses persisted authority without remap
   assert.throws(
     () =>
       mapDurableCtfRangeSuccessorProofs(
-        { record: adapter.readOperation()!, operation, result: prepared.result },
+        { record: adapter.readOperation()!, operation, result: prepared.result, preparation, seed },
         (proof) => proof,
       ),
     /successor rows are already applied/,
@@ -875,12 +886,12 @@ test('shared range custody applied replay uses persisted authority without remap
 })
 
 async function sharedRangeBinding() {
-  const operation = fixture()
+  const { operation, preparation, seed, keys } = signedOwnerRangeFixture({ plain: false })
   const binding = createDurableCtfRangeCustodyBinding({
     scope: walletScope(),
     operation,
-    facts: await factsFor(operation),
-    mintKeysets: mintKeysetsFor(operation),
+    facts: await factsFor(operation, true, keys),
+    mintKeysets: mintKeysetsFor(operation, keys),
     inventoryAccountId: null,
     boundary: {
       method: 'POST',
@@ -889,12 +900,27 @@ async function sharedRangeBinding() {
       requestBody: { authorizationId: operation.authorizationId },
     },
   })
-  return { operation, binding }
+  return {
+    operation,
+    binding,
+    preparation,
+    seed,
+    resolveKeyset: (_url: string, id: string) => ({ id, keys }),
+  }
 }
 
 async function stagedSharedRangeResult() {
-  const { operation, binding } = await sharedRangeBinding()
-  const selection = createCtfSelectionBitmap(4, [1, 3])
+  const { operation, binding, preparation, seed, resolveKeyset } = await sharedRangeBinding()
+  const selection = createCtfSelectionBitmap(
+    operation.manifest.entries.length,
+    operation.manifest.entries.flatMap((entry, index) =>
+      (BigInt(entry.amount) &
+        (entry.role === 'receive' ? BigInt(operation.policy.minReceive) : 1n)) !==
+      0n
+        ? [index]
+        : [],
+    ),
+  )
   const decision = prepareDurableCtfRangeVerifiedResult({
     record: binding.record,
     operation,
@@ -934,6 +960,8 @@ async function stagedSharedRangeResult() {
   )
   return {
     operation,
+    preparation,
+    seed,
     adapter,
     staged: adapter.readOperation()!,
     prepared: { ...decision, authority },
@@ -1429,12 +1457,25 @@ test('recovery queries the exact manifest and never invents terminal state', asy
 })
 
 test('mint-verified recovery stages the exact durable result without an engine envelope', async () => {
-  const { operation, binding } = await sharedRangeBinding()
-  const selection = createCtfSelectionBitmap(4, [1, 3])
+  const { operation, binding, resolveKeyset } = await sharedRangeBinding()
+  const selection = createCtfSelectionBitmap(
+    operation.manifest.entries.length,
+    operation.manifest.entries.flatMap((entry, index) =>
+      (BigInt(entry.amount) &
+        (entry.role === 'receive' ? BigInt(operation.policy.minReceive) : 1n)) !==
+      0n
+        ? [index]
+        : [],
+    ),
+  )
   const query = buildDurableCtfRangeRecoveryQuery(operation, null)
   const observation = {
     selection: null,
-    inputStates: [{ Y: inputY(operation), state: 'SPENT' as const, witness: null }],
+    inputStates: operation.inputs.map((proof) => ({
+      Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+      state: 'SPENT' as const,
+      witness: null,
+    })),
     queriedOutputs: query.outputs,
     restoredOutputs: buildDurableCtfRangeRecoveryQuery(operation, selection).outputs,
     signatures: signaturesFor(operation, selection),
@@ -1870,7 +1911,7 @@ test('direct preparation link and selected result commit atomically across resta
 })
 
 function walletScope(): DurableCustodyScope {
-  const input = { scopeKind: 'wallet' as const, walletId: 'a'.repeat(64) }
+  const input = { scopeKind: 'wallet' as const, walletId: deriveDurableCustodyWalletId(SEED) }
   return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
 

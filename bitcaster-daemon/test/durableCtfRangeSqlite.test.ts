@@ -1,3 +1,6 @@
+import { signedOwnerRangeFixture } from '../../bitcaster-client-sdk/test/support/signedOwnerRangeFixture.ts'
+import { encodePersistedCtfRangeOrderPreparation } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import { insertRangePreparation } from '../src/ctfRangeOrderJournalSqlite.ts'
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -372,7 +375,9 @@ test('daemon range coordinator refuses target-only source authority without chan
 test('daemon range coordinator stages and applies the exact result across crash boundaries', async () => {
   const fixture = await createProfile()
   try {
-    const operation = createRangeOperation()
+    const owner = signedOwnerRangeFixture({ plain: false, seed: new Uint8Array(64).fill(17) })
+    const operation = owner.operation
+    ownerFixtures.set(operation.operationId, owner)
     const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
     const pendingOperation = createRangeOperation('pending')
     const pendingBinding = await createRangeBinding(
@@ -398,7 +403,15 @@ test('daemon range coordinator stages and applies the exact result across crash 
       proofStateClient: unspentProofStateClient(),
       observedAtMs: 3,
     })
-    const selection = createCtfSelectionBitmap(operation.manifest.entries.length, [1, 3])
+    await persistOwnerPreparation(fixture.directory, fence, owner)
+    const selected = operation.manifest.entries.flatMap((entry, index) =>
+      (BigInt(entry.amount) &
+        (entry.role === 'receive' ? BigInt(operation.policy.minReceive) : 1n)) !==
+      0n
+        ? [index]
+        : [],
+    )
+    const selection = createCtfSelectionBitmap(operation.manifest.entries.length, selected)
     const envelope = createDurableCtfRangeResultEnvelope({
       operation,
       requestDigest: 'ef'.repeat(32),
@@ -527,6 +540,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     await assert.rejects(
       () =>
         coordinator.applyStaged({
+          seed: owner.seed,
           custodyOperationId,
           resolveKeyset,
           observedAtMs: 7,
@@ -559,6 +573,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     await assert.rejects(
       () =>
         coordinator.applyStaged({
+          seed: owner.seed,
           custodyOperationId,
           resolveKeyset,
           observedAtMs: 8,
@@ -574,7 +589,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     assert.equal(applied?.record.operation.state, 'reconciled')
     assert.equal(
       applied?.record.operation.proofStorage.lineage.successorAdmission?.proofRows.length,
-      2,
+      selected.length,
     )
     const appliedDatabase = await openDaemonStateSqlite(fixture.directory)
     try {
@@ -636,7 +651,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
         applied?.record.operation.proofStorage.lineage.successorAdmission?.proofRows.map(
           ({ proofId }) => proofId,
         ) ?? []
-      assert.equal(successorProofIds.length, 2)
+      assert.equal(successorProofIds.length, selected.length)
       for (const proofId of successorProofIds) {
         const successor = new DurableCustodySqliteStore(appliedDatabase).getProof(
           fixture.walletScopeId,
@@ -657,14 +672,14 @@ test('daemon range coordinator stages and applies the exact result across crash 
         .all(fixture.walletScopeId)
         .map((row) => ({ ...row }))
       assert.deepEqual(walletProofs, [
-        {
+        ...Array.from({ length: selected.length - 1 }, () => ({
           state: 'available',
           assetKind: 'outcome',
           baseAsset: 'sat',
           unit: 'msat',
           conditionId: CONDITION_ID,
           outcomeSetId: OUTCOME_COLLECTION,
-        },
+        })),
         {
           state: 'available',
           assetKind: 'sats',
@@ -687,6 +702,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     await assert.rejects(
       () =>
         staleCoordinator.applyStaged({
+          seed: owner.seed,
           custodyOperationId,
           resolveKeyset,
           observedAtMs: 9,
@@ -699,6 +715,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     await assert.rejects(
       () =>
         foreignCoordinator.applyStaged({
+          seed: owner.seed,
           custodyOperationId,
           resolveKeyset,
           observedAtMs: 9,
@@ -718,6 +735,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
     })
     const beforeApplyReplay = await readDatabaseFingerprint(fixture.directory)
     const exactReplay = await restarted.applyStaged({
+      seed: owner.seed,
       custodyOperationId,
       resolveKeyset,
       observedAtMs: 10,
@@ -736,7 +754,9 @@ test('daemon range coordinator stages and applies the exact result across crash 
 test('daemon range recovery remains bounded and stages confirmed mint recovery atomically', async () => {
   const fixture = await createProfile()
   try {
-    const operation = createRangeOperation()
+    const owner = signedOwnerRangeFixture({ plain: false, seed: new Uint8Array(64).fill(17) })
+    const operation = owner.operation
+    ownerFixtures.set(operation.operationId, owner)
     const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
     const custodyOperationId = binding.record.operation.operationId
     const fence = await claimCustodyScopeLease(fixture.directory, {
@@ -821,7 +841,15 @@ test('daemon range recovery remains bounded and stages confirmed mint recovery a
     assert.equal(retained?.record.operation.reservation.inputs.length, operation.inputs.length)
     assert.ok(retained?.record.operation.privateMaterial.exactPrivateMaterial)
 
-    const selection = createCtfSelectionBitmap(operation.manifest.entries.length, [1, 3])
+    await persistOwnerPreparation(fixture.directory, fence, owner)
+    const selected = operation.manifest.entries.flatMap((entry, index) =>
+      (BigInt(entry.amount) &
+        (entry.role === 'receive' ? BigInt(operation.policy.minReceive) : 1n)) !==
+      0n
+        ? [index]
+        : [],
+    )
+    const selection = createCtfSelectionBitmap(operation.manifest.entries.length, selected)
     const confirmedObservation = {
       ...recoveryFor(operation, selection),
       selection: null,
@@ -866,6 +894,7 @@ test('daemon range recovery remains bounded and stages confirmed mint recovery a
       'verified-staged',
     )
     const applied = await restarted.applyStaged({
+      seed: owner.seed,
       custodyOperationId,
       resolveKeyset: rangeKeysetResolver(operation),
       observedAtMs: 6,
@@ -1537,7 +1566,7 @@ function mintKeysets(operation: DurableCtfRangeOperation) {
         canonicalMintUrl: operation.mintUrl,
         id: authority.keysetId,
         unit: authority.unit,
-        keys: MINT_KEYS,
+        keys: ownerFixtures.get(operation.operationId)?.keys ?? MINT_KEYS,
         inputFeePpk: authority.inputFeePpk,
         finalExpiry: authority.finalExpiry,
       },
@@ -1800,7 +1829,7 @@ function rangeKeysetResolver(operation: DurableCtfRangeOperation): DurableCtfRan
   ])
   return (mintUrl, keysetId) =>
     mintUrl === operation.mintUrl && keysets.has(keysetId)
-      ? { id: keysetId, keys: MINT_KEYS }
+      ? { id: keysetId, keys: ownerFixtures.get(operation.operationId)?.keys ?? MINT_KEYS }
       : undefined
 }
 
@@ -1944,4 +1973,138 @@ async function readDatabaseFingerprint(directory: string) {
   } finally {
     database.close()
   }
+}
+
+const ownerFixtures = new Map<string, ReturnType<typeof signedOwnerRangeFixture>>()
+async function persistOwnerPreparation(
+  directory: string,
+  fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>,
+  owner: ReturnType<typeof signedOwnerRangeFixture>,
+) {
+  const p = owner.preparation
+  await withDurableCustodyUnitOfWork(directory, fence, 4, (database) => {
+    insertRangePreparation(database, {
+      scopeId: fence.scopeId,
+      rangeOperationId: p.operationId,
+      sourceOperationId: p.sourceOperationId,
+      authorizationId: p.authorizationId,
+      clientOrderId: p.request.clientOrderId,
+      orderRouteId: p.request.marketId,
+      normalizedMint: p.mintUrl,
+      conditionId: p.conditionId,
+      unit: 'msat',
+      tokenSide: p.request.tokenSide,
+      side: p.side,
+      priceSubunits: p.priceNumerator,
+      amountSubunits: p.amountSubunits,
+      minimumFillAmountSubunits: p.request.minimumFillAmountSubunits,
+      divisibility: p.divisibility,
+      authorizationExpiresAtUnixSeconds: p.expiry,
+      preparationBytes: encodePersistedCtfRangeOrderPreparation(p),
+      feeConsentBytes: null,
+      createdAtMs: 4,
+      consolidateProofs: false,
+    })
+  })
+}
+
+for (const damage of ['missing', 'malformed'] as const) {
+  test(`range successor completion refuses ${damage} retained preparation without publication`, async () => {
+    const fixture = await createProfile()
+    try {
+      const owner = signedOwnerRangeFixture({ seed: new Uint8Array(64).fill(17) })
+      const operation = owner.operation
+      ownerFixtures.set(operation.operationId, owner)
+      const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
+      const custodyOperationId = binding.record.operation.operationId
+      const fence = await claimCustodyScopeLease(fixture.directory, {
+        scopeId: fixture.walletScopeId,
+        incarnationId: 'range-damaged-preparation',
+        observedAtMs: 2,
+      })
+      await seedInputProofs(fixture.directory, fence, operation, binding)
+      const coordinator = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+      await coordinator.bind({
+        binding,
+        proofStateClient: unspentProofStateClient(),
+        observedAtMs: 3,
+      })
+      await persistOwnerPreparation(fixture.directory, fence, owner)
+      const selection = createCtfSelectionBitmap(
+        operation.manifest.entries.length,
+        operation.manifest.entries.flatMap((entry, index) =>
+          (BigInt(entry.amount) &
+            (entry.role === 'receive' ? BigInt(operation.policy.minReceive) : 1n)) !==
+          0n
+            ? [index]
+            : [],
+        ),
+      )
+      const resolveKeyset = rangeKeysetResolver(operation)
+      await coordinator.stageVerified({
+        custodyOperationId,
+        operation,
+        envelope: createDurableCtfRangeResultEnvelope({
+          operation,
+          requestDigest: 'ef'.repeat(32),
+          selection,
+          signatures: signaturesFor(operation, selection),
+        }),
+        resolveKeyset,
+        observedAtMs: 5,
+      })
+      await withDurableCustodyUnitOfWork(fixture.directory, fence, 6, (database) => {
+        if (damage === 'missing')
+          database
+            .prepare(
+              'DELETE FROM daemon_ctf_range_preparations WHERE scope_id=? AND range_operation_id=?',
+            )
+            .run(fixture.walletScopeId, operation.operationId)
+        else
+          database
+            .prepare(
+              'UPDATE daemon_ctf_range_preparations SET preparation_body=? WHERE scope_id=? AND range_operation_id=?',
+            )
+            .run(Uint8Array.of(0), fixture.walletScopeId, operation.operationId)
+      })
+      const before = await readRangeLifecycleSnapshot(
+        fixture.directory,
+        fixture.walletScopeId,
+        custodyOperationId,
+      )
+      await assert.rejects(() =>
+        coordinator.applyStaged({
+          seed: owner.seed,
+          custodyOperationId,
+          resolveKeyset,
+          observedAtMs: 7,
+        }),
+      )
+      assert.deepEqual(
+        await readRangeLifecycleSnapshot(
+          fixture.directory,
+          fixture.walletScopeId,
+          custodyOperationId,
+        ),
+        before,
+      )
+      assert.equal(
+        (await coordinator.load(custodyOperationId))?.record.operation.result.state,
+        'verified-staged',
+      )
+      const database = await openDaemonStateSqlite(fixture.directory)
+      try {
+        assert.equal(
+          database
+            .prepare('SELECT count(*) AS n FROM target_wallet_proofs WHERE scope_id=?')
+            .get(fixture.walletScopeId)?.n,
+          0,
+        )
+      } finally {
+        database.close()
+      }
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true })
+    }
+  })
 }

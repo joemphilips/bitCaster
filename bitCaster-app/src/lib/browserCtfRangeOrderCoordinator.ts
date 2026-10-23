@@ -815,6 +815,7 @@ export class BrowserCtfRangeOrderCoordinator {
     ) {
       await this.#resumePersistedOuterResult(
         journalRecord,
+        seed,
         scope,
         owner,
         snapshot.record,
@@ -914,6 +915,7 @@ export class BrowserCtfRangeOrderCoordinator {
     }
     if (prepared === null || prepared.kind !== "confirmed") throw rangeError("recovery-pending");
     await this.#commitRecoveredOuterResult(
+      seed,
       scope,
       owner,
       snapshot.record,
@@ -931,6 +933,7 @@ export class BrowserCtfRangeOrderCoordinator {
 
   async #resumePersistedOuterResult(
     journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     record: DurableCustodyRecord,
@@ -946,7 +949,7 @@ export class BrowserCtfRangeOrderCoordinator {
       resolveKeyset,
     });
     if (record.operation.result.state === "verified-staged") {
-      await this.#applyRecoveredOuterResult(scope, owner, record, operation, result);
+      await this.#applyRecoveredOuterResult(seed, scope, owner, record, operation, result);
     }
     this.#requireExactFokSettlement(journalRecord, operation, result);
     if (isMintRecoveredRangeResult(exactResult.artifact)) {
@@ -2828,6 +2831,7 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #commitRecoveredOuterResult(
+    seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     record: DurableCustodyRecord,
@@ -2868,10 +2872,11 @@ export class BrowserCtfRangeOrderCoordinator {
       exactResult,
       resolveKeyset,
     });
-    await this.#applyRecoveredOuterResult(scope, owner, current, operation, result);
+    await this.#applyRecoveredOuterResult(seed, scope, owner, current, operation, result);
   }
 
   async #applyRecoveredOuterResult(
+    seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     record: DurableCustodyRecord,
@@ -2880,18 +2885,38 @@ export class BrowserCtfRangeOrderCoordinator {
   ): Promise<void> {
     const authorization = browserOwnerAt(owner, this.#now());
     const resultAuthority = requireAppliedResultAuthority(record);
+    const journal = await readCtfRangePreparation(
+      scope.scopeId,
+      operation.operationId,
+      this.#database,
+    );
+    if (journal === null) throw new Error("range successor preparation is missing");
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(journal);
     const successors = browserRangeSuccessorProofRows(
       record,
       operation,
       result,
       authorization.observedAtMs,
+      preparation,
+      seed,
     );
     const legacySuccessors = browserRangeStoredProofs(
       operation,
       result,
       authorization.observedAtMs,
     );
-    await this.#database.transaction("rw", this.#transactionTables(false), async (tx) => {
+    await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
+      const currentJournal = await readCtfRangePreparation(
+        scope.scopeId,
+        operation.operationId,
+        this.#database,
+      );
+      if (
+        currentJournal === null ||
+        prepareDurableCustodyExactArtifact(decodeCtfRangeOrderPreparationFromRecord(currentJournal))
+          .fingerprint !== prepareDurableCustodyExactArtifact(preparation).fingerprint
+      )
+        throw new Error("range successor preparation changed before completion");
       await this.#custody.transactInCurrentTransaction(
         tx,
         browserCustodySelection(

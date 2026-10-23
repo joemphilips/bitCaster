@@ -901,6 +901,7 @@ export class DaemonCtfRangeOrderCoordinator {
     }
     const decision = await this.#classifyMintRecovery(
       coordinator,
+      walletSeedHex,
       custodyOperationId,
       loaded.record,
       new CtfRangeMintRecoveryAdapter(loaded.operation, mint),
@@ -1234,6 +1235,7 @@ export class DaemonCtfRangeOrderCoordinator {
             identity,
             () =>
               coordinator.applyStaged({
+                seed: walletSeed(walletSeedHex),
                 custodyOperationId,
                 resolveKeyset: preparationResolver,
                 observedAtMs: this.#nowMs(),
@@ -1287,6 +1289,7 @@ export class DaemonCtfRangeOrderCoordinator {
       }
       const decision = await this.#applyEngineResult(
         coordinator,
+        walletSeedHex,
         custodyOperationId,
         loaded.operation,
         persistedEngineResult,
@@ -1360,6 +1363,7 @@ export class DaemonCtfRangeOrderCoordinator {
       engineResult === null
         ? await this.#classifyMintRecovery(
             coordinator,
+            walletSeedHex,
             custodyOperationId,
             loaded.record,
             recovery,
@@ -1371,6 +1375,7 @@ export class DaemonCtfRangeOrderCoordinator {
           )
         : await this.#applyEngineResult(
             coordinator,
+            walletSeedHex,
             custodyOperationId,
             loaded.operation,
             engineResult!,
@@ -1385,6 +1390,7 @@ export class DaemonCtfRangeOrderCoordinator {
       engineResult = null
       decision = await this.#classifyMintRecovery(
         coordinator,
+        walletSeedHex,
         custodyOperationId,
         loaded.record,
         recovery,
@@ -1441,6 +1447,7 @@ export class DaemonCtfRangeOrderCoordinator {
 
   async #classifyMintRecovery(
     coordinator: DaemonCtfRangeCoordinator,
+    walletSeedHex: string,
     custodyOperationId: string,
     record: DurableCustodyRecord,
     recovery: CtfRangeMintRecoveryAdapter,
@@ -1492,6 +1499,7 @@ export class DaemonCtfRangeOrderCoordinator {
       identity,
       () =>
         coordinator.applyStaged({
+          seed: walletSeed(walletSeedHex),
           custodyOperationId,
           resolveKeyset: recoveryObservation.resolveKeyset,
           observedAtMs: this.#nowMs(),
@@ -1788,6 +1796,7 @@ export class DaemonCtfRangeOrderCoordinator {
 
   async #applyEngineResult(
     coordinator: DaemonCtfRangeCoordinator,
+    walletSeedHex: string,
     custodyOperationId: string,
     operation: DurableCtfRangeOperation,
     engineResult: CtfRangeEngineResult,
@@ -1833,6 +1842,7 @@ export class DaemonCtfRangeOrderCoordinator {
       identity,
       () =>
         coordinator.applyStaged({
+          seed: walletSeed(walletSeedHex),
           custodyOperationId,
           resolveKeyset,
           observedAtMs: this.#nowMs(),

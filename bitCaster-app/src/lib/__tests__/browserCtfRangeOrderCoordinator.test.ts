@@ -1,9 +1,28 @@
+// @vitest-environment node
+import "fake-indexeddb/auto";
+import {
+  createCtfRangePreparationIntent,
+  createCounterCtfRangePreparation,
+} from "@bitcaster/client-sdk/ctfRangeOrderCounterPreparation";
+import { webcrypto } from "node:crypto";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { createEncryptedWalletBackupV2KeyHandle } from "@bitcaster/client-sdk/encryptedWalletBackupV2Keys";
+import {
+  createEncryptedWalletBackupOwnerCurrentHead,
+  collectEncryptedWalletBackupOwnerDescriptorPages,
+  enumerateEncryptedWalletBackupOwnerDescriptorPages,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
+import { deriveEncryptedWalletBackupOwnerScope } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerScope";
+import {
+  issueEncryptedWalletBackupOwnerBundleSupersessionReceipt,
+  verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerReceipt";
+import { decodeEncryptedWalletBackupOwnerUploadGroup } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerUpload";
+import { runBrowserEncryptedWalletBackupOwnerWorkerCycle } from "../browserEncryptedWalletBackupOwnerWorker";
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
 } from "../../../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts";
-// @vitest-environment node
-import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -3050,145 +3069,195 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("aborted");
   });
 
-  it("recovers a lost result acknowledgement after exact local application", async () => {
-    const database = createDatabase();
-    const preparation = persistedPreparation("range-confirmed-result");
-    let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
-    let mintRecoveryCalls = 0;
-    const engine = engineMock({
-      acknowledgeFailureOnce: true,
-      result: () => {
-        if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
-        return confirmedEngineResult(
-          confirmed.operation,
-          confirmed.selection,
-          confirmed.signatures,
-        );
-      },
-    });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      createMintRecovery: (operation) => {
-        confirmed = confirmedRangeRecovery(operation, preparation);
-        return {
-          async loadUncertainRecoveryObservation() {
-            mintRecoveryCalls += 1;
-            throw new Error("unexpected uncertain recovery");
-          },
-        };
-      },
-    });
-    await coordinator.prepareAndSubmit({
-      seed: SEED,
-      preparation,
-      candidates: [sourceProof(preparation.offerKeyset.id)],
-    });
+  it.each([false, true])(
+    "recovers a lost result acknowledgement and backs up settlement (ordinary=%s)",
+    async (ordinary) => {
+      const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
+      const base = persistedPreparation("range-confirmed-result");
+      const preparation = ordinary
+        ? createCounterCtfRangePreparation({
+            preparation: base,
+            intent: createCtfRangePreparationIntent({
+              scopeId: walletScopeId(),
+              request: base.request,
+              feeConsentBytes: encodeCtfRangeOrderFeeConsentArtifact(coordinatorFeeFacts(base)),
+              consolidateProofs: false,
+            }).intent,
+            seed: SEED,
+            offerCounterStart: 23,
+            receiveCounterStart: 11,
+          })
+        : base;
+      if (preparation.version === 3) {
+        const counters = new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() });
+        for (const [keysetId, next] of [
+          [
+            preparation.offerKeyset.id,
+            preparation.offerCounterStart + preparation.offerCounterCount,
+          ],
+          [
+            preparation.receiveKeyset.id,
+            preparation.receiveCounterStart + preparation.receiveCounterCount,
+          ],
+        ] as const) {
+          await counters.restoreInContext(
+            { mintUrl: MINT_URL, unit: "msat" },
+            keysetId,
+            next,
+            false,
+            () => {},
+          );
+        }
+      }
+      let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+      let mintRecoveryCalls = 0;
+      const engine = engineMock({
+        acknowledgeFailureOnce: true,
+        result: () => {
+          if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+          return confirmedEngineResult(
+            confirmed.operation,
+            confirmed.selection,
+            confirmed.signatures,
+          );
+        },
+      });
+      const coordinator = createCoordinator(database, sourceWallet(), engine, {
+        createMintRecovery: (operation) => {
+          confirmed = confirmedRangeRecovery(operation, preparation);
+          return {
+            async loadUncertainRecoveryObservation() {
+              mintRecoveryCalls += 1;
+              throw new Error("unexpected uncertain recovery");
+            },
+          };
+        },
+      });
+      await coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      });
 
-    const trade = {
-      walletId: walletScope().walletId,
-      clientOrderId: preparation.request.clientOrderId,
-      marketId: preparation.request.marketId,
-      orderId: submitResponse().orderId,
-    };
-    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
-      lifecycleState: "order-submitted",
-      resultState: "none",
-    });
-    expect(
-      await readBrowserTradeRecoveryObservation(
-        walletScope(),
-        {
-          ...trade,
-          clientOrderId: "unrelated-client-order",
-        },
-        database,
-      ),
-    ).toBeNull();
-    expect(
-      await readBrowserTradeRecoveryObservation(
-        walletScope(),
-        {
-          ...trade,
-          walletId: "f".repeat(64),
-        },
-        database,
-      ),
-    ).toBeNull();
-    await expect(
-      readBrowserTradeRecoveryObservation(
-        walletScope(),
-        {
-          ...trade,
-          marketId: `${CONDITION_ID}-NO`,
-        },
-        database,
-      ),
-    ).rejects.toThrow("identity is inconsistent");
-    await expect(
-      readBrowserTradeRecoveryObservation(
-        walletScope(),
-        {
-          ...trade,
-          orderId: "55555555-5555-4555-8555-555555555555",
-        },
-        database,
-      ),
-    ).rejects.toThrow("identity is inconsistent");
-    await expect(
-      readBrowserTradeRecoveryObservation(
-        {
-          ...walletScope(),
-          scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "f".repeat(64) }),
-        },
-        trade,
-        database,
-      ),
-    ).rejects.toThrow("scope is inconsistent");
-
-    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
-      recoveredOperationIds: [],
-      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
-    });
-    expect(
-      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
-        ?.lifecycleState,
-    ).toBe("order-submitted");
-    expect(
-      (
-        await new BrowserDurableCustodyAdapter(database).readOperation(
+      const trade = {
+        walletId: walletScope().walletId,
+        clientOrderId: preparation.request.clientOrderId,
+        marketId: preparation.request.marketId,
+        orderId: submitResponse().orderId,
+      };
+      expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
+        lifecycleState: "order-submitted",
+        resultState: "none",
+      });
+      expect(
+        await readBrowserTradeRecoveryObservation(
           walletScope(),
-          custodyOperationId(preparation.operationId),
-        )
-      )?.operation.state,
-    ).toBe("reconciled");
-    expect(
-      (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
-    ).toBe(true);
+          {
+            ...trade,
+            clientOrderId: "unrelated-client-order",
+          },
+          database,
+        ),
+      ).toBeNull();
+      expect(
+        await readBrowserTradeRecoveryObservation(
+          walletScope(),
+          {
+            ...trade,
+            walletId: "f".repeat(64),
+          },
+          database,
+        ),
+      ).toBeNull();
+      await expect(
+        readBrowserTradeRecoveryObservation(
+          walletScope(),
+          {
+            ...trade,
+            marketId: `${CONDITION_ID}-NO`,
+          },
+          database,
+        ),
+      ).rejects.toThrow("identity is inconsistent");
+      await expect(
+        readBrowserTradeRecoveryObservation(
+          walletScope(),
+          {
+            ...trade,
+            orderId: "55555555-5555-4555-8555-555555555555",
+          },
+          database,
+        ),
+      ).rejects.toThrow("identity is inconsistent");
+      await expect(
+        readBrowserTradeRecoveryObservation(
+          {
+            ...walletScope(),
+            scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "f".repeat(64) }),
+          },
+          trade,
+          database,
+        ),
+      ).rejects.toThrow("scope is inconsistent");
 
-    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
-      lifecycleState: "order-submitted",
-      resultState: "applied",
-    });
-    const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+      });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("order-submitted");
+      expect(
+        (
+          await new BrowserDurableCustodyAdapter(database).readOperation(
+            walletScope(),
+            custodyOperationId(preparation.operationId),
+          )
+        )?.operation.state,
+      ).toBe("reconciled");
+      expect(
+        (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
+      ).toBe(true);
 
-    expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
-    expect(recovery.pending).toEqual([]);
-    expect(engine.acknowledgeCalls).toBe(2);
-    expect(mintRecoveryCalls).toBe(0);
-    const outer = await new BrowserDurableCustodyAdapter(database).readOperation(
-      walletScope(),
-      custodyOperationId(preparation.operationId),
-    );
-    expect(outer?.operation.state).toBe("reconciled");
-    expect(await database.custodyReservations.count()).toBe(0);
-    expect(
-      (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
-    ).toBe(true);
-    expect(
-      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
-        ?.lifecycleState,
-    ).toBe("terminal");
-    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toBeNull();
-  });
+      expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
+        lifecycleState: "order-submitted",
+        resultState: "applied",
+      });
+      const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+
+      expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
+      expect(recovery.pending).toEqual([]);
+      expect(engine.acknowledgeCalls).toBe(2);
+      expect(mintRecoveryCalls).toBe(0);
+      const outer = await new BrowserDurableCustodyAdapter(database).readOperation(
+        walletScope(),
+        custodyOperationId(preparation.operationId),
+      );
+      expect(outer?.operation.state).toBe("reconciled");
+      expect(await database.custodyReservations.count()).toBe(0);
+      expect(
+        (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
+      ).toBe(true);
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("terminal");
+      expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toBeNull();
+      const successorIds = outer!.operation.proofStorage.lineage.successorAdmission!.proofRows.map(
+        (row) => row.proofId,
+      );
+      for (const id of successorIds) {
+        const authority = (await database.custodyProofBackupAuthorities.toArray()).find(
+          (row) => row.proofId === id,
+        );
+        expect(
+          requireLiveProofBackupAuthority(authority, [walletScopeId(), id]).derivationLocator?.kind,
+        ).toBe(ordinary ? "nut13" : "ctf-range-manifest");
+      }
+      await assertSettlementBackupWorkerCommits(database);
+    },
+  );
 
   it("applies a partial FOK result but keeps its journal pending and unacknowledged", async () => {
     const database = createDatabase();
@@ -4824,3 +4893,111 @@ it("ordinary browser refund selects different committed winner outputs and locat
     ).snapshot(),
   ).toMatchObject({ [plan.keysetId]: winningStart + plan.counterCount });
 });
+
+async function assertSettlementBackupWorkerCommits(database: BitcasterDB) {
+  const runtime = {
+    subtle: webcrypto.subtle as unknown as SubtleCrypto,
+    getRandomValues(bytes: Uint8Array) {
+      bytes.set(webcrypto.getRandomValues(new Uint8Array(bytes.length)));
+      return bytes;
+    },
+  };
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: SEED,
+    realm: "mainnet",
+    runtime,
+  });
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "settlement-owner",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const context = {
+    ownerScopeId: owner.ownerScopeId,
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  };
+  let head = createEncryptedWalletBackupOwnerCurrentHead({
+    ...context,
+    headVersion: 0,
+    bundles: [],
+  });
+  let bundles: Parameters<typeof createEncryptedWalletBackupOwnerCurrentHead>[0]["bundles"] = [];
+  const evidence = () =>
+    collectEncryptedWalletBackupOwnerDescriptorPages(
+      enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles }),
+      context,
+    );
+  const signingKey = new Uint8Array(32).fill(0x44);
+  const signingKeyId = "cc".repeat(16);
+  const pinnedSigningKeys = [
+    { keyId: signingKeyId, publicKey: bytesToHex(schnorr.getPublicKey(signingKey)) },
+  ];
+  const mutateHead = vi.fn(
+    async ({ canonicalUploadGroup }: { canonicalUploadGroup: Uint8Array }) => {
+      const group = decodeEncryptedWalletBackupOwnerUploadGroup({
+        bytes: canonicalUploadGroup,
+        expectedContext: context,
+        expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      });
+      const mutation = group.mutationEvidence.envelope.mutation;
+      const nextBundles = bundles.filter(
+        (bundle) => !mutation.supersededBundleIds.includes(bundle.bundleId),
+      );
+      if (mutation.addedBundle !== null) nextBundles.push(mutation.addedBundle);
+      const resultHead = createEncryptedWalletBackupOwnerCurrentHead({
+        ...context,
+        headVersion: head.headVersion + 1,
+        bundles: nextBundles,
+      });
+      const receipt = await issueEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+        mutationEvidence: group.mutationEvidence,
+        expectedContext: context,
+        resultHead,
+        signingKeyId,
+        signingPublicKey: pinnedSigningKeys[0]!.publicKey,
+        signDigest: async (digest) =>
+          schnorr.sign(digest, signingKey, new Uint8Array(32).fill(0x55)),
+      });
+      const verified = verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+        receipt,
+        mutationEvidence: group.mutationEvidence,
+        expectedContext: context,
+        pinnedSigningKeys,
+      });
+      head = resultHead;
+      bundles = nextBundles;
+      return verified;
+    },
+  );
+  const input = {
+    database,
+    scopeId: walletScopeId(),
+    seed: SEED,
+    keyHandle,
+    owner,
+    enrollmentEpoch: 1,
+    remote: { readCurrentHead: async () => evidence(), mutateHead },
+    runtime,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+  };
+  expect(await runBrowserEncryptedWalletBackupOwnerWorkerCycle(input)).toEqual({
+    kind: "head-accepted",
+  });
+  let idle = false;
+  for (let cycle = 0; cycle < 8; cycle++) {
+    const result = await runBrowserEncryptedWalletBackupOwnerWorkerCycle(input);
+    expect(["committed", "idle"]).toContain(result.kind);
+    if (result.kind === "idle") {
+      idle = true;
+      break;
+    }
+  }
+  expect(idle).toBe(true);
+  expect(mutateHead.mock.calls.length).toBeGreaterThanOrEqual(1);
+  expect(bundles.length).toBeGreaterThanOrEqual(1);
+}
