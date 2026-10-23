@@ -3,6 +3,7 @@ import test from 'node:test'
 import { Amount, OutputData, deriveConditionalKeysetId } from '@cashu/cashu-ts'
 import {
   CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS,
+  discoverConditionSeedRecoveryKeysets,
   bindExactSeedRecoveryResponse,
   bindRetainedOutputRecoveryResponse,
   bindConditionalKeysetSeedRecoveryResponse,
@@ -395,7 +396,13 @@ function plan(input: {
       return validateConditionalKeysetSeedRecoveryDescriptor(descriptorValue)
     }),
     maxOutputs: input.maxOutputs,
-    ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    ...(input.cursor === undefined
+      ? {}
+      : {
+          cursor: input.cursor as Parameters<
+            typeof planConditionalKeysetSeedRecoveryPage
+          >[0]['cursor'],
+        }),
   })
 }
 
@@ -432,7 +439,6 @@ function* boundedIntegers(): Iterable<number> {
 test('retained random-output binding preserves absence and rejects foreign or duplicate replies', () => {
   const outputs = OutputData.createRandomData(Amount.from(3), {
     id: '01' + 'ab'.repeat(32),
-    unit: 'msat',
     keys: KEYS,
   })
   const wire = outputs.map(({ blindedMessage }) => ({
@@ -474,4 +480,156 @@ test('retained random-output binding preserves absence and rejects foreign or du
     { outputs: [wire[0]], signatures: [] },
   ])
     assert.throws(() => bindRetainedOutputRecoveryResponse({ outputs, response }))
+})
+
+test('condition discovery requires explicit capability and never falls back', async () => {
+  for (const info of [
+    { nuts: {} },
+    { nuts: { CTF: {} } },
+    { nuts: { CTF: { condition_keyset_filter: false } } },
+    { nuts: { CTF: { condition_keyset_filter: 'true' } } },
+    { nuts: { ctf: { condition_keyset_filter: true } } },
+  ]) {
+    let calls = 0
+    await assert.rejects(
+      discoverConditionSeedRecoveryKeysets({
+        conditionId: CONDITION_ID,
+        unit: 'msat',
+        mint: {
+          async getInfo() {
+            return info
+          },
+          async getConditionalKeysets() {
+            calls++
+            throw new Error('must not request')
+          },
+        },
+      }),
+    )
+    assert.equal(calls, 0)
+  }
+})
+
+test('condition discovery exhausts scoped pages and retains inactive history', async () => {
+  const first = descriptor()
+  const second = descriptor({ outcomeCollection: 'YES' })
+  const calls: unknown[] = []
+  const result = await discoverConditionSeedRecoveryKeysets({
+    conditionId: CONDITION_ID,
+    unit: 'msat',
+    mint: {
+      async getInfo() {
+        return { nuts: { CTF: { condition_keyset_filter: true } } }
+      },
+      async getConditionalKeysets(query) {
+        calls.push(query)
+        return query.cursor === undefined
+          ? { keysets: [first], next_cursor: 'opaque+?/=' }
+          : { keysets: [second], next_cursor: null }
+      },
+    },
+  })
+  assert.deepEqual(result.keysets, [first, second])
+  assert.equal(first.active, false)
+  assert.deepEqual(calls, [
+    { condition_id: CONDITION_ID, limit: 100 },
+    { condition_id: CONDITION_ID, limit: 100, cursor: 'opaque+?/=' },
+  ])
+})
+
+test('condition discovery refuses foreign descriptors, duplicate history and incomplete pages', async () => {
+  const good = descriptor()
+  const pages = [
+    [{ keysets: [descriptor({ conditionId: 'cd'.repeat(32) })], next_cursor: null }],
+    [{ keysets: [{ ...good, unit: 'sat' }], next_cursor: null }],
+    [
+      { keysets: [good], next_cursor: 'next' },
+      { keysets: [good], next_cursor: null },
+    ],
+    [
+      { keysets: [], next_cursor: 'same' },
+      { keysets: [], next_cursor: 'same' },
+    ],
+    [{ keysets: [], next_cursor: '' }],
+    [{ keysets: [], next_cursor: 'x'.repeat(4097) }],
+    [{ keysets: Array(101).fill(good), next_cursor: null }],
+    [{ keysets: [] }],
+  ]
+  for (const responses of pages) {
+    let index = 0
+    await assert.rejects(
+      discoverConditionSeedRecoveryKeysets({
+        conditionId: CONDITION_ID,
+        unit: 'msat',
+        mint: {
+          async getInfo() {
+            return { nuts: { CTF: { condition_keyset_filter: true } } }
+          },
+          async getConditionalKeysets() {
+            return responses[index++]
+          },
+        },
+      }),
+    )
+  }
+  let calls = 0
+  await assert.rejects(
+    discoverConditionSeedRecoveryKeysets({
+      conditionId: CONDITION_ID,
+      unit: 'msat',
+      mint: {
+        async getInfo() {
+          return { nuts: { CTF: { condition_keyset_filter: true } } }
+        },
+        async getConditionalKeysets() {
+          return { keysets: [], next_cursor: String(++calls) }
+        },
+      },
+    }),
+    /page bounds/,
+  )
+  assert.equal(calls, 100)
+})
+
+test('unknown condition is an explicit empty scoped listing', async () => {
+  const result = await discoverConditionSeedRecoveryKeysets({
+    conditionId: CONDITION_ID,
+    unit: 'msat',
+    mint: {
+      async getInfo() {
+        return { nuts: { CTF: { condition_keyset_filter: true } } }
+      },
+      async getConditionalKeysets() {
+        return { keysets: [], next_cursor: null }
+      },
+    },
+  })
+  assert.deepEqual(result, { keysets: [] })
+})
+
+test('condition discovery accepts the existing 1024-keyset bound and refuses overflow atomically', async () => {
+  const base = descriptor()
+  for (const count of [1024, 1025]) {
+    let offset = 0
+    const discovery = discoverConditionSeedRecoveryKeysets({
+      conditionId: CONDITION_ID,
+      unit: 'msat',
+      mint: {
+        async getInfo() {
+          return { nuts: { CTF: { condition_keyset_filter: true } } }
+        },
+        async getConditionalKeysets() {
+          const end = Math.min(offset + 100, count)
+          const keysets = Array.from({ length: end - offset }, (_, index) => ({
+            ...base,
+            id: `01${(offset + index).toString(16).padStart(64, '0')}`,
+          }))
+          offset = end
+          return { keysets, next_cursor: offset === count ? null : String(offset) }
+        },
+      },
+    })
+    if (count === 1024) assert.equal((await discovery).keysets.length, 1024)
+    else await assert.rejects(discovery, /keyset bounds/)
+  }
 })

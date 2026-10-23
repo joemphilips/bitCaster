@@ -601,14 +601,14 @@ async function withDaemonHome(directory: string, run: () => Promise<void>): Prom
   }
 }
 
-test('condition recovery refuses before phrase, profile, lock, or mint access', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-condition-refusal-'))
+test('condition recovery still requires an initialized profile before phrase or mint access', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-condition-profile-'))
   try {
-    await assert.rejects(
-      () =>
+    await withDaemonHome(directory, async () => {
+      await assert.rejects(
         runOfflineDaemonSeedRecovery({
           walletSeedHexFile: join(directory, 'absent-phrase'),
-          recoveryId: 'condition-unapproved',
+          recoveryId: 'condition-profile',
           mintUrl: 'https://mint.example',
           unit: 'msat',
           disclosureAcknowledged: true,
@@ -618,11 +618,13 @@ test('condition recovery refuses before phrase, profile, lock, or mint access', 
             conditionId: 'ab'.repeat(32),
             gapLimit: 300,
           },
+          transport: guardedTransport(() => {
+            throw new Error('must not contact mint')
+          }),
         }),
-      /condition recovery requires approved mint discovery filter/,
-    )
-    const { readdir } = await import('node:fs/promises')
-    assert.deepEqual(await readdir(directory), [])
+        /profile SQLite database is missing/,
+      )
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

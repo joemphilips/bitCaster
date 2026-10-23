@@ -165,6 +165,77 @@ export interface ConditionalKeysetSeedRecoveryResponseBinding {
   readonly discoveredKeysetIds: ReadonlySet<string>
 }
 
+/** Discover complete, condition-scoped historical metadata before any seed derivation.
+ * The mint object must be bound to the recovery mint. A failed or oversized listing
+ * never returns a partial roster. Inactive keysets remain eligible for recovery.
+ */
+export async function discoverConditionSeedRecoveryKeysets(input: {
+  readonly conditionId: string
+  readonly unit: string
+  readonly mint: {
+    getInfo(): Promise<unknown>
+    getConditionalKeysets(query: {
+      condition_id: string
+      limit: number
+      cursor?: string
+    }): Promise<unknown>
+  }
+}): Promise<{ keysets: readonly unknown[] }> {
+  if (
+    typeof input.conditionId !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(input.conditionId) ||
+    input.unit !== 'msat'
+  )
+    throw new Error('invalid condition recovery scope')
+  const info = exactRecord(await input.mint.getInfo(), 'mint info')
+  const nuts = exactRecord(info.nuts, 'mint nuts')
+  const ctf = exactRecord(nuts.CTF, 'mint NUT-CTF')
+  if (ctf.condition_keyset_filter !== true)
+    throw new Error('condition recovery requires condition_keyset_filter support')
+
+  const keysets: unknown[] = []
+  const ids = new Set<string>()
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+  // Match the existing CTF listing page bound; retain the recovery roster bound.
+  for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+    const page = exactRecord(
+      await input.mint.getConditionalKeysets({
+        condition_id: input.conditionId,
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      }),
+      'condition recovery listing',
+    )
+    exactKeys(page, ['keysets', 'next_cursor'], [], 'condition recovery listing')
+    if (
+      !Array.isArray(page.keysets) ||
+      page.keysets.length > 100 ||
+      keysets.length + page.keysets.length > CONDITIONAL_KEYSET_DISCOVERY_KEYSET_LIMIT
+    )
+      throw new Error('condition recovery listing exceeds keyset bounds')
+    for (const value of page.keysets) {
+      const descriptor = validateConditionalKeysetSeedRecoveryDescriptor(value)
+      if (descriptor.conditionId !== input.conditionId || descriptor.unit !== input.unit)
+        throw new Error('condition recovery listing contains a foreign scope')
+      if (ids.has(descriptor.id)) throw new Error('condition recovery listing repeats a keyset')
+      ids.add(descriptor.id)
+      keysets.push(value)
+    }
+    if (page.next_cursor === null) return { keysets }
+    if (
+      typeof page.next_cursor !== 'string' ||
+      page.next_cursor.length === 0 ||
+      page.next_cursor.length > 4_096 ||
+      cursors.has(page.next_cursor)
+    )
+      throw new Error('condition recovery listing has an invalid or repeated cursor')
+    cursor = page.next_cursor
+    cursors.add(cursor)
+  }
+  throw new Error('condition recovery listing exceeds page bounds')
+}
+
 /** Validate advertised keyset metadata before discovery output planning. */
 export function validateConditionalKeysetSeedRecoveryDescriptor(
   value: unknown,

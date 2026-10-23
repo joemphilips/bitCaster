@@ -245,6 +245,9 @@ new recovery ID for a deeper scan. The result reports scanned ranges and local
 counter bindings not covered by this scan. A completed scan does not prove
 that the wallet has no other funds. A gap can hide later outputs.
 
-Condition-scoped recovery is not available yet. `--condition-id` refuses before
-reading the phrase file or changing the recovery job. Stop the old client
-before seed recovery. Seed recovery does not restore live authorizations.
+Use `--condition-id <64-lowercase-hex-id>` to recover one condition. The mint
+must advertise `nuts.CTF.condition_keyset_filter: true`. Recovery includes
+inactive historical keysets for that condition. If the capability is absent
+or false, recovery refuses. It never falls back to listing all conditions.
+Without this option, recovery scans regular `msat` keysets only. Stop the old
+client before seed recovery. Seed recovery does not restore live authorizations.

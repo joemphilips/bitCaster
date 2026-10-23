@@ -31,6 +31,7 @@ import {
   type EmergencySeedRecoveryLeaseAuthority,
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
 import {
+  discoverConditionSeedRecoveryKeysets,
   bindExactSeedRecoveryResponse,
   bindRetainedOutputRecoveryResponse,
   planExactSeedRecoveryBatch,
@@ -145,7 +146,7 @@ const CUSTODY_LEASE_RENEW_INTERVAL_MS = 20_000
 export async function runOfflineDaemonSeedRecovery(
   input: OfflineDaemonSeedRecoveryInput,
 ): Promise<WalletSeedRecoveryResult> {
-  assertRegularProductionPolicy(recoveryPolicy(input))
+  recoveryPolicy(input)
   assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
@@ -320,11 +321,9 @@ export async function recoverAllDaemonWalletFromSeed(
     readonly nowMs?: () => number
     readonly invocationId?: () => string
     readonly storage?: DaemonStateSqliteSession
-    readonly _allowConditionFixture?: true
   },
 ): Promise<WalletSeedRecoveryResult> {
   const policy = recoveryPolicy(input)
-  if (!deps._allowConditionFixture) assertRegularProductionPolicy(policy)
   assertProductRecoveryUnit(input.unit)
   assertWalletSeedHex(input.walletSeedHex)
   const seed = Uint8Array.from(Buffer.from(input.walletSeedHex, 'hex'))
@@ -1017,7 +1016,7 @@ function observedSelectedProof(
   }
 }
 
-function createAllKeysetRecoveryTransport(
+export function createAllKeysetRecoveryTransport(
   mintUrl: string,
   unit: string,
   seedHex: string,
@@ -1030,9 +1029,8 @@ function createAllKeysetRecoveryTransport(
   return {
     wallet,
     listRegularKeysets: () => mint.getKeySets(),
-    listConditionalKeysets: async () => {
-      throw new Error('condition recovery requires approved mint discovery filter')
-    },
+    listConditionalKeysets: (conditionId) =>
+      discoverConditionSeedRecoveryKeysets({ conditionId, unit, mint }),
     async getConditionalKeyset(id) {
       const keys = await mint.getKeys(id)
       const keyset = keys.keysets.find((candidate) => candidate.id === id)
@@ -1179,8 +1177,4 @@ function recoveryPolicy(input: {
   return input.scanPolicy === undefined
     ? createSeedRecoveryScanPolicy()
     : validateSeedRecoveryScanPolicy(input.scanPolicy)
-}
-export function assertRegularProductionPolicy(policy: SeedRecoveryScanPolicy): void {
-  if (validateSeedRecoveryScanPolicy(policy).scope !== 'regular-msat')
-    throw new Error('condition recovery requires approved mint discovery filter')
 }

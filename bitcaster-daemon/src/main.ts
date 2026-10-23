@@ -105,8 +105,6 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   if (!/^[1-9][0-9]*$/.test(gapLimitText))
     throw new Error('recover-seed gap limit must be a positive integer')
   const scanPolicy = createSeedRecoveryScanPolicy({ conditionId, gapLimit: Number(gapLimitText) })
-  if (scanPolicy.scope === 'condition')
-    throw new Error('condition recovery requires approved mint discovery filter')
   return {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
     mintUrl: requiredArg(mintUrl, '--mint'),

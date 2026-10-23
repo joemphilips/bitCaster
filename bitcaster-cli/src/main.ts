@@ -1666,8 +1666,6 @@ function registerWalletCommand(program: Command): void {
           conditionId: options.conditionId,
           gapLimit: Number(options.gapLimit),
         })
-        if (scanPolicy.scope === 'condition')
-          throwUsage('condition recovery requires approved mint discovery filter')
         if (isDryRun(options)) {
           printDryRun({
             recoveryId: options.recoveryId,
@@ -1692,6 +1690,7 @@ function registerWalletCommand(program: Command): void {
           '--acknowledge-seed-disclosure',
           '--gap-limit',
           String(scanPolicy.gapLimit),
+          ...(scanPolicy.scope === 'condition' ? ['--condition-id', scanPolicy.conditionId] : []),
         ])
       },
     )

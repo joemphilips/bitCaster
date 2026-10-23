@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 
 const run = promisify(execFile)
 
-test('daemon recovery flags refuse unapproved condition before any profile or phrase access', async () => {
+test('daemon recovery flags accept explicit condition but preserve profile and gap validation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-cli-'))
   try {
     const env = { ...process.env }
@@ -34,11 +34,9 @@ test('daemon recovery flags refuse unapproved condition before any profile or ph
         run(process.execPath, [...base, ...extra], { env, timeout: 5_000, maxBuffer: 16_384 }),
         (error) =>
           error instanceof Error &&
-          /condition recovery requires approved mint discovery filter/.test(
-            String((error as { stderr?: string }).stderr),
-          ),
+          /profile SQLite database is missing/.test(String((error as { stderr?: string }).stderr)),
       )
-      assert.deepEqual(await readdir(directory), [])
+      assert.equal((await readdir(directory)).includes('profile.json'), false)
     }
     for (const gap of ['0', '-1', '1.5', '01', '2147483649']) {
       await assert.rejects(
@@ -51,7 +49,7 @@ test('daemon recovery flags refuse unapproved condition before any profile or ph
           error instanceof Error &&
           /gap limit|scan policy/.test(String((error as { stderr?: string }).stderr)),
       )
-      assert.deepEqual(await readdir(directory), [])
+      assert.equal((await readdir(directory)).includes('profile.json'), false)
     }
   } finally {
     await rm(directory, { recursive: true, force: true })

@@ -190,7 +190,7 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
         ...request(fixture, 'msat'),
         scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
       },
-      { ...dependencies(fixture, transport), _allowConditionFixture: true },
+      dependencies(fixture, transport),
     )
     assert.deepEqual(fetched, [conditional.id])
     assert.equal(starts.has(regular.id), false)
@@ -239,7 +239,7 @@ test('condition fixture refuses an unrelated listing without global fallback', a
             ...request(fixture),
             scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
           },
-          { ...dependencies(fixture, transport), _allowConditionFixture: true },
+          dependencies(fixture, transport),
         ),
       /condition listing is foreign/,
     )
@@ -307,7 +307,7 @@ test('conditional recovery refuses an alias before unmatched discovery or roster
             ...request(fixture, 'msat'),
             scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
           },
-          { ...dependencies(fixture, transport), _allowConditionFixture: true },
+          dependencies(fixture, transport),
         ),
       /another mint URL/,
     )
@@ -349,7 +349,7 @@ test('local conditional counter authority selects a keyset without a discovery m
         ...request(fixture, 'msat'),
         scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
       },
-      { ...dependencies(fixture, transport), _allowConditionFixture: true },
+      dependencies(fixture, transport),
     )
     assert.deepEqual(starts, [0, 1])
     assert.equal(result.selectedKeysetCount, 1)
@@ -408,7 +408,7 @@ test('a durable roster resumes a pending conditional child without rediscovery',
         ...request(fixture, 'msat'),
         scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
       },
-      { ...dependencies(fixture, first), _allowConditionFixture: true },
+      dependencies(fixture, first),
     )
     assert.equal(pending.state, 'active')
 
@@ -426,7 +426,7 @@ test('a durable roster resumes a pending conditional child without rediscovery',
         ...request(fixture, 'msat'),
         scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID }),
       },
-      { ...dependencies(fixture, resumed), _allowConditionFixture: true },
+      dependencies(fixture, resumed),
     )
     assert.deepEqual(starts, [0])
     assert.equal(completed.state, 'completed')
@@ -850,7 +850,7 @@ test('a reopened job pins scope and gap, while a new job can scan deeper', async
             ...original,
             scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID, gapLimit: 7 }),
           },
-          { ...dependencies(fixture, forbidden), _allowConditionFixture: true },
+          dependencies(fixture, forbidden),
         ),
       /binding is foreign/,
     )
@@ -898,7 +898,7 @@ test('selected condition fixture scans beyond counter zero with its explicit lar
         ...request(fixture),
         scanPolicy: createSeedRecoveryScanPolicy({ conditionId: CONDITION_ID, gapLimit: 701 }),
       },
-      { ...dependencies(fixture, transport), _allowConditionFixture: true },
+      dependencies(fixture, transport),
     )
     assert.deepEqual(starts, [0, 300, 600, 900])
     assert.deepEqual(counts, [300, 300, 300, 202])

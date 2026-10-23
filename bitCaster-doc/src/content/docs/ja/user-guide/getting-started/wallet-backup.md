@@ -250,6 +250,9 @@ recovery job は scope と gap limit を固定します。再試行では同じ�
 走査が完了しても、他の資金がないことの証明にはなりません。gap の後に output が
 残る場合があります。
 
-condition を指定した recovery はまだ利用できません。`--condition-id` は、
-phrase file の読み取りと recovery job の変更の前に拒否します。seed recovery の
+1 つの condition を復元するには `--condition-id <64桁の小文字16進ID>` を使用します。
+mint は `nuts.CTF.condition_keyset_filter: true` を宣言する必要があります。
+その condition の inactive な過去の keyset も走査します。この capability が
+未指定または false の場合は拒否します。全 condition の一覧取得には切り替えません。
+このオプションがなければ、通常の `msat` keyset だけを走査します。seed recovery の
 前に古い client を停止してください。live authorization は復元しません。
