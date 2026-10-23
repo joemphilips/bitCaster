@@ -10,6 +10,8 @@ export default mergeConfig(
       include: ["src/**/*.browser.test.ts"],
       browser: {
         enabled: true,
+        // Parallel test processes must not inherit the app server's fixed port.
+        api: { host: "127.0.0.1", strictPort: false },
         provider: playwright(),
         headless: true,
         instances: [{ browser: "chromium" }],

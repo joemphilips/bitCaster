@@ -23,15 +23,20 @@ import type { EncryptedWalletBackupV2KeyHandle } from "@bitcaster/client-sdk/enc
 
 const OWNER_SIGNING_KEY_ID = "93".repeat(16);
 const OWNER_SIGNING_PRIVATE_KEY = new Uint8Array(32).fill(0x35);
-const OWNER_SIGNING_PUBLIC_KEY = Buffer.from(
-  schnorr.getPublicKey(OWNER_SIGNING_PRIVATE_KEY),
-).toString("hex");
+const OWNER_SIGNING_PUBLIC_KEY = bytesToHex(schnorr.getPublicKey(OWNER_SIGNING_PRIVATE_KEY));
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export async function ownerReachabilitySnapshot(input: {
   readonly ownerScopeId: string;
   readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
   readonly enrollmentEpoch: number;
   readonly keyHandle?: EncryptedWalletBackupV2KeyHandle;
+  /** Current collected head may advance while retaining the signed result descriptor. */
+  readonly currentHeadVersion?: number;
+  readonly currentBundles?: readonly EncryptedWalletBackupV2BundleDescriptor[];
 }) {
   const keyHandle =
     input.keyHandle ??
@@ -70,22 +75,27 @@ export async function ownerReachabilitySnapshot(input: {
     expectedContext: context,
     expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
   });
-  const head = createEncryptedWalletBackupOwnerCurrentHead({
+  const resultHead = createEncryptedWalletBackupOwnerCurrentHead({
     ...context,
     headVersion: 1,
     bundles: [input.descriptor],
   });
+  const currentHead = createEncryptedWalletBackupOwnerCurrentHead({
+    ...context,
+    headVersion: input.currentHeadVersion ?? 1,
+    bundles: input.currentBundles ?? [input.descriptor],
+  });
   const collectedHeadEvidence = collectEncryptedWalletBackupOwnerDescriptorPages(
     enumerateEncryptedWalletBackupOwnerDescriptorPages({
-      head,
-      bundles: [input.descriptor],
+      head: currentHead,
+      bundles: input.currentBundles ?? [input.descriptor],
     }),
     context,
   );
   const receipt = await issueEncryptedWalletBackupOwnerBundleSupersessionReceipt({
     mutationEvidence,
     expectedContext: context,
-    resultHead: head,
+    resultHead,
     signingKeyId: OWNER_SIGNING_KEY_ID,
     signingPublicKey: OWNER_SIGNING_PUBLIC_KEY,
     signDigest: (digest) => schnorr.sign(digest, OWNER_SIGNING_PRIVATE_KEY),
