@@ -239,20 +239,35 @@ export async function reclaimBrowserBearerWithdrawal(input: {
     },
     () => crypto.randomUUID(),
   );
-  const prepared = prepareDurableOutgoingCashuReclaim({
-    transfer: classified,
-    reclaimId,
-    states,
-    dueAtMs: Date.now(),
-    walletReceiveOperation: operation,
-  });
-  await bindPreparedBrowserDurableWalletReceiveOperation({
+  let prepared: DurableOutgoingCashuTransfer | undefined;
+  const selectedOperation = await bindPreparedBrowserDurableWalletReceiveOperation({
     operation,
     wallet,
-    outgoingTransfer: browserOutgoingCashuTransferRow(context.scopeId, prepared, "consumed"),
+    outgoingTransfer: (selectedOperation) => {
+      prepared = prepareDurableOutgoingCashuReclaim({
+        transfer: classified,
+        reclaimId,
+        states,
+        dueAtMs: Date.now(),
+        walletReceiveOperation: selectedOperation,
+      });
+      return browserOutgoingCashuTransferRow(context.scopeId, prepared, "consumed");
+    },
     context,
   });
-  return prepared;
+  if (prepared !== undefined) return prepared;
+  const saved = await readBrowserDurableOutgoingCashuTransfer({
+    transferId: classified.transferId,
+    context,
+  });
+  if (
+    saved?.deliveryState !== "reclaim-prepared" ||
+    saved.reclaim?.reclaimId !== reclaimId ||
+    saved.reclaim.walletReceiveOperation.operationId !== selectedOperation.operationId
+  ) {
+    throw new Error("Bearer reclaim saved winner does not match its prepared receive");
+  }
+  return saved;
 }
 
 /** Execute only the already persisted exact reclaim receive. */

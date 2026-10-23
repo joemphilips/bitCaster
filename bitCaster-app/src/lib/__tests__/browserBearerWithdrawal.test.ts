@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   classify: vi.fn(),
@@ -47,6 +47,8 @@ import {
 } from "../browserBearerWithdrawal";
 
 describe("browser bearer withdrawal reclaim", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getWalletForUnit.mockResolvedValue(mocks.wallet);
@@ -72,6 +74,10 @@ describe("browser bearer withdrawal reclaim", () => {
       ...transfer,
       deliveryState: "reclaimed",
     }));
+    mocks.bindReceive.mockImplementation(async ({ operation, outgoingTransfer }) => {
+      outgoingTransfer(operation);
+      return operation;
+    });
   });
 
   it("marks all SPENT terminal without preparing or receiving", async () => {
@@ -156,6 +162,39 @@ describe("browser bearer withdrawal reclaim", () => {
       expect.any(Function),
     );
     expect(mocks.receive).not.toHaveBeenCalled();
+  });
+
+  it("returns an existing reclaim transfer when the saved receive winner skips its callback", async () => {
+    const current = transfer();
+    const reclaimId = "bearer-reclaim:00000000-0000-4000-8000-000000000001";
+    const operation = { operationId: reclaimId };
+    const saved = {
+      ...current,
+      deliveryState: "reclaim-prepared",
+      reclaim: {
+        reclaimId,
+        proofs: current.token.proofs,
+        walletReceiveOperation: operation,
+      },
+    };
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
+    mocks.wallet.checkProofsStates.mockResolvedValue(states("UNSPENT"));
+    mocks.classify.mockResolvedValue({
+      ...current,
+      token: { ...current.token, unspentProofs: current.token.proofs },
+    });
+    mocks.prepareReceive.mockResolvedValue(operation);
+    mocks.bindReceive.mockImplementationOnce(async ({ operation: selected }) => selected);
+    mocks.read.mockResolvedValueOnce(saved);
+
+    await expect(
+      reclaimBrowserBearerWithdrawal({ transfer: current as never }),
+    ).resolves.toMatchObject({
+      deliveryState: "reclaim-prepared",
+      reclaim: { walletReceiveOperation: operation },
+    });
+    expect(mocks.bindReceive).toHaveBeenCalledOnce();
+    expect(mocks.prepareReclaim).not.toHaveBeenCalled();
   });
 
   it("reclaims only the exact unspent subset after a mixed result", async () => {

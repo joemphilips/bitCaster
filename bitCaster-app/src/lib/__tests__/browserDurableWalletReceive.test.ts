@@ -11,6 +11,7 @@ import {
   CheckStateEnum,
   Keyset,
   OutputData,
+  type CounterSource,
   createBlindSignature,
   createDLEQProof,
   deriveConditionalKeysetId,
@@ -58,8 +59,25 @@ import {
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 
 const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+const receiveDraftFactory = vi.hoisted(() => ({
+  counterSource: undefined as CounterSource | undefined,
+  wallet: undefined as BrowserDurableWalletReceiveWallet | undefined,
+  afterPrepare: undefined as (() => Promise<void>) | undefined,
+  reservedRanges: [] as Array<{ start: number; count: number }>,
+}));
+
+vi.mock("../../stores/wallet", () => ({
+  createUncachedWalletForSeedUnit: async (input: { counterSource: CounterSource }) => {
+    receiveDraftFactory.counterSource = input.counterSource;
+    if (receiveDraftFactory.wallet === undefined) {
+      throw new Error("test receive draft wallet is unavailable");
+    }
+    return receiveDraftFactory.wallet;
+  },
+}));
 
 vi.mock("../browserWalletNewWritePermission", () => ({
   requireBrowserWalletNewWritePermission: requireNewWritePermission,
@@ -95,6 +113,10 @@ const databases: BitcasterDB[] = [];
 afterEach(async () => {
   requireNewWritePermission.mockClear();
   requireNewWritePermission.mockResolvedValue(undefined);
+  receiveDraftFactory.counterSource = undefined;
+  receiveDraftFactory.wallet = undefined;
+  receiveDraftFactory.afterPrepare = undefined;
+  receiveDraftFactory.reservedRanges = [];
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -354,7 +376,7 @@ describe("browser durable ordinary receive", () => {
     expect(await database.custodyScopes.count()).toBe(0);
     expect(await database.custodyOperations.count()).toBe(0);
     expect(await database.custodyProofs.count()).toBe(0);
-    expect(await database.walletCounterAssociations.count()).toBe(0);
+    expect(await database.walletCounterAssociations.count()).toBe(1);
     expect(await database.walletCounterCursors.count()).toBe(0);
 
     const prepared = await prepareBrowserDurableWalletReceiveOperation(
@@ -484,9 +506,104 @@ describe("browser durable ordinary receive", () => {
     );
   });
 
+  it("rebuilds a receive draft after a competing committed counter reservation", async () => {
+    const database = createDatabase();
+    const preview = receivePreview();
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
+    const scopeId = browserWalletScope(seed).scopeId;
+    receiveDraftFactory.afterPrepare = async () => {
+      receiveDraftFactory.afterPrepare = undefined;
+      const competingStore = new BrowserWalletCounterDexieStore({
+        database,
+        scopeId,
+        isCurrentProfile: () => true,
+      });
+      const range = await competingStore.reserveInContext(
+        { mintUrl: MINT, unit: "msat" },
+        KEYSET_ID,
+        2,
+        true,
+      );
+      expect(range).toEqual({ start: 0, count: 2 });
+    };
+    const context = receiveContext(database);
+    await receiveBrowserDurableWalletToken({
+      operationId: "receive-counter-conflict",
+      token: "cashuB-token",
+      mintUrl: MINT,
+      unit: "msat",
+      wallet: receiveWallet,
+      context,
+    });
+    expect(receiveWallet.prepareSwapToReceive).toHaveBeenCalledTimes(2);
+    expect(receiveDraftFactory.reservedRanges).toEqual([
+      { start: 0, count: 1 },
+      { start: 2, count: 1 },
+    ]);
+    const completedPreview = vi.mocked(receiveWallet.completeSwap).mock.calls[0]?.[0];
+    expect(completedPreview).toBeDefined();
+    const page = await readBrowserCurrentCustodyProofPage({
+      context,
+      selectability: "selectable",
+      cursor: null,
+    });
+    expect(page.proofs.map(({ secret }) => secret)).toEqual([
+      outputSecret({ ...preview, keepOutputs: completedPreview!.keepOutputs } as SwapPreview),
+    ]);
+    expect(page.proofs[0]?.secret).toBe(
+      outputSecret({
+        ...preview,
+        keepOutputs: [OutputData.createSingleDeterministicData(1, seed, 2, KEYSET_ID)],
+      } as SwapPreview),
+    );
+    expect(await database.walletCounterCursors.get([scopeId, KEYSET_ID])).toMatchObject({
+      next: 3,
+    });
+    expect(await database.custodyOperations.count()).toBe(1);
+  });
+
+  it("rolls back cursor and receive authority when atomic persistence fails after cursor advance", async () => {
+    const database = createDatabase();
+    const preview = receivePreview();
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
+    const original = BrowserWalletCounterDexieStore.prototype.compareAndAdvanceInCurrentTransaction;
+    const advance = vi
+      .spyOn(BrowserWalletCounterDexieStore.prototype, "compareAndAdvanceInCurrentTransaction")
+      .mockImplementation(async function (this: BrowserWalletCounterDexieStore, ...args) {
+        await original.apply(this, args);
+        throw new Error("injected after counter advance");
+      });
+
+    try {
+      await expect(
+        receiveBrowserDurableWalletToken({
+          operationId: "receive-atomic-rollback",
+          token: "cashuB-token",
+          mintUrl: MINT,
+          unit: "msat",
+          wallet: receiveWallet,
+          context: receiveContext(database),
+        }),
+      ).rejects.toThrow("injected after counter advance");
+    } finally {
+      advance.mockRestore();
+    }
+
+    expect(await database.walletCounterCursors.count()).toBe(0);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyArtifacts.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.outgoingCashuTransfers.count()).toBe(0);
+  });
+
   it("recovers a receive in its bound database after the active profile changes during mint execution", async () => {
     const originalDatabase = createDatabase();
-    const replacementDatabase = createDatabase();
+    const replacementSeed = new Uint8Array(64).fill(2);
+    const replacementDatabase = new BitcasterDB(
+      browserWalletDatabaseName(browserWalletScope(replacementSeed).scopeId),
+    );
+    databases.push(replacementDatabase);
     const scopeId = browserWalletScope(seed).scopeId;
     let activeProfile = "original";
     const context: BrowserDurableWalletReceiveContext = {
@@ -737,6 +854,11 @@ describe("browser durable ordinary receive", () => {
     const preview = receivePreviewForProof(inputProof);
     const successor = proofForOutput(preview.keepOutputs![0]!);
     const first = wallet(preview, successor, 21);
+    await database.walletCounterCursors.put({
+      scopeId,
+      keysetId: KEYSET_ID,
+      next: 21,
+    });
     const faultContext = receiveContext(database, "after-commit", "reclaim");
     const token = outgoing.token!.encodedToken;
     const operation = await prepareBrowserDurableWalletReceiveOperation(
@@ -761,7 +883,8 @@ describe("browser durable ordinary receive", () => {
         unit: "msat",
         wallet: first,
         context: faultContext,
-        outgoingTransferOnPrepare: browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
+        outgoingTransferOnPrepare: () =>
+          browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
         completeOutgoingTransfer: () =>
           browserOutgoingCashuTransferRow(scopeId, terminal, "consumed"),
       }),
@@ -779,7 +902,6 @@ describe("browser durable ordinary receive", () => {
     await expect(
       receiveBrowserDurableWalletToken({
         operationId: operation.operationId,
-        preparedOperation: operation,
         skipBind: true,
         token,
         mintUrl: MINT,
@@ -795,12 +917,75 @@ describe("browser durable ordinary receive", () => {
     expect(restarted.checkProofsStates).not.toHaveBeenCalled();
   });
 
+  it("returns the saved winner when a prepared reclaim is bound twice", async () => {
+    const database = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    const outgoing = admittedBearerTransfer(scopeId);
+    const preview = receivePreviewForProof(outgoing.token!.proofs[0]!);
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!), 21);
+    await database.walletCounterCursors.put({ scopeId, keysetId: KEYSET_ID, next: 21 });
+    const context = receiveContext(database);
+    const operation = await prepareBrowserDurableWalletReceiveOperation(
+      {
+        operationId: "bearer-reclaim-saved-winner",
+        token: outgoing.token!.encodedToken,
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receiveWallet,
+        context,
+      },
+      () => "unused",
+    );
+    const { prepared } = bearerReclaimStates(outgoing, operation);
+    const outgoingTransfer = vi.fn(() =>
+      browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
+    );
+    const first = await bindPreparedBrowserDurableWalletReceiveOperation({
+      operation,
+      wallet: receiveWallet,
+      outgoingTransfer,
+      context,
+    });
+    expect(await database.custodyOperations.count()).toBe(1);
+    const persisted = (await database.custodyOperations.toArray())[0];
+    if (!persisted) throw new Error("bound operation row is unavailable");
+    expect(persisted.operationId).not.toBe(operation.operationId);
+    expect(persisted.scopeId).toBe(scopeId);
+    expect(
+      await new BrowserDurableCustodyAdapter(database).readOperationSnapshot(
+        browserWalletScope(seed),
+        persisted.operationId,
+      ),
+    ).toMatchObject({ record: { operation: { retainedOperationKey: operation.operationId } } });
+    const second = await bindPreparedBrowserDurableWalletReceiveOperation({
+      operation,
+      wallet: receiveWallet,
+      outgoingTransfer,
+      context,
+    });
+
+    expect(second.operationId).toBe(first.operationId);
+    expect(vi.mocked(receiveWallet.prepareSwapToReceive)).toHaveBeenCalledOnce();
+    expect(outgoingTransfer).toHaveBeenCalledOnce();
+    expect(requireNewWritePermission).toHaveBeenCalledOnce();
+    expect(await database.walletCounterCursors.get([scopeId, KEYSET_ID])).toMatchObject({
+      next: 22,
+    });
+    expect(await database.custodyOperations.count()).toBe(1);
+    expect(await database.outgoingCashuTransfers.count()).toBe(1);
+  });
+
   it("atomically aborts a reclaim receive when the recipient spent every bearer proof", async () => {
     const database = createDatabase();
     const scopeId = browserWalletScope(seed).scopeId;
     const outgoing = admittedBearerTransfer(scopeId);
     const preview = receivePreviewForProof(outgoing.token!.proofs[0]!);
     const first = wallet(preview, proofForOutput(preview.keepOutputs![0]!), 31);
+    await database.walletCounterCursors.put({
+      scopeId,
+      keysetId: KEYSET_ID,
+      next: 31,
+    });
     const context = receiveContext(database);
     const operation = await prepareBrowserDurableWalletReceiveOperation(
       {
@@ -817,7 +1002,7 @@ describe("browser durable ordinary receive", () => {
     await bindPreparedBrowserDurableWalletReceiveOperation({
       operation,
       wallet: first,
-      outgoingTransfer: browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
+      outgoingTransfer: () => browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
       context,
     });
     expect(await database.custodyOperations.count()).toBe(1);
@@ -1084,7 +1269,16 @@ describe("browser durable ordinary receive", () => {
 });
 
 function createDatabase(): BitcasterDB {
-  const database = new BitcasterDB(`browser-durable-receive-${crypto.randomUUID()}`);
+  const database = new BitcasterDB(browserWalletDatabaseName(browserWalletScope(seed).scopeId));
+  database.on("populate", (transaction) =>
+    transaction.table("walletCounterAssociations").put({
+      scopeId: browserWalletScope(seed).scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      keysetId: KEYSET_ID,
+      recoveryComplete: true,
+    }),
+  );
   databases.push(database);
   return database;
 }
@@ -1306,35 +1500,70 @@ function outputSecret(preview: SwapPreview): string {
 
 function wallet(
   preview: SwapPreview,
-  proof: Proof,
+  _proof: Proof,
   counterStart = 0,
 ): BrowserDurableWalletReceiveWallet {
-  const restoreSignature = signatureForOutput(preview.keepOutputs![0]!);
   const regularKeyset = Keyset.fromMintApi(
     { id: KEYSET_ID, unit: "msat", active: true },
     { id: KEYSET_ID, unit: "msat", active: true, keys: KEYS },
   );
-  return {
+  const result: BrowserDurableWalletReceiveWallet = {
     prepareSwapToReceive: vi.fn(async (_token, options) => {
+      const allocation = await receiveDraftFactory.counterSource?.reserve(
+        KEYSET_ID,
+        preview.keepOutputs!.length,
+      );
+      const actualStart = allocation?.start ?? counterStart;
       options?.onCountersReserved?.({
         keysetId: KEYSET_ID,
-        start: counterStart,
+        start: actualStart,
         count: preview.keepOutputs!.length,
-        next: counterStart + preview.keepOutputs!.length,
+        next: actualStart + preview.keepOutputs!.length,
       });
-      return preview;
+      receiveDraftFactory.reservedRanges.push({
+        start: actualStart,
+        count: preview.keepOutputs!.length,
+      });
+      const outputs = preview.keepOutputs!.map((output, index) =>
+        OutputData.createSingleDeterministicData(
+          output.blindedMessage.amount,
+          seed,
+          actualStart + index,
+          KEYSET_ID,
+        ),
+      );
+      await receiveDraftFactory.afterPrepare?.();
+      return { ...preview, keepOutputs: outputs };
     }),
-    completeSwap: vi.fn(async () => ({ keep: [proof], send: [] })),
+    completeSwap: vi.fn(async (prepared) => ({
+      keep: [proofForOutput(prepared.keepOutputs![0]!)],
+      send: [],
+    })),
     checkProofsStates: vi.fn(),
     mint: {
       restore: vi.fn(
         async ({ outputs }: { outputs: Array<{ amount: Amount; id: string; B_: string }> }) => ({
           outputs,
-          signatures: [restoreSignature],
+          signatures: outputs.map((output) => signatureForRestoredOutput(output)),
         }),
       ),
     },
     getKeyset: vi.fn(() => regularKeyset),
+  };
+  receiveDraftFactory.wallet = result;
+  return result;
+}
+
+function signatureForRestoredOutput(output: { amount: Amount; id: string; B_: string }) {
+  const point = pointFromHex(output.B_);
+  const privateKey = mintDenominationPrivateKey(PRIVATE_KEY, output.amount.toString());
+  const signature = createBlindSignature(point, privateKey, output.id);
+  const dleq = createDLEQProof(point, privateKey);
+  return {
+    id: output.id,
+    amount: output.amount,
+    C_: signature.C_.toHex(true),
+    dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
   };
 }
 

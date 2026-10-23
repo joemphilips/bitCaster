@@ -1,6 +1,8 @@
 import { requireValidCashuProofs } from "@bitcaster/client-sdk";
+import Dexie from "dexie";
 import {
   Amount,
+  getDecodedToken,
   splitAmount,
   type OperationCounters,
   type Proof,
@@ -23,6 +25,7 @@ import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyOperationId,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyScope,
@@ -35,9 +38,14 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import {
+  createSpeculativeCounterTranscript,
+  type SpeculativeCounterTranscript,
+} from "@bitcaster/client-sdk/speculativeCounterTranscript";
+import {
   assertCanonicalNut02V2KeysetId,
   reserveAndConstructDurableSeedDerivedOutputs,
 } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
+import { createUncachedWalletForSeedUnit } from "../stores/wallet";
 import {
   deriveDurableWalletProofY,
   requireDurableWalletOperationFromCustody,
@@ -52,7 +60,10 @@ import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durabl
 import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
-import { BrowserWalletCounterSource } from "../stores/browser-wallet-counter-db";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSnapshotConflictError,
+} from "../stores/browser-wallet-counter-db";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
@@ -75,6 +86,21 @@ const RECOVERY_PAGE_LIMIT = 64;
 const PROOF_ID_MIN = "";
 const PROOF_ID_MAX = "\uffff";
 const PRODUCT_MSAT_ERROR = "browser wallet receive requires msat";
+const RECEIVE_PREPARATION_ATTEMPTS = 3;
+
+interface BrowserReceiveCounterPreparation {
+  readonly transcript: SpeculativeCounterTranscript;
+  readonly counterStore: BrowserWalletCounterDexieStore;
+  readonly counterContext: { readonly mintUrl: string; readonly unit: "msat" };
+  readonly rebuild: () => Promise<BrowserReceiveDraft>;
+}
+
+interface BrowserReceiveDraft {
+  readonly operation: DurableWalletReceiveOperation;
+  readonly counterPreparation: BrowserReceiveCounterPreparation;
+}
+
+const receiveDrafts = new WeakMap<DurableWalletReceiveOperation, BrowserReceiveDraft>();
 
 type BrowserReceiveKeyset = Pick<
   Keyset,
@@ -136,7 +162,9 @@ export interface BrowserDurableWalletReceiveInput {
   /** Reclaim provides a previously prepared exact receive plan. */
   readonly preparedOperation?: DurableWalletReceiveOperation;
   /** Reclaim binds this transfer with the exact receive operation before mint I/O. */
-  readonly outgoingTransferOnPrepare?: BrowserOutgoingCashuTransferRow;
+  readonly outgoingTransferOnPrepare?: (
+    operation: DurableWalletReceiveOperation,
+  ) => BrowserOutgoingCashuTransferRow;
   /** Recovery executes an already atomically bound exact receive operation. */
   readonly skipBind?: boolean;
   /** Recovery checks the complete persisted input vector before it calls the mint. */
@@ -196,9 +224,26 @@ export async function receiveBrowserDurableWalletToken(
       }
       const owner = await claimOwner(adapter, scope, now, randomId);
       return withReceiveScope(adapter, scope, owner, now, async () => {
-        const operation =
-          input.preparedOperation ??
-          (await prepareBrowserDurableWalletReceiveOperation(input, randomId));
+        let operation = input.preparedOperation;
+        let alreadyPersisted = false;
+        if (operation === undefined && input.operationId !== undefined) {
+          const saved = await adapter.readOperationSnapshot(
+            scope,
+            browserReceiveCustodyOperationId(scope, input.operationId),
+          );
+          if (saved !== null) {
+            operation = receiveOperationFromSnapshot(saved.record, saved.artifacts, wallet);
+            assertSavedReceiveMatchesInput(operation, input);
+            alreadyPersisted = true;
+          }
+        }
+        let draft: BrowserReceiveDraft | undefined;
+        if (operation === undefined) {
+          draft = await prepareBrowserReceiveDraft(input, randomId);
+          operation = draft.operation;
+        } else {
+          draft = receiveDrafts.get(operation);
+        }
         requireProductMsatUnit(operation.unit);
         const requestedAsset = input.asset ?? input.preparedOperation?.asset ?? "regular";
         if (operation.asset !== requestedAsset) {
@@ -207,16 +252,37 @@ export async function receiveBrowserDurableWalletToken(
         if (input.operationId !== undefined && operation.operationId !== input.operationId) {
           throw new Error("browser wallet receive operation identity conflicts");
         }
-        const binding = createReceiveBinding(scope, operation, wallet);
-        if (!input.skipBind) {
-          await bindReceiveOperation(
+        const pendingBinding = createReceiveBinding(scope, operation, wallet);
+        if (!input.skipBind && !alreadyPersisted) {
+          const saved = await adapter.readOperationSnapshot(
+            scope,
+            pendingBinding.record.operation.operationId,
+          );
+          if (saved !== null) {
+            const selected = receiveOperationFromSnapshot(saved.record, saved.artifacts, wallet);
+            assertSavedReceiveWinner(operation, selected);
+            operation = selected;
+            alreadyPersisted = true;
+          } else if (input.preparedOperation !== undefined) {
+            await requireBrowserWalletNewWritePermission({
+              database: context.database ?? db,
+              scopeId: scope.scopeId,
+            });
+          }
+        }
+        if (!input.skipBind && !alreadyPersisted) {
+          operation = await bindReceiveDraftWithRetry(
             adapter,
             scope,
-            ownerAt(owner, now()),
-            binding,
+            operation,
+            wallet,
+            draft,
             input.outgoingTransferOnPrepare,
+            now,
+            owner,
           );
         }
+        const binding = createReceiveBinding(scope, operation, wallet);
         context.requireCapturedProfile();
         const result = await runReceive(input.recoveryMode ?? "execute", operation.operationId, {
           scope,
@@ -251,23 +317,99 @@ export async function prepareBrowserDurableWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
 ): Promise<DurableWalletReceiveOperation> {
+  return (await prepareBrowserReceiveDraft(input, randomId)).operation;
+}
+
+async function prepareBrowserReceiveDraft(
+  input: BrowserDurableWalletReceiveInput,
+  randomId: () => string,
+): Promise<BrowserReceiveDraft> {
   requireProductMsatUnit(input.unit);
   input.context.requireCapturedProfile();
+  const operationInput = {
+    ...input,
+    operationId: input.operationId ?? `wallet-receive:${randomId()}`,
+  };
   if (input.asset === "conditional") {
-    return prepareBrowserConditionalWalletReceiveOperation(input, randomId);
+    return prepareBrowserConditionalWalletReceiveOperation(operationInput, randomId);
+  }
+  const selected = input.wallet.getKeyset();
+  if (
+    !selected ||
+    selected.unit !== "msat" ||
+    selected.conditional !== undefined ||
+    selected.verify() !== true
+  ) {
+    throw new Error("browser wallet receive output keyset is invalid");
+  }
+  const database = input.context.database ?? db;
+  const scope = browserWalletScope(input.context.seed);
+  const counterContext = { mintUrl: input.mintUrl, unit: "msat" as const };
+  const counterStore = new BrowserWalletCounterDexieStore({
+    database,
+    scopeId: scope.scopeId,
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  const transcript = createSpeculativeCounterTranscript([
+    await counterStore.readSnapshotInContext(counterContext, selected.id),
+  ]);
+  const draftWallet = await createUncachedWalletForSeedUnit({
+    mintUrl: input.mintUrl,
+    unit: "msat",
+    seed: input.context.seed,
+    scopeId: scope.scopeId,
+    database,
+    requireCapturedProfile: input.context.requireCapturedProfile,
+    counterSource: transcript.counterSource,
+  });
+  const pinned = draftWallet.getKeyset(selected.id);
+  if (
+    pinned.id !== selected.id ||
+    pinned.unit !== selected.unit ||
+    pinned.conditional !== undefined ||
+    pinned.verify() !== true ||
+    JSON.stringify(Object.entries(pinned.keys).sort()) !==
+      JSON.stringify(Object.entries(selected.keys).sort())
+  ) {
+    throw new Error("browser wallet receive pinned keyset changed");
   }
   let range: OperationCounters | undefined;
-  const preview = await input.wallet.prepareSwapToReceive(
+  let callbacks = 0;
+  const preview = await draftWallet.prepareSwapToReceive(
     input.token,
-    { onCountersReserved: (reserved) => (range = reserved) },
+    {
+      onCountersReserved: (reserved) => {
+        callbacks += 1;
+        range = reserved;
+      },
+    },
     { type: "deterministic", counter: 0 },
   );
+  const allocations = transcript.allocations();
+  const allocation = allocations[0];
   if (range === undefined) {
     throw new Error("browser wallet receive did not reserve a deterministic output range");
   }
+  if (
+    callbacks !== 1 ||
+    allocations.length !== 1 ||
+    !allocation ||
+    allocation.keysetId !== selected.id ||
+    range.keysetId !== selected.id ||
+    range.start !== allocation.start ||
+    range.count !== allocation.count ||
+    range.next !== allocation.start + allocation.count ||
+    preview.keepOutputs?.length !== allocation.count ||
+    preview.keepOutputs.some((output) => output.blindedMessage.id !== selected.id)
+  ) {
+    throw new Error("browser wallet receive counter transcript conflicts");
+  }
   input.context.requireCapturedProfile();
-  return serializeDurableWalletReceiveOperation({
-    operationId: input.operationId ?? `wallet-receive:${randomId()}`,
+  const operation = serializeDurableWalletReceiveOperation({
+    operationId: operationInput.operationId,
     mintUrl: input.mintUrl,
     unit: input.unit,
     preview,
@@ -277,12 +419,17 @@ export async function prepareBrowserDurableWalletReceiveOperation(
       counterCount: range.count,
     },
   });
+  const draft = makeReceiveDraft(operation, transcript, counterStore, counterContext, () =>
+    prepareBrowserReceiveDraft(operationInput, randomId),
+  );
+  receiveDrafts.set(operation, draft);
+  return draft;
 }
 
 async function prepareBrowserConditionalWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
-): Promise<DurableWalletReceiveOperation> {
+): Promise<BrowserReceiveDraft> {
   const proofs = input.conditionalInputProofs;
   if (
     proofs === undefined ||
@@ -351,20 +498,22 @@ async function prepareBrowserConditionalWalletReceiveOperation(
   await input.ensureConditionalCounterReady(appAuthority);
   input.context.requireCapturedProfile();
   const scope = browserWalletScope(input.context.seed);
-  const counterSource = new BrowserWalletCounterSource(
-    {
-      database: input.context.database ?? db,
-      scopeId: scope.scopeId,
-      isCurrentProfile: () => {
-        input.context.requireCapturedProfile();
-        return true;
-      },
+  const database = input.context.database ?? db;
+  const counterContext = { mintUrl: input.mintUrl, unit: "msat" as const };
+  const counterStore = new BrowserWalletCounterDexieStore({
+    database,
+    scopeId: scope.scopeId,
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
     },
-    { mintUrl: input.mintUrl, unit: "msat" },
-  );
+  });
+  const transcript = createSpeculativeCounterTranscript([
+    await counterStore.readSnapshotInContext(counterContext, keyset.id),
+  ]);
   const reserved = await reserveAndConstructDurableSeedDerivedOutputs({
     seed: input.context.seed,
-    counterSource,
+    counterSource: transcript.counterSource,
     keyset: { id: keyset.id, keys: keyset.keys },
     amounts,
   });
@@ -376,7 +525,7 @@ async function prepareBrowserConditionalWalletReceiveOperation(
   });
   input.context.requireCapturedProfile();
   requireExactConditionalPreview(preview, proofs, keyset.id, reserved.outputData);
-  return serializeDurableWalletReceiveOperation({
+  const operation = serializeDurableWalletReceiveOperation({
     operationId: input.operationId ?? `wallet-receive:${randomId()}`,
     mintUrl: input.mintUrl,
     unit: "msat",
@@ -389,6 +538,12 @@ async function prepareBrowserConditionalWalletReceiveOperation(
       counterCount: reserved.plan.counterCount,
     },
   });
+  const fixedInput = { ...input, operationId: operation.operationId };
+  const draft = makeReceiveDraft(operation, transcript, counterStore, counterContext, () =>
+    prepareBrowserConditionalWalletReceiveOperation(fixedInput, randomId),
+  );
+  receiveDrafts.set(operation, draft);
+  return draft;
 }
 
 function requireExactUnspentConditionalInputs(
@@ -458,30 +613,55 @@ function conditionalReceiveKeysetAuthority(
   });
 }
 
+function makeReceiveDraft(
+  operation: DurableWalletReceiveOperation,
+  transcript: SpeculativeCounterTranscript,
+  counterStore: BrowserWalletCounterDexieStore,
+  counterContext: { readonly mintUrl: string; readonly unit: "msat" },
+  rebuild: () => Promise<BrowserReceiveDraft>,
+): BrowserReceiveDraft {
+  return { operation, counterPreparation: { transcript, counterStore, counterContext, rebuild } };
+}
+
 /** Bind a caller-owned prepared receive before it may call the mint. */
 export async function bindPreparedBrowserDurableWalletReceiveOperation(input: {
   readonly operation: DurableWalletReceiveOperation;
   readonly wallet: BrowserDurableWalletReceiveWallet;
-  readonly outgoingTransfer: BrowserOutgoingCashuTransferRow;
+  readonly outgoingTransfer: (
+    operation: DurableWalletReceiveOperation,
+  ) => BrowserOutgoingCashuTransferRow;
   readonly context: BrowserDurableWalletReceiveContext;
-}): Promise<void> {
+}): Promise<DurableWalletReceiveOperation> {
   requireProductMsatUnit(input.operation.unit);
   const scope = browserWalletScope(input.context.seed);
   const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
   const now = input.context.now ?? Date.now;
   const randomId = input.context.randomId ?? (() => crypto.randomUUID());
-  await withWalletProfileLock(
+  return await withWalletProfileLock(
     scope.scopeId,
     async () => {
+      const binding = createReceiveBinding(scope, input.operation, input.wallet);
+      const existing = await adapter.readOperationSnapshot(
+        scope,
+        binding.record.operation.operationId,
+      );
+      if (existing === null) {
+        await requireBrowserWalletNewWritePermission({
+          database: input.context.database ?? db,
+          scopeId: scope.scopeId,
+        });
+      }
       const owner = await claimOwner(adapter, scope, now, randomId);
-      await withReceiveScope(adapter, scope, owner, now, async () => {
-        const binding = createReceiveBinding(scope, input.operation, input.wallet);
-        await bindReceiveOperation(
+      return await withReceiveScope(adapter, scope, owner, now, async () => {
+        return bindReceiveDraftWithRetry(
           adapter,
           scope,
-          ownerAt(owner, now()),
-          binding,
+          input.operation,
+          input.wallet,
+          receiveDrafts.get(input.operation),
           input.outgoingTransfer,
+          now,
+          owner,
         );
       });
     },
@@ -720,6 +900,13 @@ function createReceiveBinding(
   };
 }
 
+function browserReceiveCustodyOperationId(scope: DurableCustodyScope, operationId: string): string {
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey: operationId,
+    binding: { kind: "wallet", activityId: operationId, stage: "receive" },
+  });
+}
+
 function requireConditionalReceiveFee(
   operation: DurableWalletReceiveOperation,
   authority: BrowserCustodyConditionalKeysetAuthority,
@@ -828,6 +1015,7 @@ async function bindReceiveOperation(
   scope: DurableCustodyScope,
   owner: DurableCustodyOwnerAuthorization,
   binding: ReturnType<typeof createReceiveBinding>,
+  counterPreparation: BrowserReceiveCounterPreparation,
   outgoingTransfer?: BrowserOutgoingCashuTransferRow,
 ): Promise<void> {
   const apply = (
@@ -842,14 +1030,119 @@ async function bindReceiveOperation(
     owner,
     operationRows: [{ operationId: binding.record.operation.operationId, expectedRevision: null }],
   };
-  if (outgoingTransfer !== undefined) {
-    await adapter.transactAtomic(selection, apply, {
-      outgoingTransfer,
-      outgoingAdmission: null,
-    });
-    return;
+  await adapter.transactAtomic(selection, apply, {
+    ...(outgoingTransfer === undefined ? {} : { outgoingTransfer, outgoingAdmission: null }),
+    walletCounterAuthority: {
+      beforePersist: async () => {
+        for (const change of counterPreparation.transcript.changes()) {
+          await counterPreparation.counterStore.compareAndAdvanceInCurrentTransaction(
+            Dexie.currentTransaction!,
+            counterPreparation.counterContext,
+            change,
+          );
+        }
+      },
+      afterPersist: () => undefined,
+    },
+  });
+}
+
+async function bindReceiveDraftWithRetry(
+  adapter: BrowserDurableCustodyAdapter,
+  scope: DurableCustodyScope,
+  originalOperation: DurableWalletReceiveOperation,
+  wallet: BrowserDurableWalletReceiveWallet,
+  initialDraft: BrowserReceiveDraft | undefined,
+  outgoingTransferFor:
+    | ((operation: DurableWalletReceiveOperation) => BrowserOutgoingCashuTransferRow)
+    | undefined,
+  now: () => number,
+  owner: DurableCustodyOwnerAuthorization,
+): Promise<DurableWalletReceiveOperation> {
+  let draft = initialDraft;
+  let operation = originalOperation;
+  for (let attempt = 0; attempt < RECEIVE_PREPARATION_ATTEMPTS; attempt += 1) {
+    if (draft !== undefined) operation = draft.operation;
+    const binding = createReceiveBinding(scope, operation, wallet);
+    const custodyOperationId = binding.record.operation.operationId;
+    const existing = await adapter.readOperationSnapshot(scope, custodyOperationId);
+    if (existing !== null) {
+      const saved = receiveOperationFromSnapshot(existing.record, existing.artifacts, wallet);
+      assertSavedReceiveWinner(operation, saved);
+      return saved;
+    }
+    if (draft === undefined) {
+      throw new Error("browser receive preparation is missing its speculative counter transcript");
+    }
+    const outgoingTransfer = outgoingTransferFor?.(operation);
+    try {
+      await bindReceiveOperation(
+        adapter,
+        scope,
+        ownerAt(owner, now()),
+        binding,
+        draft.counterPreparation,
+        outgoingTransfer,
+      );
+      return operation;
+    } catch (error) {
+      const saved = await adapter.readOperationSnapshot(scope, custodyOperationId);
+      if (saved !== null) {
+        const selected = receiveOperationFromSnapshot(saved.record, saved.artifacts, wallet);
+        assertSavedReceiveWinner(operation, selected);
+        return selected;
+      }
+      if (
+        !(error instanceof BrowserWalletCounterSnapshotConflictError) ||
+        attempt + 1 >= RECEIVE_PREPARATION_ATTEMPTS
+      ) {
+        throw error;
+      }
+      draft = await draft.counterPreparation.rebuild();
+    }
   }
-  await adapter.transact(selection, apply);
+  throw new Error("browser receive counter preparation did not commit");
+}
+
+function assertSavedReceiveWinner(
+  expected: DurableWalletReceiveOperation,
+  saved: DurableWalletReceiveOperation,
+): void {
+  if (
+    saved.operationId !== expected.operationId ||
+    saved.kind !== "wallet-receive" ||
+    deriveDurableCustodyArtifactFingerprint(saved) !==
+      deriveDurableCustodyArtifactFingerprint(expected)
+  ) {
+    throw new Error("browser wallet receive saved operation conflicts with its request");
+  }
+}
+
+function assertSavedReceiveMatchesInput(
+  operation: DurableWalletReceiveOperation,
+  input: BrowserDurableWalletReceiveInput,
+): void {
+  const sourceProofs =
+    input.asset === "conditional"
+      ? input.conditionalInputProofs
+      : getDecodedToken(
+          input.token,
+          operation.preview.inputs.map(({ id }) => id),
+        ).proofs;
+  if (sourceProofs === undefined || sourceProofs.length === 0) {
+    throw new Error("browser wallet receive saved operation source is unavailable");
+  }
+  const expectedAsset = input.asset ?? "regular";
+  if (
+    operation.operationId !== input.operationId ||
+    operation.mintUrl !== input.mintUrl ||
+    operation.unit !== input.unit ||
+    operation.asset !== expectedAsset ||
+    deriveDurableCustodyArtifactFingerprint(operation.preview.inputs) !==
+      deriveDurableCustodyArtifactFingerprint(sourceProofs.map(serializeDurableWalletProof))
+  ) {
+    throw new Error("browser wallet receive saved operation conflicts with its request");
+  }
 }
 
 async function runReceive(
