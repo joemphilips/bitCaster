@@ -1,4 +1,5 @@
-import type { CounterSource, MintKeys } from "@cashu/cashu-ts";
+import type { BrowserWalletCounterDexieStore } from "../stores/browser-wallet-counter-db";
+import type { MintKeys } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyOperationId,
   type DurableCustodyOwnerAuthorization,
@@ -52,7 +53,7 @@ export interface BrowserCanonicalCtfPositionClaimContext {
   readonly seed: Uint8Array;
   readonly mintUrl: string;
   readonly prepareNewLegAuthority: () => Promise<BrowserCanonicalCtfPositionClaimPreparation>;
-  readonly counterSource: CounterSource;
+  readonly counterStore: BrowserWalletCounterDexieStore;
   readonly database: BitcasterDB;
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: DurableCustodyOwnerAuthorization;
@@ -343,7 +344,7 @@ async function claimWhileLocked(
               oracleResolutionContext: preparation.oracleResolutionContext,
               leg,
               regularKeyset: preparation.regularKeyset,
-              counterSource: context.counterSource,
+              counterStore: context.counterStore,
               database: context.database,
               adapter: context.adapter,
               owner: context.owner,

@@ -3,7 +3,7 @@ import { summarizeConditionOracleEvidence } from "@bitcaster/client-sdk/conditio
 import { restoreOutputGroups } from "@bitcaster/client-sdk/ctfSplit";
 import { db } from "../stores/proof-db";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
-import { createActiveBrowserWalletCounterSource } from "../stores/browser-wallet-counter-db";
+import { BrowserWalletCounterDexieStore } from "../stores/browser-wallet-counter-db";
 import { getWalletForMnemonicUnit, useWalletStore } from "../stores/wallet";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
@@ -132,9 +132,10 @@ export async function claimPortfolioPosition(input: {
                   : {}),
               };
             },
-            counterSource: createActiveBrowserWalletCounterSource(database, scope.scopeId, {
-              mintUrl,
-              unit: "msat",
+            counterStore: new BrowserWalletCounterDexieStore({
+              database,
+              scopeId: scope.scopeId,
+              isCurrentProfile: () => activeBrowserWalletScopeId() === scope.scopeId,
             }),
             restoreOutputs: (url, outputs, keyset) => restoreOutputGroups(url, outputs, [keyset]),
             onCommittedLeg: async (leg) => {
