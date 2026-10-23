@@ -984,6 +984,25 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
     return row === undefined ? null : this.#decodePreparedRow(row);
   }
 
+  /** Exact selected-owner acknowledgement for live restore classification. */
+  async isRestoreDesiredAcknowledged(
+    desired: EncryptedWalletBackupV2PreparedDesiredBinding,
+    evicted: boolean,
+  ): Promise<boolean> {
+    this.#requireDatabaseBinding();
+    const binding = requireDesiredBinding(desired);
+    const raw = await this.#database.encryptedWalletBackupOwnerDesiredAssets.get([
+      this.#scopeId,
+      this.#context.ownerScopeId,
+      binding.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (raw === undefined) return false;
+    const row = this.#decodeOwnerDesiredRow(raw);
+    if (row.syncState !== "acknowledged" || !sameOwnerDesiredBinding(row, binding)) return false;
+    return !evicted || (await this.captureBackupReceipt({ desired: binding })) !== null;
+  }
+
   async isDesiredAssetSynchronized(
     input: EncryptedWalletBackupV2PreparedDesiredBinding,
   ): Promise<boolean> {

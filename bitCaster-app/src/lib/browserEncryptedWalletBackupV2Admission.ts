@@ -77,6 +77,10 @@ export interface BrowserEncryptedWalletBackupV2AdmissionInput {
   readonly ownerRestoreAuthority?: {
     readonly validate: () => Promise<void>;
     readonly afterPersist: () => Promise<void>;
+    readonly isDesiredAcknowledged?: (
+      desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
+      evicted: boolean,
+    ) => Promise<boolean>;
   };
 }
 
@@ -794,6 +798,7 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
                 input.database.encryptedWalletBackupOwnerActiveDescriptors,
                 input.database.encryptedWalletBackupOwnerProofCoverage,
                 input.database.encryptedWalletBackupOwnerDesiredAssets,
+                input.database.encryptedWalletBackupOwnerPreparedMutations,
               ]),
         ],
         async () => {
@@ -1843,6 +1848,7 @@ async function commitMixedAuthority(
             input.database.encryptedWalletBackupOwnerActiveDescriptors,
             input.database.encryptedWalletBackupOwnerProofCoverage,
             input.database.encryptedWalletBackupOwnerDesiredAssets,
+            input.database.encryptedWalletBackupOwnerPreparedMutations,
           ]),
     ],
     async () => {
@@ -1926,7 +1932,7 @@ async function commitAuthority(
   requireCurrent(input);
   input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
   const start = await startingState(input, verified);
-  if (start.kind === "idempotent") return;
+  if (start.kind === "idempotent" && input.ownerRestoreAuthority === undefined) return;
   const sourceOperationId =
     start.kind === "evicted"
       ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
@@ -1935,6 +1941,14 @@ async function commitAuthority(
     start.proofIdsToAdmit.has(proof.proofId) ? [{ verified: proof, stored: proofs[index]! }] : [],
   );
   const beforePersist = async () => {
+    await input.ownerRestoreAuthority?.validate();
+    const current = await startingState(input, verified);
+    if (
+      current.kind !== start.kind ||
+      current.proofIdsToAdmit.size !== start.proofIdsToAdmit.size ||
+      [...current.proofIdsToAdmit].some((id) => !start.proofIdsToAdmit.has(id))
+    )
+      throw new Error("browser restore classification changed before persistence");
     await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
     if (start.kind === "evicted") {
       const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
@@ -1985,6 +1999,9 @@ async function commitAuthority(
       {
         beforePersist,
         afterPersist,
+        ...(input.ownerRestoreAuthority === undefined
+          ? {}
+          : { ownerRestoreAuthority: input.ownerRestoreAuthority }),
       },
     );
     return;
@@ -1998,10 +2015,22 @@ async function commitAuthority(
       input.database.custodyProofBackupAuthorities,
       input.database.custodyConditionalKeysets,
       input.database.encryptedWalletBackupV2DesiredAssets,
+      input.database.custodyReservations,
+      ...(input.ownerRestoreAuthority === undefined
+        ? []
+        : [
+            input.database.encryptedWalletBackupOwnerAcceptedHeads,
+            input.database.encryptedWalletBackupOwnerActiveDescriptors,
+            input.database.encryptedWalletBackupOwnerProofCoverage,
+            input.database.encryptedWalletBackupOwnerDesiredAssets,
+            input.database.encryptedWalletBackupOwnerAssetReceipts,
+            input.database.encryptedWalletBackupOwnerPreparedMutations,
+          ]),
     ],
     async () => {
       await beforePersist();
-      await afterPersist();
+      if (start.kind !== "idempotent") await afterPersist();
+      await input.ownerRestoreAuthority?.afterPersist();
       if (input.fault === "before-commit")
         throw new Error("browser V2 restore injected commit fault");
     },
@@ -2129,10 +2158,15 @@ async function startingState(
   if (row.removalIntent !== null) {
     throw new Error("browser V2 restore desired removal intent is active");
   }
+  const acknowledged =
+    input.ownerRestoreAuthority === undefined
+      ? row.syncState === "acknowledged"
+      : (await input.ownerRestoreAuthority.isDesiredAcknowledged?.(row, proofs.length === 0)) ===
+        true;
   const currentAuthorityConflicts =
     row.custodyRevision !== desired.custodyRevision ||
     row.activeProofCount !== verified.proofs.length ||
-    row.syncState !== "acknowledged" ||
+    !acknowledged ||
     !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext);
   if (!currentAuthorityConflicts) {
     if (proofs.length === 0) return { kind: "evicted", proofIdsToAdmit: allProofIds };
@@ -2143,7 +2177,7 @@ async function startingState(
   }
   if (
     row.desiredAction !== "replace" ||
-    row.syncState !== "acknowledged" ||
+    !acknowledged ||
     row.activeProofCount !== proofs.length ||
     !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext) ||
     input.custodyRevision <= BigInt(row.custodyRevision) ||

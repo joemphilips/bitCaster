@@ -996,6 +996,8 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
             this.#database.encryptedWalletBackupOwnerActiveDescriptors,
             this.#database.encryptedWalletBackupOwnerProofCoverage,
             this.#database.encryptedWalletBackupOwnerDesiredAssets,
+            this.#database.encryptedWalletBackupOwnerAssetReceipts,
+            this.#database.encryptedWalletBackupOwnerPreparedMutations,
           ]),
       ...(options.legacyProofCache === undefined ? [] : [this.#database.proofs]),
     ];

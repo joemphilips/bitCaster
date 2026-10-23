@@ -46,7 +46,10 @@ import {
 import { getNdk } from "./nostr";
 import { assertNever } from "./enumDiscipline";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
-import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
+import {
+  EncryptedWalletBackupOwnerDexieAuthorityStore,
+  type EncryptedWalletBackupOwnerBackupReceiptSnapshot,
+} from "../stores/encrypted-wallet-backup-owner-db";
 import {
   clearEncryptedWalletBackupRetryScheduler,
   readEncryptedWalletBackupRetryScheduler,
@@ -88,6 +91,14 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   quiesceForSeedHandoff(): Promise<void>;
   /** Captures the explicit selected owner adapter for a later locked handoff check. */
   prepareSeedHandoffOwnerAuthority(): Promise<BrowserEncryptedWalletBackupOwnerSeedHandoffAuthority | null>;
+  /** Reads one receipt for the already selected owner without discovery or enrollment. */
+  readSelectedOwnerBackupReceipt(
+    localAssetKey: string,
+  ): Promise<EncryptedWalletBackupOwnerBackupReceiptSnapshot | null>;
+  /** Reports prepared work for the already selected owner, or null if none is captured. */
+  hasSelectedOwnerPreparedMutation(): Promise<boolean | null>;
+  /** Reads recovery status for the already selected owner without discovery or enrollment. */
+  readSelectedOwnerLocalRecoveryStatus(): Promise<EncryptedWalletBackupV2LocalRecoveryStatus | null>;
   /** Restarts leadership when a seed handoff refuses and the captured profile remains current. */
   resumeAfterSeedHandoff(): void;
   /** Rechecks durable refusal after an explicit recovery completion. */
@@ -186,6 +197,7 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
     | "discover"
     | "resolveFirstAccount"
     | "readEnrollmentEpoch"
+    | "readCurrentInventory"
     | "readCurrentHead"
     | "mutateHead"
     | "readObject"
@@ -268,6 +280,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         | "discover"
         | "resolveFirstAccount"
         | "readEnrollmentEpoch"
+        | "readCurrentInventory"
         | "readCurrentHead"
         | "mutateHead"
         | "readObject"
@@ -425,6 +438,75 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         return Object.freeze({ evidence, collectedHeadEvidence, backupReceiptSnapshot });
       },
     });
+  }
+
+  async readSelectedOwnerBackupReceipt(
+    localAssetKey: string,
+  ): Promise<EncryptedWalletBackupOwnerBackupReceiptSnapshot | null> {
+    const session = this.#input.ownerSession;
+    const owner = this.#ownerCandidate;
+    if (
+      owner === undefined ||
+      session === undefined ||
+      !session.isCurrent() ||
+      !this.#isLeaderActive()
+    ) {
+      return null;
+    }
+    const keyHandle = await this.#keyHandlePromise;
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    const receipt =
+      await this.#ownerStore(keyHandle).captureBackupReceiptForLocalAsset(localAssetKey);
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    return receipt;
+  }
+
+  async hasSelectedOwnerPreparedMutation(): Promise<boolean | null> {
+    const session = this.#input.ownerSession;
+    const owner = this.#ownerCandidate;
+    if (
+      owner === undefined ||
+      session === undefined ||
+      !session.isCurrent() ||
+      !this.#isLeaderActive()
+    ) {
+      return null;
+    }
+    const keyHandle = await this.#keyHandlePromise;
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    const prepared = await this.#ownerStore(keyHandle).readPreparedMutation();
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    return prepared !== null;
+  }
+
+  async readSelectedOwnerLocalRecoveryStatus(): Promise<EncryptedWalletBackupV2LocalRecoveryStatus | null> {
+    const session = this.#input.ownerSession;
+    const owner = this.#ownerCandidate;
+    if (
+      owner === undefined ||
+      session === undefined ||
+      !session.isCurrent() ||
+      !this.#isLeaderActive()
+    ) {
+      return null;
+    }
+    const keyHandle = await this.#keyHandlePromise;
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    const status = await this.#ownerStore(keyHandle).readLocalRecoveryStatus();
+    if (this.#ownerCandidate !== owner || !session.isCurrent() || !this.#isLeaderActive()) {
+      return null;
+    }
+    return status;
   }
 
   resumeAfterSeedHandoff(): void {
@@ -682,6 +764,17 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       if (!this.#isActive()) return { kind: "persistent-error" };
       const enrollmentEpoch = await this.#resolveEnrollmentEpoch(keyHandle);
       if (!this.#isActive()) return { kind: "persistent-error" };
+      const owner = this.#ownerCandidate;
+      const ownerClient = this.#ownerClient;
+      const session = this.#input.ownerSession;
+      if (
+        owner === undefined ||
+        ownerClient === undefined ||
+        session === undefined ||
+        !session.isCurrent() ||
+        !this.#isLeaderActive()
+      )
+        return { kind: "persistent-error" };
       return await recoverBrowserTargetedAsset({
         database: this.#input.database,
         scopeId: this.#input.scopeId,
@@ -692,20 +785,20 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         requiredAmount: input.requiredAmount,
         loadWallet: input.loadWallet,
         readExactMonitoringRecovery: input.readExactMonitoringRecovery,
-        remote: this.#remote,
-        requestUrl: (kind, value) =>
-          kind === "head"
-            ? requestUrl(this.#input.configuration, keyHandle, "head", value)
-            : objectUrl(this.#input.configuration, keyHandle, requireObjectId(value)),
-        currentInventoryUrl: encryptedWalletBackupV2CurrentInventoryUrl(
-          this.#input.configuration,
-          keyHandle,
-        ),
-        nowUnixSeconds,
+        owner,
+        ownerContext: {
+          ownerScopeId: owner.ownerScopeId,
+          realm: keyHandle.realm,
+          walletId: keyHandle.walletId,
+          enrollmentEpoch,
+        },
+        ownerClient,
+        ownerStore: this.#ownerStore(keyHandle),
         completedAtUnixMilliseconds: Date.now,
         runtime: this.#runtime,
         signal: this.#leadershipSignal,
-        isCurrentProfile: () => this.#isActive(),
+        isCurrentProfile: () =>
+          this.#isLeaderActive() && session.isCurrent() && this.#ownerCandidate === owner,
         lockManager: input.lockManager,
       });
     } catch {

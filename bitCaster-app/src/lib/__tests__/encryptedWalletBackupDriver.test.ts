@@ -12,6 +12,7 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
+  deriveEncryptedWalletBackupV2AssetLocator,
   EncryptedWalletBackupV2HttpAdapter,
   EncryptedWalletBackupV2HttpTransportError,
   encodeEncryptedWalletBackupV2CurrentHead,
@@ -322,6 +323,12 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
     custodyRevision: 1n,
     activeProofCount: 1,
   });
+  const desiredAssetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
+    keyHandle: fixture.keyHandle,
+    mintUrl: asset.mintUrl,
+    unit: asset.unit,
+    assetIdentity: asset.assetIdentity,
+  });
   const keysetId = deriveKeysetId(
     { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" },
     { unit: "msat", versionByte: 1 },
@@ -391,7 +398,7 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
     realm: configuration.realm,
     walletId: fixture.keyHandle.walletId,
     bundleId: "77".repeat(16),
-    assetLocator: "88".repeat(32),
+    assetLocator: desiredAssetLocator,
     declaredAmount: 1n,
     custodyRevision: 1n,
     payloadCommitment: "99".repeat(32),
@@ -498,6 +505,18 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
     });
     const authority = await driver.prepareSeedHandoffOwnerAuthority();
     if (authority === null) throw new Error("selected owner authority was not captured");
+    const backupReceipt = await driver.readSelectedOwnerBackupReceipt(desired.localAssetKey);
+    expect(backupReceipt).toMatchObject({
+      desired: { localAssetKey: desired.localAssetKey, desiredAction: "replace" },
+      ownerDesired: { syncState: "acknowledged" },
+      receipt: { ownerScopeId: owner.ownerScopeId },
+      collectedHeadEvidence: { head: { ownerScopeId: owner.ownerScopeId, headVersion: 1 } },
+    });
+    await expect(driver.hasSelectedOwnerPreparedMutation()).resolves.toBe(false);
+    await expect(driver.readSelectedOwnerLocalRecoveryStatus()).resolves.toMatchObject({
+      localRecoveryStatus: "ready",
+      localRecoveryReason: "none",
+    });
     await driver.quiesceForSeedHandoff();
     await expect(authority.ownerAuthorityStore.readCurrentHead()).resolves.toMatchObject({
       head: { headVersion: 1 },
@@ -519,6 +538,56 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
     expect(readHead).toHaveBeenCalledTimes(2);
     expect(verifyStoredBackupReachability).toHaveBeenCalledOnce();
     expect(fixture.database.isOpen()).toBe(false);
+  } finally {
+    driver.stop();
+  }
+});
+
+it("does not discover or enroll when selected-owner receipt inspection has no captured candidate", async () => {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-read-receipt-without-candidate",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const ownerClient = {
+    discover: vi.fn(),
+    resolveFirstAccount: vi.fn(),
+    readEnrollmentEpoch: vi.fn(),
+    readCurrentHead: vi.fn(),
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+    verifyStoredBackupReachability: vi.fn(),
+  };
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(owner),
+    ownerClient: ownerClient as never,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: {
+      hold: async (_name, signal) => {
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    },
+  });
+
+  try {
+    await expect(driver.readSelectedOwnerBackupReceipt("local-asset-key")).resolves.toBeNull();
+    await expect(driver.hasSelectedOwnerPreparedMutation()).resolves.toBeNull();
+    await expect(driver.readSelectedOwnerLocalRecoveryStatus()).resolves.toBeNull();
+    expect(ownerClient.discover).not.toHaveBeenCalled();
+    expect(ownerClient.operateAccount).not.toHaveBeenCalled();
   } finally {
     driver.stop();
   }

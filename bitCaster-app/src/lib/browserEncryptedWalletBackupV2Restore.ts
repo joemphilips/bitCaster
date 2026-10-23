@@ -1,3 +1,9 @@
+import {
+  requireEncryptedWalletBackupOwnerCurrentInventoryScope,
+  type EncryptedWalletBackupOwnerCurrentInventory,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerServiceCodec";
+import type { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
+import { admitBrowserEncryptedWalletBackupOwnerAsset } from "./browserEncryptedWalletBackupOwnerAdmission";
 import { requireValidCashuProofs, requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
 import {
   collectAllEncryptedWalletBackupV2DescriptorPages,
@@ -929,7 +935,10 @@ function isDefinitelyNonSpendableLegacyProof(proof: StoredProof): boolean {
 
 /** Returns one complete local asset's exact currently available amount. */
 export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  input: Pick<
+    BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+    "database" | "scopeId" | "asset" | "signal" | "isCurrentProfile"
+  > & { readonly ownerStore?: EncryptedWalletBackupOwnerDexieAuthorityStore },
 ): Promise<bigint | null> {
   let local: Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2LocalAssetRead>>;
   requireCurrentForLocalCustody(input);
@@ -960,8 +969,24 @@ export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
     }
     return 0n;
   }
-  if (local.activeProofs.length === 0 && row.syncState === "acknowledged") {
-    return null;
+  if (local.activeProofs.length === 0 && local.backupEligibleProofCount === 0) {
+    if (input.ownerStore !== undefined) {
+      const receipt = await input.ownerStore.captureBackupReceiptForLocalAsset(row.localAssetKey);
+      requireCurrentForLocalCustody(input);
+      if (
+        receipt !== null &&
+        receipt.desired.localAssetKey === row.localAssetKey &&
+        receipt.desired.custodyRevision === row.custodyRevision &&
+        receipt.desired.desiredAction === row.desiredAction &&
+        receipt.desired.activeProofCount === row.activeProofCount
+      )
+        return null;
+      throw localCustodyError(
+        "missing-authority",
+        "browser owner local custody receipt is missing",
+      );
+    }
+    if (row.syncState === "acknowledged") return null;
   }
   if (local.backupEligibleProofCount !== row.activeProofCount)
     throw localCustodyError("partial", "browser V2 local custody asset is partial");
@@ -980,9 +1005,7 @@ function localCustodyError(
   return new BrowserEncryptedWalletBackupV2LocalCustodyError(code, message);
 }
 
-function requireCurrentForLocalCustody(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
-): void {
+function requireCurrentForLocalCustody(input: RestoreProfileContext): void {
   try {
     requireCurrent(input);
   } catch {
@@ -1031,4 +1054,126 @@ function lazyWallet(
     requireCurrent(input);
     return wallet;
   };
+}
+
+export interface BrowserEncryptedWalletBackupOwnerTargetedAuthority {
+  readonly owner: EncryptedWalletBackupOwnerCandidate;
+  readonly ownerContext: EncryptedWalletBackupOwnerContext;
+  readonly ownerClient: Pick<
+    EncryptedWalletBackupOwnerClient,
+    "readCurrentInventory" | "readCurrentHead" | "readObject"
+  >;
+  readonly ownerStore: EncryptedWalletBackupOwnerDexieAuthorityStore;
+}
+
+/** Restore only the selected owner's exact inventory/head pair. Never adopt a competing head. */
+export async function restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset(
+  input: BrowserEncryptedWalletBackupOwnerTargetedAuthority & {
+    readonly database: BitcasterDB;
+    readonly scopeId: string;
+    readonly seed: Uint8Array;
+    readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly inventory: EncryptedWalletBackupOwnerCurrentInventory;
+    readonly minimumAvailableAmount: bigint;
+    readonly loadWallet: () => Promise<CashuWallet>;
+    readonly runtime: EncryptedWalletBackupV2BundleRuntime;
+    readonly signal: AbortSignal;
+    readonly isCurrentProfile: () => boolean;
+    readonly lockManager?: Pick<LockManager, "request">;
+    readonly reportTargetedRecoveryStage?: (
+      stage: BrowserEncryptedWalletBackupV2RestoreStage,
+    ) => void;
+    readonly reportTargetedRecoveryFailureClass?: (
+      failureClass: BrowserEncryptedWalletBackupV2FailureClass,
+    ) => void;
+  },
+): Promise<void> {
+  requireCurrent(input);
+  requireProductMsatUnit(input.asset.unit);
+  if (input.minimumAvailableAmount <= 0n) throw new Error("owner targeted amount is invalid");
+  const inventory = requireEncryptedWalletBackupOwnerCurrentInventoryScope({
+    inventory: input.inventory,
+    expectedContext: input.ownerContext,
+  });
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    await input.ownerClient.readCurrentHead({
+      owner: input.owner,
+      enrollmentEpoch: input.ownerContext.enrollmentEpoch,
+      signal: input.signal,
+    }),
+    input.ownerContext,
+  );
+  requireCurrent(input);
+  if (
+    inventory.headVersion !== head.head.headVersion ||
+    inventory.activeSetDigest !== head.head.activeSetDigest
+  )
+    throw new Error("owner targeted inventory head changed");
+  const accepted = await input.ownerStore.readCurrentHead();
+  requireCurrent(input);
+  if (
+    accepted === null ||
+    accepted.head.headVersion !== head.head.headVersion ||
+    accepted.head.activeSetDigest !== head.head.activeSetDigest ||
+    (await input.ownerStore.readPreparedMutation()) !== null
+  )
+    throw new Error("owner targeted local head requires recovery");
+  requireCurrent(input);
+  const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
+    keyHandle: input.keyHandle,
+    ...input.asset,
+  });
+  requireCurrent(input);
+  const descriptors = head.bundles.filter((entry) => entry.assetLocator === assetLocator);
+  const inventoryEntry = inventory.entries.find((entry) => entry.assetLocator === assetLocator);
+  if (
+    descriptors.length !== 1 ||
+    inventoryEntry === undefined ||
+    inventoryEntry.bundleId !== descriptors[0]!.bundleId ||
+    inventoryEntry.descriptorDigest !==
+      digestEncryptedWalletBackupV2BundleDescriptor(descriptors[0]!) ||
+    inventoryEntry.declaredAmount < input.minimumAvailableAmount
+  )
+    throw new Error("owner targeted descriptor is absent");
+  const restored = await discoverAndVerifyBrowserEncryptedWalletBackupOwnerDescriptor({
+    ...input,
+    collectedOwnerHeadEvidence: head,
+    descriptor: descriptors[0]!,
+    loadWallet: async (mintUrl) => {
+      if (mintUrl !== input.asset.mintUrl) throw new Error("owner targeted mint is foreign");
+      return input.loadWallet();
+    },
+  });
+  requireCurrent(input);
+  if (
+    restored.asset.assetIdentity !== input.asset.assetIdentity ||
+    restored.asset.mintUrl !== input.asset.mintUrl ||
+    restored.asset.unit !== input.asset.unit
+  )
+    throw new Error("owner targeted asset is foreign");
+  const live = restored.verified.proofSet.proofs.some(
+    ({ selectionAuthority }) => selectionAuthority === "live-verified",
+  );
+  const wallet = live ? await input.loadWallet() : undefined;
+  requireCurrent(input);
+  await retryBrowserEncryptedWalletBackupV2QuotaWrite({
+    database: input.database,
+    scopeId: input.scopeId,
+    ownerScopeId: input.ownerContext.ownerScopeId,
+    isCurrentProfile: () => !input.signal.aborted && input.isCurrentProfile(),
+    protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
+    lockManager: input.lockManager,
+    write: () =>
+      admitBrowserEncryptedWalletBackupOwnerAsset({
+        ...input,
+        verified: restored.verified,
+        collectedHeadEvidence: head,
+        ownerAuthorityStore: input.ownerStore,
+        ...(wallet === undefined ? {} : { wallet }),
+        sourceOperationId: `owner-targeted:${input.ownerContext.ownerScopeId}:${input.ownerContext.enrollmentEpoch}:${head.head.headVersion}:${descriptors[0]!.bundleId}`,
+        isCurrentProfile: () => !input.signal.aborted && input.isCurrentProfile(),
+      }),
+  });
+  requireCurrent(input);
 }

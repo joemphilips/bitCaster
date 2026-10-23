@@ -225,6 +225,7 @@ async function buildMixedCtfRemoveFixture(initial: Awaited<ReturnType<typeof fix
     headEvidence,
     localProof,
     managedProof,
+    terminalSeal,
     localTargets: [target(localProof)],
     managedTargets: [target(managedProof)],
     input: (database: BitcasterDB = entry.database, includeLocalTargets = true) => ({

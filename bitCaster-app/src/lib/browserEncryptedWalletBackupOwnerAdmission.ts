@@ -9,10 +9,9 @@ import type { EncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk
 import type { BitcasterDB } from "../stores/proof-db";
 import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
 import { encryptedWalletBackupV2LocalAssetKey } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
-import { admitBrowserReceivedProofsWithHeldProfileLock } from "./browserCustodyProofReceive";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
-import { withWalletProfileLock } from "./walletProfileLock";
 import {
+  admitBrowserEncryptedWalletBackupV2Asset,
   admitBrowserEncryptedWalletBackupV2MixedAsset,
   admitBrowserEncryptedWalletBackupV2SealedAsset,
 } from "./browserEncryptedWalletBackupV2Admission";
@@ -66,6 +65,15 @@ export async function admitBrowserEncryptedWalletBackupOwnerAsset(
   ) {
     throw new Error("browser owner restore asset identity is foreign");
   }
+  const validateOwner = async () => {
+    if ((await input.ownerAuthorityStore.readPreparedMutation()) !== null)
+      throw new Error("browser owner restore has a pending mutation");
+    await input.ownerAuthorityStore.assertCurrentRestoreAuthority({
+      database: input.database,
+      collectedHeadEvidence: input.collectedHeadEvidence,
+      verified,
+    });
+  };
   if (proofSet.proofs.some(({ selectionAuthority }) => selectionAuthority !== "live-verified")) {
     if (
       proofSet.proofs.some(
@@ -75,12 +83,7 @@ export async function admitBrowserEncryptedWalletBackupOwnerAsset(
       throw new Error("browser owner refusal history requires mutation receipt authority");
     }
     const ownerRestoreAuthority = {
-      validate: () =>
-        input.ownerAuthorityStore.assertCurrentRestoreAuthority({
-          database: input.database,
-          collectedHeadEvidence: input.collectedHeadEvidence,
-          verified,
-        }),
+      validate: validateOwner,
       afterPersist: () =>
         input.ownerAuthorityStore.assertCurrentRestoreAuthority({
           database: input.database,
@@ -117,78 +120,42 @@ export async function admitBrowserEncryptedWalletBackupOwnerAsset(
     }
     return;
   }
-  const proofs = proofSet.proofs.map(({ proof, asset, mintUrl, unit }) => ({
-    ...proof,
-    mintUrl,
-    baseAsset: "sat" as const,
-    unit,
-    ...(asset.kind === "ctf"
-      ? { conditionId: asset.conditionId, outcomeCollection: asset.outcomeLabel }
-      : {}),
-  }));
-  const locators = new Map(
-    proofSet.proofs.map(({ proof, locator }) => [proof.secret, locator] as const),
-  );
-  if (locators.size !== proofSet.proofs.length)
-    throw new Error("browser owner restore proof locators are ambiguous");
-  const conditionalAssets = new Map(
-    proofSet.proofs.flatMap(({ proof, asset }) =>
-      asset.kind === "ctf"
-        ? [
-            [
-              proof.secret,
-              {
-                conditionId: asset.conditionId,
-                outcomeLabel: asset.outcomeLabel,
-                outcomeCollectionId: asset.outcomeCollectionId,
-                registeredAt: asset.registeredAt,
-                finalExpiry: asset.finalExpiry,
-              },
-            ] as const,
-          ]
-        : [],
-    ),
-  );
-  await withWalletProfileLock(
-    browserWalletScope(input.seed).scopeId,
-    () =>
-      admitBrowserReceivedProofsWithHeldProfileLock(
-        {
-          seed: input.seed,
-          sourceOperationId: input.sourceOperationId,
-          mintUrl: input.asset.mintUrl,
-          unit: "msat",
-          wallet: requireOwnerAdmissionWallet(input.wallet),
-          proofs,
-          derivationAuthority: null,
-          proofLocators: locators,
-          ...(conditionalAssets.size === 0 ? {} : { proofConditionalAssets: conditionalAssets }),
-          database: input.database,
-          ...(input.now === undefined ? {} : { now: input.now }),
-          ...(input.randomId === undefined ? {} : { randomId: input.randomId }),
-        },
-        {
-          afterPersist: () => undefined,
-          ownerRestoreAuthority: {
-            validate: () =>
-              input.ownerAuthorityStore.assertCurrentRestoreAuthority({
-                database: input.database,
-                collectedHeadEvidence: input.collectedHeadEvidence,
-                verified,
-              }),
-            afterPersist: () =>
-              input.ownerAuthorityStore.assertCurrentRestoreAuthority({
-                database: input.database,
-                collectedHeadEvidence: input.collectedHeadEvidence,
-                verified,
-                proofIds: proofSet.proofs.map(({ proofId }) => proofId),
-                localAssetKey: encryptedWalletBackupV2LocalAssetKey(input.asset),
-              }),
+  await admitBrowserEncryptedWalletBackupV2Asset({
+    seed: input.seed,
+    verified: proofSet,
+    asset: input.asset,
+    custodyRevision: verified.source.custodyRevision,
+    sourceOperationId: input.sourceOperationId,
+    wallet: requireOwnerAdmissionWallet(input.wallet),
+    database: input.database,
+    scopeId: browserWalletScope(input.seed).scopeId,
+    isCurrentProfile: input.isCurrentProfile,
+    lockManager: input.lockManager,
+    randomId: input.randomId,
+    ownerRestoreAuthority: {
+      validate: validateOwner,
+      isDesiredAcknowledged: (desired, evicted) =>
+        input.ownerAuthorityStore.isRestoreDesiredAcknowledged(
+          {
+            localAssetKey: desired.localAssetKey,
+            assetLocator: verified.source.assetLocator,
+            custodyRevision: desired.custodyRevision,
+            desiredAction: desired.desiredAction,
+            activeProofCount: desired.activeProofCount,
           },
-        },
-      ),
-    input.lockManager,
-  );
+          evicted,
+        ),
+      afterPersist: () =>
+        input.ownerAuthorityStore.assertCurrentRestoreAuthority({
+          database: input.database,
+          collectedHeadEvidence: input.collectedHeadEvidence,
+          verified,
+          proofIds: proofSet.proofs.map(({ proofId }) => proofId),
+          localAssetKey: encryptedWalletBackupV2LocalAssetKey(input.asset),
+          requireExistingProofs: true,
+        }),
+    },
+  });
 }
 
 function requireOwnerAdmissionWallet(wallet: CashuWallet | undefined): CashuWallet {

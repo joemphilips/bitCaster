@@ -1,5 +1,12 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
+import { ownerTargetedRangeFixture } from "./ownerTargetedRangeFixture";
+import {
+  ownerTargetedRecoveryFixture,
+  disposeOwnerTargetedRecoveryFixtures,
+} from "./ownerTargetedRecoveryFixture";
+import { recoverBrowserTargetedAsset } from "../browserTargetedAssetRecovery";
 import {
   createCtfRangePreparationIntent,
   createCounterCtfRangePreparation,
@@ -5001,3 +5008,94 @@ async function assertSettlementBackupWorkerCommits(database: BitcasterDB) {
   expect(mutateHead.mock.calls.length).toBeGreaterThanOrEqual(1);
   expect(bundles.length).toBeGreaterThanOrEqual(1);
 }
+
+it("uses an owner-rehydrated conditional Buy successor for a later real Sell preparation and submission", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(20_000);
+  const source = await ownerTargetedRangeFixture("Buy");
+  const f = await ownerTargetedRecoveryFixture(source);
+  try {
+    expect(await recoverBrowserTargetedAsset(f.input)).toEqual({ kind: "restored-backup" });
+    // An independently received signed top-up pays the subsequent order and source fees.
+    const topup = source.signOutput(
+      OutputData.createSingleDeterministicData(
+        512,
+        new Uint8Array(64).fill(99),
+        0,
+        source.proof.id,
+      ),
+    );
+    await admitBrowserReceivedProofs({
+      seed: source.seed,
+      sourceOperationId: "owner-targeted-topup",
+      mintUrl: MINT_URL,
+      unit: "msat",
+      wallet: f.wallet,
+      proofs: [
+        {
+          ...topup,
+          mintUrl: MINT_URL,
+          unit: "msat",
+          conditionId: source.asset.conditionId,
+          outcomeCollection: source.asset.outcomeLabel,
+        },
+      ],
+      derivationAuthority: null,
+      proofConditionalAssets: new Map([[topup.secret, source.asset]]),
+      database: f.database,
+      lockManager: immediateLockManager(),
+    });
+    const restored = await getBoundedCanonicalRangeProofsForKeyset(
+      MINT_URL,
+      {
+        scopeId: f.input.scopeId,
+        unit: "msat",
+        keysetId: source.proof.id,
+        asset: {
+          kind: "conditional",
+          conditionId: source.asset.conditionId,
+          outcomeCollection: source.asset.outcomeLabel,
+        },
+      },
+      f.database,
+    );
+    expect(restored.map((p) => p.secret).sort()).toEqual(
+      [source.proof.secret, topup.secret].sort(),
+    );
+    const preparation = persistedPreparation("owner-rehydrated-next-sell", "FOK", {
+      side: "Sell",
+      tokenSide: "Outcome",
+      amountSubunits: 1000,
+      minimumFillAmountSubunits: 1000,
+    });
+    expect(preparation.offerKeyset.id).toBe(source.proof.id);
+    const counters = new BrowserWalletCounterSource(
+      { database: f.database, scopeId: f.input.scopeId },
+      { mintUrl: MINT_URL, unit: "msat" },
+    );
+    expect((await counters.snapshot())[source.proof.id]).toBe(source.nextCounter);
+    const wallet = sourceWallet();
+    const swap = vi.spyOn(wallet, "prepareConditionalSwap");
+    const engine = engineMock();
+    const coordinator = createCoordinator(f.database, wallet, engine, {
+      createCounterSource: () => counters,
+    });
+    await expect(
+      coordinator.prepareAndSubmit({ seed: source.seed, preparation, candidates: restored }),
+    ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
+    expect(swap.mock.calls[0]?.[0].inputs.map((p) => p.secret).sort()).toEqual(
+      [source.proof.secret, topup.secret].sort(),
+    );
+    expect((await counters.snapshot())[source.proof.id]).toBeGreaterThan(source.nextCounter);
+    expect(engine.createCalls).toBe(1);
+    expect(engine.submitCalls).toBe(1);
+    expect(
+      (await f.database.custodyProofs.get([f.input.scopeId, f.local.proofId]))?.selectability,
+    ).toBe("spent");
+    expect(
+      await readCtfRangePreparation(f.input.scopeId, preparation.operationId, f.database),
+    ).not.toBeNull();
+    expect(await f.database.custodyReservations.count()).toBeGreaterThan(0);
+  } finally {
+    await disposeOwnerTargetedRecoveryFixtures();
+  }
+});
