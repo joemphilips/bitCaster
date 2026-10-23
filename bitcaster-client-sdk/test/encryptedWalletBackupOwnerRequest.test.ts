@@ -74,6 +74,7 @@ function page(
     request: verify(proof, context),
     entries,
     nextCursor: next,
+    firstAccountOwnerScopeId: v.ownerA,
   })
 }
 
@@ -219,6 +220,7 @@ test('bounded pages reject incorrect IDs, repeated order, cursors, excess entrie
       request: { ...verify(proof) },
       entries: [alice],
       nextCursor: null,
+      firstAccountOwnerScopeId: v.ownerA,
     }),
   )
   assert.throws(() =>

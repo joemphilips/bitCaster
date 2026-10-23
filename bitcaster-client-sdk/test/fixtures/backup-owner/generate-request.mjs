@@ -81,7 +81,7 @@ const make = (purpose, owner, epoch, url) => {
 const discovery = make('owner-discovery', null, 0, 'https://backup.example/owners')
 const scoped = make('scoped', ownerA, 1, 'https://backup.example/head')
 const page = cbor([
-  1,
+  2,
   'backup-owner-discovery-page',
   Buffer.from(discovery.digest, 'hex'),
   realm,
@@ -90,6 +90,7 @@ const page = cbor([
   null,
   [[Buffer.from(ownerA, 'hex'), 'test', 'Alice', 1]],
   null,
+  Buffer.from(ownerA, 'hex'),
 ])
 writeFileSync(
   new URL('./request-vectors.json', import.meta.url),

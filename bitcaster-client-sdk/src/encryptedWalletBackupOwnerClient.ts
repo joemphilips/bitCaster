@@ -4,6 +4,9 @@ import {
 } from './encryptedWalletBackupOwnerHttpAdapter.ts'
 import {
   selectEncryptedWalletBackupOwnerCandidateFromPages,
+  validateEncryptedWalletBackupOwnerDiscoveryPages,
+  resolveEncryptedWalletBackupFirstAccount,
+  type EncryptedWalletBackupFirstAccountResolution,
   type EncryptedWalletBackupOwnerCandidate,
   type EncryptedWalletBackupOwnerDiscoveryPage,
 } from './encryptedWalletBackupOwnerDiscovery.ts'
@@ -90,23 +93,30 @@ export class EncryptedWalletBackupOwnerClient {
         throw new Error('encrypted backup owner discovery context changed')
       pages.push(page)
       if (page.nextCursor === null) {
-        // Validate page order and completeness without inventing an owner choice.
-        try {
-          selectEncryptedWalletBackupOwnerCandidateFromPages({ pages, ownerScopeId: null })
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            error.name === 'EncryptedWalletBackupOwnerSelectionError' &&
-            'code' in error &&
-            error.code === 'selection-required'
-          )
-            return Object.freeze(pages)
-          throw error
-        }
+        validateEncryptedWalletBackupOwnerDiscoveryPages(pages)
+        return Object.freeze(pages)
       }
       requestedCursor = page.nextCursor
     }
     throw new Error('encrypted backup owner listing exceeds the page bound')
+  }
+
+  /** Resolves the already verified discovery result for this exact wallet key. */
+  resolveFirstAccount(input: {
+    readonly pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[]
+    readonly authenticatedOwner:
+      | import('./encryptedWalletBackupOwnerScope.ts').EncryptedWalletBackupOwnerScope
+      | null
+  }): EncryptedWalletBackupFirstAccountResolution {
+    for (const page of input.pages) {
+      if (
+        page.realm !== this.#keyHandle.realm ||
+        page.walletId !== this.#keyHandle.walletId ||
+        page.requestAuthPublicKey !== this.#keyHandle.requestAuthPublicKey
+      )
+        throw new Error('encrypted backup first-account key context changed')
+    }
+    return resolveEncryptedWalletBackupFirstAccount(input)
   }
 
   /** Uses one candidate automatically; multiple candidates require an explicit listed owner. */

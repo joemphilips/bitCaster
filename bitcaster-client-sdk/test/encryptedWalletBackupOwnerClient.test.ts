@@ -33,8 +33,11 @@ test('owner client requires explicit multi-owner selection and binds epoch to se
       }),
     )
     .sort((left, right) => left.ownerScopeId.localeCompare(right.ownerScopeId))
+  let discoveryCalls = 0
+  let listingCandidates = candidates
   const fetch = async (resource: string, init: RequestInit): Promise<Response> => {
     const url = String(resource)
+    if (url.endsWith('/owners')) discoveryCalls += 1
     const route = url.endsWith('/owners')
       ? encryptedWalletBackupOwnerServerRoute({
           operation: 'owner-discovery',
@@ -67,11 +70,12 @@ test('owner client requires explicit multi-owner selection and binds epoch to se
       route.context.operation === 'owner-discovery'
         ? encodeEncryptedWalletBackupOwnerDiscoveryPage({
             request: verified,
-            entries: candidates.map((candidate, index) => ({
+            entries: listingCandidates.map((candidate) => ({
               ...candidate,
-              enrollmentEpoch: index === 1 ? 3 : 1,
+              enrollmentEpoch: candidate.ownerScopeId === candidates[1]!.ownerScopeId ? 3 : 1,
             })),
             nextCursor: null,
+            firstAccountOwnerScopeId: candidates[1]!.ownerScopeId,
           })
         : encodeEncryptedWalletBackupOwnerHttpResponse({
             kind: 'enrollment-epoch',
@@ -117,4 +121,25 @@ test('owner client requires explicit multi-owner selection and binds epoch to se
     enrollmentEpoch: 3,
   })
   await assert.rejects(() => client.selectOwner({ signal, ownerScopeId: 'ff'.repeat(32) }))
+  listingCandidates = [candidates[1]!]
+  const pages = await client.discover({ signal })
+  const callsBeforeResolution = discoveryCalls
+  assert.equal(
+    client.resolveFirstAccount({ pages, authenticatedOwner: candidates[1]! }).kind,
+    'active',
+  )
+  assert.equal(
+    discoveryCalls,
+    callsBeforeResolution,
+    'resolution reuses the same verified pages without another request',
+  )
+  assert.throws(
+    () => client.resolveFirstAccount({ pages, authenticatedOwner: candidates[0]! }),
+    (error: unknown) =>
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'wrong-account',
+  )
+  assert.equal(discoveryCalls, callsBeforeResolution)
 })

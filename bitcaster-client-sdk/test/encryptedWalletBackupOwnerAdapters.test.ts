@@ -108,6 +108,7 @@ test('owner selection requires an explicit choice from a complete verified page'
     request: listing.evidence(),
     entries: [{ ...owner, enrollmentEpoch: 3 }],
     nextCursor: null,
+    firstAccountOwnerScopeId: owner.ownerScopeId,
   })
   const page = ownerDiscovery.verifyEncryptedWalletBackupOwnerDiscoveryPage({
     bytes,
@@ -148,6 +149,7 @@ test('owner selection requires an explicit choice from a complete verified page'
       request: listing.evidence(),
       entries: [{ ...owner, enrollmentEpoch: 3 }],
       nextCursor: owner.ownerScopeId,
+      firstAccountOwnerScopeId: owner.ownerScopeId,
     }),
     request: listing.proof,
   })
@@ -183,6 +185,7 @@ test('owner selection can require an explicit choice across a verified complete 
       request: firstRequest.evidence(),
       entries: [{ ...candidates[0]!, enrollmentEpoch: 2 }],
       nextCursor: candidates[0]!.ownerScopeId,
+      firstAccountOwnerScopeId: owner.ownerScopeId,
     }),
     request: firstRequest.proof,
   })
@@ -192,6 +195,7 @@ test('owner selection can require an explicit choice across a verified complete 
       request: secondRequest.evidence(),
       entries: [{ ...candidates[1]!, enrollmentEpoch: 4 }],
       nextCursor: null,
+      firstAccountOwnerScopeId: owner.ownerScopeId,
     }),
     request: secondRequest.proof,
   })

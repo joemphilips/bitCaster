@@ -27,7 +27,7 @@ export interface EncryptedWalletBackupOwnerCandidate extends EncryptedWalletBack
   readonly enrollmentEpoch: number
 }
 export interface EncryptedWalletBackupOwnerDiscoveryPage {
-  readonly formatVersion: 1
+  readonly formatVersion: 2
   readonly requestDigest: string
   readonly realm: string
   readonly walletId: string
@@ -35,6 +35,7 @@ export interface EncryptedWalletBackupOwnerDiscoveryPage {
   readonly requestedCursor: string | null
   readonly entries: readonly EncryptedWalletBackupOwnerCandidate[]
   readonly nextCursor: string | null
+  readonly firstAccountOwnerScopeId: string | null
 }
 const VERIFIED_PAGES = new WeakMap<object, EncryptedWalletBackupOwnerRequestProof>()
 const cursor = (v: unknown): string | null =>
@@ -74,7 +75,7 @@ function entries(
 }
 function wire(page: EncryptedWalletBackupOwnerDiscoveryPage): Uint8Array {
   const bytes = cbor([
-    1,
+    2,
     'backup-owner-discovery-page',
     hexToBytes(page.requestDigest),
     page.realm,
@@ -88,6 +89,7 @@ function wire(page: EncryptedWalletBackupOwnerDiscoveryPage): Uint8Array {
       v.enrollmentEpoch,
     ]),
     page.nextCursor,
+    page.firstAccountOwnerScopeId === null ? null : hexToBytes(page.firstAccountOwnerScopeId),
   ])
   preflightEncryptedBackupOwnerDiscoveryCbor(bytes)
   return bytes
@@ -97,13 +99,14 @@ export function encodeEncryptedWalletBackupOwnerDiscoveryPage(input: {
   request: VerifiedEncryptedWalletBackupOwnerRequest
   entries: readonly EncryptedWalletBackupOwnerCandidate[]
   nextCursor: string | null
+  firstAccountOwnerScopeId: string | null
 }): Uint8Array {
   const request = requireVerifiedEncryptedWalletBackupOwnerRequest(input.request)
   if (request.route.operation !== 'owner-discovery') throw new Error('backup owner page purpose')
   const after = cursor(request.route.requestedCursor),
     next = cursor(input.nextCursor)
   return wire({
-    formatVersion: 1,
+    formatVersion: 2,
     requestDigest: request.requestDigest,
     realm: request.claims.realm,
     walletId: request.claims.walletId,
@@ -111,6 +114,7 @@ export function encodeEncryptedWalletBackupOwnerDiscoveryPage(input: {
     requestedCursor: after,
     entries: entries(input.entries, after, next),
     nextCursor: next,
+    firstAccountOwnerScopeId: cursor(input.firstAccountOwnerScopeId),
   })
 }
 /** Exact request binding over the authenticated transport; this page has no service signature. */
@@ -124,8 +128,8 @@ export function verifyEncryptedWalletBackupOwnerDiscoveryPage(input: {
   const t = decode(input.bytes)
   if (
     !Array.isArray(t) ||
-    t.length !== 9 ||
-    t[0] !== 1 ||
+    t.length !== 10 ||
+    t[0] !== 2 ||
     t[1] !== 'backup-owner-discovery-page' ||
     !equalBytes(input.bytes, cbor(t))
   )
@@ -156,7 +160,7 @@ export function verifyEncryptedWalletBackupOwnerDiscoveryPage(input: {
     } as EncryptedWalletBackupOwnerCandidate
   })
   const page = Object.freeze({
-    formatVersion: 1 as const,
+    formatVersion: 2 as const,
     requestDigest,
     realm,
     walletId,
@@ -164,6 +168,7 @@ export function verifyEncryptedWalletBackupOwnerDiscoveryPage(input: {
     requestedCursor: after,
     entries: entries(candidates, after, next),
     nextCursor: next,
+    firstAccountOwnerScopeId: t[9] === null ? null : h(t[9]),
   })
   VERIFIED_PAGES.set(page, input.request)
   return page
@@ -205,41 +210,102 @@ export function selectEncryptedWalletBackupOwnerCandidate(input: {
   return selected
 }
 
-/** Selects one explicitly named owner after every bounded discovery page was verified. */
-export function selectEncryptedWalletBackupOwnerCandidateFromPages(input: {
-  readonly pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[]
-  readonly ownerScopeId: string | null
-}): EncryptedWalletBackupOwnerCandidate {
-  if (!Array.isArray(input.pages) || input.pages.length < 1 || input.pages.length > 64)
+/** Validates one complete bounded set of exact issued-request-bound pages. */
+export function validateEncryptedWalletBackupOwnerDiscoveryPages(
+  pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[],
+): Readonly<{
+  firstAccountOwnerScopeId: string | null
+  entries: readonly EncryptedWalletBackupOwnerCandidate[]
+}> {
+  if (!Array.isArray(pages) || pages.length < 1 || pages.length > 64)
     throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
   let after: string | null = null
   let tuple: readonly [string, string, string] | null = null
   let previousOwner: string | null = null
-  let selected: EncryptedWalletBackupOwnerCandidate | undefined
-  for (let index = 0; index < input.pages.length; index += 1) {
-    const page = input.pages[index]!
+  let binding: string | null | undefined
+  const collected: EncryptedWalletBackupOwnerCandidate[] = []
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = pages[index]!
     const request = VERIFIED_PAGES.get(page)
     if (request === undefined) throw new Error('backup owner page is not verified')
     requireIssuedEncryptedWalletBackupOwnerRequest(request)
     const identity = [page.realm, page.walletId, page.requestAuthPublicKey] as const
     if (
+      (binding !== undefined && binding !== page.firstAccountOwnerScopeId) ||
       page.requestedCursor !== after ||
       (tuple !== null && tuple.some((value, i) => value !== identity[i])) ||
-      (index > 0 && input.pages[index - 1]!.nextCursor === null)
+      (index > 0 && pages[index - 1]!.nextCursor === null)
     )
       throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
     tuple = identity
+    binding = page.firstAccountOwnerScopeId
     for (const candidate of page.entries) {
       if (previousOwner !== null && candidate.ownerScopeId <= previousOwner)
         throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
       previousOwner = candidate.ownerScopeId
-      if (candidate.ownerScopeId === input.ownerScopeId) selected = candidate
+      collected.push(candidate)
     }
     after = page.nextCursor
   }
   if (after !== null) throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+  if (binding === undefined)
+    throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+  return Object.freeze({ firstAccountOwnerScopeId: binding, entries: Object.freeze(collected) })
+}
+
+/** Selects only a named owner; the browser first-account path does not use this API. */
+export function selectEncryptedWalletBackupOwnerCandidateFromPages(input: {
+  readonly pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[]
+  readonly ownerScopeId: string | null
+}): EncryptedWalletBackupOwnerCandidate {
+  const validated = validateEncryptedWalletBackupOwnerDiscoveryPages(input.pages)
   if (input.ownerScopeId === null)
     throw new EncryptedWalletBackupOwnerSelectionError('selection-required')
+  const selected = validated.entries.find(
+    (candidate) => candidate.ownerScopeId === input.ownerScopeId,
+  )
   if (selected === undefined) throw new EncryptedWalletBackupOwnerSelectionError('owner-not-listed')
   return selected
+}
+
+export class EncryptedWalletBackupFirstAccountError extends Error {
+  readonly code: 'account-required' | 'wrong-account' | 'incompatible-discovery'
+  constructor(code: EncryptedWalletBackupFirstAccountError['code']) {
+    super(`encrypted backup first-account resolution failed: ${code}`)
+    this.name = 'EncryptedWalletBackupFirstAccountError'
+    this.code = code
+  }
+}
+
+export type EncryptedWalletBackupFirstAccountResolution =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'inactive'; ownerScopeId: string }>
+  | Readonly<{ kind: 'active'; owner: EncryptedWalletBackupOwnerCandidate }>
+
+/** Resolve only complete issued-request-bound pages. Never discover or adopt another owner. */
+export function resolveEncryptedWalletBackupFirstAccount(input: {
+  pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[]
+  authenticatedOwner: EncryptedWalletBackupOwnerScope | null
+}): EncryptedWalletBackupFirstAccountResolution {
+  const validated = validateEncryptedWalletBackupOwnerDiscoveryPages(input.pages)
+  const binding = validated.firstAccountOwnerScopeId
+  const candidates = validated.entries
+  if (
+    candidates.length > 1 ||
+    (binding === null && candidates.length !== 0) ||
+    candidates.some((candidate) => candidate.ownerScopeId !== binding)
+  )
+    throw new EncryptedWalletBackupFirstAccountError('incompatible-discovery')
+  if (input.authenticatedOwner === null)
+    throw new EncryptedWalletBackupFirstAccountError('account-required')
+  const expected = deriveEncryptedWalletBackupOwnerScope(input.authenticatedOwner)
+  if (expected.ownerScopeId !== input.authenticatedOwner.ownerScopeId)
+    throw new Error('backup account scope is invalid')
+  if (binding === null) return Object.freeze({ kind: 'absent' })
+  if (binding !== expected.ownerScopeId)
+    throw new EncryptedWalletBackupFirstAccountError('wrong-account')
+  const owner = candidates[0]
+  return owner === undefined
+    ? Object.freeze({ kind: 'inactive', ownerScopeId: binding })
+    : Object.freeze({ kind: 'active', owner })
 }

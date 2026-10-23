@@ -244,5 +244,5 @@ export function preflightEncryptedBackupOwnerProofCbor(bytes: Uint8Array): void 
 }
 
 export function preflightEncryptedBackupOwnerDiscoveryCbor(bytes: Uint8Array): void {
-  scanTuple(bytes, 16384, 4, 200, 9)
+  scanTuple(bytes, 16384, 4, 200, 10)
 }
