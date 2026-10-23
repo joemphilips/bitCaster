@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import "fake-indexeddb/auto";
-import { createBrowserWalletCounterSource, getExactUnitBalance, useWalletStore } from "../wallet";
+import {
+  createUncachedWalletForMnemonicUnit,
+  getWalletForMnemonicUnit,
+  createBrowserWalletCounterSource,
+  getExactUnitBalance,
+  useWalletStore,
+} from "../wallet";
 import * as bip39 from "@/lib/bip39";
 import { BrowserEncryptedWalletBackupV2SeedHandoffRefusal } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
 import {
   activeBrowserWalletScopeId,
   browserWalletIdFromMnemonic,
+  browserWalletDatabaseName,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
@@ -539,6 +546,7 @@ describe("useWalletStore", () => {
       setActiveBrowserWalletProfile(oldMnemonic);
       activateBrowserWalletDatabase(oldScopeId!);
       const driver = {
+        prepareSeedHandoffOwnerAuthority: vi.fn().mockResolvedValue(null),
         quiesceForSeedHandoff: vi.fn().mockResolvedValue(undefined),
         resumeAfterSeedHandoff: vi.fn(),
       };
@@ -584,6 +592,7 @@ describe("useWalletStore", () => {
       activateBrowserWalletDatabase(oldScopeId!);
       const oldDatabase = db;
       const driver = {
+        prepareSeedHandoffOwnerAuthority: vi.fn().mockResolvedValue(null),
         quiesceForSeedHandoff: vi.fn().mockResolvedValue(undefined),
         resumeAfterSeedHandoff: vi.fn(),
       };
@@ -1075,5 +1084,92 @@ describe("useWalletStore", () => {
       useWalletStore.getState()._setActiveMint("https://unknown.example");
       expect(useWalletStore.getState().activeMintUrl).toBe("https://other.example");
     });
+  });
+});
+
+describe("private uncached wallet construction", () => {
+  it("uses the exact private source without replacing a cached wallet", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    setActiveBrowserWalletProfile(mnemonic);
+    const scopeId = browserWalletScopeIdFromMnemonic(mnemonic)!;
+    activateBrowserWalletDatabase(scopeId);
+    const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const requireCapturedProfile = vi.fn();
+    const counterSource = { reserve: vi.fn(), advanceToAtLeast: vi.fn() };
+    try {
+      const cached = await getWalletForMnemonicUnit("https://mint.example", "msat", mnemonic);
+      const first = await createUncachedWalletForMnemonicUnit({
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        mnemonic,
+        scopeId,
+        database,
+        requireCapturedProfile,
+        counterSource,
+      });
+      const second = await createUncachedWalletForMnemonicUnit({
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        mnemonic,
+        scopeId,
+        database,
+        requireCapturedProfile,
+        counterSource,
+      });
+      expect(first).not.toBe(second);
+      expect(first).not.toBe(cached);
+      expect(await getWalletForMnemonicUnit("https://mint.example", "msat", mnemonic)).toBe(cached);
+      expect(
+        (first as unknown as { options: { counterSource: unknown } }).options.counterSource,
+      ).toBe(counterSource);
+      expect(requireCapturedProfile).toHaveBeenCalledTimes(4);
+      await expect(
+        createUncachedWalletForMnemonicUnit({
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          mnemonic,
+          scopeId: `custody:wallet:${"11".repeat(32)}`,
+          database,
+          requireCapturedProfile,
+          counterSource,
+        }),
+      ).rejects.toThrow("profile is unavailable");
+      const foreign = new BitcasterDB("foreign-private-wallet");
+      try {
+        await expect(
+          createUncachedWalletForMnemonicUnit({
+            mintUrl: "https://mint.example",
+            unit: "msat",
+            mnemonic,
+            scopeId,
+            database: foreign,
+            requireCapturedProfile,
+            counterSource,
+          }),
+        ).rejects.toThrow("profile is unavailable");
+      } finally {
+        foreign.close();
+      }
+      let current = true;
+      cashuMocks.loadMint.mockImplementationOnce(async () => {
+        current = false;
+      });
+      await expect(
+        createUncachedWalletForMnemonicUnit({
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          mnemonic,
+          scopeId,
+          database,
+          requireCapturedProfile: () => {
+            if (!current) throw new Error("private profile changed");
+          },
+          counterSource,
+        }),
+      ).rejects.toThrow("private profile changed");
+    } finally {
+      database.close();
+      await database.delete();
+    }
   });
 });

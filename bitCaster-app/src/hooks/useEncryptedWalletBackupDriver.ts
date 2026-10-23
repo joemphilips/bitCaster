@@ -5,10 +5,6 @@ import {
   browserWalletScopeIdFromSeed,
 } from "@/lib/browserWalletProfile";
 import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
-import {
-  BrowserWalletRecoveryRequiredError,
-  requireBrowserWalletNewWritePermission,
-} from "@/lib/browserWalletNewWritePermission";
 import { assertNever } from "@/lib/enumDiscipline";
 import {
   createBrowserEncryptedWalletBackupV2RuntimeDriver,
@@ -93,23 +89,17 @@ export function useEncryptedWalletBackupDriver(
           }
         });
       };
-      if (!nostrSignerReady) {
-        // Missing signers do not block an unenrolled wallet. Project the existing read-only guard.
-        void readNoDriverStatus(database, scopeId).then((status) => {
-          if (ownerSession.isCurrent()) onRecoveryStatusChange(status);
-        });
-        return () => {
-          ownerSession.dispose();
-          controller.abort();
-        };
-      }
-      onRecoveryStatusChange({ kind: "preparing", reason: "authentication" });
+      onRecoveryStatusChange({
+        kind: "preparing",
+        reason: nostrSignerReady ? "authentication" : "driver-unavailable",
+      });
       driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
         configuration,
         database,
         scopeId,
         seed,
         signal: ownerSession.signal,
+        ownerSession,
         isCurrentProfile,
         onRecoveryStatusChange,
         loadWallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
@@ -146,24 +136,4 @@ export function useEncryptedWalletBackupDriver(
   }, [recoveryStatus]);
 
   return { recoveryStatus, retryRecovery };
-}
-
-async function readNoDriverStatus(
-  database: typeof db,
-  scopeId: string,
-): Promise<BrowserEncryptedWalletBackupV2RecoveryStatus> {
-  try {
-    await requireBrowserWalletNewWritePermission({ database, scopeId });
-    return READY_STATUS;
-  } catch (error) {
-    if (!(error instanceof BrowserWalletRecoveryRequiredError)) return { kind: "failed" };
-    switch (error.reason) {
-      case "startup-authentication-pending":
-        return { kind: "preparing", reason: "driver-unavailable" };
-      case "genuine-conflict":
-        return { kind: "recovering", reason: null };
-      default:
-        return assertNever(error.reason);
-    }
-  }
 }

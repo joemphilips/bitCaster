@@ -147,7 +147,12 @@ test('owner receipt signature and full canonical wire match independent vectors,
       receiptEvidence: f.receiptEvidence,
       collectedHeadEvidence: result,
     })
-    assert.deepEqual(reachability, { context: f.context, bundle: descriptor })
+    assert.deepEqual(reachability, {
+      context: f.context,
+      bundle: descriptor,
+      headVersion: f.result.head.headVersion,
+      activeSetDigest: f.result.head.activeSetDigest,
+    })
     assert.equal(
       requireEncryptedWalletBackupOwnerBackupReachabilityEvidence(reachability, f.context),
       reachability,
@@ -156,6 +161,123 @@ test('owner receipt signature and full canonical wire match independent vectors,
     assert.ok(Object.isFrozen(reachability.bundle.objects))
   }
   assert.notEqual(fixture.a.digest, fixture.b.digest)
+})
+
+test('an earlier signed add remains reachable at a later head that retains its exact descriptor', async () => {
+  const f = await setup()
+  const second = {
+    ...descriptor,
+    bundleId: id(2, 16),
+    assetLocator: id(18, 32),
+    payloadCommitment: id(34, 32),
+    objects: [{ objectId: id(50, 16), digest: id(66, 32) }],
+  }
+  const secondStart = collected(f.context, [descriptor], 1)
+  const secondEnvelope = await prepareEncryptedWalletBackupOwnerBundleSupersessionMutation({
+    keyHandle: await createEncryptedWalletBackupV2KeyHandle({
+      seed: Uint8Array.from({ length: 64 }, (_, i) => i),
+      realm: durable.realm,
+      runtime: webcrypto,
+    }),
+    expectedContext: f.context,
+    expectedHeadEvidence: secondStart,
+    addedBundle: second,
+    supersededBundleIds: [],
+    runtime: {
+      getRandomValues: (target) => {
+        target.fill(0x12)
+        return target
+      },
+    },
+  })
+  const secondMutation = verifyEncryptedWalletBackupOwnerBundleSupersessionMutation({
+    envelope: secondEnvelope,
+    expectedContext: f.context,
+    expectedRequestAuthPublicKey: secondEnvelope.requestAuthPublicKey,
+  })
+  const current = collected(f.context, [descriptor, second], 2)
+  const secondReceipt = await issueEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+    mutationEvidence: secondMutation,
+    expectedContext: f.context,
+    resultHead: current.head,
+    signingKeyId: fixture.signingKeyId,
+    signingPublicKey: fixture.signingPublicKey,
+    signDigest,
+  })
+  const secondReceiptEvidence = verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+    receipt: secondReceipt,
+    mutationEvidence: secondMutation,
+    expectedContext: f.context,
+    pinnedSigningKeys: pins,
+  })
+
+  for (const [receiptEvidence, expectedBundle] of [
+    [f.receiptEvidence, descriptor],
+    [secondReceiptEvidence, second],
+  ] as const) {
+    const evidence = issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+      expectedContext: f.context,
+      receiptEvidence,
+      collectedHeadEvidence: current,
+    })
+    assert.deepEqual(evidence.bundle, expectedBundle)
+    assert.equal(evidence.headVersion, current.head.headVersion)
+    assert.equal(evidence.activeSetDigest, current.head.activeSetDigest)
+  }
+
+  assert.throws(
+    () =>
+      issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+        expectedContext: f.context,
+        receiptEvidence: f.receiptEvidence,
+        collectedHeadEvidence: collected(f.context, [descriptor], 0),
+      }),
+    /stale/,
+  )
+  assert.throws(
+    () =>
+      issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+        expectedContext: f.context,
+        receiptEvidence: f.receiptEvidence,
+        collectedHeadEvidence: collected(f.context, [], 2),
+      }),
+    /bundle/,
+  )
+  assert.throws(
+    () =>
+      issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+        expectedContext: f.context,
+        receiptEvidence: f.receiptEvidence,
+        collectedHeadEvidence: collected(
+          f.context,
+          [{ ...descriptor, payloadCommitment: id(99, 32) }],
+          2,
+        ),
+      }),
+    /bundle/,
+  )
+  assert.throws(
+    () =>
+      issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+        expectedContext: f.context,
+        receiptEvidence: f.receiptEvidence,
+        collectedHeadEvidence: collected(f.context, [second], 1),
+      }),
+    /head/,
+  )
+  assert.throws(
+    () =>
+      issueEncryptedWalletBackupOwnerBackupReachabilityEvidence({
+        expectedContext: f.context,
+        receiptEvidence: f.receiptEvidence,
+        collectedHeadEvidence: collected(
+          { ...f.context, enrollmentEpoch: f.context.enrollmentEpoch + 1 },
+          [descriptor],
+          2,
+        ),
+      }),
+    /context/,
+  )
 })
 
 test('identical descriptors and same wallet cannot substitute owners at receipt, head, reachability or consumption', async () => {

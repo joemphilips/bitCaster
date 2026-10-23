@@ -175,6 +175,26 @@
       "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
       "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
     },
+    "./encryptedWalletBackupOwnerHttpAdapter": {
+      "types": "./dist/encryptedWalletBackupOwnerHttpAdapter.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerHttpAdapter.js"
+    },
+    "./encryptedWalletBackupOwnerClient": {
+      "types": "./dist/encryptedWalletBackupOwnerClient.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerClient.js"
+    },
+    "./encryptedWalletBackupOwnerDiscovery": {
+      "types": "./dist/encryptedWalletBackupOwnerDiscovery.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerDiscovery.js"
+    },
+    "./encryptedWalletBackupOwnerHead": {
+      "types": "./dist/encryptedWalletBackupOwnerHead.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerHead.js"
+    },
+    "./encryptedWalletBackupOwnerServiceCodec": {
+      "types": "./dist/encryptedWalletBackupOwnerServiceCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerServiceCodec.js"
+    },
     "./encryptedWalletBackupOwnerDeletionAuthority": {
       "types": "./dist/encryptedWalletBackupOwnerDeletionAuthority.d.ts",
       "import": "./dist/encryptedWalletBackupOwnerDeletionAuthority.js"

@@ -905,10 +905,9 @@ async function completeLocalOnlyRemoval(
     await requireLocalTerminalAuthority(input, proof, authority);
   }
 
-  await requireBrowserWalletNewWritePermission({
-    database: input.database,
-    scopeId: input.scopeId,
-  });
+  // Terminal local custody authority is independent from backup enrollment
+  // and selected-owner reachability. The checks above bind this exact proof
+  // to its verified losing outcome and terminal operation.
   requireCurrent(input);
   await removeLegacyCacheRows(input.database, proofs, authorities);
   await input.database.custodyProofs.bulkDelete(keys);

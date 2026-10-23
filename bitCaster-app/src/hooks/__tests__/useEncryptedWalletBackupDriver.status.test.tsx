@@ -2,7 +2,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { useEncryptedWalletBackupDriver } from "../useEncryptedWalletBackupDriver";
-import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
 import { advanceNostrSignerRevision } from "@/lib/nostrSignerRevision";
 
 const mocks = vi.hoisted(() => ({
@@ -72,44 +71,28 @@ beforeEach(() => {
   mocks.unregister.mockClear();
 });
 
-it.each(["disabled", "missing-wallet", "unsigned-unenrolled"])(
-  "does not blanket-block %s wallets",
-  async (mode) => {
-    if (mode === "disabled") mocks.configurationEnabled = false;
-    if (mode === "missing-wallet") mocks.mnemonic = "";
-    const { result } = renderHook(() =>
-      useEncryptedWalletBackupDriver(mode !== "unsigned-unenrolled"),
-    );
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(result.current.recoveryStatus).toEqual({ kind: "ready" });
-    expect(mocks.input).toBeUndefined();
-    expect(mocks.permission).toHaveBeenCalledTimes(mode === "unsigned-unenrolled" ? 1 : 0);
-  },
-);
-
-it("shows no driver only when the existing enrolled-wallet guard refuses authentication", async () => {
-  mocks.permission.mockRejectedValue(
-    new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+it.each(["disabled", "missing-wallet"])("does not blanket-block %s wallets", async (mode) => {
+  if (mode === "disabled") mocks.configurationEnabled = false;
+  if (mode === "missing-wallet") mocks.mnemonic = "";
+  const { result } = renderHook(() =>
+    useEncryptedWalletBackupDriver(mode !== "unsigned-unenrolled"),
   );
-  const { result } = renderHook(() => useEncryptedWalletBackupDriver(false));
-  await waitFor(() =>
-    expect(result.current.recoveryStatus).toEqual({
-      kind: "preparing",
-      reason: "driver-unavailable",
-    }),
-  );
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(result.current.recoveryStatus).toEqual({ kind: "ready" });
   expect(mocks.input).toBeUndefined();
-  expect(mocks.driver.resumeAfterRecovery).not.toHaveBeenCalled();
+  expect(mocks.permission).not.toHaveBeenCalled();
 });
 
-it("keeps an authoritative conflict distinct when no signer can run the driver", async () => {
-  mocks.permission.mockRejectedValue(new BrowserWalletRecoveryRequiredError("genuine-conflict"));
+it("starts owner discovery without a signer and blocks configured backup writes pending selection", async () => {
   const { result } = renderHook(() => useEncryptedWalletBackupDriver(false));
-  await waitFor(() =>
-    expect(result.current.recoveryStatus).toEqual({ kind: "recovering", reason: null }),
-  );
+  await waitFor(() => expect(mocks.input?.ownerSession).toBeDefined());
+  expect(result.current.recoveryStatus).toEqual({
+    kind: "preparing",
+    reason: "driver-unavailable",
+  });
+  expect(mocks.permission).not.toHaveBeenCalled();
 });
 
 it("reports construction failure and permits a new driver without exposing private details", () => {
@@ -122,21 +105,18 @@ it("reports construction failure and permits a new driver without exposing priva
   expect(result.current.recoveryStatus).toEqual({ kind: "preparing", reason: "authentication" });
 });
 
-it("ignores a no-driver permission result after the wallet profile changes", async () => {
-  let reject!: (error: unknown) => void;
-  mocks.permission.mockReturnValueOnce(
-    new Promise((_resolve, fail) => {
-      reject = fail;
-    }),
-  );
+it("replaces configured owner discovery when the wallet profile changes", async () => {
   const { result, rerender } = renderHook(() => useEncryptedWalletBackupDriver(false));
+  const previousInput = mocks.input!;
+  const previousSignal = previousInput.signal as AbortSignal;
   mocks.mnemonic = "delta epsilon zeta";
   rerender();
-  await act(async () => {
-    reject(new BrowserWalletRecoveryRequiredError("genuine-conflict"));
-    await Promise.resolve();
+  await waitFor(() => expect(mocks.input).not.toBe(previousInput));
+  expect(previousSignal.aborted).toBe(true);
+  expect(result.current.recoveryStatus).toEqual({
+    kind: "preparing",
+    reason: "driver-unavailable",
   });
-  expect(result.current.recoveryStatus).toEqual({ kind: "ready" });
 });
 
 it("exposes pending reason and retries the existing driver", () => {

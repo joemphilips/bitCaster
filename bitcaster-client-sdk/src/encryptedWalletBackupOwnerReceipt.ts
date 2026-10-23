@@ -69,6 +69,8 @@ export interface EncryptedWalletBackupOwnerVerifiedBundleSupersessionReceipt {
 export interface EncryptedWalletBackupOwnerBackupReachabilityEvidence {
   readonly context: EncryptedWalletBackupOwnerContext
   readonly bundle: EncryptedWalletBackupV2BundleDescriptor
+  readonly headVersion: number
+  readonly activeSetDigest: string
 }
 
 const RECEIPT_DOMAIN = 'bitcaster/encrypted-wallet-backup-v2-receipt/v2\0'
@@ -129,7 +131,10 @@ export function issueEncryptedWalletBackupOwnerBackupReachabilityEvidence(input:
   )
   if (receipt.bundleId === null || receipt.bundleDescriptorDigest === null)
     throw new Error('encrypted backup receipt does not add a bundle')
+  if (collected.head.headVersion < receipt.resultHead.headVersion)
+    throw new Error('encrypted backup reachability head is stale')
   if (
+    collected.head.headVersion === receipt.resultHead.headVersion &&
     !equalBytes(
       encodeEncryptedWalletBackupOwnerCurrentHead(receipt.resultHead),
       encodeEncryptedWalletBackupOwnerCurrentHead(collected.head),
@@ -152,6 +157,8 @@ export function issueEncryptedWalletBackupOwnerBackupReachabilityEvidence(input:
   const evidence = Object.freeze({
     context,
     bundle: cloneEncryptedWalletBackupV2BundleDescriptor(bundle),
+    headVersion: collected.head.headVersion,
+    activeSetDigest: collected.head.activeSetDigest,
   })
   REACHABILITY_EVIDENCES.set(evidence, context)
   return evidence

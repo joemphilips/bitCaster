@@ -178,3 +178,68 @@ export function uniqueEncryptedWalletBackupOwnerCandidate(
     ? page.entries[0]!
     : null
 }
+
+export class EncryptedWalletBackupOwnerSelectionError extends Error {
+  readonly code: 'selection-required' | 'selection-incomplete' | 'owner-not-listed'
+  constructor(code: EncryptedWalletBackupOwnerSelectionError['code']) {
+    super(`encrypted backup owner selection failed: ${code}`)
+    this.name = 'EncryptedWalletBackupOwnerSelectionError'
+    this.code = code
+  }
+}
+
+/** Selects only an explicitly named owner from a complete verified first page. */
+export function selectEncryptedWalletBackupOwnerCandidate(input: {
+  readonly page: EncryptedWalletBackupOwnerDiscoveryPage
+  readonly ownerScopeId: string | null
+}): EncryptedWalletBackupOwnerCandidate {
+  const request = VERIFIED_PAGES.get(input.page)
+  if (request === undefined) throw new Error('backup owner page is not verified')
+  requireIssuedEncryptedWalletBackupOwnerRequest(request)
+  if (input.page.requestedCursor !== null || input.page.nextCursor !== null)
+    throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+  if (input.ownerScopeId === null)
+    throw new EncryptedWalletBackupOwnerSelectionError('selection-required')
+  const selected = input.page.entries.find((entry) => entry.ownerScopeId === input.ownerScopeId)
+  if (selected === undefined) throw new EncryptedWalletBackupOwnerSelectionError('owner-not-listed')
+  return selected
+}
+
+/** Selects one explicitly named owner after every bounded discovery page was verified. */
+export function selectEncryptedWalletBackupOwnerCandidateFromPages(input: {
+  readonly pages: readonly EncryptedWalletBackupOwnerDiscoveryPage[]
+  readonly ownerScopeId: string | null
+}): EncryptedWalletBackupOwnerCandidate {
+  if (!Array.isArray(input.pages) || input.pages.length < 1 || input.pages.length > 64)
+    throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+  let after: string | null = null
+  let tuple: readonly [string, string, string] | null = null
+  let previousOwner: string | null = null
+  let selected: EncryptedWalletBackupOwnerCandidate | undefined
+  for (let index = 0; index < input.pages.length; index += 1) {
+    const page = input.pages[index]!
+    const request = VERIFIED_PAGES.get(page)
+    if (request === undefined) throw new Error('backup owner page is not verified')
+    requireIssuedEncryptedWalletBackupOwnerRequest(request)
+    const identity = [page.realm, page.walletId, page.requestAuthPublicKey] as const
+    if (
+      page.requestedCursor !== after ||
+      (tuple !== null && tuple.some((value, i) => value !== identity[i])) ||
+      (index > 0 && input.pages[index - 1]!.nextCursor === null)
+    )
+      throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+    tuple = identity
+    for (const candidate of page.entries) {
+      if (previousOwner !== null && candidate.ownerScopeId <= previousOwner)
+        throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+      previousOwner = candidate.ownerScopeId
+      if (candidate.ownerScopeId === input.ownerScopeId) selected = candidate
+    }
+    after = page.nextCursor
+  }
+  if (after !== null) throw new EncryptedWalletBackupOwnerSelectionError('selection-incomplete')
+  if (input.ownerScopeId === null)
+    throw new EncryptedWalletBackupOwnerSelectionError('selection-required')
+  if (selected === undefined) throw new EncryptedWalletBackupOwnerSelectionError('owner-not-listed')
+  return selected
+}

@@ -25,6 +25,10 @@ import {
   prepareEncryptedWalletBackupV2ProofSetBundle,
   requireEncryptedWalletBackupV2DecryptedProofSet,
   requireEncryptedWalletBackupV2DecryptedProofSetSource,
+  requireEncryptedWalletBackupV2VerifiedProofSetSource,
+  bindEncryptedWalletBackupOwnerDecryptedProofSet,
+  bindEncryptedWalletBackupOwnerVerifiedProofSet,
+  requireEncryptedWalletBackupOwnerVerifiedProofSet,
   requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
   requireEncryptedWalletBackupV2VerifiedProofSet,
   verifyEncryptedWalletBackupV2RestoredProofSet,
@@ -59,6 +63,12 @@ import {
   enumerateEncryptedWalletBackupV2DescriptorPages,
 } from '../src/encryptedWalletBackupV2Head.ts'
 import type { EncryptedWalletBackupV2RemotePort } from '../src/encryptedWalletBackupV2HttpAdapter.ts'
+import {
+  createEncryptedWalletBackupOwnerCurrentHead,
+  enumerateEncryptedWalletBackupOwnerDescriptorPages,
+  collectEncryptedWalletBackupOwnerDescriptorPages,
+} from '../src/encryptedWalletBackupOwnerHead.ts'
+import { deriveEncryptedWalletBackupOwnerScope } from '../src/encryptedWalletBackupOwnerScope.ts'
 
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
 const D4_KEYS = { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' }
@@ -91,6 +101,105 @@ test('v2 proof-set asset identity keeps mint, unit, and verified CTF collection 
   )
   assert.throws(() =>
     encryptedWalletBackupV2LocalAssetKey({ ...ordinary, assetIdentity: 'ctf:Display label' }),
+  )
+})
+
+test('owner restore provenance binds shared proof verification to one exact owner head', async () => {
+  const keyHandle = await handle()
+  const proofSet = proof(0, { kind: 'ordinary' })
+  const prepared = await prepare({
+    keyHandle,
+    seed: SEED,
+    proofs: [proofSet],
+    counters: [counter(1)],
+  })
+  const owner = deriveEncryptedWalletBackupOwnerScope({
+    authorizationScheme: 'test',
+    ownerSubject: 'restore-owner-a',
+  })
+  const context = {
+    ownerScopeId: owner.ownerScopeId,
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  }
+  const makeEvidence = (headVersion: number, selectedOwner = owner.ownerScopeId) => {
+    const head = createEncryptedWalletBackupOwnerCurrentHead({
+      ...context,
+      ownerScopeId: selectedOwner,
+      headVersion,
+      bundles: [prepared.descriptor],
+    })
+    return collectEncryptedWalletBackupOwnerDescriptorPages(
+      enumerateEncryptedWalletBackupOwnerDescriptorPages({
+        head,
+        bundles: [prepared.descriptor],
+      }),
+      { ...context, ownerScopeId: selectedOwner },
+    )
+  }
+  const collected = makeEvidence(7)
+  const discovered = await discover(keyHandle, prepared)
+  const ownerDecrypted = bindEncryptedWalletBackupOwnerDecryptedProofSet({
+    proofSet: discovered.unverified,
+    collectedHeadEvidence: collected,
+    expectedContext: context,
+  })
+  assert.throws(
+    () =>
+      bindEncryptedWalletBackupOwnerDecryptedProofSet({
+        proofSet: discovered.unverified,
+        collectedHeadEvidence: makeEvidence(7, 'ff'.repeat(32)),
+        expectedContext: context,
+      }),
+    /owner context|not reachable/,
+  )
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: { mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' },
+    unverified: ownerDecrypted.proofSet,
+    port: verificationPort(),
+  })
+  assert.throws(
+    () =>
+      bindEncryptedWalletBackupOwnerVerifiedProofSet({
+        proofSet: verified,
+        decryptedEvidence: ownerDecrypted,
+        collectedHeadEvidence: makeEvidence(8),
+        expectedContext: context,
+      }),
+    /source changed/,
+  )
+  const ownerVerified = bindEncryptedWalletBackupOwnerVerifiedProofSet({
+    proofSet: verified,
+    decryptedEvidence: ownerDecrypted,
+    collectedHeadEvidence: collected,
+    expectedContext: context,
+  })
+  assert.equal(
+    requireEncryptedWalletBackupOwnerVerifiedProofSet(ownerVerified, context).source.headVersion,
+    7,
+  )
+  assert.throws(
+    () => requireEncryptedWalletBackupOwnerVerifiedProofSet(verified, context),
+    /owner verified proof set is invalid/,
+  )
+  assert.ok(Object.isFrozen(ownerDecrypted.proofSet.proofs[0]))
+  assert.equal(
+    Reflect.set(ownerDecrypted.proofSet.counterHighWaterMarks[0]!, 'nextCounter', 2),
+    false,
+  )
+  const detached = structuredClone(ownerDecrypted.proofSet)
+  detached.counterHighWaterMarks[0]!.nextCounter += 1
+  const detachedVerified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: { mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' },
+    unverified: detached,
+    port: verificationPort(),
+  })
+  assert.throws(
+    () => requireEncryptedWalletBackupV2VerifiedProofSetSource(detachedVerified),
+    /source is unavailable/,
   )
 })
 

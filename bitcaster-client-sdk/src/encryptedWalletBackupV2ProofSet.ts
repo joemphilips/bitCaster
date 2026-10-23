@@ -23,6 +23,13 @@ import {
   type EncryptedWalletBackupV2CollectedHeadEvidence,
   type EncryptedWalletBackupV2CurrentHead,
 } from './encryptedWalletBackupV2Head.ts'
+import {
+  decodeEncryptedWalletBackupOwnerContext,
+  requireEncryptedWalletBackupOwnerCollectedHeadEvidence,
+  requireEncryptedWalletBackupOwnerContext,
+  type EncryptedWalletBackupOwnerCollectedHeadEvidence,
+  type EncryptedWalletBackupOwnerContext,
+} from './encryptedWalletBackupOwnerHead.ts'
 import type { EncryptedWalletBackupV2RemotePort } from './encryptedWalletBackupV2HttpAdapter.ts'
 import { collectAllEncryptedWalletBackupV2DescriptorPages } from './encryptedWalletBackupV2Sync.ts'
 import {
@@ -568,6 +575,134 @@ const VERIFIED_RESTORED_PROOF_SET_SOURCES = new WeakMap<
   object,
   EncryptedWalletBackupV2VerifiedProofSetSource
 >()
+const OWNER_DECRYPTED_RESTORE_EVIDENCE = new WeakMap<
+  object,
+  EncryptedWalletBackupOwnerVerifiedProofSetSource
+>()
+const OWNER_VERIFIED_RESTORE_EVIDENCE = new WeakMap<
+  object,
+  EncryptedWalletBackupOwnerVerifiedProofSetSource
+>()
+
+export interface EncryptedWalletBackupOwnerVerifiedProofSetSource {
+  readonly context: EncryptedWalletBackupOwnerContext
+  readonly headVersion: number
+  readonly activeSetDigest: string
+  readonly bundleId: string
+  readonly descriptorDigest: string
+  readonly assetLocator: string
+  readonly custodyRevision: bigint
+}
+
+export interface EncryptedWalletBackupOwnerDecryptedProofSet {
+  readonly proofSet: EncryptedWalletBackupV2UnverifiedProofSet
+  readonly source: EncryptedWalletBackupOwnerVerifiedProofSetSource
+}
+
+export interface EncryptedWalletBackupOwnerVerifiedProofSet {
+  readonly proofSet: EncryptedWalletBackupV2VerifiedProofSet
+  readonly source: EncryptedWalletBackupOwnerVerifiedProofSetSource
+}
+
+/** Bind shared decrypted bundle material to one SDK-collected owner head. */
+export function bindEncryptedWalletBackupOwnerDecryptedProofSet(input: {
+  readonly proofSet: EncryptedWalletBackupV2UnverifiedProofSet
+  readonly collectedHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+  readonly expectedContext: EncryptedWalletBackupOwnerContext
+}): EncryptedWalletBackupOwnerDecryptedProofSet {
+  const context = decodeEncryptedWalletBackupOwnerContext(input.expectedContext)
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    input.collectedHeadEvidence,
+    context,
+  )
+  const bundle = requireEncryptedWalletBackupV2DecryptedProofSetSource(input.proofSet)
+  const descriptor = head.bundles.find(
+    (candidate) =>
+      candidate.bundleId === bundle.bundleId &&
+      candidate.assetLocator === bundle.assetLocator &&
+      candidate.custodyRevision === bundle.custodyRevision &&
+      digestEncryptedWalletBackupV2BundleDescriptor(candidate) === bundle.descriptorDigest,
+  )
+  if (descriptor === undefined)
+    throw new Error('encrypted backup owner decrypted proof set is not reachable')
+  const source = ownerProofSetSource(context, head, descriptor)
+  const evidence = Object.freeze({ proofSet: input.proofSet, source })
+  OWNER_DECRYPTED_RESTORE_EVIDENCE.set(evidence, source)
+  return evidence
+}
+
+export function requireEncryptedWalletBackupOwnerDecryptedProofSet(
+  value: unknown,
+): EncryptedWalletBackupOwnerDecryptedProofSet {
+  if (typeof value !== 'object' || value === null)
+    throw new Error('encrypted backup owner decrypted proof set is invalid')
+  const source = OWNER_DECRYPTED_RESTORE_EVIDENCE.get(value)
+  if (source === undefined) throw new Error('encrypted backup owner decrypted proof set is invalid')
+  return value as EncryptedWalletBackupOwnerDecryptedProofSet
+}
+
+/** Bind a successfully verified shared proof set to the same owner head source. */
+export function bindEncryptedWalletBackupOwnerVerifiedProofSet(input: {
+  readonly proofSet: EncryptedWalletBackupV2VerifiedProofSet
+  readonly decryptedEvidence: EncryptedWalletBackupOwnerDecryptedProofSet
+  readonly collectedHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+  readonly expectedContext: EncryptedWalletBackupOwnerContext
+}): EncryptedWalletBackupOwnerVerifiedProofSet {
+  const decrypted = requireEncryptedWalletBackupOwnerDecryptedProofSet(input.decryptedEvidence)
+  const context = decodeEncryptedWalletBackupOwnerContext(input.expectedContext)
+  requireEncryptedWalletBackupOwnerContext(decrypted.source.context, context)
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    input.collectedHeadEvidence,
+    context,
+  )
+  const source = requireEncryptedWalletBackupV2VerifiedProofSetSource(input.proofSet)
+  if (
+    source.bundleId !== decrypted.source.bundleId ||
+    source.descriptorDigest !== decrypted.source.descriptorDigest ||
+    source.assetLocator !== decrypted.source.assetLocator ||
+    source.custodyRevision !== decrypted.source.custodyRevision ||
+    head.head.headVersion !== decrypted.source.headVersion ||
+    head.head.activeSetDigest !== decrypted.source.activeSetDigest ||
+    !head.bundles.some(
+      (descriptor) =>
+        descriptor.bundleId === decrypted.source.bundleId &&
+        digestEncryptedWalletBackupV2BundleDescriptor(descriptor) ===
+          decrypted.source.descriptorDigest,
+    )
+  )
+    throw new Error('encrypted backup owner verified proof set source changed')
+  const evidence = Object.freeze({ proofSet: input.proofSet, source: decrypted.source })
+  OWNER_VERIFIED_RESTORE_EVIDENCE.set(evidence, decrypted.source)
+  return evidence
+}
+
+export function requireEncryptedWalletBackupOwnerVerifiedProofSet(
+  value: unknown,
+  expectedContext: EncryptedWalletBackupOwnerContext,
+): EncryptedWalletBackupOwnerVerifiedProofSet {
+  if (typeof value !== 'object' || value === null)
+    throw new Error('encrypted backup owner verified proof set is invalid')
+  const source = OWNER_VERIFIED_RESTORE_EVIDENCE.get(value)
+  if (source === undefined) throw new Error('encrypted backup owner verified proof set is invalid')
+  requireEncryptedWalletBackupOwnerContext(source.context, expectedContext)
+  return value as EncryptedWalletBackupOwnerVerifiedProofSet
+}
+
+function ownerProofSetSource(
+  context: EncryptedWalletBackupOwnerContext,
+  head: EncryptedWalletBackupOwnerCollectedHeadEvidence,
+  descriptor: EncryptedWalletBackupV2BundleDescriptor,
+): EncryptedWalletBackupOwnerVerifiedProofSetSource {
+  return Object.freeze({
+    context: Object.freeze({ ...context }),
+    headVersion: head.head.headVersion,
+    activeSetDigest: head.head.activeSetDigest,
+    bundleId: descriptor.bundleId,
+    descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(descriptor),
+    assetLocator: descriptor.assetLocator,
+    custodyRevision: descriptor.custodyRevision,
+  })
+}
 
 /** Authenticated bundle identity retained by one SDK-verified restore result. */
 export interface EncryptedWalletBackupV2VerifiedProofSetSource {
@@ -642,6 +777,14 @@ export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
   readonly port: EncryptedWalletBackupV2RestoreVerificationPort
   readonly preserveRefusalHistory?: true
 }): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
+  // Validate the authenticated decrypt digest for every proof set, not only
+  // terminal-sealed material. The verifier snapshots decoded input before its
+  // asynchronous mint checks, so later caller changes cannot alter that copy.
+  // Authenticated decrypt results carry a WeakMap authority and must retain
+  // their exact digest. The verifier also supports detached valid material;
+  // that path may verify proofs but cannot mint descriptor provenance.
+  if (DECRYPTED_PROOF_SET_AUTHORITY.has(input.unverified))
+    requireEncryptedWalletBackupV2DecryptedProofSet(input.unverified)
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
   const seed = input.seed
   const decoded = validateProofSet({

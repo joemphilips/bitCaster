@@ -34,6 +34,10 @@ import type {
   EncryptedWalletBackupV2ActiveDescriptorRow,
   EncryptedWalletBackupV2AssetReceiptRow,
 } from "../stores/proof-db";
+import type {
+  EncryptedWalletBackupOwnerBackupReceiptSnapshot,
+  EncryptedWalletBackupOwnerDexieAuthorityStore,
+} from "../stores/encrypted-wallet-backup-owner-db";
 
 const DESIRED_ASSET_MAX = 256;
 const PROOFS_PER_ASSET_MAX = 512;
@@ -68,10 +72,67 @@ export interface BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset {
   readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
 }
 
+export interface BrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAsset extends BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset {
+  readonly ownerReceiptSnapshot: EncryptedWalletBackupOwnerBackupReceiptSnapshot;
+}
+
 export interface BrowserEncryptedWalletBackupV2CacheEligibilityInput {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly isCurrentProfile: () => boolean;
+}
+
+/** Lists candidates using the explicitly selected owner's current receipt, never legacy V2 rows. */
+export async function listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets(input: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly isCurrentProfile: () => boolean;
+  readonly ownerAuthorityStore: EncryptedWalletBackupOwnerDexieAuthorityStore;
+}): Promise<readonly BrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAsset[]> {
+  requireCapturedDatabase(input);
+  const desiredRows = await readDesiredRows(input.database, input.scopeId);
+  const eligible: BrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAsset[] = [];
+  for (const raw of desiredRows) {
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+    requireProductMsatUnit(desired.unit);
+    if (desired.desiredAction !== "replace" || desired.activeProofCount < 1) continue;
+    try {
+      const proofs = await exactLocalProofs(input.database, input.scopeId, desired);
+      if (
+        proofs.length !== desired.activeProofCount ||
+        proofs.some((proof) => proof.selectability !== "selectable" || proof.reservationOperationId)
+      )
+        continue;
+      const ownerReceiptSnapshot =
+        await input.ownerAuthorityStore.captureBackupReceiptForLocalAsset(desired.localAssetKey);
+      if (ownerReceiptSnapshot === null) continue;
+      const receipt = ownerReceiptSnapshot.receipt;
+      const descriptor = ownerReceiptSnapshot.collectedHeadEvidence.bundles.find(
+        (bundle) => bundle.bundleId === receipt.bundleId,
+      );
+      if (
+        descriptor === undefined ||
+        descriptor.assetLocator !== ownerReceiptSnapshot.ownerDesired.assetLocator ||
+        descriptor.custodyRevision.toString() !== desired.custodyRevision ||
+        digestEncryptedWalletBackupV2BundleDescriptor(descriptor) !== receipt.bundleDescriptorDigest
+      )
+        continue;
+      eligible.push(
+        Object.freeze({
+          desired: Object.freeze({ ...desired }),
+          proofs: Object.freeze([...proofs]),
+          receipt: Object.freeze({ ...receipt }),
+          descriptor,
+          ownerReceiptSnapshot,
+        }),
+      );
+    } catch (error) {
+      if (isBackupAuthorityRefusal(error)) continue;
+      throw error;
+    }
+  }
+  requireCapturedDatabase(input);
+  return Object.freeze(eligible);
 }
 
 /** One fully evicted local asset with current, verified V2 backup authority. */
@@ -510,6 +571,7 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
   readonly assertNoPendingOrders: () => void;
   /** Selected owner identity from the adapter. Null means no owner-bound authority is available. */
   readonly ownerScopeId?: string | null;
+  readonly ownerAuthorityStore?: EncryptedWalletBackupOwnerDexieAuthorityStore;
   /** SDK-issued current-head reachability evidence, keyed by exact bundle id. */
   readonly loadCurrentOwnerReachabilityEvidence?: (
     candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
@@ -536,8 +598,42 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
       // Wallet locks are nonblocking, so work in another tab fails closed.
       await withWalletLocks(walletLocks, lockManager, async () => {
         requireCapturedDatabase(input);
-        await requireWholeWalletSeedHandoffEligibility(input);
+        const authorized = await requireWholeWalletSeedHandoffEligibility(input);
         requireCapturedDatabase(input);
+        input.assertNoPendingOrders();
+        await input.database.transaction(
+          "rw",
+          [
+            input.database.custodyProofs,
+            input.database.encryptedWalletBackupV2DesiredAssets,
+            input.database.encryptedWalletBackupOwnerDesiredAssets,
+            input.database.encryptedWalletBackupOwnerAssetReceipts,
+            input.database.encryptedWalletBackupOwnerAcceptedHeads,
+            input.database.encryptedWalletBackupOwnerActiveDescriptors,
+          ],
+          async () => {
+            requireCapturedDatabase(input);
+            await requireExactActiveProofCoverage(
+              input.database,
+              input.scopeId,
+              authorized.map(({ candidate }) => candidate),
+            );
+            for (const item of authorized) {
+              await input.ownerAuthorityStore!.assertCurrentBackupReceiptInTransaction({
+                snapshot: item.snapshot.backupReceiptSnapshot!,
+                reachabilityEvidence: item.snapshot.evidence,
+                desired: {
+                  localAssetKey: item.candidate.desired.localAssetKey,
+                  assetLocator: item.snapshot.backupReceiptSnapshot!.ownerDesired.assetLocator,
+                  custodyRevision: item.candidate.desired.custodyRevision,
+                  desiredAction: item.candidate.desired.desiredAction,
+                  activeProofCount: item.candidate.desired.activeProofCount,
+                },
+              });
+            }
+            requireCapturedDatabase(input);
+          },
+        );
         input.assertNoPendingOrders();
         input.invalidateOldProfile();
         try {
@@ -562,19 +658,31 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
 }
 
 async function readWalletLocks(database: BitcasterDB, scopeId: string): Promise<readonly string[]> {
-  const heads = await database.encryptedWalletBackupV2AcceptedHeads
-    .where("[scopeId+realm+walletId+enrollmentEpoch]")
-    .between(
-      [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
-      [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
-    )
-    .limit(DESIRED_ASSET_MAX + 1)
-    .toArray();
+  const [heads, ownerHeads] = await Promise.all([
+    database.encryptedWalletBackupV2AcceptedHeads
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
+      .between(
+        [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
+        [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
+      )
+      .limit(DESIRED_ASSET_MAX + 1)
+      .toArray(),
+    database.encryptedWalletBackupOwnerAcceptedHeads
+      .where("[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]")
+      .between(
+        [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
+        [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
+      )
+      .limit(DESIRED_ASSET_MAX + 1)
+      .toArray(),
+  ]);
   if (heads.length > DESIRED_ASSET_MAX) throw new Error("browser V2 wallet lock limit exceeded");
+  if (ownerHeads.length > DESIRED_ASSET_MAX)
+    throw new Error("browser owner wallet lock limit exceeded");
   return Object.freeze(
     [
       ...new Set(
-        heads.map(({ realm, walletId }) =>
+        [...heads, ...ownerHeads].map(({ realm, walletId }) =>
           encryptedWalletBackupV2WalletLockName({ realm, walletId }),
         ),
       ),
@@ -602,29 +710,43 @@ async function withWalletLocks<T>(
 }
 
 async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string): Promise<void> {
-  const [activeWork, preparedOperation, activeRanges, preparedMutation, outgoingAuthority] =
-    await Promise.all([
-      database.custodyActiveWork
-        .where("[scopeId+operationId]")
-        .between([scopeId, TEXT_KEY_MIN], [scopeId, TEXT_KEY_MAX])
-        .limit(1)
-        .first(),
-      database.proofOperations.where("state").equals("prepared").limit(1).first(),
-      pageActiveCtfRangePreparations({ scopeId, limit: 1 }, database),
-      database.encryptedWalletBackupV2PreparedMutations
-        .where("[scopeId+realm+walletId+enrollmentEpoch]")
-        .between(
-          [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
-          [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
-        )
-        .limit(1)
-        .first(),
-      database.outgoingCashuTransfers
-        .where("[scopeId+localAuthorityState+transferId]")
-        .between([scopeId, "nonterminal", TEXT_KEY_MIN], [scopeId, "nonterminal", TEXT_KEY_MAX])
-        .limit(1)
-        .first(),
-    ]);
+  const [
+    activeWork,
+    preparedOperation,
+    activeRanges,
+    preparedMutation,
+    preparedOwnerMutation,
+    outgoingAuthority,
+  ] = await Promise.all([
+    database.custodyActiveWork
+      .where("[scopeId+operationId]")
+      .between([scopeId, TEXT_KEY_MIN], [scopeId, TEXT_KEY_MAX])
+      .limit(1)
+      .first(),
+    database.proofOperations.where("state").equals("prepared").limit(1).first(),
+    pageActiveCtfRangePreparations({ scopeId, limit: 1 }, database),
+    database.encryptedWalletBackupV2PreparedMutations
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
+      .between(
+        [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
+        [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
+      )
+      .limit(1)
+      .first(),
+    database.encryptedWalletBackupOwnerPreparedMutations
+      .where("[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]")
+      .between(
+        [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
+        [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
+      )
+      .limit(1)
+      .first(),
+    database.outgoingCashuTransfers
+      .where("[scopeId+localAuthorityState+transferId]")
+      .between([scopeId, "nonterminal", TEXT_KEY_MIN], [scopeId, "nonterminal", TEXT_KEY_MAX])
+      .limit(1)
+      .first(),
+  ]);
   if (activeWork !== undefined) {
     throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
       "active-wallet-work",
@@ -647,6 +769,11 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
       "active-wallet-work",
       "browser V2 seed handoff has a prepared backup mutation",
     );
+  if (preparedOwnerMutation !== undefined)
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser V2 seed handoff has a prepared backup owner mutation",
+    );
   if (outgoingAuthority !== undefined) {
     throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
       "active-wallet-work",
@@ -658,17 +785,39 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
 async function requireWholeWalletSeedHandoffEligibility(
   input: BrowserEncryptedWalletBackupV2CacheEligibilityInput & {
     readonly ownerScopeId?: string | null;
+    readonly ownerAuthorityStore?: EncryptedWalletBackupOwnerDexieAuthorityStore;
     readonly loadCurrentOwnerReachabilityEvidence?: (
       candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
     ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
   },
-): Promise<void> {
+): Promise<
+  readonly {
+    readonly candidate: BrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAsset;
+    readonly snapshot: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
+  }[]
+> {
   await requireNoActiveLocalWork(input.database, input.scopeId);
   const desiredRows = await readDesiredRows(input.database, input.scopeId);
   desiredRows
     .map(decodeEncryptedWalletBackupV2DesiredAssetRow)
     .forEach(({ unit }) => requireProductMsatUnit(unit));
-  const eligible = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input);
+  if (
+    input.ownerScopeId == null ||
+    input.ownerAuthorityStore === undefined ||
+    input.loadCurrentOwnerReachabilityEvidence === undefined
+  ) {
+    if (desiredRows.length > 0) {
+      throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+        "backup-not-current",
+        "uncovered desired assets: selected-owner backup evidence is unavailable",
+      );
+    }
+    return [];
+  }
+  const eligible = await listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets({
+    ...input,
+    ownerAuthorityStore: input.ownerAuthorityStore,
+  });
   if (eligible.length !== desiredRows.length) {
     throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
       "backup-not-current",
@@ -676,11 +825,14 @@ async function requireWholeWalletSeedHandoffEligibility(
     );
   }
   await requireExactActiveProofCoverage(input.database, input.scopeId, eligible);
+  const authorized: Array<{
+    readonly candidate: BrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAsset;
+    readonly snapshot: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
+  }> = [];
   for (const candidate of eligible) {
-    if (input.ownerScopeId == null || input.loadCurrentOwnerReachabilityEvidence === undefined) {
-      throw new Error("backup owner evidence is unavailable");
-    }
     const snapshot = await input.loadCurrentOwnerReachabilityEvidence(candidate);
+    if (snapshot.backupReceiptSnapshot === undefined)
+      throw new Error("backup owner receipt snapshot is unavailable");
     requireBrowserEncryptedWalletBackupOwnerReachability({
       ownerScopeId: input.ownerScopeId ?? null,
       evidence: snapshot.evidence,
@@ -695,8 +847,10 @@ async function requireWholeWalletSeedHandoffEligibility(
       expectedCustodyRevision: candidate.receipt.custodyRevision,
       expectedBundleDescriptor: candidate.descriptor,
     });
+    authorized.push({ candidate, snapshot });
   }
   requireCapturedDatabase(input);
+  return Object.freeze(authorized);
 }
 
 function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {

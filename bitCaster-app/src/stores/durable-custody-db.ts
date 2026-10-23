@@ -181,6 +181,11 @@ export interface BrowserCustodyTransactionOptions {
     readonly beforePersist?: () => void | Promise<void>;
     readonly afterPersist: () => void | Promise<void>;
   };
+  /** Recheck selected-owner restore authority in the same physical import commit. */
+  readonly ownerRestoreAuthority?: {
+    readonly validate: () => void | Promise<void>;
+    readonly afterPersist: () => void | Promise<void>;
+  };
   /** Atomically update the legacy proof cache with the canonical custody commit. */
   readonly legacyProofCache?: {
     readonly spentSecrets: readonly string[];
@@ -349,7 +354,8 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       (options.outgoingTransfer !== undefined ||
         options.outgoingAdmission !== undefined ||
         options.marketFundingHead !== undefined ||
-        options.walletCounterAuthority !== undefined)
+        options.walletCounterAuthority !== undefined ||
+        options.ownerRestoreAuthority !== undefined)
     ) {
       throw new Error("browser custody extension requires atomic transaction");
     }
@@ -375,7 +381,8 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       options.outgoingTransfer !== undefined ||
       options.outgoingAdmission !== undefined ||
       options.marketFundingHead !== undefined ||
-      options.walletCounterAuthority !== undefined
+      options.walletCounterAuthority !== undefined ||
+      options.ownerRestoreAuthority !== undefined
     ) {
       throw new Error("browser current custody transaction cannot run external extensions");
     }
@@ -411,6 +418,9 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<T> {
     if (options.walletCounterAuthority?.beforePersist !== undefined) {
       await options.walletCounterAuthority.beforePersist();
+    }
+    if (options.ownerRestoreAuthority !== undefined) {
+      await options.ownerRestoreAuthority.validate();
     }
     const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
     const operations = await this.#loadSelectedOperations(selection);
@@ -462,6 +472,9 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     }
     if (options.walletCounterAuthority?.afterPersist !== undefined) {
       await options.walletCounterAuthority.afterPersist();
+    }
+    if (options.ownerRestoreAuthority !== undefined) {
+      await options.ownerRestoreAuthority.afterPersist();
     }
     if (options.injectFault === "before-commit") {
       throw new Error("injected browser custody fault before commit");
@@ -976,6 +989,14 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ...(options.walletCounterAuthority === undefined
         ? []
         : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
+      ...(options.ownerRestoreAuthority === undefined
+        ? []
+        : [
+            this.#database.encryptedWalletBackupOwnerAcceptedHeads,
+            this.#database.encryptedWalletBackupOwnerActiveDescriptors,
+            this.#database.encryptedWalletBackupOwnerProofCoverage,
+            this.#database.encryptedWalletBackupOwnerDesiredAssets,
+          ]),
       ...(options.legacyProofCache === undefined ? [] : [this.#database.proofs]),
     ];
   }

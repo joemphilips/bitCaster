@@ -18,6 +18,15 @@ import {
   type EncryptedWalletBackupAccountOperationRemotePort,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
+import { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
+import { EncryptedWalletBackupOwnerHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHttpAdapter";
+import { prepareEncryptedWalletBackupOwnerAccountOperation } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerAccount";
+import type { EncryptedWalletBackupOwnerCandidate } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
+import { runBrowserEncryptedWalletBackupOwnerWorkerCycle } from "./browserEncryptedWalletBackupOwnerWorker";
+import { recoverBrowserEncryptedWalletBackupOwnerConflict } from "./browserEncryptedWalletBackupOwnerConflictRecovery";
+import type { BrowserEncryptedWalletBackupOwnerSession } from "./browserEncryptedWalletBackupOwnerSession";
+import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
+import type { BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset } from "./browserEncryptedWalletBackupV2SeedHandoff";
 import { runBrowserEncryptedWalletBackupV2WorkerCycle } from "./browserEncryptedWalletBackupV2Worker";
 import {
   discoverBrowserCtfRemovals,
@@ -34,6 +43,7 @@ import {
 import { getNdk } from "./nostr";
 import { assertNever } from "./enumDiscipline";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
+import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
 import {
   clearEncryptedWalletBackupRetryScheduler,
   readEncryptedWalletBackupRetryScheduler,
@@ -73,6 +83,8 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   stop(): void;
   /** Releases this tab's wallet leadership before seed handoff takes the profile lock. */
   quiesceForSeedHandoff(): Promise<void>;
+  /** Captures the explicit selected owner adapter for a later locked handoff check. */
+  prepareSeedHandoffOwnerAuthority(): Promise<BrowserEncryptedWalletBackupOwnerSeedHandoffAuthority | null>;
   /** Restarts leadership when a seed handoff refuses and the captured profile remains current. */
   resumeAfterSeedHandoff(): void;
   /** Rechecks durable refusal after an explicit recovery completion. */
@@ -89,6 +101,14 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
     readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
     readonly lockManager?: Pick<LockManager, "request">;
   }): Promise<TargetedAssetRecoveryOutcome>;
+}
+
+export interface BrowserEncryptedWalletBackupOwnerSeedHandoffAuthority {
+  readonly ownerScopeId: string;
+  readonly ownerAuthorityStore: EncryptedWalletBackupOwnerDexieAuthorityStore;
+  readonly loadCurrentOwnerReachabilityEvidence: (
+    candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+  ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
 }
 
 export type BrowserEncryptedWalletBackupV2RecoveryStatus =
@@ -151,6 +171,20 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
   readonly seed: Uint8Array;
   readonly signal: AbortSignal;
   readonly isCurrentProfile: () => boolean;
+  /** Production captures signer/profile liveness and selected-owner identity here. */
+  readonly ownerSession?: BrowserEncryptedWalletBackupOwnerSession;
+  /** Test seam for the SDK owner client. Production creates it from pinned configuration. */
+  readonly ownerClient?: Pick<
+    EncryptedWalletBackupOwnerClient,
+    | "discover"
+    | "selectOwner"
+    | "readEnrollmentEpoch"
+    | "readCurrentHead"
+    | "mutateHead"
+    | "readObject"
+    | "operateAccount"
+    | "verifyStoredBackupReachability"
+  >;
   readonly remote?: BackupRemote;
   readonly runtime?: EncryptedWalletBackupV2BundleRuntime;
   readonly runWorkerCycle?: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
@@ -215,6 +249,19 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   readonly #input: BrowserEncryptedWalletBackupV2RuntimeDriverInput;
   readonly #runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly #remote: BackupRemote;
+  #ownerClient:
+    | Pick<
+        EncryptedWalletBackupOwnerClient,
+        | "discover"
+        | "selectOwner"
+        | "readEnrollmentEpoch"
+        | "readCurrentHead"
+        | "mutateHead"
+        | "readObject"
+        | "operateAccount"
+        | "verifyStoredBackupReachability"
+      >
+    | undefined;
   readonly #runWorkerCycle: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
   readonly #lifetimeSignal: AbortSignal;
   #leadershipSignal: AbortSignal;
@@ -229,6 +276,8 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   readonly #keyHandlePromise: Promise<EncryptedWalletBackupV2KeyHandle>;
   #enrollmentEpoch: number | undefined;
   #enrollmentEpochPromise: Promise<number> | undefined;
+  #ownerCandidate: EncryptedWalletBackupOwnerCandidate | undefined;
+  #ownerScanCursor: string | undefined;
   #pendingDesiredAssetFingerprint = "";
   #serviceQuotaPendingFingerprint: string | null = null;
   #initialized = false;
@@ -255,6 +304,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#input = input;
     this.#runtime = input.runtime ?? browserRuntime();
     this.#remote = input.remote ?? createRemote(input.configuration);
+    this.#ownerClient = input.ownerClient;
     this.#runWorkerCycle = input.runWorkerCycle ?? runBrowserEncryptedWalletBackupV2WorkerCycle;
     this.#lifetimeSignal = AbortSignal.any([input.signal, this.#cleanup.signal]);
     this.#leadershipSignal = this.#lifetimeSignal;
@@ -292,6 +342,75 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       this.#quiesceTask = undefined;
     });
     return this.#quiesceTask;
+  }
+
+  async prepareSeedHandoffOwnerAuthority(): Promise<BrowserEncryptedWalletBackupOwnerSeedHandoffAuthority | null> {
+    const session = this.#input.ownerSession;
+    if (session === undefined) return null;
+    session.requireCurrent();
+    const keyHandle = await this.#keyHandlePromise;
+    session.requireCurrent();
+    let owner = this.#ownerCandidate;
+    if (owner === undefined) {
+      if (!this.#isLeaderActive())
+        throw new Error("selected encrypted backup owner is unavailable for seed handoff");
+      owner = await this.#resolveOwnerCandidate(keyHandle);
+    }
+    session.requireCurrent();
+    const client = this.#ownerClient;
+    if (client === undefined)
+      throw new Error("selected encrypted backup owner client is unavailable for seed handoff");
+    const authorityStore = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database: this.#input.database,
+      scopeId: this.#input.scopeId,
+      ownerScopeId: owner.ownerScopeId,
+      realm: keyHandle.realm,
+      walletId: keyHandle.walletId,
+      requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      enrollmentEpoch: owner.enrollmentEpoch,
+      isCurrent: () => session.isCurrent() && this.#isCurrentForSeedHandoff(),
+    });
+    return Object.freeze({
+      ownerScopeId: owner.ownerScopeId,
+      ownerAuthorityStore: authorityStore,
+      loadCurrentOwnerReachabilityEvidence: async (
+        candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+      ) => {
+        session.requireCurrent();
+        if (!this.#isCurrentForSeedHandoff()) throw new Error("encrypted backup profile is stale");
+        const backupReceiptSnapshot = await authorityStore.captureBackupReceiptForLocalAsset(
+          candidate.desired.localAssetKey,
+        );
+        if (backupReceiptSnapshot === null)
+          throw new Error("selected-owner backup receipt is unavailable");
+        if (
+          backupReceiptSnapshot.desired.custodyRevision !== candidate.desired.custodyRevision ||
+          backupReceiptSnapshot.ownerDesired.assetLocator !== candidate.receipt.assetLocator ||
+          backupReceiptSnapshot.receipt.bundleId !== candidate.receipt.bundleId
+        )
+          throw new Error("selected-owner backup receipt changed");
+        const signal = AbortSignal.any([this.#input.signal, AbortSignal.timeout(30_000)]);
+        const collectedHeadEvidence = await client.readCurrentHead({
+          owner,
+          enrollmentEpoch: owner.enrollmentEpoch,
+          signal,
+        });
+        session.requireCurrent();
+        if (!this.#isCurrentForSeedHandoff()) throw new Error("encrypted backup profile is stale");
+        const evidence = client.verifyStoredBackupReachability({
+          expectedContext: {
+            ownerScopeId: owner.ownerScopeId,
+            realm: keyHandle.realm,
+            walletId: keyHandle.walletId,
+            enrollmentEpoch: owner.enrollmentEpoch,
+          },
+          canonicalSignedMutation: backupReceiptSnapshot.receipt.canonicalSignedMutation,
+          canonicalSignedReceipt: backupReceiptSnapshot.receipt.canonicalSignedReceipt,
+          collectedHeadEvidence,
+        });
+        return Object.freeze({ evidence, collectedHeadEvidence, backupReceiptSnapshot });
+      },
+    });
   }
 
   resumeAfterSeedHandoff(): void {
@@ -690,6 +809,10 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
 
   async #resumeOrInitialize(): Promise<void> {
     const keyHandle = requireKeyHandle(this.#keyHandle);
+    if (this.#input.ownerSession !== undefined) {
+      await this.#initialize();
+      return;
+    }
     const schedule = await readEncryptedWalletBackupRetryScheduler(this.#input.database, {
       scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
@@ -758,6 +881,21 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       const keyHandle = requireKeyHandle(this.#keyHandle);
       this.#enrollmentEpoch = await this.#resolveEnrollmentEpoch(keyHandle);
       if (!this.#isLeaderActive()) return;
+      if (this.#ownerCandidate !== undefined) {
+        const schedule = await this.#ownerStore(keyHandle).readRetryScheduler();
+        if (!this.#isLeaderActive()) return;
+        if (schedule !== null && schedule.retryNotBeforeUnixMilliseconds > Date.now()) {
+          if (
+            this.#armTimer(
+              () => void this.#initialize(),
+              schedule.retryNotBeforeUnixMilliseconds - Date.now(),
+              "retry",
+            )
+          )
+            this.#setDiagnosticState("retry");
+          return;
+        }
+      }
       if (!(await this.#allowOrdinaryWrites(keyHandle))) return;
       await this.#clearRetrySchedule();
       if (!this.#isLeaderActive()) return;
@@ -783,6 +921,22 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   }
 
   async #resolveEnrollmentEpoch(keyHandle: EncryptedWalletBackupV2KeyHandle): Promise<number> {
+    if (this.#input.ownerSession !== undefined) {
+      if (this.#ownerCandidate !== undefined) return this.#ownerCandidate.enrollmentEpoch;
+      if (this.#enrollmentEpochPromise !== undefined) return this.#enrollmentEpochPromise;
+      const resolving = this.#resolveOwnerCandidate(keyHandle).then((candidate) => {
+        this.#ownerCandidate = candidate;
+        this.#enrollmentEpoch = candidate.enrollmentEpoch;
+        return candidate.enrollmentEpoch;
+      });
+      this.#enrollmentEpochPromise = resolving;
+      try {
+        return await resolving;
+      } catch (error) {
+        if (this.#enrollmentEpochPromise === resolving) this.#enrollmentEpochPromise = undefined;
+        throw error;
+      }
+    }
     if (this.#enrollmentEpoch !== undefined) return this.#enrollmentEpoch;
     if (this.#enrollmentEpochPromise !== undefined) return this.#enrollmentEpochPromise;
     const resolving = resolveEncryptedWalletBackupV2EnrollmentEpoch({
@@ -807,6 +961,110 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       if (this.#enrollmentEpochPromise === resolving) this.#enrollmentEpochPromise = undefined;
       throw error;
     }
+  }
+
+  async #resolveOwnerCandidate(
+    keyHandle: EncryptedWalletBackupV2KeyHandle,
+  ): Promise<EncryptedWalletBackupOwnerCandidate> {
+    const session = this.#input.ownerSession;
+    if (session === undefined) throw new Error("encrypted backup owner session is absent");
+    session.requireCurrent();
+    const client =
+      this.#ownerClient ??
+      new EncryptedWalletBackupOwnerClient({
+        origin: this.#input.configuration.signedOrigin,
+        keyHandle,
+        pinnedReceiptKeys: this.#input.configuration.pinnedReceiptKeys,
+        fetch: createEncryptedWalletBackupTransportFetch({
+          signedOrigin: this.#input.configuration.signedOrigin,
+          transportOrigin: this.#input.configuration.transportOrigin,
+        }),
+      });
+    this.#ownerClient = client;
+    const pages = await client.discover({ signal: this.#leadershipSignal });
+    session.requireCurrent();
+    const listed = pages.flatMap((page) => page.entries);
+    if (listed.length > 0) {
+      const candidate = await client.selectOwner({
+        signal: this.#leadershipSignal,
+        ...(session.selectedOwnerScope === null
+          ? {}
+          : { ownerScopeId: session.selectedOwnerScope.ownerScopeId }),
+      });
+      session.requireCurrent();
+      const epoch = await client.readEnrollmentEpoch({
+        owner: candidate,
+        signal: this.#leadershipSignal,
+      });
+      session.requireCurrent();
+      if (epoch.status !== "active" || epoch.enrollmentEpoch !== candidate.enrollmentEpoch)
+        throw new Error("selected encrypted backup owner is not active");
+      return candidate;
+    }
+
+    const authenticatedOwner = session.authenticatedOwnerScope;
+    if (authenticatedOwner === null)
+      throw new Error("configured encrypted backup requires a selected owner");
+    const operation = await prepareEncryptedWalletBackupOwnerAccountOperation({
+      keyHandle,
+      action: "enroll",
+      url: accountUrl(this.#input.configuration),
+      operationId: randomOperationId(this.#runtime),
+      expectedEnrollmentEpoch: 0,
+      authorizationPort: createEncryptedWalletBackupNip98AccountAuthorizationPort({
+        signer: currentNostrSigner(),
+      }),
+      signal: this.#leadershipSignal,
+      runtime: this.#runtime,
+    });
+    session.requireLifecycleOwner(operation);
+    session.requireCurrent();
+    const response = await client.operateAccount({
+      operation,
+      signal: this.#leadershipSignal,
+    });
+    session.requireCurrent();
+    if (
+      response.kind !== "account-result" ||
+      response.result !== "committed" ||
+      response.action !== "enroll" ||
+      response.lifecycle !== "active" ||
+      response.ownerScopeId !== operation.ownerScopeId ||
+      response.realm !== keyHandle.realm ||
+      response.walletId !== keyHandle.walletId
+    )
+      throw new Error("encrypted backup owner enrollment was not committed");
+    const authority = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database: this.#input.database,
+      scopeId: this.#input.scopeId,
+      ownerScopeId: operation.ownerScopeId,
+      realm: keyHandle.realm,
+      walletId: keyHandle.walletId,
+      requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      enrollmentEpoch: response.enrollmentEpoch,
+      isCurrent: () => session.isCurrent() && this.#isActive(),
+    });
+    await authority.commitEnrollmentResult({
+      result: {
+        schemaVersion: 1,
+        operationId: response.operationId,
+        intentDigest: response.intentDigest,
+        action: "enroll",
+        realm: keyHandle.realm,
+        walletId: keyHandle.walletId,
+        requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+        expectedEnrollmentEpoch: 0,
+        observedEnrollmentEpoch: response.enrollmentEpoch,
+        lifecycle: "active",
+        result: "committed",
+      },
+      commit: () => undefined,
+    });
+    session.requireCurrent();
+    return Object.freeze({
+      ...session.requireLifecycleOwner(operation),
+      enrollmentEpoch: response.enrollmentEpoch,
+    });
   }
 
   async #runCycles(): Promise<void> {
@@ -854,6 +1112,70 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     const authenticatingStartup = !this.#sessionAuthenticated;
     this.#setDiagnosticState(authenticatingStartup ? "startup" : "authenticated");
     try {
+      if (this.#ownerCandidate !== undefined && this.#ownerClient !== undefined) {
+        if (this.#sessionAuthenticated) {
+          await this.#discoverCtfRemovals();
+          if (!this.#isLeaderActive()) return;
+        }
+        const result = await runBrowserEncryptedWalletBackupOwnerWorkerCycle({
+          database: this.#input.database,
+          scopeId: this.#input.scopeId,
+          seed: this.#input.seed,
+          keyHandle,
+          owner: this.#ownerCandidate,
+          enrollmentEpoch: this.#ownerCandidate.enrollmentEpoch,
+          remote: this.#ownerClient,
+          runtime: this.#runtime,
+          signal,
+          isCurrentProfile: () =>
+            this.#isLeaderActive() && (this.#input.ownerSession?.isCurrent() ?? false),
+          ...(this.#ownerScanCursor === undefined
+            ? {}
+            : { afterLocalAssetKey: this.#ownerScanCursor }),
+        });
+        if (!this.#isLeaderActive()) return;
+        if (
+          authenticatingStartup &&
+          (result.kind === "idle" || result.kind === "head-accepted" || result.kind === "committed")
+        ) {
+          const authenticated = this.#authenticationSession?.markOwnerAuthenticated(
+            this.#ownerCandidate.ownerScopeId,
+            this.#ownerCandidate.enrollmentEpoch,
+            keyHandle.requestAuthPublicKey,
+          );
+          if (authenticated !== true) return;
+          this.#sessionAuthenticated = true;
+          this.#setDiagnosticState("authenticated");
+          await this.#discoverCtfRemovals();
+          if (!this.#isLeaderActive()) return;
+        }
+        if (result.kind === "scan-more") {
+          this.#ownerScanCursor = result.afterLocalAssetKey;
+          this.#cycleQueued = true;
+        } else if (result.kind === "head-accepted" || result.kind === "committed") {
+          this.#ownerScanCursor = undefined;
+          await this.#clearRetrySchedule();
+          this.#cycleQueued = true;
+        } else if (result.kind === "idle") {
+          this.#ownerScanCursor = undefined;
+          await this.#clearRetrySchedule();
+        } else if (result.kind === "service-quota-pending") {
+          this.#serviceQuotaPendingFingerprint = this.#pendingDesiredAssetFingerprint;
+          this.#armTimer(
+            () => this.#requestCycle(),
+            ENCRYPTED_WALLET_BACKUP_SERVICE_QUOTA_RECHECK_MILLISECONDS,
+            "quota",
+          );
+        } else if (result.kind === "recovery-required") {
+          this.#recoveryPaused = true;
+          this.#recoveryAttempted = false;
+          this.#cycleQueued = true;
+          this.#setDiagnosticState("recovery-paused");
+          this.#notifyRemoveReadinessWaiters();
+          this.#notifyRecoveryStatus({ kind: "recovering", reason: this.#recoveryReason });
+        }
+        return;
+      }
       if (!authenticatingStartup) {
         await this.#discoverCtfRemovals();
         if (!this.#isLeaderActive()) return;
@@ -928,6 +1250,22 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#timerScheduling = true;
     try {
       const keyHandle = requireKeyHandle(this.#keyHandle);
+      if (this.#ownerCandidate !== undefined) {
+        const schedule = await this.#ownerStore(keyHandle).scheduleRetry({
+          attemptId: retryAttemptId(keyHandle),
+          minimumDelayMilliseconds,
+        });
+        if (!this.#isLeaderActive()) return;
+        if (
+          this.#armTimer(
+            task ?? (() => this.#requestCycle()),
+            Math.max(0, schedule.retryNotBeforeUnixMilliseconds - Date.now()),
+            "retry",
+          )
+        )
+          this.#setDiagnosticState("retry");
+        return;
+      }
       const persist = this.#input.scheduleDurableRetry ?? scheduleEncryptedWalletBackupRetry;
       const schedule = await persist(this.#input.database, {
         scopeId: this.#input.scopeId,
@@ -982,6 +1320,10 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   async #clearRetrySchedule(): Promise<void> {
     const keyHandle = this.#keyHandle;
     if (keyHandle === undefined || !this.#isLeaderActive()) return;
+    if (this.#ownerCandidate !== undefined) {
+      await this.#ownerStore(keyHandle).clearRetryScheduler(retryAttemptId(keyHandle));
+      return;
+    }
     await clearEncryptedWalletBackupRetryScheduler(this.#input.database, {
       scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
@@ -990,8 +1332,31 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     });
   }
 
+  #ownerStore(
+    keyHandle: EncryptedWalletBackupV2KeyHandle,
+  ): EncryptedWalletBackupOwnerDexieAuthorityStore {
+    if (this.#ownerCandidate === undefined || this.#input.ownerSession === undefined)
+      throw new Error("encrypted backup owner authority is unavailable");
+    return new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database: this.#input.database,
+      scopeId: this.#input.scopeId,
+      ownerScopeId: this.#ownerCandidate.ownerScopeId,
+      realm: keyHandle.realm,
+      walletId: keyHandle.walletId,
+      enrollmentEpoch: this.#ownerCandidate.enrollmentEpoch,
+      requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      isCurrent: () => this.#isLeaderActive() && this.#input.ownerSession!.isCurrent(),
+    });
+  }
+
   #isActive(): boolean {
     return !this.#quiesced && !this.#lifetimeSignal.aborted && this.#input.isCurrentProfile();
+  }
+
+  #isCurrentForSeedHandoff(): boolean {
+    // Handoff intentionally quiesces worker activity before reading owner evidence.
+    // Keep lifetime/profile fencing without treating that quiescence as staleness.
+    return !this.#lifetimeSignal.aborted && this.#input.isCurrentProfile();
   }
 
   #isLeaderActive(): boolean {
@@ -1000,6 +1365,69 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
 
   async #allowOrdinaryWrites(keyHandle: EncryptedWalletBackupV2KeyHandle): Promise<boolean> {
     const enrollmentEpoch = requireEnrollmentEpoch(this.#enrollmentEpoch);
+    if (this.#ownerCandidate !== undefined) {
+      const ownerAuthority = this.#ownerStore(keyHandle);
+      const ownerStatus = await ownerAuthority.readLocalRecoveryStatus();
+      if (ownerStatus === null) {
+        // The owner worker may only establish an empty first head. All public
+        // custody writes remain blocked until markOwnerAuthenticated runs.
+        return !this.#sessionAuthenticated;
+      }
+      const permission = await ownerAuthority.readNewWritePermission();
+      if (permission.canWrite) {
+        this.#setRecoveryReason(null);
+        this.#recoveryPaused = false;
+        this.#recoveryAttempted = false;
+        return true;
+      }
+      this.#recoveryPaused = true;
+      this.#setDiagnosticState("recovery-paused");
+      this.#notifyRemoveReadinessWaiters();
+      this.#cycleQueued = false;
+      this.#notifyRecoveryStatus({ kind: "recovering", reason: this.#recoveryReason });
+      if (
+        permission.localRecoveryStatus === "recovery-required" &&
+        !this.#recoveryAttempted &&
+        this.#ownerClient !== undefined &&
+        this.#input.loadWallet !== undefined
+      ) {
+        this.#recoveryAttempted = true;
+        const session = this.#input.ownerSession;
+        if (session === undefined || !this.#isLeaderActive()) return false;
+        const result = await recoverBrowserEncryptedWalletBackupOwnerConflict({
+          database: this.#input.database,
+          scopeId: this.#input.scopeId,
+          seed: this.#input.seed,
+          keyHandle,
+          owner: this.#ownerCandidate,
+          ownerContext: {
+            ownerScopeId: this.#ownerCandidate.ownerScopeId,
+            realm: keyHandle.realm,
+            walletId: keyHandle.walletId,
+            enrollmentEpoch: this.#ownerCandidate.enrollmentEpoch,
+          },
+          ownerClient: this.#ownerClient,
+          ownerStore: ownerAuthority,
+          runtime: this.#runtime,
+          signal: this.#leadershipSignal,
+          isCurrentProfile: () => this.#isLeaderActive() && session.isCurrent(),
+          loadWallet: this.#input.loadWallet,
+          lockManager: this.#input.lockManager,
+        });
+        if (!this.#isLeaderActive()) return false;
+        if (result.kind === "incomplete") {
+          this.#setRecoveryReason(result.reason);
+          return false;
+        }
+        const recoveredPermission = await ownerAuthority.readNewWritePermission();
+        if (!this.#isLeaderActive() || !recoveredPermission.canWrite) return false;
+        this.#setRecoveryReason(null);
+        this.#recoveryPaused = false;
+        this.#recoveryAttempted = false;
+        return true;
+      }
+      return false;
+    }
     const authority = new EncryptedWalletBackupV2DexieAuthorityStore({
       database: this.#input.database,
       scopeId: this.#input.scopeId,
@@ -1441,27 +1869,38 @@ function randomOperationId(
 
 function isRetryable(error: unknown): boolean {
   if (error instanceof EncryptedWalletBackupRemoteBackoffError) return true;
+  if (!isBackupHttpTransportError(error)) return false;
   return (
-    error instanceof EncryptedWalletBackupV2HttpTransportError &&
-    (error.code === "concurrency-exhausted" ||
-      error.code === "deadline-exceeded" ||
-      error.code === "transport-failure" ||
-      error.code === "rate-limited" ||
-      error.code === "overloaded" ||
-      error.code === "unavailable")
+    error.code === "concurrency-exhausted" ||
+    error.code === "deadline-exceeded" ||
+    error.code === "transport-failure" ||
+    error.code === "rate-limited" ||
+    error.code === "overloaded" ||
+    error.code === "unavailable"
   );
 }
 
 function retryDelay(error: unknown): number {
   if (error instanceof EncryptedWalletBackupRemoteBackoffError)
     return error.delayMilliseconds(ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS);
-  if (error instanceof EncryptedWalletBackupV2HttpTransportError) {
+  if (isBackupHttpTransportError(error)) {
     return Math.max(
       ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS,
       (error.retryAfterSeconds ?? 0) * 1_000,
     );
   }
   return ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS;
+}
+
+function isBackupHttpTransportError(
+  error: unknown,
+): error is
+  | EncryptedWalletBackupV2HttpTransportError
+  | EncryptedWalletBackupOwnerHttpTransportError {
+  return (
+    error instanceof EncryptedWalletBackupV2HttpTransportError ||
+    error instanceof EncryptedWalletBackupOwnerHttpTransportError
+  );
 }
 
 function requireCurrentProfile(input: {
@@ -1690,7 +2129,7 @@ const safeEncryptedWalletBackupTransportErrorCodes = new Set<string>([
 
 function encryptedWalletBackupDriverErrorCode(error: unknown): string {
   if (error instanceof EncryptedWalletBackupRemoteBackoffError) return "remote-backoff";
-  if (error instanceof EncryptedWalletBackupV2HttpTransportError) {
+  if (isBackupHttpTransportError(error)) {
     return safeEncryptedWalletBackupTransportErrorCodes.has(error.code) ? error.code : "unknown";
   }
   return "unknown";

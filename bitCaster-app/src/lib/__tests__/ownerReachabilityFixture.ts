@@ -14,6 +14,10 @@ import {
   issueEncryptedWalletBackupOwnerBundleSupersessionReceipt,
   verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt,
 } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerReceipt";
+import {
+  encodeEncryptedWalletBackupOwnerBundleSupersessionReceipt,
+  encodeEncryptedWalletBackupOwnerSignedMutation,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerServiceCodec";
 import type { EncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
 import type { EncryptedWalletBackupV2KeyHandle } from "@bitcaster/client-sdk/encryptedWalletBackupV2Keys";
 
@@ -97,5 +101,12 @@ export async function ownerReachabilitySnapshot(input: {
     expectedContext: context,
     collectedHeadEvidence,
   });
-  return { evidence, collectedHeadEvidence };
+  return {
+    evidence,
+    collectedHeadEvidence,
+    pinnedSigningKey: { keyId: OWNER_SIGNING_KEY_ID, publicKey: OWNER_SIGNING_PUBLIC_KEY },
+    receipt,
+    canonicalSignedReceipt: encodeEncryptedWalletBackupOwnerBundleSupersessionReceipt(receipt),
+    canonicalSignedMutation: encodeEncryptedWalletBackupOwnerSignedMutation(envelope),
+  };
 }

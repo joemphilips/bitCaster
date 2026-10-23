@@ -1,7 +1,7 @@
 import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCustody";
 import type { BitcasterDB } from "../stores/proof-db";
-import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../stores/encrypted-wallet-backup-v2-db";
+import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
 import { assertNever } from "./enumDiscipline";
 import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
 
@@ -18,6 +18,7 @@ type BrowserWalletBackupAuthenticationState =
   | {
       readonly token: symbol;
       readonly status: "authenticated";
+      readonly ownerScopeId?: string;
       readonly enrollmentEpoch: number;
       readonly requestAuthPublicKey: string;
     };
@@ -29,6 +30,11 @@ const authenticationByDatabase = new WeakMap<
 
 export interface BrowserWalletBackupAuthenticationSession {
   markAuthenticated(enrollmentEpoch: number, requestAuthPublicKey: string): boolean;
+  markOwnerAuthenticated(
+    ownerScopeId: string,
+    enrollmentEpoch: number,
+    requestAuthPublicKey: string,
+  ): boolean;
   markPending(): void;
   stop(): void;
 }
@@ -78,6 +84,29 @@ export function beginBrowserWalletBackupAuthenticationSession(input: {
       });
       return true;
     },
+    markOwnerAuthenticated(
+      ownerScopeId: string,
+      enrollmentEpoch: number,
+      requestAuthPublicKey: string,
+    ): boolean {
+      if (
+        !/^[0-9a-f]{64}$/.test(ownerScopeId) ||
+        !Number.isSafeInteger(enrollmentEpoch) ||
+        enrollmentEpoch < 1 ||
+        !/^[0-9a-f]{64}$/.test(requestAuthPublicKey)
+      ) {
+        throw new Error("browser wallet backup owner authentication identity is invalid");
+      }
+      if (stopped || sessions.get(key)?.token !== token) return false;
+      sessions.set(key, {
+        token,
+        status: "authenticated",
+        ownerScopeId,
+        enrollmentEpoch,
+        requestAuthPublicKey,
+      });
+      return true;
+    },
     markPending(): void {
       if (stopped || sessions.get(key)?.token !== token) return;
       sessions.set(key, { token, status: "pending" });
@@ -115,39 +144,8 @@ export async function requireBrowserWalletNewWritePermission(input: {
     return true;
   };
   if (await requireRegisteredSession()) return;
-
-  const enrollmentRow = await input.database.encryptedWalletBackupEnrollmentResults.get([
-    configuration.realm,
-    scope.walletId,
-  ]);
-  if (await requireRegisteredSession()) return;
-  if (enrollmentRow === undefined) return;
-
-  const enrollmentStore = new EncryptedWalletBackupEnrollmentDexieStore({
-    database: input.database,
-    scopeId: input.scopeId,
-    realm: configuration.realm,
-    walletId: scope.walletId,
-    requestAuthPublicKey: enrollmentRow.record.requestAuthPublicKey,
-  });
-  const enrollment = await enrollmentStore.read();
-  if (await requireRegisteredSession()) return;
-  if (enrollment === null) return;
-
-  const authority = new EncryptedWalletBackupV2DexieAuthorityStore({
-    database: input.database,
-    scopeId: input.scopeId,
-    realm: enrollment.realm,
-    walletId: enrollment.walletId,
-    enrollmentEpoch: enrollment.observedEnrollmentEpoch,
-    requestAuthPublicKey: enrollment.requestAuthPublicKey,
-  });
-  const acceptedHead = await authority.readAcceptedHead();
-  if (await requireRegisteredSession()) return;
-  if (acceptedHead === null) return;
-  if (acceptedHead.localRecoveryStatus === "recovery-required") {
-    throw new BrowserWalletRecoveryRequiredError("genuine-conflict");
-  }
+  // A v20 enrollment or head is historical evidence only. Without an active
+  // captured session and selected owner it cannot authorize new custody work.
   throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
 }
 
@@ -165,6 +163,57 @@ async function requireAuthenticatedSessionPermission(input: {
       break;
     default:
       assertNever(input.session);
+  }
+  if (input.session.ownerScopeId !== undefined) {
+    const ownerScopeId = input.session.ownerScopeId;
+    const sessionToken = input.session.token;
+    const enrollmentEpoch = input.session.enrollmentEpoch;
+    const requestAuthPublicKey = input.session.requestAuthPublicKey;
+    const hasSameOwnerSession = (
+      candidate: BrowserWalletBackupAuthenticationState | undefined,
+    ): candidate is {
+      readonly token: symbol;
+      readonly status: "authenticated";
+      readonly ownerScopeId: string;
+      readonly enrollmentEpoch: number;
+      readonly requestAuthPublicKey: string;
+    } =>
+      candidate !== undefined &&
+      candidate.token === sessionToken &&
+      candidate.status === "authenticated" &&
+      typeof candidate.ownerScopeId === "string" &&
+      candidate.ownerScopeId === ownerScopeId &&
+      candidate.enrollmentEpoch === enrollmentEpoch &&
+      candidate.requestAuthPublicKey === requestAuthPublicKey;
+    const ownerAuthority = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database: input.database,
+      scopeId: input.scopeId,
+      ownerScopeId,
+      realm: input.realm,
+      walletId: input.walletId,
+      enrollmentEpoch,
+      requestAuthPublicKey,
+      isCurrent: () =>
+        hasSameOwnerSession(readAuthenticationSession(input.database, input.scopeId, input.realm)),
+    });
+    let status: Awaited<ReturnType<typeof ownerAuthority.readLocalRecoveryStatus>>;
+    try {
+      status = await ownerAuthority.readLocalRecoveryStatus();
+    } catch (error) {
+      if (
+        !hasSameOwnerSession(readAuthenticationSession(input.database, input.scopeId, input.realm))
+      )
+        throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+      throw error;
+    }
+    const current = readAuthenticationSession(input.database, input.scopeId, input.realm);
+    if (!hasSameOwnerSession(current) || status === null) {
+      throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+    }
+    if (status.localRecoveryStatus !== "ready") {
+      throw new BrowserWalletRecoveryRequiredError("genuine-conflict");
+    }
+    return;
   }
   const authority = new EncryptedWalletBackupV2DexieAuthorityStore({
     database: input.database,
@@ -185,6 +234,7 @@ async function requireAuthenticatedSessionPermission(input: {
     case "authenticated":
       if (
         current.token !== input.session.token ||
+        current.ownerScopeId !== undefined ||
         current.enrollmentEpoch !== input.session.enrollmentEpoch ||
         current.requestAuthPublicKey !== input.session.requestAuthPublicKey
       ) {

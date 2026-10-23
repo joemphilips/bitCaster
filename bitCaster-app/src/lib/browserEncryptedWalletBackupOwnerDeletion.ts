@@ -11,6 +11,7 @@ import {
   requireEncryptedWalletBackupOwnerBackupReachabilityEvidence,
   type EncryptedWalletBackupOwnerBackupReachabilityEvidence,
 } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDeletionAuthority";
+import type { EncryptedWalletBackupOwnerBackupReceiptSnapshot } from "../stores/encrypted-wallet-backup-owner-db";
 
 export interface BrowserEncryptedWalletBackupOwnerReachabilityInput {
   readonly ownerScopeId: string | null;
@@ -27,6 +28,7 @@ export interface BrowserEncryptedWalletBackupOwnerReachabilityInput {
 export interface BrowserEncryptedWalletBackupOwnerReachabilitySnapshot {
   readonly evidence: unknown;
   readonly collectedHeadEvidence: unknown;
+  readonly backupReceiptSnapshot?: EncryptedWalletBackupOwnerBackupReceiptSnapshot;
 }
 
 /** Validate SDK-issued evidence against one exact local backup asset. */
