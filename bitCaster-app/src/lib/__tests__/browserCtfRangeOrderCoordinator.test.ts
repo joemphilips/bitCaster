@@ -46,7 +46,6 @@ import {
   pointFromHex,
   selectCtfRangeAmounts,
   type ConditionalSwapPreview,
-  type CounterSource,
   type Proof,
   type ProofState,
   type SerializedBlindedMessage,
@@ -133,6 +132,7 @@ import {
 import {
   browserRangeJournalIdentity,
   browserRangeOperationFromSnapshot,
+  browserSourceOperationFromSnapshot,
   browserCustodySelection,
   browserWalletScope,
   decodeBrowserPersistedSourceResult,
@@ -211,7 +211,9 @@ vi.mock("../browserWalletNewWritePermission", () => ({
   requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
 }));
 
+let fixtureNow = 20_000;
 beforeEach(() => {
+  fixtureNow = 20_000;
   mocks.requireNewWritePermission.mockReset();
   mocks.requireNewWritePermission.mockResolvedValue(undefined);
 });
@@ -225,6 +227,205 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
+  it.each(["source", "consolidation"] as const)(
+    "atomically rolls back %s counters with journal failures",
+    async (family) => {
+      const preparation = persistedPreparation(`atomic-${family}`);
+      const inputs =
+        family === "source"
+          ? [sourceProof(preparation.offerKeyset.id, 16)]
+          : ["a", "b", "c"].map((id) => sourceProof(preparation.offerKeyset.id, 2, id));
+      const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+      const engine = engineMock();
+      let mintCalls = 0;
+      let fault: "counter-written" | "journal-bound" | undefined = "counter-written";
+      const coordinator = createCoordinator(
+        database,
+        sourceWallet({
+          onComplete: async () => {
+            mintCalls++;
+          },
+        }),
+        engine,
+        {
+          injectSourcePreparationFault: (phase) => {
+            if (phase === fault) throw new Error("test preparation fault");
+          },
+        },
+      );
+      const perform = () =>
+        family === "source"
+          ? coordinator.prepareAndSubmit({ seed: SEED, preparation, candidates: inputs })
+          : coordinator.consolidateRound({
+              seed: SEED,
+              preparation,
+              inputs,
+              round: 0,
+              plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+              consentedFeeFacts: coordinatorFeeFacts(preparation),
+            });
+      for (const phase of ["counter-written", "journal-bound"] as const) {
+        fault = phase;
+        await expect(perform()).rejects.toMatchObject({ code: "custody-commit-failed" });
+        expect(
+          (await database.walletCounterCursors.get([walletScopeId(), preparation.offerKeyset.id]))
+            ?.next,
+        ).toBe(0);
+        expect(await database.custodyOperations.count()).toBe(0);
+        expect(await database.ctfRangePreparations.count()).toBe(0);
+        expect(await database.ctfRangePreparationConsolidations.count()).toBe(0);
+        expect(await database.custodyReservations.count()).toBe(0);
+        expect(mintCalls).toBe(0);
+      }
+      fault = undefined;
+      await perform();
+      expect(
+        (await database.walletCounterCursors.get([walletScopeId(), preparation.offerKeyset.id]))!
+          .next,
+      ).toBeGreaterThan(0);
+      expect(mintCalls).toBe(1);
+    },
+  );
+
+  it.each(["source", "consolidation"] as const)(
+    "reconciles a lost %s commit and reuses exact saved counters",
+    async (family) => {
+      const preparation = persistedPreparation(`lost-atomic-${family}`);
+      const inputs =
+        family === "source"
+          ? [sourceProof(preparation.offerKeyset.id, 16)]
+          : ["a", "b", "c"].map((id) => sourceProof(preparation.offerKeyset.id, 2, id));
+      const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+      let drafts = 0;
+      let mintCalls = 0;
+      const coordinator = createCoordinator(
+        database,
+        sourceWallet({
+          onComplete: async () => {
+            mintCalls++;
+          },
+        }),
+        engineMock(),
+        {
+          observeSourcePrepared: async () => {
+            drafts++;
+          },
+          injectSourcePreparationFault: (phase) => {
+            if (phase === "after-commit") throw new Error("lost commit reply");
+          },
+        },
+      );
+      const perform = () =>
+        family === "source"
+          ? coordinator.prepareAndSubmit({ seed: SEED, preparation, candidates: inputs })
+          : coordinator.consolidateRound({
+              seed: SEED,
+              preparation,
+              inputs,
+              round: 0,
+              plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+              consentedFeeFacts: coordinatorFeeFacts(preparation),
+            });
+      await perform();
+      const counters = await database.walletCounterCursors.toArray();
+      if (family === "source")
+        await expect(perform()).rejects.toMatchObject({ code: "capability-creation-failed" });
+      else await perform();
+      expect(await database.walletCounterCursors.toArray()).toEqual(counters);
+      expect(drafts).toBe(1);
+      expect(mintCalls).toBe(1);
+    },
+  );
+
+  it("rolls back the first mixed-source keyset on second-keyset conflict and rebuilds exact outputs", async () => {
+    const preparation = persistedPreparation("atomic-mixed-counter", "FOK", { side: "Sell" });
+    const held = [1024].map((amount, index) =>
+      sourceProof(preparation.offerKeyset.id, amount, `mixed-${index}`),
+    );
+    const cash = sourceProof(preparation.receiveKeyset.id, 8, "mixed-cash");
+    const database = createDatabase([
+      ...held.map((proof) =>
+        storedSourceProof(proof, { conditionId: CONDITION_ID, outcomeCollection: "YES" }),
+      ),
+      storedSourceProof(cash),
+    ]);
+    const drafts: Array<
+      NonNullable<BrowserCtfRangeOrderCoordinatorDependencies["observeSourcePrepared"]> extends (
+        draft: infer T,
+      ) => unknown
+        ? T
+        : never
+    > = [];
+    let mintCalls = 0;
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      observeSourcePrepared: async (draft) => {
+        drafts.push(draft);
+        expect(draft.changes).toHaveLength(2);
+        const first = draft.changes[0]!;
+        expect(
+          (await database.walletCounterCursors.get([walletScopeId(), first.keysetId]))?.next,
+        ).toBe(0);
+        if (drafts.length === 1) {
+          const second = draft.changes[1]!;
+          const counters = new BrowserWalletCounterDexieStore({
+            database,
+            scopeId: walletScopeId(),
+          });
+          await counters.reserveInContext(
+            { mintUrl: MINT_URL, unit: "msat" },
+            second.keysetId,
+            7,
+            true,
+          );
+        }
+      },
+      executeSourceConvert: async (_mintUrl, request) => {
+        mintCalls++;
+        return {
+          signatures: Object.fromEntries(
+            Object.entries(request.outputs).map(([group, outputs]) => [
+              group,
+              outputs.map(signBlindedMessage),
+            ]),
+          ),
+        };
+      },
+    });
+    const fees = {
+      ...coordinatorFeeFacts(preparation),
+      sourceMode: "mixed-source-ctf-convert" as const,
+      sourcePreparationAsset: { kind: "regular", unit: "msat" } as const,
+      sourcePreparationFeeSubunits: "1",
+    };
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: held,
+      collateralCandidates: [cash],
+      maxOutputs: 64,
+      consentedFeeFacts: fees,
+      currentFeeFacts: fees,
+    });
+    expect(drafts).toHaveLength(2);
+    expect(drafts[1]!.changes[1]!.expectedNextCounter).toBe(7);
+    const snapshot = await new BrowserDurableCustodyAdapter(database).readOperationSnapshot(
+      walletScope(),
+      sourceCustodyOperationId(preparation.sourceOperationId),
+    );
+    const saved = browserSourceOperationFromSnapshot(snapshot!.record, snapshot!.artifacts);
+    expect(JSON.stringify(saved.outputs) === JSON.stringify(drafts[1]!.operation.outputs)).toBe(
+      true,
+    );
+    expect(JSON.stringify(saved.outputs) === JSON.stringify(drafts[0]!.operation.outputs)).toBe(
+      false,
+    );
+    expect(mintCalls).toBe(1);
+    for (const change of drafts[1]!.changes)
+      expect(
+        (await database.walletCounterCursors.get([walletScopeId(), change.keysetId]))?.next,
+      ).toBe(change.nextCounter);
+  });
+
   it.each(["confirmed", "lost response", "missing cash", "missing holding", "output limit"])(
     "keeps full-share mixed preparation assets separate after %s",
     async (outcome) => {
@@ -473,9 +674,8 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
     const contexts: [string, string, string][] = [];
     const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
-      createCounterSource: (scopeId, mintUrl, unit) => {
-        contexts.push([scopeId, mintUrl, unit]);
-        return inMemoryCounterSource();
+      observeSourcePrepared: async ({ operation }) => {
+        contexts.push([walletScopeId(), operation.mintUrl, "msat"]);
       },
     });
 
@@ -535,17 +735,23 @@ describe("browser CTF range order coordinator", () => {
     ];
     const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
     let marker: ReturnType<typeof createBrowserCompletedProofRemovalMarkerRow> | undefined;
-    let bulkGetCalls = 0;
     const authorityTable = database.custodyProofBackupAuthorities;
     const originalBulkGet = authorityTable.bulkGet.bind(authorityTable);
     vi.spyOn(authorityTable, "bulkGet").mockImplementation((keys) => {
-      bulkGetCalls += 1;
-      if (bulkGetCalls !== 5) return originalBulkGet(keys);
-      return Dexie.Promise.resolve(database.custodyProofs.toArray()).then((rows) => {
-        const target = rows.find(({ selectability }) => selectability === "locked");
-        if (target === undefined) throw new Error("test locked consolidation proof is missing");
-        marker = completedRemovalMarkerForProof(target);
-        return Dexie.Promise.resolve(authorityTable.put(marker)).then(() => originalBulkGet(keys));
+      return Dexie.Promise.resolve(database.custodyOperations.toArray()).then((operations) => {
+        if (
+          marker !== undefined ||
+          !operations.some((row) => row.record.operation.result.state === "verified-staged")
+        )
+          return originalBulkGet(keys);
+        return Dexie.Promise.resolve(database.custodyProofs.toArray()).then((rows) => {
+          const target = rows.find(({ selectability }) => selectability === "locked");
+          if (target === undefined) throw new Error("test locked consolidation proof is missing");
+          marker = completedRemovalMarkerForProof(target);
+          return Dexie.Promise.resolve(authorityTable.put(marker)).then(() =>
+            originalBulkGet(keys),
+          );
+        });
       });
     });
     const coordinator = createCoordinator(database, sourceWallet(), engineMock());
@@ -587,9 +793,7 @@ describe("browser CTF range order coordinator", () => {
       sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
     ];
     const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
-    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
-      counterSource: inMemoryCounterSource(),
-    });
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {});
 
     await coordinator.consolidateRound({
       seed: SEED,
@@ -676,7 +880,7 @@ describe("browser CTF range order coordinator", () => {
           },
         }),
         engineMock(),
-        { counterSource: inMemoryCounterSource() },
+        {},
       );
       await coordinator.consolidateRound({
         seed: SEED,
@@ -919,9 +1123,8 @@ describe("browser CTF range order coordinator", () => {
     });
     const contexts: [string, string, string][] = [];
     const coordinator = createCoordinator(database, wallet, engine, {
-      createCounterSource: (scopeId, mintUrl, unit) => {
-        contexts.push([scopeId, mintUrl, unit]);
-        return inMemoryCounterSource();
+      observeSourcePrepared: async ({ operation }) => {
+        contexts.push([walletScopeId(), operation.mintUrl, "msat"]);
       },
     });
 
@@ -1347,12 +1550,7 @@ describe("browser CTF range order coordinator", () => {
       });
       const prepareConditionalSwap = vi.spyOn(wallet, "prepareConditionalSwap");
       const engine = engineMock();
-      const coordinator = createCoordinator(database, wallet, engine, {
-        createCounterSource: (requestedScopeId, mintUrl, unit) => {
-          expect([requestedScopeId, mintUrl, unit]).toEqual([scopeId, MINT_URL, "msat"]);
-          return counterSource;
-        },
-      });
+      const coordinator = createCoordinator(database, wallet, engine, {});
 
       expect(database.name).toBe(browserWalletDatabaseName(scopeId));
       const submit = coordinator.prepareAndSubmit({ seed, preparation, candidates: [proof] });
@@ -1401,15 +1599,14 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
     const preparation = persistedPreparation("range-buy-local-custody-count");
     const seeded = await admitDeterministicRegularProof(database, 8);
-    const counterSource = inMemoryCounterSource(async (keysetId, _start, count) => {
-      const cursor = await database.walletCounterCursors.get([walletScopeId(), keysetId]);
-      await database.walletCounterCursors.put({
-        scopeId: walletScopeId(),
-        keysetId,
-        next: (cursor?.next ?? 0) + count,
-      });
-    });
-    await counterSource.advanceToAtLeast(REGULAR_KEYSET_ID, 1);
+    const counterStore = new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() });
+    await counterStore.restoreInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      REGULAR_KEYSET_ID,
+      1,
+      false,
+      () => undefined,
+    );
     const sourcePlans: Array<{
       inputTotal: number;
       sendAmount: number;
@@ -1423,7 +1620,6 @@ describe("browser CTF range order coordinator", () => {
       engineMock(),
       {
         now: () => ++now,
-        counterSource,
         beforeCreateCapability: async () => {
           const rows = await database.custodyProofs.toArray();
           const authorities = new Map(
@@ -1602,9 +1798,9 @@ describe("browser CTF range order coordinator", () => {
     const engine = engineMock();
     let reservations = 0;
     const coordinator = createCoordinator(database, wallet, engine, {
-      counterSource: inMemoryCounterSource(() => {
+      observeSourcePrepared: async () => {
         reservations += 1;
-      }),
+      },
     });
 
     await expect(
@@ -1651,11 +1847,8 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-counter-recovery-pending");
     const engine = engineMock();
-    const counterSource = inMemoryCounterSource();
-    counterSource.reserve = async () => {
-      throw new Error("The wallet counter recovery is incomplete.");
-    };
-    const coordinator = createCoordinator(database, sourceWallet(), engine, { counterSource });
+    refundCounterFixtureDatabases.delete(database);
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
 
     await expect(
       coordinator.prepareAndSubmit({
@@ -2891,6 +3084,8 @@ describe("browser CTF range order coordinator", () => {
 
       const existingPreparation = persistedPreparation(`range-active-resume-refund-${status}`);
       let existingNow = 20_000;
+      database.close();
+      await database.delete();
       const existingDatabase = createRefundDatabase();
       const initial = createCoordinator(
         existingDatabase,
@@ -3352,7 +3547,15 @@ async function initializeRefundCounterFixture(
   preparation: PersistedCtfRangeOrderPreparation,
 ): Promise<void> {
   const counters = new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() });
-  for (const id of [preparation.offerKeyset.id, preparation.receiveKeyset.id])
+  for (const id of [
+    ...new Set(
+      [
+        preparation.offerKeyset.id,
+        preparation.receiveKeyset.id,
+        preparation.complementKeyset?.id,
+      ].filter((id): id is string => id !== undefined),
+    ),
+  ]) {
     await counters.restoreInContext(
       { mintUrl: preparation.mintUrl, unit: "msat" },
       id,
@@ -3360,6 +3563,9 @@ async function initializeRefundCounterFixture(
       false,
       () => undefined,
     );
+    if ((await database.walletCounterCursors.get([walletScopeId(), id])) === undefined)
+      await database.walletCounterCursors.put({ scopeId: walletScopeId(), keysetId: id, next: 0 });
+  }
 }
 
 function createCoordinator(
@@ -3368,6 +3574,8 @@ function createCoordinator(
   engine: ReturnType<typeof engineMock>,
   options: {
     isCurrentRefundProfile?: BrowserCtfRangeOrderCoordinatorDependencies["isCurrentRefundProfile"];
+    observeSourcePrepared?: BrowserCtfRangeOrderCoordinatorDependencies["observeSourcePrepared"];
+    injectSourcePreparationFault?: BrowserCtfRangeOrderCoordinatorDependencies["injectSourcePreparationFault"];
     observeRefundPrepared?: BrowserCtfRangeOrderCoordinatorDependencies["observeRefundPrepared"];
     injectRefundPreparationFault?: BrowserCtfRangeOrderCoordinatorDependencies["injectRefundPreparationFault"];
     isDefinitiveOrderRejection?: (error: unknown) => boolean;
@@ -3379,11 +3587,8 @@ function createCoordinator(
     executeRefundSwap?: BrowserCtfRangeOrderCoordinatorDependencies["executeRefundSwap"];
     executeSourceConvert?: BrowserCtfRangeOrderCoordinatorDependencies["executeSourceConvert"];
     now?: () => number;
-    counterSource?: CounterSource;
-    createCounterSource?: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
   } = {},
 ): TestCoordinator {
-  let now = 20_000;
   const coordinator = new BrowserCtfRangeOrderCoordinator({
     database,
     isCurrentRefundProfile: options.isCurrentRefundProfile,
@@ -3391,14 +3596,14 @@ function createCoordinator(
     injectRefundPreparationFault: options.injectRefundPreparationFault,
     wallet,
     engine,
+    observeSourcePrepared: options.observeSourcePrepared,
+    injectSourcePreparationFault: options.injectSourcePreparationFault,
     ...(options.executeSourceConvert === undefined
       ? {}
       : { executeSourceConvert: options.executeSourceConvert }),
-    now: options.now ?? (() => now++),
+    now: options.now ?? (() => fixtureNow++),
     randomId: () => crypto.randomUUID(),
     lockManager: options.lockManager ?? immediateLockManager(),
-    createCounterSource:
-      options.createCounterSource ?? (() => options.counterSource ?? inMemoryCounterSource()),
     ...(options.isDefinitiveOrderRejection === undefined
       ? {}
       : { isDefinitiveOrderRejection: options.isDefinitiveOrderRejection }),
@@ -3448,7 +3653,16 @@ function createCoordinator(
       currentFeeFacts: input.currentFeeFacts ?? coordinatorFeeFacts(input.preparation),
     });
   };
-  return Object.assign(coordinator, { prepareAndSubmit: testPrepareAndSubmit }) as TestCoordinator;
+  const consolidateRound = coordinator.consolidateRound.bind(coordinator);
+  return Object.assign(coordinator, {
+    prepareAndSubmit: testPrepareAndSubmit,
+    consolidateRound: async (
+      input: Parameters<BrowserCtfRangeOrderCoordinator["consolidateRound"]>[0],
+    ) => {
+      await initializeRefundCounterFixture(database, input.preparation);
+      return consolidateRound(input);
+    },
+  }) as TestCoordinator;
 }
 
 async function bindJournalCapability(
@@ -3484,23 +3698,6 @@ async function bindJournalCapability(
     },
     database,
   );
-}
-
-function inMemoryCounterSource(
-  onReserve: (keysetId: string, start: number, count: number) => void | Promise<void> = () => {},
-): CounterSource {
-  const next = new Map<string, number>();
-  return {
-    async reserve(keysetId, count) {
-      const start = next.get(keysetId) ?? 0;
-      next.set(keysetId, start + count);
-      await onReserve(keysetId, start, count);
-      return { start, count };
-    },
-    async advanceToAtLeast(keysetId, minNext) {
-      next.set(keysetId, Math.max(next.get(keysetId) ?? 0, minNext));
-    },
-  };
 }
 
 function sourceWallet(
@@ -4299,7 +4496,7 @@ function sequentialId(...ids: string[]): () => string {
 
 function createDatabase(
   proofs: StoredProof[] = [storedSourceProof(sourceProof(REGULAR_KEYSET_ID))],
-  name = `bitcaster-browser-range-${crypto.randomUUID()}`,
+  name = browserWalletDatabaseName(walletScopeId()),
 ): BitcasterDB {
   const database = new BitcasterDB(name);
   database.on("populate", (transaction) =>
@@ -4312,6 +4509,7 @@ function createDatabase(
     ),
   );
   openDatabases.push(database);
+  refundCounterFixtureDatabases.add(database);
   return database;
 }
 
@@ -4445,8 +4643,6 @@ async function expiredOrdinaryBrowserRefund(options: Parameters<typeof createCoo
   const coordinator = createCoordinator(database, sourceWallet(), engine, {
     now: () => now,
     createMintRecovery: refundableRecovery(preparation),
-    createCounterSource: (scopeId, mintUrl, unit) =>
-      new BrowserWalletCounterSource({ database, scopeId }, { mintUrl, unit }),
     executeRefundSwap: async (_url, request) => ({
       signatures: request.outputs.map(signBlindedMessage),
     }),
@@ -5076,9 +5272,7 @@ it("uses an owner-rehydrated conditional Buy successor for a later real Sell pre
     const wallet = sourceWallet();
     const swap = vi.spyOn(wallet, "prepareConditionalSwap");
     const engine = engineMock();
-    const coordinator = createCoordinator(f.database, wallet, engine, {
-      createCounterSource: () => counters,
-    });
+    const coordinator = createCoordinator(f.database, wallet, engine, {});
     await expect(
       coordinator.prepareAndSubmit({ seed: source.seed, preparation, candidates: restored }),
     ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });

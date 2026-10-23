@@ -1,6 +1,12 @@
+import {
+  BrowserCtfRangeOrderCoordinator,
+  type BrowserCtfRangeOrderCoordinatorDependencies,
+} from "@/lib/browserCtfRangeOrderCoordinator";
+import { planPersistedCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import Dexie from "dexie";
-import { afterEach, describe, expect, it } from "vitest";
-import { deriveConditionalKeysetId, deriveKeysetId } from "@cashu/cashu-ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Amount, deriveConditionalKeysetId, deriveKeysetId } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
@@ -445,4 +451,125 @@ it("native IndexedDB co-commits scoped speculative counter and caller journal, r
     nextCounter: 14,
   });
   expect(await reopened.ctfRangePreparations.count()).toBe(1);
+});
+
+vi.mock("@/lib/browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: async () => undefined,
+}));
+
+it("native source consolidation commits counters and exact custody only together", async () => {
+  const database = openDatabase();
+  await markCountersReady(database);
+  const candidate = preparation(request("native-source-consolidation"));
+  const inputs = ["a", "b", "c"].map((secret) => ({
+    id: offerKeysetId,
+    amount: Amount.from(2),
+    secret,
+    C: mintKeys["2"]!,
+  }));
+  await database.proofs.bulkPut(
+    inputs.map((proof) => ({
+      ...proof,
+      amount: 2,
+      scopeId,
+      mintUrl,
+      baseAsset: "sat" as const,
+      unit: "msat",
+      receivedAt: 1,
+    })),
+  );
+  let phase: "counter-written" | "journal-bound" | undefined = "counter-written";
+  let mintCalls = 0;
+  let now = 20000;
+  const wallet: Exclude<
+    BrowserCtfRangeOrderCoordinatorDependencies["wallet"],
+    (...args: never[]) => unknown
+  > = {
+    async prepareSwapToSend(amount, proofs, config, outputs) {
+      if (outputs.send.type !== "custom" || outputs.keep.type !== "custom")
+        throw new Error("unexpected random outputs");
+      return {
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: config.keysetId,
+        inputs: proofs,
+        sendOutputs: outputs.send.data,
+        keepOutputs: outputs.keep.data,
+        unselectedProofs: [],
+      };
+    },
+    async completeSwap() {
+      mintCalls++;
+      throw new Error("controlled mint transport boundary");
+    },
+    async prepareConditionalSwap() {
+      throw new Error("unexpected conditional call");
+    },
+    async completeConditionalSwap() {
+      throw new Error("unexpected conditional call");
+    },
+    async checkProofsStates() {
+      throw new Error("unexpected state call");
+    },
+  };
+  const unexpected = async (): Promise<never> => {
+    throw new Error("unexpected engine call");
+  };
+  const coordinator = new BrowserCtfRangeOrderCoordinator({
+    database,
+    wallet,
+    engine: {
+      createSettlementCapability: unexpected,
+      submitOrder: unexpected,
+      getOrderStatus: unexpected,
+      getSettlementCapabilityResultByOperation: unexpected,
+      acknowledgeSettlementCapabilityResult: unexpected,
+    },
+    now: () => now++,
+    injectSourcePreparationFault: (current) => {
+      if (current === phase) throw new Error("native preparation abort");
+    },
+  });
+  const feeFacts = composeCtfRangeOrderFeeFacts({
+    authorizationPlan: planPersistedCtfRangeOrderAuthorization(candidate),
+    sourcePlan: {
+      kind: "same-keyset-swap",
+      inputs: [],
+      authorizationAmounts: [],
+      changeAmount: 0,
+      inputFee: 1,
+    },
+    sourceMode: "wallet-send",
+    consolidationFeeSubunits: "0",
+    settlementAsset: { kind: "regular", unit: "msat" },
+    sourcePreparationAsset: { kind: "regular", unit: "msat" },
+    consolidationAsset: { kind: "regular", unit: "msat" },
+  });
+  const perform = () =>
+    coordinator.consolidateRound({
+      seed,
+      preparation: candidate,
+      round: 0,
+      inputs,
+      plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      consentedFeeFacts: feeFacts,
+    });
+  for (const fault of ["counter-written", "journal-bound"] as const) {
+    phase = fault;
+    await expect(perform()).rejects.toMatchObject({ code: "custody-commit-failed" });
+    expect(await database.walletCounterCursors.get([scopeId, offerKeysetId])).toBeUndefined();
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(mintCalls).toBe(0);
+  }
+  phase = undefined;
+  await expect(perform()).rejects.toMatchObject({ code: "mint-source-uncertain" });
+  expect(mintCalls).toBe(1);
+  database.close();
+  const reopened = openDatabase();
+  expect((await reopened.walletCounterCursors.get([scopeId, offerKeysetId]))?.next).toBe(2);
+  expect(await reopened.custodyOperations.count()).toBe(1);
+  expect(await reopened.ctfRangePreparations.count()).toBe(1);
+  expect(await reopened.ctfRangePreparationConsolidations.count()).toBe(1);
+  expect((await reopened.custodyArtifacts.toArray()).length).toBeGreaterThan(0);
 });
