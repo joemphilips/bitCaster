@@ -39,7 +39,6 @@ afterEach(() => {
 
 function capture(input: {
   authenticatedOwner: typeof ownerA | null;
-  selectedOwner?: typeof ownerB | null;
   isCurrentProfile?: () => boolean;
   revisions?: ReturnType<typeof revisionSource>;
   readAuthenticatedOwner?: () => typeof ownerA | null;
@@ -47,7 +46,6 @@ function capture(input: {
   const revisions = input.revisions ?? revisionSource();
   const session = captureBrowserEncryptedWalletBackupOwnerSession({
     isCurrentProfile: input.isCurrentProfile ?? (() => true),
-    ...(input.selectedOwner === undefined ? {} : { selectedOwnerScope: input.selectedOwner }),
     readAuthenticatedOwner: input.readAuthenticatedOwner ?? (() => input.authenticatedOwner),
     readSignerRevision: revisions.get,
     subscribeSignerRevision: revisions.subscribe,
@@ -56,30 +54,26 @@ function capture(input: {
   return { session, revisions };
 }
 
-it("allows seed-only recovery for a discovered owner without an account signer", () => {
-  const { session } = capture({ authenticatedOwner: null, selectedOwner: ownerB });
+it("captures an unauthenticated session without lifecycle authority", () => {
+  const { session } = capture({ authenticatedOwner: null });
 
   expect(session.isCurrent()).toBe(true);
   session.requireCurrent();
-  expect(session.selectedOwnerScope?.ownerScopeId).toBe(ownerB.ownerScopeId);
   expect(session.authenticatedOwnerScope).toBeNull();
   expect(() => session.requireLifecycleOwner(ownerB)).toThrow(
     BrowserEncryptedWalletBackupOwnerSessionError,
   );
 });
 
-it("keeps content selection independent from the active signer owner", () => {
-  const { session } = capture({ authenticatedOwner: ownerA, selectedOwner: ownerB });
+it("binds lifecycle authority only to the captured signer owner", () => {
+  const { session } = capture({ authenticatedOwner: ownerA });
 
   session.requireCurrent();
-  expect(session.selectedOwnerScope?.ownerScopeId).toBe(ownerB.ownerScopeId);
   expect(session.authenticatedOwnerScope?.ownerScopeId).toBe(ownerA.ownerScopeId);
   expect(() => session.requireLifecycleOwner(ownerB)).toThrow(
     BrowserEncryptedWalletBackupOwnerSessionError,
   );
-  expect(() => session.requireLifecycleOwner(ownerA)).toThrow(
-    BrowserEncryptedWalletBackupOwnerSessionError,
-  );
+  expect(session.requireLifecycleOwner(ownerA)).toEqual(ownerA);
 });
 
 it("rejects a lifecycle result that does not match the captured live signer", () => {

@@ -355,7 +355,7 @@ it("retires an application database instance on a later versionchange", async ()
   await expect(database.open()).rejects.toThrow("superseded by a schema upgrade");
 });
 
-it("does not write selected-owner authority when an account switch releases a deferred head", async () => {
+it("does not write captured-account authority when an account switch releases a deferred head", async () => {
   expect(Dexie.dependencies.indexedDB).toBe(window.indexedDB);
   const seed = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
   const runtime: EncryptedWalletBackupV2BundleRuntime = {
@@ -387,10 +387,7 @@ it("does not write selected-owner authority when an account switch releases a de
     ownerSubject: "account-c",
   });
   const selectedOwner = {
-    ...deriveEncryptedWalletBackupOwnerScope({
-      authorizationScheme: "test",
-      ownerSubject: "seed-selected-owner-b",
-    }),
+    ...accountA,
     enrollmentEpoch: 1,
   };
   let activeSigner = accountA;
@@ -400,7 +397,6 @@ it("does not write selected-owner authority when an account switch releases a de
   const ownerSession = captureBrowserEncryptedWalletBackupOwnerSession({
     isCurrentProfile: () => true,
     signal: sessionAbort.signal,
-    selectedOwnerScope: selectedOwner,
     readAuthenticatedOwner: () => activeSigner,
     readSignerRevision: () => signerRevision,
     subscribeSignerRevision: (listener) => {
@@ -428,7 +424,7 @@ it("does not write selected-owner authority when an account switch releases a de
   const leaderFinished = deferred<void>();
   const ownerClient = {
     discover: async () => [{ entries: [selectedOwner] }],
-    selectOwner: async () => selectedOwner,
+    resolveFirstAccount: () => ({ kind: "active" as const, owner: selectedOwner }),
     readEnrollmentEpoch: async () => ({ status: "active" as const, enrollmentEpoch: 1 }),
     readCurrentHead: () => {
       readStarted.resolve();
@@ -441,7 +437,7 @@ it("does not write selected-owner authority when an account switch releases a de
       throw new Error("empty head must not read objects");
     },
     operateAccount: async () => {
-      throw new Error("seed-only recovery must not run account lifecycle operations");
+      throw new Error("existing-account recovery must not run enrollment");
     },
   };
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({

@@ -3,7 +3,6 @@ import {
   type EncryptedWalletBackupOwnerHttpAdapter as OwnerHttpTransport,
 } from './encryptedWalletBackupOwnerHttpAdapter.ts'
 import {
-  selectEncryptedWalletBackupOwnerCandidateFromPages,
   validateEncryptedWalletBackupOwnerDiscoveryPages,
   resolveEncryptedWalletBackupFirstAccount,
   type EncryptedWalletBackupFirstAccountResolution,
@@ -117,27 +116,6 @@ export class EncryptedWalletBackupOwnerClient {
         throw new Error('encrypted backup first-account key context changed')
     }
     return resolveEncryptedWalletBackupFirstAccount(input)
-  }
-
-  /** Uses one candidate automatically; multiple candidates require an explicit listed owner. */
-  async selectOwner(input: {
-    readonly signal: AbortSignal
-    readonly ownerScopeId?: string | null
-  }): Promise<EncryptedWalletBackupOwnerCandidate> {
-    const pages = await this.discover({ signal: input.signal })
-    const listed = pages.flatMap((page) => page.entries)
-    const onlyCandidate =
-      pages.length === 1 && pages[0]?.entries.length === 1 && pages[0]?.nextCursor === null
-    const selectedScopeId =
-      input.ownerScopeId === undefined
-        ? onlyCandidate
-          ? listed[0]!.ownerScopeId
-          : null
-        : input.ownerScopeId
-    return selectEncryptedWalletBackupOwnerCandidateFromPages({
-      pages,
-      ownerScopeId: selectedScopeId,
-    })
   }
 
   async readEnrollmentEpoch(input: {

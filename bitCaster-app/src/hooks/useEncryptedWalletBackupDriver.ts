@@ -83,6 +83,7 @@ export function useEncryptedWalletBackupDriver(
               return previous;
             case "preparing":
             case "recovering":
+            case "blocked":
               return "reason" in previous && previous.reason === status.reason ? previous : status;
             default:
               return assertNever(status);
@@ -125,6 +126,7 @@ export function useEncryptedWalletBackupDriver(
         else setRestart((value) => value + 1);
         break;
       case "failed":
+      case "blocked":
         setRestart((value) => value + 1);
         break;
       case "ready":

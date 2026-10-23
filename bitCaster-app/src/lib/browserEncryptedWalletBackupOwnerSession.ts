@@ -14,7 +14,6 @@ export class BrowserEncryptedWalletBackupOwnerSessionError extends Error {
 }
 
 export interface BrowserEncryptedWalletBackupOwnerSession {
-  readonly selectedOwnerScope: EncryptedWalletBackupOwnerScope | null;
   readonly authenticatedOwnerScope: EncryptedWalletBackupOwnerScope | null;
   readonly signal: AbortSignal;
   isCurrent(): boolean;
@@ -26,16 +25,14 @@ export interface BrowserEncryptedWalletBackupOwnerSession {
 interface BrowserEncryptedWalletBackupOwnerSessionOptions {
   readonly isCurrentProfile: () => boolean;
   readonly signal?: AbortSignal;
-  readonly selectedOwnerScope?: EncryptedWalletBackupOwnerScope | null;
   readonly readAuthenticatedOwner?: () => EncryptedWalletBackupOwnerScope | null;
   readonly readSignerRevision?: typeof getNostrSignerRevision;
   readonly subscribeSignerRevision?: typeof subscribeToNostrSignerRevision;
 }
 
 /**
- * Captures browser liveness independently from backup-owner selection.
- * Content recovery may select a discovered owner while another account is
- * active. Lifecycle authorization must still match the active signer.
+ * Captures the one authenticated account and wallet profile for backup.
+ * First-release content recovery and lifecycle authorization use this account.
  */
 export function captureBrowserEncryptedWalletBackupOwnerSession(
   options: BrowserEncryptedWalletBackupOwnerSessionOptions,
@@ -45,10 +42,6 @@ export function captureBrowserEncryptedWalletBackupOwnerSession(
   const revision = readRevision();
   const readAuthenticatedOwner = options.readAuthenticatedOwner ?? readActiveNostrOwner;
   const authenticatedOwnerScope = readAuthenticatedOwner();
-  const rawSelectedOwnerScope =
-    options.selectedOwnerScope === undefined ? authenticatedOwnerScope : options.selectedOwnerScope;
-  const selectedOwnerScope =
-    rawSelectedOwnerScope === null ? null : requireOwnerScope(rawSelectedOwnerScope);
   const controller = new AbortController();
   const abortForParent = () => controller.abort();
   options.signal?.addEventListener("abort", abortForParent, { once: true });
@@ -72,7 +65,6 @@ export function captureBrowserEncryptedWalletBackupOwnerSession(
       throw new BrowserEncryptedWalletBackupOwnerSessionError("selection-changed");
   };
   return Object.freeze({
-    selectedOwnerScope,
     authenticatedOwnerScope,
     signal: controller.signal,
     isCurrent,
@@ -94,11 +86,7 @@ export function captureBrowserEncryptedWalletBackupOwnerSession(
       if (
         verified.ownerScopeId !== authenticatedOwnerScope.ownerScopeId ||
         verified.authorizationScheme !== authenticatedOwnerScope.authorizationScheme ||
-        verified.ownerSubject !== authenticatedOwnerScope.ownerSubject ||
-        (selectedOwnerScope !== null &&
-          (verified.ownerScopeId !== selectedOwnerScope.ownerScopeId ||
-            verified.authorizationScheme !== selectedOwnerScope.authorizationScheme ||
-            verified.ownerSubject !== selectedOwnerScope.ownerSubject))
+        verified.ownerSubject !== authenticatedOwnerScope.ownerSubject
       )
         throw new BrowserEncryptedWalletBackupOwnerSessionError("lifecycle-owner-mismatch");
       return verified;
@@ -119,15 +107,6 @@ function readActiveNostrOwner(): EncryptedWalletBackupOwnerScope | null {
     authorizationScheme: ENCRYPTED_WALLET_BACKUP_NIP98_ACCOUNT_PROFILE,
     ownerSubject: user.pubkey,
   });
-}
-
-function requireOwnerScope(
-  value: EncryptedWalletBackupOwnerScope,
-): EncryptedWalletBackupOwnerScope {
-  const derived = deriveEncryptedWalletBackupOwnerScope(value);
-  if (value.ownerScopeId !== derived.ownerScopeId)
-    throw new Error("The encrypted wallet backup owner is invalid.");
-  return derived;
 }
 
 function sameOwner(

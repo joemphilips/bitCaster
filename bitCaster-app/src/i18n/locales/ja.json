@@ -90,6 +90,22 @@
     "replaceBlockedSafetyChecks": "バックアップまたは復旧の安全確認に通らなかったため、ウォレットを切り替えませんでした。現在のウォレットは保持されています。"
   },
   "walletBackupRecovery": {
+    "changeAccount": "ID 設定を開く",
+    "localWalletKept": "ローカルのウォレット、資金、未完了の処理は変更していません。",
+    "blocked": {
+      "wrong-account": {
+        "title": "このバックアップは別の ID を使用しています",
+        "description": "このリカバリーフレーズのバックアップを最初に有効にした ID でサインインしてください。"
+      },
+      "inactive": {
+        "title": "このバックアップは無効です",
+        "description": "この ID ではバックアップを続行できません。ローカルのウォレットを保持してください。CLI のシード復元では、走査範囲内の対応する通常の msat 資金を復元できます。"
+      },
+      "incompatible-discovery": {
+        "title": "このバックアップには互換性の確認が必要です",
+        "description": "バックアップ記録を安全に使用できません。ローカルのウォレットを保持してください。このリカバリーフレーズの代替バックアップを作成しないでください。"
+      }
+    },
     "preparingTitle": "ウォレットバックアップを準備中",
     "preparingDescription": "入金や他のウォレット操作の前に、バックアップの準備が完了するまでお待ちください。",
     "failedTitle": "ウォレットバックアップが停止しました",

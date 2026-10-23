@@ -140,6 +140,17 @@ keysets before a full recovery. It is not full recovery by itself.
 
 ## Multiple wallets
 
+Use the ID that first enabled backup for a recovery phrase. This release does
+not transfer that binding to another ID and has no backup-owner selector.
+The recovery phrase and backup realm derive the encryption keys. Your Nostr
+secret key is not the encryption key.
+
+If the app reports a different ID, sign in with the original ID. The app keeps
+your local funds and unfinished work. It does not create an empty replacement
+backup. A revoked or deleted backup does not release the original ID binding.
+CLI seed recovery remains available for supported regular-msat funds within
+the scanned range. It does not restore the complete wallet operation history.
+
 One authenticated account can retain several independent wallet ids. Each
 wallet id belongs to one wallet seed. Funds never move between wallet ids. The
 web app displays only the wallet for the recovery phrase currently open:
@@ -180,7 +191,7 @@ Retry keeps your amount, local funds, and unfinished work.
 It does not create or submit an invoice.
 After backup is ready, select the action button to continue.
 If the message asks you to sign in, sign in or reload the page if you are already signed in.
-This check does not require sign-in when backup is disabled or the wallet has no backup enrollment.
+This check does not require sign-in when backup is disabled. When backup is enabled, sign in before the app checks or creates its backup.
 Retry does not guarantee that backup or recovery can finish.
 
 A fresh browser restores and checks the wallet's current encrypted backup

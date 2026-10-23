@@ -1,3 +1,6 @@
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { getNdk } from "../nostr";
+import { EncryptedWalletBackupFirstAccountError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { Amount, deriveKeysetId } from "@cashu/cashu-ts";
@@ -465,7 +468,7 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
     .spyOn(ownerClient, "readCurrentHead")
     .mockResolvedValue(ownerReceipt.collectedHeadEvidence);
   vi.spyOn(ownerClient, "discover").mockResolvedValue([{ entries: [owner] }] as never);
-  vi.spyOn(ownerClient, "selectOwner").mockResolvedValue(owner);
+  vi.spyOn(ownerClient, "resolveFirstAccount").mockReturnValue({ kind: "active", owner });
   vi.spyOn(ownerClient, "readEnrollmentEpoch").mockResolvedValue({
     status: "active",
     enrollmentEpoch: owner.enrollmentEpoch,
@@ -475,7 +478,7 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
     ...fixture,
-    ownerSession: noSignerOwnerSession(),
+    ownerSession: authenticatedOwnerSession(owner),
     ownerClient,
     reportError,
     remote: runtimeRemote(),
@@ -547,7 +550,7 @@ it("refuses selected-owner seed handoff evidence after the captured profile chan
   );
   const ownerClient = {
     discover: vi.fn().mockResolvedValue([{ entries: [owner] }]),
-    selectOwner: vi.fn().mockResolvedValue(owner),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner }),
     readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
     readCurrentHead: vi.fn().mockResolvedValue(ownerEvidence),
     mutateHead: vi.fn(),
@@ -559,7 +562,7 @@ it("refuses selected-owner seed handoff evidence after the captured profile chan
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
     ...fixture,
-    ownerSession: noSignerOwnerSession(),
+    ownerSession: authenticatedOwnerSession(owner),
     ownerClient: ownerClient as never,
     remote: runtimeRemote(),
     runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
@@ -1940,14 +1943,14 @@ it("allows seed-only recovery for one discovered owner without an account signer
       enrollmentEpoch: candidate.enrollmentEpoch,
     },
   );
-  const session = noSignerOwnerSession();
+  const session = authenticatedOwnerSession(candidate);
   const readCurrentHead = vi
     .fn()
     .mockResolvedValueOnce(evidence)
     .mockResolvedValue(competingEvidence);
   const client = {
     discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
-    selectOwner: vi.fn().mockResolvedValue(candidate),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
     readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
     readCurrentHead,
     mutateHead: vi.fn(),
@@ -2028,7 +2031,7 @@ it("retries selected-owner conflict recovery after remote unavailability without
     .mockResolvedValue(competingEvidence);
   const ownerClient = {
     discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
-    selectOwner: vi.fn().mockResolvedValue(candidate),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
     readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
     readCurrentHead,
     mutateHead: vi.fn(),
@@ -2040,7 +2043,7 @@ it("retries selected-owner conflict recovery after remote unavailability without
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
     ...fixture,
-    ownerSession: noSignerOwnerSession(),
+    ownerSession: authenticatedOwnerSession(candidate),
     ownerClient: ownerClient as never,
     recovery: legacyRecovery,
     runtime: crypto,
@@ -2104,7 +2107,7 @@ it.each([
     };
     const client = {
       discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
-      selectOwner: vi.fn().mockResolvedValue(candidate),
+      resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
       readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
       readCurrentHead: vi.fn().mockRejectedValue(error),
       mutateHead: vi.fn(),
@@ -2120,7 +2123,7 @@ it.each([
     const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
       configuration,
       ...fixture,
-      ownerSession: noSignerOwnerSession(),
+      ownerSession: authenticatedOwnerSession(candidate),
       ownerClient: client as never,
       runtime: crypto,
       signal: new AbortController().signal,
@@ -2165,7 +2168,7 @@ it.each([
   };
   const ownerClient = {
     discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
-    selectOwner: vi.fn().mockResolvedValue(candidate),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
     readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
     readCurrentHead: vi
       .fn()
@@ -2182,7 +2185,7 @@ it.each([
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
     ...fixture,
-    ownerSession: noSignerOwnerSession(),
+    ownerSession: authenticatedOwnerSession(candidate),
     ownerClient: ownerClient as never,
     runtime: crypto,
     signal: new AbortController().signal,
@@ -2206,7 +2209,7 @@ it("blocks configured backup when owner discovery is empty and no signer can enr
   const session = noSignerOwnerSession();
   const client = {
     discover: vi.fn().mockResolvedValue([]),
-    selectOwner: vi.fn(),
+    resolveFirstAccount: vi.fn(),
     readEnrollmentEpoch: vi.fn(),
     readCurrentHead: vi.fn(),
     mutateHead: vi.fn(),
@@ -2214,6 +2217,7 @@ it("blocks configured backup when owner discovery is empty and no signer can enr
     operateAccount: vi.fn(),
   };
   const reportError = vi.fn();
+  const paused = deferred<void>();
   const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
     ...fixture,
@@ -2224,9 +2228,14 @@ it("blocks configured backup when owner discovery is empty and no signer can enr
     isCurrentProfile: () => true,
     leadership: immediateLeadership,
     reportError,
+    onRecoveryStatusChange: (status) => {
+      if (status.kind === "preparing" && status.reason === "authentication") paused.resolve();
+    },
   });
   try {
-    await vi.waitFor(() => expect(reportError).toHaveBeenCalledOnce());
+    await paused.promise;
+    expect(reportError).not.toHaveBeenCalled();
+    expect(client.discover).not.toHaveBeenCalled();
     await expect(newWritePermission(fixture)).rejects.toMatchObject({
       reason: "startup-authentication-pending",
     });
@@ -3855,9 +3864,21 @@ const immediateLeadership = {
   },
 };
 
+function authenticatedOwnerSession(
+  owner: ReturnType<typeof deriveEncryptedWalletBackupOwnerScope>,
+): BrowserEncryptedWalletBackupOwnerSession {
+  return Object.freeze({
+    ...noSignerOwnerSession(),
+    authenticatedOwnerScope: owner,
+    requireLifecycleOwner(candidate: typeof owner) {
+      if (candidate.ownerScopeId !== owner.ownerScopeId) throw new Error("owner changed");
+      return owner;
+    },
+  });
+}
+
 function noSignerOwnerSession(): BrowserEncryptedWalletBackupOwnerSession {
   return Object.freeze({
-    selectedOwnerScope: null,
     authenticatedOwnerScope: null,
     signal: new AbortController().signal,
     isCurrent: () => true,
@@ -3917,3 +3938,70 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it.each(["account-result", "account-error"] as const)(
+  "rediscovery classifies %s conflict only from the new verified result",
+  async (kind) => {
+    const fixture = await enrollmentFixture();
+    const ndk = getNdk();
+    const oldSigner = ndk.signer;
+    const signer = new NDKPrivateKeySigner("11".repeat(32));
+    ndk.signer = signer;
+    const user = await signer.user();
+    const owner = deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "nip98-backup-intent-v1",
+      ownerSubject: user.pubkey,
+    });
+    const firstPages = [{ entries: [] }];
+    const secondPages = [{ entries: [] }];
+    const resolved = vi
+      .fn()
+      .mockReturnValueOnce({ kind: "absent" })
+      .mockImplementationOnce(() => {
+        throw new EncryptedWalletBackupFirstAccountError("wrong-account");
+      });
+    const client = {
+      discover: vi.fn().mockResolvedValueOnce(firstPages).mockResolvedValueOnce(secondPages),
+      resolveFirstAccount: resolved,
+      operateAccount: vi
+        .fn()
+        .mockResolvedValue(
+          kind === "account-result" ? { kind, result: "conflict" } : { kind, code: "conflict" },
+        ),
+      readEnrollmentEpoch: vi.fn(),
+      readCurrentHead: vi.fn(),
+      mutateHead: vi.fn(),
+      readObject: vi.fn(),
+    };
+    const stopped = deferred<void>();
+    const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+      configuration,
+      ...fixture,
+      ownerSession: authenticatedOwnerSession(owner),
+      ownerClient: client as never,
+      runtime: crypto,
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+      leadership: immediateLeadership,
+      reportError: vi.fn(),
+      onRecoveryStatusChange: (status) => {
+        if (status.kind === "blocked" && status.reason === "wrong-account") stopped.resolve();
+      },
+    });
+    try {
+      await stopped.promise;
+      expect(client.discover).toHaveBeenCalledTimes(2);
+      expect(resolved).toHaveBeenNthCalledWith(1, { pages: firstPages, authenticatedOwner: owner });
+      expect(resolved).toHaveBeenNthCalledWith(2, {
+        pages: secondPages,
+        authenticatedOwner: owner,
+      });
+      expect(client.operateAccount).toHaveBeenCalledOnce();
+      expect(client.readCurrentHead).not.toHaveBeenCalled();
+      expect(await fixture.database.encryptedWalletBackupOwnerEnrollmentResults.count()).toBe(0);
+    } finally {
+      driver.stop();
+      ndk.signer = oldSigner;
+    }
+  },
+);

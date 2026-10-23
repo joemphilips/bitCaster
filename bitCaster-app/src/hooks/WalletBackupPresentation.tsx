@@ -31,6 +31,7 @@ export function walletBackupPausesNewChanges(
       return false;
     case "preparing":
     case "failed":
+    case "blocked":
     case "recovering":
       return true;
     default:

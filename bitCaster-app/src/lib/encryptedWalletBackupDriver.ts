@@ -21,7 +21,10 @@ import {
 import { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
 import { EncryptedWalletBackupOwnerHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHttpAdapter";
 import { prepareEncryptedWalletBackupOwnerAccountOperation } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerAccount";
-import type { EncryptedWalletBackupOwnerCandidate } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
+import {
+  EncryptedWalletBackupFirstAccountError,
+  type EncryptedWalletBackupOwnerCandidate,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
 import { runBrowserEncryptedWalletBackupOwnerWorkerCycle } from "./browserEncryptedWalletBackupOwnerWorker";
 import { recoverBrowserEncryptedWalletBackupOwnerConflict } from "./browserEncryptedWalletBackupOwnerConflictRecovery";
 import type { BrowserEncryptedWalletBackupOwnerSession } from "./browserEncryptedWalletBackupOwnerSession";
@@ -119,6 +122,10 @@ export type BrowserEncryptedWalletBackupV2RecoveryStatus =
     }
   | { readonly kind: "failed" }
   | {
+      readonly kind: "blocked";
+      readonly reason: "wrong-account" | "inactive" | "incompatible-discovery";
+    }
+  | {
       readonly kind: "recovering";
       readonly reason: BrowserEncryptedWalletBackupV2ConflictRecoveryIncompleteReason | null;
     };
@@ -177,7 +184,7 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
   readonly ownerClient?: Pick<
     EncryptedWalletBackupOwnerClient,
     | "discover"
-    | "selectOwner"
+    | "resolveFirstAccount"
     | "readEnrollmentEpoch"
     | "readCurrentHead"
     | "mutateHead"
@@ -245,6 +252,12 @@ export function createBrowserEncryptedWalletBackupV2RuntimeDriver(
   return new BrowserEncryptedWalletBackupV2RuntimeDriverImpl(input).start();
 }
 
+class InactiveBrowserBackupError extends Error {
+  constructor() {
+    super("The original account's backup is inactive.");
+  }
+}
+
 class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncryptedWalletBackupV2RuntimeDriver {
   readonly #input: BrowserEncryptedWalletBackupV2RuntimeDriverInput;
   readonly #runtime: EncryptedWalletBackupV2BundleRuntime;
@@ -253,7 +266,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     | Pick<
         EncryptedWalletBackupOwnerClient,
         | "discover"
-        | "selectOwner"
+        | "resolveFirstAccount"
         | "readEnrollmentEpoch"
         | "readCurrentHead"
         | "mutateHead"
@@ -297,6 +310,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   #authenticationSession: BrowserWalletBackupAuthenticationSession | undefined;
   #sessionAuthenticated = false;
   #diagnosticState: EncryptedWalletBackupDriverState | undefined;
+  #startupBlockedReason: "wrong-account" | "inactive" | "incompatible-discovery" | undefined;
   #recoveryStatusKind: BrowserEncryptedWalletBackupV2RecoveryStatus["kind"] | undefined;
   readonly #removeReadinessWaiters = new Set<() => void>();
 
@@ -903,6 +917,13 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       this.#requestCycle();
     } catch (error) {
       if (!this.#isLeaderActive()) return;
+      if (
+        error instanceof EncryptedWalletBackupFirstAccountError &&
+        error.code === "account-required"
+      ) {
+        this.#notifyRecoveryStatus({ kind: "preparing", reason: "authentication" });
+        return;
+      }
       if (this.#recoveryPaused) {
         this.#fail(error);
         return;
@@ -969,6 +990,8 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     const session = this.#input.ownerSession;
     if (session === undefined) throw new Error("encrypted backup owner session is absent");
     session.requireCurrent();
+    if (session.authenticatedOwnerScope === null)
+      throw new EncryptedWalletBackupFirstAccountError("account-required");
     const client =
       this.#ownerClient ??
       new EncryptedWalletBackupOwnerClient({
@@ -983,28 +1006,33 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#ownerClient = client;
     const pages = await client.discover({ signal: this.#leadershipSignal });
     session.requireCurrent();
-    const listed = pages.flatMap((page) => page.entries);
-    if (listed.length > 0) {
-      const candidate = await client.selectOwner({
-        signal: this.#leadershipSignal,
-        ...(session.selectedOwnerScope === null
-          ? {}
-          : { ownerScopeId: session.selectedOwnerScope.ownerScopeId }),
-      });
-      session.requireCurrent();
+    const resolution = client.resolveFirstAccount({
+      pages,
+      authenticatedOwner: session.authenticatedOwnerScope,
+    });
+    const requireActive = async (candidate: EncryptedWalletBackupOwnerCandidate) => {
       const epoch = await client.readEnrollmentEpoch({
         owner: candidate,
         signal: this.#leadershipSignal,
       });
       session.requireCurrent();
       if (epoch.status !== "active" || epoch.enrollmentEpoch !== candidate.enrollmentEpoch)
-        throw new Error("selected encrypted backup owner is not active");
+        throw new Error("The original account's backup changed during discovery.");
       return candidate;
-    }
-
-    const authenticatedOwner = session.authenticatedOwnerScope;
-    if (authenticatedOwner === null)
-      throw new Error("configured encrypted backup requires a selected owner");
+    };
+    const rediscoverConflict = async () => {
+      const currentPages = await client.discover({ signal: this.#leadershipSignal });
+      session.requireCurrent();
+      const current = client.resolveFirstAccount({
+        pages: currentPages,
+        authenticatedOwner: session.authenticatedOwnerScope,
+      });
+      if (current.kind === "active") return requireActive(current.owner);
+      if (current.kind === "inactive") throw new InactiveBrowserBackupError();
+      throw new Error("Backup enrollment conflicted without a current binding.");
+    };
+    if (resolution.kind === "active") return requireActive(resolution.owner);
+    if (resolution.kind === "inactive") throw new InactiveBrowserBackupError();
     const operation = await prepareEncryptedWalletBackupOwnerAccountOperation({
       keyHandle,
       action: "enroll",
@@ -1019,11 +1047,24 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     });
     session.requireLifecycleOwner(operation);
     session.requireCurrent();
-    const response = await client.operateAccount({
-      operation,
-      signal: this.#leadershipSignal,
-    });
+    let response: Awaited<ReturnType<typeof client.operateAccount>>;
+    try {
+      response = await client.operateAccount({ operation, signal: this.#leadershipSignal });
+    } catch (error) {
+      session.requireCurrent();
+      if (
+        error instanceof EncryptedWalletBackupOwnerHttpTransportError &&
+        error.code === "conflict"
+      )
+        return rediscoverConflict();
+      throw error;
+    }
     session.requireCurrent();
+    if (
+      (response.kind === "account-result" && response.result === "conflict") ||
+      (response.kind === "account-error" && response.code === "conflict")
+    )
+      return rediscoverConflict();
     if (
       response.kind !== "account-result" ||
       response.result !== "committed" ||
@@ -1535,6 +1576,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     if (this.#sessionAuthenticated) return;
     switch (this.#recoveryStatusKind) {
       case "recovering":
+      case "blocked":
         return;
       case "ready":
       case "preparing":
@@ -1621,6 +1663,12 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   #fail(error: unknown): void {
     if (this.#terminal) return;
     this.#terminal = true;
+    if (error instanceof InactiveBrowserBackupError) this.#startupBlockedReason = "inactive";
+    if (
+      error instanceof EncryptedWalletBackupFirstAccountError &&
+      error.code !== "account-required"
+    )
+      this.#startupBlockedReason = error.code;
     this.#notifyRemoveReadinessWaiters();
     this.#initialized = false;
     this.#sessionAuthenticated = false;
@@ -1656,7 +1704,11 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       case "recovery-paused":
         break;
       case "terminal":
-        this.#notifyRecoveryStatus({ kind: "failed" });
+        this.#notifyRecoveryStatus(
+          this.#startupBlockedReason === undefined
+            ? { kind: "failed" }
+            : { kind: "blocked", reason: this.#startupBlockedReason },
+        );
         break;
       default:
         assertNever(state);

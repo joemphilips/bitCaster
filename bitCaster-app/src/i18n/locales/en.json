@@ -90,6 +90,22 @@
     "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept."
   },
   "walletBackupRecovery": {
+    "changeAccount": "Open ID settings",
+    "localWalletKept": "Your local wallet, funds, and unfinished work are unchanged.",
+    "blocked": {
+      "wrong-account": {
+        "title": "This backup uses a different ID",
+        "description": "Sign in with the ID that first enabled backup for this recovery phrase."
+      },
+      "inactive": {
+        "title": "This backup is inactive",
+        "description": "Backup cannot continue for this ID. Keep your local wallet. CLI seed recovery is available for supported regular-msat funds within the scanned range."
+      },
+      "incompatible-discovery": {
+        "title": "This backup needs compatibility support",
+        "description": "The backup records cannot be used safely. Keep your local wallet. Do not create a replacement backup for this recovery phrase."
+      }
+    },
     "preparingTitle": "Preparing wallet backup",
     "preparingDescription": "Wait for wallet backup before adding funds or making other wallet changes.",
     "failedTitle": "Wallet backup stopped",

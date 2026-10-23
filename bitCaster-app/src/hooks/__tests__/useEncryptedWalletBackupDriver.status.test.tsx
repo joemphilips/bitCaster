@@ -85,7 +85,7 @@ it.each(["disabled", "missing-wallet"])("does not blanket-block %s wallets", asy
   expect(mocks.permission).not.toHaveBeenCalled();
 });
 
-it("starts owner discovery without a signer and blocks configured backup writes pending selection", async () => {
+it("starts the account-bound driver and keeps configured backup writes paused before authentication", async () => {
   const { result } = renderHook(() => useEncryptedWalletBackupDriver(false));
   await waitFor(() => expect(mocks.input?.ownerSession).toBeDefined());
   expect(result.current.recoveryStatus).toEqual({
@@ -175,3 +175,18 @@ it("aborts and replaces the driver when the authenticated signer session changes
   expect(mocks.driver.stop).toHaveBeenCalled();
   expect(mocks.input).not.toBe(previousInput);
 });
+
+it.each(["wrong-account", "inactive", "incompatible-discovery"] as const)(
+  "preserves blocked %s status and restarts explicitly",
+  (reason) => {
+    const { result } = renderHook(() => useEncryptedWalletBackupDriver(true));
+    const before = mocks.input;
+    act(() => mocks.callback!({ kind: "blocked", reason }));
+    expect(result.current.recoveryStatus).toEqual({ kind: "blocked", reason });
+    expect(mocks.driver.resumeAfterRecovery).not.toHaveBeenCalled();
+    act(() => result.current.retryRecovery());
+    expect(mocks.input).not.toBe(before);
+    expect(mocks.driver.stop).toHaveBeenCalled();
+    expect(result.current.recoveryStatus).toEqual({ kind: "preparing", reason: "authentication" });
+  },
+);

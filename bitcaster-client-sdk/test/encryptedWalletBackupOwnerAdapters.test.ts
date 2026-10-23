@@ -102,47 +102,24 @@ async function issue(
     })
   return { proof, input, verified, row, cycle, evidence, keyHandle }
 }
-test('owner selection requires an explicit choice from a complete verified page', async () => {
+test('discovery accepts only complete issued pages and refuses unbound clones', async () => {
   const listing = await issue('owner-discovery')
-  const bytes = ownerDiscovery.encodeEncryptedWalletBackupOwnerDiscoveryPage({
-    request: listing.evidence(),
-    entries: [{ ...owner, enrollmentEpoch: 3 }],
-    nextCursor: null,
-    firstAccountOwnerScopeId: owner.ownerScopeId,
-  })
   const page = ownerDiscovery.verifyEncryptedWalletBackupOwnerDiscoveryPage({
-    bytes,
+    bytes: ownerDiscovery.encodeEncryptedWalletBackupOwnerDiscoveryPage({
+      request: listing.evidence(),
+      entries: [{ ...owner, enrollmentEpoch: 3 }],
+      nextCursor: null,
+      firstAccountOwnerScopeId: owner.ownerScopeId,
+    }),
     request: listing.proof,
   })
-
-  assert.throws(
-    () => ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({ page, ownerScopeId: null }),
-    (error: unknown) =>
-      error instanceof ownerDiscovery.EncryptedWalletBackupOwnerSelectionError &&
-      error.code === 'selection-required',
-  )
   assert.equal(
-    ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({
-      page,
-      ownerScopeId: owner.ownerScopeId,
-    }).ownerScopeId,
+    ownerDiscovery.validateEncryptedWalletBackupOwnerDiscoveryPages([page]).entries[0]
+      ?.ownerScopeId,
     owner.ownerScopeId,
   )
-  assert.throws(
-    () =>
-      ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({
-        page,
-        ownerScopeId: 'ff'.repeat(32),
-      }),
-    (error: unknown) =>
-      error instanceof ownerDiscovery.EncryptedWalletBackupOwnerSelectionError &&
-      error.code === 'owner-not-listed',
-  )
   assert.throws(() =>
-    ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({
-      page: { ...page },
-      ownerScopeId: owner.ownerScopeId,
-    }),
+    ownerDiscovery.validateEncryptedWalletBackupOwnerDiscoveryPages([{ ...page }]),
   )
   const partial = ownerDiscovery.verifyEncryptedWalletBackupOwnerDiscoveryPage({
     bytes: ownerDiscovery.encodeEncryptedWalletBackupOwnerDiscoveryPage({
@@ -153,78 +130,9 @@ test('owner selection requires an explicit choice from a complete verified page'
     }),
     request: listing.proof,
   })
-  assert.throws(
-    () =>
-      ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({
-        page: partial,
-        ownerScopeId: owner.ownerScopeId,
-      }),
-    (error: unknown) =>
-      error instanceof ownerDiscovery.EncryptedWalletBackupOwnerSelectionError &&
-      error.code === 'selection-incomplete',
-  )
+  assert.throws(() => ownerDiscovery.validateEncryptedWalletBackupOwnerDiscoveryPages([partial]))
   listing.cycle.abort()
-  assert.throws(() =>
-    ownerDiscovery.selectEncryptedWalletBackupOwnerCandidate({
-      page,
-      ownerScopeId: owner.ownerScopeId,
-    }),
-  )
-})
-test('owner selection can require an explicit choice across a verified complete page chain', async () => {
-  const otherOwner = deriveEncryptedWalletBackupOwnerScope({
-    authorizationScheme: 'test',
-    ownerSubject: 'owner-b',
-  })
-  const candidates = [owner, otherOwner].sort((left, right) =>
-    left.ownerScopeId.localeCompare(right.ownerScopeId),
-  )
-  const firstRequest = await issue('owner-discovery')
-  const first = ownerDiscovery.verifyEncryptedWalletBackupOwnerDiscoveryPage({
-    bytes: ownerDiscovery.encodeEncryptedWalletBackupOwnerDiscoveryPage({
-      request: firstRequest.evidence(),
-      entries: [{ ...candidates[0]!, enrollmentEpoch: 2 }],
-      nextCursor: candidates[0]!.ownerScopeId,
-      firstAccountOwnerScopeId: owner.ownerScopeId,
-    }),
-    request: firstRequest.proof,
-  })
-  const secondRequest = await issue('owner-discovery', candidates[0]!.ownerScopeId)
-  const second = ownerDiscovery.verifyEncryptedWalletBackupOwnerDiscoveryPage({
-    bytes: ownerDiscovery.encodeEncryptedWalletBackupOwnerDiscoveryPage({
-      request: secondRequest.evidence(),
-      entries: [{ ...candidates[1]!, enrollmentEpoch: 4 }],
-      nextCursor: null,
-      firstAccountOwnerScopeId: owner.ownerScopeId,
-    }),
-    request: secondRequest.proof,
-  })
-  const pages = [first, second]
-  assert.throws(
-    () =>
-      ownerDiscovery.selectEncryptedWalletBackupOwnerCandidateFromPages({
-        pages,
-        ownerScopeId: null,
-      }),
-    (error: unknown) =>
-      error instanceof ownerDiscovery.EncryptedWalletBackupOwnerSelectionError &&
-      error.code === 'selection-required',
-  )
-  assert.equal(
-    ownerDiscovery.selectEncryptedWalletBackupOwnerCandidateFromPages({
-      pages,
-      ownerScopeId: candidates[1]!.ownerScopeId,
-    }).ownerScopeId,
-    candidates[1]!.ownerScopeId,
-  )
-  firstRequest.cycle.abort()
-  secondRequest.cycle.abort()
-  assert.throws(() =>
-    ownerDiscovery.selectEncryptedWalletBackupOwnerCandidateFromPages({
-      pages,
-      ownerScopeId: candidates[1]!.ownerScopeId,
-    }),
-  )
+  assert.throws(() => ownerDiscovery.validateEncryptedWalletBackupOwnerDiscoveryPages([page]))
 })
 test('owner HTTP wrappers match independent canonical full-byte vectors', async () => {
   const i = await issue('current-inventory', null, true)

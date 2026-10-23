@@ -97,8 +97,11 @@ test('owner request signatures and discovery page match independent full-byte ve
   const bytes = page(proof, [alice])
   assert.equal(bytesToHex(bytes), v.page)
   const parsed = api.verifyEncryptedWalletBackupOwnerDiscoveryPage({ bytes, request: proof })
-  assert.equal(api.uniqueEncryptedWalletBackupOwnerCandidate(parsed)?.ownerScopeId, v.ownerA)
-  assert.throws(() => api.uniqueEncryptedWalletBackupOwnerCandidate({ ...parsed }))
+  assert.equal(
+    api.validateEncryptedWalletBackupOwnerDiscoveryPages([parsed]).entries[0]?.ownerScopeId,
+    v.ownerA,
+  )
+  assert.throws(() => api.validateEncryptedWalletBackupOwnerDiscoveryPages([{ ...parsed }]))
 })
 
 test('equal key and epoch cannot exchange owners, purpose or exact request targets', async () => {
@@ -150,14 +153,13 @@ test('discovery refuses false uniqueness on later pages and binds exact query/cu
     bytes: page(first, [owners[0]!], owners[0]!.ownerScopeId),
     request: first,
   })
-  assert.equal(api.uniqueEncryptedWalletBackupOwnerCandidate(firstPage), null)
+  assert.throws(() => api.validateEncryptedWalletBackupOwnerDiscoveryPages([firstPage]))
   const later = await issued(null, owners[0]!.ownerScopeId)
   const laterBytes = page(later, [owners[1]!], null, route(null, owners[0]!.ownerScopeId))
-  assert.equal(
-    api.uniqueEncryptedWalletBackupOwnerCandidate(
+  assert.throws(() =>
+    api.validateEncryptedWalletBackupOwnerDiscoveryPages([
       api.verifyEncryptedWalletBackupOwnerDiscoveryPage({ bytes: laterBytes, request: later }),
-    ),
-    null,
+    ]),
   )
   assert.throws(() =>
     api.verifyEncryptedWalletBackupOwnerDiscoveryPage({ bytes: laterBytes, request: first }),
@@ -232,7 +234,7 @@ test('bounded pages reject incorrect IDs, repeated order, cursors, excess entrie
     bytes: page(proof, []),
     request: proof,
   })
-  assert.equal(api.uniqueEncryptedWalletBackupOwnerCandidate(empty), null)
+  assert.equal(api.validateEncryptedWalletBackupOwnerDiscoveryPages([empty]).entries.length, 0)
 })
 
 test('owner proof rejects malformed versions/encoding and aborts, scoped epoch0 needs explicit discovery', async () => {
@@ -264,7 +266,7 @@ test('owner proof rejects malformed versions/encoding and aborts, scoped epoch0 
   assert.throws(() => api.requireIssuedEncryptedWalletBackupOwnerRequest(pending))
 })
 
-test('verified owner selection expires with its originating recovery cycle', async () => {
+test('verified owner discovery expires with its originating recovery cycle', async () => {
   const cycle = new AbortController()
   const request = await issued(null, null, { signal: cycle.signal })
   const verified = api.verifyEncryptedWalletBackupOwnerDiscoveryPage({
@@ -272,11 +274,11 @@ test('verified owner selection expires with its originating recovery cycle', asy
     request,
   })
   assert.equal(
-    api.uniqueEncryptedWalletBackupOwnerCandidate(verified)?.ownerScopeId,
+    api.validateEncryptedWalletBackupOwnerDiscoveryPages([verified]).entries[0]?.ownerScopeId,
     alice.ownerScopeId,
   )
   cycle.abort()
-  assert.throws(() => api.uniqueEncryptedWalletBackupOwnerCandidate(verified))
+  assert.throws(() => api.validateEncryptedWalletBackupOwnerDiscoveryPages([verified]))
 })
 
 test('owner listing refuses empty query and fragment delimiters', async () => {

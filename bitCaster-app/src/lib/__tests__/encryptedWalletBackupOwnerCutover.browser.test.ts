@@ -1,3 +1,15 @@
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+} from "../../stores/durable-custody-db";
+import {
+  createDurableProofOperationFacts,
+  prepareDurableCustodyExactArtifact,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
+  bindDurableCustodyProofOperation,
+  createDurableCustodyProofOperation,
+} from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import Dexie from "dexie";
 import {
   Amount,
@@ -1195,14 +1207,25 @@ function createAssetSource(
 }
 
 it.each([
-  { label: "no candidate", subjects: [] },
+  { label: "no account", subjects: ["one-owner"], noAccount: true },
+  { label: "wrong account", subjects: ["one-owner"], wrongAccount: true },
+  { label: "inactive binding", subjects: [], inactive: true },
+  { label: "legacy active without binding", subjects: ["one-owner"], legacy: true },
   { label: "one candidate", subjects: ["one-owner"] },
   { label: "multiple candidates", subjects: ["owner-a", "owner-b"] },
   { label: "malformed discovery page", subjects: ["one-owner"], malformedDiscovery: true },
   { label: "invalid owner identity", subjects: ["one-owner"], invalidOwnerIdentity: true },
 ])(
-  "connects real browser discovery and selection for $label",
-  async ({ subjects, malformedDiscovery = false, invalidOwnerIdentity = false }) => {
+  "connects verified first-account discovery without changing retained authority for $label",
+  async ({
+    subjects,
+    malformedDiscovery = false,
+    invalidOwnerIdentity = false,
+    noAccount = false,
+    wrongAccount = false,
+    inactive = false,
+    legacy = false,
+  }) => {
     expect(Dexie.dependencies.indexedDB).toBe(window.indexedDB);
     const runtime = browserRuntime();
     const seed = window.crypto.getRandomValues(new Uint8Array(64));
@@ -1240,22 +1263,55 @@ it.each([
         requests,
         malformedDiscovery,
         invalidOwnerIdentity,
+        firstAccountOwnerScopeId: legacy
+          ? null
+          : inactive
+            ? deriveEncryptedWalletBackupOwnerScope({
+                authorizationScheme: "test",
+                ownerSubject: "inactive",
+              }).ownerScopeId
+            : (owners[0]?.ownerScopeId ?? null),
       }),
       nowUnixSeconds: () => now,
     });
     const session = captureBrowserEncryptedWalletBackupOwnerSession({
       isCurrentProfile: () => true,
-      selectedOwnerScope: null,
-      readAuthenticatedOwner: () => null,
+      readAuthenticatedOwner: () =>
+        noAccount
+          ? null
+          : wrongAccount
+            ? deriveEncryptedWalletBackupOwnerScope({
+                authorizationScheme: "test",
+                ownerSubject: "other-account",
+              })
+            : (owners[0] ??
+              deriveEncryptedWalletBackupOwnerScope({
+                authorizationScheme: "test",
+                ownerSubject: "inactive",
+              })),
       readSignerRevision: () => 1,
       subscribeSignerRevision: () => () => undefined,
     });
     const reportError = vi.fn();
+    const statusChanged = vi.fn();
+    await database.walletCounterAssociations.put({
+      scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      keysetId: "01" + "11".repeat(32),
+      recoveryComplete: true,
+    });
+    if (noAccount || wrongAccount || inactive || legacy)
+      await seedRetainedAuthority(database, scopeId, seed, keyHandle, runtime);
+    const retainedBefore = await Promise.all(
+      database.tables.map(async (table) => [table.name, await table.toArray()]),
+    );
     const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
       configuration,
       database,
       scopeId,
       seed,
+      onRecoveryStatusChange: statusChanged,
       ownerSession: session,
       ownerClient: client,
       remote: unusedLegacyRemote(),
@@ -1271,7 +1327,30 @@ it.each([
     });
 
     try {
-      if (malformedDiscovery || invalidOwnerIdentity) {
+      if (noAccount || wrongAccount || inactive || legacy) {
+        await vi.waitFor(() =>
+          expect(statusChanged).toHaveBeenCalledWith(
+            noAccount
+              ? { kind: "preparing", reason: "authentication" }
+              : {
+                  kind: "blocked",
+                  reason: wrongAccount
+                    ? "wrong-account"
+                    : inactive
+                      ? "inactive"
+                      : "incompatible-discovery",
+                },
+          ),
+        );
+        if (noAccount) expect(requests).toHaveLength(0);
+        else
+          expect(requests.every((path) => path.split("?", 1)[0]!.endsWith("/owners"))).toBe(true);
+        expect(
+          await Promise.all(
+            database.tables.map(async (table) => [table.name, await table.toArray()]),
+          ),
+        ).toEqual(retainedBefore);
+      } else if (malformedDiscovery || invalidOwnerIdentity) {
         await vi.waitFor(() => expect(reportError).toHaveBeenCalledOnce());
         expect(requests.length).toBeGreaterThan(0);
         expect(requests.every((path) => path.split("?", 1)[0]!.endsWith("/owners"))).toBe(true);
@@ -1341,6 +1420,7 @@ function ownerServerFetch(input: {
   readonly requests: string[];
   readonly malformedDiscovery?: boolean;
   readonly invalidOwnerIdentity?: boolean;
+  readonly firstAccountOwnerScopeId?: string | null;
 }): typeof fetch {
   return async (resource, init) => {
     try {
@@ -1394,7 +1474,7 @@ function ownerServerFetch(input: {
         } else if (input.invalidOwnerIdentity) {
           const owner = input.owners[0]!;
           responseBytes = encodeCanonicalBackupCbor([
-            1,
+            2,
             "backup-owner-discovery-page",
             hexBytes(verified.requestDigest),
             verified.claims.realm,
@@ -1410,6 +1490,7 @@ function ownerServerFetch(input: {
               ],
             ],
             null,
+            hexBytes(owner.ownerScopeId),
           ]);
         } else {
           const firstPage = input.owners.length > 1 && parsed.searchParams.get("after") === null;
@@ -1419,6 +1500,10 @@ function ownerServerFetch(input: {
               ? input.owners.slice(0, 1)
               : input.owners.slice(input.owners.length > 1 ? 1 : 0),
             nextCursor: firstPage ? input.owners[0]!.ownerScopeId : null,
+            firstAccountOwnerScopeId:
+              input.firstAccountOwnerScopeId === undefined
+                ? (input.owners[0]?.ownerScopeId ?? null)
+                : input.firstAccountOwnerScopeId,
           });
         }
       } else {
@@ -1491,4 +1576,229 @@ function unusedLegacyRemote() {
     mutateHeadOnce: unavailable,
     executeAccountOperation: unavailable,
   } as never;
+}
+
+async function seedRetainedAuthority(
+  database: BitcasterDB,
+  scopeId: string,
+  seed: Uint8Array,
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>,
+  runtime: ReturnType<typeof browserRuntime>,
+) {
+  const keysetId = "01" + "11".repeat(32);
+  const mint = "https://retained.example";
+  const input = {
+    id: keysetId,
+    amount: 1 as never,
+    secret: "retained-input",
+    C: "02" + "22".repeat(32),
+  };
+  const proof = createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: mint,
+    unit: "msat",
+    proof: input,
+    asset: { kind: "regular" },
+    receivedAtMs: 1,
+  });
+  const operation = {
+    operationId: "retained-send",
+    kind: "wallet-send" as const,
+    mintUrl: mint,
+    inputs: [input],
+    outputs: {
+      authorization: [
+        {
+          blindedMessage: { amount: 1, id: keysetId, B_: "02" + "33".repeat(32) },
+          blindingFactor: "7",
+          secret: "retained-output",
+        },
+      ],
+      keep: [],
+    },
+    metadata: { unit: "msat" },
+  };
+  const artifacts = {
+    requestBody: prepareDurableCustodyExactArtifact(operation),
+    output: prepareDurableCustodyExactArtifact(operation.outputs),
+    privateMaterial: prepareDurableCustodyExactArtifact(operation),
+  };
+  const scope = { scopeKind: "wallet" as const, walletId: keyHandle.walletId, scopeId };
+  const record = createDurableCustodyProofOperation({
+    scope,
+    operation,
+    facts: createDurableProofOperationFacts({
+      unit: "msat",
+      binding: { kind: "wallet", activityId: operation.operationId, stage: "send" },
+      horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+      hasOutputs: true,
+      inputKeysetRequirement: "required",
+      keysets: [
+        {
+          keysetId,
+          unit: "msat",
+          curve: "secp256k1",
+          publicKeys: { "1": "02" + "11".repeat(32) },
+          keysetExpiryMs: null,
+          requireDleq: false,
+          usedByInputs: true,
+          usedByOutputs: true,
+        },
+      ],
+    }),
+    inventoryAccountId: null,
+    exactBoundary: {
+      method: "POST",
+      path: "/v1/swap",
+      idempotencyKey: operation.operationId,
+      ...artifacts,
+    },
+  });
+  const adapter = new BrowserDurableCustodyAdapter(database);
+  const authorization = await adapter.claimScope(scope, {
+    incarnationId: "retained-owner",
+    observedAtMs: 1,
+    leaseExpiresAtMs: 10000,
+  });
+  await adapter.transact(
+    {
+      scope,
+      owner: authorization,
+      operationRows: [{ operationId: record.operation.operationId, expectedRevision: null }],
+    },
+    (tx) => bindDurableCustodyProofOperation(tx, record, artifacts),
+    { predecessorProofs: { [record.operation.operationId]: [proof] } },
+  );
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "retained-backup",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const context = {
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  };
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: mint,
+    unit: "msat",
+    asset: { kind: "ordinary" },
+  });
+  let bundle = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: Uint8Array.of(0x31),
+    runtime,
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+  let head = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({
+      head: createEncryptedWalletBackupOwnerCurrentHead({
+        ...context,
+        headVersion: 0,
+        bundles: [],
+      }),
+      bundles: [],
+    }),
+    context,
+  );
+  const signingKey = new Uint8Array(32).fill(0x44);
+  const signingKeyId = "cc".repeat(16);
+  const publicKey = bytesToHex(schnorr.getPublicKey(signingKey));
+  let fail = false;
+  const remote = {
+    readCurrentHead: async () => head,
+    mutateHead: async ({ canonicalUploadGroup }: { canonicalUploadGroup: Uint8Array }) => {
+      if (fail) throw new Error("retained pending upload");
+      const group = decodeEncryptedWalletBackupOwnerUploadGroup({
+        bytes: canonicalUploadGroup,
+        expectedContext: context,
+        expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      });
+      const resultHead = createEncryptedWalletBackupOwnerCurrentHead({
+        ...context,
+        headVersion: head.head.headVersion + 1,
+        bundles: [bundle.descriptor],
+      });
+      const receipt = await issueEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+        mutationEvidence: group.mutationEvidence,
+        expectedContext: context,
+        resultHead,
+        signingKeyId,
+        signingPublicKey: publicKey,
+        signDigest: async (digest) =>
+          schnorr.sign(digest, signingKey, new Uint8Array(32).fill(0x55)),
+      });
+      const verified = verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt({
+        receipt,
+        mutationEvidence: group.mutationEvidence,
+        expectedContext: context,
+        pinnedSigningKeys: [{ keyId: signingKeyId, publicKey }],
+      });
+      head = collectEncryptedWalletBackupOwnerDescriptorPages(
+        enumerateEncryptedWalletBackupOwnerDescriptorPages({
+          head: resultHead,
+          bundles: [bundle.descriptor],
+        }),
+        context,
+      );
+      return verified;
+    },
+  };
+  const worker = () =>
+    runBrowserEncryptedWalletBackupOwnerWorkerCycle({
+      database,
+      scopeId,
+      seed,
+      keyHandle,
+      owner,
+      enrollmentEpoch: 1,
+      remote,
+      runtime,
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+      assetSource: { ...createAssetSource(database, scopeId, bundle), prepare: async () => bundle },
+    });
+  await worker();
+  await worker();
+  bundle = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset,
+    declaredAmount: 1n,
+    custodyRevision: 2n,
+    canonicalPayload: Uint8Array.of(0x32),
+    runtime,
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset,
+      custodyRevision: 2n,
+      activeProofCount: 1,
+    }),
+  );
+  fail = true;
+  await expect(worker()).rejects.toThrow("retained pending upload");
+  for (const table of [
+    database.custodyProofs,
+    database.custodyReservations,
+    database.custodyOperations,
+    database.custodyArtifacts,
+    database.custodyActiveWork,
+    database.encryptedWalletBackupOwnerAssetReceipts,
+    database.encryptedWalletBackupOwnerPreparedMutations,
+  ])
+    expect(await table.count()).toBeGreaterThan(0);
 }

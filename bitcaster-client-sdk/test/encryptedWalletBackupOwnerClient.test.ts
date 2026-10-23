@@ -20,7 +20,7 @@ Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: tr
 
 const now = 1_800_000_000
 
-test('owner client requires explicit multi-owner selection and binds epoch to selected candidate', async () => {
+test('owner client resolves the authenticated first account from the same verified pages', async () => {
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: Uint8Array.from({ length: 64 }, (_, index) => index),
     realm: 'mainnet',
@@ -104,23 +104,6 @@ test('owner client requires explicit multi-owner selection and binds epoch to se
     nowUnixSeconds: () => now,
   })
   const signal = new AbortController().signal
-  await assert.rejects(
-    () => client.selectOwner({ signal }),
-    (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'selection-required')
-      return true
-    },
-  )
-  const selected = await client.selectOwner({
-    signal,
-    ownerScopeId: candidates[1]!.ownerScopeId,
-  })
-  assert.equal(selected.ownerSubject, candidates[1]!.ownerSubject)
-  assert.deepEqual(await client.readEnrollmentEpoch({ owner: selected, signal }), {
-    status: 'active',
-    enrollmentEpoch: 3,
-  })
-  await assert.rejects(() => client.selectOwner({ signal, ownerScopeId: 'ff'.repeat(32) }))
   listingCandidates = [candidates[1]!]
   const pages = await client.discover({ signal })
   const callsBeforeResolution = discoveryCalls
@@ -142,4 +125,11 @@ test('owner client requires explicit multi-owner selection and binds epoch to se
       error.code === 'wrong-account',
   )
   assert.equal(discoveryCalls, callsBeforeResolution)
+  const resolved = client.resolveFirstAccount({ pages, authenticatedOwner: candidates[1]! })
+  assert.equal(resolved.kind, 'active')
+  if (resolved.kind !== 'active') throw new Error('expected active owner')
+  assert.deepEqual(await client.readEnrollmentEpoch({ owner: resolved.owner, signal }), {
+    status: 'active',
+    enrollmentEpoch: 3,
+  })
 })
