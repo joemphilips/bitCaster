@@ -218,6 +218,8 @@ async function prepareBrowserMarketFundingTransfer(input: {
       const operation = await prepareBrowserDeterministicOutgoingCashuSend({
         operationId: `market-funding:${begin.newAttemptId}`,
         wallet,
+        database: context.database,
+        requireCapturedProfile: context.requireCapturedProfile,
         proofs,
         amount: Number(begin.requestedAmount),
         mintUrl: durableMetadata.mintUrl,

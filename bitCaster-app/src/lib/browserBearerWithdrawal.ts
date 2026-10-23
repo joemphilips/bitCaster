@@ -83,6 +83,8 @@ export async function executeBrowserBearerWithdrawal(input: {
       return prepareBrowserDeterministicOutgoingCashuSend({
         operationId: `bearer-withdrawal:${transferId}`,
         wallet,
+        database: context.database,
+        requireCapturedProfile: context.requireCapturedProfile,
         proofs,
         amount: input.amountMsat,
         mintUrl: input.mintUrl,

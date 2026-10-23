@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import { requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
 import { type Proof, type ProofState, type SwapPreview } from "@cashu/cashu-ts";
 import {
@@ -49,6 +50,8 @@ import {
 } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserCustodyOperationId, browserWalletScope } from "./browserCtfRangeOrderSource";
 import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
+import { browserOutgoingCounterPreparationFor } from "./browserOutgoingCounterPreparation";
+import { BrowserWalletCounterSnapshotConflictError } from "../stores/browser-wallet-counter-db";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   BrowserDurableCustodyAdapter,
@@ -71,6 +74,7 @@ import {
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const CURSOR_HIGH = "\uffff";
 const DUE_MINT_DISCOVERY_KEY_LIMIT = DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX;
+const OUTGOING_PREPARATION_ATTEMPTS = 3;
 
 type BrowserOutgoingScopeOwner = DurableCustodyOwnerAuthorization & {
   readonly leaseExpiresAtMs: number;
@@ -97,6 +101,7 @@ export interface BrowserDurableOutgoingCashuContext {
   readonly randomId?: () => string;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly injectFault?: "before-commit" | "after-commit";
+  readonly injectBindFault?: "before-commit" | "after-commit";
   requireCapturedProfile(): void;
 }
 
@@ -159,26 +164,56 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
     });
     const marketFundingHead = await prepareFundingHeadMutation(input, scope.scopeId);
     input.context.requireCapturedProfile();
-    const operation = await input.prepareWalletSendOperation();
-    const transfer = await prepareBrowserOutgoingTransfer({
-      input,
-      adapter,
-      owner,
-      operation,
-      marketFundingHead,
-    });
-    input.context.requireCapturedProfile();
-    const persisted = await runBrowserOutgoingCoordinator({
-      context: input.context,
-      adapter,
-      owner,
-      wallet: input.wallet,
-      restoreExactOutputs: input.restoreExactOutputs,
-      transfer,
-      mode: "execute",
-    });
-    input.context.requireCapturedProfile();
-    return persisted;
+    let operation = await input.prepareWalletSendOperation();
+    for (let attempt = 0; attempt < OUTGOING_PREPARATION_ATTEMPTS; attempt += 1) {
+      input.context.requireCapturedProfile();
+      const counterPreparation = browserOutgoingCounterPreparationFor(operation);
+      let transfer: DurableOutgoingCashuTransfer;
+      try {
+        transfer = await prepareBrowserOutgoingTransfer({
+          input,
+          adapter,
+          owner,
+          operation,
+          counterPreparation,
+          marketFundingHead,
+        });
+      } catch (error) {
+        if (!(error instanceof BrowserWalletCounterSnapshotConflictError)) {
+          throw error;
+        }
+        const winner = await findReusableRecipientTransfer(input, scope.scopeId);
+        input.context.requireCapturedProfile();
+        if (winner !== null) {
+          if (winner.token !== null) return winner;
+          return runBrowserOutgoingCoordinator({
+            context: input.context,
+            adapter,
+            owner,
+            wallet: input.wallet,
+            restoreExactOutputs: input.restoreExactOutputs,
+            transfer: winner,
+            mode: "recover",
+          });
+        }
+        if (attempt + 1 >= OUTGOING_PREPARATION_ATTEMPTS) throw error;
+        operation = await input.prepareWalletSendOperation();
+        continue;
+      }
+      input.context.requireCapturedProfile();
+      const persisted = await runBrowserOutgoingCoordinator({
+        context: input.context,
+        adapter,
+        owner,
+        wallet: input.wallet,
+        restoreExactOutputs: input.restoreExactOutputs,
+        transfer,
+        mode: "execute",
+      });
+      input.context.requireCapturedProfile();
+      return persisted;
+    }
+    throw new Error("browser outgoing counter preparation did not commit");
   });
 }
 
@@ -637,6 +672,7 @@ async function prepareBrowserOutgoingTransfer(input: {
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: BrowserOutgoingScopeOwner;
   readonly operation: DurableWalletSendOperation;
+  readonly counterPreparation: ReturnType<typeof browserOutgoingCounterPreparationFor>;
   readonly marketFundingHead?: BrowserMarketFundingHeadMutation;
 }): Promise<DurableOutgoingCashuTransfer> {
   const { input: request, adapter, owner, operation } = input;
@@ -664,6 +700,21 @@ async function prepareBrowserOutgoingTransfer(input: {
       predecessorProofs: { [binding.record.operation.operationId]: predecessors },
       outgoingTransfer: browserOutgoingCashuTransferRow(scope.scopeId, transfer, "reserved"),
       outgoingAdmission: outgoingAdmission(scope.scopeId, transfer),
+      walletCounterAuthority: {
+        beforePersist: async () => {
+          for (const change of input.counterPreparation.transcript.changes()) {
+            await input.counterPreparation.counterStore.compareAndAdvanceInCurrentTransaction(
+              Dexie.currentTransaction!,
+              input.counterPreparation.counterContext,
+              change,
+            );
+          }
+        },
+        afterPersist: () => undefined,
+      },
+      ...(request.context.injectBindFault === undefined
+        ? {}
+        : { injectFault: request.context.injectBindFault }),
       ...(input.marketFundingHead === undefined
         ? {}
         : { marketFundingHead: input.marketFundingHead }),
