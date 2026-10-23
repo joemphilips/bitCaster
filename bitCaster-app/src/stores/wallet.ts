@@ -1,3 +1,4 @@
+import { browserWalletScope } from "@/lib/browserCtfRangeOrderSource";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
@@ -118,12 +119,25 @@ async function createWallet(
   const seedBytes = getSeedBytes(mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
   if (!seedBytes || scopeId === null) throw new Error("The wallet profile is unavailable.");
+  return createSeedWallet(
+    url,
+    unit,
+    seedBytes,
+    counterSource ?? createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl: url, unit }),
+  );
+}
+
+async function createSeedWallet(
+  url: string,
+  unit: string,
+  seed: Uint8Array,
+  counterSource: CounterSource,
+): Promise<CashuWallet> {
   const mint = new CashuMint(url);
   const wallet = new CashuWallet(mint, {
     unit,
-    bip39seed: seedBytes,
-    counterSource:
-      counterSource ?? createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl: url, unit }),
+    bip39seed: seed.slice(),
+    counterSource,
   });
   await wallet.loadMint();
   return wallet;
@@ -555,6 +569,34 @@ export async function createUncachedWalletForMnemonicUnit(input: {
     normalizeUrl(input.mintUrl),
     input.unit,
     input.mnemonic,
+    input.counterSource,
+  );
+  input.requireCapturedProfile();
+  return wallet;
+}
+
+/** Build a seed-bound private draft without mutating a cached wallet. */
+export async function createUncachedWalletForSeedUnit(input: {
+  readonly mintUrl: string;
+  readonly unit: string;
+  readonly seed: Uint8Array;
+  readonly scopeId: string;
+  readonly database: BitcasterDB;
+  readonly requireCapturedProfile: () => void;
+  readonly counterSource: CounterSource;
+}): Promise<CashuWallet> {
+  const seed = input.seed.slice();
+  input.requireCapturedProfile();
+  if (
+    browserWalletScope(seed).scopeId !== input.scopeId ||
+    input.database.name !== browserWalletDatabaseName(input.scopeId) ||
+    typeof input.counterSource?.reserve !== "function"
+  )
+    throw new Error("The private wallet profile is unavailable.");
+  const wallet = await createSeedWallet(
+    normalizeUrl(input.mintUrl),
+    input.unit,
+    seed,
     input.counterSource,
   );
   input.requireCapturedProfile();

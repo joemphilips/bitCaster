@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import "fake-indexeddb/auto";
 import {
   createUncachedWalletForMnemonicUnit,
+  createUncachedWalletForSeedUnit,
   getWalletForMnemonicUnit,
   createBrowserWalletCounterSource,
   getExactUnitBalance,
@@ -1088,6 +1089,86 @@ describe("useWalletStore", () => {
 });
 
 describe("private uncached wallet construction", () => {
+  it("copies a captured seed and keeps the cached source unchanged", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    setActiveBrowserWalletProfile(mnemonic);
+    const scopeId = browserWalletScopeIdFromMnemonic(mnemonic)!;
+    activateBrowserWalletDatabase(scopeId);
+    const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const seed = bip39.toSeed(mnemonic.split(" "));
+    const expected = seed.slice();
+    const counterSource = { reserve: vi.fn(), advanceToAtLeast: vi.fn() };
+    try {
+      const cached = await getWalletForMnemonicUnit("https://mint.example", "msat", mnemonic);
+      cashuMocks.loadMint.mockImplementationOnce(async () => {
+        seed.fill(0);
+      });
+      const privateWallet = await createUncachedWalletForSeedUnit({
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        seed,
+        scopeId,
+        database,
+        requireCapturedProfile: () => undefined,
+        counterSource,
+      });
+      const options = (
+        privateWallet as unknown as { options: { bip39seed: Uint8Array; counterSource: unknown } }
+      ).options;
+      expect([...options.bip39seed]).toEqual([...expected]);
+      expect(options.counterSource).toBe(counterSource);
+      expect(privateWallet).not.toBe(cached);
+      expect(await getWalletForMnemonicUnit("https://mint.example", "msat", mnemonic)).toBe(cached);
+      await expect(
+        createUncachedWalletForSeedUnit({
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          seed,
+          scopeId,
+          database,
+          requireCapturedProfile: () => undefined,
+          counterSource,
+        }),
+      ).rejects.toThrow("profile is unavailable");
+      const foreign = new BitcasterDB("foreign-seed-draft");
+      try {
+        await expect(
+          createUncachedWalletForSeedUnit({
+            mintUrl: "https://mint.example",
+            unit: "msat",
+            seed: expected,
+            scopeId,
+            database: foreign,
+            requireCapturedProfile: () => undefined,
+            counterSource,
+          }),
+        ).rejects.toThrow("profile is unavailable");
+      } finally {
+        foreign.close();
+      }
+      let current = true;
+      cashuMocks.loadMint.mockImplementationOnce(async () => {
+        current = false;
+      });
+      await expect(
+        createUncachedWalletForSeedUnit({
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          seed: expected,
+          scopeId,
+          database,
+          requireCapturedProfile: () => {
+            if (!current) throw new Error("seed profile changed");
+          },
+          counterSource,
+        }),
+      ).rejects.toThrow("seed profile changed");
+    } finally {
+      database.close();
+      await database.delete();
+    }
+  });
+
   it("uses the exact private source without replacing a cached wallet", async () => {
     const mnemonic = bip39.generate().join(" ");
     setActiveBrowserWalletProfile(mnemonic);

@@ -1,6 +1,17 @@
+import Dexie from "dexie";
+import {
+  createSpeculativeCounterTranscript,
+  type SpeculativeCounterTranscript,
+} from "@bitcaster/client-sdk/speculativeCounterTranscript";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSnapshotConflictError,
+} from "../stores/browser-wallet-counter-db";
+import { createUncachedWalletForSeedUnit } from "../stores/wallet";
 import {
   Amount,
   type MeltPreview,
+  type OperationCounters,
   type MeltQuoteBaseResponse,
   type MeltQuoteResponse,
   type OutputDataLike,
@@ -29,6 +40,7 @@ import {
 import {
   requireDurableWalletOperationFromCustody,
   serializeDurableWalletMeltOperation,
+  serializeDurableWalletProof,
   toDurableCustodyProofOperationInput,
   type DurableWalletMeltOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
@@ -68,7 +80,8 @@ export interface BrowserDurableWalletMeltWallet {
   prepareMelt(
     method: string,
     quote: MeltQuoteResponse,
-    proofs: readonly Proof[],
+    proofs: Proof[],
+    config?: { keysetId: string; onCountersReserved: (range: OperationCounters) => void },
   ): Promise<MeltPreview<MeltQuoteResponse>>;
   completeMelt(
     preview: MeltPreview<Pick<MeltQuoteResponse, "quote">>,
@@ -104,6 +117,10 @@ export interface BrowserDurableWalletMeltContext {
   readonly lockManager?: Pick<LockManager, "request">;
   readonly injectFault?: "before-commit" | "after-commit";
   readonly injectFaultPhase?: "stage" | "apply";
+  readonly observePrepared?: (operation: DurableWalletMeltOperation) => Promise<void>;
+  readonly injectPreparationFault?: (
+    phase: "counter-written" | "journal-bound" | "after-commit",
+  ) => void;
   requireCapturedProfile(): void;
 }
 
@@ -124,6 +141,10 @@ export async function meltBrowserDurableWallet(
   input: BrowserDurableWalletMeltInput,
 ): Promise<BrowserDurableWalletMeltResult> {
   if (input.quote.unit !== "msat") throw new Error(PRODUCT_MSAT_ERROR);
+  input = {
+    ...input,
+    context: Object.create(input.context, { seed: { value: input.context.seed.slice() } }),
+  };
   const scope = browserWalletScope(input.context.seed);
   const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
   const now = input.context.now ?? Date.now;
@@ -247,44 +268,265 @@ async function runMeltWithOwner(
     operationId = nextAttempt.operationId;
     snapshot = nextAttempt.snapshot;
   }
-  const wasPersistedBeforeCall = snapshot !== null;
+  let recover = snapshot !== null;
 
   if (snapshot === null) {
-    await requireBrowserWalletNewWritePermission({
-      database: input.context.database ?? db,
-      scopeId: scope.scopeId,
-    });
+    const database = input.context.database ?? db;
+    await requireBrowserWalletNewWritePermission({ database, scopeId: scope.scopeId });
     const canonicalProofs = await canonicalMeltProofs(adapter, scope, input);
-    const preview = await input.wallet.prepareMelt("bolt11", input.quote, canonicalProofs);
-    input.context.requireCapturedProfile();
-    const operation = serializeDurableWalletMeltOperation({
-      operationId,
-      mintUrl: input.mintUrl,
-      unit: "msat",
-      preview,
-    });
-    const binding = createMeltBinding(scope, operation, input.wallet);
-    const predecessors = await meltPredecessorRows(adapter, scope.scopeId, operation);
-    await adapter.transact(
-      {
-        scope,
-        owner: ownerAt(owner, now()),
-        operationRows: [
-          { operationId: binding.record.operation.operationId, expectedRevision: null },
-        ],
+    const selected = input.wallet.getKeyset();
+    const hasChange =
+      canonicalProofs.reduce((sum, proof) => sum + Amount.from(proof.amount).toBigInt(), 0n) >
+      Amount.from(input.quote.amount).toBigInt();
+    const pinned = {
+      id: selected.id,
+      unit: selected.unit,
+      fee: selected.fee,
+      expiry: selected.expiry,
+      conditional: selected.conditional,
+      keys: { ...selected.keys },
+    };
+    if (
+      hasChange &&
+      (!/^01[0-9a-f]{64}$/.test(pinned.id) ||
+        pinned.unit !== "msat" ||
+        pinned.conditional !== undefined ||
+        !selected.verify())
+    )
+      throw new Error("browser wallet melt output keyset is invalid");
+    const counters = new BrowserWalletCounterDexieStore({
+      database,
+      scopeId: scope.scopeId,
+      isCurrentProfile: () => {
+        input.context.requireCapturedProfile();
+        return true;
       },
-      (transaction) =>
-        bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
-      { predecessorProofs: { [binding.record.operation.operationId]: predecessors } },
-    );
-    snapshot = await readMeltSnapshot(adapter, scope, operationId);
-    if (snapshot === null) throw new Error("browser wallet melt operation was not persisted");
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transcript = hasChange
+        ? createSpeculativeCounterTranscript([
+            await counters.readSnapshotInContext(
+              { mintUrl: input.mintUrl, unit: "msat" },
+              pinned.id,
+            ),
+          ])
+        : null;
+      const wallet =
+        transcript === null
+          ? input.wallet
+          : await createUncachedWalletForSeedUnit({
+              mintUrl: input.mintUrl,
+              unit: "msat",
+              seed: input.context.seed,
+              scopeId: scope.scopeId,
+              database,
+              requireCapturedProfile: input.context.requireCapturedProfile,
+              counterSource: transcript.counterSource,
+            });
+      if (transcript !== null) {
+        const keyset = wallet.getKeyset(pinned.id);
+        if (
+          keyset.id !== pinned.id ||
+          keyset.unit !== pinned.unit ||
+          keyset.fee !== pinned.fee ||
+          keyset.expiry !== pinned.expiry ||
+          keyset.conditional !== undefined ||
+          !keyset.verify() ||
+          JSON.stringify(Object.entries(keyset.keys).sort()) !==
+            JSON.stringify(Object.entries(pinned.keys).sort())
+        )
+          throw new Error("browser wallet melt pinned keyset changed");
+      }
+      let callbacks = 0;
+      let reserved: OperationCounters | undefined;
+      const preview = await wallet.prepareMelt("bolt11", input.quote, canonicalProofs, {
+        keysetId: pinned.id,
+        onCountersReserved: (range) => {
+          callbacks += 1;
+          reserved = range;
+        },
+      });
+      const allocations = transcript?.allocations() ?? [];
+      const allocation = allocations[0];
+      if (
+        transcript === null
+          ? callbacks !== 0 || preview.outputData.length !== 0
+          : callbacks !== 1 ||
+            allocations.length !== 1 ||
+            !allocation ||
+            !reserved ||
+            allocation.keysetId !== pinned.id ||
+            reserved.keysetId !== pinned.id ||
+            reserved.start !== allocation.start ||
+            reserved.count !== allocation.count ||
+            reserved.next !== allocation.start + allocation.count ||
+            allocation.count !== preview.outputData.length ||
+            preview.outputData.length === 0 ||
+            preview.outputData.some(
+              (output) =>
+                output.blindedMessage.id !== pinned.id ||
+                Amount.from(output.blindedMessage.amount).toBigInt() !== 0n,
+            )
+      )
+        throw new Error("browser wallet melt change counter transcript conflicts");
+      input.context.requireCapturedProfile();
+      const operation = serializeDurableWalletMeltOperation({
+        operationId,
+        mintUrl: input.mintUrl,
+        unit: "msat",
+        preview,
+      });
+      const binding = createMeltBinding(scope, operation, wallet);
+      await input.context.observePrepared?.(structuredClone(operation));
+      input.context.requireCapturedProfile();
+      try {
+        const selected = await persistMeltPreparation({
+          input,
+          scope,
+          adapter,
+          owner,
+          now,
+          operation,
+          binding,
+          counters,
+          transcript,
+          canonicalProofs,
+        });
+        input.context.injectPreparationFault?.("after-commit");
+        snapshot = selected.snapshot;
+        recover = selected.recovered;
+        break;
+      } catch (error) {
+        input.context.requireCapturedProfile();
+        const saved = await readMeltSnapshot(adapter, scope, operationId);
+        if (saved !== null) {
+          assertSavedMeltSelection(saved, operation);
+          snapshot = saved;
+          recover = true;
+          break;
+        }
+        if (!(error instanceof BrowserWalletCounterSnapshotConflictError) || attempt === 2)
+          throw error;
+      }
+    }
   }
+  if (snapshot === null) throw new Error("browser wallet melt operation was not persisted");
 
   const operation = meltOperationFromSnapshot(snapshot.record, snapshot.artifacts);
   return runMeltProtocolWithSnapshot(
     { input, scope, adapter, owner, now, snapshot, operation },
-    wasPersistedBeforeCall ? "recover" : "execute",
+    recover ? "recover" : "execute",
+  );
+}
+
+function assertSavedMeltSelection(
+  snapshot: BrowserMeltOperationSnapshot,
+  expected: DurableWalletMeltOperation,
+): void {
+  const saved = meltOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+  if (
+    saved.operationId !== expected.operationId ||
+    saved.mintUrl !== expected.mintUrl ||
+    JSON.stringify(saved.preview.quote) !== JSON.stringify(expected.preview.quote) ||
+    JSON.stringify(saved.preview.inputs) !== JSON.stringify(expected.preview.inputs) ||
+    snapshot.record.operation.state === "aborted"
+  )
+    throw new Error("browser wallet melt saved preparation conflicts");
+}
+
+async function persistMeltPreparation(input: {
+  input: BrowserDurableWalletMeltInput;
+  scope: ReturnType<typeof browserWalletScope>;
+  adapter: BrowserDurableCustodyAdapter;
+  owner: DurableCustodyOwnerAuthorization;
+  now: () => number;
+  operation: DurableWalletMeltOperation;
+  binding: ReturnType<typeof createMeltBinding>;
+  counters: BrowserWalletCounterDexieStore;
+  transcript: SpeculativeCounterTranscript | null;
+  canonicalProofs: readonly Proof[];
+}): Promise<{ snapshot: BrowserMeltOperationSnapshot; recovered: boolean }> {
+  const database = input.input.context.database ?? db;
+  const context = input.input.context;
+  return database.transaction(
+    "rw",
+    [
+      database.custodyScopes,
+      database.custodyOperations,
+      database.custodyArtifacts,
+      database.custodyProofs,
+      database.custodyReservations,
+      database.custodyActiveWork,
+      database.custodyProofBackupAuthorities,
+      database.custodyConditionalKeysets,
+      database.encryptedWalletBackupV2DesiredAssets,
+      database.walletCounterAssociations,
+      database.walletCounterCursors,
+      database.encryptedWalletBackupOwnerAcceptedHeads,
+      database.encryptedWalletBackupV2AcceptedHeads,
+    ],
+    async () => {
+      context.requireCapturedProfile();
+      await requireBrowserWalletNewWritePermission({ database, scopeId: input.scope.scopeId });
+      const saved = await readMeltSnapshot(input.adapter, input.scope, input.operation.operationId);
+      if (saved !== null) {
+        assertSavedMeltSelection(saved, input.operation);
+        context.requireCapturedProfile();
+        return { snapshot: saved, recovered: true };
+      }
+      const canonical = await canonicalMeltProofs(input.adapter, input.scope, {
+        ...input.input,
+        proofs: input.canonicalProofs,
+      });
+      if (
+        JSON.stringify(canonical.map(serializeDurableWalletProof)) !==
+        JSON.stringify(input.operation.preview.inputs)
+      )
+        throw new Error("browser wallet melt source material changed");
+      const predecessors = await meltPredecessorRows(
+        input.adapter,
+        input.scope.scopeId,
+        input.operation,
+      );
+      if (input.transcript !== null) {
+        const changes = input.transcript.changes();
+        if (changes.length !== 1) throw new Error("browser wallet melt counter plan conflicts");
+        await input.counters.compareAndAdvanceInCurrentTransaction(
+          Dexie.currentTransaction!,
+          { mintUrl: input.input.mintUrl, unit: "msat" },
+          changes[0]!,
+        );
+        context.injectPreparationFault?.("counter-written");
+      }
+      await input.adapter.transactInCurrentTransaction(
+        Dexie.currentTransaction!,
+        {
+          scope: input.scope,
+          owner: ownerAt(input.owner, input.now()),
+          operationRows: [
+            { operationId: input.binding.record.operation.operationId, expectedRevision: null },
+          ],
+        },
+        (transaction) =>
+          bindDurableCustodyProofOperation(
+            transaction,
+            input.binding.record,
+            input.binding.artifacts,
+          ),
+        { predecessorProofs: { [input.binding.record.operation.operationId]: predecessors } },
+      );
+      context.injectPreparationFault?.("journal-bound");
+      await requireBrowserWalletNewWritePermission({ database, scopeId: input.scope.scopeId });
+      context.requireCapturedProfile();
+      const snapshot = await readMeltSnapshot(
+        input.adapter,
+        input.scope,
+        input.operation.operationId,
+      );
+      if (snapshot === null) throw new Error("browser wallet melt operation was not persisted");
+      context.requireCapturedProfile();
+      return { snapshot, recovered: false };
+    },
   );
 }
 
@@ -295,17 +537,38 @@ async function runMeltProtocolWithSnapshot(
   input.input.context.requireCapturedProfile();
   const { scope, adapter, owner, now, operation } = input;
   const snapshot = input.snapshot;
+  const requireOwnedOperation = async () => {
+    input.input.context.requireCapturedProfile();
+    await adapter.transact(
+      {
+        scope,
+        owner: ownerAt(owner, now()),
+        operationRows: [
+          {
+            operationId: snapshot.record.operation.operationId,
+            expectedRevision: snapshot.record.revision,
+          },
+        ],
+      },
+      () => undefined,
+    );
+    input.input.context.requireCapturedProfile();
+  };
   const result = await runDurableWalletMeltOperation({
     mode,
     operation,
     resultState: snapshot.record.operation.result.state,
     transport: {
       completeMelt: async (preview) => {
+        await requireOwnedOperation();
         const response = await input.input.wallet.completeMelt(preview);
         input.input.context.requireCapturedProfile();
         return response;
       },
-      checkMeltQuote: (method, quote) => input.input.wallet.checkMeltQuote(method, quote),
+      checkMeltQuote: async (method, quote) => {
+        await requireOwnedOperation();
+        return input.input.wallet.checkMeltQuote(method, quote);
+      },
       createMeltChangeProofs: (outputData, signatures) =>
         input.input.wallet.createMeltChangeProofs(outputData, signatures),
     },
