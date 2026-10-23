@@ -1,3 +1,4 @@
+import { seedRecoveryMnemonicBytes } from '../../../bitcaster-client-sdk/src/seedRecoveryMnemonic.ts'
 import { ownedRecoveryCommand } from './ownedRecoveryCommand.ts'
 import { requireValidCashuProofs } from '../../../bitcaster-client-sdk/src/cashuProofAdmission.ts'
 // This parent E2E actor uses real clients. It prints only fixed, public summaries.
@@ -54,6 +55,7 @@ const repo = resolve(import.meta.dirname, '../../..')
 const amountMsat = 8_192
 const recoveryId = 'd6-inactive-conditional-recovery'
 const seedFile = join(inputDirectory, 'wallet-seed.hex')
+const phraseFile = join(inputDirectory, 'wallet-phrase.txt')
 type ActorStage =
   | 'input'
   | 'issuance'
@@ -81,6 +83,7 @@ type ActorStage =
   | 'repeat'
   | 'restart'
   | 'payout'
+  | 'payout-recovery'
 let stage: ActorStage = 'input'
 interface Metadata {
   foreign: { condition_id: string; keysets: Record<string, string> }
@@ -218,7 +221,8 @@ async function issue(metadata: Metadata): Promise<void> {
     'authentic collateral and positive fee must preserve exact outcome value',
   )
   stage = 'regular-control'
-  const seed = Buffer.from((await readFile(seedFile, 'utf8')).trim(), 'hex')
+  const seed = seedRecoveryMnemonicBytes(await readFile(phraseFile, 'utf8'))
+  await writeFile(seedFile, Buffer.from(seed).toString('hex'), { mode: 0o600, flag: 'wx' })
   const regularControlKeyset = wallet.keyChain.getKeyset().toMintKeys()!
   const controlCounterSource = createEphemeralCounterSource({ [regularControlKeyset.id]: 3 })
   const controlWallet = new Wallet(mint, {
@@ -667,8 +671,8 @@ async function recover(metadata: Metadata): Promise<void> {
   const args = [
     'wallet',
     'recover-seed',
-    '--wallet-seed-hex-file',
-    seedFile,
+    '--recovery-phrase-file',
+    phraseFile,
     '--recovery-id',
     recoveryId,
     '--mint',
@@ -859,7 +863,7 @@ async function recover(metadata: Metadata): Promise<void> {
       metadata.target.winning_outcome,
       'verified witness must resolve the winning outcome',
     )
-    const seed = Buffer.from((await readFile(seedFile, 'utf8')).trim(), 'hex')
+    const seed = seedRecoveryMnemonicBytes(await readFile(phraseFile, 'utf8'))
     const id = metadata.target.keysets[metadata.target.funded_collection]
     const conditional = (await mint.getKeys(id)).keysets.find((row) => row.id === id)
     assert.equal(
@@ -932,6 +936,62 @@ async function recover(metadata: Metadata): Promise<void> {
     await assertUnspent(wallet, afterRestart[losingCollection!])
     await assertUnspent(wallet, [regularControl])
     await assertProofNotImported(regularControl)
+    stage = 'payout-recovery'
+    // The conditional scan above excluded regular funds. This explicit separate
+    // base-unit scan must discover the signed redemption outputs from the phrase.
+    const regularArgs = [
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      phraseFile,
+      '--recovery-id',
+      'd6-regular-payout-recovery',
+      '--mint',
+      mintUrl,
+      '--gap-limit',
+      '20',
+      '--acknowledge-seed-disclosure',
+    ]
+    let regularSummary: any
+    for (let invocation = 0; invocation < 4; invocation++) {
+      regularSummary = await cli(regularArgs, 60_000)
+      if (regularSummary.state !== 'active') break
+    }
+    assert.equal(regularSummary.state, 'completed')
+    assert.equal(regularSummary.selectedKeysetCount, 1)
+    const regularPage = await readAvailableWalletProofPage({
+      mintUrl,
+      keysetId: regular.id,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      limit: 64,
+    })
+    assert.equal(regularPage.nextCursor, null)
+    const expectedRegular = [...redeemed.proofs, regularControl]
+    assert.equal(regularPage.proofs.length, expectedRegular.length)
+    for (const expectedProof of expectedRegular) {
+      const restored = regularPage.proofs.find(({ proof }) => proof.secret === expectedProof.secret)
+      assert.ok(restored, 'each exact payout and control proof must be recovered')
+      const proof = restored.proof
+      const recoveredProof = deserializeDurableCustodyProofArtifact({
+        schemaVersion: 1,
+        id: proof.id,
+        C: proof.C,
+        secret: proof.secret,
+        amount: String(proof.amount),
+        dleq: proof.dleq ?? null,
+        p2pkE: proof.p2pk_e ?? null,
+        witness: proof.witness ?? null,
+      })
+      assert.equal(
+        sameProof(recoveredProof, expectedProof),
+        true,
+        'recovered regular proof must retain all authentic issuance material',
+      )
+    }
+    const beforeRegularRepeat = await authoritySnapshot()
+    const regularRepeated = await cli(regularArgs, 60_000)
+    assert.equal(regularRepeated.batchesProcessed, 0)
+    assert.equal(await authoritySnapshot(), beforeRegularRepeat)
   } finally {
     if (daemon) await stopDaemon(daemon)
   }
@@ -943,7 +1003,8 @@ async function recover(metadata: Metadata): Promise<void> {
       exactAuthority: true,
       repeatAndRestart: true,
       realPayout: true,
-      regularControlExcluded: true,
+      regularPayoutRecovered: true,
+      regularControlExcludedFromConditionScan: true,
       recoveryInvocationCount: invocations,
       selectedKeysetCount: summary.selectedKeysetCount,
       restoreProbeCount: restores.reduce((total, row) => total + row.count, 0),
