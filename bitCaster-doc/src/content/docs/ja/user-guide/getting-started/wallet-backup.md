@@ -244,6 +244,11 @@ conditional keyset の一覧は取得しません。`--gap-limit` の既定値�
 最後に検証した署名の後をさらに走査する場合は、この値を増やしてください。
 1 回の要求は最大 300 counter、1 回の実行は最大 4 batch です。
 
+入力には `--wallet-seed-hex-file` または `--recovery-phrase-file` のどちらかを
+指定します。phrase file には checksum が有効な英語の BIP-39 phrase を保存し、
+所有者以外が読めない権限にしてください。recovery では空の BIP-39 passphrase を
+使って標準 seed を導出します。recovery 完了後は file を安全に削除してください。
+
 recovery job は scope と gap limit を固定します。再試行では同じ値を指定して
 ください。より深く走査する場合は、新しい recovery ID を使用してください。
 結果には走査範囲と、この走査で確認できなかったローカル counter binding を表示します。

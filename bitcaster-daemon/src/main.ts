@@ -61,6 +61,7 @@ switch (command) {
   bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
   bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
+                         OR --recovery-phrase-file <path>
                          --recovery-id <id> --mint <url> [--unit msat] [--gap-limit 300]
                          --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
@@ -72,7 +73,8 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   recoveryId: string
   mintUrl: string
   unit: 'sat' | 'msat'
-  walletSeedHexFile: string
+  walletSeedHexFile?: string
+  recoveryPhraseFile?: string
   disclosureAcknowledged: true
   scanPolicy: SeedRecoveryScanPolicy
 } {
@@ -82,6 +84,7 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   let conditionId: string | undefined
   let gapLimitText = '300'
   let walletSeedHexFile: string | undefined
+  let recoveryPhraseFile: string | undefined
   let disclosureAcknowledged = false
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index]
@@ -97,7 +100,13 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     else if (option === '--condition-id') conditionId = value
     else if (option === '--gap-limit') gapLimitText = value
     else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
+    else if (option === '--recovery-phrase-file') recoveryPhraseFile = value
     else throw new Error(`Unknown recover-seed option: ${option}`)
+  }
+  if ((walletSeedHexFile === undefined) === (recoveryPhraseFile === undefined)) {
+    throw new Error(
+      'recover-seed requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+    )
   }
   if (!disclosureAcknowledged) {
     throw new Error('recover-seed requires --acknowledge-seed-disclosure')
@@ -109,7 +118,9 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
     mintUrl: requiredArg(mintUrl, '--mint'),
     unit,
-    walletSeedHexFile: requiredArg(walletSeedHexFile, '--wallet-seed-hex-file'),
+    ...(walletSeedHexFile !== undefined
+      ? { walletSeedHexFile }
+      : { recoveryPhraseFile: requiredArg(recoveryPhraseFile, '--recovery-phrase-file') }),
     disclosureAcknowledged: true,
     scanPolicy,
   }

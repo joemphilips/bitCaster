@@ -50,6 +50,65 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     assert.doesNotMatch(result.stdout, /walletSeedHex/)
     assert.doesNotMatch(result.stdout, new RegExp(seed))
 
+    const phrase =
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+    const phrasePath = join(home, 'recovery-phrase.txt')
+    await writeFile(phrasePath, `${phrase}\n`, { mode: 0o600 })
+    const phraseResult = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      phrasePath,
+      '--recovery-id',
+      'phrase-recovery',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.equal(phraseResult.code, 0)
+    assert.match(phraseResult.stdout, /"recoveryId": "phrase-recovery"/)
+    assert.doesNotMatch(phraseResult.stdout, /walletSeedHex/)
+    assert.doesNotMatch(phraseResult.stdout, new RegExp(phrase.split(' ')[0]))
+
+    const invalidPhrasePath = join(home, 'invalid-recovery-phrase.txt')
+    await writeFile(invalidPhrasePath, `${phrase.replace(/about$/, 'abandon')}\n`, { mode: 0o600 })
+    const invalidPhrase = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      invalidPhrasePath,
+      '--recovery-id',
+      'invalid-phrase',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.notEqual(invalidPhrase.code, 0)
+    assert.match(invalidPhrase.stderr, /valid English BIP-39 mnemonic/)
+    assert.doesNotMatch(`${invalidPhrase.stdout}\n${invalidPhrase.stderr}`, /abandon/)
+
+    const ambiguousPhrase = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--wallet-seed-hex-file',
+      seedPath,
+      '--recovery-phrase-file',
+      phrasePath,
+      '--recovery-id',
+      'ambiguous',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.notEqual(ambiguousPhrase.code, 0)
+    assert.match(
+      ambiguousPhrase.stderr,
+      /exactly one of --wallet-seed-hex-file or --recovery-phrase-file/,
+    )
+
     const defaults = [
       '--dry-run',
       'wallet',
@@ -105,11 +164,43 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     assert.match(readable.stderr, /group or other users/)
 
     await chmod(seedPath, 0o600)
+    await chmod(phrasePath, 0o640)
+    const readablePhrase = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      phrasePath,
+      '--recovery-id',
+      'phrase-permission',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.notEqual(readablePhrase.code, 0)
+    assert.match(readablePhrase.stderr, /group or other users/)
+    await chmod(phrasePath, 0o600)
     const linkPath = join(home, 'wallet-seed-link.hex')
     await symlink(seedPath, linkPath)
     const linked = await recoveryCli(home, linkPath)
     assert.notEqual(linked.code, 0)
     assert.match(linked.stderr, /ELOOP|symbolic/i)
+    const phraseLinkPath = join(home, 'recovery-phrase-link.txt')
+    await symlink(phrasePath, phraseLinkPath)
+    const linkedPhrase = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      phraseLinkPath,
+      '--recovery-id',
+      'phrase-symlink',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.notEqual(linkedPhrase.code, 0)
+    assert.match(linkedPhrase.stderr, /ELOOP|symbolic/i)
 
     const argvSecret = await runCli(home, [
       'wallet',

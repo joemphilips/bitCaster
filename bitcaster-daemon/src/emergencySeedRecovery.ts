@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
+import { seedRecoveryMnemonicBytes } from '@bitcaster-market/client-sdk/seedRecoveryMnemonic'
+import { readOwnerPrivateRecoveryPhraseFile } from '@bitcaster-market/client-sdk/seedRecoveryPhraseFile'
 import {
   CheckStateEnum,
   Mint as CashuMint,
@@ -87,7 +89,8 @@ export interface OfflineDaemonSeedRecoveryInput {
   readonly recoveryId: string
   readonly mintUrl: string
   readonly unit: 'sat' | 'msat'
-  readonly walletSeedHexFile: string
+  readonly walletSeedHexFile?: string
+  readonly recoveryPhraseFile?: string
   readonly disclosureAcknowledged: true
   readonly scanPolicy?: SeedRecoveryScanPolicy
   /** Test-only mint transport. Production uses cashu-ts. */
@@ -151,6 +154,11 @@ export async function runOfflineDaemonSeedRecovery(
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
   }
+  if ((input.walletSeedHexFile === undefined) === (input.recoveryPhraseFile === undefined)) {
+    throw new Error(
+      'seed recovery requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+    )
+  }
   const runLock = await acquireDaemonRunLock()
   try {
     return await runOfflineRecoveryWithLease(input)
@@ -166,7 +174,7 @@ async function runOfflineRecoveryWithLease(
   if (profile === null) throw new Error('daemon profile is not initialized')
   if (input.mintUrl !== profile.mintUrl)
     throw new Error('seed recovery mint does not match the profile')
-  const walletSeedHex = await readOwnerPrivateWalletSeedHexFile(input.walletSeedHexFile)
+  const walletSeedHex = await readRecoverySeedInput(input)
   const storage = createDaemonStateSqliteSession(profileDir())
   const fence = await claimOfflineRecoveryFence(storage, walletSeedHex)
   const renewal = createOfflineLeaseRenewal(storage, fence)
@@ -1118,6 +1126,23 @@ function createOfflineLeaseRenewal(
       if (failure !== undefined) throw failure
     },
   }
+}
+
+export async function readRecoverySeedInput(input: {
+  readonly walletSeedHexFile?: string
+  readonly recoveryPhraseFile?: string
+}): Promise<string> {
+  if ((input.walletSeedHexFile === undefined) === (input.recoveryPhraseFile === undefined)) {
+    throw new Error(
+      'seed recovery requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+    )
+  }
+  if (input.walletSeedHexFile !== undefined) {
+    return readOwnerPrivateWalletSeedHexFile(input.walletSeedHexFile)
+  }
+  return Buffer.from(
+    seedRecoveryMnemonicBytes(await readOwnerPrivateRecoveryPhraseFile(input.recoveryPhraseFile!)),
+  ).toString('hex')
 }
 
 async function readOwnerPrivateWalletSeedHexFile(path: string): Promise<string> {

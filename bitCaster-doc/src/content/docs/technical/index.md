@@ -94,8 +94,11 @@ Selecting a directory does not move funds or replace another profile.
 To recover deterministic proofs, stop the selected profile's daemon first:
 
 ```bash
-bitcaster-cli --datadir ./wallet-new wallet recover-seed --wallet-seed-hex-file ./wallet-seed.hex --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
+bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file ./recovery-phrase.txt --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
 ```
+
+For seed recovery, supply exactly one of `--recovery-phrase-file` or
+`--wallet-seed-hex-file`. Keep either owner-only file private.
 
 Use the profile's configured mint and the same recovery ID for later invocations.
 The acknowledgment permits disclosure of deterministic proof candidates to the mint.

@@ -351,6 +351,14 @@
       "types": "./dist/seedRecoveryScanPolicy.d.ts",
       "import": "./dist/seedRecoveryScanPolicy.js"
     },
+    "./seedRecoveryMnemonic": {
+      "types": "./dist/seedRecoveryMnemonic.d.ts",
+      "import": "./dist/seedRecoveryMnemonic.js"
+    },
+    "./seedRecoveryPhraseFile": {
+      "types": "./dist/seedRecoveryPhraseFile.d.ts",
+      "import": "./dist/seedRecoveryPhraseFile.js"
+    },
     "./emergencySeedRecovery": {
       "types": "./dist/emergencySeedRecovery.d.ts",
       "import": "./dist/emergencySeedRecovery.js"
@@ -534,6 +542,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@scure/bip39": "2.0.1",
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",

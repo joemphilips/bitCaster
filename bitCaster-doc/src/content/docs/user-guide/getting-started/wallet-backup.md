@@ -240,6 +240,11 @@ not list conditional keysets. The default `--gap-limit` is 300. Set a larger
 gap to scan farther after the last verified signature. Each request has at most
 300 counters, and each invocation processes at most four batches.
 
+Supply either `--wallet-seed-hex-file` or `--recovery-phrase-file`. The phrase
+file must contain a valid English BIP-39 phrase and must be readable only by
+the owner. Recovery derives the standard seed with an empty BIP-39 passphrase.
+Keep the file private and remove it when recovery is complete.
+
 A recovery job binds its scope and gap limit. Retry with the same values. Use a
 new recovery ID for a deeper scan. The result reports scanned ranges and local
 counter bindings not covered by this scan. A completed scan does not prove

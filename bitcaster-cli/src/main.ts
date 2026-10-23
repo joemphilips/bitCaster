@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
+import { seedRecoveryMnemonicBytes } from '@bitcaster-market/client-sdk/seedRecoveryMnemonic'
+import { readOwnerPrivateRecoveryPhraseFile } from '@bitcaster-market/client-sdk/seedRecoveryPhraseFile'
 import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
@@ -1624,11 +1626,14 @@ function registerWalletCommand(program: Command): void {
 
   wallet
     .command('recover-seed')
-    .description('Recover regular msat proofs from the wallet seed with an explicit gap limit.')
-    .requiredOption(
+    .description(
+      'Recover regular msat proofs with an explicit gap limit. Supply exactly one owner-only seed or phrase file.',
+    )
+    .option(
       '--wallet-seed-hex-file <path>',
       'Owner-only file containing the 64-byte wallet seed as lowercase hex',
     )
+    .option('--recovery-phrase-file <path>', 'Owner-only file containing an English BIP-39 phrase')
     .requiredOption(
       '--recovery-id <id>',
       'Stable recovery job id. Reuse it for later invocations until recovery completes',
@@ -1645,7 +1650,8 @@ function registerWalletCommand(program: Command): void {
     .allowExcessArguments(false)
     .action(
       async (options: {
-        walletSeedHexFile: string
+        walletSeedHexFile?: string
+        recoveryPhraseFile?: string
         recoveryId: string
         mint: string
         unit: string
@@ -1654,6 +1660,14 @@ function registerWalletCommand(program: Command): void {
         acknowledgeSeedDisclosure?: boolean
         dryRun?: boolean
       }) => {
+        if (
+          (options.walletSeedHexFile === undefined) ===
+          (options.recoveryPhraseFile === undefined)
+        ) {
+          throwUsage(
+            'wallet recover-seed requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+          )
+        }
         if (options.acknowledgeSeedDisclosure !== true) {
           throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
         }
@@ -1671,7 +1685,14 @@ function registerWalletCommand(program: Command): void {
             recoveryId: options.recoveryId,
             mintUrl: options.mint,
             unit: options.unit,
-            walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
+            walletSeedHex:
+              options.walletSeedHexFile !== undefined
+                ? await readPrivateWalletSeedFile(options.walletSeedHexFile)
+                : Buffer.from(
+                    seedRecoveryMnemonicBytes(
+                      await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
+                    ),
+                  ).toString('hex'),
             disclosureAcknowledged: true,
             scanPolicy,
           })
@@ -1679,8 +1700,9 @@ function registerWalletCommand(program: Command): void {
         }
         await runDaemonCommand([
           'recover-seed',
-          '--wallet-seed-hex-file',
-          options.walletSeedHexFile,
+          ...(options.walletSeedHexFile !== undefined
+            ? ['--wallet-seed-hex-file', options.walletSeedHexFile]
+            : ['--recovery-phrase-file', options.recoveryPhraseFile!]),
           '--recovery-id',
           options.recoveryId,
           '--mint',

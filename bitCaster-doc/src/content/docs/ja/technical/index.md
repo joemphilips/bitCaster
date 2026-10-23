@@ -93,8 +93,11 @@ bitcaster-cli --datadir ./wallet-old signer show
 決定的に生成されたプルーフを復旧する場合、先に選択中のプロファイルのデーモンを停止します。
 
 ```bash
-bitcaster-cli --datadir ./wallet-new wallet recover-seed --wallet-seed-hex-file ./wallet-seed.hex --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
+bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file ./recovery-phrase.txt --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
 ```
+
+seed recovery では `--recovery-phrase-file` または `--wallet-seed-hex-file` の
+どちらか一方を指定します。どちらの file も所有者以外に読ませないでください。
 
 プロファイルに設定されたミントを指定します。後の実行でも同じ復旧 ID を使ってください。
 この確認オプションは、シードから生成したプルーフ候補をミントに開示することへの同意です。

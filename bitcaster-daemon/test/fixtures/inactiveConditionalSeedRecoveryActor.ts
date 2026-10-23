@@ -1,3 +1,4 @@
+import { ownedRecoveryCommand } from './ownedRecoveryCommand.ts'
 import { requireValidCashuProofs } from '../../../bitcaster-client-sdk/src/cashuProofAdmission.ts'
 // This parent E2E actor uses real clients. It prints only fixed, public summaries.
 import assert from 'node:assert/strict'
@@ -120,39 +121,15 @@ async function jsonFetch(path: string): Promise<any> {
 
 // Private outputs and errors stay in memory. A command failure exposes a fixed label.
 async function command(script: string, args: string[], timeout = 45_000): Promise<any> {
-  const child = spawn(
+  const output = await ownedRecoveryCommand(
     process.execPath,
     ['--experimental-strip-types', join(repo, script), '--datadir', home, ...args],
-    {
-      cwd: repo,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
-    },
+    repo,
+    timeout,
+    2 * 1024 * 1024,
   )
-  let output = ''
-  let bytes = 0
-  child.stdout!.on('data', (data: Buffer) => {
-    bytes += data.length
-    if (bytes > 2 * 1024 * 1024) child.kill('SIGKILL')
-    else output += data.toString()
-  })
-  child.stderr!.on('data', () => {})
-  const timer = setTimeout(() => child.kill('SIGKILL'), timeout)
-  try {
-    const code = await new Promise<number | null>((resolveExit, reject) => {
-      child.once('error', () => reject(new Error('fixture command could not start')))
-      child.once('close', resolveExit)
-    })
-    assert.equal(
-      code === 0,
-      true,
-      `fixture ${script.includes('cli') ? 'CLI' : 'daemon'} command must succeed`,
-    )
-    if (script === 'bitcaster-daemon/src/main.ts' && args[0] === 'init') return null
-    return output.trim() ? JSON.parse(output) : null
-  } finally {
-    clearTimeout(timer)
-  }
+  if (script === 'bitcaster-daemon/src/main.ts' && args[0] === 'init') return null
+  return output.trim() ? JSON.parse(output) : null
 }
 const cli = (args: string[], timeout?: number) =>
   command('bitcaster-cli/src/main.ts', args, timeout)

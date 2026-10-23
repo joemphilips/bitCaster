@@ -38,6 +38,71 @@ test('daemon recovery flags accept explicit condition but preserve profile and g
       )
       assert.equal((await readdir(directory)).includes('profile.json'), false)
     }
+    const phraseInput = [
+      '--datadir',
+      directory,
+      'recover-seed',
+      '--recovery-phrase-file',
+      join(directory, 'absent-phrase'),
+      '--recovery-id',
+      'phrase-cli',
+      '--mint',
+      'https://mint.example',
+      '--acknowledge-seed-disclosure',
+      '--condition-id',
+      'ab'.repeat(32),
+    ]
+    await assert.rejects(
+      run(
+        process.execPath,
+        ['--experimental-strip-types', join(import.meta.dirname, '../src/main.ts'), ...phraseInput],
+        {
+          env,
+          timeout: 5_000,
+          maxBuffer: 16_384,
+        },
+      ),
+      (error) =>
+        error instanceof Error &&
+        /profile SQLite database is missing/.test(String((error as { stderr?: string }).stderr)),
+    )
+    for (const sources of [
+      [
+        '--wallet-seed-hex-file',
+        join(directory, 'seed'),
+        '--recovery-phrase-file',
+        join(directory, 'phrase'),
+      ],
+      [],
+    ]) {
+      const args = [
+        '--datadir',
+        directory,
+        'recover-seed',
+        ...sources,
+        '--recovery-id',
+        'ambiguous',
+        '--mint',
+        'https://mint.example',
+        '--acknowledge-seed-disclosure',
+      ]
+      await assert.rejects(
+        run(
+          process.execPath,
+          ['--experimental-strip-types', join(import.meta.dirname, '../src/main.ts'), ...args],
+          {
+            env,
+            timeout: 5_000,
+            maxBuffer: 16_384,
+          },
+        ),
+        (error) =>
+          error instanceof Error &&
+          /exactly one of --wallet-seed-hex-file or --recovery-phrase-file/.test(
+            String((error as { stderr?: string }).stderr),
+          ),
+      )
+    }
     for (const gap of ['0', '-1', '1.5', '01', '2147483649']) {
       await assert.rejects(
         run(process.execPath, [...base, '--gap-limit', gap], {
