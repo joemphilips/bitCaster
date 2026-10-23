@@ -182,7 +182,7 @@ is `/errors/{code}`. Use the HTTP status and `code`, not the wording of `detail`
 | 400 | `cashu-delivery-invalid-request` | Invalid delivery identity or metadata. |
 | 403 | `cashu-delivery-forbidden` | The authenticated subject cannot access this delivery. |
 | 409 | `cashu-delivery-conflict` | The request conflicts with saved state, or the delivery was rejected. |
-| 400 | `market-funding-invalid-request` | Invalid funding amount, unit, or product binding. |
+| 400 | `market-funding-invalid-request` | Invalid funding amount, unit, token structure, mint binding, or product binding. |
 | 404 | `market-funding-market-not-found` | The funding market was not found. |
 | 403 | `market-closed` | The market is closed to new funding. |
 | 500 | `cashu-delivery-state-unavailable` | The delivery state could not be read after admission. |

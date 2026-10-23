@@ -171,7 +171,7 @@ capability をバインドしても、注文が受け付けられたことには
 | 400 | `cashu-delivery-invalid-request` | 配信 ID またはメタデータが無効です。 |
 | 403 | `cashu-delivery-forbidden` | 認証済み主体はこの配信にアクセスできません。 |
 | 409 | `cashu-delivery-conflict` | 保存済み状態と競合するか、配信が拒否されています。 |
-| 400 | `market-funding-invalid-request` | 資金提供の金額、単位、または商品との対応付けが無効です。 |
+| 400 | `market-funding-invalid-request` | 資金提供の金額、単位、トークン構造、ミントとの対応付け、または商品との対応付けが無効です。 |
 | 404 | `market-funding-market-not-found` | 資金提供先のマーケットが見つかりません。 |
 | 403 | `market-closed` | マーケットは新しい資金提供を受け付けていません。 |
 | 500 | `cashu-delivery-state-unavailable` | 受付後の配信状態を読み取れませんでした。 |
