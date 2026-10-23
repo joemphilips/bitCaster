@@ -1,12 +1,14 @@
 ---
 name: bitcaster-frontend-guideline
-description: Apply bitCaster browser state, durable error, and recovery UX rules when those behaviors change.
+description: Apply bitCaster GUI layout, interface copy, browser state, durable error, and recovery UX rules when those behaviors change.
 ---
 
 # bitCaster Frontend Guideline
 
 ## Interface Copy
 
+- Avoid unnecessary secondary labels and explanations.
+- Use layout, grouping, and visual hierarchy to make the interface clear without extra text.
 - Use concise GUI text that states the action the user must take.
 - Use precise CLI output that supports diagnosis.
 - Keep required recovery actions and material funds warnings in both interfaces.
