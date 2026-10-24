@@ -197,7 +197,93 @@ def validate_scanner(scanner):
         raise ValueError("Scanner version mismatch")
 
 
-def scan(repo, scanner, base, head, commits, private):
+FINDING_FIELDS = ("RuleID", "Commit", "File", "StartLine", "EndLine", "StartColumn", "EndColumn")
+MAX_REVIEW_BYTES = 64 * 1024
+MAX_REVIEW_ROWS = 128
+
+
+def relative_path(value):
+    if (not isinstance(value, str) or not value or len(value) > 1024
+            or value.startswith("/") or "\\" in value
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            or any(part in ("", ".", "..") for part in value.split("/"))):
+        raise ValueError("The reviewed finding path is invalid")
+    return value
+
+
+def finding_key(finding):
+    if not isinstance(finding, dict):
+        raise ValueError("Finding metadata is invalid")
+    rule = finding.get("RuleID")
+    oid = finding.get("Commit")
+    if (not isinstance(rule, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", rule)
+            or not isinstance(oid, str) or not OID.fullmatch(oid) or oid == "0" * 40):
+        raise ValueError("Finding metadata is invalid")
+    relative_path(finding.get("File"))
+    for field in FINDING_FIELDS[3:]:
+        value = finding.get(field)
+        if type(value) is not int or not 1 <= value <= 2147483647:
+            raise ValueError("Finding location is invalid")
+    if (finding["EndLine"] < finding["StartLine"]
+            or (finding["EndLine"] == finding["StartLine"]
+                and finding["EndColumn"] < finding["StartColumn"])):
+        raise ValueError("Finding location is invalid")
+    return tuple(finding[field] for field in FINDING_FIELDS)
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate reviewed finding field")
+        result[key] = value
+    return result
+
+
+def reviewed_findings(repo, head, path):
+    if path is None:
+        return frozenset()
+    relative_path(path)
+    # Inspect the candidate tree, not an uncommitted file or a symlink target.
+    rows = git(repo, "ls-tree", "-z", head, "--", path).split(b"\0")
+    if len(rows) != 2 or rows[-1] != b"":
+        raise ValueError("The reviewed finding blob is missing")
+    metadata, actual_path = rows[0].split(b"\t", 1)
+    mode, kind, oid = metadata.decode().split()
+    if mode not in ("100644", "100755") or kind != "blob" or actual_path.decode() != path:
+        raise ValueError("The reviewed finding entry is not a regular blob")
+    if int(git(repo, "cat-file", "-s", oid)) > MAX_REVIEW_BYTES:
+        raise ValueError("Reviewed findings exceed the byte bound")
+    raw = git(repo, "cat-file", "blob", oid)
+    if len(raw) > MAX_REVIEW_BYTES:
+        raise ValueError("Reviewed findings exceed the byte bound")
+    value = json.loads(raw, object_pairs_hook=unique_object)
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "findings"}
+            or type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or not isinstance(value["findings"], list) or len(value["findings"]) > MAX_REVIEW_ROWS):
+        raise ValueError("Reviewed findings have an unsupported schema")
+    keys = set()
+    for row in value["findings"]:
+        if not isinstance(row, dict) or set(row) != set(FINDING_FIELDS) | {"rationale", "review"}:
+            raise ValueError("Reviewed finding fields are invalid")
+        for field in ("rationale", "review"):
+            text = row[field]
+            if (not isinstance(text, str) or not 1 <= len(text) <= 1024
+                    or any(ord(char) < 32 or ord(char) == 127 for char in text)):
+                raise ValueError("Reviewed finding rationale is invalid")
+        key = finding_key(row)
+        if key in keys:
+            raise ValueError("Duplicate reviewed finding")
+        keys.add(key)
+    return frozenset(keys)
+
+
+def counts(findings, reviewed):
+    matched = sum(finding_key(finding) in reviewed for finding in findings)
+    return len(findings), matched, len(findings) - matched
+
+
+def scan_findings(repo, scanner, base, head, commits, private):
     config, ignore, report = (private / name for name in ("rules.toml", "empty.ignore", "report.json"))
     config.write_text('[extend]\nuseDefault = true\n')
     ignore.write_text("")
@@ -216,7 +302,14 @@ def scan(repo, scanner, base, head, commits, private):
         if (not isinstance(finding, dict) or finding.get("Secret") != "REDACTED"
                 or finding.get("Commit") not in commits):
             raise ValueError("Scanner attribution or redaction is incomplete")
-    return len(findings)
+    # Validate all location metadata before any disposition can apply.
+    for finding in findings:
+        finding_key(finding)
+    return findings
+
+
+def scan(repo, scanner, base, head, commits, private):
+    return len(scan_findings(repo, scanner, base, head, commits, private))
 
 
 def main():
@@ -227,6 +320,7 @@ def main():
     parser.add_argument("--event-path", type=Path, required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--base", default="")
+    parser.add_argument("--reviewed-findings", help="Exact reviewed disposition blob in the candidate tree")
     args = parser.parse_args()
     os.umask(0o077)
     def interrupted(*_):
@@ -241,13 +335,16 @@ def main():
         event = json.loads(args.event_path.read_bytes())
         base, head = select_range(repo, args.event_name, event, args.head, args.base)
         commits, gitlinks = inspect_range(repo, base, head)
+        reviewed = reviewed_findings(repo, head, args.reviewed_findings)
         with tempfile.TemporaryDirectory(prefix="incremental-secrets-") as directory:
             private = Path(directory)
             scanner = args.scanner.absolute() if args.scanner else install_scanner(private)
             validate_scanner(scanner)
-            count = scan(repo, scanner, base, head, commits, private)
-        print(f"Incremental secret check: {len(commits)} commits; {count} candidates; {gitlinks} gitlink changes excluded.")
-        return 1 if count else 0
+            findings = scan_findings(repo, scanner, base, head, commits, private)
+            total, reviewed_count, actionable = counts(findings, reviewed)
+        print(f"Incremental secret check: {len(commits)} commits; {total} candidates; "
+              f"{reviewed_count} reviewed; {actionable} actionable; {gitlinks} gitlink changes excluded.")
+        return 1 if actionable else 0
     except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired,
             tarfile.TarError, KeyboardInterrupt):
         # Do not interpolate exceptions: they may contain source or provider data.

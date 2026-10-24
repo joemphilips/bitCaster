@@ -167,6 +167,7 @@ class IncrementalTests(unittest.TestCase):
     def test_public_ci_runs_without_path_filters_or_install_steps(self):
         workflow = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
         content = workflow.read_text()
+        self.assertNotIn("--reviewed-findings", content)
         job = content.split("  secret-check:\n", 1)[1].split("\n  formatting:", 1)[0]
         self.assertIn("fetch-depth: 0", job)
         self.assertIn("persist-credentials: false", job)
@@ -255,6 +256,108 @@ class IncrementalTests(unittest.TestCase):
         selected_base, selected_head = scanner.select_range(self.repo, "pull_request", event, candidate)
         self.assertEqual((selected_base, selected_head), (target_head, candidate))
         self.assertGreater(check(selected_base, selected_head), 0)
+
+
+    def review_row(self, **changes):
+        return {"RuleID": "generic-api-key", "Commit": self.head, "File": "fixture.txt",
+                "StartLine": 1, "EndLine": 2, "StartColumn": 40, "EndColumn": 2,
+                "rationale": "Public synthetic fixture", "review": "review.md", **changes}
+
+    def manifest(self, rows):
+        return json.dumps({"schema_version": 1, "findings": rows})
+
+    def test_candidate_tree_manifest_is_exact_and_unused_rows_are_inert(self):
+        row = self.review_row()
+        head = save(self.repo, "reviewed.json", self.manifest([row]))
+        keys = scanner.reviewed_findings(self.repo, head, "reviewed.json")
+        self.assertEqual(keys, {scanner.finding_key(row)})
+        (self.repo / "reviewed.json").write_text("not committed")
+        self.assertEqual(scanner.reviewed_findings(self.repo, head, "reviewed.json"), keys)
+        self.assertEqual(scanner.counts([], keys), (0, 0, 0))
+        self.assertEqual(scanner.reviewed_findings(self.repo, head, None), set())
+        for path in ["/reviewed.json", "../reviewed.json", "a//b", "./reviewed.json", "missing.json"]:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                scanner.reviewed_findings(self.repo, head, path)
+        (self.repo / "link.json").symlink_to("reviewed.json")
+        git(self.repo, "add", "link.json")
+        git(self.repo, "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic symlink")
+        with self.assertRaises(ValueError):
+            scanner.reviewed_findings(self.repo, git(self.repo, "rev-parse", "HEAD"), "link.json")
+        (self.repo / "uncommitted.json").write_text(self.manifest([row]))
+        with self.assertRaises(ValueError):
+            scanner.reviewed_findings(self.repo, head, "uncommitted.json")
+
+    def test_manifest_and_location_errors_refuse(self):
+        row = self.review_row()
+        invalid = ["{", '{"schema_version":1,"schema_version":1,"findings":[]}',
+                   self.manifest([row, row]), self.manifest([row] * 129),
+                   self.manifest([{**row, "extra": 1}]),
+                   json.dumps({"schema_version": True, "findings": []}),
+                   self.manifest([{**row, "StartLine": True}]),
+                   self.manifest([{**row, "EndLine": 0}]),
+                   self.manifest([{**row, "EndLine": 1, "EndColumn": 2}]),
+                   self.manifest([{**row, "File": "../fixture"}]),
+                   self.manifest([{**row, "Commit": "main"}]),
+                   self.manifest([{**row, "rationale": ""}]),
+                   " " * (scanner.MAX_REVIEW_BYTES + 1)]
+        for value in invalid:
+            head = save(self.repo, "reviewed.json", value)
+            with self.subTest(case=invalid.index(value)), self.assertRaises((ValueError, KeyError, TypeError)):
+                scanner.reviewed_findings(self.repo, head, "reviewed.json")
+        # Valid multiline ranges can end at a smaller column.
+        self.assertEqual(scanner.finding_key(row)[-1], 2)
+
+    def test_exact_tuple_cannot_follow_new_commit_or_location(self):
+        row = self.review_row()
+        keys = {scanner.finding_key(row)}
+        self.assertEqual(scanner.counts([row], keys), (1, 1, 0))
+        for field, value in [("Commit", self.base), ("RuleID", "github-pat"),
+                             ("File", "other.txt"), ("StartLine", 2),
+                             ("EndLine", 3), ("StartColumn", 41), ("EndColumn", 3)]:
+            changed = {**row, field: value}
+            if field == "StartLine":
+                changed["EndColumn"] = 41
+            self.assertEqual(scanner.counts([row, changed], keys), (2, 1, 1))
+
+    @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")
+    def test_real_exact_disposition_preserves_new_secret_detection(self):
+        binary = Path(os.environ["GITLEAKS_TEST_BINARY"])
+        scanner.validate_scanner(binary)
+        first = "ghp_" + hashlib.sha256(b"public reviewed fixture never issued").hexdigest()[:36]
+        introduced = save(self.repo, "fixture.txt", "token=" + first + "\n")
+        def observe(head):
+            commits, _ = scanner.inspect_range(self.repo, self.base, head)
+            with tempfile.TemporaryDirectory(dir=self.root) as temp:
+                return scanner.scan_findings(self.repo, binary, self.base, head, commits, Path(temp))
+        findings = observe(introduced)
+        self.assertEqual(len(findings), 1)
+        row = {key: findings[0][key] for key in scanner.FINDING_FIELDS}
+        row.update(rationale="Synthetic public test", review="review.md")
+        head = save(self.repo, "reviewed.json", self.manifest([row]))
+        reviewed = scanner.reviewed_findings(self.repo, head, "reviewed.json")
+        self.assertEqual(scanner.counts(observe(head), reviewed), (1, 1, 0))
+        event = self.root / "event.json"
+        event.write_text("{}")
+        def invoke(candidate):
+            return subprocess.run([sys.executable, str(Path(scanner.__file__).resolve()),
+                "--repo", str(self.repo), "--scanner", str(binary),
+                "--event-name", "workflow_dispatch", "--event-path", str(event),
+                "--base", self.base, "--head", candidate, "--reviewed-findings", "reviewed.json"],
+                capture_output=True, text=True, timeout=30)
+        result = invoke(head)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("1 candidates; 1 reviewed; 0 actionable", result.stdout)
+        second = "ghp_" + hashlib.sha256(b"other synthetic never issued").hexdigest()[:36]
+        later = save(self.repo, "fixture.txt", "token=" + second + "\n")
+        self.assertEqual(scanner.counts(observe(later), reviewed), (2, 1, 1))
+        result = invoke(later)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("2 candidates; 1 reviewed; 1 actionable", result.stdout)
+        self.assertNotIn(first, result.stdout + result.stderr)
+        self.assertNotIn(second, result.stdout + result.stderr)
+        unrelated = save(self.repo, "other.txt", "token=" + first + "\n")
+        self.assertEqual(scanner.counts(observe(unrelated), reviewed), (3, 1, 2))
+        self.assertFalse(any(self.root.glob("incremental-secrets-*")))
 
 
 if __name__ == "__main__":

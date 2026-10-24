@@ -114,3 +114,27 @@ suppression bypass, binary Git attributes, safe output, and cleanup. The other
 tests check base selection, bounds, path framing, binary pinning, and failures.
 Without `GITLEAKS_TEST_BINARY`, the real-scanner regression is skipped. Run it
 before publication. These tests do not scan the project's historical content.
+
+
+## Exact historical finding dispositions
+
+The default scan has no dispositions. A workflow can pass one explicit
+`--reviewed-findings` repository-relative path. The runner reads the regular
+blob from the verified candidate Git tree. Uncommitted files do not apply.
+The closed format has `schema_version: 1` and `findings`.
+It is limited to 128 rows and 64 KiB.
+Each row requires `RuleID`, full `Commit`, `File`, `StartLine`, `EndLine`,
+`StartColumn`, `EndColumn`, `rationale` and `review`.
+`rationale` and `review` contain no matched values.
+Duplicate rows, invalid metadata and missing or malformed blobs refuse the check.
+
+Keep all default detector rules enabled. The runner validates completed scan,
+redaction, attribution and locations before exact comparison. An earlier commit
+row cannot exempt a later addition, moved path or changed location. Unused valid
+historical rows are inert. Output separates all candidates, reviewed findings and
+actionable findings. Only zero actionable findings can pass a completed check.
+Do not use a directory, pattern, value, moving base or inline suppression instead.
+Review each data change like detector code. Add real-scanner negative tests for a
+new credential at the same path and an unrelated credential beside a disposition.
+A disposition records nonsecret data or a public fixture; it does not accept a
+new credential exposure or authorize a risk. Preserve the original failing receipt.
