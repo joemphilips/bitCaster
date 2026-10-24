@@ -16,7 +16,10 @@ import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "../browserEncryptedWalletBackupV2QuotaCleanup";
 import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
-import { listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets } from "../browserEncryptedWalletBackupV2SeedHandoff";
+import {
+  listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts,
+  listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets,
+} from "../browserEncryptedWalletBackupV2SeedHandoff";
 import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
 import { digestEncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
 import { ownerReachabilitySnapshot } from "./ownerReachabilityFixture";
@@ -26,6 +29,32 @@ import {
   enumerateEncryptedWalletBackupOwnerDescriptorPages,
 } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
 import { digestEncryptedWalletBackupOwnerBundleSupersessionReceipt } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerReceipt";
+
+import {
+  readAssetMonitoringSnapshot,
+  buildBrowserAssetMonitoringHoldings,
+  subscribeToCommittedProofChanges,
+} from "../../hooks/useAssetMonitoringReporter";
+import {
+  registerBrowserEncryptedWalletBackupV2RuntimeDriver,
+  subscribeToBrowserEncryptedBackupMonitoring,
+  type BrowserEncryptedWalletBackupV2RuntimeDriver,
+} from "../encryptedWalletBackupDriver";
+
+// Keep the actual owner driver registry, custody/owner stores, snapshot reader and
+// holdings builder. Control only profile selection and the remote catalogue.
+const monitoring = vi.hoisted(() => ({
+  scope: null as string | null,
+  catalogue: vi.fn(async () => []),
+}));
+vi.mock("../browserWalletProfile", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../browserWalletProfile")>()),
+  activeBrowserWalletScopeId: () => monitoring.scope,
+}));
+vi.mock("../assetMonitoringReporter", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../assetMonitoringReporter")>()),
+  fetchAssetMonitoringCatalogue: monitoring.catalogue,
+}));
 
 const scopeId = browserWalletScope(new Uint8Array(64).fill(9)).scopeId;
 const SEED = new Uint8Array(64).fill(9);
@@ -47,6 +76,8 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    monitoring.scope = null;
+    monitoring.catalogue.mockReset().mockResolvedValue([]);
     eligible.mockReset();
     database?.close();
     if (database) await database.delete();
@@ -127,6 +158,387 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     expect(
       await database.encryptedWalletBackupV2DesiredAssets.get([scopeId, "largest"]),
     ).toBeDefined();
+  });
+
+  it("reads one full current head for a bounded 256-key batch and revalidates each call", async () => {
+    let phaseStarted = performance.now();
+    const completedPhase = (phase: string) => {
+      const now = performance.now();
+      process.stderr.write(
+        `[owner-batch-fixture] ${phase} milliseconds=${Math.round(now - phaseStarted)}\n`,
+      );
+      phaseStarted = now;
+    };
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "batch-owner", "38", 8);
+    const store = await persistOwnerReceipt(database, victim);
+    const context = {
+      ownerScopeId: OWNER_SCOPE_ID,
+      realm: victim.descriptor.realm,
+      walletId: victim.descriptor.walletId,
+      enrollmentEpoch: 1,
+    };
+    const candidates = [victim];
+    for (let i = 0; i < 255; i += 1) {
+      const mintUrl = `https://batch-mint-${i}.example`;
+      const localAssetKey = encryptedWalletBackupV2LocalAssetKey(
+        createEncryptedWalletBackupV2AssetIdentity({
+          mintUrl,
+          unit: "msat",
+          asset: { kind: "ordinary" },
+        }),
+      );
+      const candidate = {
+        ...victim,
+        desired: { ...victim.desired, mintUrl, localAssetKey },
+        descriptor: {
+          ...victim.descriptor,
+          bundleId: (i + 1).toString(16).padStart(32, "0"),
+          assetLocator: (i + 1).toString(16).padStart(64, "0"),
+          objects: [{ objectId: (i + 1).toString(16).padStart(32, "0"), digest: "78".repeat(32) }],
+        },
+      };
+      await database.encryptedWalletBackupV2DesiredAssets.put(candidate.desired);
+      // The same real signed/verified receipt fixture is used for every distinct
+      // asset; only installation of an intermediate single-bundle head is skipped.
+      await persistOwnerReceipt(database, candidate, false);
+      candidates.push(candidate);
+    }
+    completedPhase("256-signed-receipt-setup");
+    const bundles = candidates
+      .map((candidate) => candidate.descriptor)
+      .sort((left, right) => left.bundleId.localeCompare(right.bundleId));
+    const fullHead = createEncryptedWalletBackupOwnerCurrentHead({
+      ...context,
+      headVersion: 2,
+      bundles,
+    });
+    await store.acceptCurrentHead({
+      expectedHeadVersion: 1,
+      evidence: collectEncryptedWalletBackupOwnerDescriptorPages(
+        enumerateEncryptedWalletBackupOwnerDescriptorPages({ head: fullHead, bundles }),
+        context,
+      ),
+    });
+    completedPhase("install-256-descriptor-head");
+    const keys = candidates.map((candidate) => candidate.desired.localAssetKey);
+    const headReads = vi.spyOn(database.encryptedWalletBackupOwnerAcceptedHeads, "get");
+    const descriptorReads = vi.spyOn(database.encryptedWalletBackupOwnerActiveDescriptors, "where");
+    const originalGet = database.encryptedWalletBackupOwnerDesiredAssets.get.bind(
+      database.encryptedWalletBackupOwnerDesiredAssets,
+    );
+    const ownerReads = vi.spyOn(database.encryptedWalletBackupOwnerDesiredAssets, "get");
+    expect(
+      await store.captureBackupReceipt({
+        desired: {
+          localAssetKey: "missing-single",
+          assetLocator: victim.descriptor.assetLocator,
+          custodyRevision: "1",
+          desiredAction: "replace",
+          activeProofCount: 1,
+        },
+      }),
+    ).toBeNull();
+    expect(headReads).not.toHaveBeenCalled();
+    expect(descriptorReads).not.toHaveBeenCalled();
+    const first = await store.captureBackupReceiptsForLocalAssets(keys);
+    completedPhase("first-256-asset-capture");
+    expect(first).toHaveLength(256);
+    expect(first.map((snapshot) => snapshot.desired.localAssetKey)).toEqual(keys);
+    expect(headReads).toHaveBeenCalledTimes(1);
+    expect(descriptorReads).toHaveBeenCalledTimes(1);
+    for (const key of keys) expect(ownerReads).toHaveBeenCalledWith([scopeId, OWNER_SCOPE_ID, key]);
+    await database.encryptedWalletBackupV2DesiredAssets.update(
+      [scopeId, victim.desired.localAssetKey],
+      { custodyRevision: "2" },
+    );
+    const stale = await store.captureBackupReceiptsForLocalAssets(keys);
+    completedPhase("stale-revision-capture-and-prior-assertions");
+    expect(stale).toHaveLength(255);
+    expect(
+      stale.some((snapshot) => snapshot.desired.localAssetKey === victim.desired.localAssetKey),
+    ).toBe(false);
+    expect(headReads).toHaveBeenCalledTimes(2);
+    expect(descriptorReads).toHaveBeenCalledTimes(2);
+    await expect(store.captureBackupReceiptsForLocalAssets([...keys, "overflow"])).rejects.toThrow(
+      "batch is invalid",
+    );
+    await expect(store.captureBackupReceiptsForLocalAssets([keys[0]!, keys[0]!])).rejects.toThrow(
+      "batch is invalid",
+    );
+    expect(headReads).toHaveBeenCalledTimes(2);
+    await database.encryptedWalletBackupV2DesiredAssets.update(
+      [scopeId, victim.desired.localAssetKey],
+      { custodyRevision: "1" },
+    );
+    const retainedBundles = bundles.filter(
+      (bundle) => bundle.bundleId !== victim.descriptor.bundleId,
+    );
+    const nextHead = createEncryptedWalletBackupOwnerCurrentHead({
+      ...context,
+      headVersion: 3,
+      bundles: retainedBundles,
+    });
+    await store.acceptCurrentHead({
+      expectedHeadVersion: 2,
+      evidence: collectEncryptedWalletBackupOwnerDescriptorPages(
+        enumerateEncryptedWalletBackupOwnerDescriptorPages({
+          head: nextHead,
+          bundles: retainedBundles,
+        }),
+        context,
+      ),
+    });
+    completedPhase("replace-head-and-boundary-assertions");
+    const readsBeforeNewReport = headReads.mock.calls.length;
+    const refreshed = await store.captureBackupReceiptsForLocalAssets(keys);
+    completedPhase("fresh-head-capture");
+    expect(refreshed).toHaveLength(255);
+    expect(
+      refreshed.some((snapshot) => snapshot.desired.localAssetKey === victim.desired.localAssetKey),
+    ).toBe(false);
+    expect(headReads).toHaveBeenCalledTimes(readsBeforeNewReport + 1);
+    let current = true;
+    const guarded = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database,
+      scopeId,
+      ownerScopeId: OWNER_SCOPE_ID,
+      realm: victim.descriptor.realm,
+      walletId: victim.descriptor.walletId,
+      requestAuthPublicKey: victim.keyHandle.requestAuthPublicKey,
+      enrollmentEpoch: 1,
+      isCurrent: () => current,
+    });
+    ownerReads.mockImplementationOnce((...args: Parameters<typeof originalGet>) =>
+      originalGet(...args).then((row) => {
+        current = false;
+        return row;
+      }),
+    );
+    await expect(guarded.captureBackupReceiptsForLocalAssets(keys)).rejects.toThrow();
+    completedPhase("owner-loss-refusal");
+    // This stress fixture signs and verifies 256 real receipts, then performs
+    // three full IndexedDB captures. The measured isolated case takes 6.5s.
+  }, 30_000);
+
+  it("composes real owner-only snapshots with locked local holdings and current-head refusal", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    monitoring.scope = scopeId;
+    const victim = await ownerAuthorizedCandidate(database, "snapshot-owner", "36", 6);
+    const store = await persistOwnerReceipt(database, victim);
+    await database.custodyProofs.bulkDelete(
+      victim.proofs.map((proof) => [proof.scopeId, proof.proofId]),
+    );
+    await database.custodyProofBackupAuthorities.clear();
+    await database.encryptedWalletBackupV2AssetReceipts.clear();
+    await database.encryptedWalletBackupV2AcceptedHeads.clear();
+    await database.encryptedWalletBackupV2ActiveDescriptors.clear();
+    const pending = createBrowserCustodyProofRow({
+      scopeId,
+      normalizedMint: "https://other-mint.example",
+      unit: "msat",
+      proof: {
+        id: KEYSET_ID,
+        amount: Amount.from(3),
+        secret: "pending-monitoring",
+        C: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      },
+      asset: { kind: "regular" },
+      receivedAtMs: 7,
+    });
+    await database.custodyProofs.put({
+      ...pending,
+      selectability: "locked",
+      reservationOperationId: "pending-order",
+    });
+    let current = true;
+    const driver = {
+      captureSelectedOwnerMonitoringAuthority: async () => ({
+        isCurrent: () => current,
+        captureBackupReceiptsForLocalAssets: store.captureBackupReceiptsForLocalAssets.bind(store),
+      }),
+    } as unknown as BrowserEncryptedWalletBackupV2RuntimeDriver;
+    const wake = vi.fn();
+    const unsubscribeWake = subscribeToBrowserEncryptedBackupMonitoring(scopeId, wake);
+    const unregister = registerBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId, driver);
+    const committed = vi.fn();
+    const unsubscribeCommit = subscribeToCommittedProofChanges(database, committed);
+    try {
+      expect(wake).toHaveBeenCalledOnce();
+      const snapshot = await readAssetMonitoringSnapshot(database, scopeId);
+      expect(snapshot.evictedAssets).toEqual([
+        { kind: "ordinary", mintUrl: victim.desired.mintUrl, unit: "msat", declaredAmount: 1 },
+      ]);
+      const holdings = await buildBrowserAssetMonitoringHoldings(database, scopeId, {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl: fetch,
+      });
+      expect(holdings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            asset: expect.objectContaining({ canonicalMintUrl: victim.desired.mintUrl }),
+            availableSubunits: 1,
+            pendingOutgoingSubunits: 0,
+          }),
+          expect.objectContaining({
+            asset: expect.objectContaining({ canonicalMintUrl: "https://other-mint.example" }),
+            availableSubunits: 0,
+            pendingOutgoingSubunits: 3,
+          }),
+        ]),
+      );
+      const context = {
+        ownerScopeId: OWNER_SCOPE_ID,
+        realm: victim.descriptor.realm,
+        walletId: victim.descriptor.walletId,
+        enrollmentEpoch: 1,
+      };
+      const head = createEncryptedWalletBackupOwnerCurrentHead({
+        ...context,
+        headVersion: 2,
+        bundles: [],
+      });
+      await store.acceptCurrentHead({
+        expectedHeadVersion: 1,
+        evidence: collectEncryptedWalletBackupOwnerDescriptorPages(
+          enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+          context,
+        ),
+      });
+      expect(committed).toHaveBeenCalledOnce();
+      expect((await readAssetMonitoringSnapshot(database, scopeId)).evictedAssets).toEqual([]);
+      current = false;
+      unregister();
+      expect(wake).toHaveBeenCalledTimes(2);
+      const withoutOwner = await buildBrowserAssetMonitoringHoldings(database, scopeId, {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl: fetch,
+      });
+      expect(withoutOwner).toEqual([expect.objectContaining({ pendingOutgoingSubunits: 3 })]);
+    } finally {
+      unregister();
+      unsubscribeWake();
+      unsubscribeCommit();
+    }
+  });
+
+  it("refuses a captured owner's report when the registered owner changes during catalogue work", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    monitoring.scope = scopeId;
+    const victim = await ownerAuthorizedCandidate(database, "switch-owner", "37", 7);
+    const store = await persistOwnerReceipt(database, victim);
+    await database.custodyProofs.bulkDelete(
+      victim.proofs.map((proof) => [proof.scopeId, proof.proofId]),
+    );
+    const driver = {
+      captureSelectedOwnerMonitoringAuthority: async () => ({
+        isCurrent: () => true,
+        captureBackupReceiptsForLocalAssets: store.captureBackupReceiptsForLocalAssets.bind(store),
+      }),
+    } as unknown as BrowserEncryptedWalletBackupV2RuntimeDriver;
+    const unregister = registerBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId, driver);
+    let release!: () => void;
+    let entered!: () => void;
+    const called = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    monitoring.catalogue.mockImplementationOnce(async () => {
+      entered();
+      await held;
+      return [];
+    });
+    let unregisterReplacement = () => {};
+    try {
+      const report = buildBrowserAssetMonitoringHoldings(database, scopeId, {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl: fetch,
+      });
+      await called;
+      unregisterReplacement = registerBrowserEncryptedWalletBackupV2RuntimeDriver(
+        scopeId,
+        {} as BrowserEncryptedWalletBackupV2RuntimeDriver,
+      );
+      release();
+      expect(await report).toBeNull();
+    } finally {
+      release();
+      unregisterReplacement();
+      unregister();
+    }
+  });
+
+  it("reports an owner-backed evicted holding without legacy authority and refuses stale or locally present assets", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await ownerAuthorizedCandidate(database, "monitoring-owner", "35", 5);
+    const ownerAuthority = await persistOwnerReceipt(database, victim);
+    await database.encryptedWalletBackupV2AssetReceipts.clear();
+    await database.encryptedWalletBackupV2AcceptedHeads.clear();
+    await database.encryptedWalletBackupV2ActiveDescriptors.clear();
+    await database.encryptedWalletBackupV2DesiredAssets.update(
+      [scopeId, victim.desired.localAssetKey],
+      { syncState: "pending" },
+    );
+    const input = { database, scopeId, isCurrentProfile: () => true, ownerAuthority };
+    expect(await listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts(input)).toEqual(
+      [],
+    );
+    await database.custodyProofs.bulkDelete(
+      victim.proofs.map((proof) => [proof.scopeId, proof.proofId]),
+    );
+    const facts = await database.transaction(
+      "r",
+      [
+        database.custodyProofs,
+        database.custodyConditionalKeysets,
+        database.encryptedWalletBackupV2DesiredAssets,
+        database.encryptedWalletBackupOwnerDesiredAssets,
+        database.encryptedWalletBackupOwnerAssetReceipts,
+        database.encryptedWalletBackupOwnerAcceptedHeads,
+        database.encryptedWalletBackupOwnerActiveDescriptors,
+      ],
+      async () => await listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts(input),
+    );
+    expect(facts).toEqual([
+      { kind: "ordinary", mintUrl: victim.desired.mintUrl, unit: "msat", declaredAmount: 1 },
+    ]);
+    const wrongOwner = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database,
+      scopeId,
+      ownerScopeId: "cd".repeat(32),
+      realm: victim.descriptor.realm,
+      walletId: victim.descriptor.walletId,
+      requestAuthPublicKey: victim.keyHandle.requestAuthPublicKey,
+      enrollmentEpoch: 1,
+      isCurrent: () => true,
+    });
+    expect(
+      await listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts({
+        ...input,
+        ownerAuthority: wrongOwner,
+      }),
+    ).toEqual([]);
+    await expect(
+      listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts({
+        ...input,
+        isCurrentProfile: () => false,
+      }),
+    ).rejects.toThrow();
+    const savedReceipts = await database.encryptedWalletBackupOwnerAssetReceipts.toArray();
+    await database.encryptedWalletBackupOwnerAssetReceipts.clear();
+    expect(await listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts(input)).toEqual(
+      [],
+    );
+    await database.encryptedWalletBackupOwnerAssetReceipts.bulkPut(savedReceipts);
+    await database.encryptedWalletBackupV2DesiredAssets.update(
+      [scopeId, victim.desired.localAssetKey],
+      { custodyRevision: "2" },
+    );
+    expect(await listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts(input)).toEqual(
+      [],
+    );
   });
 
   it("evicts only after the selected owner's fresh collected head matches the exact candidate", async () => {
@@ -616,6 +1028,7 @@ async function ownerAuthorizedCandidate(
 async function persistOwnerReceipt(
   database: BitcasterDB,
   candidate: Awaited<ReturnType<typeof ownerAuthorizedCandidate>>,
+  installHead = true,
 ): Promise<EncryptedWalletBackupOwnerDexieAuthorityStore> {
   const { descriptor, keyHandle, desired } = candidate;
   const store = new EncryptedWalletBackupOwnerDexieAuthorityStore({
@@ -643,17 +1056,19 @@ async function persistOwnerReceipt(
     enumerateEncryptedWalletBackupOwnerDescriptorPages({ head: emptyHead, bundles: [] }),
     context,
   );
-  await store.acceptCurrentHead({ expectedHeadVersion: null, evidence: emptyEvidence });
+  if (installHead)
+    await store.acceptCurrentHead({ expectedHeadVersion: null, evidence: emptyEvidence });
   const ownerReceipt = await ownerReachabilitySnapshot({
     ownerScopeId: OWNER_SCOPE_ID,
     descriptor,
     enrollmentEpoch: 1,
     keyHandle,
   });
-  await store.acceptCurrentHead({
-    expectedHeadVersion: 0,
-    evidence: ownerReceipt.collectedHeadEvidence,
-  });
+  if (installHead)
+    await store.acceptCurrentHead({
+      expectedHeadVersion: 0,
+      evidence: ownerReceipt.collectedHeadEvidence,
+    });
   const receipt = ownerReceipt.receipt;
   await database.encryptedWalletBackupOwnerAssetReceipts.put({
     scopeId,

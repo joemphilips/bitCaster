@@ -95,6 +95,8 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   readSelectedOwnerBackupReceipt(
     localAssetKey: string,
   ): Promise<EncryptedWalletBackupOwnerBackupReceiptSnapshot | null>;
+  /** Captures a read-only current-owner adapter without discovery or remote work. */
+  captureSelectedOwnerMonitoringAuthority?(): Promise<BrowserEncryptedWalletBackupOwnerMonitoringAuthority | null>;
   /** Reports prepared work for the already selected owner, or null if none is captured. */
   hasSelectedOwnerPreparedMutation(): Promise<boolean | null>;
   /** Reads recovery status for the already selected owner without discovery or enrollment. */
@@ -158,6 +160,28 @@ export type BrowserEncryptedWalletBackupV2RecoveryCallback = (
   input: BrowserEncryptedWalletBackupV2RecoveryInput,
 ) => Promise<void>;
 
+export interface BrowserEncryptedWalletBackupOwnerMonitoringAuthority {
+  readonly isCurrent: () => boolean;
+  readonly captureBackupReceiptsForLocalAssets: EncryptedWalletBackupOwnerDexieAuthorityStore["captureBackupReceiptsForLocalAssets"];
+}
+
+const monitoringListeners = new Map<string, Set<() => void>>();
+export function subscribeToBrowserEncryptedBackupMonitoring(
+  scopeId: string,
+  listener: () => void,
+): () => void {
+  const listeners = monitoringListeners.get(scopeId) ?? new Set<() => void>();
+  monitoringListeners.set(scopeId, listeners);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) monitoringListeners.delete(scopeId);
+  };
+}
+function notifyBackupMonitoring(scopeId: string): void {
+  for (const listener of monitoringListeners.get(scopeId) ?? []) listener();
+}
+
 const targetedDrivers = new Map<string, BrowserEncryptedWalletBackupV2RuntimeDriver>();
 
 /** Registers the exact live driver for one browser wallet profile. */
@@ -166,8 +190,12 @@ export function registerBrowserEncryptedWalletBackupV2RuntimeDriver(
   driver: BrowserEncryptedWalletBackupV2RuntimeDriver,
 ): () => void {
   targetedDrivers.set(scopeId, driver);
+  notifyBackupMonitoring(scopeId);
   return () => {
-    if (targetedDrivers.get(scopeId) === driver) targetedDrivers.delete(scopeId);
+    if (targetedDrivers.get(scopeId) === driver) {
+      targetedDrivers.delete(scopeId);
+      notifyBackupMonitoring(scopeId);
+    }
   };
 }
 
@@ -436,6 +464,27 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
           collectedHeadEvidence,
         });
         return Object.freeze({ evidence, collectedHeadEvidence, backupReceiptSnapshot });
+      },
+    });
+  }
+
+  async captureSelectedOwnerMonitoringAuthority(): Promise<BrowserEncryptedWalletBackupOwnerMonitoringAuthority | null> {
+    const owner = this.#ownerCandidate;
+    const session = this.#input.ownerSession;
+    if (owner === undefined || session === undefined) return null;
+    const isCurrent = () =>
+      this.#ownerCandidate === owner && session.isCurrent() && this.#isLeaderActive();
+    if (!isCurrent()) return null;
+    const keyHandle = await this.#keyHandlePromise;
+    if (!isCurrent()) return null;
+    const store = this.#ownerStore(keyHandle);
+    return Object.freeze({
+      isCurrent,
+      captureBackupReceiptsForLocalAssets: async (localAssetKeys: readonly string[]) => {
+        if (!isCurrent()) throw new Error("selected monitoring owner is stale");
+        const receipt = await store.captureBackupReceiptsForLocalAssets(localAssetKeys);
+        if (!isCurrent()) throw new Error("selected monitoring owner is stale");
+        return receipt;
       },
     });
   }
@@ -845,6 +894,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         async () => {
           if (!this.#isActive()) return;
           this.#leader = true;
+          notifyBackupMonitoring(this.#input.scopeId);
           this.#setDiagnosticState("leadership-active");
           this.#startLeader();
           await this.#resumeOrInitialize();
@@ -870,6 +920,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
 
   #stopLeader(): void {
     this.#leader = false;
+    notifyBackupMonitoring(this.#input.scopeId);
     this.#notifyRemoveReadinessWaiters();
     this.#initialized = false;
     this.#initializing = false;
@@ -1041,6 +1092,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       const resolving = this.#resolveOwnerCandidate(keyHandle).then((candidate) => {
         this.#ownerCandidate = candidate;
         this.#enrollmentEpoch = candidate.enrollmentEpoch;
+        notifyBackupMonitoring(this.#input.scopeId);
         return candidate.enrollmentEpoch;
       });
       this.#enrollmentEpochPromise = resolving;

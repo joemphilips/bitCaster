@@ -3,7 +3,10 @@ import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { finalizeEvent } from 'nostr-tools/pure'
 import { bytesToHex } from '@noble/curves/utils.js'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +21,7 @@ import {
   deriveKeysetId,
   hashToCurve,
   pointFromHex,
+  type CounterSource,
   type OperationCounters,
   type Proof,
 } from '@cashu/cashu-ts'
@@ -50,11 +54,7 @@ import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts
 import type { NativeMarketCreationInput } from '../src/nativeMarketOracle.ts'
 import type { NativeOracleHelper } from '../src/nativeOracleHelper.ts'
 import type { NativeMarketCreationDependencies } from '../src/nativeMarketCreation.ts'
-import {
-  createDaemonCounterSource,
-  type CashuWalletLike,
-  type WalletOpsDependencies,
-} from '../src/walletOps.ts'
+import type { CashuWalletLike, WalletOpsDependencies } from '../src/walletOps.ts'
 
 const CREATOR_PUBKEY = deriveNostrPublicKey('22'.repeat(32))
 const ORACLE_PUBKEY = CREATOR_PUBKEY
@@ -72,10 +72,7 @@ const ANNOUNCEMENT_EVENT_JSON = JSON.stringify(
   ),
 )
 const FEE_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
-const FEE_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(FEE_PRIVATE_KEY, true))
-const FEE_KEYS = Object.fromEntries(
-  [1, 2, 4, 8, 16].map((amount) => [String(amount), FEE_PUBLIC_KEY]),
-)
+const FEE_KEYS = mintDenominationKeys(FEE_PRIVATE_KEY, ['1', '2', '4', '8', '16'])
 const FEE_KEYSET_ID = deriveKeysetId(FEE_KEYS, { unit: 'msat', versionByte: 1 })
 
 for (const [name, market] of [
@@ -789,6 +786,7 @@ function createFixture(
         ...shared,
         coordinator,
         wallet,
+        createWallet: (source) => feeFixture!.createWallet(source),
       }
       return dependencies
     }
@@ -864,7 +862,7 @@ function createFixture(
 interface RegistrationFeeFixture {
   readonly coordinator: DaemonDurableOutgoingCashuCoordinator
   createCoordinator(): DaemonDurableOutgoingCashuCoordinator
-  createWallet(): CashuWalletLike
+  createWallet(source?: CounterSource): CashuWalletLike
   markMintSpent(): void
   stats(): { prepareCalls: number; completedSwaps: number }
 }
@@ -939,10 +937,6 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
       keep: restore('keep', outputGroups.keep ?? []),
     }),
   }
-  const counterSource = createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
-    normalizedMint: MINT_URL,
-    unit: 'msat',
-  })
   const createCoordinator = () =>
     new DaemonDurableOutgoingCashuCoordinator(directory, () => fence, walletDependencies)
 
@@ -960,7 +954,7 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
   return {
     coordinator: createCoordinator(),
     createCoordinator,
-    createWallet() {
+    createWallet(source) {
       const wallet: CashuWalletLike = {
         loadMint: async () => {},
         receive: async () => [],
@@ -990,7 +984,11 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
           ).onCountersReserved
           assert.equal(typeof onCountersReserved, 'function')
           const count = sendOutputs.length + keepOutputs.length
-          const range = await counterSource.reserve(FEE_KEYSET_ID, count)
+          assert.ok(
+            source,
+            'deterministic fee preparation requires the supplied speculative source',
+          )
+          const range = await source.reserve(FEE_KEYSET_ID, count)
           onCountersReserved?.({
             keysetId: FEE_KEYSET_ID,
             start: range.start,
@@ -1062,12 +1060,16 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
 }
 
 function signProof(output: OutputData): Proof {
+  const privateKey = mintDenominationPrivateKey(
+    FEE_PRIVATE_KEY,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    FEE_PRIVATE_KEY,
+    privateKey,
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), FEE_PRIVATE_KEY)
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
   const proof = output.toProof(
     {
       id: output.blindedMessage.id,

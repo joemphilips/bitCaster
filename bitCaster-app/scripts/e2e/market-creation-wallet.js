@@ -37,8 +37,11 @@ async function evaluateInActiveBrowserWalletDatabase(operation, argument) {
 }
 
 async function readOrdinaryMsatSnapshot(db, mintUrl) {
+  const tx = db.transaction(
+    ["encryptedWalletBackupV2DesiredAssets", "custodyProofs", "proofs"],
+    "readonly",
+  );
   const readAll = async (storeName) => {
-    const tx = db.transaction(storeName, "readonly");
     const request = tx.objectStore(storeName).getAll();
     return await new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result || []);
@@ -53,9 +56,8 @@ async function readOrdinaryMsatSnapshot(db, mintUrl) {
     }
   };
   const targetMint = normalizeMint(mintUrl);
-  const [desiredAssets, receipts, custodyProofs, legacyProofs] = await Promise.all([
+  const [desiredAssets, custodyProofs, legacyProofs] = await Promise.all([
     readAll("encryptedWalletBackupV2DesiredAssets"),
-    readAll("encryptedWalletBackupV2WalletAssetReceipts"),
     readAll("custodyProofs"),
     readAll("proofs"),
   ]);
@@ -65,15 +67,6 @@ async function readOrdinaryMsatSnapshot(db, mintUrl) {
       row.unit === "msat" &&
       row.assetIdentity === "cashu:ordinary",
   );
-  const receipt =
-    desired === undefined
-      ? undefined
-      : receipts.find(
-          (value) =>
-            value.scopeId === desired.scopeId &&
-            value.localAssetKey === desired.localAssetKey &&
-            value.custodyRevision === desired.custodyRevision,
-        );
   const canonical = custodyProofs.filter(
     (proof) =>
       desired !== undefined &&
@@ -92,23 +85,34 @@ async function readOrdinaryMsatSnapshot(db, mintUrl) {
       !proof.outcomeCollection &&
       !proof.outcome_collection,
   );
-  return { desired, receipt, canonical, legacy };
+  return { desired, canonical, legacy };
 }
 
 async function readOrdinaryMsatAssetState({ mintUrl }) {
   return await withActiveBrowserWalletDatabase(async (db) => {
-    const { desired, receipt, canonical, legacy } = await readOrdinaryMsatSnapshot(db, mintUrl);
+    const { desired, canonical, legacy } = await readOrdinaryMsatSnapshot(db, mintUrl);
+    const runtime = await import("/src/lib/encryptedWalletBackupDriver.ts");
+    const driver =
+      desired === undefined
+        ? null
+        : runtime.activeBrowserEncryptedWalletBackupV2RuntimeDriver(desired.scopeId);
+    const receipt =
+      driver === null ? null : await driver.readSelectedOwnerBackupReceipt(desired.localAssetKey);
+    const currentReceipt =
+      desired !== undefined &&
+      receipt !== null &&
+      receipt.desired.localAssetKey === desired.localAssetKey &&
+      receipt.desired.custodyRevision === desired.custodyRevision &&
+      receipt.desired.activeProofCount === desired.activeProofCount &&
+      driver === runtime.activeBrowserEncryptedWalletBackupV2RuntimeDriver(desired.scopeId);
     return {
       backupReady:
         desired !== undefined &&
         desired.desiredAction === "replace" &&
-        desired.syncState === "acknowledged" &&
         desired.activeProofCount > 0 &&
-        receipt !== undefined &&
-        typeof receipt.assetLocator === "string" &&
-        receipt.assetLocator.length > 0,
+        currentReceipt,
       scopeId: desired?.scopeId ?? null,
-      assetLocator: receipt?.assetLocator ?? null,
+      assetLocator: currentReceipt ? receipt.ownerDesired.assetLocator : null,
       selectableCanonicalProofCount: canonical.filter(
         (proof) => proof.selectability === "selectable",
       ).length,
@@ -128,80 +132,103 @@ async function evictOrdinaryMsatProofBodies({ mintUrl }) {
     const { desired } = await readOrdinaryMsatSnapshot(db, mintUrl);
     if (desired === undefined) throw new Error("ordinary msat backup desired asset is absent");
 
-    const [quotaCleanup, seedHandoff, proofDatabase, walletProfile] = await Promise.all([
+    const [quotaCleanup, seedHandoff, proofDatabase, walletProfile, runtime] = await Promise.all([
       import("/src/lib/browserEncryptedWalletBackupV2QuotaCleanup.ts"),
       import("/src/lib/browserEncryptedWalletBackupV2SeedHandoff.ts"),
       import("/src/stores/proof-db.ts"),
       import("/src/lib/browserWalletProfile.ts"),
+      import("/src/lib/encryptedWalletBackupDriver.ts"),
     ]);
     const quotaDatabase = proofDatabase.db;
     if (quotaDatabase.name !== walletProfile.browserWalletDatabaseName(desired.scopeId)) {
       throw new Error("ordinary msat quota cleanup database is not the active wallet database");
     }
-    const eligible = await seedHandoff.listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(
-      {
+    const driver = runtime.activeBrowserEncryptedWalletBackupV2RuntimeDriver(desired.scopeId);
+    if (
+      driver === null ||
+      (await driver.readSelectedOwnerBackupReceipt(desired.localAssetKey)) === null
+    ) {
+      throw new Error("selected-owner backup receipt is unavailable for quota eviction");
+    }
+    const authority = await driver.prepareSeedHandoffOwnerAuthority();
+    if (authority === null) throw new Error("selected-owner quota authority is unavailable");
+    const isCurrentProfile = () =>
+      quotaDatabase.name === walletProfile.browserWalletDatabaseName(desired.scopeId) &&
+      runtime.activeBrowserEncryptedWalletBackupV2RuntimeDriver(desired.scopeId) === driver;
+    // Release this tab's leadership lock for the production quota owner's locked check.
+    // Resume the same driver after checking eviction, including when the attempt refuses.
+    try {
+      await driver.quiesceForSeedHandoff();
+      const eligible =
+        await seedHandoff.listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets({
+          database: quotaDatabase,
+          scopeId: desired.scopeId,
+          isCurrentProfile,
+          ownerAuthorityStore: authority.ownerAuthorityStore,
+        });
+      const targetCandidate = eligible.find(
+        (candidate) => candidate.desired.localAssetKey === desired.localAssetKey,
+      );
+      if (targetCandidate === undefined) {
+        throw new Error("ordinary msat backup cache is not eligible for quota eviction");
+      }
+      const protectedLocalAssetKeys = eligible
+        .map((candidate) => candidate.desired.localAssetKey)
+        .filter((localAssetKey) => localAssetKey !== desired.localAssetKey);
+      let writeAttempts = 0;
+      const quotaResult = await quotaCleanup.retryBrowserEncryptedWalletBackupV2QuotaWrite({
         database: quotaDatabase,
         scopeId: desired.scopeId,
-        isCurrentProfile: () =>
-          quotaDatabase.name === walletProfile.browserWalletDatabaseName(desired.scopeId),
-      },
-    );
-    const targetCandidate = eligible.find(
-      (candidate) => candidate.desired.localAssetKey === desired.localAssetKey,
-    );
-    if (targetCandidate === undefined) {
-      throw new Error("ordinary msat backup cache is not eligible for quota eviction");
-    }
-    const protectedLocalAssetKeys = eligible
-      .map((candidate) => candidate.desired.localAssetKey)
-      .filter((localAssetKey) => localAssetKey !== desired.localAssetKey);
-    let writeAttempts = 0;
-    const quotaResult = await quotaCleanup.retryBrowserEncryptedWalletBackupV2QuotaWrite({
-      database: quotaDatabase,
-      scopeId: desired.scopeId,
-      isCurrentProfile: () =>
-        quotaDatabase.name === walletProfile.browserWalletDatabaseName(desired.scopeId),
-      protectedLocalAssetKeys,
-      write: async () => {
-        writeAttempts += 1;
-        if (writeAttempts === 1) {
-          throw new DOMException("E2E quota cleanup trigger", "QuotaExceededError");
-        }
-        return true;
-      },
-    });
-    if (
-      writeAttempts !== 2 ||
-      quotaResult.result !== true ||
-      quotaResult.evictedLocalAssetKey !== desired.localAssetKey
-    ) {
-      throw new Error("ordinary msat quota eviction did not remove the exact target cache");
-    }
-    const verifyTx = db.transaction(["custodyProofs", "custodyProofBackupAuthorities"], "readonly");
-    const read = (store, key) =>
-      new Promise((resolve, reject) => {
-        const request = verifyTx.objectStore(store).get(key);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        isCurrentProfile,
+        ...authority,
+        protectedLocalAssetKeys,
+        write: async () => {
+          writeAttempts += 1;
+          if (writeAttempts === 1) {
+            throw new DOMException("E2E quota cleanup trigger", "QuotaExceededError");
+          }
+          return true;
+        },
       });
-    const [remainingCandidateProofs, remainingCandidateAuthorities] = await Promise.all([
-      Promise.all(
-        targetCandidate.proofs.map((proof) =>
-          read("custodyProofs", [proof.scopeId, proof.proofId]),
+      if (
+        writeAttempts !== 2 ||
+        quotaResult.result !== true ||
+        quotaResult.evictedLocalAssetKey !== desired.localAssetKey
+      ) {
+        throw new Error("ordinary msat quota eviction did not remove the exact target cache");
+      }
+      const verifyTx = db.transaction(
+        ["custodyProofs", "custodyProofBackupAuthorities"],
+        "readonly",
+      );
+      const read = (store, key) =>
+        new Promise((resolve, reject) => {
+          const request = verifyTx.objectStore(store).get(key);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      const [remainingCandidateProofs, remainingCandidateAuthorities] = await Promise.all([
+        Promise.all(
+          targetCandidate.proofs.map((proof) =>
+            read("custodyProofs", [proof.scopeId, proof.proofId]),
+          ),
         ),
-      ),
-      Promise.all(
-        targetCandidate.proofs.map((proof) =>
-          read("custodyProofBackupAuthorities", [proof.scopeId, proof.proofId]),
+        Promise.all(
+          targetCandidate.proofs.map((proof) =>
+            read("custodyProofBackupAuthorities", [proof.scopeId, proof.proofId]),
+          ),
         ),
-      ),
-    ]);
-    return {
-      remainingCandidateProofCount: remainingCandidateProofs.filter((value) => value !== undefined)
-        .length,
-      remainingCandidateProofAuthorityCount: remainingCandidateAuthorities.filter(
-        (value) => value !== undefined,
-      ).length,
-    };
+      ]);
+      return {
+        remainingCandidateProofCount: remainingCandidateProofs.filter(
+          (value) => value !== undefined,
+        ).length,
+        remainingCandidateProofAuthorityCount: remainingCandidateAuthorities.filter(
+          (value) => value !== undefined,
+        ).length,
+      };
+    } finally {
+      driver.resumeAfterSeedHandoff();
+    }
   });
 }

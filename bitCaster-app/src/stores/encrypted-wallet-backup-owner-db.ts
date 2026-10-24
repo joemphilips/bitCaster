@@ -149,50 +149,111 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         this.#database.encryptedWalletBackupOwnerActiveDescriptors,
       ],
       async () => {
+        return await this.#captureBackupReceiptInTransaction(desiredBinding);
+      },
+    );
+  }
+
+  async #captureBackupReceiptInTransaction(
+    desiredBinding: EncryptedWalletBackupV2PreparedDesiredBinding,
+    capturedHead?: EncryptedWalletBackupOwnerCollectedHeadEvidence | null,
+  ): Promise<EncryptedWalletBackupOwnerBackupReceiptSnapshot | null> {
+    this.#requireSessionCurrent();
+    const canonicalRaw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      desiredBinding.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (canonicalRaw === undefined) return null;
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(canonicalRaw);
+    if (desired.scopeId !== this.#scopeId || !matchesDesiredBinding(desired, desiredBinding))
+      return null;
+    const ownerDesiredRaw = await this.#database.encryptedWalletBackupOwnerDesiredAssets.get([
+      this.#scopeId,
+      this.#context.ownerScopeId,
+      desiredBinding.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (ownerDesiredRaw === undefined) return null;
+    const ownerDesired = this.#decodeOwnerDesiredRow(ownerDesiredRaw);
+    if (
+      ownerDesired.syncState !== "acknowledged" ||
+      !sameOwnerDesiredBinding(ownerDesired, desiredBinding) ||
+      desired.activeProofCount < 1
+    )
+      return null;
+    const receiptRaw = await this.#database.encryptedWalletBackupOwnerAssetReceipts.get([
+      this.#scopeId,
+      this.#context.ownerScopeId,
+      this.#context.realm,
+      this.#context.walletId,
+      this.#context.enrollmentEpoch,
+      desiredBinding.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (receiptRaw === undefined) return null;
+    const receipt = decodeOwnerReceiptRow(receiptRaw, this.#scopeId, this.#context);
+    const head =
+      capturedHead === undefined ? await this.#readCurrentHeadInTransaction() : capturedHead;
+    this.#requireSessionCurrent();
+    if (head === null || !ownerHeadMatchesReceipt(head, receipt, desiredBinding)) return null;
+    return freezeBackupReceiptSnapshot({
+      desired,
+      ownerDesired,
+      receipt,
+      collectedHeadEvidence: head,
+    });
+  }
+
+  /** Capture at most 256 distinct assets against one internally read current head. */
+  async captureBackupReceiptsForLocalAssets(
+    localAssetKeys: readonly string[],
+  ): Promise<readonly EncryptedWalletBackupOwnerBackupReceiptSnapshot[]> {
+    this.#requireDatabaseBinding();
+    if (
+      !Array.isArray(localAssetKeys) ||
+      localAssetKeys.length > 256 ||
+      localAssetKeys.some((key) => typeof key !== "string" || key.length < 1) ||
+      new Set(localAssetKeys).size !== localAssetKeys.length
+    )
+      throw new Error("encrypted backup owner asset batch is invalid");
+    const keys = [...localAssetKeys];
+    return this.#database.transaction(
+      "r",
+      [
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.encryptedWalletBackupOwnerDesiredAssets,
+        this.#database.encryptedWalletBackupOwnerAssetReceipts,
+        this.#database.encryptedWalletBackupOwnerAcceptedHeads,
+        this.#database.encryptedWalletBackupOwnerActiveDescriptors,
+      ],
+      async () => {
         this.#requireSessionCurrent();
-        const canonicalRaw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
-          this.#scopeId,
-          desiredBinding.localAssetKey,
-        ]);
-        this.#requireSessionCurrent();
-        if (canonicalRaw === undefined) return null;
-        const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(canonicalRaw);
-        if (desired.scopeId !== this.#scopeId || !matchesDesiredBinding(desired, desiredBinding))
-          return null;
-        const ownerDesiredRaw = await this.#database.encryptedWalletBackupOwnerDesiredAssets.get([
-          this.#scopeId,
-          this.#context.ownerScopeId,
-          desiredBinding.localAssetKey,
-        ]);
-        this.#requireSessionCurrent();
-        if (ownerDesiredRaw === undefined) return null;
-        const ownerDesired = this.#decodeOwnerDesiredRow(ownerDesiredRaw);
-        if (
-          ownerDesired.syncState !== "acknowledged" ||
-          !sameOwnerDesiredBinding(ownerDesired, desiredBinding) ||
-          desired.activeProofCount < 1
-        )
-          return null;
-        const receiptRaw = await this.#database.encryptedWalletBackupOwnerAssetReceipts.get([
-          this.#scopeId,
-          this.#context.ownerScopeId,
-          this.#context.realm,
-          this.#context.walletId,
-          this.#context.enrollmentEpoch,
-          desiredBinding.localAssetKey,
-        ]);
-        this.#requireSessionCurrent();
-        if (receiptRaw === undefined) return null;
-        const receipt = decodeOwnerReceiptRow(receiptRaw, this.#scopeId, this.#context);
         const head = await this.#readCurrentHeadInTransaction();
         this.#requireSessionCurrent();
-        if (head === null || !ownerHeadMatchesReceipt(head, receipt, desiredBinding)) return null;
-        return freezeBackupReceiptSnapshot({
-          desired,
-          ownerDesired,
-          receipt,
-          collectedHeadEvidence: head,
-        });
+        const snapshots: EncryptedWalletBackupOwnerBackupReceiptSnapshot[] = [];
+        for (const localAssetKey of keys) {
+          const raw = await this.#database.encryptedWalletBackupOwnerDesiredAssets.get([
+            this.#scopeId,
+            this.#context.ownerScopeId,
+            localAssetKey,
+          ]);
+          this.#requireSessionCurrent();
+          if (raw === undefined) continue;
+          const desired = this.#decodeOwnerDesiredRow(raw);
+          const binding = requireDesiredBinding({
+            localAssetKey: desired.localAssetKey,
+            assetLocator: desired.assetLocator,
+            custodyRevision: desired.custodyRevision,
+            desiredAction: desired.desiredAction,
+            activeProofCount: desired.activeProofCount,
+          });
+          if (binding.desiredAction !== "replace") continue;
+          const snapshot = await this.#captureBackupReceiptInTransaction(binding, head);
+          if (snapshot !== null) snapshots.push(snapshot);
+        }
+        this.#requireSessionCurrent();
+        return Object.freeze(snapshots);
       },
     );
   }

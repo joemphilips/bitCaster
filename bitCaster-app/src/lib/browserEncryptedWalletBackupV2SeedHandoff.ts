@@ -201,6 +201,72 @@ export async function listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAsse
  * Lists backed assets whose complete local proof cache was evicted.
  * The returned amount is descriptor metadata. It contains no proof material.
  */
+export async function listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts(
+  input: BrowserEncryptedWalletBackupV2CacheEligibilityInput & {
+    readonly ownerAuthority: Pick<
+      EncryptedWalletBackupOwnerDexieAuthorityStore,
+      "captureBackupReceiptsForLocalAssets"
+    >;
+  },
+): Promise<readonly BrowserEncryptedWalletBackupV2EvictedAssetMonitoringFact[]> {
+  requireCapturedDatabase(input);
+  const desiredRows = (await readDesiredRows(input.database, input.scopeId)).map(
+    decodeEncryptedWalletBackupV2DesiredAssetRow,
+  );
+  const keysets = await input.database.custodyConditionalKeysets
+    .where("[scopeId+normalizedMint+unit+keysetId]")
+    .between(
+      [input.scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, TEXT_KEY_MIN],
+      [input.scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, TEXT_KEY_MAX],
+    )
+    .limit(CONDITIONAL_KEYSET_MAX + 1)
+    .toArray();
+  if (keysets.length > CONDITIONAL_KEYSET_MAX)
+    throw new Error("browser V2 conditional keyset limit exceeded");
+  const keysetsByIdentity = groupRows(keysets, monitoringKeysetIdentityKey);
+  const facts: BrowserEncryptedWalletBackupV2EvictedAssetMonitoringFact[] = [];
+  const candidates: Array<{
+    desired: EncryptedWalletBackupV2DesiredAssetRow;
+    asset: BrowserEncryptedWalletBackupV2EvictedAssetMonitoringIdentity;
+  }> = [];
+  for (const desired of desiredRows) {
+    requireProductMsatUnit(desired.unit);
+    if (desired.desiredAction !== "replace" || desired.activeProofCount < 1) continue;
+    const resolved = resolveMonitoringAsset(keysetsByIdentity, desired);
+    if (
+      resolved === null ||
+      (await exactLocalProofs(input.database, input.scopeId, desired)).length !== 0
+    )
+      continue;
+    candidates.push({ desired, asset: resolved.asset });
+  }
+  const snapshots = await input.ownerAuthority.captureBackupReceiptsForLocalAssets(
+    candidates.map(({ desired }) => desired.localAssetKey),
+  );
+  const byKey = new Map(snapshots.map((snapshot) => [snapshot.desired.localAssetKey, snapshot]));
+  for (const { desired, asset } of candidates) {
+    const snapshot = byKey.get(desired.localAssetKey);
+    if (snapshot === undefined) continue;
+    const descriptor = snapshot.collectedHeadEvidence.bundles.find(
+      (bundle) => bundle.bundleId === snapshot.receipt.bundleId,
+    );
+    if (
+      descriptor === undefined ||
+      snapshot.desired.localAssetKey !== desired.localAssetKey ||
+      snapshot.desired.custodyRevision !== desired.custodyRevision ||
+      descriptor.assetLocator !== snapshot.ownerDesired.assetLocator ||
+      descriptor.custodyRevision.toString() !== desired.custodyRevision ||
+      digestEncryptedWalletBackupV2BundleDescriptor(descriptor) !==
+        snapshot.receipt.bundleDescriptorDigest
+    )
+      continue;
+    const declaredAmount = safeDeclaredAmount(descriptor.declaredAmount);
+    if (declaredAmount !== null) facts.push({ ...asset, declaredAmount });
+  }
+  requireCapturedDatabase(input);
+  return Object.freeze(facts);
+}
+
 export async function listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts(
   input: BrowserEncryptedWalletBackupV2CacheEligibilityInput,
 ): Promise<readonly BrowserEncryptedWalletBackupV2EvictedAssetMonitoringFact[]> {

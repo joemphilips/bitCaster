@@ -97,6 +97,11 @@ vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: (mnemonic: string) => (mnemonic ? `scope-${mnemonic}` : null),
 }));
 
+vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
+  activeBrowserEncryptedWalletBackupV2RuntimeDriver: () => null,
+  subscribeToBrowserEncryptedBackupMonitoring: () => () => {},
+}));
+
 vi.mock("@/lib/markets", () => ({
   createAuthenticatedBrowserEngineClient: mocks.createAuthenticatedBrowserEngineClient,
 }));
@@ -300,6 +305,36 @@ describe("subscribeToCommittedProofChanges", () => {
     unsubscribe();
     expect([...mocks.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
     complete(aborted);
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces selected-owner metadata changes only after commit", () => {
+    const source = database("scope-wallet-a") as Record<string, unknown>;
+    const names = [
+      "custodyConditionalKeysets",
+      "encryptedWalletBackupV2DesiredAssets",
+      "encryptedWalletBackupV2AssetReceipts",
+      "encryptedWalletBackupV2AcceptedHeads",
+      "encryptedWalletBackupV2ActiveDescriptors",
+      "encryptedWalletBackupOwnerDesiredAssets",
+      "encryptedWalletBackupOwnerAssetReceipts",
+      "encryptedWalletBackupOwnerAcceptedHeads",
+      "encryptedWalletBackupOwnerActiveDescriptors",
+    ];
+    const tables = Object.fromEntries(names.map((name) => [name, hookTable()]));
+    Object.assign(source, tables);
+    const callback = vi.fn();
+    const unsubscribe = subscribeToCommittedProofChanges(source as never, callback);
+    const committed = transaction();
+    for (const name of names.filter((name) => name.includes("BackupOwner")))
+      tables[name]!.trigger("updating", committed);
+    expect(callback).not.toHaveBeenCalled();
+    complete(committed);
+    expect(callback).toHaveBeenCalledOnce();
+    unsubscribe();
+    const later = transaction();
+    tables.encryptedWalletBackupOwnerAcceptedHeads!.trigger("updating", later);
+    complete(later);
     expect(callback).toHaveBeenCalledOnce();
   });
 

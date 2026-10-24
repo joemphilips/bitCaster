@@ -1,3 +1,5 @@
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { prepareNativeConditionRegistrationFee } from '../src/nativeConditionRegistrationFee.ts'
 import { OutgoingPreparationRetryError } from '../src/speculativeWalletSendPreparation.ts'
 const testSendCounterSources = new WeakMap<
   object,
@@ -3563,6 +3565,7 @@ async function createFixture(
             .get(scopeId) as { sequence: number } | undefined,
       ),
     coordinator,
+    coordinatorCore,
     fence,
     inputProof,
     sendProofs,
@@ -4188,6 +4191,75 @@ test('Cashu Activity write failure rolls back classification and reclaim admissi
     assert.equal(await fixture.targetWalletHasProof(successors[0]!), true)
   } finally {
     removeFault()
+    await fixture.close()
+  }
+})
+
+test('native registration fee forwards speculative authority and reuses the saved fee on retry', async () => {
+  const fixture = await createFixture()
+  try {
+    let mintCalls = 0
+    let factoryCalls = 0
+    const wallet = fixture.wallet(async () => {
+      mintCalls += 1
+      return { keep: fixture.keepProofs, send: fixture.sendProofs }
+    })
+    const createWallet = (source: import('@cashu/cashu-ts').CounterSource) => {
+      factoryCalls += 1
+      const attach = testSendCounterSources.get(wallet)
+      assert.ok(attach)
+      attach({
+        reserve: async (id, count) => {
+          assert.equal(await fixture.counterNext(id), undefined)
+          const range = await source.reserve(id, count)
+          assert.equal(
+            await fixture.counterNext(id),
+            undefined,
+            'preparation persisted a counter early',
+          )
+          return range
+        },
+        advanceToAtLeast: (id, next) => source.advanceToAtLeast(id, next),
+      })
+      return wallet
+    }
+    assert.equal(await fixture.counterNext(KEYSET_ID), undefined)
+    const input = {
+      creationId: 'native-fee-real-coordinator',
+      mintUrl: MINT_URL,
+      requiredFeeMsat: 5,
+      maxWalletDebitMsat: 5,
+      seed: TEST_SEED,
+      wallet,
+      createWallet,
+    }
+    // Bypass withTestSeed: that convenience proxy supplies an omitted factory.
+    const deps = { coordinator: fixture.coordinatorCore }
+    const paid = await prepareNativeConditionRegistrationFee(deps, input)
+    assert.equal(paid.kind, 'prepared')
+    assert.equal(
+      paid.feeProofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
+      5,
+    )
+    assert.equal(factoryCalls, 1)
+    assert.equal(mintCalls, 1)
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    const saved = await fixture.coordinatorCore.loadTransfer(paid.transferId!)
+    assert.ok(saved)
+    const retry = await prepareNativeConditionRegistrationFee(deps, {
+      ...input,
+      createWallet: () => {
+        throw new Error('saved fee must not prepare new outputs')
+      },
+    })
+    assert.deepEqual(retry, paid)
+    assert.equal(mintCalls, 1, 'retry must not dispatch another fee swap')
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    const replayed = await fixture.coordinatorCore.loadTransfer(paid.transferId!)
+    assert.ok(replayed)
+    // Proof classification may update recovery scheduling, but never the saved payment.
+    assert.deepEqual({ ...replayed, revision: saved.revision, recovery: saved.recovery }, saved)
+  } finally {
     await fixture.close()
   }
 })
