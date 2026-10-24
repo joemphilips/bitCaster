@@ -8,7 +8,10 @@ import {
   type EncryptedWalletBackupOwnerContext,
 } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
 import { requireEncryptedWalletBackupOwnerBackupReachabilityEvidence } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDeletionAuthority";
-import { requireEncryptedWalletBackupOwnerVerifiedProofSet } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import {
+  requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
+  requireEncryptedWalletBackupOwnerVerifiedProofSet,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { applyEncryptedWalletBackupOwnerVerifiedReceipt } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerSync";
 import {
   decodeEncryptedWalletBackupOwnerCurrentHeadWire,
@@ -284,6 +287,213 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         activeProofCount: ownerDesired.activeProofCount,
       },
     });
+  }
+
+  /** Presence, not receipt usability, selects the restored-source branch. */
+  async hasBackupReceiptForLocalAsset(localAssetKey: string): Promise<boolean> {
+    this.#requireDatabaseBinding();
+    const row = await this.#database.encryptedWalletBackupOwnerAssetReceipts.get([
+      this.#scopeId,
+      this.#context.ownerScopeId,
+      this.#context.realm,
+      this.#context.walletId,
+      this.#context.enrollmentEpoch,
+      localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    return row !== undefined;
+  }
+
+  /** Fresh restored losing proofs may authenticate their source without an old value receipt. */
+  async assertCurrentRestoredRemovalSourceInTransaction(input: {
+    readonly source: unknown;
+    readonly desired: EncryptedWalletBackupV2PreparedDesiredBinding;
+    readonly targets: readonly {
+      readonly proofId: string;
+      readonly proofFingerprint: string;
+      readonly proofRevision: number;
+    }[];
+    readonly localTargets?: readonly {
+      readonly proofId: string;
+      readonly proofFingerprint: string;
+      readonly proofRevision: number;
+    }[];
+  }): Promise<void> {
+    this.#requireDatabaseBinding();
+    const transaction = Dexie.currentTransaction;
+    const tables = [
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      this.#database.encryptedWalletBackupOwnerDesiredAssets,
+      this.#database.encryptedWalletBackupOwnerAssetReceipts,
+      this.#database.encryptedWalletBackupOwnerAcceptedHeads,
+      this.#database.encryptedWalletBackupOwnerActiveDescriptors,
+      this.#database.encryptedWalletBackupOwnerPreparedMutations,
+      this.#database.custodyProofs,
+      this.#database.custodyProofBackupAuthorities,
+    ];
+    if (
+      transaction === undefined ||
+      transaction.db !== this.#database ||
+      transaction.mode !== "readwrite" ||
+      !transaction.active ||
+      tables.some((table) => !transaction.storeNames.includes(table.name))
+    )
+      throw new Error("encrypted backup restored removal is outside its custody transaction");
+    const binding = requireDesiredBinding(input.desired);
+    const source = requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(
+      input.source,
+      this.#context,
+    );
+    if (
+      binding.desiredAction !== "replace" ||
+      binding.activeProofCount < 1 ||
+      source.descriptor.assetLocator !== binding.assetLocator ||
+      source.descriptor.custodyRevision.toString() !== binding.custodyRevision ||
+      input.targets.length < 1 ||
+      input.targets.length > 512
+    )
+      throw new Error("encrypted backup restored removal source is foreign");
+    if (await this.hasBackupReceiptForLocalAsset(binding.localAssetKey))
+      throw new Error("encrypted backup restored removal cannot replace a value receipt");
+    const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      binding.localAssetKey,
+    ]);
+    const ownerRaw = await this.#database.encryptedWalletBackupOwnerDesiredAssets.get([
+      this.#scopeId,
+      this.#context.ownerScopeId,
+      binding.localAssetKey,
+    ]);
+    const head = await this.#readCurrentHeadInTransaction();
+    if (raw === undefined || ownerRaw === undefined || head === null)
+      throw new Error("encrypted backup restored removal source is absent");
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+    const ownerDesired = this.#decodeOwnerDesiredRow(ownerRaw);
+    const context = desired.terminalCtfContext;
+    if (
+      !matchesDesiredBinding(desired, binding) ||
+      desired.scopeId !== this.#scopeId ||
+      desired.removalIntent !== null ||
+      context === null ||
+      !sameOwnerDesiredBinding(ownerDesired, binding) ||
+      ownerDesired.syncState !== "acknowledged" ||
+      !sameBytes(
+        encodeEncryptedWalletBackupOwnerCurrentHead(head.head),
+        encodeEncryptedWalletBackupOwnerCurrentHead(source.currentHeadEvidence.head),
+      ) ||
+      !head.bundles.some(
+        (bundle) =>
+          bundle.bundleId === source.descriptor.bundleId &&
+          digestEncryptedWalletBackupV2BundleDescriptor(bundle) ===
+            digestEncryptedWalletBackupV2BundleDescriptor(source.descriptor),
+      ) ||
+      !(await this.readNewWritePermission()).canWrite ||
+      (await this.readPreparedMutation()) !== null
+    )
+      throw new Error("encrypted backup restored removal source changed");
+    const rawRows = await this.#database.custodyProofs
+      .where("[scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]")
+      .between(
+        [
+          this.#scopeId,
+          desired.mintUrl,
+          desired.unit,
+          context.conditionId,
+          context.outcomeLabel,
+          "",
+        ],
+        [
+          this.#scopeId,
+          desired.mintUrl,
+          desired.unit,
+          context.conditionId,
+          context.outcomeLabel,
+          "\uffff",
+        ],
+        true,
+        true,
+      )
+      .limit(513)
+      .toArray();
+    if (rawRows.length > 512)
+      throw new Error("encrypted backup restored removal proof set exceeds bound");
+    const rows = rawRows
+      .map(decodeBrowserCustodyProofRow)
+      .filter((row) => row.selectability !== "spent");
+    const localTargets = input.localTargets ?? [];
+    const allTargets = [...input.targets, ...localTargets];
+    const targetIds = new Set(input.targets.map((row) => row.proofId));
+    const localIds = new Set(localTargets.map((row) => row.proofId));
+    if (
+      rows.length > 512 ||
+      new Set(allTargets.map((row) => row.proofId)).size !== allTargets.length ||
+      rows.length !== binding.activeProofCount + localTargets.length ||
+      source.proofs.length !== binding.activeProofCount ||
+      allTargets.some(
+        (target) =>
+          !rows.some(
+            (row) =>
+              row.proofId === target.proofId &&
+              row.proofFingerprint === target.proofFingerprint &&
+              row.revision === target.proofRevision,
+          ),
+      )
+    )
+      throw new Error("encrypted backup restored removal proof set changed");
+    const remoteById = new Map(source.proofs.map((proof) => [proof.proofId, proof]));
+    for (const row of rows) {
+      const authority = requireBrowserProofBackupAuthorityForProof(
+        requireBrowserLiveProofBackupAuthorityTableRow(
+          await this.#database.custodyProofBackupAuthorities.get([this.#scopeId, row.proofId]),
+          [this.#scopeId, row.proofId],
+        ),
+        row,
+      );
+      if (localIds.has(row.proofId)) {
+        if (authority.backupState !== "local-only" || remoteById.has(row.proofId))
+          throw new Error("encrypted backup restored removal local companion changed");
+        continue;
+      }
+      const remote = remoteById.get(row.proofId);
+      if (
+        remote === undefined ||
+        remote.proofFingerprint !== row.proofFingerprint ||
+        !sameBrowserProofDerivationLocator(authority.derivationLocator, remote.locator) ||
+        row.selectability === "pending-removal" ||
+        row.reservationOperationId !== null
+      )
+        throw new Error("encrypted backup restored removal material changed");
+      if (targetIds.has(row.proofId)) {
+        const seal =
+          authority.terminalAuthority?.kind === "remote-seal"
+            ? authority.terminalAuthority.terminalSeal
+            : undefined;
+        if (
+          row.selectability !== "verified-losing" ||
+          authority.backupState !== "remote-backed" ||
+          seal === undefined ||
+          remote.terminalSeal?.schemaVersion !== 2 ||
+          remote.terminalSeal.proofCommitment !== remote.proofCommitment ||
+          (
+            [
+              "schemaVersion",
+              "kind",
+              "operationIdDigest",
+              "requestDigest",
+              "code",
+              "classifiedAtMs",
+              "proofCommitment",
+              "verifiedContextDigest",
+              "authenticationCode",
+            ] as const
+          ).some((field) => seal[field] !== remote.terminalSeal![field])
+        )
+          throw new Error(
+            "encrypted backup restored removal target is not authenticated losing material",
+          );
+      }
+    }
+    this.#requireSessionCurrent();
   }
 
   /** Recheck captured receipt/head authority in the custody deletion transaction. */

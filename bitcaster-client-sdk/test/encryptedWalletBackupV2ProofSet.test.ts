@@ -20,6 +20,7 @@ import {
   encryptedWalletBackupV2LocalAssetKey,
   authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
   authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse,
+  requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
   authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation,
   requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority,
   issueEncryptedWalletBackupV2TerminalSeal,
@@ -2075,6 +2076,61 @@ test('Owner terminal seal reuse binds exact current source and retained proof ma
     decryptedEvidence: bound,
   }
   const reuse = await authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse(request)
+  const captured = requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(reuse, context)
+  assert.equal(captured.proofs.length, 2)
+  assert.deepEqual(
+    captured.proofs.map((value) => value.proofId).sort(),
+    decrypted.proofs.map((value) => value.proofId).sort(),
+  )
+  assert.ok(
+    captured.proofs.every(
+      (value) =>
+        value.terminalSeal?.schemaVersion === 2 &&
+        value.terminalSeal.proofCommitment === value.proofCommitment,
+    ),
+  )
+  assert.throws(
+    () => requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult({ ...reuse }, context),
+    /result is invalid/,
+  )
+  assert.throws(
+    () =>
+      requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(
+        {
+          ...reuse,
+          authorities: reuse.authorities.map((value) => ({ ...value })),
+        },
+        context,
+      ),
+    /result is invalid/,
+  )
+  for (const changed of [
+    { ...context, ownerScopeId: '84'.repeat(32) },
+    { ...context, walletId: '85'.repeat(32) },
+    { ...context, realm: 'testnet' },
+    { ...context, enrollmentEpoch: context.enrollmentEpoch + 1 },
+  ]) {
+    assert.throws(
+      () => requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(reuse, changed),
+      /context/,
+    )
+  }
+  assert.ok(
+    Object.isFrozen(captured) &&
+      Object.isFrozen(captured.proofs) &&
+      Object.isFrozen(captured.proofs[0]!.locator) &&
+      Object.isFrozen(captured.descriptor.objects),
+  )
+  const capturedCommitment = captured.proofs[0]!.proofCommitment
+  assert.throws(() => {
+    ;(captured.proofs[0] as { proofCommitment: string }).proofCommitment = '86'.repeat(32)
+  }, TypeError)
+  assert.equal(
+    requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(reuse, context).proofs[0]!
+      .proofCommitment,
+    capturedCommitment,
+  )
+
   const kept = decrypted.proofs[1]!,
     authority = reuse.authorities.find((value) => value.proofId === kept.proofId)!
   const nextInput = {

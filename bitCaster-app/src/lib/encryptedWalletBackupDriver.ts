@@ -18,6 +18,11 @@ import {
   type EncryptedWalletBackupAccountOperationRemotePort,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
+import {
+  decryptEncryptedWalletBackupV2ProofSetBundle,
+  bindEncryptedWalletBackupOwnerDecryptedProofSet,
+  authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
 import { EncryptedWalletBackupOwnerHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHttpAdapter";
 import { prepareEncryptedWalletBackupOwnerAccountOperation } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerAccount";
@@ -665,6 +670,78 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         });
         if (!isCurrentProfile()) throw new Error("The wallet backup Owner changed");
         return Object.freeze({ backupReceiptSnapshot, collectedHeadEvidence, evidence });
+      },
+      loadCurrentOwnerRestoredRemovalSource: async () => {
+        const sourceSignal = AbortSignal.any([
+          signal,
+          this.#input.signal,
+          AbortSignal.timeout(30_000),
+        ]);
+        const requireSourceCurrent = () => {
+          sourceSignal.throwIfAborted();
+          if (!isCurrentProfile()) throw new Error("The wallet backup Owner changed");
+        };
+        requireSourceCurrent();
+        const context = {
+          ownerScopeId: owner.ownerScopeId,
+          realm: keyHandle.realm,
+          walletId: keyHandle.walletId,
+          enrollmentEpoch,
+        };
+        const head = await client.readCurrentHead({ owner, enrollmentEpoch, signal: sourceSignal });
+        requireSourceCurrent();
+        const descriptors = head.bundles.filter((bundle) => bundle.assetLocator === assetLocator);
+        if (descriptors.length !== 1)
+          throw new Error("The restored Owner removal bundle is unavailable");
+        const descriptor = descriptors[0]!;
+        const objects = [];
+        for (const object of descriptor.objects) {
+          objects.push(
+            await client.readObject({
+              owner,
+              enrollmentEpoch,
+              descriptor,
+              objectId: object.objectId,
+              signal: sourceSignal,
+            }),
+          );
+          requireSourceCurrent();
+        }
+        const proofSet = await decryptEncryptedWalletBackupV2ProofSetBundle({
+          keyHandle,
+          seed: this.#input.seed,
+          expectedAsset: asset,
+          custodyRevision: descriptor.custodyRevision,
+          descriptor,
+          objects,
+          runtime: this.#runtime,
+        });
+        requireSourceCurrent();
+        const source = await authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+          keyHandle,
+          seed: this.#input.seed,
+          expectedAsset: asset,
+          expectedContext: context,
+          collectedHeadEvidence: head,
+          decryptedEvidence: bindEncryptedWalletBackupOwnerDecryptedProofSet({
+            proofSet,
+            collectedHeadEvidence: head,
+            expectedContext: context,
+          }),
+        });
+        requireSourceCurrent();
+        const finalHead = await client.readCurrentHead({
+          owner,
+          enrollmentEpoch,
+          signal: sourceSignal,
+        });
+        requireSourceCurrent();
+        if (
+          finalHead.head.headVersion !== head.head.headVersion ||
+          finalHead.head.activeSetDigest !== head.head.activeSetDigest
+        )
+          throw new Error("The restored Owner removal head changed");
+        return source;
       },
       asset,
       assetLocator,

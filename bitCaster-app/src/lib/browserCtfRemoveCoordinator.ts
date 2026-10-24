@@ -65,6 +65,9 @@ import {
   serializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 
+import type { EncryptedWalletBackupOwnerCollectedHeadEvidence } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
+import type { EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+
 const MAX_PROOFS = 512;
 
 export interface BrowserCtfRemoveTarget {
@@ -83,6 +86,7 @@ export interface BrowserCtfRemoveInput {
   readonly loadCurrentOwnerReachabilityEvidence?: (
     localAssetKey: string,
   ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
+  readonly loadCurrentOwnerRestoredRemovalSource?: () => Promise<EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult>;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly assetLocator?: string;
   readonly targets: readonly BrowserCtfRemoveTarget[];
@@ -403,7 +407,16 @@ export async function startBrowserCtfRemove(
     input.scopeId,
     async () => {
       requireCurrent(input);
-      let sourceReceipt: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot | undefined;
+      let source:
+        | {
+            readonly kind: "receipt";
+            readonly value: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
+          }
+        | {
+            readonly kind: "restored";
+            readonly value: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult;
+          }
+        | undefined;
       if (hasManagedRemoveContext(input)) {
         const before = await input.database.encryptedWalletBackupV2DesiredAssets.get([
           input.scopeId,
@@ -419,7 +432,20 @@ export async function startBrowserCtfRemove(
             if (captured !== null) {
               if (input.loadCurrentOwnerReachabilityEvidence === undefined)
                 throw new Error("Owner removal source reachability is unavailable");
-              sourceReceipt = await input.loadCurrentOwnerReachabilityEvidence(localAssetKey);
+              source = {
+                kind: "receipt",
+                value: await input.loadCurrentOwnerReachabilityEvidence(localAssetKey),
+              };
+              requireCurrent(input);
+            } else if (
+              !(await ownerAuthorityStore(input).hasBackupReceiptForLocalAsset(localAssetKey)) &&
+              input.loadCurrentOwnerRestoredRemovalSource !== undefined &&
+              (await isRestoredLosingRemovalCandidate(input, targets))
+            ) {
+              source = {
+                kind: "restored",
+                value: await input.loadCurrentOwnerRestoredRemovalSource(),
+              };
               requireCurrent(input);
             }
           }
@@ -551,23 +577,36 @@ export async function startBrowserCtfRemove(
         }
         const localProofs = localTarget as BrowserCustodyProofRow[];
         requireExactRemovalTargets(localTargets, localProofs);
-        if (sourceReceipt?.backupReceiptSnapshot === undefined)
-          return { kind: "pending", reason: "backup-not-ready" };
+        if (source === undefined) return { kind: "pending", reason: "backup-not-ready" };
         const permission = await store.readNewWritePermission();
         if (!permission.canWrite || (await store.readPreparedMutation()) !== null)
           return { kind: "pending", reason: "backup-not-ready" };
-        await store.assertCurrentBackupReceiptInTransaction({
-          snapshot: sourceReceipt.backupReceiptSnapshot,
-          reachabilityEvidence: sourceReceipt.evidence,
-          desired: {
-            localAssetKey: desired.localAssetKey,
-            assetLocator: input.assetLocator,
-            custodyRevision: desired.custodyRevision,
-            desiredAction: desired.desiredAction,
-            activeProofCount: desired.activeProofCount,
-          },
-        });
-        const accepted = sourceReceipt.backupReceiptSnapshot.collectedHeadEvidence.head;
+        const desiredBinding = {
+          localAssetKey: desired.localAssetKey,
+          assetLocator: input.assetLocator,
+          custodyRevision: desired.custodyRevision,
+          desiredAction: desired.desiredAction,
+          activeProofCount: desired.activeProofCount,
+        };
+        let accepted: EncryptedWalletBackupOwnerCollectedHeadEvidence["head"];
+        if (source.kind === "receipt") {
+          const snapshot = source.value.backupReceiptSnapshot;
+          if (snapshot === undefined) return { kind: "pending", reason: "backup-not-ready" };
+          await store.assertCurrentBackupReceiptInTransaction({
+            snapshot,
+            reachabilityEvidence: source.value.evidence,
+            desired: desiredBinding,
+          });
+          accepted = snapshot.collectedHeadEvidence.head;
+        } else {
+          await store.assertCurrentRestoredRemovalSourceInTransaction({
+            source: source.value,
+            desired: desiredBinding,
+            targets,
+            localTargets,
+          });
+          accepted = source.value.currentHeadEvidence.head;
+        }
         const authorityRows = await requireRemovalAuthorities(input, rows);
         requireLocalRemovalTargets(input, localProofs, authorityRows);
         const proofCommitments = new Map<string, string>();
@@ -1901,4 +1940,38 @@ function requireRemoveIdentity(input: BrowserCtfRemoveInput): void {
 
 function requireCurrent(input: { readonly isCurrentProfile?: () => boolean }): void {
   if (input.isCurrentProfile?.() === false) throw new Error("browser CTF removal profile is stale");
+}
+
+/** Only exact restored losing targets can request the no-old-receipt source. */
+async function isRestoredLosingRemovalCandidate(
+  input: BrowserCtfRemoveInput,
+  targets: readonly BrowserCtfRemoveTarget[],
+): Promise<boolean> {
+  for (const tuple of targets) {
+    input.signal?.throwIfAborted();
+    requireCurrent(input);
+    const raw = await input.database.custodyProofs.get([input.scopeId, tuple.proofId]);
+    if (raw === undefined) return false;
+    const proof = decodeBrowserCustodyProofRow(raw);
+    if (
+      proof.proofFingerprint !== tuple.proofFingerprint ||
+      proof.revision !== tuple.proofRevision ||
+      proof.selectability !== "verified-losing" ||
+      proof.reservationOperationId !== null
+    )
+      return false;
+    const authority = requireBrowserProofBackupAuthorityForProof(
+      await input.database.custodyProofBackupAuthorities.get([input.scopeId, tuple.proofId]),
+      proof,
+    );
+    if (
+      authority.terminalAuthority?.kind !== "remote-seal" ||
+      authority.backupState !== "remote-backed" ||
+      authority.terminalOperationId !== null ||
+      authority.derivationLocator === null
+    )
+      return false;
+    requireCurrent(input);
+  }
+  return targets.length > 0;
 }

@@ -38,6 +38,7 @@ import {
 } from './encryptedWalletBackupV2RequestProof.ts'
 import {
   decodeDurableCustodyRecord,
+  deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
   type DurableCustodyExactArtifact,
@@ -659,6 +660,42 @@ export interface EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult {
 }
 const OWNER_TERMINAL_REUSE = new WeakSet<object>()
 
+export interface EncryptedWalletBackupOwnerRestoredRemovalSource {
+  readonly currentHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+  readonly descriptor: EncryptedWalletBackupV2BundleDescriptor
+  readonly proofs: readonly {
+    readonly proofId: string
+    readonly proofFingerprint: string
+    readonly locator: DurableWalletProofDerivationLocator
+    readonly proofCommitment: string
+    readonly terminalSeal: EncryptedWalletBackupV2TerminalSeal | null
+  }[]
+}
+const OWNER_TERMINAL_REUSE_RESULTS = new WeakMap<
+  object,
+  {
+    readonly context: EncryptedWalletBackupOwnerContext
+    readonly source: EncryptedWalletBackupOwnerRestoredRemovalSource
+  }
+>()
+
+/** Validate one issuer-owned source. This grants no deletion or eviction permission. */
+export function requireEncryptedWalletBackupOwnerRemoteTerminalSealReuseResult(
+  value: unknown,
+  expectedContext: EncryptedWalletBackupOwnerContext,
+): EncryptedWalletBackupOwnerRestoredRemovalSource {
+  if (typeof value !== 'object' || value === null)
+    throw new Error('encrypted backup owner terminal result is invalid')
+  const captured = OWNER_TERMINAL_REUSE_RESULTS.get(value)
+  if (captured === undefined) throw new Error('encrypted backup owner terminal result is invalid')
+  requireEncryptedWalletBackupOwnerContext(captured.context, expectedContext)
+  requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    captured.source.currentHeadEvidence,
+    expectedContext,
+  )
+  return captured.source
+}
+
 export async function authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly seed: Uint8Array
@@ -719,13 +756,39 @@ export async function authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse
     })
   if (authorities.length === 0)
     throw new Error('encrypted backup owner verified losing seal is missing')
-  return Object.freeze({
+  const result = Object.freeze({
     currentHeadEvidence: head,
     expectedContext: context,
     descriptor,
     decrypted: evidence.proofSet,
     authorities: Object.freeze(authorities),
   })
+  // Capture validated material separately: public decrypted fields are not authority.
+  OWNER_TERMINAL_REUSE_RESULTS.set(
+    result,
+    Object.freeze({
+      context: Object.freeze({ ...context }),
+      source: Object.freeze({
+        currentHeadEvidence: head,
+        descriptor: deepFreeze(structuredClone(descriptor)),
+        proofs: Object.freeze(
+          decoded.proofs.map((proof) =>
+            deepFreeze({
+              proofId: proof.proofId,
+              proofFingerprint: deriveDurableCustodyArtifactFingerprint(
+                serializeDurableCustodyProofArtifact(proof.proof),
+              ),
+              locator: structuredClone(proof.locator),
+              proofCommitment: proofCommitment(proof),
+              terminalSeal:
+                proof.terminalSeal === undefined ? null : structuredClone(proof.terminalSeal),
+            }),
+          ),
+        ),
+      }),
+    }),
+  )
+  return result
 }
 
 function requireOwnerTerminalReuses(
