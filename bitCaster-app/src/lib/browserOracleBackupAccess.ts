@@ -17,7 +17,7 @@ import { effectiveRelayUrls } from "./relayDefaults";
 import { browserOracleBackupValidator, prepareBrowserOracleMutation } from "./kormir";
 import {
   importBrowserOracleBackupEnvelope,
-  browserOracleAuthorityReadiness,
+  browserOracleAuthoritiesReadiness,
 } from "./browserOracleBackup";
 
 type BrowserOracleOwnerKind = "created" | "imported";
@@ -217,8 +217,17 @@ export async function localBrowserOracleBackupStatuses(
         (owner.kind === "created" ? owner.market.conditionId : owner.oracle.binding.conditionId) ===
           options.conditionId),
   );
+  const pageOwners = owners.slice(offset, offset + 20);
+  const readiness = await browserOracleAuthoritiesReadiness(
+    pageOwners.map((owner) =>
+      owner.kind === "created" ? owner.market.conditionId : owner.oracle.binding.conditionId,
+    ),
+    store,
+    options.requireCurrent,
+  );
+  const readinessById = new Map(readiness.map((row) => [row.conditionId, row.readiness]));
   const rows = await Promise.all(
-    owners.slice(offset, offset + 20).map(async (owner) => {
+    pageOwners.map(async (owner) => {
       let authority: ReturnType<typeof browserOracleOwnerAuthority>;
       try {
         authority = browserOracleOwnerAuthority(owner);
@@ -256,11 +265,7 @@ export async function localBrowserOracleBackupStatuses(
         available: true as const,
         title,
         kind: owner.kind,
-        readiness: await browserOracleAuthorityReadiness(
-          binding.conditionId,
-          store,
-          options.requireCurrent,
-        ),
+        readiness: readinessById.get(binding.conditionId) ?? "unavailable",
         outcomes: binding.outcomes,
         chosenOutcome: publication?.chosenOutcome ?? null,
         status: oracleBackupStatus({
@@ -273,6 +278,7 @@ export async function localBrowserOracleBackupStatuses(
       };
     }),
   );
+  options.requireCurrent?.();
   return {
     rows,
     nextOffset: offset + 20 < owners.length ? offset + 20 : null,

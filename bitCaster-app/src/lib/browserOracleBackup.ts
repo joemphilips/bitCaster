@@ -325,88 +325,13 @@ export async function browserOracleAuthorityReadiness(
     const readiness = await store.getState().withOracleMutation((locked) => {
       requireCurrent?.();
       return admission.withCoreLocked(async (core): Promise<BrowserOracleAuthorityReadiness> => {
-        const owner = await locked.readOwner(conditionId);
-        if (!owner) return "needs-restore";
-        let ownerAuthority: ReturnType<typeof browserOracleOwnerAuthority>;
-        if (
-          owner.kind === "created" &&
-          (!owner.market.oracle?.oraclePubkey || !owner.market.oracle?.destinations)
-        ) {
-          const oracle = owner.market.oracle;
-          if (!oracle?.announcementEventJson || !oracle.announcementHex) return "unavailable";
-          const event = readSignedOracleEvent(oracle.announcementEventJson, 88);
-          const binding = {
-            conditionId: owner.market.conditionId,
-            oracleEventId: oracle.eventId,
-            oraclePubkey: oracle.oraclePubkey ?? event.pubkey,
-            outcomes: oracle.outcomes,
-            announcementEventJson: oracle.announcementEventJson,
-          };
-          // Load the shared verifier after module initialization; publication also uses this adapter.
-          const { retainedOracleAuthority } = await import("./oracleAttestation");
-          // This supplies only a verified public binding, never private signing authority.
-          const verified = await retainedOracleAuthority(binding, {
-            announcementTlvHex: oracle.announcementHex,
-          });
-          if (
-            oracle.announcementEventId !== undefined &&
-            oracle.announcementEventId !== verified.announcementEventId
-          )
-            return "unavailable";
-          ownerAuthority = {
-            binding,
-            announcementHex: oracle.announcementHex,
-            destinations: oracle.destinations,
-          };
-        } else ownerAuthority = browserOracleOwnerAuthority(owner);
-        admission.requireCurrent();
-        requireCurrent?.();
-        const { binding, announcementHex, destinations } = ownerAuthority;
-        if (binding.oraclePubkey !== admission.publicKey) return "unavailable";
-        // This exact event lookup distinguishes absence from a corrupt nonce or invalid export.
-        // JsError.NotFound (2) here means the event is absent, not a validation failure.
-        try {
-          await core.staged_enum_publication(binding.oracleEventId);
-        } catch (error) {
-          return error === 2 ? "needs-restore" : "unavailable";
-        }
-        if (!destinations) return "unavailable";
-        const publication = await locked.read(conditionId);
-        const dto = await core.export_enum_authority(
-          binding.oracleEventId,
-          binding.announcementEventJson,
-          publication ? JSON.stringify(publication) : undefined,
+        return readLockedBrowserOracleAuthorityReadiness(
+          conditionId,
+          locked,
+          core,
+          admission,
+          requireCurrent,
         );
-        const authority = JSON.parse(dto);
-        await encodeOracleBackup(
-          {
-            schemaVersion: 1,
-            conditionId,
-            oraclePubkey: binding.oraclePubkey,
-            oracleEventId: binding.oracleEventId,
-            authority,
-            destinations,
-          },
-          browserOracleBackupValidator,
-        );
-        const summary = await browserOracleBackupValidator.validateAuthority(
-          dto,
-          binding.oraclePubkey,
-        );
-        if (
-          authority.announcementTlvHex !== announcementHex ||
-          summary.outcomes.length !== binding.outcomes.length ||
-          summary.outcomes.some((value, index) => value !== binding.outcomes[index])
-        )
-          return "unavailable";
-        switch (owner.kind) {
-          case "imported":
-            return owner.oracle.importComplete ? "ready" : "needs-restore";
-          case "created":
-            return owner.market.oracle?.importComplete === false ? "needs-restore" : "ready";
-          default:
-            return assertNever(owner);
-        }
       });
     });
     admission.requireCurrent();
@@ -414,5 +339,176 @@ export async function browserOracleAuthorityReadiness(
     return readiness;
   } catch {
     return "unavailable";
+  }
+}
+
+/** Only this module supplies the live admitted core and locked creator port. */
+async function readLockedBrowserOracleAuthorityReadiness(
+  conditionId: string,
+  locked: BrowserOracleLockedPort,
+  core: Kormir,
+  admission: Awaited<ReturnType<typeof prepareBrowserOracleMutation>>,
+  requireCurrent?: () => void,
+): Promise<BrowserOracleAuthorityReadiness> {
+  const guard = () => {
+    admission.requireCurrent();
+    requireCurrent?.();
+  };
+  guard();
+  const owner = await locked.readOwner(conditionId);
+  guard();
+  if (!owner) return "needs-restore";
+  let ownerAuthority: ReturnType<typeof browserOracleOwnerAuthority>;
+  if (
+    owner.kind === "created" &&
+    (!owner.market.oracle?.oraclePubkey || !owner.market.oracle?.destinations)
+  ) {
+    const oracle = owner.market.oracle;
+    if (!oracle?.announcementEventJson || !oracle.announcementHex) return "unavailable";
+    const event = readSignedOracleEvent(oracle.announcementEventJson, 88);
+    const binding = {
+      conditionId: owner.market.conditionId,
+      oracleEventId: oracle.eventId,
+      oraclePubkey: oracle.oraclePubkey ?? event.pubkey,
+      outcomes: oracle.outcomes,
+      announcementEventJson: oracle.announcementEventJson,
+    };
+    // Load the shared verifier after module initialization; publication also uses this adapter.
+    const { retainedOracleAuthority } = await import("./oracleAttestation");
+    // This supplies only a verified public binding, never private signing authority.
+    const verified = await retainedOracleAuthority(binding, {
+      announcementTlvHex: oracle.announcementHex,
+    });
+    guard();
+    if (
+      oracle.announcementEventId !== undefined &&
+      oracle.announcementEventId !== verified.announcementEventId
+    )
+      return "unavailable";
+    ownerAuthority = {
+      binding,
+      announcementHex: oracle.announcementHex,
+      destinations: oracle.destinations,
+    };
+  } else ownerAuthority = browserOracleOwnerAuthority(owner);
+  admission.requireCurrent();
+  requireCurrent?.();
+  const { binding, announcementHex, destinations } = ownerAuthority;
+  if (binding.oraclePubkey !== admission.publicKey) return "unavailable";
+  // This exact event lookup distinguishes absence from a corrupt nonce or invalid export.
+  // JsError.NotFound (2) here means the event is absent, not a validation failure.
+  try {
+    await core.staged_enum_publication(binding.oracleEventId);
+    guard();
+  } catch (error) {
+    return error === 2 ? "needs-restore" : "unavailable";
+  }
+  if (!destinations) return "unavailable";
+  guard();
+  const publication = await locked.read(conditionId);
+  guard();
+  const dto = await core.export_enum_authority(
+    binding.oracleEventId,
+    binding.announcementEventJson,
+    publication ? JSON.stringify(publication) : undefined,
+  );
+  guard();
+  const authority = JSON.parse(dto);
+  await encodeOracleBackup(
+    {
+      schemaVersion: 1,
+      conditionId,
+      oraclePubkey: binding.oraclePubkey,
+      oracleEventId: binding.oracleEventId,
+      authority,
+      destinations,
+    },
+    browserOracleBackupValidator,
+  );
+  guard();
+  const summary = await browserOracleBackupValidator.validateAuthority(dto, binding.oraclePubkey);
+  guard();
+  if (
+    authority.announcementTlvHex !== announcementHex ||
+    summary.outcomes.length !== binding.outcomes.length ||
+    summary.outcomes.some((value, index) => value !== binding.outcomes[index])
+  )
+    return "unavailable";
+  switch (owner.kind) {
+    case "imported":
+      return owner.oracle.importComplete ? "ready" : "needs-restore";
+    case "created":
+      return owner.market.oracle?.importComplete === false ? "needs-restore" : "ready";
+    default:
+      return assertNever(owner);
+  }
+}
+
+/** One bounded page owns one core lifetime; no readiness survives this call. */
+export async function browserOracleAuthoritiesReadiness(
+  conditionIds: readonly string[],
+  store: CreatorStore = useCreatorMarketsStore,
+  requireCurrent?: () => void,
+): Promise<
+  readonly Readonly<{ conditionId: string; readiness: BrowserOracleAuthorityReadiness }>[]
+> {
+  if (
+    !Array.isArray(conditionIds) ||
+    conditionIds.length > 20 ||
+    conditionIds.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(conditionIds).size !== conditionIds.length
+  )
+    throw new Error("Oracle readiness page is invalid.");
+  const ids = [...conditionIds];
+  if (ids.length === 0) {
+    requireCurrent?.();
+    return Object.freeze([]);
+  }
+  let admission: Awaited<ReturnType<typeof prepareBrowserOracleMutation>> | undefined;
+  const current = () => {
+    admission?.requireCurrent();
+    requireCurrent?.();
+  };
+  try {
+    admission = await prepareBrowserOracleMutation();
+    const captured = admission;
+    current();
+    const result = await store.getState().withOracleMutation((locked) => {
+      current();
+      return captured.withCoreLocked(async (core) => {
+        const rows: Readonly<{
+          conditionId: string;
+          readiness: BrowserOracleAuthorityReadiness;
+        }>[] = [];
+        for (const conditionId of ids) {
+          current();
+          let readiness: BrowserOracleAuthorityReadiness;
+          try {
+            readiness = await readLockedBrowserOracleAuthorityReadiness(
+              conditionId,
+              locked,
+              core,
+              captured,
+              current,
+            );
+          } catch {
+            current();
+            readiness = "unavailable";
+          }
+          current();
+          rows.push(Object.freeze({ conditionId, readiness }));
+        }
+        return Object.freeze(rows);
+      });
+    });
+    current();
+    return result;
+  } catch {
+    // Isolated owner failures are handled above. A stale page may not return
+    // earlier successful rows or downgrade identity loss into usable evidence.
+    current();
+    return Object.freeze(
+      ids.map((conditionId) => Object.freeze({ conditionId, readiness: "unavailable" as const })),
+    );
   }
 }

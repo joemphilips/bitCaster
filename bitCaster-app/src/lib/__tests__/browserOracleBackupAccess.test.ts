@@ -21,7 +21,8 @@ vi.mock("../kormir", () => ({
 }));
 vi.mock("../browserOracleBackup", () => ({
   importBrowserOracleBackupEnvelope: (...args: unknown[]) => admission.imported(...args),
-  browserOracleAuthorityReadiness: async () => "unavailable",
+  browserOracleAuthoritiesReadiness: async (ids: readonly string[]) =>
+    ids.map((conditionId) => ({ conditionId, readiness: "unavailable" })),
 }));
 class QuerySocket {
   static readonly OPEN = 1;
