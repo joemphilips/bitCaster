@@ -73,6 +73,11 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Keep the real-time client below the same per-asset precache limit.
+          // This remains a static import and retains one SignalR module instance.
+          if (id.includes("/node_modules/@microsoft/signalr/")) {
+            return "signalr";
+          }
           // Keep static translation data in its own cacheable asset. This does
           // not defer language setup or add a runtime translation request.
           if (id.includes("/src/i18n/locales/") && id.endsWith(".json")) {
