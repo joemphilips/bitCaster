@@ -1,3 +1,15 @@
+import type { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
+import {
+  authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse,
+  bindEncryptedWalletBackupOwnerDecryptedProofSet,
+  decryptEncryptedWalletBackupV2ProofSetBundle,
+  type EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyArtifactFingerprint,
+} from "@bitcaster/client-sdk/durableCustody";
 import {
   decodeEncryptedWalletBackupOwnerUploadGroup,
   encodeEncryptedWalletBackupOwnerUploadGroup,
@@ -25,6 +37,7 @@ import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypt
 import type { EncryptedWalletBackupV2PreparedDesiredBinding } from "../stores/encrypted-wallet-backup-v2-db";
 
 export interface BrowserEncryptedWalletBackupOwnerRemotePort {
+  readonly readObject?: EncryptedWalletBackupOwnerClient["readObject"];
   readCurrentHead(input: {
     readonly owner: EncryptedWalletBackupOwnerCandidate;
     readonly enrollmentEpoch: number;
@@ -58,6 +71,7 @@ export interface BrowserEncryptedWalletBackupOwnerWorkerInput {
     readonly read: typeof readBrowserEncryptedWalletBackupV2AssetSnapshot;
     readonly prepare: (
       snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot,
+      ownerReuse?: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
     ) => Promise<EncryptedWalletBackupV2PreparedTransportBundle>;
   };
 }
@@ -148,6 +162,17 @@ export async function runBrowserEncryptedWalletBackupOwnerWorkerCycle(
   const hasMore = localRows.length > scanPageSize;
   for (const raw of localRows.slice(0, scanPageSize)) {
     const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+    const intent = desired.removalIntent;
+    // Shared desired rows never transfer an explicit removal to another account.
+    if (
+      intent !== null &&
+      (intent.schemaVersion !== 2 ||
+        intent.ownerScopeId !== input.owner.ownerScopeId ||
+        intent.realm !== input.keyHandle.realm ||
+        intent.walletId !== input.keyHandle.walletId ||
+        intent.enrollmentEpoch !== input.enrollmentEpoch)
+    )
+      continue;
     const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
       keyHandle: input.keyHandle,
       mintUrl: desired.mintUrl,
@@ -167,6 +192,9 @@ export async function runBrowserEncryptedWalletBackupOwnerWorkerCycle(
     const existing = remoteHead.bundles.filter((bundle) => bundle.assetLocator === assetLocator);
     if (existing.length > 1) return { kind: "recovery-required" };
     let preparedBundle: EncryptedWalletBackupV2PreparedTransportBundle | null = null;
+    let removalSurvivors:
+      | readonly { readonly proofId: string; readonly proofFingerprint: string }[]
+      | undefined = intent === null ? undefined : [];
     if (desired.desiredAction === "replace") {
       if (existing.length === 0 && remoteHead.head.activeBundleCount >= 256)
         return { kind: "service-quota-pending" };
@@ -184,7 +212,82 @@ export async function runBrowserEncryptedWalletBackupOwnerWorkerCycle(
         snapshot.desired.activeProofCount !== desired.activeProofCount
       )
         return { kind: "stale-desired" };
-      preparedBundle = await source.prepare(snapshot);
+      if (intent !== null) {
+        removalSurvivors = Object.freeze(
+          snapshot.proofs.map((proof) => ({
+            proofId: deriveDurableCustodyProofId({
+              scopeId: input.scopeId,
+              normalizedMint: proof.mintUrl,
+              unit: proof.unit,
+              keysetId: proof.proof.id,
+              secret: proof.proof.secret,
+            }),
+            proofFingerprint: deriveDurableCustodyArtifactFingerprint(
+              serializeDurableCustodyProofArtifact(proof.proof),
+            ),
+          })),
+        );
+        const targets = new Set(intent.proofs.map((proof) => proof.proofId));
+        if (
+          removalSurvivors.length !== desired.activeProofCount ||
+          new Set(removalSurvivors.map((row) => row.proofId)).size !== removalSurvivors.length ||
+          removalSurvivors.some((row) => targets.has(row.proofId))
+        )
+          throw new Error("encrypted backup removal snapshot contains invalid survivors");
+      }
+      let ownerReuse: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult | undefined;
+      if (snapshot.losingProofs.some((proof) => proof.origin.kind === "remote-seal")) {
+        const predecessors = remoteHead.bundles.filter(
+          (bundle) => bundle.assetLocator === assetLocator,
+        );
+        const readObject = input.remote.readObject;
+        if (predecessors.length !== 1 || readObject === undefined)
+          throw new Error("owner terminal predecessor material is unavailable");
+        const descriptor = predecessors[0]!;
+        const objects = [];
+        for (const object of descriptor.objects) {
+          objects.push(
+            await readObject.call(input.remote, {
+              owner: input.owner,
+              enrollmentEpoch: input.enrollmentEpoch,
+              descriptor,
+              objectId: object.objectId,
+              signal: input.signal,
+            }),
+          );
+          requireCurrent(input);
+        }
+        const proofSet = await decryptEncryptedWalletBackupV2ProofSetBundle({
+          keyHandle: input.keyHandle,
+          seed: input.seed,
+          expectedAsset: snapshot.asset,
+          custodyRevision: descriptor.custodyRevision,
+          descriptor,
+          objects,
+          runtime: input.runtime,
+        });
+        requireCurrent(input);
+        const expectedContext = {
+          ownerScopeId: input.owner.ownerScopeId,
+          realm: input.keyHandle.realm,
+          walletId: input.keyHandle.walletId,
+          enrollmentEpoch: input.enrollmentEpoch,
+        };
+        ownerReuse = await authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+          keyHandle: input.keyHandle,
+          seed: input.seed,
+          expectedAsset: snapshot.asset,
+          expectedContext,
+          collectedHeadEvidence: remoteHead,
+          decryptedEvidence: bindEncryptedWalletBackupOwnerDecryptedProofSet({
+            proofSet,
+            expectedContext,
+            collectedHeadEvidence: remoteHead,
+          }),
+        });
+        requireCurrent(input);
+      }
+      preparedBundle = await source.prepare(snapshot, ownerReuse);
       requireCurrent(input);
     } else if (existing.length === 0) {
       const recorded = await store.recordAlreadyAbsentDesired(binding);
@@ -211,7 +314,16 @@ export async function runBrowserEncryptedWalletBackupOwnerWorkerCycle(
     });
     requireCurrent(input);
     const inserted = await store.insertPreparedMutationForDesired({
+      ...(removalSurvivors === undefined ? {} : { removalSurvivors }),
       prepared: {
+        ...(intent === null
+          ? {}
+          : {
+              removalBinding: {
+                intentId: intent.intentId,
+                proofSetCommitment: intent.proofSetCommitment,
+              },
+            }),
         mutationId: envelope.mutation.mutationId,
         requestDigest: envelope.requestDigest,
         canonicalUploadGroup,
@@ -257,6 +369,8 @@ async function sendPrepared(
     },
     expectedRequestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
   });
+  await store.assertPreparedRemovalCurrent(prepared);
+  requireCurrent(input);
   const receiptEvidence = await input.remote.mutateHead({
     owner: input.owner,
     enrollmentEpoch: input.enrollmentEpoch,
@@ -289,13 +403,17 @@ function defaultAssetSource(input: BrowserEncryptedWalletBackupOwnerWorkerInput)
   });
   return {
     read: readBrowserEncryptedWalletBackupV2AssetSnapshot,
-    prepare: (snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot) =>
+    prepare: (
+      snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot,
+      ownerReuse?: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
+    ) =>
       prepareBrowserEncryptedWalletBackupV2AssetBundle({
         snapshot,
         keyHandle: input.keyHandle,
         seed: input.seed,
         runtime: input.runtime,
         terminalSealStore,
+        ownerRemoteTerminalSealReuse: ownerReuse,
       }),
   };
 }

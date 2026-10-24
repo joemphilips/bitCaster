@@ -74,6 +74,7 @@ export type EncryptedWalletBackupOwnerRetrySchedulerRow =
   EncryptedWalletBackupDexieRetrySchedulerRow & { ownerScopeId: string };
 export type EncryptedWalletBackupOwnerPreparedMutationRow =
   EncryptedWalletBackupV2PreparedMutationRow & {
+    removalBinding?: { readonly intentId: string; readonly proofSetCommitment: string };
     ownerScopeId: string;
     realm: string;
     walletId: string;

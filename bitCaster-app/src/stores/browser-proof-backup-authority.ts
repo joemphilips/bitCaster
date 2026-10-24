@@ -83,7 +83,8 @@ export type BrowserProofBackupAuthorityRow =
 export type BrowserCompletedProofRemovalAcknowledgementKind = "receipt" | "current-head";
 
 export interface BrowserCompletedProofRemovalMarkerRow {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  ownerScopeId?: string;
   recordKind: "completed-removal";
   scopeId: string;
   proofId: string;
@@ -165,6 +166,7 @@ const completedLocalProofRemovalMarkerFields = [
 ] as const;
 
 export function createBrowserCompletedProofRemovalMarkerRow(input: {
+  readonly ownerScopeId?: string;
   readonly scopeId: string;
   readonly proofId: string;
   readonly proofFingerprint: string;
@@ -184,10 +186,12 @@ export function createBrowserCompletedProofRemovalMarkerRow(input: {
   readonly acknowledgedAtMs: number;
   readonly completedAtMs: number;
 }): BrowserCompletedProofRemovalMarkerRow {
+  const { ownerScopeId, ...fields } = input;
   return decodeBrowserCompletedProofRemovalMarkerRow({
-    schemaVersion: 1,
+    schemaVersion: ownerScopeId === undefined ? 1 : 2,
+    ...(ownerScopeId === undefined ? {} : { ownerScopeId }),
     recordKind: "completed-removal",
-    ...input,
+    ...fields,
     proofRevision: input.proofRevision,
     completionCustodyRevision: decimalUint64(
       typeof input.completionCustodyRevision === "bigint"
@@ -201,7 +205,16 @@ export function createBrowserCompletedProofRemovalMarkerRow(input: {
 export function decodeBrowserCompletedProofRemovalMarkerRow(
   value: unknown,
 ): BrowserCompletedProofRemovalMarkerRow {
-  if (!isExactRecord(value, completedProofRemovalMarkerFields)) {
+  if (
+    !isRecord(value) ||
+    !isExactRecord(
+      value,
+      value.schemaVersion === 2
+        ? [...completedProofRemovalMarkerFields, "ownerScopeId"]
+        : completedProofRemovalMarkerFields,
+    ) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2)
+  ) {
     throw new Error("browser completed proof removal marker is invalid");
   }
   const scopeId = decodeDurableCustodyScopeId(value.scopeId);
@@ -232,7 +245,10 @@ export function decodeBrowserCompletedProofRemovalMarkerRow(
     throw new Error("browser completed proof removal marker time is invalid");
   }
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: value.schemaVersion as 1 | 2,
+    ...(value.schemaVersion === 2
+      ? { ownerScopeId: requireFingerprint(value.ownerScopeId, "completed owner scope id") }
+      : {}),
     recordKind: "completed-removal",
     scopeId,
     proofId,

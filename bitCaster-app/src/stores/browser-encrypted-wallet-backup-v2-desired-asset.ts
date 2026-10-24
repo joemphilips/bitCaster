@@ -43,7 +43,22 @@ export interface EncryptedWalletBackupV2RemovalProofTuple {
   readonly proofCommitment: string;
 }
 
+/** Verified local acknowledgement binding; created only by the selected Owner store. */
+export interface BrowserOwnerRemovalEvidenceBinding {
+  readonly schemaVersion: 2;
+  readonly ownerScopeId: string;
+  readonly intentId: string;
+  readonly localAssetKey: string;
+  readonly assetLocator: string;
+  readonly targetCustodyRevision: string;
+  readonly desiredAction: EncryptedWalletBackupV2DesiredAction;
+  readonly proofSetCommitment: string;
+  readonly mutationId: string | null;
+  readonly requestDigest: string | null;
+}
+
 export interface EncryptedWalletBackupV2ReceiptRemovalExclusionEvidence {
+  readonly owner?: BrowserOwnerRemovalEvidenceBinding;
   readonly kind: "receipt";
   readonly headVersion: number;
   readonly activeSetDigest: string;
@@ -55,6 +70,7 @@ export interface EncryptedWalletBackupV2ReceiptRemovalExclusionEvidence {
 }
 
 export interface EncryptedWalletBackupV2CurrentHeadRemovalExclusionEvidence {
+  readonly owner?: BrowserOwnerRemovalEvidenceBinding;
   readonly kind: "current-head";
   readonly headVersion: number;
   readonly activeSetDigest: string;
@@ -70,6 +86,9 @@ export type EncryptedWalletBackupV2RemovalExclusionEvidence =
 export type EncryptedWalletBackupV2RemovalIntentState = "pending" | "exclusion-acknowledged";
 
 export interface EncryptedWalletBackupV2RemovalIntent {
+  /** Missing only for recognized legacy unbound intents. Never infer an owner. */
+  readonly schemaVersion?: 2;
+  readonly ownerScopeId?: string;
   readonly intentId: string;
   readonly createdAtMs: number;
   readonly realm: string;
@@ -111,6 +130,7 @@ export function digestEncryptedWalletBackupV2RemovalProofSet(
 }
 
 export function createEncryptedWalletBackupV2RemovalIntent(input: {
+  readonly ownerScopeId?: string;
   readonly intentId: string;
   readonly createdAtMs: number;
   readonly realm: string;
@@ -138,6 +158,9 @@ export function createEncryptedWalletBackupV2RemovalIntent(input: {
       ? null
       : decodeRemovalExclusionEvidence(input.acknowledgedExclusionEvidence);
   return decodeEncryptedWalletBackupV2RemovalIntent({
+    ...(input.ownerScopeId === undefined
+      ? {}
+      : { schemaVersion: 2, ownerScopeId: input.ownerScopeId }),
     intentId: input.intentId,
     createdAtMs: input.createdAtMs,
     realm: input.realm,
@@ -160,7 +183,15 @@ export function createEncryptedWalletBackupV2RemovalIntent(input: {
 export function decodeEncryptedWalletBackupV2RemovalIntent(
   value: unknown,
 ): EncryptedWalletBackupV2RemovalIntent {
-  if (!isRecord(value) || !exactKeys(value, removalIntentFields)) {
+  if (
+    !isRecord(value) ||
+    !exactKeys(
+      value,
+      value.schemaVersion === 2
+        ? [...removalIntentFields, "schemaVersion", "ownerScopeId"]
+        : removalIntentFields,
+    )
+  ) {
     throw new Error("browser V2 removal intent is invalid");
   }
   const proofs = decodeRemovalProofTuples(value.proofs);
@@ -179,7 +210,22 @@ export function decodeEncryptedWalletBackupV2RemovalIntent(
   if ((state === "pending") !== (evidence === null)) {
     throw new Error("browser V2 removal intent exclusion evidence is inconsistent");
   }
+  const ownerScopeId =
+    value.schemaVersion === 2
+      ? requireRemovalLowerHex(value.ownerScopeId, "owner scope id")
+      : undefined;
+  if (
+    evidence !== null &&
+    (ownerScopeId === undefined
+      ? evidence.owner !== undefined
+      : evidence.owner?.ownerScopeId !== ownerScopeId ||
+        evidence.owner?.intentId !== value.intentId ||
+        evidence.owner?.targetCustodyRevision !== value.targetCustodyRevision ||
+        evidence.owner?.proofSetCommitment !== proofSetCommitment)
+  )
+    throw new Error("browser removal exclusion owner binding is invalid");
   return Object.freeze({
+    ...(ownerScopeId === undefined ? {} : { schemaVersion: 2 as const, ownerScopeId }),
     intentId: requireBoundedText(value.intentId, "intent id"),
     createdAtMs: requireNonnegativeSafeInteger(value.createdAtMs, "creation time"),
     realm: requireRealm(value.realm),
@@ -208,6 +254,8 @@ export function sameEncryptedWalletBackupV2RemovalIntent(
   if (left === right) return true;
   if (left === null || right === null) return false;
   if (
+    left.schemaVersion !== right.schemaVersion ||
+    left.ownerScopeId !== right.ownerScopeId ||
     left.intentId !== right.intentId ||
     left.createdAtMs !== right.createdAtMs ||
     left.realm !== right.realm ||
@@ -439,12 +487,22 @@ function decodeRemovalExclusionEvidence(
   }
   switch (value.kind) {
     case "receipt": {
-      if (!exactKeys(value, removalReceiptExclusionEvidenceFields)) {
+      if (
+        !exactKeys(
+          value,
+          value.owner === undefined
+            ? removalReceiptExclusionEvidenceFields
+            : [...removalReceiptExclusionEvidenceFields, "owner"],
+        )
+      ) {
         throw new Error("browser V2 removal intent exclusion evidence is invalid");
       }
       const { bundleId, bundleDescriptorDigest } = decodeExclusionBundle(value);
       return Object.freeze({
         kind: "receipt",
+        ...(value.owner === undefined
+          ? {}
+          : { owner: decodeOwnerRemovalEvidence(value.owner, "receipt") }),
         headVersion: requireNonnegativeSafeInteger(value.headVersion, "exclusion head version"),
         activeSetDigest: requireRemovalLowerHex(
           value.activeSetDigest,
@@ -461,12 +519,22 @@ function decodeRemovalExclusionEvidence(
       });
     }
     case "current-head": {
-      if (!exactKeys(value, removalCurrentHeadExclusionEvidenceFields)) {
+      if (
+        !exactKeys(
+          value,
+          value.owner === undefined
+            ? removalCurrentHeadExclusionEvidenceFields
+            : [...removalCurrentHeadExclusionEvidenceFields, "owner"],
+        )
+      ) {
         throw new Error("browser V2 removal intent exclusion evidence is invalid");
       }
       const { bundleId, bundleDescriptorDigest } = decodeExclusionBundle(value);
       return Object.freeze({
         kind: "current-head",
+        ...(value.owner === undefined
+          ? {}
+          : { owner: decodeOwnerRemovalEvidence(value.owner, "current-head") }),
         headVersion: requireNonnegativeSafeInteger(value.headVersion, "exclusion head version"),
         activeSetDigest: requireRemovalLowerHex(
           value.activeSetDigest,
@@ -555,6 +623,7 @@ function sameRemovalExclusionEvidence(
   if (left === right) return true;
   if (left === null || right === null) return false;
   if (
+    JSON.stringify(left.owner) !== JSON.stringify(right.owner) ||
     left.kind !== right.kind ||
     left.headVersion !== right.headVersion ||
     left.activeSetDigest !== right.activeSetDigest ||
@@ -1197,4 +1266,44 @@ function decodeActiveProofReference(
     throw new Error("browser V2 desired asset counter proof is foreign");
   }
   return proof;
+}
+
+function decodeOwnerRemovalEvidence(
+  value: unknown,
+  kind: "receipt" | "current-head",
+): BrowserOwnerRemovalEvidenceBinding {
+  const fields = [
+    "schemaVersion",
+    "ownerScopeId",
+    "intentId",
+    "localAssetKey",
+    "assetLocator",
+    "targetCustodyRevision",
+    "desiredAction",
+    "proofSetCommitment",
+    "mutationId",
+    "requestDigest",
+  ];
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, fields) ||
+    value.schemaVersion !== 2 ||
+    (value.desiredAction !== "replace" && value.desiredAction !== "remove") ||
+    (kind === "current-head" && (value.mutationId !== null || value.requestDigest !== null))
+  )
+    throw new Error("browser Owner removal exclusion evidence is invalid");
+  return Object.freeze({
+    schemaVersion: 2,
+    ownerScopeId: requireRemovalLowerHex(value.ownerScopeId, "owner scope id"),
+    intentId: requireBoundedText(value.intentId, "intent id"),
+    localAssetKey: requireBackupUtf8Text(value.localAssetKey, 4096, "local asset key"),
+    assetLocator: requireRemovalLowerHex(value.assetLocator, "asset locator"),
+    targetCustodyRevision: decimalUint64(parseDecimalUint64(value.targetCustodyRevision)),
+    desiredAction: value.desiredAction,
+    proofSetCommitment: requireRemovalLowerHex(value.proofSetCommitment, "proof set commitment"),
+    mutationId:
+      kind === "receipt" ? requireRemovalLowerHex(value.mutationId, "mutation id", 16) : null,
+    requestDigest:
+      kind === "receipt" ? requireRemovalLowerHex(value.requestDigest, "request digest") : null,
+  });
 }

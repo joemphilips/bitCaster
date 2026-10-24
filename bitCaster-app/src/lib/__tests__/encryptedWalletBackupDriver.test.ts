@@ -1,8 +1,11 @@
+import "fake-indexeddb/auto";
+import * as ownerWorker from "../browserEncryptedWalletBackupOwnerWorker";
+import { createOwnerRemovalRemote } from "./fixtures/ownerRemovalFixture";
+import { ownerCtfRemovalFixture, removalSeed } from "./fixtures/ownerCtfRemovalProofs";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getNdk } from "../nostr";
 import { EncryptedWalletBackupFirstAccountError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
 // @vitest-environment node
-import "fake-indexeddb/auto";
 import { Amount, deriveKeysetId } from "@cashu/cashu-ts";
 import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
 import * as removeCoordinator from "../browserCtfRemoveCoordinator";
@@ -30,10 +33,7 @@ import {
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
-import {
-  createEncryptedWalletBackupV2DesiredAssetRow,
-  createEncryptedWalletBackupV2RemovalIntent,
-} from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { deriveEncryptedWalletBackupOwnerScope } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerScope";
@@ -518,9 +518,11 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
       localRecoveryReason: "none",
     });
     await driver.quiesceForSeedHandoff();
+    const readsBeforeHandoff = readHead.mock.calls.length;
     await expect(authority.ownerAuthorityStore.readCurrentHead()).resolves.toMatchObject({
       head: { headVersion: 1 },
     });
+    expect(readHead).toHaveBeenCalledTimes(readsBeforeHandoff);
     await handoffBrowserEncryptedWalletBackupV2Seed({
       database: fixture.database,
       scopeId: fixture.scopeId,
@@ -535,7 +537,7 @@ it("keeps selected-owner authority current through prepare, quiesce, and seed ha
       restoreOldProfile: async () => undefined,
     });
     expect(activated).toHaveBeenCalledOnce();
-    expect(readHead).toHaveBeenCalledTimes(2);
+    expect(readHead).toHaveBeenCalledTimes(readsBeforeHandoff + 1);
     expect(verifyStoredBackupReachability).toHaveBeenCalledOnce();
     expect(fixture.database.isOpen()).toBe(false);
   } finally {
@@ -724,7 +726,7 @@ it("cancels recovery waiting for the profile lock before releasing leadership", 
 });
 
 it("drains a queued removeManagedProofs call before releasing leadership", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const lockManager = new SharedTestLockManager();
   const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
   const walletLockName = encryptedWalletBackupV2WalletLockName({
@@ -745,7 +747,7 @@ it("drains a queued removeManagedProofs call before releasing leadership", async
       await withWalletProfileLock(input.scopeId, async () => undefined, lockManager, input.signal);
       return { kind: "started", intentId: "test-remove" };
     });
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     vi.fn().mockResolvedValue({ kind: "idle" }),
     runtimeRemote(),
@@ -803,42 +805,11 @@ it("drains a queued removeManagedProofs call before releasing leadership", async
 });
 
 it("cancels queued CTF removal finalization before releasing leadership", async () => {
-  const fixture = await readyEnrolledFixture();
-  const desiredAsset = await putRemovalDesired(fixture, "acknowledged");
-  const rawDesired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-    fixture.scopeId,
-    desiredAsset.localAssetKey,
-  ]);
-  if (rawDesired === undefined) throw new Error("test desired asset is absent");
-  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-    ...rawDesired,
-    removalIntent: createEncryptedWalletBackupV2RemovalIntent({
-      intentId: "queued-finalization",
-      createdAtMs: 1,
-      realm: configuration.realm,
-      walletId: fixture.keyHandle.walletId,
-      enrollmentEpoch: 1,
-      expectedHeadVersion: 0,
-      expectedActiveSetDigest: "aa".repeat(32),
-      targetCustodyRevision: rawDesired.custodyRevision,
-      proofs: [
-        {
-          proofId: "55".repeat(32),
-          proofFingerprint: "66".repeat(32),
-          proofRevision: 1,
-          proofCommitment: "77".repeat(32),
-        },
-      ],
-      acknowledgedExclusionEvidence: {
-        kind: "current-head",
-        headVersion: 0,
-        activeSetDigest: "aa".repeat(32),
-        bundleId: null,
-        bundleDescriptorDigest: null,
-        acknowledgedAtMs: 1,
-      },
-    }),
-  });
+  const managed = await ownerCtfRemovalFixture();
+  databases.push(managed.database);
+  await removeCoordinator.startBrowserCtfRemove(managed.input());
+  await managed.cycle();
+  const fixture = { ...managed, seed: removalSeed, ownerRemote: managed.remote };
   const lockManager = new SharedTestLockManager();
   const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
   const walletLockName = encryptedWalletBackupV2WalletLockName({
@@ -852,7 +823,7 @@ it("cancels queued CTF removal finalization before releasing leadership", async 
     () => releaseProfileLock.promise,
   );
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2981,12 +2952,12 @@ async function readyEnrolledFixture() {
 it.each(["started", "resumed"] as const)(
   "waits for exact managed completion after %s",
   async (kind) => {
-    const fixture = await readyEnrolledFixture();
+    const fixture = await readyManagedFixture();
     const { asset, localAssetKey } = await putRemovalDesired(fixture, "acknowledged");
     const worker = vi.fn().mockResolvedValue({ kind: "idle" });
     const cancel = vi.fn();
     let expire: (() => void) | undefined;
-    const driver = createRuntime(
+    const driver = await createManagedRuntime(
       fixture,
       worker,
       runtimeRemote(),
@@ -3016,6 +2987,7 @@ it.each(["started", "resumed"] as const)(
       // A foreign marker wakes the exact-key query but cannot complete this call.
       const marker = createBrowserCompletedProofRemovalMarkerRow({
         scopeId: fixture.scopeId,
+        ownerScopeId: fixture.owner.ownerScopeId,
         ...targets[0]!,
         proofRevision: 8,
         proofCommitment: "51".repeat(32),
@@ -3050,7 +3022,7 @@ it.each(["started", "resumed"] as const)(
 );
 
 it("keeps one deadline across readiness and completion and returns genuine pending", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "acknowledged");
   let expire: (() => void) | undefined;
   const cancel = vi.fn();
@@ -3058,7 +3030,7 @@ it("keeps one deadline across readiness and completion and returns genuine pendi
     expire = task;
     return cancel;
   });
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     vi.fn().mockResolvedValue({ kind: "idle" }),
     runtimeRemote(),
@@ -3091,10 +3063,10 @@ it("keeps one deadline across readiness and completion and returns genuine pendi
 it.each(["stop", "storage-error"] as const)(
   "cleans an active completion observer after %s",
   async (ending) => {
-    const fixture = await readyEnrolledFixture();
+    const fixture = await readyManagedFixture();
     const { asset } = await putRemovalDesired(fixture, "acknowledged");
     const cancel = vi.fn();
-    const driver = createRuntime(
+    const driver = await createManagedRuntime(
       fixture,
       vi.fn().mockResolvedValue({ kind: "idle" }),
       runtimeRemote(),
@@ -3141,13 +3113,13 @@ it.each(["stop", "storage-error"] as const)(
 );
 
 it("keeps coordinator reentry owned until it drains after the deadline", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "acknowledged");
   const entered = deferred<void>();
   const release = deferred<void>();
   let expire: (() => void) | undefined;
   const cancel = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     vi.fn().mockResolvedValue({ kind: "idle" }),
     runtimeRemote(),
@@ -3193,10 +3165,10 @@ it("keeps coordinator reentry owned until it drains after the deadline", async (
 });
 
 it("does not revive an aborted removal when the same profile resumes", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "acknowledged");
   const schedule = vi.fn(() => vi.fn());
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     vi.fn().mockResolvedValue({ kind: "idle" }),
     runtimeRemote(),
@@ -3235,10 +3207,10 @@ it("does not revive an aborted removal when the same profile resumes", async () 
 });
 
 it("starts managed removal with the driver's existing enrollment and rejects a stale profile", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   let current = true;
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(fixture, worker, runtimeRemote(), () => current);
+  const driver = await createManagedRuntime(fixture, worker, runtimeRemote(), () => current);
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
     .mockResolvedValue({ kind: "completed", intentId: "removal" });
@@ -3274,7 +3246,7 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
 
     current = false;
     await expect(driver.removeManagedProofs({ asset, targets })).rejects.toThrow(
-      "profile is unavailable",
+      "Owner is unavailable",
     );
     expect(start).toHaveBeenCalledOnce();
   } finally {
@@ -3283,12 +3255,12 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
 });
 
 it("reenters managed removal when the desired revision is already acknowledged", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "acknowledged");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let timeoutMilliseconds = 0;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3324,11 +3296,11 @@ it("reenters managed removal when the desired revision is already acknowledged",
 });
 
 it("waits for a pending desired revision to be acknowledged", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3353,10 +3325,7 @@ it("waits for a pending desired revision to be acknowledged", async () => {
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await expect(removal).resolves.toEqual({ kind: "completed", intentId: "after-ack" });
     expect(start).toHaveBeenCalledTimes(2);
     expect(start.mock.calls[0]?.[0].targets).toEqual(targets);
@@ -3368,12 +3337,12 @@ it("waits for a pending desired revision to be acknowledged", async () => {
 });
 
 it("returns typed pending when backup readiness times out", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let expire: (() => void) | undefined;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3409,11 +3378,11 @@ it("returns typed pending when backup readiness times out", async () => {
 });
 
 it("returns typed pending when the readiness stream is unavailable", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3452,12 +3421,12 @@ it("returns typed pending when the readiness stream is unavailable", async () =>
 });
 
 it("cleans the readiness subscription and deadline when the driver stops", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let waitScheduled = false;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3492,10 +3461,7 @@ it("cleans the readiness subscription and deadline when the driver stops", async
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(start).toHaveBeenCalledOnce();
   } finally {
@@ -3504,12 +3470,12 @@ it("cleans the readiness subscription and deadline when the driver stops", async
 });
 
 it("stops the readiness wait after a profile change", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   let currentProfile = true;
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -3534,10 +3500,7 @@ it("stops the readiness wait after a profile change", async () => {
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await expect(removal).resolves.toEqual({
       kind: "pending",
       reason: "backup-not-ready",
@@ -3550,10 +3513,10 @@ it("stops the readiness wait after a profile change", async () => {
 });
 
 it("keeps the pending result when readiness races with coordinator reentry", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(fixture, worker);
+  const driver = await createManagedRuntime(fixture, worker);
   const targets = [
     { proofId: "ff".repeat(32), proofFingerprint: "00".repeat(32), proofRevision: 18 },
   ];
@@ -3566,10 +3529,7 @@ it("keeps the pending result when readiness races with coordinator reentry", asy
         desired.localAssetKey,
       ]);
       if (current === undefined) throw new Error("test desired asset is absent");
-      await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-        ...current,
-        syncState: "pending",
-      });
+      await setManagedReadiness(fixture, desired.localAssetKey, "pending");
       return { kind: "pending", reason: "backup-not-ready" };
     });
   try {
@@ -3581,10 +3541,7 @@ it("keeps the pending result when readiness races with coordinator reentry", asy
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await expect(removal).resolves.toEqual({
       kind: "pending",
       reason: "backup-not-ready",
@@ -3724,6 +3681,139 @@ function resolveEpoch(
   });
 }
 
+const actualOwnerWorkerCycle = ownerWorker.runBrowserEncryptedWalletBackupOwnerWorkerCycle;
+
+async function readyManagedFixture() {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "managed-driver-owner",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const ownerRemote = await createOwnerRemovalRemote({ ...fixture, owner, enrollmentEpoch: 1 });
+  return { ...fixture, owner, ownerRemote };
+}
+
+async function setManagedReadiness(
+  fixture: Awaited<ReturnType<typeof readyManagedFixture>>,
+  localAssetKey: string,
+  state: "pending" | "acknowledged",
+) {
+  if (state === "pending") {
+    await fixture.database.encryptedWalletBackupOwnerDesiredAssets.delete([
+      fixture.scopeId,
+      fixture.owner.ownerScopeId,
+      localAssetKey,
+    ]);
+    return;
+  }
+  const desired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+    fixture.scopeId,
+    localAssetKey,
+  ]);
+  if (desired === undefined) throw new Error("test desired asset is absent");
+  const asset = {
+    mintUrl: desired.mintUrl,
+    unit: desired.unit,
+    assetIdentity: desired.assetIdentity,
+  };
+  // Real Owner worker/SDK receipt transition; this lifecycle unit fixture controls
+  // encrypted payload content. Proof-set and deletion authority have separate composition tests.
+  await actualOwnerWorkerCycle({
+    ...fixture,
+    enrollmentEpoch: 1,
+    remote: fixture.ownerRemote.remote,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    assetSource: {
+      read: async () => ({
+        desired,
+        asset,
+        proofs: [],
+        losingProofs: [],
+        refusalHistories: [],
+        counterHighWaterMarks: [],
+      }),
+      prepare: async () =>
+        prepareEncryptedWalletBackupV2TransportBundle({
+          keyHandle: fixture.keyHandle,
+          asset,
+          declaredAmount: BigInt(desired.activeProofCount),
+          custodyRevision: BigInt(desired.custodyRevision),
+          canonicalPayload: new TextEncoder().encode("driver lifecycle fixture"),
+          runtime: crypto,
+        }),
+    },
+  });
+}
+
+async function createManagedRuntime(...args: Parameters<typeof createRuntime>) {
+  const [
+    base,
+    worker,
+    remote = runtimeRemote(),
+    isCurrentProfile = () => true,
+    scheduleRetry,
+    leadership = immediateLeadership,
+    scheduleManagedRemoveTimeout,
+    recovery,
+    lockManager,
+  ] = args;
+  const fixture = base as Awaited<ReturnType<typeof readyManagedFixture>>;
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", configuration.realm);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", configuration.signedOrigin);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", configuration.pinnedReceiptKeys[0].keyId);
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    configuration.pinnedReceiptKeys[0].publicKey,
+  );
+  const client = fixture.ownerRemote.client;
+  vi.spyOn(client, "discover").mockResolvedValue([{ entries: [fixture.owner] }] as never);
+  vi.spyOn(client, "resolveFirstAccount").mockReturnValue({ kind: "active", owner: fixture.owner });
+  vi.spyOn(client, "readEnrollmentEpoch").mockResolvedValue({
+    status: "active",
+    enrollmentEpoch: 1,
+  });
+  vi.spyOn(client, "readCurrentHead").mockImplementation(
+    fixture.ownerRemote.remote.readCurrentHead,
+  );
+  vi.spyOn(ownerWorker, "runBrowserEncryptedWalletBackupOwnerWorkerCycle").mockImplementation(
+    (input) => {
+      if (input.database !== fixture.database) throw new Error("unexpected driver test wallet");
+      return (
+        worker as ReturnType<
+          typeof vi.fn<typeof ownerWorker.runBrowserEncryptedWalletBackupOwnerWorkerCycle>
+        >
+      )(input);
+    },
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(fixture.owner),
+    ownerClient: client,
+    remote,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile,
+    scheduleRetry,
+    scheduleManagedRemoveTimeout,
+    leadership,
+    recovery,
+    lockManager,
+  });
+  await vi.waitFor(() =>
+    requireBrowserWalletNewWritePermission({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+    }),
+  );
+  return driver;
+}
+
 function createRuntime(
   fixture: Awaited<ReturnType<typeof runtimeFixture>>,
   worker: ReturnType<typeof vi.fn>,
@@ -3775,7 +3865,16 @@ async function putRemovalDesired(
     custodyRevision: 3n,
     activeProofCount: 1,
   });
-  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({ ...desired, syncState });
+  if ("owner" in fixture) {
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+    await setManagedReadiness(
+      fixture as Awaited<ReturnType<typeof readyManagedFixture>>,
+      desired.localAssetKey,
+      syncState,
+    );
+  } else {
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({ ...desired, syncState });
+  }
   return { asset, localAssetKey: desired.localAssetKey };
 }
 

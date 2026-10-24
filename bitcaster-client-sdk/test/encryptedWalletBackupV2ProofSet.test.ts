@@ -19,6 +19,7 @@ import {
   discoverEncryptedWalletBackupV2ProofSetBundle,
   encryptedWalletBackupV2LocalAssetKey,
   authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
+  authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse,
   authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation,
   requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority,
   issueEncryptedWalletBackupV2TerminalSeal,
@@ -1879,6 +1880,40 @@ test('authenticated old seal retains decrypted proof history without losing or r
   const unverified = await restore(keyHandle, prepared, asset)
   assert.equal(unverified.proofs[0]!.proof.secret, entry.proof.secret)
   assert.equal(unverified.proofs[0]!.terminalSeal?.schemaVersion, 1)
+  const ownerContext = {
+    ownerScopeId: '83'.repeat(32),
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  }
+  const ownerHead = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({
+      head: createEncryptedWalletBackupOwnerCurrentHead({
+        ...ownerContext,
+        headVersion: 1,
+        bundles: [prepared.descriptor],
+      }),
+      bundles: [prepared.descriptor],
+    }),
+    ownerContext,
+  )
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        expectedContext: ownerContext,
+        collectedHeadEvidence: ownerHead,
+        decryptedEvidence: bindEncryptedWalletBackupOwnerDecryptedProofSet({
+          proofSet: unverified,
+          expectedContext: ownerContext,
+          collectedHeadEvidence: ownerHead,
+        }),
+      }),
+    /verified losing seal is missing/,
+  )
+
   await assert.rejects(
     () =>
       verifyEncryptedWalletBackupV2RestoredProofSet({
@@ -1968,4 +2003,211 @@ test('authenticated old seal retains decrypted proof history without losing or r
     /head evidence/,
   )
   assert.equal(unverified.proofs[0]!.proof.secret, entry.proof.secret)
+})
+
+test('Owner terminal seal reuse binds exact current source and retained proof material', async () => {
+  const keyHandle = await handle()
+  const losing = proof(0, ctfAsset(), true),
+    survivor = proof(1, ctfAsset(), true)
+  const sealed = await Promise.all(
+    [losing, survivor].map(async (value, index) => {
+      const committed = committedTerminalStore(value, `owner-reuse:${index}`)
+      return {
+        ...value,
+        terminalSeal: await issueEncryptedWalletBackupV2TerminalSeal({
+          seed: SEED,
+          proof: value,
+          operationId: committed.operationId,
+          store: committed.store,
+        }),
+      }
+    }),
+  )
+  const asset = proofSetAsset(losing)
+  const predecessor = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: sealed,
+    custodyRevision: 1n,
+    counterHighWaterMarks: [counter(2)],
+    runtime: webcrypto,
+  })
+  const context = {
+    ownerScopeId: '83'.repeat(32),
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  }
+  const headFor = (version = 1, selectedContext = context, bundles = [predecessor.descriptor]) =>
+    collectEncryptedWalletBackupOwnerDescriptorPages(
+      enumerateEncryptedWalletBackupOwnerDescriptorPages({
+        head: createEncryptedWalletBackupOwnerCurrentHead({
+          ...selectedContext,
+          headVersion: version,
+          bundles,
+        }),
+        bundles,
+      }),
+      selectedContext,
+    )
+  const head = headFor()
+  const decrypted = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 1n,
+    descriptor: predecessor.descriptor,
+    objects: predecessor.objects,
+    runtime: webcrypto,
+  })
+  const bound = bindEncryptedWalletBackupOwnerDecryptedProofSet({
+    proofSet: decrypted,
+    expectedContext: context,
+    collectedHeadEvidence: head,
+  })
+  const request = {
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    expectedContext: context,
+    collectedHeadEvidence: head,
+    decryptedEvidence: bound,
+  }
+  const reuse = await authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse(request)
+  const kept = decrypted.proofs[1]!,
+    authority = reuse.authorities.find((value) => value.proofId === kept.proofId)!
+  const nextInput = {
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [kept],
+    custodyRevision: 2n,
+    counterHighWaterMarks: decrypted.counterHighWaterMarks,
+    runtime: webcrypto,
+    ownerRemoteTerminalSealReuse: {
+      authorities: [authority],
+      currentHeadEvidence: head,
+      expectedContext: context,
+    },
+  }
+  const next = await prepareEncryptedWalletBackupV2ProofSetBundle(nextInput)
+  const result = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 2n,
+    descriptor: next.descriptor,
+    objects: next.objects,
+    runtime: webcrypto,
+  })
+  assert.deepEqual(result.proofs, [kept])
+  assert.deepEqual(result.counterHighWaterMarks, decrypted.counterHighWaterMarks)
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      decryptedEvidence: { ...bound },
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      collectedHeadEvidence: headFor(2),
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      expectedContext: { ...context, enrollmentEpoch: 2 },
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      expectedContext: { ...context, realm: 'other.example' },
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      expectedContext: { ...context, walletId: '85'.repeat(32) },
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      collectedHeadEvidence: headFor(1, context, [
+        { ...predecessor.descriptor, custodyRevision: 2n },
+      ]),
+    }),
+  )
+
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      expectedContext: { ...context, ownerScopeId: '84'.repeat(32) },
+    }),
+  )
+  await assert.rejects(() =>
+    authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse({
+      ...request,
+      expectedAsset: proofSetAsset(proof(0, { kind: 'ordinary' })),
+    }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      ...nextInput,
+      ownerRemoteTerminalSealReuse: {
+        ...nextInput.ownerRemoteTerminalSealReuse,
+        authorities: [{ ...authority }],
+      },
+    }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      ...nextInput,
+      ownerRemoteTerminalSealReuse: {
+        ...nextInput.ownerRemoteTerminalSealReuse,
+        authorities: [authority, authority],
+      },
+    }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      ...nextInput,
+      ownerRemoteTerminalSealReuse: {
+        ...nextInput.ownerRemoteTerminalSealReuse,
+        authorities: reuse.authorities,
+      },
+    }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({ ...nextInput, remoteTerminalSealReuses: [] }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      ...nextInput,
+      proofs: [{ ...kept, proof: { ...kept.proof, amount: 2 } }],
+    }),
+  )
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      ...nextInput,
+      ownerRemoteTerminalSealReuse: {
+        ...nextInput.ownerRemoteTerminalSealReuse,
+        currentHeadEvidence: headFor(2),
+      },
+    }),
+  )
+  await assert.rejects(() =>
+    decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      expectedAsset: asset,
+      custodyRevision: 1n,
+      descriptor: predecessor.descriptor,
+      objects: [],
+      runtime: webcrypto,
+    }),
+  )
 })

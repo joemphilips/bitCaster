@@ -31,7 +31,6 @@ import type {
   EncryptedWalletBackupOwnerPreparedMutationRow,
   EncryptedWalletBackupOwnerRetrySchedulerRow,
   EncryptedWalletBackupOwnerDesiredAssetRow,
-  EncryptedWalletBackupV2PreparedMutationRow,
 } from "./proof-db";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
@@ -63,6 +62,9 @@ import type {
 } from "./encrypted-wallet-backup-v2-db";
 import {
   decodeEncryptedWalletBackupV2DesiredAssetRow,
+  createEncryptedWalletBackupV2RemovalIntent,
+  type EncryptedWalletBackupV2RemovalExclusionEvidence,
+  type BrowserOwnerRemovalEvidenceBinding,
   type EncryptedWalletBackupV2DesiredAssetRow,
 } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
@@ -1102,6 +1104,214 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
     );
   }
 
+  /** Refuse foreign or legacy pending removal before any publication or acknowledgement. */
+  #requireRemovalOwner(desired: EncryptedWalletBackupV2DesiredAssetRow): void {
+    const intent = desired.removalIntent;
+    if (intent === null) return;
+    if (
+      intent.schemaVersion !== 2 ||
+      intent.ownerScopeId !== this.#context.ownerScopeId ||
+      intent.realm !== this.#context.realm ||
+      intent.walletId !== this.#context.walletId ||
+      intent.enrollmentEpoch !== this.#context.enrollmentEpoch ||
+      intent.targetCustodyRevision !== desired.custodyRevision
+    )
+      throw new Error("encrypted backup removal owner is unavailable");
+  }
+
+  #requirePreparedRemovalBinding(
+    desired: EncryptedWalletBackupV2DesiredAssetRow | null,
+    prepared: EncryptedWalletBackupOwnerPreparedMutationRow,
+  ): void {
+    const intent = desired?.removalIntent;
+    if (intent === undefined || intent === null) {
+      if (prepared.removalBinding !== undefined)
+        throw new Error("encrypted backup prepared removal intent disappeared");
+      return;
+    }
+    this.#requireRemovalOwner(desired!);
+    if (
+      prepared.removalBinding?.intentId !== intent.intentId ||
+      prepared.removalBinding.proofSetCommitment !== intent.proofSetCommitment ||
+      prepared.custodyRevision !== desired!.custodyRevision ||
+      prepared.desiredAction !== desired!.desiredAction ||
+      prepared.activeProofCount !== desired!.activeProofCount
+    )
+      throw new Error("encrypted backup prepared removal intent changed");
+  }
+
+  /** Same-owner exact intent is required before replay dispatch, even for old prepared rows. */
+  async assertPreparedRemovalCurrent(
+    prepared: EncryptedWalletBackupOwnerPreparedMutationRow,
+  ): Promise<void> {
+    this.#requireDatabaseBinding();
+    const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      prepared.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (raw === undefined) throw new Error("encrypted backup prepared canonical asset is absent");
+    this.#requirePreparedRemovalBinding(
+      decodeEncryptedWalletBackupV2DesiredAssetRow(raw),
+      prepared,
+    );
+  }
+
+  async #requireRemovalSurvivors(
+    desired: EncryptedWalletBackupV2DesiredAssetRow,
+    proofs: readonly { readonly proofId: string; readonly proofFingerprint: string }[] | undefined,
+  ): Promise<void> {
+    if (desired.removalIntent === null) return;
+    const context = desired.terminalCtfContext;
+    if (
+      context === null ||
+      proofs === undefined ||
+      new Set(proofs.map((row) => row.proofId)).size !== proofs.length
+    )
+      throw new Error("encrypted backup removal survivor binding is missing");
+    const rows = await this.#database.custodyProofs
+      .where("[scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]")
+      .between(
+        [
+          this.#scopeId,
+          desired.mintUrl,
+          desired.unit,
+          context.conditionId,
+          context.outcomeLabel,
+          "",
+        ],
+        [
+          this.#scopeId,
+          desired.mintUrl,
+          desired.unit,
+          context.conditionId,
+          context.outcomeLabel,
+          "\uffff",
+        ],
+        true,
+        true,
+      )
+      .limit(513)
+      .toArray();
+    this.#requireSessionCurrent();
+    if (rows.length > 512) throw new Error("encrypted backup removal proof set exceeds bound");
+    const live = rows
+      .map(decodeBrowserCustodyProofRow)
+      .filter((row) => row.selectability !== "pending-removal" && row.selectability !== "spent");
+    const targets = new Set(desired.removalIntent.proofs.map((row) => row.proofId));
+    if (
+      live.length !== desired.activeProofCount ||
+      proofs.length !== live.length ||
+      live.some(
+        (row) =>
+          !proofs.some(
+            (proof) =>
+              proof.proofId === row.proofId && proof.proofFingerprint === row.proofFingerprint,
+          ) || targets.has(row.proofId),
+      )
+    )
+      throw new Error("encrypted backup removal survivor set changed");
+  }
+
+  #removalEvidenceBinding(
+    desired: EncryptedWalletBackupV2DesiredAssetRow,
+    assetLocator: string,
+    mutationId: string | null,
+    requestDigest: string | null,
+  ): BrowserOwnerRemovalEvidenceBinding {
+    this.#requireRemovalOwner(desired);
+    const intent = desired.removalIntent;
+    if (intent === null) throw new Error("encrypted backup removal intent is absent");
+    return Object.freeze({
+      schemaVersion: 2,
+      ownerScopeId: this.#context.ownerScopeId,
+      intentId: intent.intentId,
+      localAssetKey: desired.localAssetKey,
+      assetLocator,
+      targetCustodyRevision: desired.custodyRevision,
+      desiredAction: desired.desiredAction,
+      proofSetCommitment: intent.proofSetCommitment,
+      mutationId,
+      requestDigest,
+    });
+  }
+
+  async #acknowledgeRemoval(
+    desired: EncryptedWalletBackupV2DesiredAssetRow,
+    evidence: EncryptedWalletBackupV2RemovalExclusionEvidence,
+  ): Promise<void> {
+    this.#requireRemovalOwner(desired);
+    const intent = desired.removalIntent;
+    if (intent === null || evidence.headVersion < intent.expectedHeadVersion)
+      throw new Error("encrypted backup removal predecessor is stale");
+    await this.#database.encryptedWalletBackupV2DesiredAssets.put({
+      ...desired,
+      removalIntent: createEncryptedWalletBackupV2RemovalIntent({
+        ...intent,
+        state: "exclusion-acknowledged",
+        acknowledgedExclusionEvidence: evidence,
+      }),
+    });
+    this.#requireSessionCurrent();
+  }
+
+  /** The coordinator owns the outer fenced transaction and rechecks target/survivor proofs. */
+  async assertRemovalExclusionInTransaction(
+    desired: EncryptedWalletBackupV2DesiredAssetRow,
+  ): Promise<void> {
+    this.#requireDatabaseBinding();
+    if (!(await this.readNewWritePermission()).canWrite)
+      throw new Error("encrypted backup removal owner recovery is not ready");
+    this.#requireRemovalOwner(desired);
+    const intent = desired.removalIntent;
+    const evidence = intent?.acknowledgedExclusionEvidence;
+    const binding = evidence?.owner;
+    if (
+      intent?.state !== "exclusion-acknowledged" ||
+      evidence === null ||
+      evidence === undefined ||
+      binding === undefined ||
+      binding.ownerScopeId !== this.#context.ownerScopeId ||
+      binding.intentId !== intent.intentId ||
+      binding.localAssetKey !== desired.localAssetKey ||
+      binding.targetCustodyRevision !== desired.custodyRevision ||
+      binding.desiredAction !== desired.desiredAction ||
+      binding.proofSetCommitment !== intent.proofSetCommitment
+    )
+      throw new Error("encrypted backup removal exclusion is unavailable");
+    const current = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      desired.localAssetKey,
+    ]);
+    this.#requireSessionCurrent();
+    if (
+      current === undefined ||
+      JSON.stringify(decodeEncryptedWalletBackupV2DesiredAssetRow(current)) !==
+        JSON.stringify(desired)
+    )
+      throw new Error("encrypted backup removal desired state changed");
+    const head = await this.#readCurrentHeadInTransaction();
+    this.#requireSessionCurrent();
+    if (
+      head === null ||
+      head.head.headVersion < evidence.headVersion ||
+      (head.head.headVersion === evidence.headVersion &&
+        head.head.activeSetDigest !== evidence.activeSetDigest)
+    )
+      throw new Error("encrypted backup removal current head is stale");
+    const bundles = head.bundles.filter((bundle) => bundle.assetLocator === binding.assetLocator);
+    if (desired.desiredAction === "remove") {
+      if (desired.activeProofCount !== 0 || bundles.length !== 0 || evidence.bundleId !== null)
+        throw new Error("encrypted backup removal asset is not excluded");
+    } else if (
+      bundles.length !== 1 ||
+      bundles[0]!.bundleId !== evidence.bundleId ||
+      bundles[0]!.custodyRevision.toString() !== desired.custodyRevision ||
+      digestEncryptedWalletBackupV2BundleDescriptor(bundles[0]!) !== evidence.bundleDescriptorDigest
+    )
+      throw new Error("encrypted backup removal replacement is stale");
+  }
+
   async recordAlreadyAbsentDesired(
     input: EncryptedWalletBackupV2PreparedDesiredBinding,
   ): Promise<"recorded" | "stale-desired"> {
@@ -1130,6 +1340,11 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
           currentDesired.activeProofCount !== desired.activeProofCount
         )
           return "stale-desired";
+        const canonical = decodeEncryptedWalletBackupV2DesiredAssetRow(currentDesired);
+        this.#requireRemovalOwner(canonical);
+        if (canonical.removalIntent !== null && !(await this.readNewWritePermission()).canWrite)
+          throw new Error("encrypted backup removal recovery is not ready");
+        if (canonical.activeProofCount !== 0) return "stale-desired";
         const head = await this.#readCurrentHeadInTransaction();
         this.#requireSessionCurrent();
         if (
@@ -1144,6 +1359,17 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
           lastObservedHeadVersion: head.head.headVersion,
           receiptDigest: null,
         };
+        if (canonical.removalIntent !== null) {
+          await this.#acknowledgeRemoval(canonical, {
+            kind: "current-head",
+            owner: this.#removalEvidenceBinding(canonical, desired.assetLocator, null, null),
+            headVersion: head.head.headVersion,
+            activeSetDigest: head.head.activeSetDigest,
+            bundleId: null,
+            bundleDescriptorDigest: null,
+            acknowledgedAtMs: Date.now(),
+          });
+        }
         await this.#database.encryptedWalletBackupOwnerDesiredAssets.put(row);
         this.#requireSessionCurrent();
         return "recorded";
@@ -1200,9 +1426,13 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
   }
 
   async insertPreparedMutationForDesired(input: {
+    readonly removalSurvivors?: readonly {
+      readonly proofId: string;
+      readonly proofFingerprint: string;
+    }[];
     readonly prepared: Omit<
-      EncryptedWalletBackupV2PreparedMutationRow,
-      "scopeId" | "realm" | "walletId" | "enrollmentEpoch"
+      EncryptedWalletBackupOwnerPreparedMutationRow,
+      "scopeId" | "ownerScopeId" | "realm" | "walletId" | "enrollmentEpoch"
     >;
     readonly desired: EncryptedWalletBackupV2PreparedDesiredBinding;
   }): Promise<"inserted" | "existing" | "owner-current" | "stale-desired"> {
@@ -1211,11 +1441,14 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
     const prepared = this.#decodePreparedRow({ ...this.#identity(), ...input.prepared });
     return this.#database.transaction(
       "rw",
-      this.#database.encryptedWalletBackupV2DesiredAssets,
-      this.#database.encryptedWalletBackupOwnerPreparedMutations,
-      this.#database.encryptedWalletBackupOwnerAcceptedHeads,
-      this.#database.encryptedWalletBackupOwnerActiveDescriptors,
-      this.#database.encryptedWalletBackupOwnerDesiredAssets,
+      [
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.custodyProofs,
+        this.#database.encryptedWalletBackupOwnerPreparedMutations,
+        this.#database.encryptedWalletBackupOwnerAcceptedHeads,
+        this.#database.encryptedWalletBackupOwnerActiveDescriptors,
+        this.#database.encryptedWalletBackupOwnerDesiredAssets,
+      ],
       async () => {
         this.#requireSessionCurrent();
         const rawDesired = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
@@ -1234,6 +1467,14 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
           currentDesired.activeProofCount !== desired.activeProofCount
         )
           return "stale-desired";
+        this.#requireRemovalOwner(currentDesired);
+        if (
+          currentDesired.removalIntent !== null &&
+          !(await this.readNewWritePermission()).canWrite
+        )
+          throw new Error("encrypted backup removal recovery is not ready");
+        this.#requirePreparedRemovalBinding(currentDesired, prepared);
+        await this.#requireRemovalSurvivors(currentDesired, input.removalSurvivors);
         const head = await this.#readCurrentHeadInTransaction();
         this.#requireSessionCurrent();
         if (head === null) throw new Error("encrypted backup owner accepted head is missing");
@@ -1326,6 +1567,7 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
     return this.#database.transaction(
       "rw",
       this.#database.encryptedWalletBackupOwnerPreparedMutations,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
       async () => {
         this.#requireSessionCurrent();
         const key = this.#authorityKey();
@@ -1333,6 +1575,17 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         this.#requireSessionCurrent();
         if (row === undefined) return false;
         const prepared = this.#decodePreparedRow(row);
+        const desired = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+          this.#scopeId,
+          prepared.localAssetKey,
+        ]);
+        this.#requireSessionCurrent();
+        if (
+          prepared.removalBinding !== undefined ||
+          (desired !== undefined &&
+            decodeEncryptedWalletBackupV2DesiredAssetRow(desired).removalIntent !== null)
+        )
+          throw new Error("Owner removal has no verified cancellation authority");
         if (
           prepared.mutationId !== input.mutationId ||
           prepared.requestDigest !== input.requestDigest
@@ -1447,6 +1700,10 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
           currentDesired.desiredAction === desired.desiredAction &&
           currentDesired.activeProofCount === desired.activeProofCount &&
           currentDesired.localAssetKey === desired.localAssetKey;
+        if (currentDesired?.removalIntent !== null && currentDesired?.removalIntent !== undefined) {
+          this.#requireRemovalOwner(currentDesired);
+          if (!desiredIsCurrent) throw new Error("encrypted backup removal desired state changed");
+        }
         const preparedKey = this.#authorityKey();
         const rawPrepared =
           await this.#database.encryptedWalletBackupOwnerPreparedMutations.get(preparedKey);
@@ -1454,6 +1711,7 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         if (rawPrepared === undefined)
           throw new Error("encrypted backup owner prepared row is absent");
         const prepared = this.#decodePreparedRow(rawPrepared);
+        this.#requirePreparedRemovalBinding(currentDesired, prepared);
         if (
           prepared.mutationId !== input.preparedMutation.mutationId ||
           prepared.requestDigest !== input.preparedMutation.requestDigest ||
@@ -1558,6 +1816,37 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         };
         await this.#database.encryptedWalletBackupOwnerDesiredAssets.put(nextOwnerDesired);
         this.#requireSessionCurrent();
+        if (currentDesired?.removalIntent !== null && currentDesired?.removalIntent !== undefined) {
+          const remaining = nextEvidence.bundles.filter(
+            (bundle) => bundle.assetLocator === desired.assetLocator,
+          );
+          if (
+            desired.desiredAction === "remove"
+              ? remaining.length !== 0 ||
+                desired.activeProofCount !== 0 ||
+                receipt.bundleId !== null
+              : remaining.length !== 1 ||
+                remaining[0]!.bundleId !== receipt.bundleId ||
+                remaining[0]!.custodyRevision.toString() !== desired.custodyRevision
+          )
+            throw new Error("encrypted backup removal result does not exclude its targets");
+          await this.#acknowledgeRemoval(currentDesired, {
+            kind: "receipt",
+            owner: this.#removalEvidenceBinding(
+              currentDesired,
+              desired.assetLocator,
+              mutation.mutationId,
+              receipt.requestDigest,
+            ),
+            headVersion: nextEvidence.head.headVersion,
+            activeSetDigest: nextEvidence.head.activeSetDigest,
+            receiptDigest,
+            bundleId: receipt.bundleId,
+            bundleDescriptorDigest: receipt.bundleDescriptorDigest,
+            supersededBundleIds: receipt.supersededBundleIds,
+            acknowledgedAtMs: Date.now(),
+          });
+        }
         await this.#database.encryptedWalletBackupOwnerPreparedMutations.delete(key);
         this.#requireSessionCurrent();
         return desiredIsCurrent ? "committed" : "stale-desired";
@@ -1789,7 +2078,9 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
       "requestDigest",
       "scopeId",
       "walletId",
-    ].sort();
+    ];
+    if (value?.removalBinding !== undefined) expectedKeys.push("removalBinding");
+    expectedKeys.sort();
     if (
       typeof value !== "object" ||
       value === null ||
@@ -1815,6 +2106,17 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
       value.activeProofCount < 0
     )
       throw new Error("encrypted backup owner prepared mutation row is foreign");
+    if (
+      value.removalBinding !== undefined &&
+      (typeof value.removalBinding !== "object" ||
+        value.removalBinding === null ||
+        Object.keys(value.removalBinding).sort().join(",") !== "intentId,proofSetCommitment" ||
+        typeof value.removalBinding.intentId !== "string" ||
+        value.removalBinding.intentId.length < 1 ||
+        value.removalBinding.intentId.length > 256 ||
+        !/^[0-9a-f]{64}$/.test(value.removalBinding.proofSetCommitment))
+    )
+      throw new Error("encrypted backup prepared removal binding is invalid");
     const decoded = decodeEncryptedWalletBackupOwnerUploadGroup({
       bytes: value.canonicalUploadGroup,
       expectedContext: this.#context,
@@ -1833,7 +2135,13 @@ export class EncryptedWalletBackupOwnerDexieAuthorityStore {
         (value.activeProofCount !== 0 || mutation.addedBundle !== null))
     )
       throw new Error("encrypted backup owner prepared mutation row is inconsistent");
-    return Object.freeze({ ...value, canonicalUploadGroup: value.canonicalUploadGroup.slice() });
+    return Object.freeze({
+      ...value,
+      ...(value.removalBinding === undefined
+        ? {}
+        : { removalBinding: Object.freeze({ ...value.removalBinding }) }),
+      canonicalUploadGroup: value.canonicalUploadGroup.slice(),
+    });
   }
 
   #decodeOwnerDesiredRow(
@@ -2198,6 +2506,8 @@ function samePreparedMutation(
     left.realm === right.realm &&
     left.walletId === right.walletId &&
     left.enrollmentEpoch === right.enrollmentEpoch &&
+    left.removalBinding?.intentId === right.removalBinding?.intentId &&
+    left.removalBinding?.proofSetCommitment === right.removalBinding?.proofSetCommitment &&
     left.mutationId === right.mutationId &&
     left.requestDigest === right.requestDigest &&
     sameBytes(left.canonicalUploadGroup, right.canonicalUploadGroup) &&

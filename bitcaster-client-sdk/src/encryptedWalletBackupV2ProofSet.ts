@@ -641,6 +641,146 @@ export function requireEncryptedWalletBackupOwnerDecryptedProofSet(
   return value as EncryptedWalletBackupOwnerDecryptedProofSet
 }
 
+/** Owner-scoped authority. It cannot be used as legacy V2 head evidence. */
+export interface EncryptedWalletBackupOwnerRemoteTerminalSealReuseAuthority extends Omit<
+  EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
+  'kind' | 'head'
+> {
+  readonly kind: 'owner-ctf-verified-losing-remote-reuse'
+  readonly head: EncryptedWalletBackupOwnerCollectedHeadEvidence['head']
+  readonly context: EncryptedWalletBackupOwnerContext
+}
+export interface EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult {
+  readonly currentHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+  readonly expectedContext: EncryptedWalletBackupOwnerContext
+  readonly descriptor: EncryptedWalletBackupV2BundleDescriptor
+  readonly decrypted: EncryptedWalletBackupV2UnverifiedProofSet
+  readonly authorities: readonly EncryptedWalletBackupOwnerRemoteTerminalSealReuseAuthority[]
+}
+const OWNER_TERMINAL_REUSE = new WeakSet<object>()
+
+export async function authorizeEncryptedWalletBackupOwnerRemoteTerminalSealReuse(input: {
+  readonly keyHandle: EncryptedWalletBackupV2KeyHandle
+  readonly seed: Uint8Array
+  readonly expectedAsset: EncryptedWalletBackupV2AssetIdentity
+  readonly expectedContext: EncryptedWalletBackupOwnerContext
+  readonly collectedHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+  readonly decryptedEvidence: EncryptedWalletBackupOwnerDecryptedProofSet
+}): Promise<EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult> {
+  const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
+  const context = decodeEncryptedWalletBackupOwnerContext(input.expectedContext)
+  if (context.realm !== input.keyHandle.realm || context.walletId !== input.keyHandle.walletId)
+    throw new Error('encrypted backup owner terminal wallet binding is invalid')
+  const evidence = requireEncryptedWalletBackupOwnerDecryptedProofSet(input.decryptedEvidence)
+  requireEncryptedWalletBackupOwnerContext(evidence.source.context, context)
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    input.collectedHeadEvidence,
+    context,
+  )
+  const locator = await deriveEncryptedWalletBackupV2AssetLocator({
+    keyHandle: input.keyHandle,
+    ...asset,
+  })
+  const source = evidence.source
+  const descriptor = head.bundles.find(
+    (bundle) =>
+      bundle.bundleId === source.bundleId &&
+      bundle.assetLocator === locator &&
+      bundle.custodyRevision === source.custodyRevision &&
+      digestEncryptedWalletBackupV2BundleDescriptor(bundle) === source.descriptorDigest,
+  )
+  if (
+    descriptor === undefined ||
+    source.assetLocator !== locator ||
+    source.headVersion !== head.head.headVersion ||
+    source.activeSetDigest !== head.head.activeSetDigest
+  )
+    throw new Error('encrypted backup owner terminal source changed')
+  const decoded = validateAuthenticatedDecryptedProofSet(evidence.proofSet, seed, asset)
+  const authorities = decoded.proofs
+    .filter((proof) => proof.terminalSeal?.schemaVersion === 2)
+    .map((proof) => {
+      requireCompactTerminalSeal(proof)
+      const authority: EncryptedWalletBackupOwnerRemoteTerminalSealReuseAuthority = Object.freeze({
+        kind: 'owner-ctf-verified-losing-remote-reuse',
+        context: Object.freeze({ ...context }),
+        head: Object.freeze({ ...head.head }),
+        proofId: proof.proofId,
+        bundleId: descriptor.bundleId,
+        descriptorDigest: source.descriptorDigest,
+        assetLocator: locator,
+        custodyRevision: source.custodyRevision,
+        proofCommitment: proofCommitment(proof),
+        terminalSeal: Object.freeze({ ...proof.terminalSeal! }),
+      })
+      OWNER_TERMINAL_REUSE.add(authority)
+      return authority
+    })
+  if (authorities.length === 0)
+    throw new Error('encrypted backup owner verified losing seal is missing')
+  return Object.freeze({
+    currentHeadEvidence: head,
+    expectedContext: context,
+    descriptor,
+    decrypted: evidence.proofSet,
+    authorities: Object.freeze(authorities),
+  })
+}
+
+function requireOwnerTerminalReuses(
+  input: {
+    readonly authorities: readonly EncryptedWalletBackupOwnerRemoteTerminalSealReuseAuthority[]
+    readonly currentHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence
+    readonly expectedContext: EncryptedWalletBackupOwnerContext
+  },
+  assetLocator: string,
+  keyHandle: EncryptedWalletBackupV2KeyHandle,
+) {
+  const context = decodeEncryptedWalletBackupOwnerContext(input.expectedContext)
+  if (context.realm !== keyHandle.realm || context.walletId !== keyHandle.walletId)
+    throw new Error('encrypted backup owner terminal wallet binding is invalid')
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    input.currentHeadEvidence,
+    context,
+  )
+  if (
+    !Array.isArray(input.authorities) ||
+    input.authorities.length > ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX
+  )
+    throw new Error('encrypted backup owner terminal authorities are invalid')
+  const first = input.authorities[0]
+  if (first === undefined) return input.authorities
+  if (typeof first !== 'object' || first === null || !OWNER_TERMINAL_REUSE.has(first))
+    throw new Error('encrypted backup owner terminal authority is invalid')
+  requireEncryptedWalletBackupOwnerContext(first.context, context)
+  const descriptor = head.bundles.find((bundle) => bundle.bundleId === first.bundleId)
+  if (
+    descriptor === undefined ||
+    descriptor.assetLocator !== assetLocator ||
+    descriptor.assetLocator !== first.assetLocator ||
+    descriptor.custodyRevision !== first.custodyRevision ||
+    digestEncryptedWalletBackupV2BundleDescriptor(descriptor) !== first.descriptorDigest
+  )
+    throw new Error('encrypted backup owner terminal head evidence is stale')
+  // All authorities name this one predecessor. Hash its descriptor once per call.
+  for (const authority of input.authorities) {
+    if (typeof authority !== 'object' || authority === null || !OWNER_TERMINAL_REUSE.has(authority))
+      throw new Error('encrypted backup owner terminal authority is invalid')
+    requireEncryptedWalletBackupOwnerContext(authority.context, context)
+    if (
+      authority.assetLocator !== first.assetLocator ||
+      authority.head.headVersion !== head.head.headVersion ||
+      authority.head.activeSetDigest !== head.head.activeSetDigest ||
+      authority.bundleId !== first.bundleId ||
+      authority.descriptorDigest !== first.descriptorDigest ||
+      authority.custodyRevision !== first.custodyRevision
+    )
+      throw new Error('encrypted backup owner terminal head evidence is stale')
+  }
+  return input.authorities
+}
+
 /** Bind a successfully verified shared proof set to the same owner head source. */
 export function bindEncryptedWalletBackupOwnerVerifiedProofSet(input: {
   readonly proofSet: EncryptedWalletBackupV2VerifiedProofSet
@@ -887,7 +1027,10 @@ function requireRemoteTerminalSealReuseData(
 
 function requireProofSetSealAuthorities(
   decoded: DecodedProofSet,
-  remoteAuthorities: readonly RemoteTerminalSealReuseAuthorityData[],
+  remoteAuthorities: readonly Pick<
+    RemoteTerminalSealReuseAuthorityData,
+    'proofId' | 'proofCommitment' | 'terminalSeal' | 'historyOnly'
+  >[],
   issuedProofIds: ReadonlySet<string>,
 ): void {
   const remoteByProofId = new Map(
@@ -973,12 +1116,33 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[]
   readonly runtime: EncryptedWalletBackupV2BundleRuntime
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>
+  readonly ownerRemoteTerminalSealReuse?: Pick<
+    EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
+    'authorities' | 'currentHeadEvidence' | 'expectedContext'
+  >
   readonly remoteTerminalSealReuses?: readonly EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority[]
   readonly remoteRefusalHistoryPreservations?: readonly EncryptedWalletBackupV2RemoteRefusalHistoryAuthority[]
   readonly remoteTerminalSealReuseHeadEvidence?: EncryptedWalletBackupV2CollectedHeadEvidence
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset)
+  if (
+    input.ownerRemoteTerminalSealReuse !== undefined &&
+    (input.remoteTerminalSealReuses !== undefined ||
+      input.remoteRefusalHistoryPreservations !== undefined ||
+      input.remoteTerminalSealReuseHeadEvidence !== undefined)
+  )
+    throw new Error('encrypted backup Owner and legacy terminal reuse cannot be mixed')
+  const ownerAuthorities =
+    input.ownerRemoteTerminalSealReuse === undefined
+      ? []
+      : requireOwnerTerminalReuses(
+          input.ownerRemoteTerminalSealReuse,
+          await deriveEncryptedWalletBackupV2AssetLocator({ keyHandle: input.keyHandle, ...asset }),
+          input.keyHandle,
+        )
+  if (new Set(ownerAuthorities.map((value) => value.proofId)).size !== ownerAuthorities.length)
+    throw new Error('encrypted backup owner terminal authorities are duplicated')
   const history = input.remoteRefusalHistoryPreservations ?? []
   if (!Array.isArray(history) || history.length > ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX)
     throw new Error('encrypted backup refusal history authorities are invalid')
@@ -1033,7 +1197,7 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
   })
   requireProofSetSealAuthorities(
     decoded,
-    remoteAuthorities,
+    [...remoteAuthorities, ...ownerAuthorities],
     new Set(
       input.proofs.flatMap((proof, index) =>
         proof.terminalSeal !== undefined &&
