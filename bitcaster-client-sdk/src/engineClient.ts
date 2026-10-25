@@ -429,6 +429,11 @@ export type MarketSnapshotReadOptions = NonNullable<
   operations['getMarketComments']['parameters']['query']
 > & { signal?: AbortSignal }
 
+export interface OrderBookReadOptions {
+  /** Retry only the exact depth-refresh problem, at most five attempts two seconds apart. */
+  retryRefreshing?: boolean
+}
+
 export type MarketPriceHistoryReadOptions = MarketSnapshotReadOptions &
   Pick<MarketPriceHistoryValidationContext, 'minimumAsOf' | 'outcomeIds' | 'divisibility'>
 
@@ -796,11 +801,32 @@ export class BitcasterEngineClient {
     return response.status !== 404
   }
 
-  async getOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBookSnapshot> {
-    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
-      signal,
-    })
-    return (await response.json()) as OrderBookSnapshot
+  async getOrderBook(
+    marketId: string,
+    signal?: AbortSignal,
+    options: OrderBookReadOptions = {},
+  ): Promise<OrderBookSnapshot> {
+    const attempts = options.retryRefreshing ? 5 : 1
+    for (let attempt = 1; ; attempt++) {
+      const lifetime = options.retryRefreshing
+        ? createBoundedRequestLifetime(signal, 10_000)
+        : undefined
+      const requestSignal = lifetime?.signal ?? signal
+      try {
+        const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
+          signal: requestSignal,
+        })
+        const snapshot = (await response.json()) as OrderBookSnapshot
+        requestSignal?.throwIfAborted()
+        return snapshot
+      } catch (error) {
+        requestSignal?.throwIfAborted()
+        if (attempt >= attempts || !isOrderBookRefreshingError(error)) throw error
+      } finally {
+        lifetime?.dispose()
+      }
+      await waitForOrderBookRetry(signal)
+    }
   }
 
   async queryMarkets(
@@ -1663,6 +1689,21 @@ function createBoundedRequestLifetime(
   }
 }
 
+function waitForOrderBookRetry(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, 2_000)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function decodeSettlementCapabilityAdmissionPolicy(
   value: unknown,
 ): SettlementCapabilityAdmissionPolicyResponse {
@@ -1851,8 +1892,17 @@ function normalizeHeaders(headers: HeadersInit | undefined): Record<string, stri
   return { ...headers }
 }
 
-/** Only this authenticated endpoint problem permits exact-original resubmission. */
+/** In an order submission, this exact problem permits exact-original resubmission. */
 export function isOrderQuotesRefreshingError(error: unknown): boolean {
+  return isQuotesRefreshingProblem(error)
+}
+
+/** A failed depth read preserves last-known display data; it is not an empty book. */
+export function isOrderBookRefreshingError(error: unknown): boolean {
+  return isQuotesRefreshingProblem(error)
+}
+
+function isQuotesRefreshingProblem(error: unknown): boolean {
   if (!(error instanceof EngineClientError) || error.status !== 503) return false
   try {
     const problem: unknown = JSON.parse(error.detail)

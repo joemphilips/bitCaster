@@ -1248,6 +1248,7 @@ export function MarketDetailPage() {
   const currentRouteId = id ?? null;
   const activeRouteIdRef = useRef<string | null>(currentRouteId);
   const routeGenerationRef = useRef(0);
+  const depthReadAbortRef = useRef<AbortController | null>(null);
   const marketLoadRequestTokenRef = useRef(0);
   const marketDetailRequestRef = useRef<MarketDetailRequest | null>(null);
   const [previewMarketRevision, setPreviewMarketRevision] = useState(0);
@@ -1499,6 +1500,7 @@ export function MarketDetailPage() {
       const routeId = id;
       if (!routeId) return Promise.resolve("stale");
       const generation = routeGenerationRef.current;
+      const depthSignal = options.signal ?? depthReadAbortRef.current?.signal;
       if (options.singleFlight) {
         const inFlight = marketDetailRequestRef.current;
         if (inFlight?.routeId === routeId && inFlight.generation === generation)
@@ -1550,10 +1552,10 @@ export function MarketDetailPage() {
             });
           };
           if (options.requireAllBooks) {
-            applyBooks(await fetchMarketOrderBooks(routeId, detail, true, options.signal));
+            applyBooks(await fetchMarketOrderBooks(routeId, detail, true, depthSignal));
             if (!isCurrentLoad()) return "stale";
           } else {
-            void fetchMarketOrderBooks(routeId, detail).then(applyBooks);
+            void fetchMarketOrderBooks(routeId, detail, false, depthSignal).then(applyBooks);
           }
           return "success";
         })
@@ -1581,6 +1583,8 @@ export function MarketDetailPage() {
 
   useEffect(() => {
     const generation = ++routeGenerationRef.current;
+    const depthReads = new AbortController();
+    depthReadAbortRef.current = depthReads;
     dispatchMarketData({ type: "routeChanged", routeId: currentRouteId });
 
     cancelActiveScoreTopUp();
@@ -1627,6 +1631,7 @@ export function MarketDetailPage() {
     if (routeGenerationRef.current === generation) loadMarket();
     return () => {
       if (routeGenerationRef.current === generation) routeGenerationRef.current += 1;
+      depthReads.abort();
       quoteRefreshAbortRef.current?.abort();
     };
   }, [cancelActiveScoreTopUp, currentRouteId, invalidatePreviewForMarket, loadMarket]);
@@ -1754,6 +1759,7 @@ export function MarketDetailPage() {
     if (outcomeSetIds.length === 0) return;
 
     let cancelled = false;
+    const depthSignal = depthReadAbortRef.current?.signal;
     const cleanups: Array<() => void> = [];
 
     cleanups.push(
@@ -1787,7 +1793,7 @@ export function MarketDetailPage() {
     for (const outcomeSetId of outcomeSetIds) {
       const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
       const refreshLiveOrderBook = debounce(() => {
-        void refreshOrderBook(liveMarketId)
+        void refreshOrderBook(liveMarketId, depthSignal)
           .then((orderBook) => {
             if (cancelled || !isCurrentRoute(id, generation)) return;
             invalidatePreviewForMarket();
@@ -2254,7 +2260,12 @@ export function MarketDetailPage() {
       try {
         const latestDetail = await fetchMarketDetail(routeId);
         if (abortIfAttemptStale() || latestDetail.id !== routeId) return;
-        const books = await fetchMarketOrderBooks(routeId, latestDetail);
+        const books = await fetchMarketOrderBooks(
+          routeId,
+          latestDetail,
+          false,
+          depthReadAbortRef.current?.signal,
+        );
         if (abortIfAttemptStale()) return;
         latestMarket = {
           ...latestDetail,
@@ -3032,6 +3043,12 @@ export function MarketDetailPage() {
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}
         isFullyEmptyBook={isFullyEmptyBook}
+        orderBookSnapshotAvailableByOutcome={Object.fromEntries(
+          outcomeSetIdsForMarketBooks(market).map((outcome) => {
+            const source = marketData.bookSourcesByMarketId[market.id]?.[outcome];
+            return [outcome, source === "rest" || source === "live"];
+          }),
+        )}
         tradeRecovery={tradeRecovery}
         suppressFundingHint={
           isTradeSubmitting ||

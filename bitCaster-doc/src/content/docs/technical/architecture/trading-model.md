@@ -275,3 +275,26 @@ The wallet keeps its existing recovery and expiry process.
 A generic service error, timeout, malformed response or uncertain result stops
 automatic submission. The client reconciles the original operation. Restarting
 the app does not restart this submission loop.
+
+## Reading depth while quotes refresh
+
+`GET /api/v1/{marketId}/orderbook` can return HTTP 503 with code
+`order-quotes-refreshing`, type `/errors/order-quotes-refreshing`, and status
+`503`. This response means that current depth is temporarily unavailable.
+It does not mean that the book is empty or that the market needs more funding.
+
+The GUI keeps the last received snapshot while a depth read retries. Without a
+snapshot, it keeps the initial depth display pending. The market page and its
+subscriptions remain available. Order, fill, and settlement notifications
+continue. A fresh snapshot replaces the previous display normally.
+
+The browser makes at most five attempts for this exact response, including the
+first request. It waits two seconds between attempts. Each request has a
+ten-second deadline. Leaving the page cancels its pending reads. Other errors
+and timeouts stop the retry. The SDK uses one attempt by default; callers can
+opt into this bounded policy. A reconnect can start the existing snapshot
+repair. These reads do not resubmit an order.
+
+A successful response with zero depth remains valid, including for a closed
+market. A previous snapshot is display data only. Obtain a current order
+preview and submit through normal order admission before trading.

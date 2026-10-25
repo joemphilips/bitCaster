@@ -3,6 +3,28 @@ import { describe, expect, it } from "vitest";
 import { OrderBookSection } from "../OrderBookSection";
 
 describe("OrderBookSection", () => {
+  it("shows loading until a snapshot arrives and distinguishes successful zero depth", () => {
+    const book = { bids: [], asks: [], spread: 0 };
+    const view = render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={book}
+        snapshotAvailable={false}
+      />,
+    );
+    expect(screen.getByRole("status", { name: "Loading..." })).toBeInTheDocument();
+    expect(screen.queryByText("No asks")).not.toBeInTheDocument();
+    expect(screen.queryByText("No bids")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("order-book-spread-row")).not.toBeInTheDocument();
+    view.rerender(
+      <OrderBookSection baseAsset="sat" divisibility={1_000} orderBook={book} snapshotAvailable />,
+    );
+    expect(screen.queryByTestId("order-book-loading")).not.toBeInTheDocument();
+    expect(screen.getByText("No asks")).toBeInTheDocument();
+    expect(screen.getByText("No bids")).toBeInTheDocument();
+  });
+
   it("formats amounts as shares and price numerators with the market divisibility", () => {
     render(
       <OrderBookSection

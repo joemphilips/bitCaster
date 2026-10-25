@@ -2799,6 +2799,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means current depth is temporarily unavailable. Retry this read with a bounded policy. Keep a previously received snapshot as last-known display data. A client without a snapshot keeps its loading state. This response does not mean the book is empty or that more funding is required. Market subscriptions and order, fill and settlement notifications remain available. Current order preview and admission are still required before a trade. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
         };
     };
     getMarketMetadata: {

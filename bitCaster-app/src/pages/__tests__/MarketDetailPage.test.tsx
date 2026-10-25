@@ -1608,6 +1608,222 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
   });
 
+  it("keeps the cold shell and subscriptions through depth refresh exhaustion, then repairs on reconnect", async () => {
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+    let fresh = false;
+    const reads = vi.fn(async () =>
+      fresh
+        ? Response.json({ bids: [], asks: [{ price: 400, amount: 100 }], spread: 0 })
+        : new Response(
+            JSON.stringify({
+              type: "/errors/order-quotes-refreshing",
+              status: 503,
+              code: "order-quotes-refreshing",
+            }),
+            { status: 503 },
+          ),
+    );
+    vi.stubGlobal("fetch", reads);
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ closingDate: null }));
+    vi.mocked(fetchOrderBook).mockImplementation(actual.fetchOrderBook);
+    const view = render(<MarketDetailPage />);
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("heading", { name: "Will it happen?" })).toBeInTheDocument();
+      expect(joinMarket).toHaveBeenCalledWith("condition-yesno-Yes");
+      expect(joinMarket).toHaveBeenCalledWith("condition-yesno-No");
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.queryAllByTestId("order-book-ask-row")).toHaveLength(0);
+      expect(screen.queryByText(i18n.t("orderBook.noAsks"))).not.toBeInTheDocument();
+      expect(screen.queryByText(i18n.t("orderBook.noBids"))).not.toBeInTheDocument();
+      expect(screen.getByTestId("order-book-loading")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000);
+      });
+      expect(reads).toHaveBeenCalledTimes(10);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(reads).toHaveBeenCalledTimes(10);
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Will it happen?" })).toBeInTheDocument();
+      expect(screen.queryByText(i18n.t("orderBook.noAsks"))).not.toBeInTheDocument();
+      expect(screen.queryByText(i18n.t("orderBook.noBids"))).not.toBeInTheDocument();
+      expect(screen.getByTestId("order-book-loading")).toBeInTheDocument();
+      fresh = true;
+      await act(async () => {
+        mocks.rejoinHandlers.forEach((handler) => handler());
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(screen.getAllByTestId("order-book-ask-row").length).toBeGreaterThan(0);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers cold depth without a notification and cancels pending reads on unmount", async () => {
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+    let fresh = false;
+    const reads = vi.fn(async () =>
+      fresh
+        ? Response.json({ bids: [], asks: [{ price: 400, amount: 100 }], spread: 0 })
+        : new Response(
+            JSON.stringify({
+              type: "/errors/order-quotes-refreshing",
+              status: 503,
+              code: "order-quotes-refreshing",
+            }),
+            { status: 503 },
+          ),
+    );
+    vi.stubGlobal("fetch", reads);
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ closingDate: null }));
+    vi.mocked(fetchOrderBook).mockImplementation(actual.fetchOrderBook);
+    const view = render(<MarketDetailPage />);
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(reads).toHaveBeenCalledTimes(2);
+      fresh = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(reads).toHaveBeenCalledTimes(4);
+      expect(screen.getAllByTestId("order-book-ask-row").length).toBeGreaterThan(0);
+      fresh = false;
+      await act(async () => {
+        mocks.rejoinHandlers.forEach((handler) => handler());
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      const callsAtUnmount = reads.mock.calls.length;
+      const signals = vi.mocked(fetchOrderBook).mock.calls.map(([, signal]) => signal);
+      view.unmount();
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(reads).toHaveBeenCalledTimes(callsAtUnmount);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves warm depth during refresh and accepts a closed market's fresh zero depth", async () => {
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+    let phase: "warm" | "refreshing" | "closed" = "warm";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        phase === "refreshing"
+          ? new Response(
+              JSON.stringify({
+                type: "/errors/order-quotes-refreshing",
+                status: 503,
+                code: "order-quotes-refreshing",
+              }),
+              { status: 503 },
+            )
+          : Response.json({
+              bids: [],
+              asks: phase === "warm" ? [{ price: 400, amount: 100 }] : [],
+              spread: 0,
+            }),
+      ),
+    );
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ closingDate: null }));
+    vi.mocked(fetchOrderBook).mockImplementation(actual.fetchOrderBook);
+    const view = render(<MarketDetailPage />);
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const rows = screen.getAllByTestId("order-book-ask-row").map((row) => row.textContent);
+      phase = "refreshing";
+      await act(async () => {
+        mocks.rejoinHandlers.forEach((handler) => handler());
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(screen.getAllByTestId("order-book-ask-row").map((row) => row.textContent)).toEqual(
+        rows,
+      );
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      phase = "closed";
+      vi.mocked(fetchMarketDetail).mockResolvedValue(
+        yesNoMarket({ state: "closed", closingDate: null }),
+      );
+      await act(async () => {
+        mocks.liveStatusHandlers.at(-1)?.({
+          conditionId: "condition-yesno",
+          state: "closed",
+          closedAt: "2026-06-24T00:00:00Z",
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByText("Market Closed")).toBeInTheDocument();
+      expect(screen.queryAllByTestId("order-book-ask-row")).toHaveLength(0);
+      expect(screen.getByText(i18n.t("orderBook.noAsks"))).toBeInTheDocument();
+      expect(screen.getByText(i18n.t("orderBook.noBids"))).toBeInTheDocument();
+      expect(screen.queryByTestId("order-book-loading")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps only an unavailable categorical route loading while ready siblings retain their own depth", async () => {
+    const market = categoricalMarket();
+    mocks.routeParams.id = market.id;
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) => {
+      if (marketId.endsWith("-Bob")) throw new Error("Depth is refreshing");
+      return marketId.endsWith("-Alice") ? emptyBook : askBook(400);
+    });
+    const view = render(<MarketDetailPage />);
+    try {
+      await screen.findByRole("heading", { name: "Winner" });
+      const panels = await screen.findAllByTestId("order-book-panel");
+      const panel = (outcome: string) =>
+        within(panels.find((element) => element.dataset.outcomeId === outcome)!);
+      await waitFor(() =>
+        expect(panel("Alice").getByText(i18n.t("orderBook.noAsks"))).toBeInTheDocument(),
+      );
+      expect(panel("Alice").getByText(i18n.t("orderBook.noBids"))).toBeInTheDocument();
+      expect(panel("Bob").getByTestId("order-book-loading")).toBeInTheDocument();
+      expect(panel("Bob").queryByText(i18n.t("orderBook.noAsks"))).not.toBeInTheDocument();
+      expect(panel("Bob").queryByText(i18n.t("orderBook.noBids"))).not.toBeInTheDocument();
+      expect(panel("Carol").getAllByTestId("order-book-ask-row").length).toBeGreaterThan(0);
+      expect(panel("Carol").queryByTestId("order-book-loading")).not.toBeInTheDocument();
+      act(() =>
+        mocks.orderBookHandlers.get("condition-1-Bob")?.({
+          marketId: "condition-1-Bob",
+          bids: [],
+          asks: [],
+          spread: 0,
+        }),
+      );
+      expect(panel("Bob").queryByTestId("order-book-loading")).not.toBeInTheDocument();
+      expect(panel("Bob").getByText(i18n.t("orderBook.noAsks"))).toBeInTheDocument();
+      expect(panel("Bob").getByText(i18n.t("orderBook.noBids"))).toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  });
+
   it("keeps capacity requests independent from amount and Sell holdings", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://sell-holdings-a.example";
@@ -1907,8 +2123,16 @@ describe("MarketDetailPage live market status", () => {
       expect(screen.getByRole("heading", { name: "Will it happen?" })).toBeInTheDocument();
       expect(fetchMarketDetail).toHaveBeenCalledOnce();
       expect(fetchOrderBook).toHaveBeenCalledTimes(2);
-      expect(fetchOrderBook).toHaveBeenNthCalledWith(1, "condition-yesno-Yes");
-      expect(fetchOrderBook).toHaveBeenNthCalledWith(2, "condition-yesno-No");
+      expect(fetchOrderBook).toHaveBeenNthCalledWith(
+        1,
+        "condition-yesno-Yes",
+        expect.any(AbortSignal),
+      );
+      expect(fetchOrderBook).toHaveBeenNthCalledWith(
+        2,
+        "condition-yesno-No",
+        expect.any(AbortSignal),
+      );
       const detailCalls = vi.mocked(fetchMarketDetail).mock.calls.length;
       const orderBookCalls = vi.mocked(fetchOrderBook).mock.calls.length;
 

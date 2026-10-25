@@ -397,6 +397,8 @@ export interface MarketDetailProps {
   /** Read-only capacity across the full legal discovery range. */
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   isFullyEmptyBook?: boolean;
+  /** Routes with a received REST or live depth snapshot, including valid zero depth. */
+  orderBookSnapshotAvailableByOutcome?: Readonly<Record<string, boolean>>;
   tradeRecovery?: MarketTradeRecoveryDisplay;
   suppressFundingHint?: boolean;
 

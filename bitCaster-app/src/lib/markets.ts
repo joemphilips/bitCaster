@@ -883,7 +883,7 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
 export async function fetchOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBook> {
   const snapshot = await new BitcasterEngineClient({
     baseUrl: window.location.origin,
-  }).getOrderBook(marketId, signal);
+  }).getOrderBook(marketId, signal, { retryRefreshing: true });
   return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
 }
 

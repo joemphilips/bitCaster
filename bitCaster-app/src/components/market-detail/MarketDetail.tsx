@@ -83,6 +83,7 @@ export function MarketDetail({
   tradeSide,
   tradeCapacityPreview,
   isFullyEmptyBook,
+  orderBookSnapshotAvailableByOutcome,
   tradeRecovery,
   suppressFundingHint,
   onTimeframeChange,
@@ -313,6 +314,7 @@ export function MarketDetail({
                   return (
                     <OrderBookSection
                       outcomeId={primaryOutcomeId}
+                      snapshotAvailable={orderBookSnapshotAvailableByOutcome?.[primaryOutcomeId]}
                       orderBook={deriveExecutableOrderBook({
                         book: directBook,
                         complementBook,
@@ -335,6 +337,9 @@ export function MarketDetail({
                     title={outcome.label}
                     outcome={outcome}
                     outcomeId={outcomeBookKey(outcome.label)}
+                    snapshotAvailable={
+                      orderBookSnapshotAvailableByOutcome?.[outcomeBookKey(outcome.label)]
+                    }
                     orderBook={deriveExecutableOrderBook({
                       book: market.outcomeOrderBooks?.[outcomeBookKey(outcome.label)] ?? {
                         bids: [],
