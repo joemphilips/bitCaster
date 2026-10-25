@@ -247,6 +247,15 @@ and expiry. This optional wait does not guarantee acceptance or settlement.
 It does not change the client's retry limits below. A disconnect stops further
 retries; it does not cancel an order that was already accepted.
 
+For a batch, the server can retry the same batch only when every submitted
+item was refused before acceptance because quotes were refreshing. It rechecks
+the market and the original authorizations before retrying. All server waits
+share the original request budget of at most five seconds and four attempts.
+A partial success or another refusal does not trigger a whole-batch retry.
+The server does not extend price limits, consent, or expiry. If the quote wait
+ends without acceptance, the batch reports `authorityUnavailable` for the
+remaining current items. This does not guarantee a fill.
+
 The GUI and CLI can wait when the engine returns the exact
 `order-quotes-refreshing` pre-acceptance problem. The client retries the same
 serialized request and signed comment. It keeps the original capability,
