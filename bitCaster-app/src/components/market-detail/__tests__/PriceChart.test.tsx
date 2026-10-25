@@ -2187,6 +2187,22 @@ describe("chart data identity", () => {
 });
 
 describe("price history freshness presentation", () => {
+  it("uses the neutral heading while initial history loads", () => {
+    render(
+      <PriceChart
+        priceHistory={{ timeframe: "all", data: [] }}
+        chartTimeframe="all"
+        currentDisplay=""
+        historyStatus="loading"
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Price Chart" })).toBeInTheDocument();
+    expect(screen.getByTestId("price-chart-empty-state")).toHaveTextContent(
+      "Loading price history",
+    );
+    expect(screen.queryByText("No trades yet")).not.toBeInTheDocument();
+  });
+
   it.each(["refreshing", "unavailable"] as const)(
     "keeps confirmed chart data during %s",
     (historyStatus) => {

@@ -48,15 +48,23 @@ function computeCurrentDisplay(
     return `Resolved: ${market.resolution.finalOutcome}`;
   }
 
+  const historyPending =
+    market.priceHistoryStatus === "loading" || market.priceHistoryStatus === "refreshing";
+  const confirmedEmpty =
+    market.latestConfirmedTradesValid === true && market.latestConfirmedTrades?.length === 0;
+  const unpricedDisplay = priceAuthorityUnavailable
+    ? t("trade.priceUnavailable")
+    : confirmedEmpty && !historyPending
+      ? t("trade.noTrades")
+      : "";
+
   if (market.type === "yesno") {
     return market.currentOdds.yes == null
-      ? t(priceAuthorityUnavailable ? "trade.priceUnavailable" : "trade.noTrades")
+      ? unpricedDisplay
       : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
-  return market.outcomes.some((outcome) => outcome.odds != null)
-    ? ""
-    : t(priceAuthorityUnavailable ? "trade.priceUnavailable" : "trade.noTrades");
+  return market.outcomes.some((outcome) => outcome.odds != null) ? "" : unpricedDisplay;
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {

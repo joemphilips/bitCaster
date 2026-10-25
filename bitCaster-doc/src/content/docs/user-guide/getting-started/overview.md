@@ -280,6 +280,8 @@ The market chart shows recorded trades for each primitive outcome. If only one
 outcome has traded, only that line is shown; bitCaster does not invent prices
 for outcomes that have not traded. Before any confirmed trade, the market
 shows **No trades yet** or an em dash.
+During the first load, an unpriced binary or categorical chart uses the
+**Price Chart** heading.
 
 The line continues at the latest confirmed price to the chart edge.
 This extension does not represent a new trade. The endpoint glows gently.
