@@ -2389,7 +2389,17 @@ type EncryptedWalletBackupDriverFailureSiteOwner =
   | "owner-authority-store"
   | "sdk-proof-set"
   | "sdk-service-codec"
-  | "sdk-sync";
+  | "sdk-sync"
+  | "owner-admission"
+  | "asset-admission"
+  | "asset-restore"
+  | "proof-authority"
+  | "desired-asset"
+  | "durable-custody"
+  | "sdk-owner-head"
+  | "sdk-owner-codec"
+  | "sdk-owner-sync"
+  | "sdk-proof-material";
 
 const maximumEncryptedWalletBackupStackBytes = 16 * 1024;
 const maximumEncryptedWalletBackupStackCodeUnits = maximumEncryptedWalletBackupStackBytes / 2;
@@ -2401,6 +2411,12 @@ const encryptedWalletBackupAppFailureSiteOwners: Readonly<
   Record<string, EncryptedWalletBackupDriverFailureSiteOwner>
 > = {
   "/src/lib/encryptedWalletBackupDriver.ts": "driver",
+  "/src/lib/browserEncryptedWalletBackupOwnerAdmission.ts": "owner-admission",
+  "/src/lib/browserEncryptedWalletBackupV2Admission.ts": "asset-admission",
+  "/src/lib/browserEncryptedWalletBackupV2Restore.ts": "asset-restore",
+  "/src/stores/browser-proof-backup-authority.ts": "proof-authority",
+  "/src/stores/browser-encrypted-wallet-backup-v2-desired-asset.ts": "desired-asset",
+  "/src/stores/durable-custody-db.ts": "durable-custody",
   "/src/lib/browserEncryptedWalletBackupV2Worker.ts": "worker",
   "/src/lib/browserCtfRemoveCoordinator.ts": "ctf-removal",
   "/src/stores/browser-encrypted-wallet-backup-v2-asset-source.ts": "asset-source",
@@ -2419,6 +2435,13 @@ const encryptedWalletBackupSdkFailureSiteSuffixes: readonly [
     "sdk-service-codec",
   ],
   ["/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupV2Sync.ts", "sdk-sync"],
+  ["/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerHead.ts", "sdk-owner-head"],
+  [
+    "/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerServiceCodec.ts",
+    "sdk-owner-codec",
+  ],
+  ["/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerSync.ts", "sdk-owner-sync"],
+  ["/bitCaster/bitcaster-client-sdk/src/durableCustodyProofMaterial.ts", "sdk-proof-material"],
 ];
 
 /** Returns only fixed source owners and bounded coordinates from valid stack frames. */
@@ -2531,7 +2554,11 @@ const safeEncryptedWalletBackupTransportErrorCodes = new Set<string>([
   "unavailable",
 ]);
 
-const safeEncryptedWalletBackupStorageErrors: Readonly<Record<string, string>> = {
+const safeEncryptedWalletBackupErrorNames: Readonly<Record<string, string>> = {
+  Error: "javascript-error",
+  TypeError: "javascript-type",
+  RangeError: "javascript-range",
+  SyntaxError: "javascript-syntax",
   AbortError: "storage-abort",
   ConstraintError: "storage-constraint",
   DataError: "storage-data",
@@ -2550,8 +2577,8 @@ function encryptedWalletBackupDriverErrorCode(error: unknown): string {
   try {
     const name =
       typeof error === "object" && error !== null ? (error as { name?: unknown }).name : null;
-    if (typeof name === "string" && Object.hasOwn(safeEncryptedWalletBackupStorageErrors, name))
-      return safeEncryptedWalletBackupStorageErrors[name]!;
+    if (typeof name === "string" && Object.hasOwn(safeEncryptedWalletBackupErrorNames, name))
+      return safeEncryptedWalletBackupErrorNames[name]!;
   } catch {
     // A diagnostic must not invoke an untrusted error getter again or expose its text.
   }

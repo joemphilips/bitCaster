@@ -1833,7 +1833,12 @@ it("reports key-handle failure before leadership wait", async () => {
 });
 
 it.each([
-  { code: "unknown", createFailure: () => new Error("private terminal error marker") },
+  { code: "javascript-error", createFailure: () => new Error("private terminal error marker") },
+  {
+    code: "unknown",
+    createFailure: () =>
+      Object.assign(new Error("private terminal error marker"), { name: "PrivateFailure" }),
+  },
   {
     code: "unauthorized",
     createFailure: () => new EncryptedWalletBackupV2HttpTransportError("unauthorized"),
@@ -1875,7 +1880,7 @@ it("adds a bounded source label to the default error report", async () => {
     await vi.waitFor(() =>
       expect(warnings).toContain("encrypted-backup-driver-failure-site=worker@24:6"),
     );
-    expect(warnings).toContain("encrypted-backup-driver-error=unknown");
+    expect(warnings).toContain("encrypted-backup-driver-error=javascript-error");
     expect(warnings.join(" ")).not.toContain("private terminal");
   } finally {
     driver.stop();
@@ -2233,6 +2238,10 @@ it.each([
     PrematureCommitError: "storage-premature-commit",
     ReadOnlyError: "storage-read-only",
     TransactionInactiveError: "storage-transaction-inactive",
+    Error: "javascript-error",
+    TypeError: "javascript-type",
+    RangeError: "javascript-range",
+    SyntaxError: "javascript-syntax",
     PrivateFailure: "unknown",
   }).map(([code, diagnostic]) => ({
     code,
@@ -4223,3 +4232,36 @@ it.each(["account-result", "account-error"] as const)(
     }
   },
 );
+
+it.each([
+  ["/src/lib/browserEncryptedWalletBackupOwnerAdmission.ts", "owner-admission"],
+  ["/src/lib/browserEncryptedWalletBackupV2Admission.ts", "asset-admission"],
+  ["/src/lib/browserEncryptedWalletBackupV2Restore.ts", "asset-restore"],
+  ["/src/stores/browser-proof-backup-authority.ts", "proof-authority"],
+  ["/src/stores/browser-encrypted-wallet-backup-v2-desired-asset.ts", "desired-asset"],
+  ["/src/stores/durable-custody-db.ts", "durable-custody"],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerHead.ts",
+    "sdk-owner-head",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerServiceCodec.ts",
+    "sdk-owner-codec",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerSync.ts",
+    "sdk-owner-sync",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/durableCustodyProofMaterial.ts",
+    "sdk-proof-material",
+  ],
+])("bounds recovery diagnostic source %s", (path, owner) => {
+  const stack = `Error: private token and proof material\n    at http://localhost:5273${path}?private=do-not-emit#secret:31:7`;
+  expect(encryptedWalletBackupDriverFailureSite({ stack })).toBe(`${owner}@31:7`);
+  expect(
+    encryptedWalletBackupDriverFailureSite({
+      stack: `Error: private\n    at http://localhost:5273${path}.evil:31:7`,
+    }),
+  ).toBe("unknown");
+});
