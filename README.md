@@ -69,9 +69,9 @@ git submodule update --init --recursive
 ### 2. Frontend (PWA)
 
 ```bash
+npm install                   # run from the public repository root
 cd bitCaster-app
 cp .env.example .env          # set VITE_MINT_URL to your mint
-npm install
 npm run dev                   # -> http://localhost:5273
 ```
 
@@ -119,7 +119,8 @@ docker compose up mintd
 cd BitCaster.Server && dotnet run
 
 # Terminal 3: Start frontend
-cd bitCaster-app && npm install && npm run dev
+npm install                   # run from the public repository root
+cd bitCaster-app && npm run dev
 ```
 
 Run `mintd-setup` only for a new, owned local mint store. It refuses an

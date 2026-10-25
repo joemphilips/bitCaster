@@ -53,8 +53,8 @@ window.runOwnerCutoverPhase = async (phase) => {
   if (phase === "first") await seedOrdinaryBackup(database, scopeId, keyHandle);
   const ownerSession = captureBrowserEncryptedWalletBackupOwnerSession({
     isCurrentProfile: () => true,
-    selectedOwnerScope: null,
-    readAuthenticatedOwner: () => null,
+    readAuthenticatedOwner: () =>
+      deriveEncryptedWalletBackupOwnerScope({ authorizationScheme: "test", ownerSubject }),
     readSignerRevision: () => 1,
     subscribeSignerRevision: () => () => undefined,
   });

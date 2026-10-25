@@ -271,6 +271,7 @@ async function handleOwnerRequest(request, response, state) {
         request: verified,
         entries: [state.owner],
         nextCursor: null,
+        firstAccountOwnerScopeId: state.owner.ownerScopeId,
       })
       responseKind = undefined
     } else if (operation === 'enrollment-epoch') {
