@@ -927,6 +927,26 @@ it.each([
     "authority-store@21:8",
   ],
   [
+    "the Owner recovery source",
+    "Error: private headline\n    at http://localhost:5273/src/lib/browserEncryptedWalletBackupOwnerConflictRecovery.ts:238:7",
+    "owner-recovery@238:7",
+  ],
+  [
+    "the Owner authority store with a Vite query",
+    "Error: private headline\n    at http://localhost:5273/src/stores/encrypted-wallet-backup-owner-db.ts?t=123:1057:8",
+    "owner-authority-store@1057:8",
+  ],
+  [
+    "a lookalike Owner recovery source",
+    "Error: private headline\n    at http://localhost:5273/src/lib/browserEncryptedWalletBackupOwnerConflictRecovery.ts.evil:238:7",
+    "unknown",
+  ],
+  [
+    "an unknown path with an Owner authority query tail",
+    "Error: private headline\n    at http://localhost:5273/module.ts?next=/src/stores/encrypted-wallet-backup-owner-db.ts:1057:8",
+    "unknown",
+  ],
+  [
     "an allowlisted SDK source under Vite's filesystem route",
     "Error: private headline\n    at http://localhost:5273/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupV2ProofSet.ts:22:9",
     "sdk-proof-set@22:9",
@@ -2194,9 +2214,41 @@ it.each([
 );
 
 it.each([
-  { code: "conflict", diagnostic: "conflict" },
-  { code: "private-server-detail", diagnostic: "unknown" },
-])("keeps owner HTTP diagnostic code bounded for $code", async ({ code, diagnostic }) => {
+  {
+    code: "conflict",
+    diagnostic: "conflict",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("conflict"),
+  },
+  {
+    code: "private-server-detail",
+    diagnostic: "unknown",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("private-server-detail"),
+  },
+  ...Object.entries({
+    AbortError: "storage-abort",
+    ConstraintError: "storage-constraint",
+    DataError: "storage-data",
+    DatabaseClosedError: "storage-closed",
+    NotFoundError: "storage-not-found",
+    PrematureCommitError: "storage-premature-commit",
+    ReadOnlyError: "storage-read-only",
+    TransactionInactiveError: "storage-transaction-inactive",
+    PrivateFailure: "unknown",
+  }).map(([code, diagnostic]) => ({
+    code,
+    diagnostic,
+    error: Object.assign(new Error("private error payload"), { name: code }),
+  })),
+  {
+    code: "throwing-name",
+    diagnostic: "unknown",
+    error: {
+      get name() {
+        throw new Error("private getter payload");
+      },
+    },
+  },
+])("keeps owner failure diagnostic code bounded for $code", async ({ code, diagnostic, error }) => {
   enableBackupGate();
   const fixture = await enrollmentFixture();
   const candidate = {
@@ -2210,9 +2262,7 @@ it.each([
     discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
     resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
     readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
-    readCurrentHead: vi
-      .fn()
-      .mockRejectedValue(new EncryptedWalletBackupOwnerHttpTransportError(code)),
+    readCurrentHead: vi.fn().mockRejectedValue(error),
     mutateHead: vi.fn(),
     readObject: vi.fn(),
     operateAccount: vi.fn(),

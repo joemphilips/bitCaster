@@ -2385,6 +2385,8 @@ type EncryptedWalletBackupDriverFailureSiteOwner =
   | "asset-source"
   | "ctf-removal"
   | "authority-store"
+  | "owner-recovery"
+  | "owner-authority-store"
   | "sdk-proof-set"
   | "sdk-service-codec"
   | "sdk-sync";
@@ -2403,6 +2405,8 @@ const encryptedWalletBackupAppFailureSiteOwners: Readonly<
   "/src/lib/browserCtfRemoveCoordinator.ts": "ctf-removal",
   "/src/stores/browser-encrypted-wallet-backup-v2-asset-source.ts": "asset-source",
   "/src/stores/encrypted-wallet-backup-v2-db.ts": "authority-store",
+  "/src/lib/browserEncryptedWalletBackupOwnerConflictRecovery.ts": "owner-recovery",
+  "/src/stores/encrypted-wallet-backup-owner-db.ts": "owner-authority-store",
 };
 
 const encryptedWalletBackupSdkFailureSiteSuffixes: readonly [
@@ -2527,10 +2531,29 @@ const safeEncryptedWalletBackupTransportErrorCodes = new Set<string>([
   "unavailable",
 ]);
 
+const safeEncryptedWalletBackupStorageErrors: Readonly<Record<string, string>> = {
+  AbortError: "storage-abort",
+  ConstraintError: "storage-constraint",
+  DataError: "storage-data",
+  DatabaseClosedError: "storage-closed",
+  NotFoundError: "storage-not-found",
+  PrematureCommitError: "storage-premature-commit",
+  ReadOnlyError: "storage-read-only",
+  TransactionInactiveError: "storage-transaction-inactive",
+};
+
 function encryptedWalletBackupDriverErrorCode(error: unknown): string {
   if (error instanceof EncryptedWalletBackupRemoteBackoffError) return "remote-backoff";
   if (isBackupHttpTransportError(error)) {
     return safeEncryptedWalletBackupTransportErrorCodes.has(error.code) ? error.code : "unknown";
+  }
+  try {
+    const name =
+      typeof error === "object" && error !== null ? (error as { name?: unknown }).name : null;
+    if (typeof name === "string" && Object.hasOwn(safeEncryptedWalletBackupStorageErrors, name))
+      return safeEncryptedWalletBackupStorageErrors[name]!;
+  } catch {
+    // A diagnostic must not invoke an untrusted error getter again or expose its text.
   }
   return "unknown";
 }
