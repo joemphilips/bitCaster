@@ -1144,5 +1144,6 @@
     "next": "Next page",
     "previous": "Previous page",
     "unavailable": "Original oracle metadata is unavailable. Restore its backup before preparing a new backup."
-  }
+  },
+  "betaNotice": "Beta: this service uses real funds and has limited capacity."
 }
