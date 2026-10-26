@@ -6,6 +6,7 @@ import {
   EncryptedWalletBackupRecoveryStatus,
 } from "@/components/shell";
 import { SettlementProgress } from "@/components/shell/SettlementProgress";
+import { BetaNotice } from "@/components/shell/BetaNotice";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
@@ -370,6 +371,8 @@ function AppRoutes() {
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
     <WalletBackupPresentationProvider value={walletBackupRecovery}>
+      {/* Every page, including the wizard, states the beta (ADR-048). */}
+      <BetaNotice />
       {isWizard ? (
         <WizardRoutes />
       ) : (
