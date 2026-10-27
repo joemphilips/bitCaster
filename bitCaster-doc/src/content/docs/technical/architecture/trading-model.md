@@ -263,9 +263,9 @@ price limit, fee consent and expiry. It does not prepare a replacement order.
 
 Waiting lasts at most 60 seconds from the first submission and 30 attempts.
 The first delay is one second. Later delays are two seconds. Each request has
-at most 30 seconds. A shorter caller timeout stays in effect. A new attempt
-starts only if its full request budget fits before both the wait deadline and
-original authorization expiry.
+at most 30 seconds. It also ends no later than the wait deadline and the
+original authorization expiry. A shorter caller timeout stays in effect. A new
+attempt starts only while time remains before both limits.
 
 The GUI shows progress and lets you stop waiting. The CLI shows progress on
 stderr. Press Ctrl-C to stop waiting. Stopping does not release reserved funds

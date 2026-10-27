@@ -537,8 +537,9 @@ paths:
             Authentication headers may be refreshed. Bound waiting to 60 seconds
             from first submission, at most 30 attempts and the original authorization
             expiry. Use a 1-second first delay and 2-second later delays. Each attempt
-            is at most 30 seconds; preserve shorter caller limits. Start an attempt
-            only when its full request budget fits before the wait and expiry limits.
+            is at most 30 seconds and ends no later than the wait and expiry limits;
+            preserve shorter caller limits. Start an attempt only while time remains
+            before both limits.
             Waiting can be stopped. Stopping or this refusal does not authorize
             custody release or prove that another copy cannot be accepted.
             order-admission-unavailable, order-processing-unavailable, generic 503,

@@ -123,7 +123,11 @@ test('generic failure never enters the waiting policy', async () => {
   assert.equal(waits, 0)
 })
 
-test('expiry must leave a full request budget before dispatch', async () => {
+// A whole second keeps the integer expiry and the remaining time exact.
+const MOCKED_NOW_MS = 1_800_000_000_000
+
+test('an expired authorization never dispatches', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: MOCKED_NOW_MS })
   let calls = 0
   await assert.rejects(
     runOrderQuoteRefreshRetry(
@@ -133,12 +137,81 @@ test('expiry must leave a full request budget before dispatch', async () => {
       },
       isOrderQuotesRefreshingError,
       {
-        quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 5 },
+        quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 },
       },
     ),
     (e) => e instanceof OrderQuoteRefreshWaitStopped && e.reason === 'expired',
   )
   assert.equal(calls, 0)
+})
+
+test('a short-lived authorization submits with an attempt limit at its expiry', async (t) => {
+  // Five seconds of authorization lifetime is less than the 30-second
+  // attempt limit. The order must still be sent, and the attempt must stop
+  // at the authorization expiry.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: MOCKED_NOW_MS })
+  const entered = deferred<void>()
+  let calls = 0
+  let settled = false
+  const result = runOrderQuoteRefreshRetry(
+    async () => {
+      calls++
+      entered.resolve()
+      return new Promise(() => {})
+    },
+    isOrderQuotesRefreshingError,
+    {
+      quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 + 5 },
+    },
+  )
+  const assertion = assert.rejects(result, /timed out/).finally(() => {
+    settled = true
+  })
+  await entered.promise
+  assert.equal(calls, 1)
+  t.mock.timers.tick(4_999)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(settled, false)
+  t.mock.timers.tick(1)
+  await assertion
+  assert.equal(calls, 1)
+})
+
+test('a quote-refresh retry uses the time left after its delay', async (t) => {
+  // Ten seconds of lifetime cannot hold a delay plus a 30-second attempt.
+  // The retry still runs, and its attempt stops at the authorization expiry.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: MOCKED_NOW_MS })
+  const waiting = deferred<void>()
+  const second = deferred<void>()
+  let calls = 0
+  let settled = false
+  const result = runOrderQuoteRefreshRetry(
+    async () => {
+      if (++calls === 1) throw refusal
+      second.resolve()
+      return new Promise(() => {})
+    },
+    isOrderQuotesRefreshingError,
+    {
+      quoteRefreshRetry: {
+        authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 + 10,
+        onWaiting: () => waiting.resolve(),
+      },
+    },
+  )
+  const assertion = assert.rejects(result, /timed out/).finally(() => {
+    settled = true
+  })
+  await waiting.promise
+  t.mock.timers.tick(1_000)
+  await second.promise
+  assert.equal(calls, 2)
+  t.mock.timers.tick(8_999)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(settled, false)
+  t.mock.timers.tick(1)
+  await assertion
+  assert.equal(calls, 2)
 })
 
 test('attempt timeout exits after 30 seconds even when a transport ignores cancellation', async (t) => {
@@ -279,7 +352,9 @@ test('total wait budget does not reset after a refusal', async (t) => {
     (e) => e instanceof OrderQuoteRefreshWaitStopped && e.reason === 'budget',
   )
   await waiting.promise
-  now = 51000
+  // The delay ends when the 60-second budget from the first submission is
+  // used. A reset budget would start a second attempt.
+  now = 60_000
   t.mock.timers.tick(1000)
   await assertion
   assert.equal(calls, 1)

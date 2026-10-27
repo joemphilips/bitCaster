@@ -53,21 +53,26 @@ export async function runOrderQuoteRefreshRetry<T>(
     throw new Error('Order authorization expiry is invalid')
   const startedAt = performance.now()
   const remaining = () => Math.min(60_000 - (performance.now() - startedAt), expiryMs - Date.now())
-  const stop = () => {
+  // Stop unless more than reservedMs is left before both the wait deadline
+  // and the authorization expiry.
+  const stop = (reservedMs: number) => {
     if (options.signal?.aborted) throw new OrderQuoteRefreshWaitStopped('cancelled')
-    if (remaining() < timeoutMs)
+    if (remaining() <= reservedMs)
       throw new OrderQuoteRefreshWaitStopped(
-        expiryMs - Date.now() < timeoutMs ? 'expired' : 'budget',
+        expiryMs - Date.now() <= reservedMs ? 'expired' : 'budget',
       )
   }
   for (let attempt = 1; attempt <= 30; attempt++) {
-    stop()
+    stop(0)
+    // A short-lived authorization still gets an attempt. The attempt ends at
+    // the earlier of its own limit, the wait deadline and the expiry.
+    const attemptTimeoutMs = Math.min(timeoutMs, Math.ceil(remaining()))
     const controller = new AbortController()
     const abort = () => controller.abort(options.signal?.reason)
     options.signal?.addEventListener('abort', abort, { once: true })
     const timer = setTimeout(
       () => controller.abort(new Error('Order request timed out')),
-      timeoutMs,
+      attemptTimeoutMs,
     )
     let refreshing = false
     try {
@@ -95,11 +100,7 @@ export async function runOrderQuoteRefreshRetry<T>(
     }
     if (!refreshing || attempt === 30) throw new OrderQuoteRefreshWaitStopped('budget')
     const delayMs = attempt === 1 ? 1_000 : 2_000
-    stop()
-    if (remaining() < delayMs + timeoutMs)
-      throw new OrderQuoteRefreshWaitStopped(
-        expiryMs - Date.now() < delayMs + timeoutMs ? 'expired' : 'budget',
-      )
+    stop(delayMs)
     options.quoteRefreshRetry.onWaiting?.({
       attempt,
       remainingMs: Math.max(0, Math.floor(remaining())),
