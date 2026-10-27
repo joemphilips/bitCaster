@@ -27,6 +27,11 @@ description: Apply bitCaster GUI layout, interface copy, browser state, durable 
 
 - Do not set an automatic timeout for an error message.
 - Remove an error message only after an explicit user action.
+- Exception: resolve the CTF range order alerts `recovery-pending`,
+  `mint-source-uncertain`, and `order-submission-uncertain` when the durable
+  order journal becomes terminal. The terminal journal makes their statement
+  false. Mark them acknowledged and keep the row. Keep alerts with a definitive
+  outcome until the user dismisses them.
 - Persist the acknowledgement for the exact durable message identity.
 - Keep the same acknowledged message dismissed after reload.
 - A later state version or error code can create a new message.
