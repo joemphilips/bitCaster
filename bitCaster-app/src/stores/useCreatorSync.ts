@@ -8,6 +8,7 @@ import { resolveNsecIdentity } from "@/lib/identityOps";
 import { useCreatorMarketsStore, type StoredCreatorMarket } from "./creatorMarkets";
 import { useSettingsStore } from "./settings";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import { createRelaySyncRetry } from "@/lib/relaySyncRetry";
 
 const PUBLISH_DEBOUNCE_MS = 800;
 
@@ -49,8 +50,17 @@ export function useCreatorSync(): void {
     let cancelled = false;
     const controller = new AbortController();
     const options = { relays, signal: controller.signal };
-    void (async () => {
-      const remote = await fetchNip78CreatorMarkets(keys.publicKey, options).catch(() => null);
+    const retry = createRelaySyncRetry();
+    const sync = async () => {
+      let remote: StoredCreatorMarket[] | null;
+      try {
+        remote = await fetchNip78CreatorMarkets(keys.publicKey, options);
+      } catch {
+        // A failed or partial read cannot prove that no remote set exists.
+        // Seeding now could replace a newer set on a slow relay.
+        if (!cancelled) retry.schedule(() => void sync().catch(stopSync));
+        return;
+      }
       if (cancelled) return;
 
       const local = await mergeRemoteMarkets([]);
@@ -75,12 +85,15 @@ export function useCreatorSync(): void {
       if (!remoteHasAll || !publicCreatorMarketsEqual(remote, merged)) {
         await publishNip78CreatorMarkets(keys.privateKeyHex, merged, options).catch(() => {});
       }
-    })().catch(() => {
+    };
+    const stopSync = () => {
       if (!cancelled) setInitialSyncDone(false);
-    });
+    };
+    void sync().catch(stopSync);
 
     return () => {
       cancelled = true;
+      retry.cancel();
       controller.abort();
     };
   }, [nostrSignerMode, nsecSecret, mergeRemoteMarkets, relaySelectionKey]);

@@ -13,6 +13,7 @@ import { queryBrowserProfileRelay } from "./browserProfileRelay";
 import NDK, {
   NDKNip07Signer,
   NDKPrivateKeySigner,
+  NDKRelayStatus,
   type NDKSigner,
   type NDKUser,
   type NDKFilter,
@@ -151,11 +152,24 @@ export interface RelayOperationOptions {
  */
 export const RELAY_CONNECT_TIMEOUT_MS = 4_000;
 
+export interface TemporaryRelayConnection {
+  /** True only when every requested relay connected before the action started. */
+  readonly complete: boolean;
+}
+
+/** A read from a partial relay set cannot prove that a record is absent. */
+export class IncompleteRelayReadError extends Error {
+  constructor() {
+    super("Not every selected relay answered the read.");
+    this.name = "IncompleteRelayReadError";
+  }
+}
+
 /** A temporary operation owns cancellation from connection setup through completion. */
 export async function withTemporaryRelayNdk<T>(
   options: RelayOperationOptions,
   signer: NDKSigner | undefined,
-  action: (ndk: NDK) => Promise<T>,
+  action: (ndk: NDK, connection: TemporaryRelayConnection) => Promise<T>,
 ): Promise<T | undefined> {
   const relays = selectNostrRelayUrls(options.relays, selectedRelayUrls());
   if (relays.length === 0) return undefined;
@@ -170,11 +184,37 @@ export async function withTemporaryRelayNdk<T>(
     signal.throwIfAborted();
     await awaitAbortable(ndk.connect(RELAY_CONNECT_TIMEOUT_MS), signal);
     signal.throwIfAborted();
-    return await awaitAbortable(action(ndk), signal);
+    // NDK sends an author read only to connected relays. The pool holds one
+    // relay for each requested URL unless NDK refused one.
+    const pool = [...ndk.pool.relays.values()];
+    const connection = {
+      complete:
+        pool.length === relays.length &&
+        pool.every((relay) => relay.status >= NDKRelayStatus.CONNECTED),
+    };
+    return await awaitAbortable(action(ndk, connection), signal);
   } finally {
     signal.removeEventListener("abort", dispose);
     dispose();
   }
+}
+
+/**
+ * Read one record for state synchronization. A null result means absence only
+ * when every requested relay connected. Otherwise the read rejects with
+ * {@link IncompleteRelayReadError}, so a caller cannot seed or publish from it.
+ */
+export async function fetchTemporaryRelayRecord<T>(
+  options: RelayOperationOptions,
+  read: (ndk: NDK) => Promise<T | null>,
+): Promise<T | null> {
+  return (
+    (await withTemporaryRelayNdk(options, undefined, async (ndk, connection) => {
+      const record = await read(ndk);
+      if (record === null && !connection.complete) throw new IncompleteRelayReadError();
+      return record;
+    })) ?? null
+  );
 }
 
 export function getNdk(): NDK {

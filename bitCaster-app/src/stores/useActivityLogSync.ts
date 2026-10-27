@@ -6,6 +6,7 @@ import { useActivityLogStore } from "./activity-log";
 import { useSettingsStore } from "./settings";
 import type { ActivityItem } from "@/types/portfolio";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import { createRelaySyncRetry } from "@/lib/relaySyncRetry";
 
 const PUBLISH_DEBOUNCE_MS = 800;
 
@@ -37,11 +38,20 @@ export function useActivityLogSync(): void {
 
     let cancelled = false;
     const controller = new AbortController();
-    void (async () => {
-      const remote = await fetchNip78ActivityLog(keys.publicKey, keys.privateKeyHex, {
-        relays,
-        signal: controller.signal,
-      }).catch(() => null);
+    const retry = createRelaySyncRetry();
+    const sync = async () => {
+      let remote: ActivityItem[] | null;
+      try {
+        remote = await fetchNip78ActivityLog(keys.publicKey, keys.privateKeyHex, {
+          relays,
+          signal: controller.signal,
+        });
+      } catch {
+        // A failed or partial read cannot prove that no remote log exists.
+        // Publishing now could replace a newer log on a slow relay.
+        if (!cancelled) retry.schedule(() => void sync());
+        return;
+      }
       if (cancelled) return;
 
       const local = useActivityLogStore.getState().items;
@@ -55,10 +65,12 @@ export function useActivityLogSync(): void {
       lastPublished.current = remote;
       replace(merged);
       setInitialSyncDone(true);
-    })();
+    };
+    void sync();
 
     return () => {
       cancelled = true;
+      retry.cancel();
       controller.abort();
     };
   }, [nostrSignerMode, nsecSecret, replace, relaySelectionKey]);

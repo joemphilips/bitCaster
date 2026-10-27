@@ -13,7 +13,11 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { verifyEvent } from "nostr-tools/pure";
 import type { StoredCreatorMarket, StoredCreatorOracleMetadata } from "@/stores/creatorMarkets";
-import { withTemporaryRelayNdk, type RelayOperationOptions } from "./nostr";
+import {
+  fetchTemporaryRelayRecord,
+  withTemporaryRelayNdk,
+  type RelayOperationOptions,
+} from "./nostr";
 import {
   readSignedOracleEvent,
   verifyOracleResolutionExplanation,
@@ -189,43 +193,43 @@ export async function publishNip78CreatorMarkets(
  * Returns `null` if no event exists or the content cannot be parsed. Entries
  * that fail validation are dropped individually rather than failing the whole
  * fetch so a malformed record in the relay doesn't wipe the local state.
+ * Rejects with `IncompleteRelayReadError` instead of `null` when a selected
+ * relay did not connect.
  */
 export async function fetchNip78CreatorMarkets(
   pubkey: string,
   options: RelayOperationOptions = {},
 ): Promise<StoredCreatorMarket[] | null> {
-  return (
-    (await withTemporaryRelayNdk(options, undefined, async (ndk) => {
-      const event = await ndk.fetchEvent({
-        kinds: [CREATOR_MARKETS_KIND as number],
-        authors: [pubkey],
-        "#d": [CREATOR_MARKETS_D_TAG],
-      });
-      if (!event) return null;
-      if (
-        event.kind !== CREATOR_MARKETS_KIND ||
-        event.pubkey !== pubkey ||
-        !verifyEvent(event.rawEvent()) ||
-        event.tags.filter((tag) => tag[0] === "d").length !== 1 ||
-        event.tags.find((tag) => tag[0] === "d")?.[1] !== CREATOR_MARKETS_D_TAG
-      )
-        return null;
-      try {
-        if (event.content.length > 2 * 1024 * 1024) return null;
-        const parsed = JSON.parse(event.content) as Partial<CreatorMarketsPayload>;
-        if (!Array.isArray(parsed.markets) || parsed.markets.length > 256) return null;
-        const markets: StoredCreatorMarket[] = [];
-        for (const input of parsed.markets.filter(isStoredCreatorMarket)) {
-          try {
-            markets.push(await verifyPublicCreatorMarket(input));
-          } catch {
-            /* Invalid public evidence must not replace local recovery state. */
-          }
+  return fetchTemporaryRelayRecord(options, async (ndk) => {
+    const event = await ndk.fetchEvent({
+      kinds: [CREATOR_MARKETS_KIND as number],
+      authors: [pubkey],
+      "#d": [CREATOR_MARKETS_D_TAG],
+    });
+    if (!event) return null;
+    if (
+      event.kind !== CREATOR_MARKETS_KIND ||
+      event.pubkey !== pubkey ||
+      !verifyEvent(event.rawEvent()) ||
+      event.tags.filter((tag) => tag[0] === "d").length !== 1 ||
+      event.tags.find((tag) => tag[0] === "d")?.[1] !== CREATOR_MARKETS_D_TAG
+    )
+      return null;
+    try {
+      if (event.content.length > 2 * 1024 * 1024) return null;
+      const parsed = JSON.parse(event.content) as Partial<CreatorMarketsPayload>;
+      if (!Array.isArray(parsed.markets) || parsed.markets.length > 256) return null;
+      const markets: StoredCreatorMarket[] = [];
+      for (const input of parsed.markets.filter(isStoredCreatorMarket)) {
+        try {
+          markets.push(await verifyPublicCreatorMarket(input));
+        } catch {
+          /* Invalid public evidence must not replace local recovery state. */
         }
-        return markets;
-      } catch {
-        return null;
       }
-    })) ?? null
-  );
+      return markets;
+    } catch {
+      return null;
+    }
+  });
 }
