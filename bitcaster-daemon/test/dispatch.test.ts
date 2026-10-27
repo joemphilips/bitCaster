@@ -62,6 +62,10 @@ import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 
 const TEST_KEYSET_ID = canonicalTestKeysetId('dispatch')
 const CTF_KEYSET_ID = canonicalTestKeysetId('dispatch:ctf')
@@ -1459,10 +1463,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
     await t.test('wallet.send uses a leased strict-custody path for a V2 DLEQ proof', async () => {
       const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
-      const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-      const keys = { '1': publicKey, '2': publicKey, '4': publicKey, '8': publicKey }
+      const keys = mintDenominationKeys(privateKey, ['1', '2', '4', '8'])
       const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
-      const input = signedDleqProof(
+      const input = signedDenominationProof(
         OutputData.createSingleData(8, keysetId, 'strict-send-input', 1n),
         privateKey,
         keys,
@@ -1540,8 +1543,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 keepAmounts: [2, 1],
                 config,
               })
-              sent = sendOutputs.map((output) => signedDleqProof(output, privateKey, keys))
-              kept = keepOutputs.map((output) => signedDleqProof(output, privateKey, keys))
+              sent = sendOutputs.map((output) => signedDenominationProof(output, privateKey, keys))
+              kept = keepOutputs.map((output) => signedDenominationProof(output, privateKey, keys))
               return {
                 amount: Amount.from(5),
                 fees: Amount.zero(),
@@ -1575,17 +1578,16 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       'order.submit bounds delayed Score credit, preserves one delivery identity, and retires it after the purchase epoch advances',
       async () => {
         const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
-        const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-        const keys = {
-          '1': publicKey,
-          '2': publicKey,
-          '4': publicKey,
-          '8': publicKey,
-          '1000': publicKey,
-          '2000': publicKey,
-          '4000': publicKey,
-          '8000': publicKey,
-        }
+        const keys = mintDenominationKeys(privateKey, [
+          '1',
+          '2',
+          '4',
+          '8',
+          '1000',
+          '2000',
+          '4000',
+          '8000',
+        ])
         const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
         const scopeId = deriveDurableCustodyScopeId({
           scopeKind: 'wallet',
@@ -1596,7 +1598,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           incarnationId: 'wallet-receive-bind-test',
           observedAtMs: Date.now(),
         })
-        const input = signedDleqProof(
+        const input = signedDenominationProof(
           OutputData.createSingleData(8_000, keysetId, 'score-input', 19n),
           privateKey,
           keys,
@@ -1683,9 +1685,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   keepAmounts: [2_000, 4_000],
                   config,
                 })
-              scoreProofs = scoreOutputs.map((output) => signedDleqProof(output, privateKey, keys))
+              scoreProofs = scoreOutputs.map((output) =>
+                signedDenominationProof(output, privateKey, keys),
+              )
               scoreKeepProofs = scoreKeepOutputs.map((output) =>
-                signedDleqProof(output, privateKey, keys),
+                signedDenominationProof(output, privateKey, keys),
               )
               return {
                 amount: Amount.from(2_000),
@@ -4377,6 +4381,19 @@ function signedDleqProof(
     p2pkE: null,
     witness: null,
   } as Proof
+}
+
+/** Sign with the denomination key that a mint keyset uses for this output amount. */
+function signedDenominationProof(
+  output: OutputData,
+  rootPrivateKey: Uint8Array,
+  keys: Record<string, string>,
+): Proof {
+  return signedDleqProof(
+    output,
+    mintDenominationPrivateKey(rootPrivateKey, output.blindedMessage.amount.toString()),
+    keys,
+  )
 }
 
 function signedOutcomeProof(amount: number, secret: string): Proof {
