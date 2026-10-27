@@ -70,8 +70,16 @@ export const removalLock = {
     action(null)) as LockManager["request"],
 };
 
-/** Reuse the existing terminal proof boundary fixture; Owner CAS uses genuine SDK receipts. */
-export async function ownerCtfRemovalFixture(count = 2, restored = false) {
+/**
+ * Reuse the existing terminal proof boundary fixture; Owner CAS uses genuine SDK receipts.
+ * `deferClassification` uploads selectable proofs first and returns `classify` so that a
+ * test can commit the terminal classification after the first Owner backup.
+ */
+export async function ownerCtfRemovalFixture(
+  count = 2,
+  restored = false,
+  options: { readonly deferClassification?: boolean } = {},
+) {
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: SEED,
     realm: REALM,
@@ -145,24 +153,31 @@ export async function ownerCtfRemovalFixture(count = 2, restored = false) {
       finalExpiryUnixSeconds: 2,
       curve: "secp256k1",
     });
-    for (const [i, proof] of proofs.entries()) {
-      await commitBrowserCtfTerminalOperation({
-        adapter,
-        database,
-        scope,
-        owner: { ...custodyOwner, observedAtMs: 1500 + i * 100 },
-        operationId: `ctf-owner-removal-${i}`,
-        mintUrl: MINT,
-        proofs: [
-          deserializeDurableCustodyProofArtifact(
-            JSON.parse(new TextDecoder().decode(proof.proofBody)),
-          ) as never,
-        ],
-        predecessorProofs: [proof],
-        publicKey: PUBLIC_KEY,
-        classifiedAtMs: 2000 + i * 100,
-      });
-    }
+    const proofIds = proofs.map(({ proofId }) => proofId);
+    const classify = async (indexes: readonly number[]) => {
+      for (const i of indexes) {
+        const proof = decodeBrowserCustodyProofRow(
+          await database.custodyProofs.get([scopeId, proofIds[i]!]),
+        );
+        await commitBrowserCtfTerminalOperation({
+          adapter,
+          database,
+          scope,
+          owner: { ...custodyOwner, observedAtMs: 1500 + i * 100 },
+          operationId: `ctf-owner-removal-${i}`,
+          mintUrl: MINT,
+          proofs: [
+            deserializeDurableCustodyProofArtifact(
+              JSON.parse(new TextDecoder().decode(proof.proofBody)),
+            ) as never,
+          ],
+          predecessorProofs: [proof],
+          publicKey: PUBLIC_KEY,
+          classifiedAtMs: 2000 + i * 100,
+        });
+      }
+    };
+    if (options.deferClassification !== true) await classify(proofIds.map((_id, i) => i));
     proofs = (
       await database.custodyProofs.bulkGet(proofs.map((proof) => [scopeId, proof.proofId]))
     ).map(decodeBrowserCustodyProofRow);
@@ -223,59 +238,16 @@ export async function ownerCtfRemovalFixture(count = 2, restored = false) {
       });
     const initial = await cycle();
     if (initial.kind !== "committed") throw new Error("fixture Owner backup did not commit");
-    const initialRequest = remote.remote.mutateHead.mock.calls[0]![0];
-    const group = decodeEncryptedWalletBackupOwnerUploadGroup({
-      bytes: initialRequest.canonicalUploadGroup,
-      expectedContext: remote.context,
-      expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
-    });
-    const descriptor = group.mutationEvidence.envelope.mutation.addedBundle;
-    if (descriptor === null) throw new Error("fixture initial Owner descriptor missing");
-    const decrypted = await decryptEncryptedWalletBackupV2ProofSetBundle({
-      keyHandle,
-      seed: SEED,
-      expectedAsset: asset,
-      custodyRevision: 1n,
-      runtime: crypto,
-      descriptor,
-      objects: group.objects,
-    });
-    for (const proof of proofs) {
-      const entry = decrypted.proofs.find((row) => row.proofId === proof.proofId);
-      if (entry?.terminalSeal === undefined) throw new Error("fixture genuine Owner seal missing");
-      const previous = requireBrowserProofBackupAuthorityForProof(
-        await database.custodyProofBackupAuthorities.get([scopeId, proof.proofId]),
-        proof,
-      );
-      const restoredProof = restored
-        ? decodeBrowserCustodyProofRow({ ...proof, revision: 0 })
-        : proof;
-      const authority = createBrowserRemoteProofBackupAuthorityRow({
-        proof: restoredProof,
-        observedAtMs: 2400,
-        derivationLocator: entry.locator,
-        restoreProofId: proof.proofId,
-        restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment({
-          proofId: proof.proofId,
-          mintUrl: MINT,
-          unit: "msat",
-          asset: entry.asset,
-          proof: entry.proof,
-          locator: entry.locator,
-        }),
-        terminalSeal: entry.terminalSeal,
+    if (options.deferClassification !== true)
+      await adoptInitialOwnerSeals({
+        database,
+        scopeId,
+        keyHandle,
+        asset,
+        proofs,
+        remote,
+        restored,
       });
-      await database.custodyProofs.put(restoredProof);
-      await database.custodyProofBackupAuthorities.put(
-        restored
-          ? authority
-          : {
-              ...authority,
-              terminalOperationId: previous.terminalOperationId,
-              terminalAuthority: previous.terminalAuthority,
-            },
-      );
-    }
     proofs = (
       await database.custodyProofs.bulkGet(proofs.map((proof) => [scopeId, proof.proofId]))
     ).map(decodeBrowserCustodyProofRow);
@@ -295,6 +267,7 @@ export async function ownerCtfRemovalFixture(count = 2, restored = false) {
       owner,
       remote,
       cycle,
+      classify,
       assetLocator,
       input: (selected = proofs) => ({
         database,
@@ -330,6 +303,72 @@ export async function ownerCtfRemovalFixture(count = 2, restored = false) {
     database.close();
     await database.delete();
     throw error;
+  }
+}
+
+/** Bind each classified proof to the genuine terminal seal of the first Owner upload. */
+async function adoptInitialOwnerSeals(input: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>;
+  readonly asset: ReturnType<typeof createEncryptedWalletBackupV2AssetIdentity>;
+  readonly proofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[];
+  readonly remote: Awaited<ReturnType<typeof createOwnerRemovalRemote>>;
+  readonly restored: boolean;
+}) {
+  const { database, scopeId, keyHandle, asset, remote, restored } = input;
+  const initialRequest = remote.remote.mutateHead.mock.calls[0]![0];
+  const group = decodeEncryptedWalletBackupOwnerUploadGroup({
+    bytes: initialRequest.canonicalUploadGroup,
+    expectedContext: remote.context,
+    expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
+  });
+  const descriptor = group.mutationEvidence.envelope.mutation.addedBundle;
+  if (descriptor === null) throw new Error("fixture initial Owner descriptor missing");
+  const decrypted = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 1n,
+    runtime: crypto,
+    descriptor,
+    objects: group.objects,
+  });
+  for (const proof of input.proofs) {
+    const entry = decrypted.proofs.find((row) => row.proofId === proof.proofId);
+    if (entry?.terminalSeal === undefined) throw new Error("fixture genuine Owner seal missing");
+    const previous = requireBrowserProofBackupAuthorityForProof(
+      await database.custodyProofBackupAuthorities.get([scopeId, proof.proofId]),
+      proof,
+    );
+    const restoredProof = restored
+      ? decodeBrowserCustodyProofRow({ ...proof, revision: 0 })
+      : proof;
+    const authority = createBrowserRemoteProofBackupAuthorityRow({
+      proof: restoredProof,
+      observedAtMs: 2400,
+      derivationLocator: entry.locator,
+      restoreProofId: proof.proofId,
+      restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment({
+        proofId: proof.proofId,
+        mintUrl: MINT,
+        unit: "msat",
+        asset: entry.asset,
+        proof: entry.proof,
+        locator: entry.locator,
+      }),
+      terminalSeal: entry.terminalSeal,
+    });
+    await database.custodyProofs.put(restoredProof);
+    await database.custodyProofBackupAuthorities.put(
+      restored
+        ? authority
+        : {
+            ...authority,
+            terminalOperationId: previous.terminalOperationId,
+            terminalAuthority: previous.terminalAuthority,
+          },
+    );
   }
 }
 
