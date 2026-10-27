@@ -15,6 +15,7 @@ import { resolveCreatorPubkey } from "@/lib/identityOps";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore } from "@/stores/wallet";
 import type { MarketBaseAsset } from "@/types/market-creation";
+import { assertNever } from "@/lib/enumDiscipline";
 import {
   defaultCollateralUnit,
   formatMarketSubunits,
@@ -22,6 +23,27 @@ import {
   parseSatsToMsat,
   type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
+
+/**
+ * The engine finishes an admitted funding payment after a wallet request
+ * timeout, but this step has no event for one delivery. As a temporary release
+ * tradeoff, resume the stored payment on this bounded schedule, then leave the
+ * explicit retry action. A resume submits only the stored token.
+ */
+const FUNDING_AUTO_RESUME_DELAYS_MS = [3_000, 6_000, 12_000, 24_000, 45_000, 60_000] as const;
+
+function awaitsFundingResult(progress: MarketFundingDeliveryProgress | null): boolean {
+  switch (progress) {
+    case "pending":
+    case "received":
+      return true;
+    case "credited":
+    case null:
+      return false;
+    default:
+      return assertNever(progress);
+  }
+}
 
 function parseFundingAmount(value: string): number | null {
   if (value.trim() === "") return null;
@@ -82,6 +104,7 @@ export function DepositStep({
   const [headTransferId, setHeadTransferId] = useState<string | null>(null);
   const [headReady, setHeadReady] = useState(false);
   const [headReadRevision, setHeadReadRevision] = useState(0);
+  const [autoResumeCount, setAutoResumeCount] = useState(0);
   const generation = useRef(0);
   const inFlight = useRef(false);
   // Keep callback identity changes out of receipt restoration after market refreshes.
@@ -127,6 +150,7 @@ export function DepositStep({
     setDeliveryProgress(null);
     setShowCreditedNotice(false);
     setError(null);
+    setAutoResumeCount(0);
     inFlight.current = false;
     if (!walletMnemonic.trim() || !accountSubject) {
       setHeadReady(true);
@@ -304,6 +328,21 @@ export function DepositStep({
     walletMnemonic,
   ]);
 
+  const submitMarketFundingRef = useRef(submitMarketFunding);
+  submitMarketFundingRef.current = submitMarketFunding;
+
+  useEffect(() => {
+    if (!headReady || fundingBusy || headTransferId === null) return undefined;
+    if (!awaitsFundingResult(deliveryProgress)) return undefined;
+    const delay = FUNDING_AUTO_RESUME_DELAYS_MS[autoResumeCount];
+    if (delay === undefined) return undefined;
+    const timer = window.setTimeout(() => {
+      setAutoResumeCount((count) => count + 1);
+      void submitMarketFundingRef.current();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [autoResumeCount, deliveryProgress, fundingBusy, headReady, headTransferId]);
+
   const canSubmitFunding =
     headReady &&
     !fundingBusy &&
@@ -410,7 +449,11 @@ export function DepositStep({
         <button
           data-testid="confirm-amm-funding"
           type="button"
-          onClick={() => void submitMarketFunding()}
+          onClick={() => {
+            // An explicit action starts a new bounded automatic resume schedule.
+            setAutoResumeCount(0);
+            void submitMarketFunding();
+          }}
           disabled={!canSubmitFunding}
           className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 sm:flex-1"
         >

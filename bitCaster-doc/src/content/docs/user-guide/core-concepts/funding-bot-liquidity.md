@@ -40,8 +40,9 @@ For an existing market, open its `LIQUIDITY` tab. Follow the payment steps
 with funds from the supported mint. Wait for the app to confirm completion.
 You can make more funding payments later. You do not need to be the creator.
 
-If a payment is still pending, check or resume that payment in the app.
-After a reload, resume the same payment. A received payment is not yet
+If a payment is still pending, the app resumes the same payment automatically
+for about two and a half minutes. After that, resume the payment in the app.
+After a reload, the app resumes the same payment. A received payment is not yet
 credited to the market. Wait for the app to confirm credit before you make
 another explicit funding payment. Do not make a second payment only because
 the first one is taking time. A second payment is a separate, non-refundable
