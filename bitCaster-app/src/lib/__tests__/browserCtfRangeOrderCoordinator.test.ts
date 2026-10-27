@@ -2616,20 +2616,23 @@ describe("browser CTF range order coordinator", () => {
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
   });
 
-  // The fixture FOK requests 1,000 face subunits.
+  // The fixture FOK requests 1,000 face subunits. The engine refuses a FOK
+  // as cancelled, or as failed when it cannot process the order.
   it.each([
-    { remainingAmountSubunits: 1_000, expected: "order-submitted" },
-    { remainingAmountSubunits: 400, expected: "order-submission-uncertain" },
-    { remainingAmountSubunits: 0, expected: "order-submission-uncertain" },
+    { status: "cancelled", remainingAmountSubunits: 1_000, expected: "order-submitted" },
+    { status: "cancelled", remainingAmountSubunits: 400, expected: "order-submission-uncertain" },
+    { status: "cancelled", remainingAmountSubunits: 0, expected: "order-submission-uncertain" },
+    { status: "failed", remainingAmountSubunits: 1_000, expected: "order-submitted" },
+    { status: "failed", remainingAmountSubunits: 0, expected: "order-submission-uncertain" },
   ] as const)(
-    "classifies a cancelled FOK acknowledgement with $remainingAmountSubunits remaining as $expected",
-    async ({ remainingAmountSubunits, expected }) => {
+    "classifies a $status FOK acknowledgement with $remainingAmountSubunits remaining as $expected",
+    async ({ status, remainingAmountSubunits, expected }) => {
       const database = createDatabase();
-      const preparation = persistedPreparation(`range-cancelled-${remainingAmountSubunits}`);
+      const preparation = persistedPreparation(`range-${status}-${remainingAmountSubunits}`);
       const coordinator = createCoordinator(
         database,
         sourceWallet(),
-        engineMock({ submitResponse: { status: "cancelled", remainingAmountSubunits } }),
+        engineMock({ submitResponse: { status, remainingAmountSubunits } }),
       );
 
       const submitted = coordinator.prepareAndSubmit({
@@ -2640,7 +2643,7 @@ describe("browser CTF range order coordinator", () => {
 
       if (expected === "order-submitted") {
         await expect(submitted).resolves.toMatchObject({
-          status: "cancelled",
+          status,
           remainingAmountSubunits,
         });
       } else {

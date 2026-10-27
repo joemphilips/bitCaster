@@ -2540,11 +2540,13 @@ export function MarketDetailPage() {
               },
             });
             break;
+          case "failed":
+            setTradeSubmitStatus({ kind: "error", message: "Order failed." });
+            break;
           case "filled":
           case "expired":
           case "evicted_capacity":
           case "rejected_capacity":
-          case "failed":
           case "resting":
           case "partially_filled":
             setTradeSubmitStatus({

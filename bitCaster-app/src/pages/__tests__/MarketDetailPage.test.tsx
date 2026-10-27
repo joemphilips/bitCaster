@@ -3466,6 +3466,35 @@ describe("MarketDetailPage live market status", () => {
     },
   );
 
+  it("shows a failed FOK submission as an error", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    vi.mocked(submitBrowserCtfRangeOrder).mockResolvedValue({
+      orderId: "failed-order",
+      status: "failed",
+      remainingAmountSubunits: 1000,
+      fills: [],
+      baseAsset: "sat",
+      divisibility: 1000,
+      activeSettlementGroup: null,
+    });
+    render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Order failed."),
+    );
+    expect(screen.getByTestId("trade-submit-status")).toHaveClass("border-rose-200");
+  });
+
   it("retains reviewed preparation fees for an accepted cancelled FOK with no fills", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";

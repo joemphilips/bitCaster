@@ -3427,14 +3427,15 @@ function immediateFokRemainingAmount(
 ): number | null {
   switch (status) {
     // FOK is all-or-nothing, so a refused FOK retains its complete request.
+    // The engine reports failed when it cannot process the order.
     case "cancelled":
+    case "failed":
       return requestedAmountSubunits;
     case "matched":
     case "filled":
     case "expired":
     case "evicted_capacity":
     case "rejected_capacity":
-    case "failed":
       return 0;
     // A FOK never rests or partially fills.
     case "resting":
