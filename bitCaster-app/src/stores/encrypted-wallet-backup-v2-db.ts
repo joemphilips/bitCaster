@@ -4,8 +4,6 @@ import {
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
   decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire,
-  createEncryptedWalletBackupV2CurrentHead,
-  digestEncryptedWalletBackupV2BundleDescriptor,
   digestEncryptedWalletBackupV2BundleSupersessionReceipt,
   decodeEncryptedWalletBackupV2UploadGroup,
   encodeEncryptedWalletBackupV2BundleDescriptor,
@@ -429,81 +427,6 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
           input.canonicalSignedReceipt,
           input.acknowledgedAtMs ?? Date.now(),
         );
-      },
-    );
-  }
-
-  /** Commits an authenticated exact result while retaining the prepared bytes until acknowledgement. */
-  async commitExactPreparedRemovalHead(input: {
-    readonly binding: EncryptedWalletBackupV2AssetReceiptBinding;
-    readonly collectedHeadEvidence: unknown;
-    readonly preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
-    readonly acknowledgedAtMs: number;
-  }): Promise<"acknowledged"> {
-    this.#requireDatabaseBinding();
-    const binding = requireAssetReceiptBinding(input.binding);
-    const authority = this.#headAuthorityRows(input.collectedHeadEvidence);
-    if (!isNonnegativeSafeInteger(input.acknowledgedAtMs)) {
-      throw new Error("encrypted wallet backup v2 removal acknowledgement time is invalid");
-    }
-    return this.#database.transaction(
-      "rw",
-      [
-        ...this.#removalAcknowledgementTables(),
-        this.#database.encryptedWalletBackupV2PreparedMutations,
-      ],
-      async () => {
-        await this.#requirePreparedReceiptBinding(input.preparedMutation, binding);
-        const rawPrepared = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
-          this.#authorityKey(),
-        );
-        if (rawPrepared === undefined) {
-          throw new Error("encrypted wallet backup v2 prepared mutation is absent");
-        }
-        const prepared = this.#decodePreparedRow(rawPrepared);
-        const mutation = decodeEncryptedWalletBackupV2UploadGroup({
-          bytes: prepared.canonicalUploadGroup,
-          expectedRequestAuthPublicKey: this.#requestAuthPublicKey,
-          expectedContext: this.#context(),
-        }).mutationEvidence.envelope.mutation;
-        const rawDesired = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
-          this.#scopeId,
-          binding.localAssetKey,
-        ]);
-        if (rawDesired === undefined || !sameDesiredBinding(rawDesired, binding)) {
-          throw new Error("encrypted wallet backup v2 desired asset is stale");
-        }
-        const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-        const intent = desired.removalIntent;
-        if (intent === null || intent.state !== "pending") {
-          throw new Error("encrypted wallet backup v2 removal intent is stale");
-        }
-        requireRemovalIntentProfile(intent, this.#realm, this.#walletId, this.#enrollmentEpoch);
-        const expected = await this.#exactPreparedResultAuthority(binding, intent, mutation);
-        if (
-          !sameBytes(authority.head.canonicalCurrentHead, expected.head.canonicalCurrentHead) ||
-          !sameDescriptorRows(authority.descriptors, expected.descriptors)
-        ) {
-          throw new Error("encrypted wallet backup v2 exact removal result is invalid");
-        }
-        await this.#database.encryptedWalletBackupV2AcceptedHeads.put(
-          await this.#preserveLocalRecoveryStatus(authority.head),
-        );
-        await this.#replaceDescriptorRows(authority.descriptors);
-        await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
-          ...this.#authorityKey(),
-          binding.localAssetKey,
-        ]);
-        await this.#database.encryptedWalletBackupV2PreparedMutations.delete(this.#authorityKey());
-        await this.#acknowledgeRemovalIntent(desired, intent, {
-          kind: "current-head",
-          headVersion: authority.head.headVersion,
-          activeSetDigest: authority.head.activeSetDigest,
-          bundleId: binding.bundleId,
-          bundleDescriptorDigest: binding.bundleDescriptorDigest,
-          acknowledgedAtMs: input.acknowledgedAtMs,
-        });
-        return "acknowledged" as const;
       },
     );
   }
@@ -1119,71 +1042,6 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     await this.#database.encryptedWalletBackupV2AcceptedHeads.put(
       await this.#preserveLocalRecoveryStatus(authority.head),
     );
-  }
-
-  async #exactPreparedResultAuthority(
-    binding: EncryptedWalletBackupV2AssetReceiptBinding,
-    intent: EncryptedWalletBackupV2RemovalIntent,
-    mutation: ReturnType<
-      typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
-    >["mutation"],
-  ): Promise<{
-    readonly head: EncryptedWalletBackupV2AcceptedHeadRow;
-    readonly descriptors: readonly EncryptedWalletBackupV2ActiveDescriptorRow[];
-  }> {
-    const rawHead = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(
-      this.#authorityKey(),
-    );
-    if (rawHead === undefined)
-      throw new Error("encrypted wallet backup v2 accepted head is absent");
-    const head = this.#decodeHeadRow(rawHead);
-    const currentDescriptors = await this.#readCurrentDescriptorRows();
-    const target = currentDescriptors.filter(
-      ({ assetLocator }) => assetLocator === binding.assetLocator,
-    );
-    const added = mutation.addedBundle;
-    if (
-      intent.targetCustodyRevision !== binding.custodyRevision ||
-      intent.expectedHeadVersion !== head.headVersion ||
-      intent.expectedActiveSetDigest !== head.activeSetDigest ||
-      mutation.expectedHeadVersion !== head.headVersion ||
-      mutation.expectedActiveSetDigest !== head.activeSetDigest ||
-      mutation.supersededBundleIds.length !== 1 ||
-      target.length !== 1 ||
-      mutation.supersededBundleIds[0] !== target[0]!.bundleId ||
-      (binding.desiredAction === "remove" &&
-        (binding.activeProofCount !== 0 || added !== null || binding.bundleId !== null)) ||
-      (binding.desiredAction === "replace" &&
-        (binding.activeProofCount === 0 ||
-          added === null ||
-          added.assetLocator !== binding.assetLocator ||
-          added.custodyRevision.toString() !== binding.custodyRevision ||
-          added.bundleId !== binding.bundleId ||
-          digestEncryptedWalletBackupV2BundleDescriptor(added) !== binding.bundleDescriptorDigest))
-    ) {
-      throw new Error("encrypted wallet backup v2 exact removal mutation is invalid");
-    }
-    const superseded = new Set(mutation.supersededBundleIds);
-    const bundles = currentDescriptors
-      .filter(({ bundleId }) => !superseded.has(bundleId))
-      .map(({ canonicalDescriptor }) =>
-        decodeEncryptedWalletBackupV2BundleDescriptorWire(canonicalDescriptor, this.#context()),
-      );
-    if (added !== null) bundles.push(added);
-    bundles.sort((left, right) => left.bundleId.localeCompare(right.bundleId));
-    const resultHead = createEncryptedWalletBackupV2CurrentHead({
-      realm: this.#realm,
-      walletId: this.#walletId,
-      enrollmentEpoch: this.#enrollmentEpoch,
-      headVersion: head.headVersion + 1,
-      bundles,
-    });
-    return {
-      head: this.#headRow(resultHead, recoveryStatus(head)),
-      descriptors: bundles.map((descriptor) =>
-        this.#descriptorRow(encodeEncryptedWalletBackupV2BundleDescriptor(descriptor)),
-      ),
-    };
   }
 
   async #requeueAcknowledgedDesiredAssets(): Promise<void> {

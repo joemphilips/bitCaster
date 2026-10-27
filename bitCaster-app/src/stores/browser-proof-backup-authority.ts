@@ -565,38 +565,6 @@ export function advanceBrowserProofBackupAuthorityRowToPendingRemoval(
   });
 }
 
-/** Cancel one rejected removal without changing its terminal-classification origin. */
-export function restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-  current: BrowserProofBackupAuthorityRow,
-  proof: BrowserCustodyProofRow,
-  observedAtMs: number,
-): BrowserProofBackupAuthorityRow {
-  const authority = requireBrowserProofBackupAuthorityRow(current);
-  requireProofBinding(authority, proof);
-  if (authority.proofState !== "pending-removal" || authority.terminalAuthority === null) {
-    throw new Error("browser proof backup rejected-removal predecessor is invalid");
-  }
-  if (
-    proof.selectability !== "verified-losing" ||
-    proof.assetKind !== "conditional" ||
-    proof.reservationOperationId !== null
-  ) {
-    throw new Error("browser proof backup rejected-removal proof is invalid");
-  }
-  const time = requireTime(observedAtMs, "proof backup authority time");
-  if (time < proof.receivedAtMs) {
-    throw new Error("browser proof backup authority time is stale");
-  }
-  requireNextProofAuthorityRevision(authority, proof, time);
-  return requireBrowserProofBackupAuthorityRow({
-    ...authority,
-    proofRevision: proof.revision,
-    proofState: proof.selectability,
-    recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
-    updatedAtMs: time,
-  });
-}
-
 /** Retire exact mint-spent proof state without replacing its historical terminal origin. */
 export function retireBrowserProofBackupAuthorityRowAsMintSpent(
   current: BrowserProofBackupAuthorityRow,

@@ -7,7 +7,6 @@ import {
   deriveDurableCustodyArtifactFingerprint,
   digestEncryptedWalletBackupV2TerminalProofCommitment,
   deriveEncryptedWalletBackupV2AssetLocator,
-  decodeEncryptedWalletBackupV2UploadGroup,
   decodeEncryptedWalletBackupV2AssetIdentity,
   encryptedWalletBackupV2LocalAssetKey,
   type EncryptedWalletBackupV2AssetIdentity,
@@ -38,7 +37,6 @@ import {
   advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   createBrowserCompletedLocalProofRemovalMarkerRow,
   createBrowserCompletedProofRemovalMarkerRow,
-  restoreBrowserProofBackupAuthorityRowFromPendingRemoval,
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityForProof,
   decodeBrowserProofBackupAuthorityTableRow,
@@ -57,8 +55,6 @@ import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
 import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
-import { EncryptedWalletBackupV2DexieAuthorityStore } from "../stores/encrypted-wallet-backup-v2-db";
-import type { EncryptedWalletBackupV2PreparedMutationMatch } from "../stores/encrypted-wallet-backup-v2-db";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   deserializeDurableCustodyProofArtifact,
@@ -178,209 +174,6 @@ export async function readBrowserCtfRemoveCompletion(
       requireCurrent(input);
       return completed;
     },
-  );
-}
-
-export interface BrowserCtfRejectedRemoveCancellationInput {
-  readonly database: BitcasterDB;
-  readonly scopeId: string;
-  readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
-  readonly enrollmentEpoch: number;
-  readonly localAssetKey: string;
-  readonly assetLocator: string;
-  readonly rejectedPreparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
-  readonly observedAtMs?: number;
-  readonly lockManager?: Pick<LockManager, "request">;
-  readonly isCurrentProfile?: () => boolean;
-  readonly fault?: "before-commit";
-}
-
-/** Restores local losing custody only after the exact backup candidate was rejected. */
-export async function cancelDefinitivelyRejectedBrowserCtfRemove(
-  input: BrowserCtfRejectedRemoveCancellationInput,
-): Promise<{ readonly kind: "cancelled"; readonly intentId: string }> {
-  requireFinalizeAssetLocator(input);
-  const observedAtMs = input.observedAtMs ?? Date.now();
-  const desiredBefore = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-    input.scopeId,
-    input.localAssetKey,
-  ]);
-  if (desiredBefore === undefined) {
-    throw new Error("browser CTF rejected removal desired asset is missing");
-  }
-  if (
-    decodeEncryptedWalletBackupV2DesiredAssetRow(desiredBefore).removalIntent?.ownerScopeId !==
-    undefined
-  )
-    throw new Error("Owner-bound removal cannot use legacy cancellation");
-  await requireDesiredLocator(
-    decodeEncryptedWalletBackupV2DesiredAssetRow(desiredBefore),
-    input.assetLocator,
-    input.keyHandle,
-  );
-  return withWalletProfileLock(
-    input.scopeId,
-    async () => {
-      requireCurrent(input);
-      const store = authorityStore(input);
-      return input.database.transaction("rw", removalTables(input.database), async () => {
-        const prepared = await store.readPreparedMutation();
-        if (
-          prepared === null ||
-          prepared.mutationId !== input.rejectedPreparedMutation.mutationId ||
-          prepared.requestDigest !== input.rejectedPreparedMutation.requestDigest
-        ) {
-          throw new Error("browser CTF rejected removal prepared candidate is stale");
-        }
-        const group = decodeEncryptedWalletBackupV2UploadGroup({
-          bytes: prepared.canonicalUploadGroup,
-          expectedRequestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
-          expectedContext: {
-            realm: input.keyHandle.realm,
-            walletId: input.keyHandle.walletId,
-            enrollmentEpoch: input.enrollmentEpoch,
-          },
-        });
-        const mutation = group.mutationEvidence.envelope.mutation;
-        if (
-          mutation.mutationId !== prepared.mutationId ||
-          group.mutationEvidence.envelope.requestDigest !== prepared.requestDigest ||
-          prepared.localAssetKey !== input.localAssetKey ||
-          prepared.assetLocator !== input.assetLocator
-        ) {
-          throw new Error("browser CTF rejected removal prepared candidate is foreign");
-        }
-        const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-          input.scopeId,
-          input.localAssetKey,
-        ]);
-        if (rawDesired === undefined) {
-          throw new Error("browser CTF rejected removal desired asset is missing");
-        }
-        const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-        const intent = desired.removalIntent;
-        if (intent?.ownerScopeId !== undefined)
-          throw new Error("Owner-bound removal cannot use legacy cancellation");
-        if (
-          intent === null ||
-          intent.state !== "pending" ||
-          intent.acknowledgedExclusionEvidence !== null ||
-          desired.syncState !== "pending" ||
-          desired.custodyRevision !== intent.targetCustodyRevision ||
-          prepared.custodyRevision !== desired.custodyRevision ||
-          prepared.desiredAction !== desired.desiredAction ||
-          prepared.activeProofCount !== desired.activeProofCount
-        ) {
-          throw new Error("browser CTF rejected removal intent is stale");
-        }
-        requireRemovalIntentProfile(intent, input);
-        const accepted = await store.readAcceptedHead();
-        if (
-          accepted === null ||
-          accepted.headVersion !== intent.expectedHeadVersion ||
-          accepted.activeSetDigest !== intent.expectedActiveSetDigest ||
-          mutation.expectedHeadVersion !== intent.expectedHeadVersion ||
-          mutation.expectedActiveSetDigest !== intent.expectedActiveSetDigest
-        ) {
-          throw new Error("browser CTF rejected removal predecessor head is stale");
-        }
-        const descriptors = await store.listActiveDescriptors();
-        const predecessor = descriptors.filter(
-          ({ assetLocator }) => assetLocator === input.assetLocator,
-        );
-        const predecessorRevision = predecessorCustodyRevision(intent.targetCustodyRevision);
-        if (
-          predecessor.length !== 1 ||
-          predecessor[0]!.custodyRevision !== predecessorRevision ||
-          mutation.supersededBundleIds.length !== 1 ||
-          mutation.supersededBundleIds[0] !== predecessor[0]!.bundleId
-        ) {
-          throw new Error("browser CTF rejected removal predecessor descriptor is stale");
-        }
-        if (
-          (desired.desiredAction === "remove" &&
-            (desired.activeProofCount !== 0 || mutation.addedBundle !== null)) ||
-          (desired.desiredAction === "replace" &&
-            (desired.activeProofCount === 0 ||
-              mutation.addedBundle === null ||
-              mutation.addedBundle.assetLocator !== input.assetLocator ||
-              mutation.addedBundle.custodyRevision.toString() !== desired.custodyRevision))
-        ) {
-          throw new Error("browser CTF rejected removal successor is stale");
-        }
-        const rows = await exactAssetRows(input.database, desired);
-        if (rows.length !== desired.activeProofCount + intent.proofs.length) {
-          throw new Error("browser CTF rejected removal proof set is stale");
-        }
-        const tuples = new Map(intent.proofs.map((tuple) => [tuple.proofId, tuple]));
-        const target = rows.filter(({ proofId }) => tuples.has(proofId));
-        if (target.length !== intent.proofs.length) {
-          throw new Error("browser CTF rejected removal proof set is incomplete");
-        }
-        const authorities = await requireRemovalAuthorities(input, rows);
-        const restoredProofs: BrowserCustodyProofRow[] = [];
-        const restoredAuthorities: BrowserProofBackupAuthorityRow[] = [];
-        for (const proof of target) {
-          const tuple = tuples.get(proof.proofId)!;
-          const authority = authorities.get(proof.proofId)!;
-          if (
-            proof.selectability !== "pending-removal" ||
-            proof.reservationOperationId !== null ||
-            proof.revision !== tuple.proofRevision + 1 ||
-            proof.proofFingerprint !== tuple.proofFingerprint
-          ) {
-            throw new Error("browser CTF rejected removal proof authority is stale");
-          }
-          const proofCommitment = await requireTerminalAuthority(input, desired, proof, authority);
-          if (proofCommitment !== tuple.proofCommitment) {
-            throw new Error("browser CTF rejected removal proof commitment is stale");
-          }
-          requirePendingRemovalAuthority(proof, authority, intent, proofCommitment);
-          await requireProofReconciliationFence(input.database, proof, authority);
-          const restored = decodeBrowserCustodyProofRow({
-            ...proof,
-            revision: nextProofRevision(proof.revision),
-            selectability: "verified-losing",
-            reservationOperationId: null,
-          });
-          restoredProofs.push(restored);
-          restoredAuthorities.push(
-            restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-              authority,
-              restored,
-              observedAtMs,
-            ),
-          );
-        }
-        const restoredProofCount = desired.activeProofCount + intent.proofs.length;
-        if (restoredProofCount < 1 || restoredProofCount > MAX_PROOFS) {
-          throw new Error("browser CTF rejected removal predecessor proof count is invalid");
-        }
-        requireCurrent(input);
-        await input.database.custodyProofs.bulkPut(restoredProofs);
-        await input.database.custodyProofBackupAuthorities.bulkPut(restoredAuthorities);
-        await input.database.encryptedWalletBackupV2DesiredAssets.put({
-          ...desired,
-          custodyRevision: predecessorRevision,
-          activeProofCount: restoredProofCount,
-          desiredAction: "replace",
-          syncState: "acknowledged",
-          removalIntent: null,
-        });
-        await input.database.encryptedWalletBackupV2PreparedMutations.delete([
-          input.scopeId,
-          input.keyHandle.realm,
-          input.keyHandle.walletId,
-          input.enrollmentEpoch,
-        ]);
-        if (input.fault === "before-commit") {
-          throw new Error("browser CTF rejected removal cancellation fault");
-        }
-        requireCurrent(input);
-        return { kind: "cancelled", intentId: intent.intentId } as const;
-      });
-    },
-    input.lockManager,
   );
 }
 
@@ -1198,19 +991,6 @@ function localRemovalAsset(asset: EncryptedWalletBackupV2AssetIdentity): {
   return { conditionId: parts[1]!, outcomeCollectionId: parts[2]! };
 }
 
-function authorityStore(
-  input: BrowserCtfBackupContext,
-): EncryptedWalletBackupV2DexieAuthorityStore {
-  return new EncryptedWalletBackupV2DexieAuthorityStore({
-    database: input.database,
-    scopeId: input.scopeId,
-    realm: input.keyHandle.realm,
-    walletId: input.keyHandle.walletId,
-    enrollmentEpoch: input.enrollmentEpoch,
-    requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
-  });
-}
-
 function requireManagedRemovalOwnerScopeId(value: unknown): string {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
     throw new Error("Managed removal requires its original Owner identity");
@@ -1705,17 +1485,6 @@ function nextProofRevision(revision: number): number {
     throw new Error("browser CTF removal proof revision exceeds the limit");
   }
   return revision + 1;
-}
-
-function predecessorCustodyRevision(revision: string): string {
-  if (!/^(?:0|[1-9][0-9]{0,19})$/.test(revision)) {
-    throw new Error("browser CTF rejected removal custody revision is invalid");
-  }
-  const parsed = BigInt(revision);
-  if (parsed < 1n) {
-    throw new Error("browser CTF rejected removal custody revision is invalid");
-  }
-  return (parsed - 1n).toString();
 }
 
 async function completedRemovalReplay(

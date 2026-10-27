@@ -5,7 +5,6 @@ import {
   collectAllEncryptedWalletBackupV2DescriptorPages,
   decodeEncryptedWalletBackupV2UploadGroup,
   createEncryptedWalletBackupV2CurrentHead,
-  decryptEncryptedWalletBackupV2ProofSetBundle,
   deriveEncryptedWalletBackupV2AssetLocator,
   digestEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
@@ -21,12 +20,9 @@ import {
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2CollectedHeadEvidence,
-  type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
-import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import Dexie from "dexie";
 import { EncryptedWalletBackupV2HttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupV2HttpAdapter";
 import {
@@ -35,16 +31,11 @@ import {
 } from "../stores/encrypted-wallet-backup-v2-db";
 import {
   prepareBrowserEncryptedWalletBackupV2AssetBundle,
-  readBrowserEncryptedWalletBackupV2ExactLocalProofRows,
   readBrowserEncryptedWalletBackupV2AssetSnapshot,
 } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import type { BitcasterDB } from "../stores/proof-db";
-import {
-  cancelDefinitivelyRejectedBrowserCtfRemove,
-  finalizeBrowserCtfRemove,
-} from "./browserCtfRemoveCoordinator";
 
 export type BrowserEncryptedWalletBackupV2WorkerResult =
   | { readonly kind: "idle" }
@@ -428,27 +419,6 @@ async function sendAndCommit(
     preparedMutation,
     acknowledgedAtMs: input.nowUnixSeconds() * 1000,
   });
-  const desired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-    input.scopeId,
-    binding.localAssetKey,
-  ]);
-  if (
-    desired !== undefined &&
-    decodeEncryptedWalletBackupV2DesiredAssetRow(desired).removalIntent !== null
-  ) {
-    await finalizeBrowserCtfRemove({
-      database: input.database,
-      scopeId: input.scopeId,
-      keyHandle: input.keyHandle,
-      enrollmentEpoch: input.enrollmentEpoch,
-      localAssetKey: binding.localAssetKey,
-      assetLocator: binding.assetLocator,
-      signal: input.signal,
-      lockManager: input.lockManager,
-      isCurrentProfile: input.isCurrentProfile,
-      observedAtMs: input.nowUnixSeconds() * 1000,
-    });
-  }
 }
 
 async function recoverTransportError(
@@ -460,57 +430,6 @@ async function recoverTransportError(
   error: unknown,
 ): Promise<BrowserEncryptedWalletBackupV2WorkerResult> {
   if (!(error instanceof EncryptedWalletBackupV2HttpTransportError)) throw error;
-  const supportsRemovalReconciliation =
-    error.code === "transport-failure" ||
-    error.code === "deadline-exceeded" ||
-    error.code === "replay-rejected" ||
-    error.code === "concurrency-exhausted" ||
-    error.code === "unavailable" ||
-    error.code === "overloaded" ||
-    error.code === "rate-limited" ||
-    error.code === "conflict" ||
-    error.code === "quota-exceeded";
-  const pendingRemoval =
-    supportsRemovalReconciliation && (await hasExactPendingRemovalIntent(input, binding));
-  let removalReconciliation: LostRemovalReconciliation | null = null;
-  if (pendingRemoval && !input.signal.aborted) {
-    removalReconciliation = await reconcileLostRemoval(
-      input,
-      store,
-      preparedMutation,
-      binding,
-      group,
-    );
-    if (removalReconciliation.kind === "committed") return { kind: "committed" };
-  }
-  if (pendingRemoval && (error.code === "conflict" || error.code === "quota-exceeded")) {
-    if (removalReconciliation?.kind !== "disproved") {
-      return {
-        kind: "retry-pending",
-        minimumRetryDelayMilliseconds: minimumRetryDelayMilliseconds(error),
-      };
-    }
-    requireCurrent(input);
-    await store.markCompetingHeadRecoveryRequired({
-      collectedHeadEvidence: removalReconciliation.collectedHeadEvidence,
-    });
-    requireCurrent(input);
-    await cancelDefinitivelyRejectedBrowserCtfRemove({
-      database: input.database,
-      scopeId: input.scopeId,
-      keyHandle: input.keyHandle,
-      enrollmentEpoch: input.enrollmentEpoch,
-      localAssetKey: binding.localAssetKey,
-      assetLocator: binding.assetLocator,
-      rejectedPreparedMutation: preparedMutation,
-      observedAtMs: input.nowUnixSeconds() * 1000,
-      lockManager: input.lockManager,
-      isCurrentProfile: input.isCurrentProfile,
-    });
-    return error.code === "conflict"
-      ? { kind: "conflict-recovered" }
-      : { kind: "service-quota-pending" };
-  }
   if (error.code === "conflict" || error.code === "quota-exceeded") {
     const reconciliation = await reconcileRejectedReplacement(
       input,
@@ -554,7 +473,7 @@ async function recoverTransportError(
   throw error;
 }
 
-type LostRemovalReconciliation =
+type ReplacementReconciliation =
   | { readonly kind: "committed" }
   | {
       readonly kind: "disproved";
@@ -568,7 +487,7 @@ async function reconcileRejectedReplacement(
   preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch,
   binding: PreparedBinding,
   group: ReturnType<typeof decodeEncryptedWalletBackupV2UploadGroup>,
-): Promise<LostRemovalReconciliation> {
+): Promise<ReplacementReconciliation> {
   try {
     const predecessor = await collectedHead(store);
     const mutation = group.mutationEvidence.envelope.mutation;
@@ -624,254 +543,6 @@ async function reconcileRejectedReplacement(
     if (!input.isCurrentProfile() || input.signal.aborted) throw error;
     return { kind: "indeterminate" };
   }
-}
-
-async function hasExactPendingRemovalIntent(
-  input: BrowserEncryptedWalletBackupV2WorkerInput,
-  binding: PreparedBinding,
-): Promise<boolean> {
-  const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-    input.scopeId,
-    binding.localAssetKey,
-  ]);
-  if (rawDesired === undefined) return false;
-  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-  const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
-    keyHandle: input.keyHandle,
-    mintUrl: desired.mintUrl,
-    unit: desired.unit,
-    assetIdentity: desired.assetIdentity,
-  });
-  return (
-    desired.localAssetKey === binding.localAssetKey &&
-    assetLocator === binding.assetLocator &&
-    desired.custodyRevision === binding.custodyRevision &&
-    desired.desiredAction === binding.desiredAction &&
-    desired.activeProofCount === binding.activeProofCount &&
-    desired.syncState === "pending" &&
-    desired.removalIntent?.state === "pending"
-  );
-}
-
-async function reconcileLostRemoval(
-  input: BrowserEncryptedWalletBackupV2WorkerInput,
-  store: EncryptedWalletBackupV2DexieAuthorityStore,
-  preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch,
-  binding: PreparedBinding,
-  group: ReturnType<typeof decodeEncryptedWalletBackupV2UploadGroup>,
-): Promise<LostRemovalReconciliation> {
-  const mutation = group.mutationEvidence.envelope.mutation;
-  if (mutation.supersededBundleIds.length !== 1) return { kind: "indeterminate" };
-  let resultCommitted = false;
-  try {
-    const predecessor = await collectedHead(store);
-    if (
-      mutation.expectedHeadVersion !== predecessor.head.headVersion ||
-      mutation.expectedActiveSetDigest !== predecessor.head.activeSetDigest
-    ) {
-      return { kind: "indeterminate" };
-    }
-    const targetBundles = predecessor.bundles.filter(
-      ({ assetLocator }) => assetLocator === binding.assetLocator,
-    );
-    if (
-      targetBundles.length !== 1 ||
-      targetBundles[0]!.bundleId !== mutation.supersededBundleIds[0]
-    ) {
-      return { kind: "indeterminate" };
-    }
-    const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-      input.scopeId,
-      binding.localAssetKey,
-    ]);
-    if (rawDesired === undefined) return { kind: "indeterminate" };
-    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-    const intent = desired.removalIntent;
-    if (
-      intent === null ||
-      desired.custodyRevision !== binding.custodyRevision ||
-      desired.desiredAction !== binding.desiredAction ||
-      desired.activeProofCount !== binding.activeProofCount
-    )
-      return { kind: "indeterminate" };
-    const expectedBundles = predecessor.bundles.filter(
-      ({ bundleId }) => !mutation.supersededBundleIds.includes(bundleId),
-    );
-    if (binding.desiredAction === "remove") {
-      if (binding.activeProofCount !== 0 || mutation.addedBundle !== null) {
-        return { kind: "indeterminate" };
-      }
-    } else {
-      const successor = mutation.addedBundle;
-      if (
-        successor === null ||
-        successor.assetLocator !== binding.assetLocator ||
-        successor.custodyRevision.toString() !== binding.custodyRevision
-      )
-        return { kind: "indeterminate" };
-      expectedBundles.push(successor);
-    }
-    expectedBundles.sort((left, right) => left.bundleId.localeCompare(right.bundleId));
-    const expectedHead = collectEncryptedWalletBackupV2DescriptorPages(
-      enumerateEncryptedWalletBackupV2DescriptorPages({
-        head: createEncryptedWalletBackupV2CurrentHead({
-          realm: input.keyHandle.realm,
-          walletId: input.keyHandle.walletId,
-          enrollmentEpoch: input.enrollmentEpoch,
-          headVersion: predecessor.head.headVersion + 1,
-          bundles: expectedBundles,
-        }),
-        bundles: expectedBundles,
-      }),
-    );
-    const current = await collectHead(input);
-    if (!sameCollectedHead(current, expectedHead)) {
-      return { kind: "disproved", collectedHeadEvidence: current };
-    }
-    const targetProofIds = new Set(intent.proofs.map(({ proofId }) => proofId));
-    const expectedAsset: EncryptedWalletBackupV2AssetIdentity = {
-      mintUrl: desired.mintUrl,
-      unit: desired.unit,
-      assetIdentity: desired.assetIdentity,
-    };
-    const localRows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
-      database: input.database,
-      scopeId: input.scopeId,
-      asset: expectedAsset,
-    });
-    const decrypted = await readAndDecryptBundle(
-      input,
-      targetBundles[0]!,
-      BigInt(targetBundles[0]!.custodyRevision),
-      expectedAsset,
-    );
-    if (!sameProofMaterialSet(localRows, decrypted.proofs)) return { kind: "indeterminate" };
-    if (
-      intent.proofs.length === 0 ||
-      intent.proofs.some(
-        (tuple) =>
-          !decrypted.proofs.some(
-            (entry) =>
-              entry.proofId === tuple.proofId &&
-              entry.terminalSeal?.proofCommitment === tuple.proofCommitment,
-          ),
-      )
-    )
-      return { kind: "indeterminate" };
-    if (mutation.addedBundle !== null) {
-      const successorProofs = await readAndDecryptBundle(
-        input,
-        mutation.addedBundle,
-        BigInt(mutation.addedBundle.custodyRevision),
-        expectedAsset,
-      );
-      const survivors = localRows.filter((row) => !targetProofIds.has(row.proofId));
-      if (!sameProofMaterialSet(survivors, successorProofs.proofs)) {
-        return { kind: "indeterminate" };
-      }
-      if (
-        successorProofs.proofs.some(
-          (entry) =>
-            targetProofIds.has(entry.proofId) ||
-            (entry.terminalSeal !== undefined &&
-              intent.proofs.some(
-                (tuple) => entry.terminalSeal!.proofCommitment === tuple.proofCommitment,
-              )),
-        )
-      )
-        return { kind: "indeterminate" };
-    }
-    requireCurrent(input);
-    await store.commitExactPreparedRemovalHead({
-      binding: {
-        ...binding,
-        bundleId: mutation.addedBundle?.bundleId ?? null,
-        bundleDescriptorDigest:
-          mutation.addedBundle === null
-            ? null
-            : digestEncryptedWalletBackupV2BundleDescriptor(mutation.addedBundle),
-      },
-      collectedHeadEvidence: current,
-      preparedMutation,
-      acknowledgedAtMs: input.nowUnixSeconds() * 1000,
-    });
-    resultCommitted = true;
-    await finalizeBrowserCtfRemove({
-      database: input.database,
-      scopeId: input.scopeId,
-      keyHandle: input.keyHandle,
-      enrollmentEpoch: input.enrollmentEpoch,
-      localAssetKey: binding.localAssetKey,
-      assetLocator: binding.assetLocator,
-      signal: input.signal,
-      lockManager: input.lockManager,
-      isCurrentProfile: input.isCurrentProfile,
-      observedAtMs: input.nowUnixSeconds() * 1000,
-    });
-    return { kind: "committed" };
-  } catch (error) {
-    if (resultCommitted || !input.isCurrentProfile() || input.signal.aborted) throw error;
-    return { kind: "indeterminate" };
-  }
-}
-
-async function readAndDecryptBundle(
-  input: BrowserEncryptedWalletBackupV2WorkerInput,
-  descriptor: EncryptedWalletBackupV2BundleDescriptor,
-  custodyRevision: bigint,
-  asset: {
-    readonly mintUrl: string;
-    readonly unit: string;
-    readonly assetIdentity: string;
-  },
-) {
-  const objects = [];
-  for (const { objectId } of descriptor.objects) {
-    const requestProof = await proof(input, "object", objectId, new Uint8Array());
-    requireCurrent(input);
-    objects.push(
-      await input.remote.readObject({
-        requestProof,
-        objectId,
-        expectedDescriptor: descriptor,
-        signal: input.signal,
-      }),
-    );
-  }
-  return decryptEncryptedWalletBackupV2ProofSetBundle({
-    keyHandle: input.keyHandle,
-    seed: input.seed,
-    expectedAsset: asset,
-    custodyRevision,
-    runtime: input.runtime,
-    descriptor,
-    objects,
-  });
-}
-
-function sameProofMaterialSet(
-  localRows: readonly ReturnType<
-    typeof import("../stores/durable-custody-types").decodeBrowserCustodyProofRow
-  >[],
-  remoteProofs: readonly { readonly proofId: string; readonly proof: unknown }[],
-): boolean {
-  if (localRows.length !== remoteProofs.length) return false;
-  const expected = new Map(localRows.map((row) => [row.proofId, row.proofFingerprint]));
-  const seen = new Set<string>();
-  for (const entry of remoteProofs) {
-    if (seen.has(entry.proofId)) return false;
-    seen.add(entry.proofId);
-    let fingerprint: string;
-    try {
-      fingerprint = deriveDurableCustodyArtifactFingerprint(
-        serializeDurableCustodyProofArtifact(entry.proof as never),
-      );
-    } catch {
-      return false;
-    }
-    if (expected.get(entry.proofId) !== fingerprint) return false;
-  }
-  return seen.size === expected.size;
 }
 
 function minimumRetryDelayMilliseconds(error: EncryptedWalletBackupV2HttpTransportError): number {
@@ -963,10 +634,12 @@ async function selectPendingAsset(
   store: EncryptedWalletBackupV2DexieAuthorityStore,
   head: Awaited<ReturnType<typeof collectedHead>>,
 ) {
-  const desired = await desiredRows(input.database, input.scopeId);
-  for (const removal of desired.filter(
-    ({ desiredAction, removalIntent }) => desiredAction === "remove" || removalIntent !== null,
-  )) {
+  // Managed removal intents are bound to one backup Owner. Only the Owner worker may
+  // publish or acknowledge them, so this ownerless worker leaves them untouched.
+  const desired = (await desiredRows(input.database, input.scopeId)).filter(
+    ({ removalIntent }) => removalIntent === null,
+  );
+  for (const removal of desired.filter(({ desiredAction }) => desiredAction === "remove")) {
     const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
       keyHandle: input.keyHandle,
       mintUrl: removal.mintUrl,
@@ -981,7 +654,7 @@ async function selectPendingAsset(
     }
     if (!freshHead.bundles.some((bundle) => bundle.assetLocator === assetLocator)) {
       requireCurrent(input);
-      const outcome = await store.acknowledgeCurrentHeadRemoval({
+      await store.acknowledgeCurrentHeadRemoval({
         binding: {
           localAssetKey: removal.localAssetKey,
           assetLocator,
@@ -992,20 +665,6 @@ async function selectPendingAsset(
         collectedHeadEvidence: freshHead,
         acknowledgedAtMs: input.nowUnixSeconds() * 1000,
       });
-      if (outcome === "acknowledged") {
-        await finalizeBrowserCtfRemove({
-          database: input.database,
-          scopeId: input.scopeId,
-          keyHandle: input.keyHandle,
-          enrollmentEpoch: input.enrollmentEpoch,
-          localAssetKey: removal.localAssetKey,
-          assetLocator,
-          signal: input.signal,
-          lockManager: input.lockManager,
-          isCurrentProfile: input.isCurrentProfile,
-          observedAtMs: input.nowUnixSeconds() * 1000,
-        });
-      }
       return "locally-committed" as const;
     }
     return { desired: removal, assetLocator } as const;

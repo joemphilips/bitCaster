@@ -27,7 +27,6 @@ import {
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityRow,
   retireBrowserProofBackupAuthorityRowAsMintSpent,
-  restoreBrowserProofBackupAuthorityRowFromPendingRemoval,
 } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 
@@ -261,25 +260,6 @@ describe("browser proof backup authority", () => {
       terminalOperationId: "redeem",
       terminalAuthority: { kind: "local-operation", operationId: "redeem" },
     });
-    expect(
-      restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-        pending,
-        {
-          ...losing,
-          selectability: "verified-losing",
-          reservationOperationId: null,
-          revision: 3,
-        },
-        5,
-      ),
-    ).toMatchObject({
-      proofState: "verified-losing",
-      proofRevision: 3,
-      backupState: "local-only",
-      admissionOperationId: "admission",
-      terminalOperationId: "redeem",
-      terminalAuthority: { kind: "local-operation", operationId: "redeem" },
-    });
     expect(() =>
       advanceBrowserProofBackupAuthorityRowToPendingRemoval(
         authority,
@@ -313,18 +293,6 @@ describe("browser proof backup authority", () => {
     );
     expect(pending).toMatchObject({
       proofState: "pending-removal",
-      terminalAuthority: { kind: "remote-seal" },
-      backupState: "remote-backed",
-      backupRecordCommitment: "66".repeat(32),
-    });
-    const restored = restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-      pending,
-      { ...proof, selectability: "verified-losing", reservationOperationId: null, revision: 3 },
-      4,
-    );
-    expect(restored).toMatchObject({
-      proofState: "verified-losing",
-      proofRevision: 3,
       terminalAuthority: { kind: "remote-seal" },
       backupState: "remote-backed",
       backupRecordCommitment: "66".repeat(32),

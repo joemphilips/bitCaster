@@ -18,11 +18,7 @@ import { createMixedCtfRemoveFixture } from "./fixtures/ownerMixedCtfRemoveFixtu
 import { removePortfolioPosition } from "../browserPortfolioRemove";
 import type { BrowserCtfRemoveTarget } from "../browserCtfRemoveCoordinator";
 import type { EncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk";
-import {
-  cancelDefinitivelyRejectedBrowserCtfRemove,
-  finalizeBrowserCtfRemove,
-  startBrowserCtfRemove,
-} from "../browserCtfRemoveCoordinator";
+import { finalizeBrowserCtfRemove, startBrowserCtfRemove } from "../browserCtfRemoveCoordinator";
 
 const mocks = vi.hoisted(() => ({
   database: null as BitcasterDB | null,
@@ -332,12 +328,6 @@ describe("mixed local-only and remote-backed CTF removal", () => {
     await expect(mixed.cycle()).rejects.toThrow("controlled Owner refusal");
     const prepared = await mixed.remote.store.readPreparedMutation();
     expect(prepared).not.toBeNull();
-    await expect(
-      cancelDefinitivelyRejectedBrowserCtfRemove({
-        ...mixed.final(),
-        rejectedPreparedMutation: prepared!,
-      }),
-    ).rejects.toThrow("legacy cancellation");
     expect(
       await mixed.database.custodyProofs.get([mixed.scopeId, mixed.managedProof.proofId]),
     ).toMatchObject({ selectability: "pending-removal" });

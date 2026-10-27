@@ -13,7 +13,6 @@ import { createBrowserEncryptedWalletBackupV2RuntimeDriver } from "../encryptedW
 import { requireBrowserWalletNewWritePermission } from "../browserWalletNewWritePermission";
 import {
   startBrowserCtfRemove,
-  cancelDefinitivelyRejectedBrowserCtfRemove,
   finalizeBrowserCtfRemove,
   readBrowserCtfRemoveCompletion,
   discoverBrowserCtfRemovals,
@@ -588,25 +587,6 @@ it("recognizes reopened legacy-unbound intent without adopting its owner or dele
   ]);
   expect(retained?.removalIntent).toEqual(legacy);
   expect(f.remote.remote.mutateHead).toHaveBeenCalledTimes(1);
-});
-
-it("legacy rejection cancellation refuses an Owner-bound pending intent before changing state", async () => {
-  const f = await fixture();
-  await startBrowserCtfRemove(f.input());
-  const before = await f.database.encryptedWalletBackupV2DesiredAssets.get([
-    f.scopeId,
-    f.desired.localAssetKey,
-  ]);
-  await expect(
-    cancelDefinitivelyRejectedBrowserCtfRemove({
-      ...f.final(),
-      rejectedPreparedMutation: { mutationId: "11".repeat(16), requestDigest: "22".repeat(32) },
-    }),
-  ).rejects.toThrow("legacy cancellation");
-  expect(
-    await f.database.encryptedWalletBackupV2DesiredAssets.get([f.scopeId, f.desired.localAssetKey]),
-  ).toEqual(before);
-  expect(await f.database.custodyProofs.count()).toBe(2);
 });
 
 it("recovery-required state blocks finalization even when the unchanged head excludes the asset", async () => {
