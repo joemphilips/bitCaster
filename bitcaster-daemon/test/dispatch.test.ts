@@ -14,6 +14,7 @@ import {
   getEncodedToken,
   hashToCurve,
   pointFromHex,
+  type CounterSource,
   type Proof,
   type OperationCounters,
 } from '@cashu/cashu-ts'
@@ -57,10 +58,7 @@ import {
   writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
-import {
-  createDaemonCounterSource,
-  splitAvailableMsatProofsForCtfCollateral,
-} from '../src/walletOps.ts'
+import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
@@ -71,7 +69,6 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
-import { reserveDaemonKeysetCounter } from '../src/state.ts'
 import type { OrderDraftParams, ScorePurchaseConsent, SubmitOrderParams } from '../src/protocol.ts'
 import { retainNativeOrderLink } from './support/nativeOrderOwnership.ts'
 
@@ -804,12 +801,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         incarnationId: 'wallet-receive-bind-test',
         observedAtMs: Date.now(),
       })
-      await reserveDaemonKeysetCounter(
-        keysetId,
-        1,
-        { fence, observedAtMs: Date.now() },
-        { normalizedMint: 'https://mint-a.example', unit: 'msat' },
-      )
+      let reserved: OperationCounters | undefined
       let completeCalled = false
       await assert.rejects(
         () =>
@@ -823,8 +815,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 regularKeysets: [{ keysetId, unit: 'msat', active: true }],
                 conditionalKeysets: [],
               }),
-              createCashuWallet(mintUrl) {
+              createCashuWallet(mintUrl, _unit, counterSource) {
                 assert.equal(mintUrl, 'https://mint-a.example')
+                assert.ok(counterSource, 'receive must supply its speculative counter source')
                 const output = OutputData.createSingleData(
                   Amount.from(7),
                   keysetId,
@@ -839,7 +832,15 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   async prepareSwapToReceive(receivedToken, config) {
                     assert.equal(receivedToken, token)
                     assert.deepEqual(config?.proofsWeHave, [])
-                    config?.onCountersReserved?.({ keysetId, start: 0, count: 1 })
+                    // A real wallet reserves its output counters from the supplied source.
+                    const range = await counterSource.reserve(keysetId, 1)
+                    reserved = {
+                      keysetId,
+                      start: range.start,
+                      count: range.count,
+                      next: range.start + range.count,
+                    }
+                    config?.onCountersReserved?.(reserved)
                     return {
                       amount: Amount.from(7),
                       fees: Amount.zero(),
@@ -850,12 +851,23 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   },
                   async completeSwap() {
                     completeCalled = true
-                    const custodyRows = await withDaemonStateSqliteTransaction(
+                    const { custodyRows, counters } = await withDaemonStateSqliteTransaction(
                       profileDir(),
-                      (database) =>
-                        database.prepare('SELECT operation_id FROM custody_operations').all(),
+                      (database) => ({
+                        custodyRows: database
+                          .prepare('SELECT operation_id FROM custody_operations')
+                          .all(),
+                        counters: database
+                          .prepare(
+                            'SELECT next_counter FROM target_keyset_counters WHERE keyset_id = ?',
+                          )
+                          .all(keysetId)
+                          .map((row) => Number(row.next_counter)),
+                      }),
                     )
                     assert.equal(custodyRows.length, 1)
+                    assert.ok(reserved)
+                    assert.deepEqual(counters, [reserved.next])
                     return { keep: [{ ...cashuProof(7, 'fresh-secret'), id: keysetId }], send: [] }
                   },
                   async checkProofsStates() {
@@ -1513,7 +1525,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         },
         {
           getCustodyFence: () => fence,
-          createCashuWallet: () => ({
+          createCashuWallet: (_mintUrl, _unit, counterSource) => ({
             loadMint: async () => {},
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
@@ -1522,7 +1534,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               assert.equal(proofs[0]?.secret, input.secret)
               const { sendOutputs, keepOutputs } = await deterministicDispatchOutputs({
                 walletSeedHex: secrets.walletSeedHex,
-                fence,
+                counterSource,
                 keysetId,
                 sendAmounts: [4, 1],
                 keepAmounts: [2, 1],
@@ -1654,7 +1666,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         }
         const dispatchDeps = {
           getCustodyFence: () => fence,
-          createCashuWallet: () => ({
+          createCashuWallet: (_mintUrl, _unit, counterSource) => ({
             loadMint: async () => {},
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
@@ -1665,7 +1677,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               const { sendOutputs: scoreOutputs, keepOutputs: scoreKeepOutputs } =
                 await deterministicDispatchOutputs({
                   walletSeedHex: secrets.walletSeedHex,
-                  fence,
+                  counterSource,
                   keysetId,
                   sendAmounts: [1_000, 1_000],
                   keepAmounts: [2_000, 4_000],
@@ -4298,7 +4310,7 @@ function cashuProof(amount: number, secret: string): Proof {
 
 async function deterministicDispatchOutputs(input: {
   walletSeedHex: string
-  fence: Parameters<typeof withDurableCustodyUnitOfWork>[1]
+  counterSource: CounterSource | undefined
   keysetId: string
   sendAmounts: number[]
   keepAmounts: number[]
@@ -4309,11 +4321,9 @@ async function deterministicDispatchOutputs(input: {
     'function',
     'deterministic dispatch fixture needs a counter callback',
   )
-  const counterSource = createDaemonCounterSource(
-    () => ({ fence: input.fence, observedAtMs: Date.now() }),
-    { normalizedMint: 'https://mint-a.example', unit: 'msat' },
-  )
-  const range = await counterSource.reserve(
+  // A real wallet reserves its output counters from the source that the daemon supplies.
+  assert.ok(input.counterSource, 'deterministic dispatch fixture needs the wallet counter source')
+  const range = await input.counterSource.reserve(
     input.keysetId,
     input.sendAmounts.length + input.keepAmounts.length,
   )
