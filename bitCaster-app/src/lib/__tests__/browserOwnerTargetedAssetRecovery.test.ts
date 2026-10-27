@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
+import { createSpeculativeCounterTranscript } from "@bitcaster/client-sdk/speculativeCounterTranscript";
 import {
   Amount,
   OutputData,
@@ -11,8 +12,10 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import "fake-indexeddb/auto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 import { getBoundedCanonicalRegularProofs } from "../../stores/proof-db";
 import { executeBrowserDurableOutgoingCashuTransfer } from "../browserDurableOutgoingCashuTransfer";
+import { bindBrowserOutgoingCounterPreparation } from "../browserOutgoingCounterPreparation";
 import {
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset,
@@ -93,7 +96,21 @@ for (const receiptFault of ["missing", "foreign"] as const)
 it("spends a restored proof through the durable outgoing custody transaction", async () => {
   const f = await fixture();
   expect(await recoverBrowserTargetedAsset(f.input)).toEqual({ kind: "restored-backup" });
-  const output = OutputData.createSingleDeterministicData(1, f.input.seed, 1, keysetId);
+  // Production sends bind a speculative counter transcript to the exact send
+  // operation. Bind one over the real counter store that the restore advanced.
+  const counterContext = { mintUrl: f.input.asset.mintUrl, unit: "msat" };
+  const counterStore = new BrowserWalletCounterDexieStore({
+    database: f.database,
+    scopeId: f.input.scopeId,
+    isCurrentProfile: f.input.isCurrentProfile,
+  });
+  const transcript = createSpeculativeCounterTranscript([
+    await counterStore.readSnapshotInContext(counterContext, keysetId),
+  ]);
+  const { start: sendCounter } = await transcript.counterSource.reserve(keysetId, 1);
+  // The restored backup recorded counter 0 as used, so the send starts at 1.
+  expect(sendCounter).toBe(1);
+  const output = OutputData.createSingleDeterministicData(1, f.input.seed, sendCounter, keysetId);
   const point = pointFromHex(output.blindedMessage.B_);
   const signature = createBlindSignature(point, privateKey, keysetId);
   const dleq = createDLEQProof(point, privateKey);
@@ -126,7 +143,7 @@ it("spends a restored proof through the durable outgoing custody transaction", a
         f.database,
       );
       expect(available).toHaveLength(1);
-      return serializeDurableWalletSendOperation({
+      const operation = serializeDurableWalletSendOperation({
         operationId: "wallet-send:owner-restored-spend",
         mintUrl: f.input.asset.mintUrl,
         unit: "msat",
@@ -140,6 +157,12 @@ it("spends a restored proof through the durable outgoing custody transaction", a
           unselectedProofs: [],
         },
       });
+      bindBrowserOutgoingCounterPreparation(operation, {
+        transcript,
+        counterStore,
+        counterContext,
+      });
+      return operation;
     },
     preflightFundedAsset: async () => undefined,
     keepProofDerivationLocators: [],
@@ -171,6 +194,10 @@ it("spends a restored proof through the durable outgoing custody transaction", a
   expect(
     (await f.database.custodyProofs.get([f.input.scopeId, f.local.proofId]))?.selectability,
   ).toBe("spent");
+  expect(await counterStore.readSnapshotInContext(counterContext, keysetId)).toEqual({
+    keysetId,
+    nextCounter: 2,
+  });
 });
 
 it("rolls back owner custody, desired count, counters and coverage when the final owner fence fails", async () => {
