@@ -89,6 +89,10 @@ import { refreshOrderBook } from "@/lib/orderBookRefresh";
 import { getExactUnitBalance, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import {
+  useOrderSettlementObservations,
+  type OrderSettlementObservation,
+} from "@/stores/orderSettlementObservations";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import {
@@ -1342,7 +1346,32 @@ export function MarketDetailPage() {
     message: string;
     reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
     reviewedFeeIdentityKey?: string;
+    /** A matched order that waits for its authoritative final status. */
+    settlingOrder?: SettlingOrder;
   } | null>(null);
+  const settlingOrder = tradeSubmitStatus?.settlingOrder ?? null;
+  useEffect(() => {
+    if (settlingOrder === null) return;
+    // The order status reader publishes these observations after each
+    // lifecycle or settlement notification. Replace the notice only with an
+    // observation for the same order, wallet, and route.
+    const settle = (observation: OrderSettlementObservation | undefined) => {
+      if (
+        observation?.walletId !== settlingOrder.walletId ||
+        observation.marketId !== settlingOrder.marketId
+      )
+        return;
+      const notice = settledOrderNotice(observation.status);
+      if (notice === null) return;
+      setTradeSubmitStatus((current) =>
+        current?.settlingOrder === settlingOrder ? notice : current,
+      );
+    };
+    settle(useOrderSettlementObservations.getState().byOrderId[settlingOrder.orderId]);
+    return useOrderSettlementObservations.subscribe((state) =>
+      settle(state.byOrderId[settlingOrder.orderId]),
+    );
+  }, [settlingOrder]);
   const clearCompletedTradeNotice = useCallback(() => {
     setTradeSubmitStatus((status) => {
       if (status === null) return null;
@@ -2499,6 +2528,18 @@ export function MarketDetailPage() {
             });
             break;
           case "matched":
+            // The order is reserved, not complete. The settled status replaces
+            // this notice after the mint commit or a settlement failure.
+            setTradeSubmitStatus({
+              kind: "info",
+              message: t("trade.orderSettling"),
+              settlingOrder: {
+                orderId: response.orderId,
+                walletId: submittedWalletId,
+                marketId: ticket.marketId,
+              },
+            });
+            break;
           case "filled":
           case "expired":
           case "evicted_capacity":
@@ -3164,4 +3205,33 @@ export function MarketDetailPage() {
       )}
     </>
   );
+}
+
+interface SettlingOrder {
+  readonly orderId: string;
+  readonly walletId: string;
+  readonly marketId: string;
+}
+
+/** The final trade notice for a settled order, or null while it can still settle. */
+function settledOrderNotice(
+  status: OrderSettlementObservation["status"],
+): { kind: "info" | "success" | "error"; message: string } | null {
+  switch (status) {
+    case "resting":
+    case "matched":
+    case "partially_filled":
+      return null;
+    case "filled":
+      return { kind: "success", message: "Order filled." };
+    case "failed":
+      return { kind: "error", message: "Order failed." };
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
+      return { kind: "info", message: `Order ${status.replace("_", " ")}.` };
+    default:
+      return assertNever(status);
+  }
 }

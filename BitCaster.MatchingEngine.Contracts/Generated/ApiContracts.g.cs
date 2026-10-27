@@ -1504,7 +1504,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
+    /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order that reserves its complete amount is `matched`, and the submission response reports `matched`. Its order status becomes `filled` after its settlement group is `Confirmed`, or `failed` when the group ends in another terminal status. A public FOK order that cannot reserve its complete amount is `cancelled`. The engine also reports `failed` when it cannot process an accepted order. An internal GTC quote can rest or partially fill.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]

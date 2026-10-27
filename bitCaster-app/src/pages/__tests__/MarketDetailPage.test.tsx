@@ -41,6 +41,7 @@ import { BrowserCtfRangeOrderError } from "@/lib/browserCtfRangeOrderCoordinator
 import { decodeBrowserCustodyProofRow } from "@/stores/durable-custody-types";
 import { db } from "@/stores/proof-db";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 import {
   joinMarket,
   onConfirmedTradeRecorded,
@@ -3393,6 +3394,74 @@ describe("MarketDetailPage live market status", () => {
       } else {
         expect(screen.queryByTestId("trade-submit-status")).not.toBeInTheDocument();
       }
+      expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { final: "filled", message: "Order filled." },
+    { final: "failed", message: "Order failed." },
+  ] as const)(
+    "shows a matched FOK as settling until its order status is $final",
+    async ({ final, message }) => {
+      // A matched FOK is reserved, not complete. The final state comes from
+      // the authoritative order status after the settlement group ends.
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      useOrderSettlementObservations.setState({ byOrderId: {} });
+      vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      vi.mocked(submitBrowserCtfRangeOrder).mockResolvedValue({
+        orderId: "order-matched-1",
+        status: "matched",
+        remainingAmountSubunits: 0,
+        fills: [],
+        baseAsset: "sat",
+        divisibility: 1_000,
+        activeSettlementGroup: null,
+      });
+      const walletId = browserWalletIdFromMnemonic(mocks.walletState.mnemonic)!;
+      const observe = (status: "matched" | "filled" | "failed", observedWalletId = walletId) =>
+        act(() =>
+          useOrderSettlementObservations.setState({
+            byOrderId: {
+              "order-matched-1": {
+                walletId: observedWalletId,
+                signerRevision: 0,
+                marketId: "condition-yesno-Yes",
+                orderId: "order-matched-1",
+                status,
+                group: null,
+              },
+            },
+          }),
+        );
+
+      render(<MarketDetailPage />);
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+      const status = await screen.findByTestId("trade-submit-status");
+      await waitFor(() =>
+        expect(status).toHaveTextContent("Order matched. Settlement is pending."),
+      );
+      observe("matched");
+      observe(final, "f".repeat(64));
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
+        "Order matched. Settlement is pending.",
+      );
+      observe(final);
+      await waitFor(() =>
+        expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(message),
+      );
       expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     },
   );

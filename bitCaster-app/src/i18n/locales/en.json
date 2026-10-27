@@ -416,6 +416,7 @@
     "quoteWaitRecovery": "We will retry your unchanged order for up to a minute. Stopping may still require wallet recovery.",
     "topUpIntentChanged": "Order details changed during top-up. Review the order and confirm again.",
     "scoreTopUpCancelled": "Participation Score top-up was cancelled. The order was not submitted.",
+    "orderSettling": "Order matched. Settlement is pending.",
     "selectActiveMintBeforeSubmit": "Select an active mint before submitting the order.",
     "topUpStillInsufficient": "Top-up completed, but the wallet balance is still below the order requirement.",
     "recentTrades": "Recent Trades",

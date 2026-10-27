@@ -232,9 +232,11 @@ a refund. Clients read the authoritative order status and keep their recovery
 records if that read fails. Only `Confirmed` signals confirmed-result recovery.
 
 While its group settles, a FOK order that reserved its complete amount has the
-order status `matched`. Its `filledAmountSubunits` is the reserved amount, and
-its `remainingAmountSubunits` is `0`. After the group is `Confirmed`, the order
-status is `filled`.
+order status `matched`. The submission response also reports `matched`. Its
+`filledAmountSubunits` is the reserved amount, and its `remainingAmountSubunits`
+is `0`. After the group is `Confirmed`, the order status is `filled`. If the
+group ends in another terminal status, the order status is `failed`. A FOK
+order that cannot reserve its complete amount is `cancelled`.
 
 On confirmation, the mint returns exact result entries for the group. Clients
 persist the submitted operation and its result. This lets a client recover the

@@ -213,8 +213,11 @@ API と決済通知は、送信前に認可が期限切れになった場合に
 回復用の記録を保持します。確定結果の回復を開始する状態は `Confirmed` だけです。
 
 全量を予約した FOK 注文の注文状態は、グループの決済中は `matched` です。
+注文送信の応答も `matched` を返します。
 `filledAmountSubunits` は予約済みの量で、`remainingAmountSubunits` は `0` です。
 グループが `Confirmed` になると、注文状態は `filled` になります。
+グループが別の終了状態になった場合、注文状態は `failed` です。
+全量を予約できない FOK 注文は `cancelled` です。
 
 確定時に、ミントはグループの正確な result entry を返します。クライアントは送信した operation と result を保存します。これにより、クライアントはクラッシュ後に正確な operation と result を回復できます。
 

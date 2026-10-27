@@ -29,7 +29,8 @@ engine accepts the order, the available matching orders must cover its full
 quantity within the accepted trade-value and price limits. Otherwise, it cancels
 the whole order.
 It does not fill only part of your request or leave the rest waiting for a buyer
-or seller. A matching decision still needs settlement confirmation.
+or seller. A matching decision still needs settlement confirmation. The app
+shows the order as matched until settlement ends, then shows the final result.
 
 Cancellation because the full quantity cannot match does not itself spend the
 trade authorization or start a refund. If your wallet already prepared locked

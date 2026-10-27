@@ -414,6 +414,7 @@
     "quoteWaitRecovery": "注文内容を変えずに最大1分間再試行します。待機を終了しても、ウォレットの復旧が必要な場合があります。",
     "topUpIntentChanged": "チャージ中に注文内容が変更されました。注文内容を確認して、もう一度確定してください。",
     "scoreTopUpCancelled": "Participation Score のチャージをキャンセルしました。注文は送信されていません。",
+    "orderSettling": "注文がマッチしました。決済は処理中です。",
     "selectActiveMintBeforeSubmit": "注文を送信する前にアクティブなミントを選択してください。",
     "topUpStillInsufficient": "チャージは完了しましたが、ウォレット残高が注文に必要な金額にまだ不足しています。",
     "recentTrades": "最近の取引",
