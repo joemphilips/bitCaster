@@ -61,7 +61,7 @@
     "build:native-oracle-helper": "node ../scripts/build-native-oracle-helper.mjs",
     "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
     "prepack": "npm run build && npm run build:native-oracle-helper",
-    "test": "node --experimental-strip-types --import ./test/dataDirTestSetup.ts --test test/*.test.ts",
+    "test": "node --experimental-strip-types --experimental-test-module-mocks --import ./test/dataDirTestSetup.ts --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
