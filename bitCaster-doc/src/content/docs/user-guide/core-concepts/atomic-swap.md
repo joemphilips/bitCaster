@@ -69,7 +69,9 @@ The mint's swap fee still applies. The protocol calls this operation `refund`.
 The mint operator's discretionary compensation policy is separate.
 See [market resolution](/user-guide/core-concepts/resolution/).
 
-The web app keeps wallet alerts until you dismiss them. Use **Next** to read
+The web app keeps wallet alerts until you dismiss them. One exception applies
+when the wallet finishes an operation. Its alerts that say the order result is
+uncertain or that funds recovery is pending then close. Use **Next** to read
 more alerts without dismissing an unresolved alert. Use **First alerts** to
 return to the start. Dismissing an alert does not stop recovery or delete funds.
 

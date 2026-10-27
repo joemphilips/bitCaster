@@ -1,9 +1,12 @@
 import type { BrowserCtfRangeOrderErrorCode } from "@/lib/browserCtfRangeOrderCoordinator";
 import { BROWSER_CTF_RANGE_ORDER_ERROR_CODES } from "@/lib/browserCtfRangeOrderCoordinator";
+import { assertNever } from "@/lib/enumDiscipline";
 import { db, type BitcasterDB, type BrowserCtfRangeMessageRow } from "./proof-db";
 
 const ERROR_CODES = new Set<string>(BROWSER_CTF_RANGE_ORDER_ERROR_CODES);
 const PAGE_LIMIT_MAX = 64;
+// One operation has one message for each recorded revision and bounded code.
+const OPERATION_MESSAGE_LIMIT = 1_024;
 
 export interface BrowserCtfRangeMessageCursor {
   observedAtMs: number;
@@ -59,6 +62,78 @@ export async function acknowledgeBrowserCtfRangeMessage(
       }),
     );
   });
+}
+
+/**
+ * Resolves the active messages of one terminal operation whose statement the
+ * terminal journal contradicts. The caller must first read a terminal journal:
+ * the wallet then settled or refunded every reserved input, so pending recovery
+ * and an uncertain result no longer describe the operation. A message with a
+ * definitive outcome stays until the user acknowledges it.
+ */
+export async function resolveTerminalBrowserCtfRangeMessages(
+  input: { scopeId: string; operationId: string; resolvedAtMs: number },
+  database: BitcasterDB = db,
+): Promise<void> {
+  const resolvedAtMs = nonnegativeInteger(input.resolvedAtMs, "resolved time");
+  await database.transaction("rw", database.ctfRangeMessages, async () => {
+    const rows = await database.ctfRangeMessages
+      .where("[scopeId+operationId+revision+code]")
+      // A shorter key sorts first and an array sorts after every revision.
+      .between([input.scopeId, input.operationId], [input.scopeId, input.operationId, []])
+      .limit(OPERATION_MESSAGE_LIMIT)
+      .toArray();
+    for (const row of rows) {
+      const current = decodeMessage(row);
+      if (current.status === "acknowledged" || !terminalJournalResolves(current.code)) continue;
+      await database.ctfRangeMessages.put(
+        decodeMessage({ ...current, status: "acknowledged", acknowledgedAtMs: resolvedAtMs }),
+      );
+    }
+  });
+}
+
+/** Whether a terminal journal makes the message false. */
+function terminalJournalResolves(code: BrowserCtfRangeOrderErrorCode): boolean {
+  switch (code) {
+    case "recovery-pending":
+    case "mint-source-uncertain":
+    case "order-submission-uncertain":
+      return true;
+    case "invalid-order-type":
+    case "insufficient-funds":
+    case "score-top-up-required":
+    case "score-top-up-cancelled":
+    case "asset-recovery-failed":
+    case "source-preparation-failed":
+    case "custody-commit-failed":
+    case "capability-creation-failed":
+    case "capability-validation-failed":
+    case "order-attempt-ended":
+    case "settlement-capability-invalid-request":
+    case "settlement-capability-invalid-artifact":
+    case "settlement-capability-policy-rejected":
+    case "settlement-capability-score-required":
+    case "settlement-capability-not-found":
+    case "settlement-capability-conflict":
+    case "settlement-capability-market-unavailable":
+    case "settlement-capability-request-too-large":
+    case "settlement-capability-admission-limited":
+    case "settlement-capability-capacity-exhausted":
+    case "settlement-capability-admission-unavailable":
+    case "order-invalid-request":
+    case "order-invalid-comment":
+    case "order-market-not-found":
+    case "order-capability-not-found":
+    case "order-capability-route-mismatch":
+    case "order-capability-not-current":
+    case "order-processing-conflict":
+    case "order-market-closed":
+    case "order-submission-rejected":
+      return false;
+    default:
+      return assertNever(code);
+  }
 }
 
 export async function pageActiveBrowserCtfRangeMessages(

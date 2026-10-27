@@ -5,6 +5,7 @@ import {
   acknowledgeBrowserCtfRangeMessage,
   pageActiveBrowserCtfRangeMessages,
   recordBrowserCtfRangeMessage,
+  resolveTerminalBrowserCtfRangeMessages,
 } from "../ctf-range-order-messages";
 import { BitcasterDB } from "../proof-db";
 
@@ -68,6 +69,52 @@ describe("durable browser range messages", () => {
     expect(second.messages).toMatchObject([{ revision: 2 }]);
   });
 
+  it("resolves only stale uncertainty of a terminal operation and keeps definitive outcomes", async () => {
+    const database = createDatabase();
+    // The order call timed out, so the wallet recorded an uncertain order and
+    // pending recovery. Recovery later settled the same operation.
+    await recordBrowserCtfRangeMessage(
+      { ...message(3, "recovery-pending", 10), code: "order-submission-uncertain", kind: "order" },
+      database,
+    );
+    await recordBrowserCtfRangeMessage(message(3, "recovery-pending", 10), database);
+    await recordBrowserCtfRangeMessage(message(1, "mint-source-uncertain", 5), database);
+    await recordBrowserCtfRangeMessage(
+      { ...message(2, "recovery-pending", 7), code: "order-market-closed", kind: "order" },
+      database,
+    );
+    await recordBrowserCtfRangeMessage(
+      { ...message(1, "recovery-pending", 11), operationId: "operation-2" },
+      database,
+    );
+
+    await resolveTerminalBrowserCtfRangeMessages(
+      { scopeId: "scope-1", operationId: "operation-1", resolvedAtMs: 50 },
+      database,
+    );
+    database.close();
+    await database.open();
+
+    expect(
+      (await page(database)).messages.map(({ operationId, revision, code, kind }) => ({
+        operationId,
+        revision,
+        code,
+        kind,
+      })),
+    ).toEqual([
+      { operationId: "operation-1", revision: 2, code: "order-market-closed", kind: "order" },
+      { operationId: "operation-2", revision: 1, code: "recovery-pending", kind: "funds" },
+    ]);
+    const resolved = await database.ctfRangeMessages.get([
+      "scope-1",
+      "operation-1",
+      3,
+      "order-submission-uncertain",
+    ]);
+    expect(resolved).toMatchObject({ status: "acknowledged", acknowledgedAtMs: 50 });
+  });
+
   it("retains alerts beyond the visible page after reopening", async () => {
     const database = createDatabase();
     for (let revision = 1; revision <= 10; revision++) {
@@ -96,7 +143,11 @@ function createDatabase(): BitcasterDB {
 
 function message(
   revision: number,
-  code: "recovery-pending" | "mint-source-uncertain",
+  code:
+    | "recovery-pending"
+    | "mint-source-uncertain"
+    | "order-submission-uncertain"
+    | "order-market-closed",
   observedAtMs: number,
 ) {
   return {

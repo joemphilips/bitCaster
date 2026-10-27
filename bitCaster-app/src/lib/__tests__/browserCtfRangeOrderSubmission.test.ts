@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => ({
   recoverFundedAsset: vi.fn(),
   readPreparation: vi.fn(),
   recordMessage: vi.fn(),
+  resolveMessages: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
   counterReady: vi.fn(),
   scopeId: `custody:wallet:${"11".repeat(32)}`,
@@ -106,6 +107,7 @@ vi.mock("@/stores/browser-wallet-counter-db", () => ({
 
 vi.mock("@/stores/ctf-range-order-messages", () => ({
   recordBrowserCtfRangeMessage: mocks.recordMessage,
+  resolveTerminalBrowserCtfRangeMessages: mocks.resolveMessages,
 }));
 
 vi.mock("@/stores/wallet", () => ({
@@ -195,6 +197,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.readPreparation.mockResolvedValue(null);
     mocks.readPreparation.mockClear();
     mocks.recordMessage.mockResolvedValue(undefined);
+    mocks.resolveMessages.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
     mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
@@ -1422,6 +1425,53 @@ describe("submitBrowserCtfRangeOrder", () => {
       }),
     );
   });
+
+  it.each([
+    { state: "terminal", resolved: true },
+    { state: "order-submitted", resolved: false },
+  ] as const)(
+    "resolves stale uncertain alerts only when recovery leaves a $state journal",
+    async ({ state, resolved }) => {
+      // The order call timed out, then the server confirmed the order. The
+      // recovery pass settles the operation, so its earlier uncertainty is stale.
+      mocks.recoverPage.mockResolvedValue({
+        recoveredOperationIds: ["range-1"],
+        pending: [],
+        nextCursor: null,
+      });
+      mocks.recoverClientOrder.mockResolvedValue({
+        recoveredOperationIds: ["range-1"],
+        pending: [],
+      });
+      mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>
+        scopeId === mocks.scopeId && operationId === "range-1"
+          ? { scopeId, rangeOperationId: operationId, lifecycleState: state, revision: 9 }
+          : null,
+      );
+      const wallet = {
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      };
+
+      await recoverBrowserCtfRangeOrders(wallet);
+      await recoverBrowserCtfRangeOrder({ ...wallet, clientOrderId: "client-1" });
+
+      const expected = {
+        scopeId: mocks.scopeId,
+        operationId: "range-1",
+        resolvedAtMs: expect.any(Number),
+      };
+      if (resolved) {
+        expect(mocks.resolveMessages).toHaveBeenCalledTimes(2);
+        expect(mocks.resolveMessages).toHaveBeenNthCalledWith(1, expected);
+        expect(mocks.resolveMessages).toHaveBeenNthCalledWith(2, expected);
+      } else {
+        expect(mocks.resolveMessages).not.toHaveBeenCalled();
+      }
+      expect(mocks.recordMessage).not.toHaveBeenCalled();
+    },
+  );
 
   // DurableWalletErrors shows "Funds recovery needs attention" for each active
   // funds message, so a recorded funds message is the visible warning.

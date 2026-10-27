@@ -54,7 +54,11 @@ import {
 } from "@/stores/ctf-range-order-db";
 import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import { db } from "@/stores/proof-db";
-import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages";
+import {
+  recordBrowserCtfRangeMessage,
+  resolveTerminalBrowserCtfRangeMessages,
+} from "@/stores/ctf-range-order-messages";
+import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
@@ -1093,6 +1097,7 @@ export async function recoverBrowserCtfRangeOrders(input: {
       pending.push(message);
       await persistRecoveryPending(scopeId, message);
     }
+    await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
     if (page.nextCursor === null) break;
     const cursor = JSON.stringify(page.nextCursor);
     if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
@@ -1128,7 +1133,43 @@ export async function recoverBrowserCtfRangeOrder(input: {
   for (const message of recovery.pending) {
     await persistRecoveryPending(scopeId, message);
   }
+  await resolveRecoveredRangeMessages(scopeId, recovery.recoveredOperationIds);
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
+}
+
+/**
+ * A timed-out order can still settle. Recovery then terminalizes its journal,
+ * so the uncertain-order and pending-recovery alerts no longer describe it.
+ * Only the durable terminal journal authorizes this resolution.
+ */
+async function resolveRecoveredRangeMessages(
+  scopeId: string,
+  operationIds: readonly string[],
+): Promise<void> {
+  for (const operationId of operationIds) {
+    const record = await readCtfRangePreparation(scopeId, operationId);
+    if (record === null || !isTerminalRangePreparation(record.lifecycleState)) continue;
+    await resolveTerminalBrowserCtfRangeMessages({
+      scopeId,
+      operationId,
+      resolvedAtMs: Date.now(),
+    });
+  }
+}
+
+function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): boolean {
+  switch (state) {
+    case "terminal":
+      return true;
+    case "prepared":
+    case "capability-requested":
+    case "capability-bound":
+    case "order-submitted":
+    case "submission-rejected":
+      return false;
+    default:
+      return assertNever(state);
+  }
 }
 
 async function persistRecoveryPending(
