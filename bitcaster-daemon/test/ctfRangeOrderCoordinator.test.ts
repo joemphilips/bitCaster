@@ -561,8 +561,17 @@ test('daemon same-operation source race replays the exact committed journal once
       })
       const repeatedIds = ['source-same-operation-operation', 'source-same-operation-authorization']
       let randomIdCall = 0
+      let timeout: ReturnType<typeof setTimeout> | undefined
       const beforeCreateCapability = async () => {
         callbacks += 1
+        if (callbacks === 1) {
+          // Bound only the wait for the second call. The preparation before the barrier is
+          // CPU-bound, and a parallel test run can make it take longer than this bound.
+          timeout = setTimeout(() => {
+            timedOut = true
+            releaseCallbacks()
+          }, 5_000)
+        }
         if (callbacks === 2) {
           clearTimeout(timeout)
           releaseCallbacks()
@@ -570,10 +579,6 @@ test('daemon same-operation source race replays the exact committed journal once
         await callbackGate
         throw new Error('stop after source commit')
       }
-      const timeout = setTimeout(() => {
-        timedOut = true
-        releaseCallbacks()
-      }, 5_000)
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => wallet,
