@@ -779,6 +779,7 @@
     "resumeCreation": "保存済みの作成を再開",
     "creationResumeRequired": "別の市場を作成する前に、保存済みの作成を再開してください。",
     "creationIncompleteError": "作成は未完了です。元のウォレット、ID、Mint、エンジンを確認し、この保存済みの作成を再開してください。新たな支払いを開始しないでください。",
+    "creationAnnouncementRelayUnavailable": "Nostrリレーがオラクルのアナウンスを受け付けませんでした。後でこの保存済みの作成を再開してください。新たな支払いを開始しないでください。",
     "creationResumeUnavailable": "このウォレットまたはIDでは保存済みの作成を利用できません。元のウォレットと設定を復元してから再開してください。",
     "creationStorageUnavailable": "ブラウザーの下書き保存を利用できません。ブラウザーの保存機能を有効にし、再読み込みしてから市場の作成または再開をしてください。",
     "creationPaymentPending": "元の登録支払いを照合中です。Mintが利用可能になったら、同じ作成を再開してください。",

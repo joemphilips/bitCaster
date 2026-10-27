@@ -8,6 +8,7 @@ import { useSettingsStore } from "@/stores/settings";
 
 vi.mock("../nostr", () => ({
   DEFAULT_RELAYS: ["wss://relay.example"],
+  RELAY_CONNECT_TIMEOUT_MS: 4_000,
   createExplicitRelayNdk: vi.fn(() => {
     throw new Error("Relay I/O is not permitted in this unit test");
   }),

@@ -53,6 +53,7 @@ const {
     conditionId: "",
     lookupMint: vi.fn(),
     published: [] as string[],
+    relayAccepts: true,
     seed: new Uint8Array(64).fill(0x11),
     scopeId: "",
     feeOperations: [] as string[],
@@ -249,10 +250,15 @@ vi.mock("@/lib/browserOracleBackup", () => ({
 vi.mock("@nostr-dev-kit/ndk", async () => ({
   ...(await vi.importActual("@nostr-dev-kit/ndk")),
   NDKEvent: class {
-    constructor(_ndk: unknown, event: unknown) {
+    readonly id: string;
+    constructor(_ndk: unknown, event: { id: string }) {
+      this.id = event.id;
       runtime.published.push(JSON.stringify(event));
     }
     async publish() {
+      // The installed NDK rejects when no relay acknowledges the event.
+      if (!runtime.relayAccepts)
+        throw new Error("Not enough relays received the event (0 published, 1 required)");
       return new Set(["relay"]);
     }
   },
@@ -338,6 +344,7 @@ beforeEach(async () => {
   runtime.seed = new Uint8Array(64).fill(0x11);
   runtime.engineThumbnails = [];
   runtime.published = [];
+  runtime.relayAccepts = true;
   runtime.feeOperations = [];
   runtime.conditionId = conditionId;
   runtime.lookupMint.mockImplementation(async () =>
@@ -806,6 +813,58 @@ describe("durable browser market creation", () => {
         await i18n.changeLanguage("en");
       });
     }
+  });
+
+  it("stops on an unaccepted announcement with translated relay guidance, then resumes the same creation", async () => {
+    const relayGuidance = () => i18n.t("marketCreation.creationAnnouncementRelayUnavailable");
+    const result = await beginPaidCreation();
+    runtime.relayAccepts = false;
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.isSubmitting).toBe(false);
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(result.current.submitError).toBe(relayGuidance());
+    expect(result.current.submitError).toContain("relay");
+    expect(useMarketDraftStore.getState().draft.creation?.failure).toEqual({
+      code: "announcement-relay-unavailable",
+      progress: "prepared",
+      dismissed: false,
+    });
+    expect(result.current.retainedCreation?.mintConfirmed).toBe(false);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    // A retry against relays that still refuse settles with the same guidance.
+    await act(async () => {
+      await result.current.onResumeCreation();
+    });
+    expect(result.current.isSubmitting).toBe(false);
+    expect(result.current.submitError).toBe(relayGuidance());
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.submitError).toBe(relayGuidance());
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(reloaded.current.submitError).toBe(relayGuidance());
+      expect(reloaded.current.submitError).toContain("リレー");
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+    runtime.relayAccepts = true;
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
+    // Every attempt reconciles the one fee operation and publishes the one announcement.
+    expect(runtime.feeOperations).toHaveLength(3);
+    expect(new Set(runtime.feeOperations).size).toBe(1);
+    expect(runtime.published).toHaveLength(3);
+    expect(new Set(runtime.published).size).toBe(1);
   });
 
   it("resumes a paid engine 401 after a cold read with the original thumbnail and one announcement", async () => {

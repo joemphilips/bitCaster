@@ -1,4 +1,3 @@
-import { NDKEvent, type NostrEvent } from "@nostr-dev-kit/ndk";
 import {
   assertMarketCreationBinding,
   completeDurableMarketCreation,
@@ -25,7 +24,7 @@ import {
   preflightLockedBrowserOracleCreation,
 } from "./browserOracleBackup";
 import { buildEventId } from "./slug";
-import { withTemporaryRelayNdk } from "./nostr";
+import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 import { createPreparedMarket, fetchMarketRegistrationForRecovery } from "./markets";
 import {
   confirmConditionRegistrationFee,
@@ -40,10 +39,22 @@ export interface BrowserMarketCreationPointer {
   readonly creationId: string;
   readonly binding: MarketCreationBinding;
   readonly failure?: {
-    readonly code: "incomplete" | "payment-pending" | "thumbnail-presence-mismatch";
+    readonly code:
+      | "incomplete"
+      | "payment-pending"
+      | "thumbnail-presence-mismatch"
+      | "announcement-relay-unavailable";
     readonly progress: "prepared" | "mint-confirmed" | "engine-confirmed";
     readonly dismissed: boolean;
   };
+}
+
+/** No saved relay accepted the announcement. The same saved creation can resume. */
+export class MarketAnnouncementRelayError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("No Nostr relay accepted the oracle announcement.", options);
+    this.name = "MarketAnnouncementRelayError";
+  }
 }
 
 export function currentBrowserMarketCreationBinding(): MarketCreationBinding {
@@ -194,23 +205,18 @@ export async function completeBrowserMarketCreation(
       },
       async publishAnnouncement(record) {
         session.requireBinding();
-        const published = await withTemporaryRelayNdk(
-          { relays: record.relayUrls },
-          undefined,
-          async (ndk) => {
-            session.requireBinding();
-            const event = new NDKEvent(
-              ndk,
-              JSON.parse(record.announcement.announcementNostrEventJson) as NostrEvent,
-            );
-            const accepted = await event.publish();
-            if (accepted.size === 0)
-              throw new Error("Oracle announcement publication is unavailable.");
-            return true;
-          },
-        );
+        try {
+          // The transport bounds connection and acknowledgement. It requires one accepting relay.
+          await publishRetainedOracleEvent(
+            record.relayUrls,
+            record.announcement.announcementNostrEventJson,
+          );
+        } catch (error) {
+          // A binding change outranks the relay outcome.
+          session.requireBinding();
+          throw new MarketAnnouncementRelayError({ cause: error });
+        }
         session.requireBinding();
-        if (published !== true) throw new Error("Oracle announcement publication is unavailable.");
       },
       async lookupMint(record) {
         session.requireBinding();

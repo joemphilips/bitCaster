@@ -57,6 +57,12 @@ The app shows a spinner while it creates the market or loads a saved attempt.
 Fee confirmation remains available when payment needs your approval.
 Resume controls appear when a saved attempt is incomplete and work has stopped.
 
+Before mint registration, the client publishes the saved announcement to the
+saved relays. A relay that does not connect within a few seconds does not delay
+the others. If no saved relay accepts the announcement, creation stops before
+mint registration and shows an error. Resume the same creation later. Do not
+start another payment. A saved creation keeps its original relay list.
+
 Mint registration can succeed before the engine accepts the market.
 If the engine request fails, resume the saved creation instead of starting
 another one. Use the original wallet, oracle key, mint, and engine.

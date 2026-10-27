@@ -24,6 +24,7 @@ import {
   prepareMarketCreationRequest,
 } from "@bitcaster/client-sdk";
 import {
+  MarketAnnouncementRelayError,
   browserMarketCreationSession,
   completeBrowserMarketCreation,
   prepareBrowserMarketCreation,
@@ -217,6 +218,8 @@ function creationFailureMessage(
       return "marketCreation.creationPaymentPending";
     case "thumbnail-presence-mismatch":
       return "marketCreation.creationImageMismatch";
+    case "announcement-relay-unavailable":
+      return "marketCreation.creationAnnouncementRelayUnavailable";
   }
 }
 
@@ -845,7 +848,9 @@ export function useMarketCreationState() {
         const failureCode =
           error instanceof MarketCreationThumbnailMismatchError
             ? "thumbnail-presence-mismatch"
-            : "incomplete";
+            : error instanceof MarketAnnouncementRelayError
+              ? "announcement-relay-unavailable"
+              : "incomplete";
         const pointer = useMarketDraftStore.getState().draft.creation;
         if (pointer !== undefined) {
           let retained: MarketCreationRecord | null = null;

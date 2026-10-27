@@ -144,6 +144,13 @@ export interface RelayOperationOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * NDK connect waits for every relay. One relay that never connects keeps it pending.
+ * After this limit, the operation continues with the relays that connected. The limit
+ * leaves time for a publish acknowledgement inside the 8 s oracle relay limit.
+ */
+export const RELAY_CONNECT_TIMEOUT_MS = 4_000;
+
 /** A temporary operation owns cancellation from connection setup through completion. */
 export async function withTemporaryRelayNdk<T>(
   options: RelayOperationOptions,
@@ -161,7 +168,7 @@ export async function withTemporaryRelayNdk<T>(
   signal.addEventListener("abort", dispose, { once: true });
   try {
     signal.throwIfAborted();
-    await awaitAbortable(ndk.connect(), signal);
+    await awaitAbortable(ndk.connect(RELAY_CONNECT_TIMEOUT_MS), signal);
     signal.throwIfAborted();
     return await awaitAbortable(action(ndk), signal);
   } finally {

@@ -782,6 +782,7 @@
     "resumeCreation": "Resume saved creation",
     "creationResumeRequired": "Resume the saved creation before starting another market.",
     "creationIncompleteError": "Creation is incomplete. Check the original wallet, identity, mint, and engine. Then resume this saved creation. Do not start another payment.",
+    "creationAnnouncementRelayUnavailable": "No Nostr relay accepted the oracle announcement. Resume this saved creation later. Do not start another payment.",
     "creationResumeUnavailable": "The saved creation is unavailable for this wallet or identity. Restore the original wallet and configuration, then resume.",
     "creationStorageUnavailable": "Browser draft storage is unavailable. Enable browser storage, then reload before creating or resuming a market.",
     "creationPaymentPending": "The original registration payment is still being reconciled. Resume this same creation when the mint is available.",
