@@ -173,6 +173,8 @@ notification failure does not replace that result with a submission error.
 `GET` on the same path reads its saved status. A failed request does not prove
 that no funds were received. Keep the original delivery ID, token, and immutable
 request for recovery. Do not create a replacement payment for an uncertain result.
+After the engine admits a delivery, it completes the delivery even if the client
+disconnects before the response. A later status read returns that result.
 
 The following application errors use `application/problem+json`. Their `type`
 is `/errors/{code}`. Use the HTTP status and `code`, not the wording of `detail`.
@@ -199,6 +201,7 @@ to every response with the same HTTP status.
 
 The SDK delivery methods discard error bodies because a recipient can echo a
 bearer token. They report status-only errors and do not retry automatically.
+Each SDK delivery request waits at most 30 seconds by default.
 The status method returns `null` for `404`. This SDK behavior is separate from
 the API's structured error format.
 
@@ -227,6 +230,11 @@ the group stopped before committing a mint request for another reason.
 Both have a null `frozenAt`. Neither confirms wallet recovery or authorizes
 a refund. Clients read the authoritative order status and keep their recovery
 records if that read fails. Only `Confirmed` signals confirmed-result recovery.
+
+While its group settles, a FOK order that reserved its complete amount has the
+order status `matched`. Its `filledAmountSubunits` is the reserved amount, and
+its `remainingAmountSubunits` is `0`. After the group is `Confirmed`, the order
+status is `filled`.
 
 On confirmation, the mint returns exact result entries for the group. Clients
 persist the submitted operation and its result. This lets a client recover the

@@ -9,11 +9,25 @@ export interface OrderQuoteRefreshRetryOptions {
   onWaiting?: (progress: OrderQuotesRefreshingProgress) => void
 }
 
+/**
+ * One order attempt can take more than 10 seconds on a hosted engine. A
+ * shorter limit reports an accepted order as uncertain.
+ */
+export const ORDER_REQUEST_TIMEOUT_MS = 30_000
+
 export interface SubmitOrderOptions {
   signal?: AbortSignal
   quoteRefreshRetry?: OrderQuoteRefreshRetryOptions
-  /** A caller can shorten, but cannot extend, the 10-second attempt limit. */
+  /** A caller can shorten, but cannot extend, the 30-second attempt limit. */
   requestTimeoutMs?: number
+}
+
+export function requireOrderRequestTimeoutMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > ORDER_REQUEST_TIMEOUT_MS)
+    throw new Error(
+      `Order request timeout must be between 1 and ${ORDER_REQUEST_TIMEOUT_MS} milliseconds`,
+    )
+  return value
 }
 
 export class OrderQuoteRefreshWaitStopped extends Error {
@@ -32,11 +46,11 @@ export async function runOrderQuoteRefreshRetry<T>(
   options: SubmitOrderOptions & { quoteRefreshRetry: OrderQuoteRefreshRetryOptions },
 ): Promise<T> {
   const expiryMs = options.quoteRefreshRetry.authorizationExpiresAtUnixSeconds * 1_000
-  const timeoutMs = options.requestTimeoutMs ?? 10_000
+  const timeoutMs = requireOrderRequestTimeoutMs(
+    options.requestTimeoutMs ?? ORDER_REQUEST_TIMEOUT_MS,
+  )
   if (!Number.isSafeInteger(expiryMs) || expiryMs <= 0)
     throw new Error('Order authorization expiry is invalid')
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10_000)
-    throw new Error('Order request timeout must be between 1 and 10000 milliseconds')
   const startedAt = performance.now()
   const remaining = () => Math.min(60_000 - (performance.now() - startedAt), expiryMs - Date.now())
   const stop = () => {

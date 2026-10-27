@@ -840,6 +840,42 @@ test('BitcasterEngineClient durable delivery timeout covers response-body consum
   assert.equal(bodySignalAborted, true)
 })
 
+test('BitcasterEngineClient durable delivery waits 30 seconds by default for a hosted response', async (t) => {
+  // A hosted engine can take more than 10 seconds to finish the first
+  // custody receive. The default must not abandon that completed work.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const submission = durableRecipientSubmission('88888888-8888-4888-8888-888888888888')
+  let fetchSignal: AbortSignal | undefined
+  let enterFetch!: () => void
+  const fetchEntered = new Promise<void>((resolve) => {
+    enterFetch = resolve
+  })
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        fetchSignal = init?.signal ?? undefined
+        fetchSignal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true },
+        )
+        enterFetch()
+      }),
+  })
+
+  const assertion = assert.rejects(
+    () => client.submitDurableRecipientDelivery(submission),
+    /durable recipient delivery request failed/,
+  )
+  await fetchEntered
+  t.mock.timers.tick(29_999)
+  assert.equal(fetchSignal?.aborted, false)
+  t.mock.timers.tick(1)
+  assert.equal(fetchSignal?.aborted, true)
+  await assertion
+})
+
 test('BitcasterEngineClient durable delivery timeout covers authorization before fetch', async () => {
   const deliveryId = '66666666-6666-4666-8666-666666666666'
   let fetchCalls = 0

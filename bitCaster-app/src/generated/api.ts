@@ -378,7 +378,7 @@ export interface paths {
         put?: never;
         /**
          * Submit one authenticated durable Cashu delivery
-         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity. An admitted delivery completes even if the client disconnects before the response; read its status later.
          */
         post: operations["submitDurableCashuDelivery"];
         delete?: never;
@@ -2501,7 +2501,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 10 seconds; preserve shorter caller limits. Start an attempt only when its full request budget fits before the wait and expiry limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds; preserve shorter caller limits. Start an attempt only when its full request budget fits before the wait and expiry limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;

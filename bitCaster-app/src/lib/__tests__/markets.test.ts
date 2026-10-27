@@ -1751,9 +1751,12 @@ describe("durable Cashu delivery transport", () => {
     mocks.eventSign.mockClear();
     try {
       const pending = getDurableCashuDeliveryStatus("88888888-8888-4888-8888-888888888888");
-      const rejection = expect(pending).rejects.toThrow(
-        /durable recipient delivery request failed/,
-      );
+      let settled = false;
+      const rejection = expect(
+        pending.finally(() => {
+          settled = true;
+        }),
+      ).rejects.toThrow(/durable recipient delivery request failed/);
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -1761,7 +1764,10 @@ describe("durable Cashu delivery transport", () => {
       expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
       expect(mocks.eventSign).toHaveBeenCalledOnce();
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      // The SDK waits 30 seconds for a hosted delivery response.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       await rejection;
     } finally {
       vi.useRealTimers();

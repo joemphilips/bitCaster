@@ -141,10 +141,13 @@ test('expiry must leave a full request budget before dispatch', async () => {
   assert.equal(calls, 0)
 })
 
-test('attempt timeout exits even when a transport ignores cancellation', async (t) => {
+test('attempt timeout exits after 30 seconds even when a transport ignores cancellation', async (t) => {
+  // A hosted engine can take more than 10 seconds to accept an order. The
+  // default attempt limit must not report that accepted order as uncertain.
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const entered = deferred<void>()
   let calls = 0
+  let settled = false
   const result = runOrderQuoteRefreshRetry(
     async () => {
       calls++
@@ -156,11 +159,44 @@ test('attempt timeout exits even when a transport ignores cancellation', async (
       quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120 },
     },
   )
-  const assertion = assert.rejects(result, /timed out/)
+  const assertion = assert.rejects(result, /timed out/).finally(() => {
+    settled = true
+  })
   await entered.promise
-  t.mock.timers.tick(10000)
+  t.mock.timers.tick(29_999)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(settled, false)
+  t.mock.timers.tick(1)
   await assertion
   assert.equal(calls, 1)
+})
+
+test('a caller can shorten but not extend the 30-second attempt limit', async () => {
+  const { BitcasterEngineClient } = await import('../src/engineClient.ts')
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      calls++
+      return new Response(null, { status: 500 })
+    },
+  })
+  const request = {
+    settlementCapability: { artifactId: 'initial', bindingDigest: 'digest' },
+    comment: null,
+  }
+  await assert.rejects(
+    client.submitOrder('market', request, { requestTimeoutMs: 30_001 }),
+    /between 1 and 30000 milliseconds/,
+  )
+  await assert.rejects(
+    runOrderQuoteRefreshRetry(async () => 1, isOrderQuotesRefreshingError, {
+      requestTimeoutMs: 30_001,
+      quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120 },
+    }),
+    /between 1 and 30000 milliseconds/,
+  )
+  assert.equal(calls, 0)
 })
 
 test('SDK freezes bytes including comment while refreshing authentication', async (t) => {

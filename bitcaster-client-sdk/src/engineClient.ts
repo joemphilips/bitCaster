@@ -1,5 +1,10 @@
-import { runOrderQuoteRefreshRetry, type SubmitOrderOptions } from './orderQuoteRefreshRetry.ts'
+import {
+  requireOrderRequestTimeoutMs,
+  runOrderQuoteRefreshRetry,
+  type SubmitOrderOptions,
+} from './orderQuoteRefreshRetry.ts'
 export {
+  ORDER_REQUEST_TIMEOUT_MS,
   OrderQuoteRefreshWaitStopped,
   type SubmitOrderOptions,
   type OrderQuotesRefreshingProgress,
@@ -73,7 +78,9 @@ export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
 export const DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX = 64 * 1_024
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
-const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS = 10_000
+// The first hosted custody receive can take more than 10 seconds. The engine
+// completes it after a disconnect, but a shorter wait reports a false failure.
+const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS = 30_000
 const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS_MAX = 60_000
 
 export interface EngineClientOptions {
@@ -671,13 +678,10 @@ export class BitcasterEngineClient {
         quoteRefreshRetry: options.quoteRefreshRetry,
       })
     if (options.requestTimeoutMs === undefined) return submit(options.signal)
-    if (
-      !Number.isSafeInteger(options.requestTimeoutMs) ||
-      options.requestTimeoutMs <= 0 ||
-      options.requestTimeoutMs > 10_000
+    const lifetime = createBoundedRequestLifetime(
+      options.signal,
+      requireOrderRequestTimeoutMs(options.requestTimeoutMs),
     )
-      throw new Error('Order request timeout must be between 1 and 10000 milliseconds')
-    const lifetime = createBoundedRequestLifetime(options.signal, options.requestTimeoutMs)
     try {
       return await awaitAbortable(submit(lifetime.signal), lifetime.signal)
     } finally {
