@@ -1362,6 +1362,41 @@ async function recoverHistoricalClaimPayout(
     mode === 'takeover' && takeover
       ? { ...fixture.context.fence, fencingEpoch: fixture.context.fence.fencingEpoch + 1 }
       : fixture.context.fence
+  // Claim payouts are seed-derived. The exact seed scan also requests them, with amount 0.
+  // The retained-output request carries the stored output amounts.
+  const committedRequests = (candidates: readonly unknown[]) => {
+    const matches = candidates.flatMap((candidate) => {
+      const request = candidate as { id: string; amount: unknown; B_: string }
+      const planned = committed.get(request.B_)
+      return planned === undefined ? [] : [{ request, amount: Number(planned.amount) }]
+    })
+    return {
+      matches,
+      seedScan: matches.some(({ request, amount }) => String(request.amount) !== String(amount)),
+    }
+  }
+  // A NUT-09 mint echoes each requested output. The signature carries the signed amount.
+  const signedRestore = (matches: ReturnType<typeof committedRequests>['matches']) => ({
+    outputs: matches.map(({ request }) => request),
+    signatures: matches.map(({ request, amount }) => {
+      const point = pointFromHex(request.B_)
+      const signature = createBlindSignature(
+        point,
+        mintDenominationPrivateKey(privateKey, String(amount)),
+        regular.id,
+      )
+      const dleq = createDLEQProof(point, mintDenominationPrivateKey(privateKey, String(amount)))
+      return {
+        id: regular.id,
+        amount,
+        C_: signature.C_.toHex(true),
+        dleq: {
+          e: mode === 'bad-dleq' ? '01'.repeat(32) : bytesToHex(dleq.e),
+          s: bytesToHex(dleq.s),
+        },
+      }
+    }),
+  })
   const transport: AllKeysetSeedRecoveryTransport = {
     wallet: {
       loadMint: async () => {},
@@ -1394,11 +1429,8 @@ async function recoverHistoricalClaimPayout(
       throw new Error('ordinary payout recovery must not fetch conditional keys')
     },
     restoreCandidates: async (candidates) => {
-      const matches = candidates.flatMap((candidate) => {
-        const planned = committed.get((candidate as { B_: string }).B_)
-        return planned === undefined ? [] : [planned]
-      })
-      if (matches.length > 0) retainedCounters = await readCounters()
+      const { matches, seedScan } = committedRequests(candidates)
+      if (matches.length > 0 && !seedScan) retainedCounters = await readCounters()
       else if (retainedCounters !== undefined) {
         assert.deepEqual(
           await readCounters(),
@@ -1409,6 +1441,8 @@ async function recoverHistoricalClaimPayout(
         counterChecks += 1
       }
       if (mode === 'empty') matches.length = 0
+      // The fault modes target only the retained-output request.
+      if (seedScan) return signedRestore(matches)
       if (mode === 'partial' && matches.length > 1) matches.length = 1
       if (mode === 'takeover' && matches.length > 0) takeover = true
       if (mode === 'changed-authority' && matches.length > 0) {
@@ -1471,30 +1505,7 @@ async function recoverHistoricalClaimPayout(
       }
       matches.reverse()
       if (mode === 'valid') restored += matches.length
-      return {
-        outputs: matches,
-        signatures: matches.map((output) => {
-          const point = pointFromHex(output.B_)
-          const signature = createBlindSignature(
-            point,
-            mintDenominationPrivateKey(privateKey, String(output.amount)),
-            regular.id,
-          )
-          const dleq = createDLEQProof(
-            point,
-            mintDenominationPrivateKey(privateKey, String(output.amount)),
-          )
-          return {
-            id: regular.id,
-            amount: Number(output.amount),
-            C_: signature.C_.toHex(true),
-            dleq: {
-              e: mode === 'bad-dleq' ? '01'.repeat(32) : bytesToHex(dleq.e),
-              s: bytesToHex(dleq.s),
-            },
-          }
-        }),
-      }
+      return signedRestore(matches)
     },
   }
   const pagingDatabase = await openDaemonStateSqlite(fixture.directory)
@@ -1507,6 +1518,7 @@ async function recoverHistoricalClaimPayout(
   for (const total of [1023, 1024, 1025]) {
     let reads = 0
     let restoredRecords = 0
+    let seedScanRequests = 0
     const pageMock = mock.method(
       SeedRecoverySqliteStore.prototype,
       'readRetainedClaimPage',
@@ -1537,8 +1549,9 @@ async function recoverHistoricalClaimPayout(
           transport: {
             ...transport,
             restoreCandidates: async (candidates) => {
-              if (candidates.some((candidate) => committed.has((candidate as { B_: string }).B_)))
-                restoredRecords += 1
+              const { matches, seedScan } = committedRequests(candidates)
+              if (matches.length > 0 && seedScan) seedScanRequests += 1
+              else if (matches.length > 0) restoredRecords += 1
               return { outputs: [], signatures: [] }
             },
           },
@@ -1548,6 +1561,7 @@ async function recoverHistoricalClaimPayout(
         await assert.rejects(recovery, /retained payout recovery record bound exceeded/)
       else assert.equal((await recovery).state, 'completed')
       assert.equal(restoredRecords, Math.min(total, 1024))
+      assert.equal(seedScanRequests, total === 1025 ? 0 : 1)
       assert.equal(reads, total === 1023 ? 64 : 65)
       assert.deepEqual((await readState())!.wallet.proofs, original.wallet.proofs)
     } finally {
