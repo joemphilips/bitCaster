@@ -61,6 +61,7 @@ test('owner HTTP adapter binds bounded discovery to the exact issued request and
         request: evidence,
         entries: [{ ...owner, enrollmentEpoch: 3 }],
         nextCursor: null,
+        firstAccountOwnerScopeId: null,
       })
       const response = new Response(body, {
         status: 200,
@@ -227,6 +228,7 @@ test('owner HTTP adapter aborts a late body read and releases its request slot',
         request: verified,
         entries: [],
         nextCursor: null,
+        firstAccountOwnerScopeId: null,
       })
       const response = new Response(body, {
         status: 200,
