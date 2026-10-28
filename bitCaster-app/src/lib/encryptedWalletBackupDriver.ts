@@ -997,6 +997,9 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       });
     } catch {
       return { kind: "persistent-error" };
+    } finally {
+      // A targeted pass can admit custody that a paused recovery has read.
+      this.resumeAfterRecovery();
     }
   }
 

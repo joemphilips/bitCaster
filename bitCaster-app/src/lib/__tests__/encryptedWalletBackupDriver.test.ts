@@ -2516,6 +2516,48 @@ it.each([true, false])("retries incomplete recovery with a queued wake: %s", asy
   driver.stop();
 });
 
+it("retries incomplete recovery after a targeted recovery pass", async () => {
+  const fixture = await enrollmentFixture();
+  await persistRecoveryRequiredHead(fixture);
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const reportError = vi.fn();
+  const remote = remoteWithEmptyHead(fixture, 1) as unknown as EncryptedWalletBackupV2RemotePort & {
+    readDescriptorPage: ReturnType<typeof vi.fn>;
+  };
+  remote.readDescriptorPage.mockRejectedValueOnce(
+    new EncryptedWalletBackupV2HttpTransportError("unavailable"),
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: remote as never,
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    lockManager: immediateLockManager,
+    loadWallet: vi.fn(),
+    reportError,
+  });
+
+  await vi.waitFor(() => expect(driver.recoveryReason).toBe("remote-unavailable"));
+  expect(worker).not.toHaveBeenCalled();
+  await driver.recoverTargetedAsset({
+    asset: { mintUrl: "https://mint.one.example", unit: "msat", assetIdentity: "ordinary" },
+    requiredAmount: 1n,
+    loadWallet: vi.fn(),
+    readExactMonitoringRecovery: vi.fn(async () => null),
+  });
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+  await expect(readRecoveryStatus(fixture)).resolves.toMatchObject({
+    localRecoveryStatus: "ready",
+  });
+  expect(reportError).not.toHaveBeenCalled();
+  expect(driver.recoveryReason).toBeNull();
+  driver.stop();
+});
+
 it.each([
   { kind: "retry", delay: 5_000 },
   { kind: "quota", delay: 3_600_000 },

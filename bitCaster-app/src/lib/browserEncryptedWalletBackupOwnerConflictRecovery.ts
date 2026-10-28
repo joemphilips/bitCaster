@@ -213,24 +213,41 @@ export async function recoverBrowserEncryptedWalletBackupOwnerConflict(
     const live = restored.verified.proofSet.proofs.some(
       ({ selectionAuthority }) => selectionAuthority === "live-verified",
     );
-    await admitBrowserEncryptedWalletBackupOwnerAsset({
-      seed: input.seed,
-      verified: restored.verified,
-      collectedHeadEvidence: firstHead,
-      ownerContext: input.ownerContext,
-      ownerAuthorityStore: input.ownerStore,
-      asset: restored.asset,
-      database: input.database,
-      ...(live ? { wallet: await input.loadWallet(restored.asset.mintUrl) } : {}),
-      sourceOperationId: `owner-conflict:${firstHead.head.headVersion}:${descriptor.assetLocator}`,
-      isCurrentProfile: input.isCurrentProfile,
-      lockManager: input.lockManager,
-    });
+    try {
+      await admitBrowserEncryptedWalletBackupOwnerAsset({
+        seed: input.seed,
+        verified: restored.verified,
+        collectedHeadEvidence: firstHead,
+        ownerContext: input.ownerContext,
+        ownerAuthorityStore: input.ownerStore,
+        asset: restored.asset,
+        database: input.database,
+        ...(live ? { wallet: await input.loadWallet(restored.asset.mintUrl) } : {}),
+        sourceOperationId: `owner-conflict:${firstHead.head.headVersion}:${descriptor.assetLocator}`,
+        isCurrentProfile: input.isCurrentProfile,
+        lockManager: input.lockManager,
+      });
+    } catch (error) {
+      // A targeted restore can change this local row after the snapshot above.
+      // A later pass reads the new row and repeats every check.
+      const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+        input.scopeId,
+        localAssetKey,
+      ]);
+      const current = raw === undefined ? undefined : decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+      if (!sameDesiredRow(desired, current)) return incomplete("local-state-changed");
+      throw error;
+    }
   }
 
   if (await hasUnresolvedSubmittedWork(input.database, input.scopeId))
     return incomplete("submitted-work-unresolved");
-  const captured = await readSnapshot(input);
+  const captured = await withWalletProfileLock(
+    input.scopeId,
+    () => readSnapshot(input),
+    input.lockManager,
+    input.signal,
+  );
   const secondHead = await tryReadHead(input);
   if (secondHead === null) return incomplete("remote-unavailable");
   if (!sameOwnerHead(firstHead, secondHead)) return incomplete("remote-head-changed");
@@ -348,6 +365,18 @@ async function retireSpentLocalProofs(
   );
   requireCurrent(input);
   return "retired";
+}
+
+type DesiredRow = ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>;
+
+function sameDesiredRow(left: DesiredRow | undefined, right: DesiredRow | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.custodyRevision === right.custodyRevision &&
+    left.syncState === right.syncState &&
+    left.activeProofCount === right.activeProofCount &&
+    left.desiredAction === right.desiredAction
+  );
 }
 
 async function readDesiredRows(input: BrowserEncryptedWalletBackupOwnerConflictInput) {

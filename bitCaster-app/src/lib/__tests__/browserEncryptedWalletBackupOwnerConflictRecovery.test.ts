@@ -380,6 +380,229 @@ describe("selected-owner conflict recovery", () => {
     ]);
   });
 
+  it("returns local-state-changed when another restore admits a snapshot-absent asset", async () => {
+    const runtime = createRuntime();
+    const keyHandle = await createEncryptedWalletBackupV2KeyHandle({ seed, realm, runtime });
+    const scopeId = deriveDurableCustodyScopeId({
+      scopeKind: "wallet",
+      walletId: keyHandle.walletId,
+    });
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    await database.open();
+    const store = makeStore(database, scopeId, keyHandle);
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      asset: { kind: "ordinary" },
+    });
+    const locator = {
+      schemaVersion: 1 as const,
+      kind: "nut13" as const,
+      keysetId: restoreKeysetId,
+      counter: 0,
+    };
+    const proof = signedProof(0);
+    const bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed,
+      asset,
+      custodyRevision: 1n,
+      counterHighWaterMarks: [
+        { mintUrl: asset.mintUrl, unit: "msat", keysetId: restoreKeysetId, nextCounter: 1 },
+      ],
+      proofs: [
+        { mintUrl: asset.mintUrl, unit: "msat", asset: { kind: "ordinary" }, locator, proof },
+      ],
+      runtime,
+    });
+    const emptyHead = evidence(keyHandle.walletId, 0);
+    const competingHead = evidence(keyHandle.walletId, 1, [bundle.descriptor]);
+    await store.acceptCurrentHead({ expectedHeadVersion: null, evidence: emptyHead });
+    await store.markCompetingHeadRecoveryRequired({ evidence: competingHead });
+    const objects = new Map(bundle.objects.map((object) => [object.objectId, object]));
+    // A concurrent targeted restore admits the same proof after the recovery
+    // snapshot. A later counter advance leaves its desired row pending at revision 2.
+    let admitConcurrently = true;
+    const readObject = vi.fn(async ({ objectId }: { objectId: string }) => {
+      if (admitConcurrently) {
+        admitConcurrently = false;
+        const localProof = createBrowserCustodyProofRow({
+          scopeId,
+          normalizedMint: asset.mintUrl,
+          unit: "msat",
+          proof,
+          asset: { kind: "regular" },
+          receivedAtMs: 1,
+        });
+        await database!.custodyProofs.put(localProof);
+        await database!.custodyProofBackupAuthorities.put(
+          createBrowserProofBackupAuthorityRow(localProof, 1, locator, "concurrent-restore"),
+        );
+        await database!.encryptedWalletBackupV2DesiredAssets.put(
+          createEncryptedWalletBackupV2DesiredAssetRow({
+            scopeId,
+            asset,
+            custodyRevision: 2n,
+            activeProofCount: 1,
+          }),
+        );
+      }
+      const object = objects.get(objectId);
+      if (object === undefined) throw new Error("owner object is absent");
+      return object;
+    });
+    const recover = () =>
+      recoverBrowserEncryptedWalletBackupOwnerConflict({
+        database: database!,
+        scopeId,
+        seed,
+        keyHandle,
+        owner,
+        ownerContext: {
+          ownerScopeId: owner.ownerScopeId,
+          realm,
+          walletId: keyHandle.walletId,
+          enrollmentEpoch: 1,
+        },
+        ownerClient: { readCurrentHead: vi.fn(async () => competingHead), readObject },
+        ownerStore: store,
+        runtime,
+        signal: new AbortController().signal,
+        isCurrentProfile: () => true,
+        lockManager: testLockManager(),
+        loadWallet: async (mintUrl: string) => testWallet(mintUrl),
+      });
+
+    await expect(recover()).resolves.toEqual({ kind: "incomplete", reason: "local-state-changed" });
+    expect(await store.readNewWritePermission()).toMatchObject({
+      canWrite: false,
+      localRecoveryStatus: "recovery-required",
+    });
+
+    await expect(recover()).resolves.toEqual({
+      kind: "completed",
+      headVersion: 1,
+      recoveryVersion: 2,
+    });
+    expect(await database.custodyProofs.count()).toBe(1);
+    // The newer local row stays pending for upload. The older head does not replace it.
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      { custodyRevision: "2", syncState: "pending", activeProofCount: 1 },
+    ]);
+    expect(await database.encryptedWalletBackupOwnerDesiredAssets.toArray()).toMatchObject([
+      { custodyRevision: "2", syncState: "pending" },
+    ]);
+  });
+
+  it.each(["untracked", "conflicting"] as const)(
+    "still refuses an unchanged %s local asset",
+    async (localState) => {
+      const runtime = createRuntime();
+      const keyHandle = await createEncryptedWalletBackupV2KeyHandle({ seed, realm, runtime });
+      const scopeId = deriveDurableCustodyScopeId({
+        scopeKind: "wallet",
+        walletId: keyHandle.walletId,
+      });
+      database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+      await database.open();
+      const store = makeStore(database, scopeId, keyHandle);
+      const asset = createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        asset: { kind: "ordinary" },
+      });
+      const locatorFor = (counter: number) => ({
+        schemaVersion: 1 as const,
+        kind: "nut13" as const,
+        keysetId: restoreKeysetId,
+        counter,
+      });
+      const proofs = [signedProof(0), signedProof(1)];
+      const bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle,
+        seed,
+        asset,
+        custodyRevision: 1n,
+        counterHighWaterMarks: [
+          { mintUrl: asset.mintUrl, unit: "msat", keysetId: restoreKeysetId, nextCounter: 2 },
+        ],
+        proofs: proofs.map((proof, counter) => ({
+          mintUrl: asset.mintUrl,
+          unit: "msat" as const,
+          asset: { kind: "ordinary" as const },
+          locator: locatorFor(counter),
+          proof,
+        })),
+        runtime,
+      });
+      const localProof = createBrowserCustodyProofRow({
+        scopeId,
+        normalizedMint: asset.mintUrl,
+        unit: "msat",
+        proof: proofs[0]!,
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      });
+      await database.custodyProofs.put(localProof);
+      await database.custodyProofBackupAuthorities.put(
+        createBrowserProofBackupAuthorityRow(localProof, 1, locatorFor(0), "local-proof"),
+      );
+      // A newer local revision that holds fewer proofs is a genuine conflict.
+      if (localState === "conflicting")
+        await database.encryptedWalletBackupV2DesiredAssets.put(
+          createEncryptedWalletBackupV2DesiredAssetRow({
+            scopeId,
+            asset,
+            custodyRevision: 2n,
+            activeProofCount: 1,
+          }),
+        );
+      const emptyHead = evidence(keyHandle.walletId, 0);
+      const competingHead = evidence(keyHandle.walletId, 1, [bundle.descriptor]);
+      await store.acceptCurrentHead({ expectedHeadVersion: null, evidence: emptyHead });
+      await store.markCompetingHeadRecoveryRequired({ evidence: competingHead });
+      const objects = new Map(bundle.objects.map((object) => [object.objectId, object]));
+
+      await expect(
+        recoverBrowserEncryptedWalletBackupOwnerConflict({
+          database,
+          scopeId,
+          seed,
+          keyHandle,
+          owner,
+          ownerContext: {
+            ownerScopeId: owner.ownerScopeId,
+            realm,
+            walletId: keyHandle.walletId,
+            enrollmentEpoch: 1,
+          },
+          ownerClient: {
+            readCurrentHead: vi.fn(async () => competingHead),
+            readObject: vi.fn(async ({ objectId }: { objectId: string }) => {
+              const object = objects.get(objectId);
+              if (object === undefined) throw new Error("owner object is absent");
+              return object;
+            }),
+          },
+          ownerStore: store,
+          runtime,
+          signal: new AbortController().signal,
+          isCurrentProfile: () => true,
+          lockManager: testLockManager(),
+          loadWallet: async (mintUrl: string) => testWallet(mintUrl),
+        }),
+      ).rejects.toThrow(
+        localState === "untracked"
+          ? "browser V2 restore local custody is untracked"
+          : "browser V2 restore desired authority conflicts",
+      );
+      expect(await store.readNewWritePermission()).toMatchObject({
+        canWrite: false,
+        localRecoveryStatus: "recovery-required",
+      });
+    },
+  );
+
   it("does not clear recovery when the owner head changes between reads", async () => {
     const runtime = createRuntime();
     const keyHandle = await createEncryptedWalletBackupV2KeyHandle({ seed, realm, runtime });
