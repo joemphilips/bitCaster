@@ -7,7 +7,7 @@ import type { WizardOutcome } from "@/types/market-creation";
 function makeOutcomes(count: number): WizardOutcome[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `o${i}`,
-    label: `Outcome ${i}`,
+    label: `Outcome${i}`,
     description: "",
   }));
 }
@@ -104,15 +104,15 @@ describe("OutcomesStep outcome colors", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("Color for Outcome 1"), {
+    fireEvent.change(screen.getByLabelText("Color for Outcome1"), {
       target: { value: "#A1B2C3" },
     });
     expect(onOutcomeColorChange).toHaveBeenCalledWith("o1", "#a1b2c3");
 
-    await user.click(screen.getByRole("button", { name: "Use automatic color for Outcome 0" }));
+    await user.click(screen.getByRole("button", { name: "Use automatic color for Outcome0" }));
     expect(onOutcomeColorChange).toHaveBeenLastCalledWith("o0", null);
     expect(
-      screen.getByRole("button", { name: "Use automatic color for Outcome 0" }),
+      screen.getByRole("button", { name: "Use automatic color for Outcome0" }),
     ).not.toHaveAttribute("aria-pressed");
     expect(screen.getAllByRole("button", { name: /Use automatic color for Outcome/ })).toHaveLength(
       2,
@@ -125,6 +125,46 @@ describe("OutcomesStep creator pricing removal", () => {
     render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes(2)} />);
     expect(screen.queryAllByRole("spinbutton")).toHaveLength(0);
     expect(screen.queryByText(/probability/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).not.toBeDisabled();
+  });
+});
+
+describe("OutcomesStep outcome label rule", () => {
+  const outcomes = (...labels: string[]): WizardOutcome[] =>
+    labels.map((label, i) => ({ id: `o${i}`, label, description: "" }));
+
+  it.each([
+    ["a case variant", ["Red", "red"], "Another outcome already has this name."],
+    ["a padded copy", ["Red", " Red "], "Another outcome already has this name."],
+    [
+      "a space inside",
+      ["New York", "Paris"],
+      "Use only letters and digits, with no spaces or symbols.",
+    ],
+    [
+      "the set separator",
+      ["Red|Blue", "Green"],
+      "Use only letters and digits, with no spaces or symbols.",
+    ],
+  ])("shows the error at the field and keeps Next disabled for %s", (_case, labels, message) => {
+    render(<OutcomesStep outcomeType="categorical" outcomes={outcomes(...labels)} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+  });
+
+  it("keeps a new blank field quiet but does not proceed", () => {
+    render(<OutcomesStep outcomeType="categorical" outcomes={outcomes("Red", "")} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+  });
+
+  it("clears the error after the user edits the duplicate", () => {
+    const { rerender } = render(
+      <OutcomesStep outcomeType="categorical" outcomes={outcomes("Red", "RED")} />,
+    );
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    rerender(<OutcomesStep outcomeType="categorical" outcomes={outcomes("Red", "Blue")} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /next/i })).not.toBeDisabled();
   });
 });
