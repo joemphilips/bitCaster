@@ -1728,9 +1728,13 @@ describe("TradingPanel", () => {
           "Too few shares. The market maker cannot fill an order this small, because its fee would not cover the mint fee. Try more shares.",
         );
         expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+        // A refresh cannot make a too-small order fillable.
+        expect(refusal).not.toHaveTextContent("This is a snapshot.");
+        expect(screen.queryByTestId("fok-preview-response-retry")).not.toBeInTheDocument();
       } else {
         expect(refusal).toHaveTextContent(/There aren't enough (sell|buy) orders/);
         expect(screen.getByTestId("fok-preview-subsidy")).toBeInTheDocument();
+        expect(screen.getByTestId("fok-preview-response-retry")).toBeInTheDocument();
       }
     },
   );

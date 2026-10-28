@@ -716,7 +716,7 @@ function FokOrderPreviewSection({
                 defaultValue: t("trade.previewNotFillable"),
               })}
         </p>
-        <p className="mt-2 text-xs">{t("trade.previewSnapshot")}</p>
+        {!belowMinimum && <p className="mt-2 text-xs">{t("trade.previewSnapshot")}</p>}
         {priceLimitFacts !== null && (
           <div data-testid="fok-preview-price-limit-details" className="mt-2 space-y-1">
             <p data-testid="fok-preview-current-executable-price">
@@ -744,14 +744,16 @@ function FokOrderPreviewSection({
               {t("trade.previewSubsidyMayHelp")}
             </p>
           )}
-        <button
-          type="button"
-          data-testid="fok-preview-response-retry"
-          className="mt-3 underline"
-          onClick={preview.refresh}
-        >
-          {t("trade.refreshQuote")}
-        </button>
+        {!belowMinimum && (
+          <button
+            type="button"
+            data-testid="fok-preview-response-retry"
+            className="mt-3 underline"
+            onClick={preview.refresh}
+          >
+            {t("trade.refreshQuote")}
+          </button>
+        )}
       </div>
     );
   }
