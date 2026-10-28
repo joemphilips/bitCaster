@@ -2207,7 +2207,7 @@ export interface operations {
         }
         content?: never
       }
-      /** @description The price history is not serving. This occurs while the server builds the history for the first time or after a server fault. It does not mean an empty history. */
+      /** @description The price history is not serving. This occurs while the server builds or restarts the history, or after a server fault. It does not mean an empty history. */
       503: {
         headers: {
           [name: string]: unknown

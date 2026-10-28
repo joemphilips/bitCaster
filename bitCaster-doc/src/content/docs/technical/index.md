@@ -658,8 +658,8 @@ supplies no position for a later `minimumEventOrder` request. Use
 Treat event positions as opaque values. Do not parse or compare them on the client.
 A comment read returns `503` if it cannot prove the required position within
 its deadline. A price-history read returns `503` only when the history is not
-available. This occurs while the server builds it for the first time or after
-a server fault.
+available. This occurs while the server builds or restarts the history, or
+after a server fault.
 Keep the previous display and show that its refresh is unavailable.
 Do not treat this response as an empty list or zero prices.
 

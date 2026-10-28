@@ -3539,6 +3539,7 @@ test('order submit forwards exact fee-preview consent for explicit and Auto requ
         ...process.env,
         BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
         BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([
+          { command: { method: 'health' }, response: { ok: true, result: { status: 'ok' } } },
           {
             command: {
               method: 'order.submit',
@@ -3924,9 +3925,16 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
   await writeFile(feeConsentPath, JSON.stringify(feeConsent), { mode: 0o600 })
   const received: unknown[] = []
   const server = createServer(async (req, res) => {
-    const command = JSON.parse(await readBody(req))
+    const command = JSON.parse(await readBody(req)) as { method: string }
     received.push(command)
-    writeJson(res, 200, { ok: true, result: { orderId: 'ord-1' } })
+    // An order submission is a health check, then a streamed result frame.
+    if (command.method === 'order.submit') {
+      res.writeHead(200, { 'content-type': 'application/vnd.bitcaster.order-submission+ndjson' })
+      res.end(
+        JSON.stringify({ type: 'result', response: { ok: true, result: { orderId: 'ord-1' } } }) +
+          '\n',
+      )
+    } else writeJson(res, 200, { ok: true, result: { status: 'ok' } })
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -3984,53 +3992,56 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '--fee-consent-file',
       feeConsentPath,
     ])
-    assert.deepEqual(received, [
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-YES',
-          outcomeId: 'YES',
-          tokenSide: 'Outcome',
-          side: 'Buy',
-          price: 42,
-          amountSubunits: 100,
-          consolidateProofs: false,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+    assert.deepEqual(
+      received.filter((command) => (command as { method: string }).method !== 'health'),
+      [
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            tokenSide: 'Outcome',
+            side: 'Buy',
+            price: 42,
+            amountSubunits: 100,
+            consolidateProofs: false,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-NO',
-          outcomeId: 'NO',
-          tokenSide: 'Outcome',
-          side: 'Buy',
-          price: 55,
-          amountSubunits: 200,
-          consolidateProofs: true,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-NO',
+            outcomeId: 'NO',
+            tokenSide: 'Outcome',
+            side: 'Buy',
+            price: 55,
+            amountSubunits: 200,
+            consolidateProofs: true,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-GTD',
-          outcomeId: 'GTD',
-          tokenSide: 'Outcome',
-          side: 'Sell',
-          price: 40,
-          amountSubunits: 100,
-          consolidateProofs: false,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-GTD',
+            outcomeId: 'GTD',
+            tokenSide: 'Outcome',
+            side: 'Sell',
+            price: 40,
+            amountSubunits: 100,
+            consolidateProofs: false,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-    ])
+      ],
+    )
   } finally {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -6084,6 +6095,14 @@ function daemonRpcFetchModule(
                 state: step.responseFromAttempt,
               },
             }
+      // An order submission streams NDJSON frames. Its final frame is the result.
+      const orderSubmission = 'application/vnd.bitcaster.order-submission+ndjson'
+      if (new Headers(init?.headers).get('accept') === orderSubmission) {
+        return new Response(JSON.stringify({ type: 'result', response }) + '\\n', {
+          status: 200,
+          headers: { 'content-type': orderSubmission },
+        })
+      }
       return new Response(JSON.stringify(response), {
         status: 200,
         headers: { 'content-type': 'application/json' },

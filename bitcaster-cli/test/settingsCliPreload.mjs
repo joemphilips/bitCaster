@@ -60,7 +60,7 @@ const rpcSource = `
   }
   const unexpected = () => { throw Error('Unexpected RPC or daemon I/O') }
   export const callDaemon = unexpected, daemonLogPath = unexpected, isNetworkFailure = unexpected,
-    stopDaemon = unexpected, watchDaemonToOutput = unexpected
+    stopDaemon = unexpected, submitOrderWithProgress = unexpected, watchDaemonToOutput = unexpected
 `
 
 registerHooks({

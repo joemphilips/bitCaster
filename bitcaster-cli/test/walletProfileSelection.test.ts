@@ -78,7 +78,11 @@ test('actual CLI selects distinct wallet profiles for secure import and acknowle
       ...recoveryArgs,
       '--acknowledge-seed-disclosure',
     ])
-    assert.deepEqual(JSON.parse(recovered.stdout), {
+    const recoveredResult = JSON.parse(recovered.stdout)
+    // The fixture derives its keyset ID. The result reports the one scanned range.
+    const scannedKeysetId = recoveredResult.scannedRanges?.[0]?.keysetId
+    assert.match(scannedKeysetId ?? '', /^01[0-9a-f]{64}$/)
+    assert.deepEqual(recoveredResult, {
       recoveryId: 'imported-profile-recovery',
       state: 'completed',
       selectedKeysetCount: 1,
@@ -86,6 +90,11 @@ test('actual CLI selects distinct wallet profiles for secure import and acknowle
       retainedOutputProofsImported: 0,
       batchesProcessed: 1,
       gapLimit: 300,
+      scanPolicy: { gapLimit: 300, scope: 'regular-msat', version: 1 },
+      scannedRanges: [
+        { keysetId: scannedKeysetId, startCounter: 0, nextCounter: 300, stopReason: 'gap-limit' },
+      ],
+      uncoveredLocalCounterBindings: { capped: false, count: 0, diagnostic: null },
     })
     const requests = (await readFile(requestLog, 'utf8'))
       .trim()
