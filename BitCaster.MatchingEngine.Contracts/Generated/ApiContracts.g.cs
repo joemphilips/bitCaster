@@ -2969,7 +2969,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Outcome label (e.g. "Yes", "Alice").
+        /// Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or digits, with no spaces or symbols.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("name")]
         public string Name { get; }
@@ -3040,7 +3041,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Description { get; }
 
         /// <summary>
-        /// The outcomes for the market (2 through 8).
+        /// The outcomes for the market (2 through 8). Outcome names must be unique when letter case is ignored: "Red" and "red" are the same outcome. A duplicate returns 400.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }

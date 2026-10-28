@@ -90,7 +90,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateMarketResponse'
         '400':
-          description: Validation error
+          description: >
+            Validation error, for example an outcome name that is not ASCII
+            letters or digits, or that repeats another name in any letter case.
           content:
             application/json:
               schema:
@@ -3898,7 +3900,12 @@ components:
       properties:
         name:
           type: string
-          description: Outcome label (e.g. "Yes", "Alice").
+          minLength: 1
+          maxLength: 191
+          pattern: '^[A-Za-z0-9]{1,191}$'
+          description: >
+            Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or
+            digits, with no spaces or symbols.
         color:
           type: string
           pattern: '^#[0-9A-Fa-f]{6}$'
@@ -3950,7 +3957,10 @@ components:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
           maxItems: 8
-          description: The outcomes for the market (2 through 8).
+          description: >
+            The outcomes for the market (2 through 8). Outcome names must be
+            unique when letter case is ignored: "Red" and "red" are the same
+            outcome. A duplicate returns 400.
         outcomeType:
           type: string
           enum: [yesno, categorical, numeric]

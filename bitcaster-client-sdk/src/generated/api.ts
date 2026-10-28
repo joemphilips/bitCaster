@@ -1606,7 +1606,7 @@ export interface components {
       finalOutcome?: string | null
     }
     CreateMarketOutcome: {
-      /** @description Outcome label (e.g. "Yes", "Alice"). */
+      /** @description Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or digits, with no spaces or symbols. */
       name: string
       /** @description Optional categorical outcome display color. The server accepts either hex letter case and resolves it to uppercase #RRGGBB. Omit this field to request a server-assigned color. */
       color?: string
@@ -1623,7 +1623,7 @@ export interface components {
       title: string
       /** @description Detailed market description. */
       description: string
-      /** @description The outcomes for the market (2 through 8). */
+      /** @description The outcomes for the market (2 through 8). Outcome names must be unique when letter case is ignored: "Red" and "red" are the same outcome. A duplicate returns 400. */
       outcomes: components['schemas']['CreateMarketOutcome'][]
       /**
        * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
@@ -2047,7 +2047,7 @@ export interface operations {
           'application/json': components['schemas']['CreateMarketResponse']
         }
       }
-      /** @description Validation error */
+      /** @description Validation error, for example an outcome name that is not ASCII letters or digits, or that repeats another name in any letter case. */
       400: {
         headers: {
           [name: string]: unknown

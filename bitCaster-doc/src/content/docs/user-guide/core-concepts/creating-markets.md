@@ -25,6 +25,8 @@ or reduce the relay list before trying again.
 
 For a yes/no market, the wizard uses Yes and No automatically. It skips the
 outcome-entry step. For a categorical market, enter the outcome names.
+Use only letters and digits. Each name must differ from the others in more
+than letter case: "Red" and "red" are the same outcome.
 If a payment needs a wallet, choose Create wallet or Restore wallet.
 Setup and cancellation preserve your draft. Setup does not submit the market
 or pay its fee. Continue only after you review the next action.
