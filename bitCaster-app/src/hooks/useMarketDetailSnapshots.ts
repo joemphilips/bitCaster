@@ -14,7 +14,6 @@ import {
 } from "@/lib/marketHub";
 import { outcomeSetIdsForMarketBooks, outcomeSetMarketId } from "@/lib/outcomeSets";
 import type { ChartTimeframe, MarketDetail } from "@/types/market-detail";
-import type { MarketSnapshotReadOptions } from "@bitcaster/client-sdk/engineClient";
 
 interface SnapshotInputs {
   market: MarketDetail | null;
@@ -25,56 +24,52 @@ interface SnapshotInputs {
   onHistoryStatus?: (status: NonNullable<MarketDetail["priceHistoryStatus"]>) => void;
 }
 
+interface SnapshotRead {
+  signal: AbortSignal;
+  /** The latest notified source position. It is opaque. */
+  eventOrder?: string;
+}
+
 // One active read keeps one pending invalidation. Source positions remain opaque.
 function subscribeSnapshot<T>(
   market: MarketDetail,
-  read: (options: MarketSnapshotReadOptions) => Promise<T>,
+  read: (request: SnapshotRead) => Promise<T>,
   apply: (response: T) => void,
   invalidate: () => void = () => {},
   commentChanges = false,
-  observation?: {
-    initialEventOrder?: string;
-    onEventOrder: (eventOrder: string) => void;
-    onStatus: (status: "refreshing" | "ready" | "unavailable") => void;
-  },
+  onStatus?: (status: "refreshing" | "ready" | "unavailable") => void,
 ): () => void {
   const controller = new AbortController();
   let generation = 0;
-  let minimumEventOrder = observation?.initialEventOrder;
+  let eventOrder: string | undefined;
   const repair = createDisplayResyncRepair({
     initialJitterMs: 250,
     repair: async (signal) => {
       signal.throwIfAborted();
       const requestGeneration = generation;
-      observation?.onStatus("refreshing");
+      onStatus?.("refreshing");
       try {
-        const response = await read({
-          minimumEventOrder,
-          refresh: true,
-          signal: controller.signal,
-        });
+        const response = await read({ eventOrder, signal: controller.signal });
         signal.throwIfAborted();
         controller.signal.throwIfAborted();
         // A newer demand already owns the next coordinator pass. Never apply
         // an older response, even when the transport ignores cancellation.
         if (requestGeneration !== generation) return;
         apply(response);
-        observation?.onStatus("ready");
+        onStatus?.("ready");
       } catch (error) {
         if (!controller.signal.aborted && requestGeneration === generation)
-          observation?.onStatus("unavailable");
+          onStatus?.("unavailable");
         throw error;
       }
     },
   });
-  const changed = (eventOrder?: string) => {
+  const changed = (notifiedEventOrder?: string) => {
     if (controller.signal.aborted) return;
-    if (eventOrder !== undefined && eventOrder === minimumEventOrder) return;
+    // A page in several outcome groups gets one copy from each. Compare positions only for equality.
+    if (notifiedEventOrder !== undefined && notifiedEventOrder === eventOrder) return;
     generation += 1;
-    if (eventOrder !== undefined) {
-      minimumEventOrder = eventOrder;
-      observation?.onEventOrder(eventOrder);
-    }
+    if (notifiedEventOrder !== undefined) eventOrder = notifiedEventOrder;
     invalidate();
     repair.invalidate();
   };
@@ -122,7 +117,6 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
   ]);
   const historySource = useRef<{
     contextKey: string;
-    eventOrder?: string;
     asOfByRange: Partial<Record<ChartTimeframe, string>>;
   }>({ contextKey: priceContextKey, asOfByRange: {} });
   if (historySource.current.contextKey !== priceContextKey) {
@@ -133,10 +127,12 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
     if (!market) return;
     return subscribeSnapshot(
       market,
-      (options) => {
+      // The engine notifies a trade after this history includes it. The read
+      // returns the latest applied history, so it sends no source position.
+      ({ signal }) => {
         const current = latest.current.market;
         return fetchMarketPriceHistory(market.id, inputs.timeframe, {
-          ...options,
+          signal,
           minimumAsOf:
             historySource.current.asOfByRange[inputs.timeframe] ??
             (current?.priceHistory.timeframe === inputs.timeframe
@@ -165,24 +161,17 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
           latest.current.onInvalidateHistory();
       },
       false,
-      {
-        initialEventOrder: historySource.current.eventOrder,
-        onEventOrder: (eventOrder) => {
-          if (historySource.current.contextKey === priceContextKey)
-            historySource.current.eventOrder = eventOrder;
-        },
-        onStatus: (status) => {
-          if (
-            historySource.current.contextKey !== priceContextKey ||
-            latest.current.market?.id !== market.id ||
-            latest.current.timeframe !== inputs.timeframe
-          )
-            return;
-          const hasSnapshot = Boolean(latest.current.market.priceHistory.asOf);
-          latest.current.onHistoryStatus?.(
-            status === "refreshing" && !hasSnapshot ? "loading" : status,
-          );
-        },
+      (status) => {
+        if (
+          historySource.current.contextKey !== priceContextKey ||
+          latest.current.market?.id !== market.id ||
+          latest.current.timeframe !== inputs.timeframe
+        )
+          return;
+        const hasSnapshot = Boolean(latest.current.market.priceHistory.asOf);
+        latest.current.onHistoryStatus?.(
+          status === "refreshing" && !hasSnapshot ? "loading" : status,
+        );
       },
     );
   }, [marketId, inputs.timeframe, priceContextKey]);
@@ -191,7 +180,8 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
     if (!market) return;
     return subscribeSnapshot(
       market,
-      (options) => fetchMarketComments(market.id, options),
+      ({ eventOrder, signal }) =>
+        fetchMarketComments(market.id, { minimumEventOrder: eventOrder, refresh: true, signal }),
       (response) => {
         if (latest.current.market?.id !== market.id || response.conditionId !== market.id)
           throw new Error("Comment repair does not match the active display scope.");

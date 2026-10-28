@@ -1517,7 +1517,7 @@ describe("MarketDetailPage live market status", () => {
           expect(screen.getByTestId("chart-headline")).toHaveTextContent(expectedHeadline);
         });
         expect(fetchStub.mock.calls.map(([input]) => String(input))).toContain(
-          `${window.location.origin}/api/v1/markets/${conditionId}/price-history?timeframe=7d&refresh=true`,
+          `${window.location.origin}/api/v1/markets/${conditionId}/price-history?timeframe=7d`,
         );
       } finally {
         view.unmount();
@@ -2266,10 +2266,11 @@ describe("MarketDetailPage live market status", () => {
     );
     expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(2);
     expect(fetchMarketComments).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(fetchMarketPriceHistory).mock.calls[1][2]).toMatchObject({
-      minimumEventOrder: "opaque-19",
-      refresh: true,
-    });
+    // Price history reads the latest applied state. Comments keep their source minimum.
+    expect(vi.mocked(fetchMarketPriceHistory).mock.calls[1][2]).not.toHaveProperty(
+      "minimumEventOrder",
+    );
+    expect(vi.mocked(fetchMarketPriceHistory).mock.calls[1][2]).not.toHaveProperty("refresh");
     expect(vi.mocked(fetchMarketComments).mock.calls[1][1]).toMatchObject({
       minimumEventOrder: "late-comment-source",
       refresh: true,
@@ -2307,8 +2308,8 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("chart-latest-price")).toHaveTextContent("62.00%");
     expect(screen.getByTestId("chart-comments")).toHaveTextContent("late confirmed comment");
     const options = vi.mocked(fetchMarketPriceHistory).mock.calls[2][2];
-    expect(options).toMatchObject({ refresh: true });
-    expect(options?.minimumEventOrder).toBe("opaque-19");
+    expect(options).not.toHaveProperty("minimumEventOrder");
+    expect(options).not.toHaveProperty("refresh");
     view.unmount();
     expect(options?.signal?.aborted).toBe(true);
     expect(mocks.commentHandlers).toHaveLength(0);

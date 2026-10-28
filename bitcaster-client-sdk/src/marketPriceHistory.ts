@@ -5,7 +5,6 @@ type History = components['schemas']['MarketPriceHistoryResponse']
 export interface MarketPriceHistoryValidationContext {
   conditionId: string
   timeframe: History['timeframe']
-  minimumEventOrder?: string
   /** A previously accepted server evaluation time for this market and range. */
   minimumAsOf?: string
   outcomeIds?: readonly string[]
@@ -46,7 +45,7 @@ function timestamp(value: unknown, field: string): number {
 
 /**
  * Validate a complete confirmed-fill snapshot. Omitted outcomes and empty ranges
- * are valid. The server enforces minimumEventOrder; clients cannot order tokens.
+ * are valid. Event orders are opaque; clients cannot order them.
  * Callers must also discard responses from obsolete requests or market contexts.
  */
 export function decodeMarketPriceHistoryResponse(
@@ -58,8 +57,6 @@ export function decodeMarketPriceHistoryResponse(
   if (body.timeframe !== context.timeframe || !Object.hasOwn(windowMilliseconds, context.timeframe))
     invalid('timeframe')
   if (body.snapshotEventOrder !== null && !nonempty(body.snapshotEventOrder))
-    invalid('snapshotEventOrder')
-  if (context.minimumEventOrder !== undefined && body.snapshotEventOrder === null)
     invalid('snapshotEventOrder')
   const asOf = timestamp(body.asOf, 'asOf')
   if (context.minimumAsOf !== undefined && asOf < timestamp(context.minimumAsOf, 'minimumAsOf'))
@@ -85,8 +82,8 @@ export function decodeMarketPriceHistoryResponse(
       if (!nonempty(point.eventOrder) || body.snapshotEventOrder === null) invalid('eventOrder')
       const time = timestamp(point.timestamp, 'timestamp')
       if (duration !== null && time < asOf - duration) invalid('point outside timeframe')
-      // The server can wait for catch-up after it captures asOf. A newly confirmed
-      // fill can therefore have a timestamp after asOf.
+      // The server captures asOf before it reads the applied history. A fill applied
+      // in between can therefore have a timestamp after asOf.
       if (
         typeof point.price !== 'number' ||
         !Number.isSafeInteger(point.price) ||

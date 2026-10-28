@@ -399,12 +399,7 @@ function registerMarketCommand(program: Command): Command {
 
   market
     .command('history <conditionId>')
-    .description('Read public price history for one market.')
-    .option(
-      '--minimum-event-order <eventOrder>',
-      'Opaque source position required for the snapshot',
-    )
-    .option('--refresh', 'Capture the current source head before reading the snapshot')
+    .description('Read the latest applied public price history for one market.')
     .option(
       '--timeframe <timeframe>',
       'History window: 1h, 24h, 7d, 30d, or all',
@@ -414,20 +409,11 @@ function registerMarketCommand(program: Command): Command {
       'after',
       '\nExample:\n  bitcaster-cli market history <condition-id> --timeframe 30d',
     )
-    .action(
-      async (
-        conditionId: string,
-        options: MarketSnapshotReadOptions & { timeframe?: PriceHistoryTimeframe },
-      ) => {
-        await printPublicEngineResult(() =>
-          directEngineClient().getMarketPriceHistory(
-            conditionId,
-            options.timeframe ?? '7d',
-            options,
-          ),
-        )
-      },
-    )
+    .action(async (conditionId: string, options: { timeframe?: PriceHistoryTimeframe }) => {
+      await printPublicEngineResult(() =>
+        directEngineClient().getMarketPriceHistory(conditionId, options.timeframe ?? '7d'),
+      )
+    })
 
   market
     .command('attestation <conditionId>')

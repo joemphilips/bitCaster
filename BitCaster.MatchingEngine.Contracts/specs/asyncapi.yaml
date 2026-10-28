@@ -110,6 +110,8 @@ channels:
       groups for the condition and to clients with a Portfolio valuation
       subscription for that condition. The REST market catalogue remains
       authoritative when a client reconnects or misses a live delta.
+      The server sends the delta after the REST price history includes the
+      trade, or after a bounded wait. Delivery is best effort.
 
   marketCommentsChanged:
     address: MarketCommentsChanged
@@ -262,6 +264,8 @@ operations:
     summary: Receive committed confirmed-trade price delta
     description: >
       Server pushes a confirmed trade only after its settlement is committed.
+      It waits, with a bound, until the REST price history includes the trade.
+      Read the price history again after this message.
       The message contains one bounded latest-trade value. Clients subscribed
       to Portfolio valuation updates for the condition also receive it.
       Clients must reload the REST market catalogue after reconnect or an

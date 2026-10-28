@@ -54,7 +54,8 @@ Use `bitcaster-cli market comments <condition-id>` to read public comments as JS
 This read does not need a wallet.
 
 Use `bitcaster-cli market history <condition-id> --timeframe 7d` to read price history.
-Both commands accept `--minimum-event-order <event-order>` and `--refresh`.
+It returns the latest applied history at once.
+The comments command accepts `--minimum-event-order <event-order>` and `--refresh`.
 Pass the source position unchanged. It is opaque.
 Use `--refresh` to capture the current source head for the read.
 The JSON result retains `snapshotEventOrder`.
@@ -63,7 +64,7 @@ These reads do not require a wallet, signer, or daemon.
 
 ```bash
 bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
-bitcaster-cli market history <condition-id> --timeframe 7d --refresh
+bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
 Use `bitcaster-cli --help` and each command's `--help` to check current support.
@@ -637,19 +638,29 @@ longer needed. After reconnecting, send `JoinMarket` for the IDs still needed.
 
 ### Refresh comments and price history
 
-The comments endpoint and
-`GET /api/v1/markets/{conditionId}/price-history` accept `minimumEventOrder`
-and `refresh=true`. Pass an event position unchanged in `minimumEventOrder`.
+`GET /api/v1/markets/{conditionId}/price-history` returns the latest applied
+history at once. It does not accept a source position and does not wait for
+newer trades. The server sends `ConfirmedTradeRecorded` after the history
+includes the trade. That wait has a time limit. When the limit passes, the
+server sends the notification anyway. Read the history again after each
+notification and after a reconnect.
+
+The comments endpoint accepts `minimumEventOrder` and `refresh=true`.
+Pass an event position unchanged in `minimumEventOrder`.
 Use `refresh=true` after a reconnect. The server captures the current source
 position once. It waits for that position before returning the snapshot.
 It does not wait for all future events.
 
 Both responses include `snapshotEventOrder`. It is the applied source position
-proven for that snapshot. The field is nullable. A `null` value supplies no
-position for a later `minimumEventOrder` request. Use `refresh=true` instead.
+proven for that snapshot. The field is nullable. A `null` comment snapshot
+supplies no position for a later `minimumEventOrder` request. Use
+`refresh=true` instead.
 Treat event positions as opaque values. Do not parse or compare them on the client.
-If the read cannot prove the required position within its deadline, it returns
-`503`. Keep the previous display and show that its refresh is unavailable.
+A comment read returns `503` if it cannot prove the required position within
+its deadline. A price-history read returns `503` only when the history is not
+available. This occurs while the server builds it for the first time or after
+a server fault.
+Keep the previous display and show that its refresh is unavailable.
 Do not treat this response as an empty list or zero prices.
 
 Price history also includes `asOf`, the server's evaluation time.
@@ -664,12 +675,16 @@ existing categorical price step.
 The SignalR message `MarketCommentsChanged { conditionId, eventOrder }`
 means that the public comment source changed. `ConfirmedTradeRecorded`
 also supplies a source position in `latestConfirmedTrade.eventOrder`.
-Neither message guarantees that a snapshot is ready. Use its position in the
-next bounded read. Delivery is best effort. Refresh after a reconnect even
+`MarketCommentsChanged` does not guarantee that the comment snapshot is ready.
+Use either position in the next bounded comment read.
+`ConfirmedTradeRecorded` usually arrives after the price history includes the
+trade. If the server's wait reaches its time limit, the notification can arrive
+first. The history can then omit the trade until a later read.
+Delivery is best effort. Refresh after a reconnect even
 when the last trade price did not change.
 
-Start initial and ordinary event-triggered reads immediately. If a bounded read
-fails, keep its source minimum and retry with capped backoff and jitter until a
+Start initial and ordinary event-triggered reads immediately. If a read fails,
+keep any comment source minimum and retry with capped backoff and jitter until a
 current snapshot is applied. Do not wait for another event. Keep the displayed
 snapshot during repair. Stop retries when the route changes or the read succeeds.
 These retries do not poll a healthy display.
@@ -689,7 +704,8 @@ characters. Reject malformed controls.
 
 Keep the existing display while refreshing. Refresh the current order books,
 price history, comments, and affected Portfolio values from their normal APIs.
-Use `refresh=true` for history and comments when no source position is available.
+Use `refresh=true` for comments when no source position is available.
+Price history needs no option.
 Complete repair only after the required reads succeed and apply to the current
 route or wallet. Retry failed repair with bounded backoff and jitter, even when
 no later message arrives. Coalesce duplicate requests and retain one follow-up

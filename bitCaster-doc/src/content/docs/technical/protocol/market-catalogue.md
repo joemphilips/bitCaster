@@ -68,7 +68,7 @@ market price. A midpoint is an order-entry reference only.
 
 Price-history points expose `volumeSubunits` and `eventOrder`.
 The opaque `eventOrder` value identifies canonical trade order.
-Pass it unchanged as `minimumEventOrder` to the bounded history read.
+The history read returns the latest applied history. It takes no source position.
 Replace the complete selected-timeframe snapshot after a confirmed trade.
 Do not merge live ticks into the retained series.
 Use request generation to discard stale read responses.

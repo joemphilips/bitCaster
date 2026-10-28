@@ -93,7 +93,7 @@ export interface paths {
     }
     /**
      * Fetch primitive outcome price history for a market
-     * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
+     * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids. The response is the latest applied history. The read does not wait for newer trades. The server sends `ConfirmedTradeRecorded` after this history includes the trade, or after a bounded wait. Read the history again after that notification.
      */
     get: operations['getMarketPriceHistory']
     put?: never
@@ -1674,7 +1674,7 @@ export interface components {
       outcomeDetails: components['schemas']['MarketOutcomeDetails'][]
     }
     MarketPriceHistoryPoint: {
-      /** @description Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
+      /** @description Opaque source position for this confirmed trade. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
       eventOrder: string
       /** Format: date-time */
       timestamp: string
@@ -2180,10 +2180,6 @@ export interface operations {
   getMarketPriceHistory: {
     parameters: {
       query?: {
-        /** @description Opaque source position from a server response. Do not compare positions on the client. */
-        minimumEventOrder?: string
-        /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
-        refresh?: boolean
         timeframe?: '1h' | '24h' | '7d' | '30d' | 'all'
       }
       header?: never
@@ -2204,14 +2200,14 @@ export interface operations {
           'application/json': components['schemas']['MarketPriceHistoryResponse']
         }
       }
-      /** @description Invalid condition id, timeframe, or event order */
+      /** @description Invalid condition id or timeframe */
       400: {
         headers: {
           [name: string]: unknown
         }
         content?: never
       }
-      /** @description The snapshot could not prove the requested position within the read deadline. */
+      /** @description The price history is not serving. This occurs while the server builds the history for the first time or after a server fault. It does not mean an empty history. */
       503: {
         headers: {
           [name: string]: unknown

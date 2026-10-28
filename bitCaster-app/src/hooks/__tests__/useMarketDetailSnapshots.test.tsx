@@ -64,6 +64,13 @@ const market: MarketDetail = {
   ],
   priceHistory: { timeframe: "7d", data: [], asOf: "2026-10-08T10:00:00Z" },
 };
+// Price history returns the latest applied state. Its read sends no source position.
+function expectLatestAppliedHistoryRead() {
+  const options = vi.mocked(fetchMarketPriceHistory).mock.calls.at(-1)?.[2];
+  expect(options).toBeDefined();
+  expect(options).not.toHaveProperty("minimumEventOrder");
+  expect(options).not.toHaveProperty("refresh");
+}
 function notify(eventOrder: string) {
   const callback = vi.mocked(onConfirmedTradeRecorded).mock.calls[0][1];
   act(() =>
@@ -120,11 +127,9 @@ describe("history refresh observations", () => {
     expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
       "condition",
       "7d",
-      expect.objectContaining({
-        minimumEventOrder: "source-b",
-        minimumAsOf: "2026-10-08T10:00:00Z",
-      }),
+      expect.objectContaining({ minimumAsOf: "2026-10-08T10:00:00Z" }),
     );
+    expectLatestAppliedHistoryRead();
     expect(onHistoryStatus).toHaveBeenLastCalledWith("ready");
   });
 
@@ -198,7 +203,7 @@ describe("history refresh observations", () => {
     expect(onHistory).toHaveBeenCalledTimes(1);
   });
 
-  it("retains each range's asOf and the live watermark across range switches and reconnect", async () => {
+  it("retains each range's asOf across range switches and reconnect", async () => {
     const onHistory = vi.fn();
     const callbacks = { onHistory, onComments: vi.fn(), onInvalidateHistory: vi.fn() };
     vi.mocked(fetchMarketPriceHistory).mockImplementation(async (_, timeframe) =>
@@ -214,11 +219,8 @@ describe("history refresh observations", () => {
     await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(2));
     rerender({ timeframe: "1h" });
     await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(3));
-    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
-      "condition",
-      "1h",
-      expect.objectContaining({ minimumEventOrder: "live-token" }),
-    );
+    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith("condition", "1h", expect.any(Object));
+    expectLatestAppliedHistoryRead();
     rerender({ timeframe: "7d" });
     await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(4));
     const rejoin = vi.mocked(onMarketRejoined).mock.calls.at(-1)![1];
@@ -227,11 +229,9 @@ describe("history refresh observations", () => {
     expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
       "condition",
       "7d",
-      expect.objectContaining({
-        minimumEventOrder: "live-token",
-        minimumAsOf: "2026-10-08T10:00:00Z",
-      }),
+      expect.objectContaining({ minimumAsOf: "2026-10-08T10:00:00Z" }),
     );
+    expectLatestAppliedHistoryRead();
   });
 });
 
@@ -256,11 +256,8 @@ it("retains displayed history and retries explicit loss without another control"
   await waitFor(() => expect(onHistoryStatus).toHaveBeenCalledWith("unavailable"));
   expect(onHistory).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(onHistory).toHaveBeenCalledTimes(2));
-  expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
-    market.id,
-    "7d",
-    expect.objectContaining({ refresh: true }),
-  );
+  expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(market.id, "7d", expect.any(Object));
+  expectLatestAppliedHistoryRead();
   view.unmount();
 });
 
@@ -290,7 +287,7 @@ it("discards an old route repair response after disposal", async () => {
   expect(onHistory).toHaveBeenCalledTimes(1);
 });
 
-it("repairs an ordinary trade hint after 503 without another event, preserving its minimum", async () => {
+it("repairs an ordinary trade hint after 503 without another event, preserving the comment minimum", async () => {
   vi.useFakeTimers();
   const onHistory = vi.fn();
   const onComments = vi.fn();
@@ -330,11 +327,8 @@ it("repairs an ordinary trade hint after 503 without another event, preserving i
     expect(onHistory).toHaveBeenCalledTimes(2);
     expect(onComments).toHaveBeenCalledTimes(2);
     expect(onHistoryStatus).toHaveBeenLastCalledWith("ready");
-    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
-      market.id,
-      "7d",
-      expect.objectContaining({ minimumEventOrder: "new-fill", refresh: true }),
-    );
+    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(market.id, "7d", expect.any(Object));
+    expectLatestAppliedHistoryRead();
     expect(fetchMarketComments).toHaveBeenLastCalledWith(
       market.id,
       expect.objectContaining({ minimumEventOrder: "new-fill", refresh: true }),
@@ -346,7 +340,7 @@ it("repairs an ordinary trade hint after 503 without another event, preserving i
   }
 });
 
-it("keeps newer ordinary minima when a control races a held read", async () => {
+it("keeps the newest demand when a control races a held read", async () => {
   vi.useFakeTimers();
   const onHistory = vi.fn();
   let release!: (value: MarketPriceHistoryResponse) => void;
@@ -378,11 +372,9 @@ it("keeps newer ordinary minima when a control races a held read", async () => {
     expect(onHistory.mock.calls.some(([value]) => value.asOf === "2026-10-08T09:00:00Z")).toBe(
       false,
     );
-    expect(fetchMarketPriceHistory).toHaveBeenLastCalledWith(
-      market.id,
-      "7d",
-      expect.objectContaining({ minimumEventOrder: "newer-fill" }),
-    );
+    // The held read is discarded. One follow-up read serves the newer fill.
+    expect(fetchMarketPriceHistory).toHaveBeenCalledTimes(3);
+    expectLatestAppliedHistoryRead();
     expect(vi.getTimerCount()).toBe(0);
   } finally {
     release?.(snapshot());

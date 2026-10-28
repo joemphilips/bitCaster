@@ -52,7 +52,8 @@ CLI を利用できます。コマンドは、プログラムが読み取れる 
 この読み取りにウォレットは不要です。
 
 `bitcaster-cli market history <condition-id> --timeframe 7d` で価格履歴を取得します。
-どちらのコマンドも `--minimum-event-order <event-order>` と `--refresh` を受け付けます。
+このコマンドは、反映済みの最新の履歴をすぐに返します。
+コメントのコマンドは `--minimum-event-order <event-order>` と `--refresh` を受け付けます。
 ソース位置は不透明な値です。値を変えずに渡してください。
 現在のソース位置を対象に読み取るには、`--refresh` を使ってください。
 JSON の結果は `snapshotEventOrder` を保持します。
@@ -61,7 +62,7 @@ JSON の結果は `snapshotEventOrder` を保持します。
 
 ```bash
 bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
-bitcaster-cli market history <condition-id> --timeframe 7d --refresh
+bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
 現在の対応状況は `bitcaster-cli --help` と各コマンドの `--help` で確認してください。
@@ -645,18 +646,25 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 
 ### コメントと価格履歴の更新
 
-コメント endpoint と `GET /api/v1/markets/{conditionId}/price-history` は、
-`minimumEventOrder` と `refresh=true` を受け付けます。取得したイベント位置を
+`GET /api/v1/markets/{conditionId}/price-history` は、反映済みの最新の履歴をすぐに返します。
+source position は受け付けず、新しい取引を待ちません。サーバーは、履歴に取引が
+反映された後に `ConfirmedTradeRecorded` を送信します。この待機には制限時間があります。
+制限時間を過ぎた場合も、サーバーは通知を送信します。通知を受け取るたびと再接続後に、
+履歴を再取得してください。
+
+コメント endpoint は `minimumEventOrder` と `refresh=true` を受け付けます。取得したイベント位置を
 変更せずに `minimumEventOrder` に渡してください。再接続後は `refresh=true` を使います。
 サーバーは現在の source position を一度だけ取得します。その位置まで反映した後に
 snapshot を返します。今後発生するすべてのイベントを待つわけではありません。
 
 どちらのレスポンスも `snapshotEventOrder` を含みます。
 これは、その snapshot に反映済みと確認した source position です。
-このフィールドは `null` を許容します。`null` の場合、次の `minimumEventOrder`
-リクエストに使える位置はありません。代わりに `refresh=true` を使ってください。
+このフィールドは `null` を許容します。コメントの snapshot が `null` の場合、次の
+`minimumEventOrder` リクエストに使える位置はありません。代わりに `refresh=true` を使ってください。
 イベント位置は不透明な値として扱ってください。クライアント側で解析や比較をしないでください。
-読み取り期限内に必要な位置までの反映を確認できない場合は `503` を返します。
+コメントの読み取りは、読み取り期限内に必要な位置までの反映を確認できない場合に `503` を返します。
+価格履歴の読み取りは、履歴を提供できない場合にだけ `503` を返します。
+これは、サーバーが履歴を初めて作成している間か、サーバーの障害の後に発生します。
 前の表示を保持し、更新できないことを示してください。
 このレスポンスを空のリストや価格ゼロとして扱わないでください。
 
@@ -673,12 +681,16 @@ snapshot を返します。今後発生するすべてのイベントを待つ�
 SignalR の `MarketCommentsChanged { conditionId, eventOrder }` は、
 公開コメントの source が変更されたことを示します。
 `ConfirmedTradeRecorded` も `latestConfirmedTrade.eventOrder` に source position を含みます。
-どちらのメッセージも snapshot の準備完了を保証しません。
-その位置を次の bounded read に渡してください。配信は best effort です。
+`MarketCommentsChanged` は、コメントの snapshot の準備完了を保証しません。
+どちらの位置も、次の上限付きのコメント読み取りに渡してください。
+`ConfirmedTradeRecorded` は通常、価格履歴に取引が反映された後に届きます。
+サーバーの待機が制限時間に達した場合は、通知が先に届くことがあります。
+その場合、後の読み取りまで履歴に取引が含まれないことがあります。
+配信は best effort です。
 再接続後は、最終取引価格が変わっていない場合も更新してください。
 
-初回と通常のイベントによる読み取りは、すぐに開始します。上限付きの読み取りが失敗した場合は、
-source の下限を保持します。現在の snapshot を適用するまで、上限付きバックオフとジッターで
+初回と通常のイベントによる読み取りは、すぐに開始します。読み取りが失敗した場合は、
+コメントの source の下限を保持します。現在の snapshot を適用するまで、上限付きバックオフとジッターで
 再試行します。次のイベントを待たないでください。復旧中は既存の表示を保持します。
 ルートが変わった場合、または読み取りが成功した場合は再試行を停止します。
 正常な表示を定期的に取得する処理ではありません。
@@ -696,8 +708,8 @@ token は小文字の16進数32文字です。イベント位置ではなく、�
 condition ID は小文字の16進数64文字です。不正な通知は拒否してください。
 
 再取得中は既存の表示を保持します。現在の注文板、価格履歴、コメント、影響を受ける
-Portfolio の評価額を通常の API から再取得します。source position がない履歴とコメントには
-`refresh=true` を使います。必要な読み取りがすべて成功し、現在のルートまたはウォレットに
+Portfolio の評価額を通常の API から再取得します。source position がないコメントには
+`refresh=true` を使います。価格履歴にオプションは不要です。必要な読み取りがすべて成功し、現在のルートまたはウォレットに
 適用された後にだけ復旧を完了します。後続の通知がなくても、失敗した復旧は上限付きの
 バックオフとジッターで再試行します。重複した要求をまとめます。復旧中に別の通知が来た場合は、
 次の復旧要求を1つ保持します。古いルートやウォレットの処理は中止します。

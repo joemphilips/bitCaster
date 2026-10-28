@@ -2055,69 +2055,69 @@ test('market history exposes every public timeframe and preserves all outcome-se
   }
 })
 
-for (const command of ['comments', 'history'] as const) {
-  test(`market ${command} flags preserve opaque source and structured snapshot metadata`, async () => {
-    const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-snapshot-'))
-    const response =
-      command === 'comments'
-        ? { conditionId: 'condition-1', snapshotEventOrder: 'opaque /+?&=Ω', comments: [] }
-        : {
-            conditionId: 'condition-1',
-            snapshotEventOrder: 'opaque /+?&=Ω',
-            asOf: '2026-10-03T00:00:00Z',
-            timeframe: '30d',
-            outcomes: [],
-          }
-    try {
-      for (const [flags, query] of [
-        [
-          ['--minimum-event-order', 'opaque /+?&=Ω'],
-          'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9',
-        ],
-        [['--refresh'], 'refresh=true'],
-        [
-          ['--minimum-event-order', 'opaque /+?&=Ω', '--refresh'],
-          'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9&refresh=true',
-        ],
-      ] as const) {
-        const suffix =
-          command === 'comments' ? `comments?${query}` : `price-history?timeframe=30d&${query}`
-        const result = await runDefaultPublicEngineReadCli(
-          home,
-          [
-            '--dry-run',
-            '--json',
-            'market',
-            command,
-            'condition-1',
-            ...(command === 'history' ? ['--timeframe', '30d'] : []),
-            ...flags,
-          ],
-          [{ url: `http://localhost:5000/api/v1/markets/condition-1/${suffix}`, response }],
-        )
-        assert.deepEqual(JSON.parse(result.stdout), response)
-        assert.equal(result.stderr, '')
-      }
-      const help = await runDefaultPublicEngineReadCli(home, ['market', command, '--help'], [])
-      assert.match(help.stdout, /--minimum-event-order <eventOrder>/)
-      assert.match(help.stdout, /--refresh/)
-      await assert.rejects(
-        runDefaultPublicEngineReadCli(
-          home,
-          ['market', command, 'condition-1', '--minimum-event-order'],
-          [],
+test('market comments flags preserve opaque source and structured snapshot metadata', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-snapshot-'))
+  const response = { conditionId: 'condition-1', snapshotEventOrder: 'opaque /+?&=Ω', comments: [] }
+  try {
+    for (const [flags, query] of [
+      [
+        ['--minimum-event-order', 'opaque /+?&=Ω'],
+        'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9',
+      ],
+      [['--refresh'], 'refresh=true'],
+      [
+        ['--minimum-event-order', 'opaque /+?&=Ω', '--refresh'],
+        'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9&refresh=true',
+      ],
+    ] as const) {
+      const result = await runDefaultPublicEngineReadCli(
+        home,
+        ['--dry-run', '--json', 'market', 'comments', 'condition-1', ...flags],
+        [{ url: `http://localhost:5000/api/v1/markets/condition-1/comments?${query}`, response }],
+      )
+      assert.deepEqual(JSON.parse(result.stdout), response)
+      assert.equal(result.stderr, '')
+    }
+    const help = await runDefaultPublicEngineReadCli(home, ['market', 'comments', '--help'], [])
+    assert.match(help.stdout, /--minimum-event-order <eventOrder>/)
+    assert.match(help.stdout, /--refresh/)
+    await assert.rejects(
+      runDefaultPublicEngineReadCli(
+        home,
+        ['market', 'comments', 'condition-1', '--minimum-event-order'],
+        [],
+      ),
+      (error: unknown) =>
+        /argument missing/.test(
+          `${(error as { stderr?: string }).stderr ?? ''}\n${(error as { stdout?: string }).stdout ?? ''}`,
         ),
+    )
+    assert.equal(await fileExists(join(home, 'config.json')), false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('market history reads the latest applied history and refuses snapshot flags', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-history-'))
+  try {
+    const help = await runDefaultPublicEngineReadCli(home, ['market', 'history', '--help'], [])
+    assert.doesNotMatch(help.stdout, /--minimum-event-order/)
+    assert.doesNotMatch(help.stdout, /--refresh/)
+    for (const flags of [['--minimum-event-order', 'opaque'], ['--refresh']] as const) {
+      await assert.rejects(
+        runDefaultPublicEngineReadCli(home, ['market', 'history', 'condition-1', ...flags], []),
         (error: unknown) =>
-          /argument missing/.test(
+          new RegExp(`unknown option '${flags[0]}'`).test(
             `${(error as { stderr?: string }).stderr ?? ''}\n${(error as { stdout?: string }).stdout ?? ''}`,
           ),
       )
-      assert.equal(await fileExists(join(home, 'config.json')), false)
-    } finally {
-      await rm(home, { recursive: true, force: true })
     }
-  })
-}
+    assert.equal(await fileExists(join(home, 'config.json')), false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
 
 test('market attestation reads public oracle details and preserves the 404 null result', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-attestation-'))

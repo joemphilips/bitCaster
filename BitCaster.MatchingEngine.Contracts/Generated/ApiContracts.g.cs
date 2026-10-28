@@ -3222,7 +3222,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots.
+        /// Opaque source position for this confirmed trade. Do not compare positions on the client. Do not merge live trade points into retained history snapshots.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("eventOrder")]

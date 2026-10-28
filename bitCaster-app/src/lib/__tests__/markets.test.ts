@@ -1806,7 +1806,7 @@ describe("SDK snapshot output to browser mapping", () => {
       const fetchMock = vi.fn().mockImplementation(async () => Response.json(response));
       vi.stubGlobal("fetch", fetchMock);
       const signal = new AbortController().signal;
-      const options = { minimumEventOrder: "opaque z/a", refresh: true, signal };
+      const options = { signal };
       const live = await fetchMarketPriceHistory("condition/one", timeframe, options);
       const reload = await fetchMarketPriceHistory("condition/one", timeframe, options);
       const market = mapCatalogueEntryToMarket(yesNoEntry) as unknown as MarketDetail;
@@ -1817,7 +1817,7 @@ describe("SDK snapshot output to browser mapping", () => {
       expect(mapped.snapshotEventOrder).toBe("opaque z/a");
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe(
-        `${window.location.origin}/api/v1/markets/condition%2Fone/price-history?timeframe=${timeframe}&minimumEventOrder=opaque+z%2Fa&refresh=true`,
+        `${window.location.origin}/api/v1/markets/condition%2Fone/price-history?timeframe=${timeframe}`,
       );
       expect(init.signal).toBe(signal);
     },

@@ -17,6 +17,7 @@ import {
   SUBMIT_ORDER_RESPONSE_BYTES_MAX,
   type EngineAuthorizationRequest,
   type CreateSettlementCapabilityRequest,
+  type MarketPriceHistoryReadOptions,
 } from '../src/engineClient.ts'
 import type { components } from '../src/generated/api.ts'
 import { decodeOrderQuotePaymentBounds } from '../src/tradeTicket.ts'
@@ -500,17 +501,30 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
 })
 
 for (const kind of ['comments', 'history'] as const) {
-  for (const [options, expectedQuery] of [
-    [undefined, ''],
-    [{ refresh: false }, ''],
-    [{ minimumEventOrder: 'source /+?&=Ω' }, 'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9'],
-    [{ refresh: true }, 'refresh=true'],
-    [
-      { minimumEventOrder: 'source /+?&=Ω', refresh: true },
-      'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9&refresh=true',
-    ],
-  ] as const) {
-    test(`public ${kind} snapshot read preserves opaque metadata and query (${expectedQuery || 'none'})`, async () => {
+  // Price history returns the latest applied state. It sends no snapshot options,
+  // even when an untyped caller supplies the removed comment options.
+  const cases =
+    kind === 'comments'
+      ? ([
+          [undefined, ''],
+          [{ refresh: false }, ''],
+          [
+            { minimumEventOrder: 'source /+?&=Ω' },
+            'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9',
+          ],
+          [{ refresh: true }, 'refresh=true'],
+          [
+            { minimumEventOrder: 'source /+?&=Ω', refresh: true },
+            'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9&refresh=true',
+          ],
+        ] as const)
+      : ([
+          [undefined, ''],
+          [{}, ''],
+          [{ minimumEventOrder: 'source /+?&=Ω', refresh: true }, ''],
+        ] as const)
+  for (const [options, expectedQuery] of cases) {
+    test(`public ${kind} snapshot read preserves opaque metadata and query (${expectedQuery || `none ${JSON.stringify(options)}`})`, async () => {
       const signal = new AbortController().signal
       const body =
         kind === 'comments'
@@ -541,7 +555,11 @@ for (const kind of ['comments', 'history'] as const) {
       const result =
         kind === 'comments'
           ? await client.getMarketComments('condition', readOptions)
-          : await client.getMarketPriceHistory('condition', undefined, readOptions)
+          : await client.getMarketPriceHistory(
+              'condition',
+              undefined,
+              readOptions as MarketPriceHistoryReadOptions | undefined,
+            )
       assert.deepEqual(result, body)
       assert.equal(calls, 1)
     })
@@ -559,7 +577,7 @@ for (const kind of ['comments', 'history'] as const) {
     await assert.rejects(
       kind === 'comments'
         ? client.getMarketComments('condition', { refresh: true })
-        : client.getMarketPriceHistory('condition', 'all', { refresh: true }),
+        : client.getMarketPriceHistory('condition', 'all'),
       (error: unknown) => error instanceof EngineClientError && error.status === 503,
     )
     assert.equal(calls, 1)

@@ -441,8 +441,11 @@ export interface OrderBookReadOptions {
   retryRefreshing?: boolean
 }
 
-export type MarketPriceHistoryReadOptions = MarketSnapshotReadOptions &
-  Pick<MarketPriceHistoryValidationContext, 'minimumAsOf' | 'outcomeIds' | 'divisibility'>
+/** Price history returns the latest applied state. It has no source-position options. */
+export type MarketPriceHistoryReadOptions = { signal?: AbortSignal } & Pick<
+  MarketPriceHistoryValidationContext,
+  'minimumAsOf' | 'outcomeIds' | 'divisibility'
+>
 
 export type MarketComment = components['schemas']['MarketComment']
 export type MarketCommentsResponse = components['schemas']['MarketCommentsResponse']
@@ -856,17 +859,16 @@ export class BitcasterEngineClient {
     options: MarketPriceHistoryReadOptions = {},
   ): Promise<MarketPriceHistoryResponse> {
     const query = new URLSearchParams({ timeframe })
-    if (options.minimumEventOrder !== undefined)
-      query.set('minimumEventOrder', options.minimumEventOrder)
-    if (options.refresh === true) query.set('refresh', 'true')
     const response = await this.request(
       `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
       { signal: options.signal },
     )
     return decodeMarketPriceHistoryResponse(await response.json(), {
-      ...options,
       conditionId,
       timeframe,
+      minimumAsOf: options.minimumAsOf,
+      outcomeIds: options.outcomeIds,
+      divisibility: options.divisibility,
     })
   }
 

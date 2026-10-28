@@ -115,17 +115,25 @@ test('history accepts authoritative empty ranges and an empty source', async () 
   }
 })
 
-test('minimum source position requires authority without comparing opaque values', async () => {
-  await assert.rejects(
-    read(
-      { ...snapshot(), snapshotEventOrder: null, outcomes: [] },
-      {
-        minimumEventOrder: 'opaque-minimum',
-      },
-    ),
-    /snapshotEventOrder/,
-  )
-  assert.deepEqual(await read(snapshot(), { minimumEventOrder: 'zzzz' }), snapshot())
+test('history sends only its range and validates an empty source without a position', async () => {
+  const requests: string[] = []
+  const body = { ...snapshot(), snapshotEventOrder: null, outcomes: [] }
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input) => {
+      requests.push(String(input))
+      return Response.json(body)
+    },
+  })
+  // An untyped caller can still pass the removed comment options. They do not reach the wire.
+  const stale = {
+    minimumEventOrder: 'opaque-minimum',
+    refresh: true,
+  } as unknown as MarketPriceHistoryReadOptions
+  assert.deepEqual(await client.getMarketPriceHistory('condition', '1h', stale), body)
+  assert.deepEqual(requests, [
+    'https://engine.example/api/v1/markets/condition/price-history?timeframe=1h',
+  ])
 })
 
 test('older HTTP 200 evaluations cannot replace an accepted snapshot, including empty results', async () => {
