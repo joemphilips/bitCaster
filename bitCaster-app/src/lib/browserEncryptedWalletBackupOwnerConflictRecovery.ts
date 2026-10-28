@@ -234,7 +234,8 @@ export async function recoverBrowserEncryptedWalletBackupOwnerConflict(
         input.scopeId,
         localAssetKey,
       ]);
-      const current = raw === undefined ? undefined : decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+      const current =
+        raw === undefined ? undefined : decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
       if (!sameDesiredRow(desired, current)) return incomplete("local-state-changed");
       throw error;
     }
