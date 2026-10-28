@@ -355,12 +355,9 @@ export function DepositStep({
         <div className="mb-5 inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300">
           <Check className="h-5 w-5" strokeWidth={1.75} />
         </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-6">
           {t("marketCreation.marketCreatedTitle")}
         </h2>
-        <p className="text-sm text-slate-400 mb-6">
-          {t("marketCreation.marketCreatedAttractTraders")}
-        </p>
         <button
           type="button"
           onClick={() => setStage("funding")}
@@ -407,10 +404,9 @@ export function DepositStep({
 
   return (
     <div className="w-full max-w-2xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-5">
         {t("marketCreation.ammFundingTitle")}
       </h2>
-      <p className="text-sm text-slate-400 mb-5">{t("marketCreation.ammFundingSubtitle")}</p>
 
       <label className="mb-5 block rounded-lg border border-slate-800 bg-slate-900 p-4">
         <span className="mb-2 block text-sm font-semibold text-white">

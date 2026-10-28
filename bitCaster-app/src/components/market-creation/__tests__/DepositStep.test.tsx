@@ -101,9 +101,10 @@ describe("DepositStep", () => {
     const view = renderStep();
 
     expect(screen.getByText("Market created!")).toBeInTheDocument();
+    // The wizard shows no helper subtitle under the heading.
     expect(
-      screen.getByText("You can optionally fund the market maker after creation."),
-    ).toBeInTheDocument();
+      screen.queryByText("You can optionally fund the market maker after creation."),
+    ).toBeNull();
     const transition = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(transition).toBeDefined();
 
@@ -266,9 +267,6 @@ describe("DepositStep", () => {
     renderStep({ presentation: "detail" });
 
     expect(screen.getByText("Fund the market maker")).toBeInTheDocument();
-    expect(
-      screen.getByText("Enter the exact amount of sats to give the market maker, or skip for now."),
-    ).toBeInTheDocument();
     expect(screen.queryByTestId("skip-amm-funding")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Use up to three decimal places. The exact amount you enter is funded."),
