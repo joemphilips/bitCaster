@@ -240,11 +240,7 @@ export function OrderBookSection({
   );
 }
 
-function formatOrderBookShares(
-  amountSubunits: number,
-  divisibility: number,
-  t: TFunction,
-): string {
+function formatOrderBookShares(amountSubunits: number, divisibility: number, t: TFunction): string {
   const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 1;
   const shares = Number.isFinite(amountSubunits) ? amountSubunits / denominator : 0;
   const formatted = shares.toLocaleString(undefined, {
