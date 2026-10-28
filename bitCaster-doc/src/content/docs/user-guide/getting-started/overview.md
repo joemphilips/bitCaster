@@ -48,8 +48,10 @@ the whole order is refused. Review a fresh quote before confirming a new order.
 The estimated last fill price describes the last match in your proposed order.
 It is not a promise of the next orderbook midpoint.
 The form checks your entered quantity and its fees. It warns when the current
-orders cannot fill that quantity within your price limit. A preview does not
-reserve liquidity. Your order fills in full
+orders cannot fill that quantity within your price limit. A very small buy
+can be refused although the order book shows depth: the market maker's fee
+must cover the mint fee. The form then says **Too few shares**. Buy more shares.
+A preview does not reserve liquidity. Your order fills in full
 within the limit or does not fill. It does not stay on the order book for later.
 Markets can have two outcomes, such as Yes and No, or up to eight named
 outcomes. You can fund your wallet through a Lightning invoice or with an
