@@ -1533,6 +1533,9 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
           this.#setDiagnosticState("authenticated");
           await this.#discoverCtfRemovals();
           if (!this.#isLeaderActive()) return;
+          // An idle startup queues no later cycle, so report write readiness now.
+          if (result.kind === "idle") await this.#allowOrdinaryWrites(keyHandle);
+          if (!this.#isLeaderActive()) return;
         }
         if (result.kind === "scan-more") {
           this.#ownerScanCursor = result.afterLocalAssetKey;

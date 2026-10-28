@@ -1618,6 +1618,55 @@ it.each(["leadership", "startup"] as const)(
   },
 );
 
+it("reports ready when a selected-owner startup finds nothing to back up", async () => {
+  const fixture = await readyManagedFixture();
+  const statuses = vi.fn();
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const client = fixture.ownerRemote.client;
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", configuration.realm);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", configuration.signedOrigin);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", configuration.pinnedReceiptKeys[0].keyId);
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    configuration.pinnedReceiptKeys[0].publicKey,
+  );
+  vi.spyOn(client, "discover").mockResolvedValue([{ entries: [fixture.owner] }] as never);
+  vi.spyOn(client, "resolveFirstAccount").mockReturnValue({ kind: "active", owner: fixture.owner });
+  vi.spyOn(client, "readEnrollmentEpoch").mockResolvedValue({
+    status: "active",
+    enrollmentEpoch: 1,
+  });
+  vi.spyOn(client, "readCurrentHead").mockImplementation(
+    fixture.ownerRemote.remote.readCurrentHead,
+  );
+  vi.spyOn(ownerWorker, "runBrowserEncryptedWalletBackupOwnerWorkerCycle").mockImplementation(
+    worker,
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(fixture.owner),
+    ownerClient: client,
+    remote: runtimeRemote(),
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+  });
+  try {
+    await vi.waitFor(() =>
+      requireBrowserWalletNewWritePermission({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+      }),
+    );
+    await vi.waitFor(() => expect(statuses).toHaveBeenLastCalledWith({ kind: "ready" }));
+  } finally {
+    driver.stop();
+  }
+});
+
 it("a replacement driver reauthenticates after terminal failure without discarding pending work", async () => {
   enableBackupGate();
   const fixture = await readyEnrolledFixture();
