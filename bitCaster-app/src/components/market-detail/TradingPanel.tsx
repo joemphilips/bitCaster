@@ -98,7 +98,7 @@ type TradingTab = TradeTab;
 // Buy quick-presets are user-facing display shares. Boundary code maps each
 // display share to a market-divisibility-sized conditional-token face lot
 // before submit.
-const QUICK_SHARE_PRESETS = [1, 5, 10, 50];
+const QUICK_SHARE_PRESETS = [100, 500, 1000, 5000];
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100];
 
 type SellOutcomeAvailability =
@@ -694,6 +694,15 @@ function FokOrderPreviewSection({
             capacityResponse.priceDenominator ?? response.priceDenominator ?? divisibility,
         }
       : null;
+  // The capacity read of the same snapshot can fill more than this request, so
+  // a maker minimum refuses this smaller order.
+  const belowMinimum =
+    response.reason === "insufficient_liquidity" &&
+    response.previewRevision !== null &&
+    capacityResponse?.status === "ready" &&
+    capacityResponse.previewRevision === response.previewRevision &&
+    capacityResponse.maxFaceAmountSubunits !== null &&
+    deliveredFaceAmountSubunits < capacityResponse.maxFaceAmountSubunits;
   if (!response.fullFillAvailable) {
     return (
       <div
@@ -701,9 +710,11 @@ function FokOrderPreviewSection({
         className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
       >
         <p>
-          {t(previewReasonKey(response.reason, isSell), {
-            defaultValue: t("trade.previewNotFillable"),
-          })}
+          {belowMinimum
+            ? t("trade.previewReason.belowMinimum")
+            : t(previewReasonKey(response.reason, isSell), {
+                defaultValue: t("trade.previewNotFillable"),
+              })}
         </p>
         <p className="mt-2 text-xs">{t("trade.previewSnapshot")}</p>
         {priceLimitFacts !== null && (
@@ -726,6 +737,7 @@ function FokOrderPreviewSection({
           </div>
         )}
         {!suppressFundingHint &&
+          !belowMinimum &&
           response.reason === "insufficient_liquidity" &&
           response.subsidyMayHelp === true && (
             <p data-testid="fok-preview-subsidy" className="mt-2">

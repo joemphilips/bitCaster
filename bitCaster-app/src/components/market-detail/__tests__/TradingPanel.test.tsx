@@ -994,7 +994,7 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByText("Shares")).toBeInTheDocument();
-    expect(screen.getByText("1 share = 1,000 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 1,000 sats if it wins")).toBeInTheDocument();
     expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("0.0310%");
     expect(screen.getByTestId("trade-winning-payout")).toHaveTextContent("50,000.000 sats");
     expect(screen.queryByTestId("trade-average-execution-price")).not.toBeInTheDocument();
@@ -1478,7 +1478,7 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 1 sats if it wins")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.100 sats");
     expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^0\.001 sats$/);
     expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent(/^0\.002 sats$/);
@@ -1498,7 +1498,7 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 1 sats if it wins")).toBeInTheDocument();
   });
 
   it("shows loading state while the authoritative preview is pending", () => {
@@ -1676,6 +1676,41 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(message);
     expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
   });
+
+  it.each([
+    ["Buy", "preview-revision", 1, true],
+    ["Sell", "preview-revision", 1, true],
+    ["Buy", "older-revision", 1, false],
+    ["Buy", "preview-revision", 50, false],
+  ] as const)(
+    "explains a %s order below the maker minimum only from a matching larger capacity (%s, %i shares)",
+    (tradeSide, capacityRevision, tradeAmount, belowMinimum) => {
+      render(
+        <TradingPanel
+          market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={tradeAmount}
+          tradePreview={nonfillablePreview("insufficient_liquidity", true)}
+          tradeCapacityPreview={readyCapacityPreview({
+            maxFaceAmountSubunits: 9_000,
+            previewRevision: capacityRevision,
+          })}
+          tradeSide={tradeSide}
+        />,
+      );
+
+      const refusal = screen.getByTestId("fok-preview-nonfillable");
+      if (belowMinimum) {
+        expect(refusal).toHaveTextContent(
+          "Too few shares. The market maker cannot fill an order this small, because its fee would not cover the mint fee. Try more shares.",
+        );
+        expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+      } else {
+        expect(refusal).toHaveTextContent(/There aren't enough (sell|buy) orders/);
+        expect(screen.getByTestId("fok-preview-subsidy")).toBeInTheDocument();
+      }
+    },
+  );
 
   it("gives a Sell price-limit refusal in minimum-price terms", () => {
     render(
