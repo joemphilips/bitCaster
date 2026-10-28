@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { OrderBook } from "@/types/market-detail";
@@ -147,7 +148,7 @@ export function OrderBookSection({
                         {formatPricePercent(row.order.price, divisibility)}
                       </span>
                       <span className="text-right text-slate-600 dark:text-slate-300 font-mono">
-                        {formatOrderBookShares(row.order.amount, divisibility)}
+                        {formatOrderBookShares(row.order.amount, divisibility, t)}
                       </span>
                       <span
                         className="text-right text-slate-500 dark:text-slate-400 font-mono"
@@ -218,7 +219,7 @@ export function OrderBookSection({
                       {formatPricePercent(row.order.price, divisibility)}
                     </span>
                     <span className="text-right text-slate-600 dark:text-slate-300 font-mono">
-                      {formatOrderBookShares(row.order.amount, divisibility)}
+                      {formatOrderBookShares(row.order.amount, divisibility, t)}
                     </span>
                     <span
                       className="text-right text-slate-500 dark:text-slate-400 font-mono"
@@ -239,11 +240,15 @@ export function OrderBookSection({
   );
 }
 
-function formatOrderBookShares(amountSubunits: number, divisibility: number): string {
+function formatOrderBookShares(
+  amountSubunits: number,
+  divisibility: number,
+  t: TFunction,
+): string {
   const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 1;
   const shares = Number.isFinite(amountSubunits) ? amountSubunits / denominator : 0;
   const formatted = shares.toLocaleString(undefined, {
     maximumFractionDigits: 4,
   });
-  return `${formatted} ${shares === 1 ? "share" : "shares"}`;
+  return t("trade.shareCount", { count: shares, formattedCount: formatted });
 }
