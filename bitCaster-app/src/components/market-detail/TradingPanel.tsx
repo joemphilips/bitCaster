@@ -1333,7 +1333,9 @@ export function TradingPanel({
               deliveredFaceAmountSubunits={tradeAmount * divisibility}
               feeFacts={tradeFeeFacts}
               feeConsentCurrent={feeConsentCurrent}
-              feeCheckFailed={tradeFeasibility?.canBack === false}
+              // The cost check needs the Nostr signer. Without it no check runs, and the
+              // "Start trading" action sets up the identity first.
+              feeCheckFailed={!walletReady || tradeFeasibility?.canBack === false}
               suppressFundingHint={suppressFundingHint || isTradeSubmitting}
               isSell={isSell}
               isComplement={selectedTokenIsComplement}

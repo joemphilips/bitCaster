@@ -2208,6 +2208,11 @@ export function MarketDetailPage() {
         setTradeFeasibility({ key: rangeFeePreviewKey, canBack: true });
       } catch (error) {
         if (cancelled || !isCurrentRoute(routeId, generation)) return;
+        // The panel shows a coarse reason. Log the code for diagnosis, not the proof details.
+        console.warn(
+          "[MarketDetailPage] trade cost check refused:",
+          error instanceof BrowserCtfRangeOrderError ? error.code : (error as Error)?.name,
+        );
         setTradeFeasibility({
           key: rangeFeePreviewKey,
           canBack: false,

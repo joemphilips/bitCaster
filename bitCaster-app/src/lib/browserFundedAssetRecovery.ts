@@ -5,6 +5,7 @@ import {
   type TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
+import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
 import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "./encryptedWalletBackupDriver";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 
@@ -68,6 +69,10 @@ async function recoverBackupFirst<TPlan extends FundedPlan>(
 ): Promise<BrowserFundedAssetRecoveryOutcome<TPlan>> {
   const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(input.scopeId);
   if (driver === null) {
+    // A build without the optional backup has no recovery source, so the local
+    // shortfall is an ordinary insufficient balance. A configured backup without
+    // its driver stays an error.
+    if (resolveEncryptedWalletBackupConfiguration() === null) return { kind: "unavailable" };
     reportFundedRecoveryDiagnostic("driver-absent");
     return { kind: "persistent-error" };
   }

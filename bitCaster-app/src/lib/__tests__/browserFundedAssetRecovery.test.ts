@@ -8,11 +8,15 @@ const mocks = vi.hoisted(() => ({
   driver: { recoverTargetedAsset: vi.fn() },
   activeDriver: vi.fn(),
   wallet: vi.fn(),
+  backupConfiguration: vi.fn(),
 }));
 
 vi.mock("@/stores/wallet", () => ({ getWalletForMnemonicUnit: mocks.wallet }));
 vi.mock("../encryptedWalletBackupDriver", () => ({
   activeBrowserEncryptedWalletBackupV2RuntimeDriver: mocks.activeDriver,
+}));
+vi.mock("../encryptedWalletBackupConfig", () => ({
+  resolveEncryptedWalletBackupConfiguration: mocks.backupConfiguration,
 }));
 vi.mock("../markets", () => ({
   createAuthenticatedBrowserEngineClient: () => ({ getAssetMonitoringAssets: mocks.engineAssets }),
@@ -29,6 +33,21 @@ describe("recoverBrowserFundedAsset", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.backupConfiguration.mockReturnValue({ realm: "backup-realm" });
+  });
+
+  it("reports an ordinary shortfall when the build has no backup", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.activeDriver.mockReturnValue(null);
+    mocks.backupConfiguration.mockReturnValue(null);
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "unavailable",
+    });
+
+    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expect(mocks.engineAssets).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("returns a ready local action plan without recovery I/O", async () => {

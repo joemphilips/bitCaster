@@ -437,6 +437,29 @@ describe("TradingPanel", () => {
     },
   );
 
+  it("shows no fee loading message before the identity exists", () => {
+    // A wallet created in Settings has no Nostr signer. The cost check needs one,
+    // so the panel offers the identity setup instead of a check that never runs.
+    const onWalletRequired = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradeSide="Buy"
+        tradePreview={readyPreview()}
+        tradeFeeFacts={null}
+        walletReady={false}
+        onWalletRequired={onWalletRequired}
+      />,
+    );
+
+    expect(screen.queryByTestId("trade-fees-loading")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-feasibility-status")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(onWalletRequired).toHaveBeenCalledOnce();
+  });
+
   const emptyBook = {
     bids: [],
     asks: [],
