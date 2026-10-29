@@ -12,6 +12,7 @@ identifiers unchanged. Choose the term for the action being described.
 | Receive a payout | claim payout | 報酬受取 |
 | Winning portfolio position | Won | 当たり😋 |
 | Losing portfolio position | Lost | ハズレ😭 |
+| Unit for a count of shares | shares | 枚 |
 
 Do not replace settlement terms with resolution terms. Keep the result text
 available to assistive technology. Do not use an emoji as the only result cue.

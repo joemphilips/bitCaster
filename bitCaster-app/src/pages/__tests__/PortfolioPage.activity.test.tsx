@@ -97,7 +97,7 @@ function fill(fillId: string, amountSubunits: number, faceAmountSubunits: number
 describe("Portfolio route Activity records", () => {
   it.each([
     ["en", "Activity", "2 recorded fills", "Trade value before fees", "Outcome YES", "shares"],
-    ["ja", "アクティビティ", "記録された約定 2 件", "手数料適用前の取引額", "YES のトークン", "口"],
+    ["ja", "アクティビティ", "記録された約定 2 件", "手数料適用前の取引額", "YES のトークン", "枚"],
   ] as const)(
     "expands the real route's exact fill facts in %s",
     async (language, tab, header, qualifier, token, shareUnit) => {
@@ -152,7 +152,7 @@ describe("Portfolio route Activity records", () => {
       );
       expect(within(panel).getByTestId("activity-average-price")).toHaveTextContent(
         language === "ja"
-          ? "加重平均約定単価：0.409636 sats/口 (概算)"
+          ? "加重平均約定単価：0.409636 sats/枚 (概算)"
           : "Weighted execution price: 0.409636 sats/share (approximate)",
       );
       expect(groups[0].querySelector("summary a")).toBeNull();

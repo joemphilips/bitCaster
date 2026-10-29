@@ -126,7 +126,7 @@ describe("ActivityFeed trade details", () => {
 
   it.each([
     ["en", "2 recorded fills", "Trade value before fees", "Complement of YES · 2.5 shares"],
-    ["ja", "記録された約定 2 件", "手数料適用前の取引額", "YES の補完トークン · 2.5 口"],
+    ["ja", "記録された約定 2 件", "手数料適用前の取引額", "YES の補完トークン · 2.5 枚"],
   ] as const)("expands exact fill records in %s", async (language, header, qualifier, shares) => {
     await i18n.changeLanguage(language);
     const first = trade();

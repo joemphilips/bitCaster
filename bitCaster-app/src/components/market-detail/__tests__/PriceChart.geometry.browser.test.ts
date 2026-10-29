@@ -1100,7 +1100,7 @@ it.each(["en", "ja"])(
     const authorBounds = author.getBoundingClientRect();
     expect(author.textContent).toBe(displayName);
     expect(card.textContent).toContain(
-      language === "ja" ? "NOを12.345口売却" : "Sold 12.345 NO shares",
+      language === "ja" ? "NOを12.345枚売却" : "Sold 12.345 NO shares",
     );
     expect(authorBounds.width).toBeGreaterThanOrEqual(32);
     expect(authorBounds.right).toBeLessThanOrEqual(button.left);
