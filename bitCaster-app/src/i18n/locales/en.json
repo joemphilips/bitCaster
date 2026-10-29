@@ -866,6 +866,7 @@
     "outcomeColorFor": "Color for {{outcome}}",
     "outcomeColorAutomatic": "Automatic",
     "useAutomaticOutcomeColorFor": "Use automatic color for {{outcome}}",
+    "removeOutcomeFor": "Remove {{outcome}}",
     "yesNoSummaryLabel": "Yes / No",
     "numericSummary": "Numeric: {{lo}} – {{hi}} {{unit}}",
     "numericSummaryWithPrecision": "Numeric: {{lo}} – {{hi}} {{unit}} ({{precision}} decimals)",

@@ -167,17 +167,23 @@ export function PriceChart({
       odds != null && divisibility != null && divisibility > 1 && odds > 0 && odds < divisibility
         ? (odds * 100) / divisibility
         : null;
+    const value =
+      cursorTime !== null
+        ? confirmedPriceAtOrBefore(item.data, cursorTime / 1000)
+        : isCategorical
+          ? currentValue
+          : (item.data[item.data.length - 1]?.price ?? null);
     return {
       id: item.id,
       label: item.label,
       color: item.color,
-      neverTraded: isCategorical && odds === null && !priceAuthorityUnavailable,
-      value:
-        cursorTime !== null
-          ? confirmedPriceAtOrBefore(item.data, cursorTime / 1000)
-          : isCategorical
-            ? currentValue
-            : (item.data[item.data.length - 1]?.price ?? null),
+      // The whole history has no confirmed trade at or before the cursor. A shorter
+      // range can hide earlier trades, so it keeps "Price unavailable".
+      noTradesYet:
+        !priceAuthorityUnavailable &&
+        ((isCategorical && odds === null) ||
+          (cursorTime !== null && value === null && chartTimeframe === "all")),
+      value,
     };
   });
   const freshnessMessage = disabledNumeric
@@ -296,7 +302,7 @@ export function PriceChart({
               />
               <span>
                 {latest.value === null
-                  ? t(latest.neverTraded ? "trade.noTrades" : "trade.priceUnavailable")
+                  ? t(latest.noTradesYet ? "trade.noTrades" : "trade.priceUnavailable")
                   : formatPercent(latest.value)}
               </span>
             </span>

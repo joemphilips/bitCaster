@@ -1053,9 +1053,8 @@ export function TradingPanel({
     }
     if (buyNeedsTopUp) return t("trade.topUpWalletUnit", { unit: unitLabel });
     if (backingBlocked) return backingBlockMessage;
-    if (previewNeedsAttention && previewResponse?.fullFillAvailable === false) {
-      return t("trade.previewNotFillable");
-    }
+    // The preview box states the refusal. The disabled button keeps its action label.
+    const previewRefused = previewNeedsAttention && previewResponse?.fullFillAvailable === false;
     if (
       tradePreview?.status === "ready" &&
       previewResponse?.fullFillAvailable &&
@@ -1063,7 +1062,8 @@ export function TradingPanel({
     ) {
       return t("trade.feesLoading");
     }
-    if (previewNeedsAttention && !buyNeedsTopUp) return t("trade.previewLoading");
+    if (previewNeedsAttention && !buyNeedsTopUp && !previewRefused)
+      return t("trade.previewLoading");
     const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
     const amountLabel = shareCountLabel(tradeAmount);
 

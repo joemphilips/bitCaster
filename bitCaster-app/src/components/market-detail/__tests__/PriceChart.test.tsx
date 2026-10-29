@@ -232,6 +232,35 @@ describe("PriceChart", () => {
     expect(screen.queryByTestId("price-chart-current-endpoint")).not.toBeInTheDocument();
   });
 
+  it("labels a cursor before an outcome's first trade as no trades yet", () => {
+    render(
+      <PriceChart
+        chartTimeframe="all"
+        priceHistory={{ timeframe: "all", data: [] }}
+        divisibility={1000}
+        outcomes={[
+          { id: "a", label: "A", odds: 300, color: "#112233" },
+          { id: "b", label: "B", odds: 750, color: "#445566" },
+        ]}
+        outcomePriceHistories={{
+          A: {
+            timeframe: "all",
+            data: [{ eventOrder: "a", timestamp: "2026-05-25T10:00:00Z", price: 30 }],
+          },
+          B: {
+            timeframe: "all",
+            data: [{ eventOrder: "b", timestamp: "2026-05-25T11:00:00Z", price: 75 }],
+          },
+        }}
+      />,
+    );
+    moveCursor(0);
+    const pills = screen.getAllByTestId("latest-price-pill");
+    expect(pills[0]).toHaveTextContent("A30.00%");
+    expect(pills[1]).toHaveTextContent("BNo trades yet");
+    expect(screen.queryByText("Price unavailable")).not.toBeInTheDocument();
+  });
+
   it("shows one endpoint for each populated categorical series without pricing an empty outcome", () => {
     const data = [{ eventOrder: "first", timestamp: "2026-05-25T10:00:00Z", price: 30 }];
     render(
@@ -1572,15 +1601,16 @@ describe("PriceChart", () => {
     const pills = screen.getAllByTestId("latest-price-pill");
     expect(pills).toHaveLength(3);
     expect(pills[0]).toHaveTextContent("Alice20.00%");
-    expect(pills[1]).toHaveTextContent("BobPrice unavailable");
-    expect(pills[2]).toHaveTextContent("CarolPrice unavailable");
+    // The whole history has no trade of Bob or Carol at the cursor yet.
+    expect(pills[1]).toHaveTextContent("BobNo trades yet");
+    expect(pills[2]).toHaveTextContent("CarolNo trades yet");
     expect(pills[0].querySelector('[data-testid="outcome-color-swatch"]')).toHaveStyle({
       backgroundColor: "#112233",
     });
     moveCursor(0.75);
     expect(pills[0]).toHaveTextContent("Alice20.00%");
     expect(pills[1]).toHaveTextContent("Bob78.00%");
-    expect(pills[2]).toHaveTextContent("CarolPrice unavailable");
+    expect(pills[2]).toHaveTextContent("CarolNo trades yet");
     expect(screen.queryByTestId("price-chart-cursor-tooltip")).not.toBeInTheDocument();
     expect(screen.getByTestId("price-chart-x-axis-cursor-label")).toBeInTheDocument();
     expect(screen.queryByTestId("price-chart-y-axis-cursor-label")).not.toBeInTheDocument();

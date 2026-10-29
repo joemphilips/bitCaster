@@ -863,6 +863,7 @@
     "outcomeColorFor": "{{outcome}} の色",
     "outcomeColorAutomatic": "自動",
     "useAutomaticOutcomeColorFor": "{{outcome}} の色を自動にする",
+    "removeOutcomeFor": "{{outcome}} を削除",
     "yesNoSummaryLabel": "YES / NO",
     "numericSummary": "数値: {{lo}} – {{hi}} {{unit}}",
     "numericSummaryWithPrecision": "数値: {{lo}} – {{hi}} {{unit}} ({{precision}} 桁)",

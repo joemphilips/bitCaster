@@ -1619,6 +1619,9 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("trade-quote-payment")).not.toBeInTheDocument();
     expect(screen.queryByText(/0\.000 sats/)).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    // The preview box states the refusal; the disabled button keeps its action label.
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Buy YES for 50 shares");
+    expect(screen.getByTestId("trade-confirm")).not.toHaveTextContent("cannot be filled");
 
     rerender(
       <TradingPanel

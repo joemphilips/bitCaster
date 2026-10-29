@@ -51,11 +51,10 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
         onRemoveOutcome={onRemoveOutcome}
       />,
     );
-    // Each outcome row has a trash button; click the first one
-    const trashButtons = screen.getAllByRole("button", { name: "" });
-    // The trash buttons have no accessible name — find by aria or order
-    await user.click(trashButtons[trashButtons.length - 1]);
-    expect(onRemoveOutcome).toHaveBeenCalledOnce();
+    const outcomes = makeOutcomes(2);
+    // Each delete button names its outcome.
+    await user.click(screen.getByRole("button", { name: `Remove ${outcomes[1].label}` }));
+    expect(onRemoveOutcome).toHaveBeenCalledExactlyOnceWith(outcomes[1].id);
   });
 });
 
