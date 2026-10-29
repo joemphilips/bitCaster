@@ -91,6 +91,29 @@ beforeEach(() => {
   vi.mocked(fetchMarketPriceHistory).mockResolvedValue(snapshot());
 });
 
+describe("comment refresh observations", () => {
+  it("reports an unavailable comment read and its recovery", async () => {
+    const onComments = vi.fn();
+    const onCommentsStatus = vi.fn();
+    vi.mocked(fetchMarketComments).mockRejectedValueOnce(new Error("503"));
+    renderHook(() =>
+      useMarketDetailSnapshots({
+        market,
+        timeframe: "7d",
+        onHistory: vi.fn(),
+        onComments,
+        onCommentsStatus,
+        onInvalidateHistory: vi.fn(),
+      }),
+    );
+    await waitFor(() => expect(onCommentsStatus).toHaveBeenLastCalledWith("unavailable"));
+    expect(onComments).not.toHaveBeenCalled();
+    notify("source-a");
+    await waitFor(() => expect(onComments).toHaveBeenCalledTimes(1));
+    expect(onCommentsStatus).toHaveBeenLastCalledWith("ready");
+  });
+});
+
 describe("history refresh observations", () => {
   it("discards an older successful empty response when another fill races it", async () => {
     const onHistory = vi.fn();

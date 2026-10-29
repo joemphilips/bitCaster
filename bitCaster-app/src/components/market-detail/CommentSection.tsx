@@ -7,6 +7,8 @@ import { formatTimeAgo } from "@/lib/format";
 
 interface CommentSectionProps {
   comments: Comment[];
+  /** The last comment read failed. An empty list is then not "no comments". */
+  unavailable?: boolean;
   onLoadMoreComments?: () => void;
 }
 
@@ -65,8 +67,13 @@ function CommentRow({ comment }: { comment: Comment }) {
   );
 }
 
-export function CommentSection({ comments, onLoadMoreComments }: CommentSectionProps) {
+export function CommentSection({
+  comments,
+  unavailable = false,
+  onLoadMoreComments,
+}: CommentSectionProps) {
   const { t } = useTranslation();
+  const showUnavailable = unavailable && comments.length === 0;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
@@ -103,9 +110,11 @@ export function CommentSection({ comments, onLoadMoreComments }: CommentSectionP
       <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
           {t("comment.title")}
-          <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
-            ({comments.length})
-          </span>
+          {!showUnavailable && (
+            <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
+              ({comments.length})
+            </span>
+          )}
         </h3>
       </div>
 
@@ -128,7 +137,7 @@ export function CommentSection({ comments, onLoadMoreComments }: CommentSectionP
         >
           {comments.length === 0 ? (
             <p className="text-center text-sm text-slate-400 dark:text-slate-500 py-8">
-              {t("comment.noComments")}
+              {showUnavailable ? t("comment.unavailable") : t("comment.noComments")}
             </p>
           ) : (
             <>

@@ -439,6 +439,7 @@ export type MarketDetailDataState = {
   historyStatuses: Partial<
     Record<ChartTimeframe, NonNullable<MarketDetailType["priceHistoryStatus"]>>
   >;
+  commentsUnavailable: boolean;
   confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
   registeredPrimitiveOutcomeIdsByConditionId: Record<string, string[]>;
   booksByMarketId: Record<string, Record<string, OrderBook>>;
@@ -458,6 +459,11 @@ export type MarketDetailDataState = {
 };
 
 export type MarketDetailDataAction =
+  | {
+      type: "commentsUnavailableChanged";
+      marketId: string;
+      unavailable: boolean;
+    }
   | {
       type: "historyStatusChanged";
       marketId: string;
@@ -533,6 +539,7 @@ const emptyMarketDetailDataState: MarketDetailDataState = {
   marketId: null,
   core: null,
   historyStatuses: {},
+  commentsUnavailable: false,
   confirmedTradesByConditionId: {},
   registeredPrimitiveOutcomeIdsByConditionId: {},
   booksByMarketId: {},
@@ -796,6 +803,7 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
     historyStatuses: {},
+    commentsUnavailable: false,
     confirmedTradesByConditionId: {
       [detail.id]: detail.latestConfirmedTrades ?? [],
     },
@@ -1009,6 +1017,12 @@ export function marketDetailDataReducer(
         },
       };
     }
+    case "commentsUnavailableChanged": {
+      if (state.activeRouteId !== action.marketId || state.marketId !== action.marketId)
+        return state;
+      if (state.commentsUnavailable === action.unavailable) return state;
+      return { ...state, commentsUnavailable: action.unavailable };
+    }
     case "historyStatusChanged": {
       if (state.activeRouteId !== action.marketId || state.marketId !== action.marketId)
         return state;
@@ -1178,6 +1192,7 @@ export function composeMarketDetail(
     orderBook,
     outcomeOrderBooks: booksByOutcomeSetId,
     comments: enrichment.comments,
+    commentsUnavailable: state.commentsUnavailable,
     recentTrades: enrichment.recentTrades,
     relatedMarkets: enrichment.relatedMarkets,
   };
@@ -1926,6 +1941,15 @@ export function MarketDetailPage() {
         historiesByOutcomeSetId,
         expectedRouteId: market.id,
       });
+    },
+    onCommentsStatus: (status) => {
+      // A refresh keeps the last result until it completes.
+      if (market && status !== "refreshing")
+        dispatchMarketData({
+          type: "commentsUnavailableChanged",
+          marketId: market.id,
+          unavailable: status === "unavailable",
+        });
     },
     onComments: (response) => {
       if (!market) return;

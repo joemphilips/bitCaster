@@ -5391,6 +5391,35 @@ describe("marketDetailDataReducer", () => {
     },
   );
 
+  it("marks comments unavailable for the active market only, and a route change clears it", () => {
+    const initial = yesNoMarket({ ammBotBudgetSubunits: 30_000, fundingRevision: "0002" });
+    const state = createMarketDetailDataState(initial);
+    const unavailable = marketDetailDataReducer(state, {
+      type: "commentsUnavailableChanged",
+      marketId: initial.id,
+      unavailable: true,
+    });
+    expect(composeMarketDetail(unavailable, "7d")?.commentsUnavailable).toBe(true);
+    expect(
+      marketDetailDataReducer(unavailable, {
+        type: "commentsUnavailableChanged",
+        marketId: "other",
+        unavailable: false,
+      }),
+    ).toBe(unavailable);
+    const ready = marketDetailDataReducer(unavailable, {
+      type: "commentsUnavailableChanged",
+      marketId: initial.id,
+      unavailable: false,
+    });
+    expect(composeMarketDetail(ready, "7d")?.commentsUnavailable).toBe(false);
+    const switched = marketDetailDataReducer(unavailable, {
+      type: "routeChanged",
+      routeId: "other",
+    });
+    expect(switched.commentsUnavailable).toBe(false);
+  });
+
   it("ignores duplicate funding and a late update after a condition switch", () => {
     const initial = yesNoMarket({ ammBotBudgetSubunits: 30_000, fundingRevision: "0002" });
     const state = createMarketDetailDataState(initial);

@@ -433,6 +433,7 @@
   "comment": {
     "title": "コメント",
     "noComments": "まだコメントがありません。トレードするとコメントできます！",
+    "unavailable": "現在コメントを読み込めません。",
     "loadMore": "さらにコメントを表示"
   },
   "portfolio": {

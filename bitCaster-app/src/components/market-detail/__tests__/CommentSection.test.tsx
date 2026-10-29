@@ -13,6 +13,32 @@ afterEach(() => {
 });
 
 describe("CommentSection", () => {
+  it("states that comments are unavailable instead of showing an empty list", () => {
+    render(<CommentSection comments={[]} unavailable />);
+
+    expect(screen.getByText("Comments are not available now.")).toBeVisible();
+    expect(screen.queryByText(/No comments yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText("(0)")).not.toBeInTheDocument();
+  });
+
+  it("keeps loaded comments when a later read is unavailable", () => {
+    const comment: Comment = {
+      id: "kept-comment",
+      userId: "public-author",
+      userDisplayName: "Trader",
+      timestamp: "2026-05-25T10:00:00.000Z",
+      content: "A loaded comment",
+      trade: null,
+      likeCount: 0,
+      isLiked: false,
+    };
+    render(<CommentSection comments={[comment]} unavailable />);
+
+    expect(screen.getByText("A loaded comment")).toBeVisible();
+    expect(screen.getByText("(1)")).toBeVisible();
+    expect(screen.queryByText("Comments are not available now.")).not.toBeInTheDocument();
+  });
+
   it("shows a comment with its author and text without an inert like control or count", () => {
     const comment: Comment = {
       id: "confirmed-comment",

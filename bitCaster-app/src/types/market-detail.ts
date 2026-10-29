@@ -171,6 +171,8 @@ interface BaseMarketDetail {
   /** The displayed validated price survived an unavailable same-market refresh. */
   priceRefreshUnavailable?: boolean;
   priceHistoryStatus?: "loading" | "refreshing" | "ready" | "unavailable";
+  /** The last comment read failed. Shown only when no comment is loaded. */
+  commentsUnavailable?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];

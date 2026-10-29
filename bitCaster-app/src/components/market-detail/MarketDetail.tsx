@@ -374,7 +374,11 @@ export function MarketDetail({
               />
             )}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
-            <CommentSection comments={market.comments} onLoadMoreComments={onLoadMoreComments} />
+            <CommentSection
+              comments={market.comments}
+              unavailable={market.commentsUnavailable}
+              onLoadMoreComments={onLoadMoreComments}
+            />
           </div>
         </div>
       </div>

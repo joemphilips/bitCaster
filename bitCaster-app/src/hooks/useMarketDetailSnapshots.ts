@@ -22,6 +22,7 @@ interface SnapshotInputs {
   onComments: (response: MarketCommentsResponse) => void;
   onInvalidateHistory: () => void;
   onHistoryStatus?: (status: NonNullable<MarketDetail["priceHistoryStatus"]>) => void;
+  onCommentsStatus?: (status: "refreshing" | "ready" | "unavailable") => void;
 }
 
 interface SnapshotRead {
@@ -189,6 +190,9 @@ export function useMarketDetailSnapshots(inputs: SnapshotInputs): void {
       },
       undefined,
       true,
+      (status) => {
+        if (latest.current.market?.id === market.id) latest.current.onCommentsStatus?.(status);
+      },
     );
   }, [marketId]);
 }
