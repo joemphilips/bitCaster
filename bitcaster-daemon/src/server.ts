@@ -1923,6 +1923,7 @@ async function dispatchProtectedOrderSubmit(
   let orderId: string | undefined
   let participationScore: DaemonParticipationScorePreflightResult | undefined
   let prepared: PreparedSettlementCapability
+  inFlightOrderSubmissions += 1
   try {
     prepared = await deps.prepareSettlementCapability(
       preparationInput(resolved.value, clientOrderId),
@@ -1965,6 +1966,8 @@ async function dispatchProtectedOrderSubmit(
       operationId,
       orderId,
     }
+  } finally {
+    inFlightOrderSubmissions -= 1
   }
   let submitted: SubmitOrderResponse
   try {
@@ -3039,6 +3042,10 @@ function rejectUnsupportedPublicOrder(command: DaemonCommand): DaemonResponse | 
   }
 }
 
+// Order submissions run concurrently. While another order is prepared, its
+// source funds are not set aside yet, so a Score buffer could take them.
+let inFlightOrderSubmissions = 0
+
 function planOrderParticipationScoreTopUp(input: {
   score: ParticipationScoreResponse
   requiredScore: number
@@ -3049,6 +3056,7 @@ function planOrderParticipationScoreTopUp(input: {
   return planDaemonParticipationScoreTopUp({
     score: input.score,
     requiredScore: input.requiredScore,
+    buffer: inFlightOrderSubmissions <= 1,
     resumesDelivery: () =>
       resumesParticipationScoreDeliveryCashu({
         accountSubject: input.secrets.nostrPublicKeyHex,

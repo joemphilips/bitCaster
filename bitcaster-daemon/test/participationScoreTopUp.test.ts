@@ -61,8 +61,8 @@ test('daemon Score top-up buys the 50 Score buffer when the wallet can pay it', 
   assert.deepEqual(io.calls, { reads: 1, quotedMsat: [50_000] })
 })
 
-test('daemon Score top-up buys only the whole sats that remain below the buffer', async () => {
-  const io = fixture({ availableMsat: 8_999 })
+test('daemon Score top-up buys only the shortfall when less than 200 sats stay spare', async () => {
+  const io = fixture({ availableMsat: 199_999 })
 
   const plan = await planDaemonParticipationScoreTopUp({
     score: { enabled: true, balance: -1 },
@@ -70,12 +70,12 @@ test('daemon Score top-up buys only the whole sats that remain below the buffer'
     ...io,
   })
 
-  assert.equal(plan.kind === 'needs-top-up' ? plan.topUpScore : null, 8)
-  assert.deepEqual(io.calls.quotedMsat, [8_000])
+  assert.equal(plan.kind === 'needs-top-up' ? plan.topUpScore : null, 2)
+  assert.deepEqual(io.calls.quotedMsat, [])
 })
 
 test('daemon Score top-up buys the exact shortfall when the buffered send does not fit', async () => {
-  const io = fixture({ availableMsat: 50_000, quoteFails: true })
+  const io = fixture({ availableMsat: 500_000, quoteFails: true })
 
   const plan = await planDaemonParticipationScoreTopUp({
     score: { enabled: true, balance: -1 },
@@ -137,4 +137,23 @@ test('daemon Score top-up resumes an active delivery without a new backing check
     topUpScore: 2,
   })
   assert.deepEqual(io.calls, { reads: 0, quotedMsat: [] })
+})
+
+test('daemon Score top-up buys only the shortfall while another order is prepared', async () => {
+  const io = fixture({ availableMsat: 900_000 })
+
+  const plan = await planDaemonParticipationScoreTopUp({
+    score: { enabled: true, balance: -1 },
+    requiredScore: 1,
+    buffer: false,
+    ...io,
+  })
+
+  assert.deepEqual(plan, {
+    kind: 'needs-top-up',
+    requiredScore: 1,
+    deficitScore: 2,
+    topUpScore: 2,
+  })
+  assert.deepEqual(io.calls, { reads: 1, quotedMsat: [] })
 })

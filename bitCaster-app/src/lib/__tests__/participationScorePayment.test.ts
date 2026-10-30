@@ -153,15 +153,15 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
   });
 
-  it("buys only the payable Score when the wallet cannot pay the buffer", async () => {
+  it("buys only the shortfall when the wallet keeps less than 200 sats spare", async () => {
     mocks.getParticipationScore.mockResolvedValue({ ...baseScore, balance: -1 });
     mocks.readBrowserParticipationScorePayableScore.mockResolvedValue(20);
 
     await expect(
       ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
-    ).resolves.toMatchObject({ kind: "paid", payment: { amountSats: 20 } });
+    ).resolves.toMatchObject({ kind: "paid", payment: { amountSats: 5 } });
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedAmount: "20000" }),
+      expect.objectContaining({ requestedAmount: "5000" }),
     );
   });
 

@@ -22,6 +22,8 @@ export async function planDaemonParticipationScoreTopUp(input: {
   readonly resumesDelivery: () => Promise<boolean>
   readonly readAvailableMsat: () => Promise<number>
   readonly quoteSend: (amountMsat: number) => Promise<unknown>
+  /** False while another order is prepared: its funds are not set aside yet. */
+  readonly buffer?: boolean
 }): Promise<ParticipationScoreTopUpPlan> {
   const wallet = { resumed: false, availableMsat: 0 }
   const plan = await planParticipationScoreTopUpFromWallet(
@@ -51,6 +53,9 @@ export async function planDaemonParticipationScoreTopUp(input: {
     deficitScore: plan.deficitScore,
   })
   if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+  if (input.buffer === false) {
+    return planParticipationScoreTopUp(input.score, input.requiredScore, 0)
+  }
   if (plan.topUpScore === plan.deficitScore) return plan
   // The balance excludes input fees. Quote the buffered send against the same
   // proofs. If it does not fit, buy only the shortfall, as before the buffer.

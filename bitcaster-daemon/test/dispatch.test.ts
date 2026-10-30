@@ -1674,9 +1674,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
             prepareSwapToSend: async (amount, proofs, config) => {
-              // The wallet holds 8 sats after the order's funds, below the
-              // buffer, so the top-up buys all 8 sats.
-              assert.equal(amount, 8_000)
+              // The wallet keeps 8 sats after the order's funds, less than the
+              // buffer needs, so the top-up buys only the shortfall.
+              assert.equal(amount, 2_000)
               assert.equal(proofs.length, 1)
               assert.equal(Number(proofs[0]?.amount), 8_000)
               const { sendOutputs: scoreOutputs, keepOutputs: scoreKeepOutputs } =
@@ -1684,8 +1684,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   walletSeedHex: secrets.walletSeedHex,
                   counterSource,
                   keysetId,
-                  sendAmounts: [8_000],
-                  keepAmounts: [],
+                  sendAmounts: [1_000, 1_000],
+                  keepAmounts: [2_000, 4_000],
                   config,
                 })
               scoreProofs = scoreOutputs.map((output) =>
@@ -1695,7 +1695,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 signedDenominationProof(output, privateKey, keys),
               )
               return {
-                amount: Amount.from(8_000),
+                amount: Amount.from(2_000),
                 fees: Amount.zero(),
                 keysetId,
                 inputs: proofs,
@@ -1740,7 +1740,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               pendingScoreDelivery = submission
               submittedDeliveryIds.push(submission.deliveryId)
               submittedStates.push('pending')
-              assert.equal(submission.requestedAmount, '8000')
+              assert.equal(submission.requestedAmount, '2000')
               assert.match(submission.token, /^cashu/)
               return pendingRecipientStatus(submission)
             },
@@ -1800,7 +1800,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.deepEqual(submittedDeliveryIds, [deliveryId])
         assert.deepEqual(observedDeliveryIds, [...Array(10).fill(deliveryId), deliveryId])
         assert.equal(observedStates.at(-1), 'credited')
-        assert.deepEqual(quotedAmounts, [8_000])
+        assert.deepEqual(quotedAmounts, [])
         const restarted = new DaemonDurableOutgoingCashuCoordinator(profileDir(), () => fence)
         await restarted.preflightParticipationScoreDelivery({
           transferId: 'f4444444-4444-4444-8444-444444444444',

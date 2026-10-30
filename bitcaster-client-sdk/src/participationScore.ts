@@ -6,11 +6,17 @@ export interface ParticipationScoreLike {
 export const SETTLEMENT_CAPABILITY_V1_TARIFF_RULE_ID = 'settlement-capability-v1'
 
 /**
- * Score units that one top-up buys at least, so later trades can skip a
- * delivery. One Score unit costs 1 sat. A wallet that cannot pay the buffer
- * buys less, but never less than the shortfall.
+ * Score units that one top-up buys, so later trades can skip a delivery. One
+ * Score unit costs 1 sat.
  */
 export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 50
+
+/**
+ * The buffer applies only when the wallet keeps at least this much Score after
+ * the order's own funds, so the buffer is at most a quarter of the spare funds.
+ * A smaller wallet buys only the shortfall and keeps its funds for trades.
+ */
+export const PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE = 4 * PARTICIPATION_SCORE_TOP_UP_BUFFER
 
 export interface SettlementCapabilityScoreWorkFacts {
   inputCount: number
@@ -32,9 +38,9 @@ export type ParticipationScoreTopUpPlan =
  * true shortfall for this trade. `topUpScore` is the amount to buy.
  *
  * `availableScore` is the whole Score that the wallet can pay after the
- * order's own funds are set aside. The buffer never exceeds it, so the buffer
- * cannot make a trade fail when the exact shortfall is payable. Without it,
- * the plan buys the full buffer.
+ * order's own funds are set aside. The plan buys the buffer only when that is
+ * at least `PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE`. Without it, the
+ * plan buys only the shortfall.
  */
 export function planParticipationScoreTopUp(
   score: ParticipationScoreLike,
@@ -50,10 +56,11 @@ export function planParticipationScoreTopUp(
   }
 
   const deficitScore = requiredScore - score.balance
-  const bufferScore = Math.min(
-    PARTICIPATION_SCORE_TOP_UP_BUFFER,
-    availableScore ?? PARTICIPATION_SCORE_TOP_UP_BUFFER,
-  )
+  const bufferScore =
+    availableScore !== undefined &&
+    availableScore >= PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE
+      ? PARTICIPATION_SCORE_TOP_UP_BUFFER
+      : 0
   return {
     kind: 'needs-top-up',
     requiredScore,

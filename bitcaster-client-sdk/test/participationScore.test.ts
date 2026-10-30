@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   calculateSettlementCapabilityV1Tariff,
   PARTICIPATION_SCORE_TOP_UP_BUFFER,
+  PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE,
   planParticipationScoreTopUp,
   planParticipationScoreTopUpFromWallet,
 } from '../src/participationScore.ts'
@@ -27,26 +28,46 @@ test('planParticipationScoreTopUp accepts an existing sufficient balance', () =>
   })
 })
 
-test('the Score top-up buffer is 50 Score units', () => {
+test('the Score top-up buffer is 50 Score units and needs 200 spare', () => {
   assert.equal(PARTICIPATION_SCORE_TOP_UP_BUFFER, 50)
+  assert.equal(PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE, 200)
 })
 
-test('planParticipationScoreTopUp buys the buffer for a shortfall below it', () => {
+test('planParticipationScoreTopUp buys only the shortfall without a payable Score', () => {
   assert.deepEqual(planParticipationScoreTopUp({ enabled: true, balance: -2 }, 1), {
     kind: 'needs-top-up',
     requiredScore: 1,
     deficitScore: 3,
-    topUpScore: 50,
+    topUpScore: 3,
   })
 })
 
-test('planParticipationScoreTopUp caps the buffer when the wallet can pay more', () => {
-  assert.deepEqual(planParticipationScoreTopUp({ enabled: true, balance: 0 }, 3, 10_000), {
-    kind: 'needs-top-up',
-    requiredScore: 3,
-    deficitScore: 3,
-    topUpScore: 50,
-  })
+test('planParticipationScoreTopUp buys the buffer when the wallet keeps enough spare', () => {
+  for (const availableScore of [200, 10_000]) {
+    assert.deepEqual(
+      planParticipationScoreTopUp({ enabled: true, balance: 0 }, 3, availableScore),
+      {
+        kind: 'needs-top-up',
+        requiredScore: 3,
+        deficitScore: 3,
+        topUpScore: 50,
+      },
+    )
+  }
+})
+
+test('planParticipationScoreTopUp keeps a small wallet for trades', () => {
+  for (const availableScore of [0, 2, 20, 199]) {
+    assert.deepEqual(
+      planParticipationScoreTopUp({ enabled: true, balance: 1 }, 4, availableScore),
+      {
+        kind: 'needs-top-up',
+        requiredScore: 4,
+        deficitScore: 3,
+        topUpScore: 3,
+      },
+    )
+  }
 })
 
 test('planParticipationScoreTopUp buys the full shortfall when it exceeds the buffer', () => {
@@ -61,30 +82,6 @@ test('planParticipationScoreTopUp buys the full shortfall when it exceeds the bu
     requiredScore: 20,
     deficitScore: 700,
     topUpScore: 700,
-  })
-})
-
-test('planParticipationScoreTopUp buys only what the wallet can pay below the buffer', () => {
-  assert.deepEqual(planParticipationScoreTopUp({ enabled: true, balance: 1 }, 4, 20), {
-    kind: 'needs-top-up',
-    requiredScore: 4,
-    deficitScore: 3,
-    topUpScore: 20,
-  })
-})
-
-test('planParticipationScoreTopUp never buys less than the shortfall', () => {
-  assert.deepEqual(planParticipationScoreTopUp({ enabled: true, balance: 1 }, 4, 2), {
-    kind: 'needs-top-up',
-    requiredScore: 4,
-    deficitScore: 3,
-    topUpScore: 3,
-  })
-  assert.deepEqual(planParticipationScoreTopUp({ enabled: true, balance: 1 }, 4, 0), {
-    kind: 'needs-top-up',
-    requiredScore: 4,
-    deficitScore: 3,
-    topUpScore: 3,
   })
 })
 
@@ -126,7 +123,7 @@ test('planParticipationScoreTopUpFromWallet reads the wallet only for a shortfal
       4,
       readAvailableScore,
     ),
-    { kind: 'needs-top-up', requiredScore: 4, deficitScore: 3, topUpScore: 20 },
+    { kind: 'needs-top-up', requiredScore: 4, deficitScore: 3, topUpScore: 3 },
   )
   assert.equal(reads, 1)
 })
