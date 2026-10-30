@@ -542,16 +542,16 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@scure/bip39": "2.0.1",
+    "@scure/bip39": "2.4.0",
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "cborg": "5.1.7",
-    "nostr-tools": "2.23.9"
+    "nostr-tools": "2.25.2"
   },
   "devDependencies": {
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "playwright": "1.60.0",
     "typescript": "^5.7.2"
   }
