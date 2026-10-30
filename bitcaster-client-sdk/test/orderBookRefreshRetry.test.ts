@@ -54,6 +54,32 @@ test('default depth reads make one attempt', async () => {
   assert.equal(calls, 1)
 })
 
+test('a single depth read without retries still ends after ten seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requestSignal: AbortSignal | undefined
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      requestSignal = init?.signal ?? undefined
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        )
+      })
+    },
+  })
+  const read = client.getOrderBook('market', undefined, { retryRefreshing: false })
+  await setImmediate()
+  assert.equal(requestSignal?.aborted, false)
+  t.mock.timers.tick(9_999)
+  assert.equal(requestSignal?.aborted, false)
+  t.mock.timers.tick(1)
+  await assert.rejects(
+    read,
+    (error: unknown) => error instanceof DOMException && error.name === 'AbortError',
+  )
+})
+
 test('opt-in depth read recovers after a lost notification at the two-second cadence', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0

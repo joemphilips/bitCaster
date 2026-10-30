@@ -225,6 +225,27 @@ async function preflightParticipationScoreAsset(input: {
   }
 }
 
+/**
+ * Return the whole Score that the wallet can pay now. The order flow calls this
+ * after the order reserves its source proofs, so those funds are excluded. The
+ * input fee for every candidate bounds the fee of any selected subset.
+ */
+export async function readBrowserParticipationScorePayableScore(mintUrl: string): Promise<number> {
+  const context = captureBrowserMintPersistenceContext();
+  const wallet = await getWalletForUnit(mintUrl, "msat");
+  context.requireCapturedProfile();
+  const proofs = await readParticipationScoreCandidates(mintUrl, context.scopeId);
+  context.requireCapturedProfile();
+  let inputFeeMsat: number;
+  try {
+    inputFeeMsat = amountToNumber(wallet.getFeesForProofs(proofs));
+  } catch {
+    // The send can load a missing keyset; this read cannot. Buy only the shortfall.
+    return 0;
+  }
+  return Math.max(0, Math.floor((sumProofs(proofs) - inputFeeMsat) / 1_000));
+}
+
 async function readParticipationScoreCandidates(
   mintUrl: string,
   scopeId: string,

@@ -324,6 +324,7 @@ describe("TradingPanel", () => {
     "order-pending",
     "settlement-pending",
     "wallet-recovery",
+    "wallet-updating",
     "result-saved",
     "unavailable",
   ] as const)(
@@ -346,6 +347,11 @@ describe("TradingPanel", () => {
       expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
       expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
       expect(screen.getByTestId("fok-preview-response-retry")).toBeEnabled();
+      if (stage === "wallet-updating") {
+        expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent(
+          /^Updating your wallet…$/,
+        );
+      }
       if (stage === "result-saved") {
         expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent("partial result");
         expect(screen.getByTestId("trade-recovery-status")).not.toHaveTextContent(
@@ -1564,6 +1570,19 @@ describe("TradingPanel", () => {
 
     fireEvent.click(screen.getByTestId("fok-preview-retry"));
     expect(refresh).toHaveBeenCalledTimes(1);
+
+    const oneSecondPreview = errorPreview(1);
+    rerender(
+      <TradingPanel
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={50}
+        tradePreview={oneSecondPreview}
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("fok-preview-error")).toHaveTextContent("Try again in 1 second.");
 
     rerender(
       <TradingPanel

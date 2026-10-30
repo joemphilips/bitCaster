@@ -71,6 +71,7 @@ const mocks = vi.hoisted(() => ({
     suppressFundingHint: false,
     invalidationKey: "initial",
   },
+  tradeRecoveryInputs: [] as Array<{ submittedOrder?: unknown }>,
   readCanonicalSellHoldings: vi.fn(),
   sellHoldingsByOutcomeSet: new Map([
     ["Yes", { selectableSubunits: 10_000, reservedSubunits: 0 }],
@@ -146,7 +147,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useMarketTradeRecovery", () => ({
-  useMarketTradeRecovery: () => mocks.tradeRecovery,
+  useMarketTradeRecovery: (input: { submittedOrder?: unknown }) => {
+    mocks.tradeRecoveryInputs.push(input);
+    return mocks.tradeRecovery;
+  },
 }));
 
 vi.mock("@microsoft/signalr", () => ({
@@ -3441,6 +3445,7 @@ describe("MarketDetailPage live market status", () => {
           }),
         );
 
+      mocks.tradeRecoveryInputs.length = 0;
       render(<MarketDetailPage />);
       await screen.findByRole("heading", { name: "Will it happen?" });
       fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
@@ -3448,6 +3453,7 @@ describe("MarketDetailPage live market status", () => {
         target: { value: "1" },
       });
       await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      expect(mocks.tradeRecoveryInputs.at(-1)?.submittedOrder).toBeNull();
       fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
 
       const status = await screen.findByTestId("trade-submit-status");
@@ -3463,6 +3469,13 @@ describe("MarketDetailPage live market status", () => {
       await waitFor(() =>
         expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(message),
       );
+      // The final notice replaces the settling notice. The panel still knows
+      // which order this page submitted while that order's result is applied.
+      expect(mocks.tradeRecoveryInputs.at(-1)?.submittedOrder).toEqual({
+        orderId: "order-matched-1",
+        walletId,
+        marketId: "condition-yesno-Yes",
+      });
       expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     },
   );
@@ -4552,6 +4565,43 @@ describe("MarketDetailPage live market status", () => {
       ),
     );
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+  });
+
+  it("does not wait for a refreshing order book before submission", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await screen.findByTestId("fok-preview-ready");
+    await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+
+    // After a fill the book answers "refreshing" until the bot quotes again.
+    vi.mocked(fetchOrderBook).mockClear();
+    vi.mocked(fetchOrderBook).mockRejectedValue(new Error("order-quotes-refreshing"));
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    // The submit refresh reads each book once, without the refreshing retry.
+    const submitReads = vi
+      .mocked(fetchOrderBook)
+      .mock.calls.filter(([, , options]) => options?.retryRefreshing === false);
+    expect(submitReads.map(([marketId]) => marketId).sort()).toEqual([
+      "condition-yesno-No",
+      "condition-yesno-Yes",
+    ]);
   });
 
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {

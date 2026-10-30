@@ -148,6 +148,7 @@ import {
 import {
   BitcasterDB,
   getBoundedCanonicalRangeProofsForKeyset,
+  getBoundedCanonicalRegularProofs,
   type StoredProof,
 } from "../../stores/proof-db";
 import type { BrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
@@ -1252,6 +1253,42 @@ describe("browser CTF range order coordinator", () => {
 
     expect(fundedScore).toBe(expectedScore);
     expect(calls).toEqual(["score", "capability"]);
+  });
+
+  it("reserves the order source before Score funding reads the regular balance", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(20_000);
+    const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
+    const preparation = persistedPreparation("range-score-payable-balance");
+    const seeded = await admitDeterministicRegularProof(database, 8);
+    await new BrowserWalletCounterDexieStore({
+      database,
+      scopeId: walletScopeId(),
+    }).restoreInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      REGULAR_KEYSET_ID,
+      1,
+      false,
+      () => undefined,
+    );
+    let regularAmountsAtScore: number[] | null = null;
+    let now = 20_000;
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      now: () => ++now,
+      beforeCreateCapability: async ({ mintUrl }) => {
+        const regular = await getBoundedCanonicalRegularProofs(
+          mintUrl,
+          { scopeId: walletScopeId(), unit: "msat" },
+          database,
+        );
+        regularAmountsAtScore = regular.map(({ amount }) => amountToNumber(amount));
+      },
+    });
+
+    await coordinator.prepareAndSubmit({ seed: SEED, preparation, candidates: [seeded] });
+
+    // The 8 msat input paid a 1 msat fee and locked 3 msat for the order.
+    // Only the 4 msat change can fund a Score top-up.
+    expect(regularAmountsAtScore).toEqual([4]);
   });
 
   it("does not re-enter the profile lock while funding Score", async () => {

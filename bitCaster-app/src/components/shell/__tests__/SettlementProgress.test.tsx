@@ -11,6 +11,8 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type { SettlementGroupStatus } from "@bitcaster/client-sdk/engineClient";
 import { BitcasterDB } from "@/stores/proof-db";
+import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
+import { SETTLEMENT_COMPLETION_NOTICE_MS } from "@/hooks/useSettlementProgress";
 import { SettlementProgress } from "../SettlementProgress";
 import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
@@ -18,12 +20,14 @@ import ja from "@/i18n/locales/ja.json";
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   scopeId: "",
+  walletId: "a".repeat(64),
   signerRevision: 0,
   signerListeners: new Set<() => void>(),
 }));
 vi.mock("@/lib/settlementProgressReader", () => ({ readSettlementProgress: mocks.read }));
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: () => mocks.scopeId,
+  browserWalletIdFromMnemonic: () => mocks.walletId,
 }));
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: (select: (state: { mnemonic: string }) => unknown) =>
@@ -43,6 +47,8 @@ vi.mock("@/stores/ctf-range-order-db", async (original) => {
     pageActiveCtfRangePreparations: (
       input: Parameters<typeof actual.pageActiveCtfRangePreparations>[0],
     ) => actual.pageActiveCtfRangePreparations(input, database),
+    readCtfRangePreparation: (scopeId: string, rangeOperationId: string) =>
+      actual.readCtfRangePreparation(scopeId, rangeOperationId, database),
   };
 });
 
@@ -61,6 +67,7 @@ beforeEach(() => {
   mocks.scopeId = fixture().scopeId;
   mocks.signerRevision = 0;
   mocks.read.mockReset().mockResolvedValue(group("Reconciling"));
+  useOrderSettlementObservations.setState({ byOrderId: {} });
 });
 afterEach(async () => {
   database.close();
@@ -248,6 +255,77 @@ describe("active settlement progress", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText(en.settlementProgress.Confirmed)).not.toBeInTheDocument();
+    expect(screen.queryByText(en.settlementProgress.complete)).not.toBeInTheDocument();
+  });
+
+  it("replaces a pending status when the order observation reports the order filled", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(group("SubmissionPending"));
+    render(<SettlementProgress canReadStatus />);
+    expect(await screen.findByText(en.settlementProgress.SubmissionPending)).toBeVisible();
+    act(() =>
+      useOrderSettlementObservations.setState({
+        byOrderId: {
+          [fixture().capability!.orderId]: {
+            walletId: mocks.walletId,
+            signerRevision: 0,
+            marketId: fixture().orderRouteId,
+            orderId: fixture().capability!.orderId,
+            status: "filled",
+            group: { ...group("Confirmed"), revision: 2 },
+          },
+        },
+      }),
+    );
+    expect(screen.getByText(en.settlementProgress.Confirmed)).toBeVisible();
+    expect(screen.queryByText(en.settlementProgress.SubmissionPending)).not.toBeInTheDocument();
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a short final state when a confirmed trade's journal becomes terminal, then closes", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(group("Confirmed"));
+    render(<SettlementProgress canReadStatus />);
+    expect(
+      await screen.findByText(en.settlementProgress.Confirmed, undefined, { timeout: 5_000 }),
+    ).toBeVisible();
+    // The live query uses zero-delay timeouts, so a fake clock stalls it. Hold
+    // only the close timeout and run it explicitly. The hook test owns its delay.
+    const closes: Array<() => void> = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const schedule = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: () => void,
+      delay?: number,
+    ) => {
+      if (delay !== SETTLEMENT_COMPLETION_NOTICE_MS) return realSetTimeout(handler, delay);
+      closes.push(handler);
+      return realSetTimeout(() => {}, 0);
+    }) as typeof setTimeout);
+    try {
+      await act(async () => {
+        await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
+      });
+      const region = screen.getByRole("region", { name: en.settlementProgress.title });
+      // The IndexedDB live query delivers the terminal journal asynchronously; allow a slow run.
+      expect(
+        await within(region).findByText(en.settlementProgress.complete, undefined, {
+          timeout: 5_000,
+        }),
+      ).toBeVisible();
+      expect(within(region).queryByText(en.settlementProgress.Confirmed)).not.toBeInTheDocument();
+      expect(within(region).queryByText(en.settlementProgress.fees)).not.toBeInTheDocument();
+      expect(
+        within(region).queryByRole("button", { name: en.settlementProgress.refresh }),
+      ).not.toBeInTheDocument();
+      expect(closes).toHaveLength(1);
+      act(() => closes[0]());
+      expect(
+        screen.queryByRole("region", { name: en.settlementProgress.title }),
+      ).not.toBeInTheDocument();
+    } finally {
+      schedule.mockRestore();
+    }
+    expect(ja.settlementProgress.complete).not.toBe("");
   });
 });
 

@@ -1655,6 +1655,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         const observedDeliveryIds: string[] = []
         let creditAvailable = false
         let deliveryStatusReads = 0
+        const quotedAmounts: number[] = []
         const command = {
           method: 'order.submit' as const,
           params: withFeeConsent({
@@ -1673,6 +1674,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
             prepareSwapToSend: async (amount, proofs, config) => {
+              // The wallet keeps 8 sats after the order's funds, less than the
+              // buffer needs, so the top-up buys only the shortfall.
               assert.equal(amount, 2_000)
               assert.equal(proofs.length, 1)
               assert.equal(Number(proofs[0]?.amount), 8_000)
@@ -1752,6 +1755,15 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             }),
           }),
           prepareSettlementCapability: prepareSettlementCapability('score-paid-order'),
+          participationScoreOps: {
+            quote: async ({ amountMsat }: { amountMsat: number }) => {
+              quotedAmounts.push(amountMsat)
+              return { amountMsat, sendPreparationFeeMsat: 0, totalWalletDebitMsat: amountMsat }
+            },
+            deliver: async () => {
+              throw new Error('order Score payment must use the durable order path')
+            },
+          },
           waitForParticipationScoreDeliveryRetry: async (attempt, delayMs) => {
             deliveryRetryWaits += 1
             deliveryRetryAttempts.push(attempt)
@@ -1788,6 +1800,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.deepEqual(submittedDeliveryIds, [deliveryId])
         assert.deepEqual(observedDeliveryIds, [...Array(10).fill(deliveryId), deliveryId])
         assert.equal(observedStates.at(-1), 'credited')
+        assert.deepEqual(quotedAmounts, [])
         const restarted = new DaemonDurableOutgoingCashuCoordinator(profileDir(), () => fence)
         await restarted.preflightParticipationScoreDelivery({
           transferId: 'f4444444-4444-4444-8444-444444444444',

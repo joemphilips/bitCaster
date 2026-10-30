@@ -42,6 +42,11 @@ const IDLE_STATE: InternalFokPreviewRequestState<never> = {
   inputIdentity: null,
 };
 
+// The engine limits concurrent previews for all users together, so a rate limit
+// usually clears within its Retry-After time. Retry a few times before the error.
+export const FOK_PREVIEW_RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_RETRY_FALLBACK_MS = 1_000;
+
 export function normalizedFokPreviewDebounceMs(value: number | undefined): number {
   if (value == null || !Number.isFinite(value)) return 0;
   return Math.min(Math.max(Math.trunc(value), 0), 250);
@@ -137,6 +142,7 @@ export function useFokPreviewRequest<TRequest, TResponse>({
     });
 
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let rateLimitRetries = 0;
     const schedule = (waitMs: number) => {
       timer = setTimeout(() => {
         timer = undefined;
@@ -166,6 +172,11 @@ export function useFokPreviewRequest<TRequest, TResponse>({
         const mappedError = mapError(error);
         if (error instanceof EngineClientError && error.status === 429) {
           recordCooldown(cooldownConditionId, mappedError.retryAfterSeconds);
+          if (rateLimitRetries < FOK_PREVIEW_RATE_LIMIT_RETRIES) {
+            rateLimitRetries += 1;
+            schedule(Math.max(cooldownDelayMs(cooldownConditionId), RATE_LIMIT_RETRY_FALLBACK_MS));
+            return;
+          }
         }
         setState({
           status: "error",

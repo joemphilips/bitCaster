@@ -880,10 +880,14 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
   };
 }
 
-export async function fetchOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBook> {
+export async function fetchOrderBook(
+  marketId: string,
+  signal?: AbortSignal,
+  options: { retryRefreshing?: boolean } = {},
+): Promise<OrderBook> {
   const snapshot = await new BitcasterEngineClient({
     baseUrl: window.location.origin,
-  }).getOrderBook(marketId, signal, { retryRefreshing: true });
+  }).getOrderBook(marketId, signal, { retryRefreshing: options.retryRefreshing ?? true });
   return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
 }
 

@@ -662,7 +662,7 @@ function FokOrderPreviewSection({
         <p>{preview.error ?? t("trade.previewUnavailable")}</p>
         {preview.retryAfterSeconds != null && (
           <p className="mt-1">
-            {t("trade.previewRetryAfter", { seconds: preview.retryAfterSeconds })}
+            {t("trade.previewRetryAfter", { count: preview.retryAfterSeconds })}
           </p>
         )}
         <button

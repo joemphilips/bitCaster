@@ -761,6 +761,35 @@ export async function deliverParticipationScoreCashu(input: {
   })
 }
 
+/**
+ * Return true when the next order Score delivery resumes the active pointer.
+ * That delivery keeps its stored amount and needs no new wallet funds. This
+ * read uses the same pointer resolution as the delivery itself.
+ */
+export async function resumesParticipationScoreDeliveryCashu(input: {
+  readonly accountSubject: string
+  readonly purchasedTotalEpoch: number
+  readonly profile: DaemonProfile
+  readonly deps?: WalletOpsDependencies
+}): Promise<boolean> {
+  const deps = input.deps ?? {}
+  if (!deps.getCustodyFence) return false
+  const probeTransferId = randomUUID()
+  const pointer = await new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  ).resolveParticipationScoreDelivery({
+    transferId: probeTransferId,
+    // This read never persists the probe. The amount only passes validation.
+    amountMsat: 1_000,
+    purchasedTotal: input.purchasedTotalEpoch,
+    accountSubject: input.accountSubject,
+    mintUrl: input.profile.mintUrl,
+  })
+  return pointer.transferId !== probeTransferId
+}
+
 /** Quote one gross Score purchase without reserving proofs or calling a mint mutation. */
 export async function quoteParticipationScoreCashu(input: {
   readonly amountMsat: number

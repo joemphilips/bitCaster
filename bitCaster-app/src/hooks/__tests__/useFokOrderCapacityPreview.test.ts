@@ -183,9 +183,10 @@ describe("useFokOrderCapacityPreview", () => {
     const capacityClient: FokOrderCapacityPreviewClient = {
       previewFokOrderCapacity: vi
         .fn()
-        .mockRejectedValue(
+        .mockRejectedValueOnce(
           new EngineClientError(429, "private response detail", undefined, undefined, 3),
-        ),
+        )
+        .mockResolvedValue(executableCapacity),
     };
     const exactClient: FokOrderPreviewClient = {
       previewFokOrder: vi.fn().mockResolvedValue(exactResponse),
@@ -198,7 +199,9 @@ describe("useFokOrderCapacityPreview", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(capacity.result.current.error).toBe("Preview is temporarily rate limited.");
+    expect(capacityClient.previewFokOrderCapacity).toHaveBeenCalledTimes(1);
+    expect(capacity.result.current.status).toBe("loading");
+    expect(capacity.result.current.error).toBeNull();
 
     const exact = renderHook(() =>
       useFokOrderPreview({ client: exactClient, request: exactRequest }),
@@ -218,6 +221,8 @@ describe("useFokOrderCapacityPreview", () => {
     });
     expect(exactClient.previewFokOrder).toHaveBeenCalledTimes(1);
     expect(exact.result.current.response).toBe(exactResponse);
+    expect(capacityClient.previewFokOrderCapacity).toHaveBeenCalledTimes(2);
+    expect(capacity.result.current.response).toBe(executableCapacity);
   });
 
   it("defers a queued capacity request when the exact preview starts a cooldown", async () => {
