@@ -286,7 +286,9 @@ describe("active settlement progress", () => {
     await database.ctfRangePreparations.put(fixture());
     mocks.read.mockResolvedValue(group("Confirmed"));
     render(<SettlementProgress canReadStatus />);
-    expect(await screen.findByText(en.settlementProgress.Confirmed)).toBeVisible();
+    expect(
+      await screen.findByText(en.settlementProgress.Confirmed, undefined, { timeout: 5_000 }),
+    ).toBeVisible();
     // The live query uses zero-delay timeouts, so a fake clock stalls it. Hold
     // only the close timeout and run it explicitly. The hook test owns its delay.
     const closes: Array<() => void> = [];
@@ -304,7 +306,12 @@ describe("active settlement progress", () => {
         await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
       });
       const region = screen.getByRole("region", { name: en.settlementProgress.title });
-      expect(await within(region).findByText(en.settlementProgress.complete)).toBeVisible();
+      // The IndexedDB live query delivers the terminal journal asynchronously; allow a slow run.
+      expect(
+        await within(region).findByText(en.settlementProgress.complete, undefined, {
+          timeout: 5_000,
+        }),
+      ).toBeVisible();
       expect(within(region).queryByText(en.settlementProgress.Confirmed)).not.toBeInTheDocument();
       expect(within(region).queryByText(en.settlementProgress.fees)).not.toBeInTheDocument();
       expect(

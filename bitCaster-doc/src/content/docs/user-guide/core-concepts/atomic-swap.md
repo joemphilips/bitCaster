@@ -85,8 +85,8 @@ the wallet finishes its work. After a confirmed trade, the list shows
 **Trade complete.** for a few seconds before the trade leaves it. The list is
 not your completed-trade history.
 
-While the wallet saves the result of the trade that you just submitted, the
-trading panel shows **Updating your wallet…**.
+While the wallet finishes the trade that you just submitted, the trading panel
+shows **Updating your wallet…**. This includes the refund of a failed trade.
 
 Wallet preparation is separate from order acceptance. The progress list shows
 which stage is confirmed. A prepared payment does not prove that the engine
