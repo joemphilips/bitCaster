@@ -1565,6 +1565,19 @@ describe("TradingPanel", () => {
     fireEvent.click(screen.getByTestId("fok-preview-retry"));
     expect(refresh).toHaveBeenCalledTimes(1);
 
+    const oneSecondPreview = errorPreview(1);
+    rerender(
+      <TradingPanel
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={50}
+        tradePreview={oneSecondPreview}
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("fok-preview-error")).toHaveTextContent("Try again in 1 second.");
+
     rerender(
       <TradingPanel
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}

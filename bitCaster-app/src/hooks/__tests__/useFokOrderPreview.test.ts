@@ -8,6 +8,7 @@ import type {
 } from "@bitcaster/client-sdk/fokOrderPreview";
 import { useFokOrderPreview, type FokOrderPreviewClient } from "../useFokOrderPreview";
 import { clearFokPreviewCooldownsForTests } from "../fokPreviewCooldown";
+import { FOK_PREVIEW_RATE_LIMIT_RETRIES } from "../useFokPreviewRequest";
 
 const request: PreviewFokOrderRequest = {
   marketId: "condition-Yes",
@@ -228,7 +229,8 @@ describe("useFokOrderPreview", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("returns a coarse error and preserves Retry-After for 429", async () => {
+  it("retries a 429 after Retry-After, then returns a coarse error", async () => {
+    vi.useFakeTimers();
     const client: FokOrderPreviewClient = {
       previewFokOrder: vi
         .fn()
@@ -238,11 +240,47 @@ describe("useFokOrderPreview", () => {
     };
     const { result } = renderHook(() => useFokOrderPreview({ client, request }));
 
-    await waitFor(() => expect(result.current.status).toBe("error"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(client.previewFokOrder).toHaveBeenCalledTimes(1);
+    expect(result.current.status).toBe("loading");
+    expect(result.current.error).toBeNull();
+
+    for (let retry = 1; retry <= FOK_PREVIEW_RATE_LIMIT_RETRIES; retry++) {
+      await act(() => vi.advanceTimersByTimeAsync(16_999));
+      expect(client.previewFokOrder).toHaveBeenCalledTimes(retry);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(client.previewFokOrder).toHaveBeenCalledTimes(retry + 1);
+    }
+
+    expect(result.current.status).toBe("error");
     expect(result.current.error).toBe("Preview is temporarily rate limited.");
     expect(result.current.error).not.toContain("private response detail");
     expect(result.current.retryAfterSeconds).toBe(17);
     expect(result.current.response).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(client.previewFokOrder).toHaveBeenCalledTimes(FOK_PREVIEW_RATE_LIMIT_RETRIES + 1);
+  });
+
+  it("becomes ready after a rate-limited preview without a manual refresh", async () => {
+    vi.useFakeTimers();
+    const client: FokOrderPreviewClient = {
+      previewFokOrder: vi
+        .fn()
+        .mockRejectedValueOnce(new EngineClientError(429, "limited"))
+        .mockResolvedValueOnce(fillableResponse),
+    };
+    const { result } = renderHook(() => useFokOrderPreview({ client, request }));
+
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(result.current.status).toBe("loading");
+    await act(() => vi.advanceTimersByTimeAsync(999));
+    expect(client.previewFokOrder).toHaveBeenCalledTimes(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(client.previewFokOrder).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe("ready");
+    expect(result.current.response).toBe(fillableResponse);
+    expect(result.current.error).toBeNull();
   });
 
   it("refreshes explicitly without changing request terms", async () => {
