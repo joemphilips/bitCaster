@@ -8,6 +8,7 @@ import {
 import { createParticipationScoreDeliveryMetadata } from "@bitcaster/client-sdk/participationScoreDelivery";
 import {
   executeBrowserParticipationScoreDelivery,
+  readBrowserParticipationScorePayableScore,
   reconcileBrowserParticipationScoreDelivery,
 } from "../browserParticipationScoreDelivery";
 
@@ -259,6 +260,61 @@ describe("browser Participation Score delivery", () => {
     );
     expect(prepareBrowserDeterministicOutgoingCashuSend).not.toHaveBeenCalled();
     expect(submitDurableCashuDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "a fee below one sat", proofsMsat: ["300000", "200500"], feeMsat: 2, expected: 500 },
+    {
+      name: "a fee that crosses a sat",
+      proofsMsat: ["300000", "200000"],
+      feeMsat: 2,
+      expected: 499,
+    },
+    { name: "an empty wallet", proofsMsat: [], feeMsat: 0, expected: 0 },
+    { name: "a fee above the balance", proofsMsat: ["1"], feeMsat: 2, expected: 0 },
+  ])(
+    "reports whole payable Score after the input fee of every candidate for $name",
+    async ({ proofsMsat, feeMsat, expected }) => {
+      const requireCapturedProfile = vi.fn();
+      captureBrowserMintPersistenceContext.mockReturnValue({
+        activeMintUrl: input.mintUrl,
+        scopeId: "test-scope",
+        seed: new Uint8Array(64),
+        requireCapturedProfile,
+      });
+      const proofs = proofsMsat.map((amount) => ({ id: ACTIVE_KEYSET_ID, amount }));
+      const getFeesForProofs = vi.fn(() => feeMsat);
+      getWalletForUnit.mockResolvedValue({ getFeesForProofs });
+      getBoundedCanonicalRegularProofs.mockResolvedValue(proofs);
+
+      await expect(readBrowserParticipationScorePayableScore(input.mintUrl)).resolves.toBe(
+        expected,
+      );
+      expect(getWalletForUnit).toHaveBeenCalledWith(input.mintUrl, "msat");
+      expect(getBoundedCanonicalRegularProofs).toHaveBeenCalledWith(input.mintUrl, {
+        scopeId: "test-scope",
+        unit: "msat",
+      });
+      expect(getFeesForProofs).toHaveBeenCalledWith(proofs);
+      expect(requireCapturedProfile).toHaveBeenCalled();
+    },
+  );
+
+  it("reports no payable Score when the wallet lacks a candidate keyset fee", async () => {
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      scopeId: "test-scope",
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    getWalletForUnit.mockResolvedValue({
+      getFeesForProofs: () => {
+        throw new Error("Could not get fee. No keyset found for keyset id");
+      },
+    });
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ id: OLD_KEYSET_ID, amount: "900000" }]);
+
+    await expect(readBrowserParticipationScorePayableScore(input.mintUrl)).resolves.toBe(0);
   });
 
   it("reloads an acknowledged received transfer to credited without mint recovery", async () => {

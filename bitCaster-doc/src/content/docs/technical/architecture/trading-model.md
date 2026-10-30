@@ -216,6 +216,12 @@ Retries use the same delivery identity. Credit can be delayed after the mint
 receives the payment. If the bounded wait ends, the payment remains available
 for recovery. A pending delivery does not prove that the payment failed.
 
+A Score top-up buys at least 50 sats of Score, or the full shortfall if it is
+larger. Later trades use the remaining Score, so they often need no top-up. If
+less than 50 sats remain spendable after the order's own funds, the top-up
+buys only what those funds can pay. It never buys less than the shortfall.
+Score is non-refundable and cannot be withdrawn.
+
 ## Trust boundary
 
 The engine receives the exact `PAY_TO_UNLOCK` proofs that authorize an order.

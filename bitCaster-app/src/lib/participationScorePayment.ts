@@ -2,6 +2,7 @@ import {
   BrowserParticipationScoreAssetUnavailableError,
   BrowserParticipationScoreInsufficientBalanceError,
   executeBrowserParticipationScoreDelivery,
+  readBrowserParticipationScorePayableScore,
   reconcileBrowserParticipationScoreDeliveryIfPresent,
   type BrowserParticipationScoreRecoveryStatus,
 } from "@/lib/browserParticipationScoreDelivery";
@@ -14,7 +15,7 @@ import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
 import { resolveCreatorPubkey } from "@/lib/identityOps";
 import { getParticipationScore, type ParticipationScoreResponse } from "@/lib/markets";
 import { useSettingsStore } from "@/stores/settings";
-import { planParticipationScoreTopUp } from "@bitcaster/client-sdk/participationScore";
+import { planParticipationScoreTopUpFromWallet } from "@bitcaster/client-sdk/participationScore";
 
 export interface ParticipationScorePaymentResult {
   paymentId: string;
@@ -91,7 +92,11 @@ export async function ensureParticipationScoreForNextMatch(input: {
       context,
     });
   }
-  const plan = planParticipationScoreTopUp(score, input.requiredScore);
+  // The order reserved its source proofs before this preflight, so the
+  // payable Score excludes the order's own funds.
+  const plan = await planParticipationScoreTopUpFromWallet(score, input.requiredScore, () =>
+    readBrowserParticipationScorePayableScore(input.mintUrl),
+  );
   if (plan.kind === "disabled") return { kind: "disabled", score };
   if (plan.kind === "sufficient") return { kind: "sufficient", score };
   const candidatePaymentId = input.paymentId ?? crypto.randomUUID();
@@ -107,7 +112,7 @@ export async function ensureParticipationScoreForNextMatch(input: {
       deliveryId: claimed.deliveryId,
       accountSubject,
       mintUrl: input.mintUrl,
-      requestedAmount: (BigInt(plan.deficitScore) * 1_000n).toString(),
+      requestedAmount: (BigInt(plan.topUpScore) * 1_000n).toString(),
     });
     if (delivery.progress !== "credited") {
       throw new Error("Participation Score delivery is pending authoritative credit.");

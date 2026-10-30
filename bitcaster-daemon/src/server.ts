@@ -152,6 +152,7 @@ import {
   ParticipationScoreRetryUnavailableError,
   quoteParticipationScoreCashu,
   readParticipationScoreDeliveryStatus,
+  resumesParticipationScoreDeliveryCashu,
   deliverMarketFundingCashu,
   quoteMarketFundingCashu,
   readMarketFundingHeadCashu,
@@ -164,6 +165,11 @@ import {
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { readDaemonAvailableRegularMsatBalance } from './walletHoldings.ts'
+import {
+  InsufficientParticipationScoreBackingError,
+  participationScoreToMsat,
+  planDaemonParticipationScoreTopUp,
+} from './participationScoreTopUp.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
@@ -307,13 +313,6 @@ type DaemonParticipationScorePreflightResult =
       deliveryState: 'credited'
       operationId: string
     }
-
-class InsufficientParticipationScoreBackingError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'InsufficientParticipationScoreBackingError'
-  }
-}
 
 export interface DispatchDependencies extends WalletOpsDependencies {
   orderSubmissionSignal?: AbortSignal
@@ -1930,14 +1929,13 @@ async function dispatchProtectedOrderSubmit(
       client,
       async (requiredScore) => {
         const score = await client.getParticipationScore()
-        const plan = planParticipationScoreTopUp(score, requiredScore)
-        if (plan.kind === 'needs-top-up') {
-          const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
-            mintUrl: profile.mintUrl,
-          })
-          const backingError = participationScoreBackingError({ availableScoreMsat, plan })
-          if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
-        }
+        const plan = await planOrderParticipationScoreTopUp({
+          score,
+          requiredScore,
+          profile,
+          secrets,
+          deps,
+        })
         participationScore = await ensureDaemonParticipationScoreForNextMatch({
           client,
           profile,
@@ -3041,6 +3039,35 @@ function rejectUnsupportedPublicOrder(command: DaemonCommand): DaemonResponse | 
   }
 }
 
+function planOrderParticipationScoreTopUp(input: {
+  score: ParticipationScoreResponse
+  requiredScore: number
+  profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
+  secrets: NonNullable<Awaited<ReturnType<typeof readSecrets>>>
+  deps: DispatchDependencies
+}): Promise<ParticipationScoreTopUpPlan> {
+  return planDaemonParticipationScoreTopUp({
+    score: input.score,
+    requiredScore: input.requiredScore,
+    resumesDelivery: () =>
+      resumesParticipationScoreDeliveryCashu({
+        accountSubject: input.secrets.nostrPublicKeyHex,
+        purchasedTotalEpoch: input.score.purchasedTotal,
+        profile: input.profile,
+        deps: input.deps,
+      }),
+    readAvailableMsat: () =>
+      readDaemonAvailableRegularMsatBalance(profileDir(), { mintUrl: input.profile.mintUrl }),
+    quoteSend: (amountMsat) =>
+      (input.deps.participationScoreOps?.quote ?? quoteParticipationScoreCashu)({
+        amountMsat,
+        profile: input.profile,
+        secrets: input.secrets,
+        deps: input.deps,
+      }),
+  })
+}
+
 async function ensureDaemonParticipationScoreForNextMatch(input: {
   client: EngineClientLike
   profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
@@ -3101,19 +3128,25 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   try {
     let delivery = await deliverUntilCredited(
       deliveryId,
-      participationScoreToMsat(plan.deficitScore),
+      participationScoreToMsat(plan.topUpScore),
       score.purchasedTotal,
     )
     let refreshedScore = await input.client.getParticipationScore()
     if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
       throw new Error('Participation Score credit is not available for this capability')
     }
-    let refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
+    let refreshedPlan = await planOrderParticipationScoreTopUp({
+      score: refreshedScore,
+      requiredScore,
+      profile: input.profile,
+      secrets: input.secrets,
+      deps: input.deps,
+    })
     if (refreshedPlan.kind === 'needs-top-up') {
       const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
       delivery = await deliverUntilCredited(
         randomUUID(),
-        participationScoreToMsat(refreshedPlan.deficitScore),
+        participationScoreToMsat(refreshedPlan.topUpScore),
         purchasedBeforeSecondDelivery,
       )
       refreshedScore = await input.client.getParticipationScore()
@@ -3370,30 +3403,6 @@ function assertPreparedSettlementCapability(
   ) {
     throw new Error('daemon settlement capability response is foreign')
   }
-}
-
-function participationScoreBackingError(input: {
-  availableScoreMsat: number
-  plan: ParticipationScoreTopUpPlan
-}): string | null {
-  if (input.plan.kind !== 'needs-top-up') return null
-  if (!Number.isSafeInteger(input.availableScoreMsat) || input.availableScoreMsat < 0) {
-    throw new Error('Participation Score backing exceeds safe range')
-  }
-  const requiredMsat = participationScoreToMsat(input.plan.deficitScore)
-  if (input.availableScoreMsat >= requiredMsat) return null
-  return `insufficient Participation Score backing: have ${input.availableScoreMsat} msat, need ${requiredMsat} msat`
-}
-
-function participationScoreToMsat(score: number): number {
-  if (!Number.isSafeInteger(score) || score <= 0) {
-    throw new Error('Participation Score amount is invalid')
-  }
-  const amountMsat = score * 1_000
-  if (!Number.isSafeInteger(amountMsat)) {
-    throw new Error('Participation Score amount exceeds safe range')
-  }
-  return amountMsat
 }
 
 async function trackOwnedOrderBestEffort(

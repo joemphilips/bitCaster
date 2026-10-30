@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getParticipationScore: vi.fn(),
   executeBrowserParticipationScoreDelivery: vi.fn(),
+  readBrowserParticipationScorePayableScore: vi.fn(),
   reconcileBrowserParticipationScoreDeliveryIfPresent: vi.fn(),
   readBrowserParticipationScoreDeliveryPointer: vi.fn(),
   claimBrowserParticipationScoreDeliveryPointer: vi.fn(),
@@ -34,6 +35,8 @@ vi.mock("@/lib/browserParticipationScoreDelivery", () => ({
   },
   executeBrowserParticipationScoreDelivery: (...args: unknown[]) =>
     mocks.executeBrowserParticipationScoreDelivery(...args),
+  readBrowserParticipationScorePayableScore: (...args: unknown[]) =>
+    mocks.readBrowserParticipationScorePayableScore(...args),
   reconcileBrowserParticipationScoreDeliveryIfPresent: (...args: unknown[]) =>
     mocks.reconcileBrowserParticipationScoreDeliveryIfPresent(...args),
 }));
@@ -87,6 +90,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       requireCapturedProfile: vi.fn(),
     });
     mocks.resolveCreatorPubkey.mockReturnValue("subject-1");
+    mocks.readBrowserParticipationScorePayableScore.mockResolvedValue(10_000);
     mocks.executeBrowserParticipationScoreDelivery.mockImplementation(async (input) => ({
       progress: "credited",
       transfer: {
@@ -118,9 +122,10 @@ describe("ensureParticipationScoreForNextMatch", () => {
     ).resolves.toMatchObject({ kind: "sufficient" });
 
     expect(mocks.executeBrowserParticipationScoreDelivery).not.toHaveBeenCalled();
+    expect(mocks.readBrowserParticipationScorePayableScore).not.toHaveBeenCalled();
   });
 
-  it("pays the exact msat deficit and reports sats and Score separately", async () => {
+  it("buys the 50 Score buffer and reports sats and Score separately", async () => {
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
@@ -135,17 +140,54 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(result).toMatchObject({
       kind: "paid",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
-      payment: { amountSats: 5, creditedScore: 5 },
+      payment: { amountSats: 50, creditedScore: 50 },
     });
+    expect(mocks.readBrowserParticipationScorePayableScore).toHaveBeenCalledWith(
+      "https://mint.example",
+    );
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith({
       deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
       accountSubject: "subject-1",
       mintUrl: "https://mint.example",
-      requestedAmount: "5000",
+      requestedAmount: "50000",
     });
   });
 
-  it("converts an insufficient msat balance to exact UI sats", async () => {
+  it("buys only the payable Score when the wallet cannot pay the buffer", async () => {
+    mocks.getParticipationScore.mockResolvedValue({ ...baseScore, balance: -1 });
+    mocks.readBrowserParticipationScorePayableScore.mockResolvedValue(20);
+
+    await expect(
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
+    ).resolves.toMatchObject({ kind: "paid", payment: { amountSats: 20 } });
+    expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedAmount: "20000" }),
+    );
+  });
+
+  it("buys the exact shortfall when the wallet cannot pay more", async () => {
+    mocks.getParticipationScore.mockResolvedValue({ ...baseScore, balance: -1 });
+    mocks.readBrowserParticipationScorePayableScore.mockResolvedValue(2);
+    mocks.executeBrowserParticipationScoreDelivery.mockRejectedValue(
+      new BrowserParticipationScoreInsufficientBalanceError(2_000),
+    );
+
+    await expect(
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
+    ).resolves.toMatchObject({
+      kind: "needs-regular-top-up",
+      requiredSats: 5,
+      balanceSats: 2,
+      deficitSats: 3,
+      recoveryStatus: "insufficient",
+    });
+    expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledOnce();
+    expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedAmount: "5000" }),
+    );
+  });
+
+  it("reports the trade shortfall, not the buffer, for an insufficient balance", async () => {
     mocks.executeBrowserParticipationScoreDelivery.mockRejectedValue(
       new BrowserParticipationScoreInsufficientBalanceError(1_500),
     );
@@ -155,6 +197,9 @@ describe("ensureParticipationScoreForNextMatch", () => {
       requiredScore: 4,
     });
 
+    expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedAmount: "50000" }),
+    );
     expect(result).toMatchObject({
       kind: "needs-regular-top-up",
       requiredSats: 4,
