@@ -148,7 +148,9 @@ def inspect_range(repo, base, head):
                 if not OID.fullmatch(new_oid.decode()):
                     raise ValueError("Unexpected blob identity")
                 blobs.append(new_oid)
-                changes[oid][raw[index + 1]] = new_oid.decode()
+                # Strict UTF-8: the scanner reports an invalid byte as U+FFFD, which
+                # can name another path. Refuse such a path, not guess its blob.
+                changes[oid][raw[index + 1].decode()] = new_oid.decode()
             elif mode != b"000000":
                 raise ValueError("Unsupported Git entry mode")
     objects = [oid.encode() for oid in commits] + blobs
@@ -306,7 +308,7 @@ def scan_findings(repo, scanner, base, head, changes, private):
                 or finding.get("Commit") not in changes or not isinstance(finding.get("File"), str)):
             raise ValueError("Scanner attribution or redaction is incomplete")
         # A disposition binds the exact file content, so a merge or squash of it keeps the disposition.
-        blob = changes[finding["Commit"]].get(finding["File"].encode())
+        blob = changes[finding["Commit"]].get(finding["File"])
         if blob is None:
             raise ValueError("Scanner attribution or redaction is incomplete")
         finding["Blob"] = blob

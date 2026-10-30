@@ -116,6 +116,14 @@ class IncrementalTests(unittest.TestCase):
         with patch.object(scanner, "MAX_ENTRIES", 0), self.assertRaises(ValueError):
             scanner.inspect_range(self.repo, self.base, self.head)
 
+    def test_changed_path_that_is_not_utf8_is_refused(self):
+        name = os.fsdecode(b"a\xffb.txt")
+        (self.repo / name).write_text("fixture")
+        git(self.repo, "add", "--", name)
+        git(self.repo, "-c", "commit.gpgsign=false", "commit", "-qm", "public invalid name")
+        with self.assertRaises(UnicodeError):
+            scanner.inspect_range(self.repo, self.head, git(self.repo, "rev-parse", "HEAD"))
+
     def test_gitlink_is_reported_without_opening_the_child(self):
         git(self.repo, "update-index", "--add", "--cacheinfo", "160000", self.base, "uninitialized-child")
         git(self.repo, "-c", "commit.gpgsign=false", "commit", "-qm", "public child fixture")
@@ -139,7 +147,7 @@ class IncrementalTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(sys, "argv", argv), patch.object(scanner, "validate_scanner"), \
                 patch.object(scanner.tempfile, "TemporaryDirectory", side_effect=private_directory), \
-                patch.object(scanner, "scan", side_effect=interrupt), contextlib.redirect_stdout(output):
+                patch.object(scanner, "scan_findings", side_effect=interrupt), contextlib.redirect_stdout(output):
             previous_mask = os.umask(0o077)
             try:
                 self.assertEqual(scanner.main(), 2)
@@ -368,14 +376,16 @@ class IncrementalTests(unittest.TestCase):
         unrelated = save(self.repo, "other.txt", "token=" + first + "\n")
         self.assertEqual(scanner.counts(observe(unrelated), reviewed), (3, 1, 2))
         self.assertFalse(any(self.root.glob("incremental-secrets-*")))
-        # A squash of the reviewed content keeps the disposition; changed content does not.
-        def squash(tree):
-            commit = git(self.repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", self.base,
+        # A merge or squash of the reviewed content keeps the disposition; changed content does not.
+        def squash(tree, *parents):
+            parents = [arg for parent in (self.base, *parents) for arg in ("-p", parent)]
+            commit = git(self.repo, "-c", "commit.gpgsign=false", "commit-tree", tree, *parents,
                          "-m", "synthetic squash")
             commits, _ = scanner.inspect_range(self.repo, self.base, commit)
             with tempfile.TemporaryDirectory(dir=self.root) as temp:
                 return scanner.scan_findings(self.repo, binary, self.base, commit, commits, Path(temp))
         self.assertEqual(scanner.counts(squash(head + "^{tree}"), reviewed), (1, 1, 0))
+        self.assertEqual(scanner.counts(squash(head + "^{tree}", head), reviewed), (2, 2, 0))
         self.assertEqual(scanner.counts(squash(later + "^{tree}"), reviewed), (1, 0, 1))
 
     @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")

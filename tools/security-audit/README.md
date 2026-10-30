@@ -131,6 +131,7 @@ Each row requires `RuleID`, full `Blob`, `File`, `StartLine`, `EndLine`,
 `StartColumn`, `EndColumn`, `rationale` and `review`. `Blob` is the Git blob
 ID of `File` in the commit of the finding. The runner takes it from the changed
 entries of the verified range. A finding outside those entries refuses the check.
+A changed path that is not valid UTF-8 also refuses the check.
 `rationale` and `review` contain no matched values.
 Duplicate rows, invalid metadata and missing or malformed blobs refuse the check.
 
