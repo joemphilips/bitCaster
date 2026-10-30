@@ -815,22 +815,21 @@ export class BitcasterEngineClient {
   ): Promise<OrderBookSnapshot> {
     const attempts = options.retryRefreshing ? 5 : 1
     for (let attempt = 1; ; attempt++) {
-      const lifetime = options.retryRefreshing
-        ? createBoundedRequestLifetime(signal, 10_000)
-        : undefined
-      const requestSignal = lifetime?.signal ?? signal
+      // Every read is bounded. The option sets only the retries of a refreshing book.
+      const lifetime = createBoundedRequestLifetime(signal, 10_000)
+      const requestSignal = lifetime.signal
       try {
         const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
           signal: requestSignal,
         })
         const snapshot = (await response.json()) as OrderBookSnapshot
-        requestSignal?.throwIfAborted()
+        requestSignal.throwIfAborted()
         return snapshot
       } catch (error) {
-        requestSignal?.throwIfAborted()
+        requestSignal.throwIfAborted()
         if (attempt >= attempts || !isOrderBookRefreshingError(error)) throw error
       } finally {
-        lifetime?.dispose()
+        lifetime.dispose()
       }
       await waitForOrderBookRetry(signal)
     }

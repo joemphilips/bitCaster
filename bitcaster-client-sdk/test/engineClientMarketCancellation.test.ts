@@ -67,18 +67,19 @@ for (const [name, read] of reads) {
     assert.equal(fetches, 0)
   })
 
-  test(`${name} read passes its cancellation signal to fetch`, async () => {
+  test(`${name} read passes its cancellation to fetch`, async () => {
     const controller = new AbortController()
     let requests = 0
     const client = new BitcasterEngineClient({
       baseUrl: 'https://engine.example',
       fetchImpl: async (_input, init) => {
         requests++
-        assert.equal(init?.signal, controller.signal)
+        // A read can pass the caller's signal or a bounded signal that follows it.
+        const signal = init?.signal
+        assert.ok(signal)
+        assert.equal(signal.aborted, false)
         return new Promise<Response>((_resolve, reject) => {
-          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
-            once: true,
-          })
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
           controller.abort()
         })
       },
