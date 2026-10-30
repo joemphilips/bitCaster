@@ -19,7 +19,7 @@ BINARY_SHA256 = "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e550
 URL = f"https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}/gitleaks_{VERSION}_linux_x64.tar.gz"
 MAX_COMMITS = 4096
 MAX_ENTRIES = 50000
-MAX_SOURCE_BYTES = 256 * 1024 * 1024
+MAX_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 OID = re.compile(r"[0-9a-f]{40}")
 
@@ -127,6 +127,7 @@ def inspect_range(repo, base, head):
     # Bound the full size of every changed source blob, including repeated edits.
     # Names stay as NUL-delimited bytes and are never paths opened by this tool.
     blobs, gitlinks, entries = [], 0, 0
+    changes = {oid: {} for oid in commits}
     for oid in commits:
         raw = git(repo, "diff-tree", "--root", "--no-commit-id", "-r", "--raw", "-z",
                   "--no-renames", "--no-ext-diff", "--no-textconv",
@@ -147,6 +148,7 @@ def inspect_range(repo, base, head):
                 if not OID.fullmatch(new_oid.decode()):
                     raise ValueError("Unexpected blob identity")
                 blobs.append(new_oid)
+                changes[oid][raw[index + 1]] = new_oid.decode()
             elif mode != b"000000":
                 raise ValueError("Unsupported Git entry mode")
     objects = [oid.encode() for oid in commits] + blobs
@@ -163,7 +165,7 @@ def inspect_range(repo, base, head):
             total += int(size)
             if total > MAX_SOURCE_BYTES:
                 raise ValueError("Changed source exceeds the supported bound")
-    return set(commits), gitlinks
+    return changes, gitlinks
 
 
 def install_scanner(directory):
@@ -197,7 +199,7 @@ def validate_scanner(scanner):
         raise ValueError("Scanner version mismatch")
 
 
-FINDING_FIELDS = ("RuleID", "Commit", "File", "StartLine", "EndLine", "StartColumn", "EndColumn")
+FINDING_FIELDS = ("RuleID", "Blob", "File", "StartLine", "EndLine", "StartColumn", "EndColumn")
 MAX_REVIEW_BYTES = 64 * 1024
 MAX_REVIEW_ROWS = 128
 
@@ -215,9 +217,9 @@ def finding_key(finding):
     if not isinstance(finding, dict):
         raise ValueError("Finding metadata is invalid")
     rule = finding.get("RuleID")
-    oid = finding.get("Commit")
+    blob = finding.get("Blob")
     if (not isinstance(rule, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", rule)
-            or not isinstance(oid, str) or not OID.fullmatch(oid) or oid == "0" * 40):
+            or not isinstance(blob, str) or not OID.fullmatch(blob) or blob == "0" * 40):
         raise ValueError("Finding metadata is invalid")
     relative_path(finding.get("File"))
     for field in FINDING_FIELDS[3:]:
@@ -259,7 +261,7 @@ def reviewed_findings(repo, head, path):
         raise ValueError("Reviewed findings exceed the byte bound")
     value = json.loads(raw, object_pairs_hook=unique_object)
     if (not isinstance(value, dict) or set(value) != {"schema_version", "findings"}
-            or type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or type(value["schema_version"]) is not int or value["schema_version"] != 2
             or not isinstance(value["findings"], list) or len(value["findings"]) > MAX_REVIEW_ROWS):
         raise ValueError("Reviewed findings have an unsupported schema")
     keys = set()
@@ -283,12 +285,13 @@ def counts(findings, reviewed):
     return len(findings), matched, len(findings) - matched
 
 
-def scan_findings(repo, scanner, base, head, commits, private):
+def scan_findings(repo, scanner, base, head, changes, private):
     config, ignore, report = (private / name for name in ("rules.toml", "empty.ignore", "report.json"))
     config.write_text('[extend]\nuseDefault = true\n')
     ignore.write_text("")
+    # Gitlinks are excluded. A gitlink patch also removes the commit from later files.
     code, _ = run([str(scanner), "git", str(repo),
-                   f"--log-opts={base}..{head} --full-history --diff-merges=first-parent --text --no-renames --no-ext-diff --no-textconv",
+                   f"--log-opts={base}..{head} --full-history --diff-merges=first-parent --text --no-renames --no-ext-diff --no-textconv --ignore-submodules=all",
                    "--config", str(config), "--gitleaks-ignore-path", str(ignore),
                    "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--no-color",
                    "--log-level=error", "--report-format=json", "--report-path", str(report),
@@ -300,16 +303,21 @@ def scan_findings(repo, scanner, base, head, commits, private):
         raise ValueError("Scanner result is inconsistent")
     for finding in findings:
         if (not isinstance(finding, dict) or finding.get("Secret") != "REDACTED"
-                or finding.get("Commit") not in commits):
+                or finding.get("Commit") not in changes or not isinstance(finding.get("File"), str)):
             raise ValueError("Scanner attribution or redaction is incomplete")
+        # A disposition binds the exact file content, so a merge or squash of it keeps the disposition.
+        blob = changes[finding["Commit"]].get(finding["File"].encode())
+        if blob is None:
+            raise ValueError("Scanner attribution or redaction is incomplete")
+        finding["Blob"] = blob
     # Validate all location metadata before any disposition can apply.
     for finding in findings:
         finding_key(finding)
     return findings
 
 
-def scan(repo, scanner, base, head, commits, private):
-    return len(scan_findings(repo, scanner, base, head, commits, private))
+def scan(repo, scanner, base, head, changes, private):
+    return len(scan_findings(repo, scanner, base, head, changes, private))
 
 
 def main():
@@ -334,15 +342,15 @@ def main():
             raise ValueError("Event payload exceeds the supported bound")
         event = json.loads(args.event_path.read_bytes())
         base, head = select_range(repo, args.event_name, event, args.head, args.base)
-        commits, gitlinks = inspect_range(repo, base, head)
+        changes, gitlinks = inspect_range(repo, base, head)
         reviewed = reviewed_findings(repo, head, args.reviewed_findings)
         with tempfile.TemporaryDirectory(prefix="incremental-secrets-") as directory:
             private = Path(directory)
             scanner = args.scanner.absolute() if args.scanner else install_scanner(private)
             validate_scanner(scanner)
-            findings = scan_findings(repo, scanner, base, head, commits, private)
+            findings = scan_findings(repo, scanner, base, head, changes, private)
             total, reviewed_count, actionable = counts(findings, reviewed)
-        print(f"Incremental secret check: {len(commits)} commits; {total} candidates; "
+        print(f"Incremental secret check: {len(changes)} commits; {total} candidates; "
               f"{reviewed_count} reviewed; {actionable} actionable; {gitlinks} gitlink changes excluded.")
         return 1 if actionable else 0
     except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired,

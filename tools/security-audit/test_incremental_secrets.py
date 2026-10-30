@@ -187,14 +187,20 @@ class IncrementalTests(unittest.TestCase):
     def test_scanner_errors_and_attribution_are_not_clean(self):
         private = self.root / "private"
         private.mkdir()
-        def fake(command, **kwargs):
-            (private / "report.json").write_text(json.dumps([{"Commit": "", "Secret": "REDACTED"}]))
-            self.assertIn("--ignore-gitleaks-allow", command)
-            self.assertIn("--text", next(x for x in command if x.startswith("--log-opts=")))
-            self.assertNotIn("--all", " ".join(command))
-            return 10, b""
-        with patch.object(scanner, "run", side_effect=fake), self.assertRaises(ValueError):
-            scanner.scan(self.repo, Path("/unused"), self.base, self.head, {self.head}, private)
+        changes, _ = scanner.inspect_range(self.repo, self.base, self.head)
+        for finding in [{"Commit": "", "Secret": "REDACTED"},
+                        {"Commit": self.head, "File": "old.txt", "Secret": "REDACTED"}]:
+            def fake(command, **kwargs):
+                (private / "report.json").write_text(json.dumps([finding]))
+                self.assertIn("--ignore-gitleaks-allow", command)
+                options = next(x for x in command if x.startswith("--log-opts="))
+                self.assertIn("--text", options)
+                self.assertIn("--ignore-submodules=all", options)
+                self.assertNotIn("--all", " ".join(command))
+                return 10, b""
+            with self.subTest(finding=finding), patch.object(scanner, "run", side_effect=fake), \
+                    self.assertRaises(ValueError):
+                scanner.scan(self.repo, Path("/unused"), self.base, self.head, changes, private)
 
     def test_timeout_and_diagnostic_fail_without_output(self):
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -259,12 +265,13 @@ class IncrementalTests(unittest.TestCase):
 
 
     def review_row(self, **changes):
-        return {"RuleID": "generic-api-key", "Commit": self.head, "File": "fixture.txt",
+        return {"RuleID": "generic-api-key", "Blob": git(self.repo, "rev-parse", self.head + ":docs/readme.md"),
+                "File": "fixture.txt",
                 "StartLine": 1, "EndLine": 2, "StartColumn": 40, "EndColumn": 2,
                 "rationale": "Public synthetic fixture", "review": "review.md", **changes}
 
     def manifest(self, rows):
-        return json.dumps({"schema_version": 1, "findings": rows})
+        return json.dumps({"schema_version": 2, "findings": rows})
 
     def test_candidate_tree_manifest_is_exact_and_unused_rows_are_inert(self):
         row = self.review_row()
@@ -293,11 +300,14 @@ class IncrementalTests(unittest.TestCase):
                    self.manifest([row, row]), self.manifest([row] * 129),
                    self.manifest([{**row, "extra": 1}]),
                    json.dumps({"schema_version": True, "findings": []}),
+                   json.dumps({"schema_version": 1, "findings": []}),
+                   self.manifest([{**{k: v for k, v in row.items() if k != "Blob"}, "Commit": self.head}]),
                    self.manifest([{**row, "StartLine": True}]),
                    self.manifest([{**row, "EndLine": 0}]),
                    self.manifest([{**row, "EndLine": 1, "EndColumn": 2}]),
                    self.manifest([{**row, "File": "../fixture"}]),
-                   self.manifest([{**row, "Commit": "main"}]),
+                   self.manifest([{**row, "Blob": "main"}]),
+                   self.manifest([{**row, "Blob": "0" * 40}]),
                    self.manifest([{**row, "rationale": ""}]),
                    " " * (scanner.MAX_REVIEW_BYTES + 1)]
         for value in invalid:
@@ -307,11 +317,11 @@ class IncrementalTests(unittest.TestCase):
         # Valid multiline ranges can end at a smaller column.
         self.assertEqual(scanner.finding_key(row)[-1], 2)
 
-    def test_exact_tuple_cannot_follow_new_commit_or_location(self):
+    def test_exact_tuple_cannot_follow_new_content_or_location(self):
         row = self.review_row()
         keys = {scanner.finding_key(row)}
         self.assertEqual(scanner.counts([row], keys), (1, 1, 0))
-        for field, value in [("Commit", self.base), ("RuleID", "github-pat"),
+        for field, value in [("Blob", git(self.repo, "rev-parse", self.base + ":old.txt")), ("RuleID", "github-pat"),
                              ("File", "other.txt"), ("StartLine", 2),
                              ("EndLine", 3), ("StartColumn", 41), ("EndColumn", 3)]:
             changed = {**row, field: value}
@@ -358,6 +368,39 @@ class IncrementalTests(unittest.TestCase):
         unrelated = save(self.repo, "other.txt", "token=" + first + "\n")
         self.assertEqual(scanner.counts(observe(unrelated), reviewed), (3, 1, 2))
         self.assertFalse(any(self.root.glob("incremental-secrets-*")))
+        # A squash of the reviewed content keeps the disposition; changed content does not.
+        def squash(tree):
+            commit = git(self.repo, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", self.base,
+                         "-m", "synthetic squash")
+            commits, _ = scanner.inspect_range(self.repo, self.base, commit)
+            with tempfile.TemporaryDirectory(dir=self.root) as temp:
+                return scanner.scan_findings(self.repo, binary, self.base, commit, commits, Path(temp))
+        self.assertEqual(scanner.counts(squash(head + "^{tree}"), reviewed), (1, 1, 0))
+        self.assertEqual(scanner.counts(squash(later + "^{tree}"), reviewed), (1, 0, 1))
+
+    @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")
+    def test_real_gitlink_change_keeps_attribution_of_later_files(self):
+        binary = Path(os.environ["GITLEAKS_TEST_BINARY"])
+        scanner.validate_scanner(binary)
+        fake = "ghp_" + hashlib.sha256(b"public gitlink fixture never issued").hexdigest()[:36]
+        git(self.repo, "update-index", "--add", "--cacheinfo", "160000", self.base, "a-child")
+        git(self.repo, "-c", "commit.gpgsign=false", "commit", "-qm", "public child fixture")
+        base = git(self.repo, "rev-parse", "HEAD")
+        # A repository can show a gitlink as a log summary. After a file without a final
+        # newline, that summary removes the commit from the findings of later files.
+        git(self.repo, "config", "diff.submodule", "log")
+        (self.repo / "0-first.txt").write_text("no final newline")
+        (self.repo / "z-fixture.txt").write_text("token=" + fake + "\n")
+        git(self.repo, "update-index", "--cacheinfo", "160000", self.head, "a-child")
+        git(self.repo, "add", "--", "0-first.txt", "z-fixture.txt")
+        git(self.repo, "-c", "commit.gpgsign=false", "commit", "-qm", "public child and fixture")
+        head = git(self.repo, "rev-parse", "HEAD")
+        changes, links = scanner.inspect_range(self.repo, base, head)
+        self.assertEqual(links, 1)
+        with tempfile.TemporaryDirectory(dir=self.root) as temp:
+            findings = scanner.scan_findings(self.repo, binary, base, head, changes, Path(temp))
+        self.assertEqual([(f["Commit"], f["File"]) for f in findings], [(head, "z-fixture.txt")])
+        self.assertEqual(findings[0]["Blob"], git(self.repo, "rev-parse", head + ":z-fixture.txt"))
 
 
 if __name__ == "__main__":

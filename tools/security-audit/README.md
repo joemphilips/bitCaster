@@ -50,7 +50,9 @@ can appear as a new addition and require review.
 
 The check does not scan reachable history outside the range. It does not scan
 uncommitted files. It does not inspect nested submodule contents. It counts
-changed gitlinks and reports their exclusion. Each repository needs its own
+changed gitlinks and reports their exclusion. The scan omits gitlink patches,
+so a repository `diff.submodule` setting cannot change the attribution of
+findings. Each repository needs its own
 check. A parent gitlink update is not proof that a fork's new contents passed
 this check. Keep the separate reviewed fork and submodule pinning gates.
 
@@ -86,7 +88,7 @@ values. Temporary files use private permissions. Cleanup runs on success,
 failure, timeout, interrupt, and SIGTERM. A machine crash or SIGKILL can leave
 private temporary files. Do not upload them. CI runners are disposable.
 
-The bounds are 4,096 commits, 50,000 changed entries, 256 MiB of changed blobs
+The bounds are 4,096 commits, 50,000 changed entries, 1 GiB of changed blobs
 and commit metadata, and 32 MiB per process output/report. Blob sizes count
 repeated edits. Each Git command has a 30-second timeout. The scanner has a
 300-second timeout and a 330-second process timeout. The CI job has a ten-minute
@@ -110,7 +112,9 @@ GITLEAKS_TEST_BINARY=/absolute/path/to/pinned/gitleaks \
 The real-scanner regression creates a temporary repository. Its token is a
 public synthetic value that was never issued. It verifies new documentation
 secrets, add-then-delete commits, merge-only additions, unchanged old fixtures,
-suppression bypass, binary Git attributes, safe output, and cleanup. The other
+suppression bypass, binary Git attributes, safe output, and cleanup. It also
+verifies attribution after a gitlink summary and a disposition on a squash of
+the reviewed blob. The other
 tests check base selection, bounds, path framing, binary pinning, and failures.
 Without `GITLEAKS_TEST_BINARY`, the real-scanner regression is skipped. Run it
 before publication. These tests do not scan the project's historical content.
@@ -121,16 +125,20 @@ before publication. These tests do not scan the project's historical content.
 The default scan has no dispositions. A workflow can pass one explicit
 `--reviewed-findings` repository-relative path. The runner reads the regular
 blob from the verified candidate Git tree. Uncommitted files do not apply.
-The closed format has `schema_version: 1` and `findings`.
+The closed format has `schema_version: 2` and `findings`.
 It is limited to 128 rows and 64 KiB.
-Each row requires `RuleID`, full `Commit`, `File`, `StartLine`, `EndLine`,
-`StartColumn`, `EndColumn`, `rationale` and `review`.
+Each row requires `RuleID`, full `Blob`, `File`, `StartLine`, `EndLine`,
+`StartColumn`, `EndColumn`, `rationale` and `review`. `Blob` is the Git blob
+ID of `File` in the commit of the finding. The runner takes it from the changed
+entries of the verified range. A finding outside those entries refuses the check.
 `rationale` and `review` contain no matched values.
 Duplicate rows, invalid metadata and missing or malformed blobs refuse the check.
 
 Keep all default detector rules enabled. The runner validates completed scan,
-redaction, attribution and locations before exact comparison. An earlier commit
-row cannot exempt a later addition, moved path or changed location. Unused valid
+redaction, attribution and locations before exact comparison. A row binds the
+exact file content, path and location. A merge or squash commit that adds the
+same blob at the same path keeps the disposition. Changed content, a moved path
+or a changed location needs a new row. Unused valid
 historical rows are inert. Output separates all candidates, reviewed findings and
 actionable findings. Only zero actionable findings can pass a completed check.
 Do not use a directory, pattern, value, moving base or inline suppression instead.
