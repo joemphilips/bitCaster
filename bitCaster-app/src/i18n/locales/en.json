@@ -344,7 +344,8 @@
       "settlement-pending": "An earlier trade is settling. Market estimates are snapshots.",
       "wallet-recovery": "An earlier trade needs wallet recovery. Current wallet checks apply to each new trade.",
       "result-saved": "A trade result is saved. Wallet recovery is finishing; this can include a partial result.",
-      "unavailable": "Earlier trade recovery details are unavailable. Current wallet checks apply to each new trade."
+      "unavailable": "Earlier trade recovery details are unavailable. Current wallet checks apply to each new trade.",
+      "wallet-updating": "Updating your wallet…"
     },
     "previewSubsidyMayHelp": "Additional condition funding may help. It is non-refundable and cannot guarantee this order will fill. Review funding on the Liquidity tab.",
     "previewRetryAfter_one": "Try again in {{count}} second.",
@@ -988,6 +989,7 @@
     "submissionRejected": "The engine rejected the order submission. The wallet will not retry it; funds recovery is separate.",
     "orderSubmitted": "The engine accepted the order submission. Settlement is not confirmed yet.",
     "terminal": "The wallet operation is complete.",
+    "complete": "Trade complete.",
     "authenticationRequired": "The engine accepted the order submission. Sign in to check settlement status. Wallet recovery is separate.",
     "checking": "Checking settlement status. The trade is not yet confirmed here.",
     "unavailable": "Settlement status is unavailable. Keep your wallet data and try Refresh status.",

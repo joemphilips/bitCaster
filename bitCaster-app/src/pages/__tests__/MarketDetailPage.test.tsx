@@ -71,6 +71,7 @@ const mocks = vi.hoisted(() => ({
     suppressFundingHint: false,
     invalidationKey: "initial",
   },
+  tradeRecoveryInputs: [] as Array<{ submittedOrder?: unknown }>,
   readCanonicalSellHoldings: vi.fn(),
   sellHoldingsByOutcomeSet: new Map([
     ["Yes", { selectableSubunits: 10_000, reservedSubunits: 0 }],
@@ -146,7 +147,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useMarketTradeRecovery", () => ({
-  useMarketTradeRecovery: () => mocks.tradeRecovery,
+  useMarketTradeRecovery: (input: { submittedOrder?: unknown }) => {
+    mocks.tradeRecoveryInputs.push(input);
+    return mocks.tradeRecovery;
+  },
 }));
 
 vi.mock("@microsoft/signalr", () => ({
@@ -3441,6 +3445,7 @@ describe("MarketDetailPage live market status", () => {
           }),
         );
 
+      mocks.tradeRecoveryInputs.length = 0;
       render(<MarketDetailPage />);
       await screen.findByRole("heading", { name: "Will it happen?" });
       fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
@@ -3448,6 +3453,7 @@ describe("MarketDetailPage live market status", () => {
         target: { value: "1" },
       });
       await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      expect(mocks.tradeRecoveryInputs.at(-1)?.submittedOrder).toBeNull();
       fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
 
       const status = await screen.findByTestId("trade-submit-status");
@@ -3463,6 +3469,13 @@ describe("MarketDetailPage live market status", () => {
       await waitFor(() =>
         expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(message),
       );
+      // The final notice replaces the settling notice. The panel still knows
+      // which order this page submitted while that order's result is applied.
+      expect(mocks.tradeRecoveryInputs.at(-1)?.submittedOrder).toEqual({
+        orderId: "order-matched-1",
+        walletId,
+        marketId: "condition-yesno-Yes",
+      });
       expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     },
   );

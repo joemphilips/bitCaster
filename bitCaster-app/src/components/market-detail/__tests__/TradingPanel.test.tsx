@@ -324,6 +324,7 @@ describe("TradingPanel", () => {
     "order-pending",
     "settlement-pending",
     "wallet-recovery",
+    "wallet-updating",
     "result-saved",
     "unavailable",
   ] as const)(
@@ -346,6 +347,11 @@ describe("TradingPanel", () => {
       expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
       expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
       expect(screen.getByTestId("fok-preview-response-retry")).toBeEnabled();
+      if (stage === "wallet-updating") {
+        expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent(
+          /^Updating your wallet…$/,
+        );
+      }
       if (stage === "result-saved") {
         expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent("partial result");
         expect(screen.getByTestId("trade-recovery-status")).not.toHaveTextContent(

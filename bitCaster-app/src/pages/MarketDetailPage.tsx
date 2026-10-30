@@ -60,7 +60,7 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
-import { useMarketTradeRecovery } from "@/hooks/useMarketTradeRecovery";
+import { useMarketTradeRecovery, type SubmittedTradeOrder } from "@/hooks/useMarketTradeRecovery";
 import { useMarketDetailSnapshots } from "@/hooks/useMarketDetailSnapshots";
 import { mergeMarketFundingObservation } from "@/lib/marketFunding";
 import {
@@ -1290,10 +1290,14 @@ export function MarketDetailPage() {
     getNostrSignerRevision,
     getNostrSignerRevision,
   );
+  // The final order notice replaces the settling notice before the wallet
+  // applies the result. Keep this identity for the recovery notice.
+  const [submittedTradeOrder, setSubmittedTradeOrder] = useState<SubmittedTradeOrder | null>(null);
   const tradeRecovery = useMarketTradeRecovery({
     mnemonic: walletMnemonic,
     conditionId: currentRouteId,
     signerRevision,
+    submittedOrder: submittedTradeOrder,
   });
   const recoveryInvalidationKeyRef = useRef(tradeRecovery.invalidationKey);
   recoveryInvalidationKeyRef.current = tradeRecovery.invalidationKey;
@@ -1362,7 +1366,7 @@ export function MarketDetailPage() {
     reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
     reviewedFeeIdentityKey?: string;
     /** A matched order that waits for its authoritative final status. */
-    settlingOrder?: SettlingOrder;
+    settlingOrder?: SubmittedTradeOrder;
   } | null>(null);
   const settlingOrder = tradeSubmitStatus?.settlingOrder ?? null;
   useEffect(() => {
@@ -2532,6 +2536,12 @@ export function MarketDetailPage() {
         ) {
           return;
         }
+        const submittedOrder: SubmittedTradeOrder = {
+          orderId: response.orderId,
+          walletId: submittedWalletId,
+          marketId: ticket.marketId,
+        };
+        setSubmittedTradeOrder(submittedOrder);
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
           orderId: response.orderId,
@@ -2562,11 +2572,7 @@ export function MarketDetailPage() {
             setTradeSubmitStatus({
               kind: "info",
               message: t("trade.orderSettling"),
-              settlingOrder: {
-                orderId: response.orderId,
-                walletId: submittedWalletId,
-                marketId: ticket.marketId,
-              },
+              settlingOrder: submittedOrder,
             });
             break;
           case "failed":
@@ -3236,12 +3242,6 @@ export function MarketDetailPage() {
       )}
     </>
   );
-}
-
-interface SettlingOrder {
-  readonly orderId: string;
-  readonly walletId: string;
-  readonly marketId: string;
 }
 
 /** The final trade notice for a settled order, or null while it can still settle. */

@@ -12,7 +12,7 @@ import {
   type BrowserTradeRecoveryObservation,
 } from "@/lib/browserTradeRecoveryObservation";
 import { hasActiveCtfRangePreparation } from "@/stores/ctf-range-order-db";
-import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { usePendingTradesStore, type PendingTrade } from "@/stores/pendingTrades";
 import {
   useOrderSettlementObservations,
   type OrderSettlementObservation,
@@ -24,7 +24,15 @@ export type MarketTradeRecoveryStage =
   | "settlement-pending"
   | "wallet-recovery"
   | "result-saved"
-  | "unavailable";
+  | "unavailable"
+  /** The wallet applies the result of the order that this page submitted. */
+  | "wallet-updating";
+/** The order that this page submitted. Its submit notice describes it. */
+export interface SubmittedTradeOrder {
+  readonly orderId: string;
+  readonly walletId: string;
+  readonly marketId: string;
+}
 export interface MarketTradeRecoveryDisplay {
   readonly stages: readonly MarketTradeRecoveryStage[];
   readonly suppressFundingHint: boolean;
@@ -35,7 +43,7 @@ export interface MarketTradeRecoveryDisplay {
 export function marketTradeRecoveryStage(
   local: BrowserTradeRecoveryObservation | null,
   observed: OrderSettlementObservation | undefined,
-): MarketTradeRecoveryStage {
+): Exclude<MarketTradeRecoveryStage, "wallet-updating"> {
   const resultState = local?.resultState ?? null;
   switch (resultState) {
     case "applied":
@@ -67,15 +75,43 @@ export function marketTradeRecoveryStage(
   }
 }
 
+/**
+ * The submit notice and the settlement banner describe the order that this
+ * page submitted. Show only its wallet update, its saved result, and problems.
+ */
+export function submittedOrderRecoveryStage(
+  local: BrowserTradeRecoveryObservation | null,
+  observed: OrderSettlementObservation | undefined,
+): MarketTradeRecoveryStage | null {
+  // This order had an active journal at submission. An active journal is now
+  // absent only after the journal became terminal.
+  if (local === null) return null;
+  const stage = marketTradeRecoveryStage(local, observed);
+  switch (stage) {
+    case "order-pending":
+    case "settlement-pending":
+      return null;
+    case "wallet-recovery":
+      return "wallet-updating";
+    case "result-saved":
+    case "unavailable":
+      return stage;
+    default:
+      return assertNever(stage);
+  }
+}
+
 /** Display-only consumer of the existing lifecycle reader and exact local custody facts. */
 export function useMarketTradeRecovery({
   mnemonic,
   conditionId,
   signerRevision,
+  submittedOrder,
 }: {
   mnemonic: string | null;
   conditionId: string | null;
   signerRevision: number;
+  submittedOrder: SubmittedTradeOrder | null;
 }): MarketTradeRecoveryDisplay {
   const pending = usePendingTradesStore((state) => state.byOrderId);
   const observations = useOrderSettlementObservations((state) => state.byOrderId);
@@ -164,17 +200,27 @@ export function useMarketTradeRecovery({
       observed?.group?.status ?? null,
     ];
   });
+  const stageOf = (trade: PendingTrade, index: number): MarketTradeRecoveryStage | null => {
+    const submittedHere =
+      submittedOrder !== null &&
+      trade.orderId === submittedOrder.orderId &&
+      trade.walletId === submittedOrder.walletId &&
+      trade.marketId === submittedOrder.marketId;
+    // Local facts of a new identity are loading. The submit notice covers this order.
+    if (current === null) return submittedHere ? null : "unavailable";
+    if (current.unavailable) return "unavailable";
+    const local = localByOrderId.get(trade.orderId) ?? null;
+    return submittedHere
+      ? submittedOrderRecoveryStage(local, scopedObservations[index])
+      : marketTradeRecoveryStage(local, scopedObservations[index]);
+  };
   return {
     stages: [
       ...new Set(
-        trades.map((trade, index) =>
-          current === null || current.unavailable
-            ? ("unavailable" as const)
-            : marketTradeRecoveryStage(
-                localByOrderId.get(trade.orderId) ?? null,
-                scopedObservations[index],
-              ),
-        ),
+        trades.flatMap((trade, index) => {
+          const stage = stageOf(trade, index);
+          return stage === null ? [] : [stage];
+        }),
       ),
     ],
     suppressFundingHint:

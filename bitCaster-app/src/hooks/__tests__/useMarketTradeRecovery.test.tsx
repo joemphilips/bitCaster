@@ -1,7 +1,11 @@
 import "fake-indexeddb/auto";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useMarketTradeRecovery, marketTradeRecoveryStage } from "../useMarketTradeRecovery";
+import {
+  useMarketTradeRecovery,
+  marketTradeRecoveryStage,
+  submittedOrderRecoveryStage,
+} from "../useMarketTradeRecovery";
 import { usePendingTradesStore, type PendingTrade } from "@/stores/pendingTrades";
 import {
   useOrderSettlementObservations,
@@ -38,17 +42,28 @@ function trade(
 }
 function observed(
   status: NonNullable<OrderSettlementObservation["group"]>["status"],
+  orderId = "order-a",
 ): OrderSettlementObservation {
   return {
     walletId: "a".repeat(64),
     signerRevision: 1,
     marketId: "condition-with-dashes-Yes",
-    orderId: "order-a",
+    orderId,
     status: "filled",
     group: { status } as OrderSettlementObservation["group"],
   };
 }
-const input = { mnemonic: "a", conditionId: "condition-with-dashes", signerRevision: 1 };
+const input: Parameters<typeof useMarketTradeRecovery>[0] = {
+  mnemonic: "a",
+  conditionId: "condition-with-dashes",
+  signerRevision: 1,
+  submittedOrder: null,
+};
+const submittedHere = {
+  orderId: "order-a",
+  walletId: "a".repeat(64),
+  marketId: "condition-with-dashes-Yes",
+};
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -79,6 +94,102 @@ describe("market trade recovery presentation", () => {
       ).toBe(stage);
     },
   );
+
+  it.each([
+    [null, "Confirmed", null],
+    ["none", null, null],
+    ["none", "SubmissionPending", null],
+    ["none", "Confirmed", "wallet-updating"],
+    ["none", "DefinitivelyRejected", "wallet-updating"],
+    ["verified-staged", "Confirmed", "wallet-updating"],
+    ["applied", "Confirmed", "result-saved"],
+    ["missing", "Confirmed", "unavailable"],
+  ] as const)(
+    "maps result %s and group %s of the order submitted here to %s",
+    (resultState, groupStatus, stage) => {
+      const local: BrowserTradeRecoveryObservation | null =
+        resultState === null
+          ? null
+          : {
+              lifecycleState: "order-submitted",
+              resultState: resultState === "missing" ? null : resultState,
+            };
+      expect(
+        submittedOrderRecoveryStage(
+          local,
+          groupStatus === null ? undefined : observed(groupStatus),
+        ),
+      ).toBe(stage);
+    },
+  );
+
+  it("names the wallet update of the order submitted here and keeps an earlier recovery", async () => {
+    usePendingTradesStore.setState({
+      byOrderId: { "order-a": trade(), "order-b": trade("order-b") },
+    });
+    useOrderSettlementObservations.setState({
+      byOrderId: { "order-a": observed("Confirmed"), "order-b": observed("Confirmed", "order-b") },
+    });
+    mocks.read.mockResolvedValue({
+      lifecycleState: "order-submitted",
+      resultState: "verified-staged",
+    });
+    const initialProps: typeof input = { ...input, submittedOrder: submittedHere };
+    const { result, rerender } = renderHook((props) => useMarketTradeRecovery(props), {
+      initialProps,
+    });
+    await waitFor(() =>
+      expect(result.current.stages).toEqual(["wallet-updating", "wallet-recovery"]),
+    );
+    const key = result.current.invalidationKey;
+    rerender(input);
+    expect(result.current.stages).toEqual(["wallet-recovery"]);
+    expect(result.current.invalidationKey).toBe(key);
+  });
+
+  it.each([
+    ["wallet", { walletId: "b".repeat(64) }],
+    ["market", { marketId: "condition-with-dashes-No" }],
+    ["order", { orderId: "order-other" }],
+  ] as const)("treats an order with another %s as an earlier trade", async (_, change) => {
+    usePendingTradesStore.setState({ byOrderId: { "order-a": trade() } });
+    useOrderSettlementObservations.setState({ byOrderId: { "order-a": observed("Confirmed") } });
+    mocks.read.mockResolvedValue({
+      lifecycleState: "order-submitted",
+      resultState: "verified-staged",
+    });
+    const { result } = renderHook(() =>
+      useMarketTradeRecovery({ ...input, submittedOrder: { ...submittedHere, ...change } }),
+    );
+    await waitFor(() => expect(result.current.stages).toEqual(["wallet-recovery"]));
+  });
+
+  it("does not call the order submitted here unavailable while its local facts load", async () => {
+    let finish!: (value: BrowserTradeRecoveryObservation) => void;
+    mocks.read.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    usePendingTradesStore.setState({ byOrderId: { "order-a": trade() } });
+    const { result } = renderHook(() =>
+      useMarketTradeRecovery({ ...input, submittedOrder: submittedHere }),
+    );
+    await waitFor(() => expect(mocks.read).toHaveBeenCalledTimes(1));
+    expect(result.current.stages).toEqual([]);
+    expect(result.current.suppressFundingHint).toBe(true);
+    await act(async () => finish({ lifecycleState: "order-submitted", resultState: "applied" }));
+    await waitFor(() => expect(result.current.stages).toEqual(["result-saved"]));
+  });
+
+  it("keeps a local read failure visible for the order submitted here", async () => {
+    mocks.read.mockRejectedValue(new Error("local read failed"));
+    usePendingTradesStore.setState({ byOrderId: { "order-a": trade() } });
+    const { result } = renderHook(() =>
+      useMarketTradeRecovery({ ...input, submittedOrder: submittedHere }),
+    );
+    await waitFor(() => expect(result.current.stages).toEqual(["unavailable"]));
+  });
 
   it("reads only exact pending orders for the current wallet and parsed condition", async () => {
     const selected = trade();

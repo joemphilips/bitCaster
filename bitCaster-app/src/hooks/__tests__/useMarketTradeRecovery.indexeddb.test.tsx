@@ -47,7 +47,29 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-it("observes real IndexedDB result application without another pending or status update", async () => {
+it("observes real IndexedDB result application without another pending or status update", () =>
+  observeResultApplication({
+    submittedHere: false,
+    initialStages: ["order-pending"],
+    stagedStages: ["wallet-recovery"],
+  }));
+
+it("names the wallet update of the order submitted here from real IndexedDB facts", () =>
+  observeResultApplication({
+    submittedHere: true,
+    initialStages: [],
+    stagedStages: ["wallet-updating"],
+  }));
+
+async function observeResultApplication({
+  submittedHere,
+  initialStages,
+  stagedStages,
+}: {
+  submittedHere: boolean;
+  initialStages: readonly string[];
+  stagedStages: readonly string[];
+}): Promise<void> {
   // fake IndexedDB uses Node structuredClone. Match its byte-array realm so
   // canonical SDK decoders see the same Uint8Array type after persistence.
   vi.stubGlobal("Uint8Array", Object.getPrototypeOf(Buffer));
@@ -181,9 +203,15 @@ it("observes real IndexedDB result application without another pending or status
   usePendingTradesStore.setState({ byOrderId: { [orderId]: trade } });
   const pendingBefore = usePendingTradesStore.getState().byOrderId;
   const { result, unmount } = renderHook(() =>
-    useMarketTradeRecovery({ mnemonic, conditionId: journal.conditionId, signerRevision: 1 }),
+    useMarketTradeRecovery({
+      mnemonic,
+      conditionId: journal.conditionId,
+      signerRevision: 1,
+      submittedOrder: submittedHere ? { orderId, walletId, marketId: journal.orderRouteId } : null,
+    }),
   );
-  await waitFor(() => expect(result.current.stages).toEqual(["order-pending"]));
+  await waitFor(() => expect(result.current.invalidationKey).toContain('"ready"'));
+  expect(result.current.stages).toEqual(initialStages);
   const firstKey = result.current.invalidationKey;
   const scopeState = claimDurableCustodyScope(
     {
@@ -214,7 +242,7 @@ it("observes real IndexedDB result application without another pending or status
     },
   );
   await act(async () => writeRecord(state.operation));
-  await waitFor(() => expect(result.current.stages).toEqual(["wallet-recovery"]));
+  await waitFor(() => expect(result.current.stages).toEqual(stagedStages));
   state = reduceDurableCustodyState(state, {
     kind: "apply-verified-result",
     authorization,
@@ -234,7 +262,7 @@ it("observes real IndexedDB result application without another pending or status
   expect(result.current.suppressFundingHint).toBe(true);
   expect(network).not.toHaveBeenCalled();
   unmount();
-});
+}
 
 async function writeRecord(record: DurableCustodyRecord): Promise<void> {
   await db.custodyOperations.put({
