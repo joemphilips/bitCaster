@@ -174,9 +174,7 @@ export function useFokPreviewRequest<TRequest, TResponse>({
           recordCooldown(cooldownConditionId, mappedError.retryAfterSeconds);
           if (rateLimitRetries < FOK_PREVIEW_RATE_LIMIT_RETRIES) {
             rateLimitRetries += 1;
-            schedule(
-              Math.max(cooldownDelayMs(cooldownConditionId), RATE_LIMIT_RETRY_FALLBACK_MS),
-            );
+            schedule(Math.max(cooldownDelayMs(cooldownConditionId), RATE_LIMIT_RETRY_FALLBACK_MS));
             return;
           }
         }
