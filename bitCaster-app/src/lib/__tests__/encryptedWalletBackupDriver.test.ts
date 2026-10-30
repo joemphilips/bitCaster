@@ -2710,7 +2710,9 @@ it("reinitializes after conflict recovery without requiring another owner to wak
   await changeDesiredToRemoval(fixture.database, fixture.scopeId);
   finishFirstCycle();
   await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(3));
+  // Recovery leaves the driver uninitialized, so only reinitialization starts a third cycle.
+  // The recovery writes can then wake one more idle cycle, depending on timing.
+  await vi.waitFor(() => expect(worker.mock.calls.length).toBeGreaterThanOrEqual(3));
   expect(messages).toContain("encrypted-backup-driver-state=recovery-paused");
   driver.stop();
 });
