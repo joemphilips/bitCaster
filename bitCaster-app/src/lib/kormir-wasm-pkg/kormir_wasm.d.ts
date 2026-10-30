@@ -159,7 +159,7 @@ export interface InitOutput {
     readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
     readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
     readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___wasm_bindgen_4120b4884fc5c4df___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_4120b4884fc5c4df___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_Event__Event__core_608f92abc48d28da___result__Result_____rexie_bf41a0e48bc61275___error__Error___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_Event__Event__core_608f92abc48d28da___result__Result_____rexie_64a4d4d02099c2d4___error__Error___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___js_sys_23a74b2c067383d0___Function_fn_wasm_bindgen_4120b4884fc5c4df___JsValue_____wasm_bindgen_4120b4884fc5c4df___sys__Undefined___js_sys_23a74b2c067383d0___Function_fn_wasm_bindgen_4120b4884fc5c4df___JsValue_____wasm_bindgen_4120b4884fc5c4df___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_CloseEvent__CloseEvent______true_: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_CloseEvent__CloseEvent______true__3: (a: number, b: number, c: any) => void;
