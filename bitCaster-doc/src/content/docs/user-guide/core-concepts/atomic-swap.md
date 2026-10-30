@@ -81,7 +81,12 @@ to finish. It survives a reload while the wallet data remains available.
 Use **Refresh status** to check again. An unavailable status is not a failed
 trade. A confirmed settlement can still need wallet recovery. Refund eligibility
 does not mean a refund is complete. An operation leaves this active list when
-the wallet finishes its work. The list is not your completed-trade history.
+the wallet finishes its work. After a confirmed trade, the list shows
+**Trade complete.** for a few seconds before the trade leaves it. The list is
+not your completed-trade history.
+
+While the wallet saves the result of the trade that you just submitted, the
+trading panel shows **Updating your wallet…**.
 
 Wallet preparation is separate from order acceptance. The progress list shows
 which stage is confirmed. A prepared payment does not prove that the engine
