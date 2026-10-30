@@ -377,6 +377,7 @@ async function fetchMarketOrderBooks(
   detail: MarketDetailType,
   requireAll = false,
   signal?: AbortSignal,
+  retryRefreshing = true,
 ): Promise<MarketOrderBooksLoad> {
   const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
   if (outcomeSetIds.length === 0) {
@@ -391,11 +392,14 @@ async function fetchMarketOrderBooks(
     await Promise.allSettled(
       outcomeSetIds.map(async (outcomeSetId) => {
         try {
+          const marketId = outcomeSetMarketId(conditionId, outcomeSetId);
           return [
             outcomeSetId,
-            await (signal
-              ? fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId), signal)
-              : fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId))),
+            await (!retryRefreshing
+              ? fetchOrderBook(marketId, signal, { retryRefreshing: false })
+              : signal
+                ? fetchOrderBook(marketId, signal)
+                : fetchOrderBook(marketId)),
           ] as const;
         } catch (error) {
           if (requireAll) throw error;
@@ -2322,11 +2326,14 @@ export function MarketDetailPage() {
       try {
         const latestDetail = await fetchMarketDetail(routeId);
         if (abortIfAttemptStale() || latestDetail.id !== routeId) return;
+        // A book that is refreshing after a fill is skipped, not awaited. The final
+        // preview below checks the fill again before the order is sent.
         const books = await fetchMarketOrderBooks(
           routeId,
           latestDetail,
           false,
           depthReadAbortRef.current?.signal,
+          false,
         );
         if (abortIfAttemptStale()) return;
         latestMarket = {

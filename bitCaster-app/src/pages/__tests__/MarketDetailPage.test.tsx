@@ -4567,6 +4567,43 @@ describe("MarketDetailPage live market status", () => {
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
+  it("does not wait for a refreshing order book before submission", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await screen.findByTestId("fok-preview-ready");
+    await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+
+    // After a fill the book answers "refreshing" until the bot quotes again.
+    vi.mocked(fetchOrderBook).mockClear();
+    vi.mocked(fetchOrderBook).mockRejectedValue(new Error("order-quotes-refreshing"));
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    // The submit refresh reads each book once, without the refreshing retry.
+    const submitReads = vi
+      .mocked(fetchOrderBook)
+      .mock.calls.filter(([, , options]) => options?.retryRefreshing === false);
+    expect(submitReads.map(([marketId]) => marketId).sort()).toEqual([
+      "condition-yesno-No",
+      "condition-yesno-Yes",
+    ]);
+  });
+
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
