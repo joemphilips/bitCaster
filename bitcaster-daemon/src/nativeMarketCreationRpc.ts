@@ -213,6 +213,8 @@ async function runNativeMarketCreationCommand(
         return payment.coordinator
       },
       wallet,
+      createWallet: (source) =>
+        createWallet(profile.mintUrl, secrets, deps, 'sat', 'msat', undefined, source),
       seed: Buffer.from(secrets.walletSeedHex, 'hex'),
       engine: createAuthenticatedBitcasterEngineClient({
         baseUrl: profile.engineBaseUrl,

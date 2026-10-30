@@ -10,7 +10,8 @@
 #
 # Docker-compose services (mintd, cashu-me, lnbits, nostr-relay, seed) are
 # shared across all slots and NOT started by this script — run
-# `docker compose up -d` separately.
+# `docker compose up -d` separately. Before first use of a new owned mint store,
+# follow README.md's explicit mintd-setup command. Do not initialize on restart.
 #
 # Usage:
 #   ./tools/worktree-services.sh               # slot 0 (or $WORKTREE_SLOT)
@@ -56,6 +57,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "[slot ${SLOT}] vite=${VITE_PORT}"
 echo "[slot ${SLOT}] docker-compose backend is shared — start separately with 'docker compose up -d'"
+echo "[slot ${SLOT}] first use of a new mint store requires the mintd-setup step in README.md"
 
 cleanup() {
   # Kill child jobs started from this shell. `|| true` keeps set -e happy on

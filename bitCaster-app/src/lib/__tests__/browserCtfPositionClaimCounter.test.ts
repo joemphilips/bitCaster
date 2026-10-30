@@ -202,7 +202,7 @@ function directClaimContext(
     seed: entry.seed,
     mintUrl: MINT,
     prepareNewLegAuthority,
-    counterSource: entry.counters,
+    counterStore: entry.counterStore,
     database: entry.database,
     adapter: entry.adapter,
     owner: entry.owner,

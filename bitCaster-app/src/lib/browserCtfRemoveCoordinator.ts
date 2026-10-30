@@ -7,9 +7,6 @@ import {
   deriveDurableCustodyArtifactFingerprint,
   digestEncryptedWalletBackupV2TerminalProofCommitment,
   deriveEncryptedWalletBackupV2AssetLocator,
-  digestEncryptedWalletBackupV2BundleDescriptor,
-  decodeEncryptedWalletBackupV2UploadGroup,
-  decodeEncryptedWalletBackupV2BundleDescriptorWire,
   decodeEncryptedWalletBackupV2AssetIdentity,
   encryptedWalletBackupV2LocalAssetKey,
   type EncryptedWalletBackupV2AssetIdentity,
@@ -40,7 +37,6 @@ import {
   advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   createBrowserCompletedLocalProofRemovalMarkerRow,
   createBrowserCompletedProofRemovalMarkerRow,
-  restoreBrowserProofBackupAuthorityRowFromPendingRemoval,
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityForProof,
   decodeBrowserProofBackupAuthorityTableRow,
@@ -57,14 +53,16 @@ import {
 } from "../stores/proof-db";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
-import { EncryptedWalletBackupV2DexieAuthorityStore } from "../stores/encrypted-wallet-backup-v2-db";
-import type { EncryptedWalletBackupV2PreparedMutationMatch } from "../stores/encrypted-wallet-backup-v2-db";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
+import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
+import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   deserializeDurableCustodyProofArtifact,
   serializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+
+import type { EncryptedWalletBackupOwnerCollectedHeadEvidence } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
+import type { EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 
 const MAX_PROOFS = 512;
 
@@ -80,6 +78,11 @@ export interface BrowserCtfRemoveInput {
   /** Backup identity is required only when the managed-backup path is used. */
   readonly keyHandle?: EncryptedWalletBackupV2KeyHandle;
   readonly enrollmentEpoch?: number;
+  readonly ownerScopeId?: string;
+  readonly loadCurrentOwnerReachabilityEvidence?: (
+    localAssetKey: string,
+  ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
+  readonly loadCurrentOwnerRestoredRemovalSource?: () => Promise<EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult>;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly assetLocator?: string;
   readonly targets: readonly BrowserCtfRemoveTarget[];
@@ -97,199 +100,80 @@ export type BrowserCtfRemoveResult =
   | { readonly kind: "completed"; readonly intentId: string }
   | { readonly kind: "pending"; readonly reason: "backup-not-ready" };
 
-export interface BrowserCtfRejectedRemoveCancellationInput {
-  readonly database: BitcasterDB;
-  readonly scopeId: string;
-  readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
-  readonly enrollmentEpoch: number;
-  readonly localAssetKey: string;
-  readonly assetLocator: string;
-  readonly rejectedPreparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
-  readonly observedAtMs?: number;
-  readonly lockManager?: Pick<LockManager, "request">;
-  readonly isCurrentProfile?: () => boolean;
-  readonly fault?: "before-commit";
-}
-
-/** Restores local losing custody only after the exact backup candidate was rejected. */
-export async function cancelDefinitivelyRejectedBrowserCtfRemove(
-  input: BrowserCtfRejectedRemoveCancellationInput,
-): Promise<{ readonly kind: "cancelled"; readonly intentId: string }> {
-  requireFinalizeAssetLocator(input);
-  const observedAtMs = input.observedAtMs ?? Date.now();
-  const desiredBefore = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+/** Observes completion only; the background finalizer retains all deletion authority. */
+export async function readBrowserCtfRemoveCompletion(
+  input: BrowserCtfRemoveInput & {
+    readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+    readonly enrollmentEpoch: number;
+    readonly ownerScopeId?: string;
+    readonly assetLocator: string;
+    readonly intentId: string;
+  },
+): Promise<boolean> {
+  requireManagedRemovalOwnerScopeId(input.ownerScopeId);
+  requireRemoveIdentity(input);
+  requireManagedRemoveContext(input);
+  const targets = sortedRemoveTargets(input.targets);
+  const localTargets = input.localTargets?.length ? sortedRemoveTargets(input.localTargets) : [];
+  requireDisjointRemovalTargets(targets, localTargets);
+  if (input.intentId.length === 0) throw new Error("browser CTF removal intent is missing");
+  await Dexie.waitFor(requireAssetLocator(input));
+  const localAssetKey = encryptedWalletBackupV2LocalAssetKey(input.asset);
+  const keys = [...targets, ...localTargets].map<[string, string]>(({ proofId }) => [
     input.scopeId,
-    input.localAssetKey,
+    proofId,
   ]);
-  if (desiredBefore === undefined) {
-    throw new Error("browser CTF rejected removal desired asset is missing");
-  }
-  await requireDesiredLocator(
-    decodeEncryptedWalletBackupV2DesiredAssetRow(desiredBefore),
-    input.assetLocator,
-    input.keyHandle,
-  );
-  return withWalletProfileLock(
-    input.scopeId,
+  return input.database.transaction(
+    "r",
+    input.database.custodyProofs,
+    input.database.custodyProofBackupAuthorities,
+    input.database.custodyReservations,
     async () => {
+      input.signal?.throwIfAborted();
       requireCurrent(input);
-      const store = authorityStore(input);
-      return input.database.transaction("rw", removalTables(input.database), async () => {
-        const prepared = await store.readPreparedMutation();
-        if (
-          prepared === null ||
-          prepared.mutationId !== input.rejectedPreparedMutation.mutationId ||
-          prepared.requestDigest !== input.rejectedPreparedMutation.requestDigest
-        ) {
-          throw new Error("browser CTF rejected removal prepared candidate is stale");
-        }
-        const group = decodeEncryptedWalletBackupV2UploadGroup({
-          bytes: prepared.canonicalUploadGroup,
-          expectedRequestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
-          expectedContext: {
-            realm: input.keyHandle.realm,
-            walletId: input.keyHandle.walletId,
-            enrollmentEpoch: input.enrollmentEpoch,
-          },
-        });
-        const mutation = group.mutationEvidence.envelope.mutation;
-        if (
-          mutation.mutationId !== prepared.mutationId ||
-          group.mutationEvidence.envelope.requestDigest !== prepared.requestDigest ||
-          prepared.localAssetKey !== input.localAssetKey ||
-          prepared.assetLocator !== input.assetLocator
-        ) {
-          throw new Error("browser CTF rejected removal prepared candidate is foreign");
-        }
-        const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-          input.scopeId,
-          input.localAssetKey,
-        ]);
-        if (rawDesired === undefined) {
-          throw new Error("browser CTF rejected removal desired asset is missing");
-        }
-        const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-        const intent = desired.removalIntent;
-        if (
-          intent === null ||
-          intent.state !== "pending" ||
-          intent.acknowledgedExclusionEvidence !== null ||
-          desired.syncState !== "pending" ||
-          desired.custodyRevision !== intent.targetCustodyRevision ||
-          prepared.custodyRevision !== desired.custodyRevision ||
-          prepared.desiredAction !== desired.desiredAction ||
-          prepared.activeProofCount !== desired.activeProofCount
-        ) {
-          throw new Error("browser CTF rejected removal intent is stale");
-        }
-        requireRemovalIntentProfile(intent, input);
-        const accepted = await store.readAcceptedHead();
-        if (
-          accepted === null ||
-          accepted.headVersion !== intent.expectedHeadVersion ||
-          accepted.activeSetDigest !== intent.expectedActiveSetDigest ||
-          mutation.expectedHeadVersion !== intent.expectedHeadVersion ||
-          mutation.expectedActiveSetDigest !== intent.expectedActiveSetDigest
-        ) {
-          throw new Error("browser CTF rejected removal predecessor head is stale");
-        }
-        const descriptors = await store.listActiveDescriptors();
-        const predecessor = descriptors.filter(
-          ({ assetLocator }) => assetLocator === input.assetLocator,
-        );
-        const predecessorRevision = predecessorCustodyRevision(intent.targetCustodyRevision);
-        if (
-          predecessor.length !== 1 ||
-          predecessor[0]!.custodyRevision !== predecessorRevision ||
-          mutation.supersededBundleIds.length !== 1 ||
-          mutation.supersededBundleIds[0] !== predecessor[0]!.bundleId
-        ) {
-          throw new Error("browser CTF rejected removal predecessor descriptor is stale");
-        }
-        if (
-          (desired.desiredAction === "remove" &&
-            (desired.activeProofCount !== 0 || mutation.addedBundle !== null)) ||
-          (desired.desiredAction === "replace" &&
-            (desired.activeProofCount === 0 ||
-              mutation.addedBundle === null ||
-              mutation.addedBundle.assetLocator !== input.assetLocator ||
-              mutation.addedBundle.custodyRevision.toString() !== desired.custodyRevision))
-        ) {
-          throw new Error("browser CTF rejected removal successor is stale");
-        }
-        const rows = await exactAssetRows(input.database, desired);
-        if (rows.length !== desired.activeProofCount + intent.proofs.length) {
-          throw new Error("browser CTF rejected removal proof set is stale");
-        }
-        const tuples = new Map(intent.proofs.map((tuple) => [tuple.proofId, tuple]));
-        const target = rows.filter(({ proofId }) => tuples.has(proofId));
-        if (target.length !== intent.proofs.length) {
-          throw new Error("browser CTF rejected removal proof set is incomplete");
-        }
-        const authorities = await requireRemovalAuthorities(input, rows);
-        const restoredProofs: BrowserCustodyProofRow[] = [];
-        const restoredAuthorities: BrowserProofBackupAuthorityRow[] = [];
-        for (const proof of target) {
-          const tuple = tuples.get(proof.proofId)!;
-          const authority = authorities.get(proof.proofId)!;
-          if (
-            proof.selectability !== "pending-removal" ||
-            proof.reservationOperationId !== null ||
-            proof.revision !== tuple.proofRevision + 1 ||
-            proof.proofFingerprint !== tuple.proofFingerprint
-          ) {
-            throw new Error("browser CTF rejected removal proof authority is stale");
-          }
-          const proofCommitment = await requireTerminalAuthority(input, desired, proof, authority);
-          if (proofCommitment !== tuple.proofCommitment) {
-            throw new Error("browser CTF rejected removal proof commitment is stale");
-          }
-          requirePendingRemovalAuthority(proof, authority, intent, proofCommitment);
-          await requireProofReconciliationFence(input.database, proof, authority);
-          const restored = decodeBrowserCustodyProofRow({
-            ...proof,
-            revision: nextProofRevision(proof.revision),
-            selectability: "verified-losing",
-            reservationOperationId: null,
-          });
-          restoredProofs.push(restored);
-          restoredAuthorities.push(
-            restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-              authority,
-              restored,
-              observedAtMs,
-            ),
+      const [rawAuthorities, bodies, reservations] = await Promise.all([
+        input.database.custodyProofBackupAuthorities.bulkGet(keys),
+        input.database.custodyProofs.bulkGet(keys),
+        input.database.custodyReservations.bulkGet(keys),
+      ]);
+      // Decode every present row, including local companions. Corruption is an
+      // error here, not the legacy replay helper's incomplete-marker result.
+      const authorities = rawAuthorities.map((raw) =>
+        raw === undefined ? null : decodeBrowserProofBackupAuthorityTableRow(raw),
+      );
+      let completed =
+        bodies.every((row) => row === undefined) &&
+        reservations.every((row) => row === undefined) &&
+        authorities
+          .slice(0, targets.length)
+          .every(
+            (marker) =>
+              marker !== null &&
+              "recordKind" in marker &&
+              marker.recordKind === "completed-removal" &&
+              marker.removalIntentId === input.intentId,
           );
-        }
-        const restoredProofCount = desired.activeProofCount + intent.proofs.length;
-        if (restoredProofCount < 1 || restoredProofCount > MAX_PROOFS) {
-          throw new Error("browser CTF rejected removal predecessor proof count is invalid");
-        }
-        requireCurrent(input);
-        await input.database.custodyProofs.bulkPut(restoredProofs);
-        await input.database.custodyProofBackupAuthorities.bulkPut(restoredAuthorities);
-        await input.database.encryptedWalletBackupV2DesiredAssets.put({
-          ...desired,
-          custodyRevision: predecessorRevision,
-          activeProofCount: restoredProofCount,
-          desiredAction: "replace",
-          syncState: "acknowledged",
-          removalIntent: null,
-        });
-        await input.database.encryptedWalletBackupV2PreparedMutations.delete([
-          input.scopeId,
-          input.keyHandle.realm,
-          input.keyHandle.walletId,
-          input.enrollmentEpoch,
-        ]);
-        if (input.fault === "before-commit") {
-          throw new Error("browser CTF rejected removal cancellation fault");
-        }
-        requireCurrent(input);
-        return { kind: "cancelled", intentId: intent.intentId } as const;
-      });
+      if (completed) {
+        completed =
+          (await completedRemovalReplay(
+            input.database,
+            input.scopeId,
+            localAssetKey,
+            targets.map(({ proofId }) => proofId),
+            input,
+            targets,
+          )) &&
+          (await completedLocalRemovalReplay(
+            input.database,
+            input.scopeId,
+            localAssetKey,
+            localTargets,
+          ));
+      }
+      input.signal?.throwIfAborted();
+      requireCurrent(input);
+      return completed;
     },
-    input.lockManager,
   );
 }
 
@@ -316,6 +200,50 @@ export async function startBrowserCtfRemove(
     input.scopeId,
     async () => {
       requireCurrent(input);
+      let source:
+        | {
+            readonly kind: "receipt";
+            readonly value: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
+          }
+        | {
+            readonly kind: "restored";
+            readonly value: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult;
+          }
+        | undefined;
+      if (hasManagedRemoveContext(input)) {
+        const before = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+          input.scopeId,
+          localAssetKey,
+        ]);
+        requireCurrent(input);
+        if (before !== undefined) {
+          const prior = decodeEncryptedWalletBackupV2DesiredAssetRow(before);
+          if (prior.removalIntent === null) {
+            const captured =
+              await ownerAuthorityStore(input).captureBackupReceiptForLocalAsset(localAssetKey);
+            requireCurrent(input);
+            if (captured !== null) {
+              if (input.loadCurrentOwnerReachabilityEvidence === undefined)
+                throw new Error("Owner removal source reachability is unavailable");
+              source = {
+                kind: "receipt",
+                value: await input.loadCurrentOwnerReachabilityEvidence(localAssetKey),
+              };
+              requireCurrent(input);
+            } else if (
+              !(await ownerAuthorityStore(input).hasBackupReceiptForLocalAsset(localAssetKey)) &&
+              input.loadCurrentOwnerRestoredRemovalSource !== undefined &&
+              (await isRestoredLosingRemovalCandidate(input, targets))
+            ) {
+              source = {
+                kind: "restored",
+                value: await input.loadCurrentOwnerRestoredRemovalSource(),
+              };
+              requireCurrent(input);
+            }
+          }
+        }
+      }
       return input.database.transaction("rw", removalTables(input.database), async () => {
         const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
           input.scopeId,
@@ -390,7 +318,7 @@ export async function startBrowserCtfRemove(
           throw new Error("browser CTF removal desired asset is missing");
         }
         requireManagedRemoveContext(input);
-        const store = authorityStore(input);
+        const store = ownerAuthorityStore(input);
         const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
         requireDesiredAsset(desired, input.scopeId, asset);
         const existing = desired.removalIntent;
@@ -425,7 +353,14 @@ export async function startBrowserCtfRemove(
           }
           return { kind: "resumed", intentId: existing.intentId };
         }
-        const rows = await requireRemovalRows(input, desired, proofIds, false);
+        const rows = await requireRemovalRows(
+          input,
+          desired,
+          proofIds,
+          false,
+          undefined,
+          localTargets.length,
+        );
         const rowsById = new Map(rows.map((proof) => [proof.proofId, proof]));
         const target = targets.map((tuple) => rowsById.get(tuple.proofId)!);
         requireExactRemovalTargets(targets, target);
@@ -435,22 +370,35 @@ export async function startBrowserCtfRemove(
         }
         const localProofs = localTarget as BrowserCustodyProofRow[];
         requireExactRemovalTargets(localTargets, localProofs);
-        if (desired.syncState !== "acknowledged") {
+        if (source === undefined) return { kind: "pending", reason: "backup-not-ready" };
+        const permission = await store.readNewWritePermission();
+        if (!permission.canWrite || (await store.readPreparedMutation()) !== null)
           return { kind: "pending", reason: "backup-not-ready" };
-        }
-        const prepared = await store.readPreparedMutation();
-        if (prepared !== null) return { kind: "pending", reason: "backup-not-ready" };
-        const accepted = await store.readAcceptedHead();
-        if (accepted === null) throw new Error("browser CTF removal accepted head is missing");
-        const descriptors = await store.listActiveDescriptors();
-        const matchingDescriptors = descriptors.filter(
-          ({ assetLocator }) => assetLocator === input.assetLocator,
-        );
-        if (
-          matchingDescriptors.length !== 1 ||
-          matchingDescriptors[0]!.custodyRevision !== desired.custodyRevision
-        ) {
-          throw new Error("browser CTF removal accepted head is stale");
+        const desiredBinding = {
+          localAssetKey: desired.localAssetKey,
+          assetLocator: input.assetLocator,
+          custodyRevision: desired.custodyRevision,
+          desiredAction: desired.desiredAction,
+          activeProofCount: desired.activeProofCount,
+        };
+        let accepted: EncryptedWalletBackupOwnerCollectedHeadEvidence["head"];
+        if (source.kind === "receipt") {
+          const snapshot = source.value.backupReceiptSnapshot;
+          if (snapshot === undefined) return { kind: "pending", reason: "backup-not-ready" };
+          await store.assertCurrentBackupReceiptInTransaction({
+            snapshot,
+            reachabilityEvidence: source.value.evidence,
+            desired: desiredBinding,
+          });
+          accepted = snapshot.collectedHeadEvidence.head;
+        } else {
+          await store.assertCurrentRestoredRemovalSourceInTransaction({
+            source: source.value,
+            desired: desiredBinding,
+            targets,
+            localTargets,
+          });
+          accepted = source.value.currentHeadEvidence.head;
         }
         const authorityRows = await requireRemovalAuthorities(input, rows);
         requireLocalRemovalTargets(input, localProofs, authorityRows);
@@ -478,11 +426,10 @@ export async function startBrowserCtfRemove(
           authorityRows,
           new Set([...proofIds, ...localTargets.map(({ proofId }) => proofId)]),
         );
-        await requireBrowserWalletNewWritePermission({
-          database: input.database,
-          scopeId: input.scopeId,
-        });
+        if (!(await store.readNewWritePermission()).canWrite)
+          throw new Error("Owner removal writes are not permitted");
         const intent = createEncryptedWalletBackupV2RemovalIntent({
+          ownerScopeId: input.ownerScopeId,
           intentId: `ctf-remove:${input.keyHandle.walletId}:${observedAtMs}:${proofIds[0]}`,
           createdAtMs: observedAtMs,
           realm: input.keyHandle.realm,
@@ -543,7 +490,7 @@ export async function startBrowserCtfRemove(
             custodyRevision: incrementEncryptedWalletBackupV2DesiredAssetRevision(
               BigInt(desired.custodyRevision),
             ),
-            activeProofCount: desired.activeProofCount - target.length - localProofs.length,
+            activeProofCount: desired.activeProofCount - target.length,
             terminalCtfContext: desired.terminalCtfContext,
             removalIntent: intent,
           }),
@@ -563,11 +510,13 @@ export async function discoverBrowserCtfRemovals(input: {
   readonly scopeId: string;
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
   readonly enrollmentEpoch: number;
+  readonly ownerScopeId?: string;
   readonly signal?: AbortSignal;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly isCurrentProfile?: () => boolean;
   readonly observedAtMs?: number;
 }): Promise<number> {
+  const ownerScopeId = requireManagedRemovalOwnerScopeId(input.ownerScopeId);
   const rows = await input.database.encryptedWalletBackupV2DesiredAssets
     .where("[scopeId+localAssetKey]")
     .between([input.scopeId, Dexie.minKey], [input.scopeId, Dexie.maxKey])
@@ -578,8 +527,10 @@ export async function discoverBrowserCtfRemovals(input: {
   for (const raw of rows) {
     const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
     if (desired.removalIntent?.state !== "exclusion-acknowledged") continue;
+    if (desired.removalIntent.ownerScopeId !== ownerScopeId) continue;
     const result = await finalizeBrowserCtfRemove({
       ...input,
+      ownerScopeId,
       localAssetKey: desired.localAssetKey,
       assetLocator: await deriveEncryptedWalletBackupV2AssetLocator({
         keyHandle: input.keyHandle,
@@ -598,6 +549,7 @@ export async function finalizeBrowserCtfRemove(input: {
   readonly scopeId: string;
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
   readonly enrollmentEpoch: number;
+  readonly ownerScopeId?: string;
   readonly localAssetKey: string;
   readonly assetLocator: string;
   readonly proofIds?: readonly string[];
@@ -607,6 +559,7 @@ export async function finalizeBrowserCtfRemove(input: {
   readonly observedAtMs?: number;
   readonly fault?: "before-commit";
 }): Promise<{ readonly kind: "completed" | "pending" }> {
+  const ownerScopeId = requireManagedRemovalOwnerScopeId(input.ownerScopeId);
   await requireFinalizeAssetLocator(input);
   const rawBefore = await input.database.encryptedWalletBackupV2DesiredAssets.get([
     input.scopeId,
@@ -660,22 +613,20 @@ export async function finalizeBrowserCtfRemove(input: {
           }
           return { kind: "completed" };
         }
-        requireRemovalIntentProfile(intent, input);
+        requireRemovalIntentProfile(intent, { ...input, ownerScopeId });
         if (
           intent.state !== "exclusion-acknowledged" ||
           intent.acknowledgedExclusionEvidence === null
         ) {
           return { kind: "pending" };
         }
-        const store = authorityStore(input);
+        const store = ownerAuthorityStore({ ...input, ownerScopeId });
         if ((await store.readPreparedMutation()) !== null) {
           throw new Error(
             "browser CTF removal finalization conflicts with prepared backup mutation",
           );
         }
-        const accepted = await store.readAcceptedHead();
-        const descriptors = await store.listActiveDescriptors();
-        requireExclusionEvidence(input, desired, accepted, descriptors);
+        await store.assertRemovalExclusionInTransaction(desired);
         const rows = await exactAssetRows(input.database, desired);
         if (rows.length !== desired.activeProofCount + intent.proofs.length) {
           throw new Error("browser CTF removal finalization proof set is stale");
@@ -709,6 +660,13 @@ export async function finalizeBrowserCtfRemove(input: {
           requirePendingRemovalAuthority(proof, authority, intent, proofCommitment);
           await requireProofReconciliationFence(input.database, proof, authority);
         }
+        await requireRetainedRemovalSurvivors(
+          input,
+          desired,
+          rows,
+          authorities,
+          new Set(tuples.keys()),
+        );
         requireCurrent(input);
         await removeLegacyCacheRows(input.database, target, authorities);
         if (input.fault === "before-commit")
@@ -717,6 +675,7 @@ export async function finalizeBrowserCtfRemove(input: {
         const markers = target.map((proof) =>
           createBrowserCompletedProofRemovalMarkerRow({
             scopeId: input.scopeId,
+            ownerScopeId,
             proofId: proof.proofId,
             proofFingerprint: proof.proofFingerprint,
             proofRevision: proof.revision,
@@ -831,10 +790,9 @@ async function completeLocalOnlyRemoval(
     await requireLocalTerminalAuthority(input, proof, authority);
   }
 
-  await requireBrowserWalletNewWritePermission({
-    database: input.database,
-    scopeId: input.scopeId,
-  });
+  // Terminal local custody authority is independent from backup enrollment
+  // and selected-owner reachability. The checks above bind this exact proof
+  // to its verified losing outcome and terminal operation.
   requireCurrent(input);
   await removeLegacyCacheRows(input.database, proofs, authorities);
   await input.database.custodyProofs.bulkDelete(keys);
@@ -932,7 +890,7 @@ function requireLocalRemovalTargets(
 }
 
 async function requireRetainedRemovalSurvivors(
-  input: BrowserCtfManagedRemoveInput,
+  input: Pick<BrowserCtfRemoveInput, "database" | "scopeId" | "keyHandle">,
   desired: EncryptedWalletBackupV2DesiredAssetRow,
   rows: readonly BrowserCustodyProofRow[],
   authorities: ReadonlyMap<string, BrowserProofBackupAuthorityRow>,
@@ -1033,16 +991,24 @@ function localRemovalAsset(asset: EncryptedWalletBackupV2AssetIdentity): {
   return { conditionId: parts[1]!, outcomeCollectionId: parts[2]! };
 }
 
-function authorityStore(
-  input: BrowserCtfBackupContext,
-): EncryptedWalletBackupV2DexieAuthorityStore {
-  return new EncryptedWalletBackupV2DexieAuthorityStore({
+function requireManagedRemovalOwnerScopeId(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
+    throw new Error("Managed removal requires its original Owner identity");
+  return value;
+}
+
+function ownerAuthorityStore(
+  input: BrowserCtfBackupContext & { readonly ownerScopeId: string },
+): EncryptedWalletBackupOwnerDexieAuthorityStore {
+  return new EncryptedWalletBackupOwnerDexieAuthorityStore({
     database: input.database,
     scopeId: input.scopeId,
+    ownerScopeId: input.ownerScopeId,
     realm: input.keyHandle.realm,
     walletId: input.keyHandle.walletId,
     enrollmentEpoch: input.enrollmentEpoch,
     requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
+    isCurrent: () => !input.signal?.aborted && (input.isCurrentProfile?.() ?? true),
   });
 }
 
@@ -1059,6 +1025,11 @@ function removalTables(database: BitcasterDB) {
     database.encryptedWalletBackupV2PreparedMutations,
     database.encryptedWalletBackupV2AcceptedHeads,
     database.encryptedWalletBackupV2ActiveDescriptors,
+    database.encryptedWalletBackupOwnerDesiredAssets,
+    database.encryptedWalletBackupOwnerAssetReceipts,
+    database.encryptedWalletBackupOwnerAcceptedHeads,
+    database.encryptedWalletBackupOwnerActiveDescriptors,
+    database.encryptedWalletBackupOwnerPreparedMutations,
     database.proofs,
   ] as const;
 }
@@ -1103,9 +1074,10 @@ async function requireRemovalRows(
   proofIds: readonly string[],
   resuming: boolean,
   intent?: EncryptedWalletBackupV2RemovalIntent,
+  initialLocalTargetCount = 0,
 ): Promise<readonly BrowserCustodyProofRow[]> {
   const rows = await exactAssetRows(input.database, desired);
-  if (!resuming && rows.length !== desired.activeProofCount) {
+  if (!resuming && rows.length !== desired.activeProofCount + initialLocalTargetCount) {
     throw new Error("browser CTF removal local proof count is stale");
   }
   if (
@@ -1429,45 +1401,6 @@ async function removeLegacyCacheRows(
   if (secrets.length > 0) await database.proofs.bulkDelete(secrets);
 }
 
-function requireExclusionEvidence(
-  input: BrowserCtfAssetLocatorContext,
-  desired: EncryptedWalletBackupV2DesiredAssetRow,
-  accepted: Awaited<ReturnType<EncryptedWalletBackupV2DexieAuthorityStore["readAcceptedHead"]>>,
-  descriptors: Awaited<
-    ReturnType<EncryptedWalletBackupV2DexieAuthorityStore["listActiveDescriptors"]>
-  >,
-): void {
-  const evidence = desired.removalIntent?.acknowledgedExclusionEvidence;
-  if (evidence === null || evidence === undefined || accepted === null) {
-    throw new Error("browser CTF removal accepted head evidence is missing");
-  }
-  if (
-    accepted.headVersion !== evidence.headVersion ||
-    accepted.activeSetDigest !== evidence.activeSetDigest
-  ) {
-    throw new Error("browser CTF removal accepted head evidence is stale");
-  }
-  const target = descriptors.filter(({ assetLocator }) => assetLocator === input.assetLocator);
-  if (evidence.bundleId === null) {
-    if (target.length !== 0 || evidence.bundleDescriptorDigest !== null) {
-      throw new Error("browser CTF removal exclusion evidence is invalid");
-    }
-  } else if (
-    target.length !== 1 ||
-    target[0]!.bundleId !== evidence.bundleId ||
-    target[0]!.custodyRevision !== desired.custodyRevision ||
-    target[0]!.canonicalDescriptor.length === 0 ||
-    digestEncryptedWalletBackupV2BundleDescriptor(
-      decodeEncryptedWalletBackupV2BundleDescriptorWire(target[0]!.canonicalDescriptor, {
-        realm: input.keyHandle.realm,
-        walletId: input.keyHandle.walletId,
-      }),
-    ) !== evidence.bundleDescriptorDigest
-  ) {
-    throw new Error("browser CTF removal replacement evidence is invalid");
-  }
-}
-
 function requireDesiredAsset(
   desired: EncryptedWalletBackupV2DesiredAssetRow,
   scopeId: string,
@@ -1531,8 +1464,13 @@ function requireFinalizeAssetLocator(input: {
 
 function requireRemovalIntentProfile(
   intent: EncryptedWalletBackupV2RemovalIntent,
-  input: BrowserCtfBackupContext,
+  input: BrowserCtfBackupContext & { readonly ownerScopeId?: string },
 ): void {
+  if (
+    intent.ownerScopeId !== input.ownerScopeId ||
+    (input.ownerScopeId !== undefined && intent.schemaVersion !== 2)
+  )
+    throw new Error("browser CTF removal intent requires its original Owner");
   if (
     intent.realm !== input.keyHandle.realm ||
     intent.walletId !== input.keyHandle.walletId ||
@@ -1549,23 +1487,12 @@ function nextProofRevision(revision: number): number {
   return revision + 1;
 }
 
-function predecessorCustodyRevision(revision: string): string {
-  if (!/^(?:0|[1-9][0-9]{0,19})$/.test(revision)) {
-    throw new Error("browser CTF rejected removal custody revision is invalid");
-  }
-  const parsed = BigInt(revision);
-  if (parsed < 1n) {
-    throw new Error("browser CTF rejected removal custody revision is invalid");
-  }
-  return (parsed - 1n).toString();
-}
-
 async function completedRemovalReplay(
   database: BitcasterDB,
   scopeId: string,
   localAssetKey: string,
   proofIds: readonly string[],
-  identity: Pick<BrowserCtfRemoveInput, "keyHandle" | "enrollmentEpoch">,
+  identity: Pick<BrowserCtfRemoveInput, "keyHandle" | "enrollmentEpoch" | "ownerScopeId">,
   targets?: readonly BrowserCtfRemoveTarget[],
 ): Promise<boolean> {
   const rows = await database.custodyProofBackupAuthorities.bulkGet(
@@ -1601,6 +1528,9 @@ async function completedRemovalReplay(
   return markers.every(
     (marker, index) =>
       marker?.recordKind === "completed-removal" &&
+      marker.schemaVersion === 2 &&
+      marker.ownerScopeId === identity.ownerScopeId &&
+      identity.ownerScopeId !== undefined &&
       marker.scopeId === scopeId &&
       marker.proofId === proofIds[index] &&
       (targets === undefined ||
@@ -1713,15 +1643,14 @@ function sortedProofIds(value: readonly string[]): readonly string[] {
 
 type BrowserCtfBackupContext = Pick<
   BrowserCtfRemoveInput,
-  "database" | "scopeId" | "keyHandle" | "enrollmentEpoch"
+  "database" | "scopeId" | "keyHandle" | "enrollmentEpoch" | "signal" | "isCurrentProfile"
 > &
   Required<Pick<BrowserCtfRemoveInput, "keyHandle" | "enrollmentEpoch">>;
 
-type BrowserCtfAssetLocatorContext = BrowserCtfBackupContext &
-  Required<Pick<BrowserCtfRemoveInput, "assetLocator">>;
-
 type BrowserCtfManagedRemoveInput = BrowserCtfRemoveInput &
-  Required<Pick<BrowserCtfRemoveInput, "keyHandle" | "enrollmentEpoch" | "assetLocator">>;
+  Required<
+    Pick<BrowserCtfRemoveInput, "keyHandle" | "enrollmentEpoch" | "assetLocator" | "ownerScopeId">
+  >;
 
 function hasManagedRemoveContext(
   input: BrowserCtfRemoveInput,
@@ -1729,7 +1658,8 @@ function hasManagedRemoveContext(
   return (
     input.keyHandle !== undefined &&
     input.enrollmentEpoch !== undefined &&
-    input.assetLocator !== undefined
+    input.assetLocator !== undefined &&
+    input.ownerScopeId !== undefined
   );
 }
 
@@ -1745,7 +1675,8 @@ function requireRemoveIdentity(input: BrowserCtfRemoveInput): void {
   const hasAnyBackupContext =
     input.keyHandle !== undefined ||
     input.enrollmentEpoch !== undefined ||
-    input.assetLocator !== undefined;
+    input.assetLocator !== undefined ||
+    input.ownerScopeId !== undefined;
   if (hasAnyBackupContext && !hasManagedRemoveContext(input)) {
     throw new Error("browser CTF removal backup context is incomplete");
   }
@@ -1778,4 +1709,38 @@ function requireRemoveIdentity(input: BrowserCtfRemoveInput): void {
 
 function requireCurrent(input: { readonly isCurrentProfile?: () => boolean }): void {
   if (input.isCurrentProfile?.() === false) throw new Error("browser CTF removal profile is stale");
+}
+
+/** Only exact restored losing targets can request the no-old-receipt source. */
+async function isRestoredLosingRemovalCandidate(
+  input: BrowserCtfRemoveInput,
+  targets: readonly BrowserCtfRemoveTarget[],
+): Promise<boolean> {
+  for (const tuple of targets) {
+    input.signal?.throwIfAborted();
+    requireCurrent(input);
+    const raw = await input.database.custodyProofs.get([input.scopeId, tuple.proofId]);
+    if (raw === undefined) return false;
+    const proof = decodeBrowserCustodyProofRow(raw);
+    if (
+      proof.proofFingerprint !== tuple.proofFingerprint ||
+      proof.revision !== tuple.proofRevision ||
+      proof.selectability !== "verified-losing" ||
+      proof.reservationOperationId !== null
+    )
+      return false;
+    const authority = requireBrowserProofBackupAuthorityForProof(
+      await input.database.custodyProofBackupAuthorities.get([input.scopeId, tuple.proofId]),
+      proof,
+    );
+    if (
+      authority.terminalAuthority?.kind !== "remote-seal" ||
+      authority.backupState !== "remote-backed" ||
+      authority.terminalOperationId !== null ||
+      authority.derivationLocator === null
+    )
+      return false;
+    requireCurrent(input);
+  }
+  return targets.length > 0;
 }

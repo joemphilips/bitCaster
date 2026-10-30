@@ -46,6 +46,14 @@ const currentTableNames = [
   "marketCreations",
   "participationScoreDeliveryPointers",
   "targetedAssetRecoveryAttempts",
+  "encryptedWalletBackupOwnerEnrollmentResults",
+  "encryptedWalletBackupOwnerRetrySchedulers",
+  "encryptedWalletBackupOwnerPreparedMutations",
+  "encryptedWalletBackupOwnerAcceptedHeads",
+  "encryptedWalletBackupOwnerAssetReceipts",
+  "encryptedWalletBackupOwnerActiveDescriptors",
+  "encryptedWalletBackupOwnerDesiredAssets",
+  "encryptedWalletBackupOwnerProofCoverage",
 ].sort();
 
 afterEach(async () => {
@@ -58,7 +66,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(20);
+    expect(db.verno).toBe(21);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();
@@ -124,6 +132,33 @@ describe("browser wallet databases", () => {
       "walletId",
       "enrollmentEpoch",
       "bundleId",
+    ]);
+    expect(db.encryptedWalletBackupOwnerEnrollmentResults.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "ownerScopeId",
+      "realm",
+      "walletId",
+    ]);
+    expect(db.encryptedWalletBackupOwnerRetrySchedulers.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "ownerScopeId",
+      "realm",
+      "walletId",
+    ]);
+    expect(db.encryptedWalletBackupOwnerPreparedMutations.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "ownerScopeId",
+      "realm",
+      "walletId",
+      "enrollmentEpoch",
+    ]);
+    expect(db.encryptedWalletBackupOwnerAssetReceipts.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "ownerScopeId",
+      "realm",
+      "walletId",
+      "enrollmentEpoch",
+      "localAssetKey",
     ]);
     expect(db.targetedAssetRecoveryAttempts.schema.primKey.keyPath).toEqual([
       "scopeId",
@@ -242,6 +277,103 @@ describe("browser wallet databases", () => {
       await upgraded.open();
       expect(await upgraded.proofs.count()).toBe(0);
       expect(await upgraded.custodyProofs.count()).toBe(0);
+    } finally {
+      upgraded.close();
+      await Dexie.delete(name);
+    }
+  });
+
+  it("preserves legacy ownerless v20 backup rows without assigning them to a v21 owner", async () => {
+    const name = `bitcaster-wallet-v20-owner-upgrade-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(20).stores({
+      proofs: "&secret",
+      custodyProofBackupAuthorities: "&[scopeId+proofId]",
+      encryptedWalletBackupV2DesiredAssets: "&[scopeId+localAssetKey]",
+      encryptedWalletBackupWalletEnrollmentResults: "&[realm+walletId]",
+      encryptedWalletBackupWalletRetrySchedulers: "&[scopeId+realm+walletId]",
+      encryptedWalletBackupV2WalletPreparedMutations: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupV2WalletAcceptedHeads: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupV2WalletAssetReceipts:
+        "&[scopeId+realm+walletId+enrollmentEpoch+localAssetKey]",
+      encryptedWalletBackupV2WalletActiveDescriptors:
+        "&[scopeId+realm+walletId+enrollmentEpoch+bundleId]",
+    });
+    await legacy.open();
+    const rows = {
+      enrollment: { realm: "mainnet", walletId: "wallet", record: { lifecycle: "active" } },
+      retry: { scopeId: "scope", realm: "mainnet", walletId: "wallet", attemptId: "retry" },
+      prepared: {
+        scopeId: "scope",
+        realm: "mainnet",
+        walletId: "wallet",
+        enrollmentEpoch: 1,
+        mutationId: "uncertain",
+      },
+      head: {
+        scopeId: "scope",
+        realm: "mainnet",
+        walletId: "wallet",
+        enrollmentEpoch: 1,
+        headVersion: 2,
+      },
+      receipt: {
+        scopeId: "scope",
+        realm: "mainnet",
+        walletId: "wallet",
+        enrollmentEpoch: 1,
+        localAssetKey: "asset",
+        bundleId: "bundle",
+      },
+      descriptor: {
+        scopeId: "scope",
+        realm: "mainnet",
+        walletId: "wallet",
+        enrollmentEpoch: 1,
+        bundleId: "bundle",
+        objectCount: 1,
+      },
+      desired: { scopeId: "scope", localAssetKey: "asset", removalIntent: { state: "pending" } },
+      custody: {
+        scopeId: "scope",
+        proofId: "proof",
+        backupState: "remote-backed",
+        proofState: "active",
+      },
+    };
+    await Promise.all([
+      legacy.table("encryptedWalletBackupWalletEnrollmentResults").put(rows.enrollment),
+      legacy.table("encryptedWalletBackupWalletRetrySchedulers").put(rows.retry),
+      legacy.table("encryptedWalletBackupV2WalletPreparedMutations").put(rows.prepared),
+      legacy.table("encryptedWalletBackupV2WalletAcceptedHeads").put(rows.head),
+      legacy.table("encryptedWalletBackupV2WalletAssetReceipts").put(rows.receipt),
+      legacy.table("encryptedWalletBackupV2WalletActiveDescriptors").put(rows.descriptor),
+      legacy.table("encryptedWalletBackupV2DesiredAssets").put(rows.desired),
+      legacy.table("custodyProofBackupAuthorities").put(rows.custody),
+    ]);
+    legacy.close();
+
+    const upgraded = new BitcasterDB(name);
+    try {
+      await upgraded.open();
+      expect(upgraded.verno).toBe(21);
+      expect(await upgraded.encryptedWalletBackupEnrollmentResults.toArray()).toEqual([
+        rows.enrollment,
+      ]);
+      expect(await upgraded.encryptedWalletBackupRetrySchedulers.toArray()).toEqual([rows.retry]);
+      expect(await upgraded.encryptedWalletBackupV2PreparedMutations.toArray()).toEqual([
+        rows.prepared,
+      ]);
+      expect(await upgraded.encryptedWalletBackupV2AcceptedHeads.toArray()).toEqual([rows.head]);
+      expect(await upgraded.encryptedWalletBackupV2AssetReceipts.toArray()).toEqual([rows.receipt]);
+      expect(await upgraded.encryptedWalletBackupV2ActiveDescriptors.toArray()).toEqual([
+        rows.descriptor,
+      ]);
+      expect(await upgraded.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([rows.desired]);
+      expect(await upgraded.custodyProofBackupAuthorities.toArray()).toEqual([rows.custody]);
+      expect(await upgraded.encryptedWalletBackupOwnerEnrollmentResults.count()).toBe(0);
+      expect(await upgraded.encryptedWalletBackupOwnerPreparedMutations.count()).toBe(0);
+      expect(await upgraded.encryptedWalletBackupOwnerAssetReceipts.count()).toBe(0);
     } finally {
       upgraded.close();
       await Dexie.delete(name);

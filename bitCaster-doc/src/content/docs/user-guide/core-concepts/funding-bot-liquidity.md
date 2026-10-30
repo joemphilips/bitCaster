@@ -40,8 +40,9 @@ For an existing market, open its `LIQUIDITY` tab. Follow the payment steps
 with funds from the supported mint. Wait for the app to confirm completion.
 You can make more funding payments later. You do not need to be the creator.
 
-If a payment is still pending, check or resume that payment in the app.
-After a reload, resume the same payment. A received payment is not yet
+If a payment is still pending, the app resumes the same payment automatically
+for about two and a half minutes. After that, resume the payment in the app.
+After a reload, the app resumes the same payment. A received payment is not yet
 credited to the market. Wait for the app to confirm credit before you make
 another explicit funding payment. Do not make a second payment only because
 the first one is taking time. A second payment is a separate, non-refundable
@@ -85,5 +86,8 @@ every refusal, such as a price limit or an unavailable market.
 It does not buy your shares. Review a new trade preview after funding.
 Funding and trading are separate actions.
 
-When no orders are available, the `BUY` and `SELL` tabs direct you to
-`LIQUIDITY`. The trade form returns when executable orders are available.
+An empty book alone does not show that funding will help. With no selected
+trade, the `BUY` and `SELL` tabs show a neutral empty state. `LIQUIDITY` remains
+available for voluntary funding. An existing selected form and quote wait stay
+visible through empty-book updates. Submission still needs a current preview
+and fee consent.

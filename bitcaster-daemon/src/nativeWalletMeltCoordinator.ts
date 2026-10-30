@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import type { SpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import type { DatabaseSync } from 'node:sqlite'
 import type {
   MeltPreview,
@@ -57,9 +58,10 @@ import {
   withDurableCustodyUnitOfWork,
 } from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
-import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import { createDaemonStateSqliteSession, type StateSqliteFaultPhase } from './stateSqlite.ts'
 import { writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import {
+  commitDaemonCounterTranscript,
   admitExactAvailableWalletProofsFromDatabase,
   assertExactWalletMeltReservedProofProjectionFromDatabase,
   deleteExactReservedWalletProofsFromDatabase,
@@ -156,25 +158,35 @@ export class NativeWalletMeltCoordinator {
     readonly wallet: NativeWalletMeltWallet
     readonly approvalContext: NativeWalletMeltApprovalContext
     readonly approvedMaxDebitMsat: number
+    readonly counterTranscript?: SpeculativeCounterTranscript
+    readonly operationFence?: CustodyScopeFence
+    readonly injectFault?: (phase: StateSqliteFaultPhase) => void
   }): Promise<{ readonly operationId: string; readonly totalWalletDebitMsat: number }> {
+    const capturedFence = input.operationFence ?? this.#getFence()
+    const requireOperationFence = () => {
+      const current = this.#getFence()
+      if (
+        current.scopeId !== capturedFence.scopeId ||
+        current.incarnationId !== capturedFence.incarnationId ||
+        current.fencingEpoch !== capturedFence.fencingEpoch
+      )
+        throw new Error('native wallet melt operation fence changed')
+      return current
+    }
+    requireOperationFence()
     const operation = requireNativeMelt(input.operation)
     requireApprovalContext(input.approvalContext)
     requireApprovedMaximum(input.approvedMaxDebitMsat)
     const existing = await this.#loadByKey(operation.operationId)
+    requireOperationFence()
     if (existing !== null) {
-      const savedOperation = operationFromRecord(existing.record, existing.exactAuthority)
-      const approval = requireMeltApproval(existing.authority, savedOperation)
-      if (
-        !isDeepStrictEqual(operation, savedOperation) ||
-        !approvalMatchesContext(approval, input.approvalContext) ||
-        approval.approvedMaxDebitMsat !== input.approvedMaxDebitMsat
-      ) {
-        throw new Error('native wallet melt retry conflicts with saved quote or approval')
-      }
-      return {
-        operationId: operation.operationId,
-        totalWalletDebitMsat: approval.totalWalletDebitMsat,
-      }
+      return selectSavedPreparation(
+        existing,
+        operation,
+        input.approvalContext,
+        input.approvedMaxDebitMsat,
+        input.counterTranscript !== undefined,
+      )
     }
 
     const quote = await input.wallet.checkMeltQuote(
@@ -196,7 +208,7 @@ export class NativeWalletMeltCoordinator {
       keysets,
       applicationAuthority: approval,
     })
-    const scope = walletScope(this.#getFence())
+    const scope = walletScope(requireOperationFence())
     const record = createDurableCustodyProofOperation({
       scope,
       operation: custody,
@@ -212,42 +224,74 @@ export class NativeWalletMeltCoordinator {
       },
     })
     const observedAtMs = this.#now()
-    const fence = this.#getFence()
-    await withDurableCustodyUnitOfWork(this.#storage, fence, observedAtMs, (database) => {
-      const store = new DurableCustodySqliteStore(database)
-      const current = store.getOperation(record.operation.operationId)
-      if (current !== null) {
-        assertDurableCustodyMintOperationAuthority(
-          current,
-          requiredAuthorityArtifact(current, store),
-        )
-        throw new Error('native wallet melt operation already exists')
-      }
-      assertInputDebitCoverage(operation, approval.totalWalletDebitMsat)
-      const reservationId = requiredText(record.operation.reservation.reservationId)
-      reserveExactAvailableWalletProofsFromDatabase(database, {
-        operationId: operation.operationId,
-        reservationId,
-        mintUrl: operation.mintUrl,
-        proofs: operation.preview.inputs.map(hydrateDurableWalletProof),
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-        nowMs: observedAtMs,
-      })
-      assertCanonicalSelectableInputs(database, scope, operation, reservationId)
-      applyDurableCustodyTransaction(
-        new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
-        selection(record, owner(fence, observedAtMs), null),
-        (transaction) =>
-          bindDurableCustodyProofOperation(transaction, record, {
-            requestBody: authority.exactRequest,
-            output: authority.exactOutput,
-            privateMaterial: authority.exactAuthority,
-          }),
+    const fence = requireOperationFence()
+    try {
+      return await withDurableCustodyUnitOfWork(
+        this.#storage,
+        fence,
+        observedAtMs,
+        (database) => {
+          requireOperationFence()
+          const store = new DurableCustodySqliteStore(database)
+          const current = store.getOperation(record.operation.operationId)
+          if (current !== null) {
+            return selectSavedPreparation(
+              loadMeltRecord(current, store),
+              operation,
+              input.approvalContext,
+              input.approvedMaxDebitMsat,
+              input.counterTranscript !== undefined,
+            )
+          }
+          if (input.counterTranscript !== undefined)
+            commitDaemonCounterTranscript(
+              database,
+              scope.scopeId,
+              { normalizedMint: operation.mintUrl, unit: 'msat' },
+              input.counterTranscript,
+              observedAtMs,
+            )
+          assertInputDebitCoverage(operation, approval.totalWalletDebitMsat)
+          const reservationId = requiredText(record.operation.reservation.reservationId)
+          reserveExactAvailableWalletProofsFromDatabase(database, {
+            operationId: operation.operationId,
+            reservationId,
+            mintUrl: operation.mintUrl,
+            proofs: operation.preview.inputs.map(hydrateDurableWalletProof),
+            asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+            nowMs: observedAtMs,
+          })
+          assertCanonicalSelectableInputs(database, scope, operation, reservationId)
+          applyDurableCustodyTransaction(
+            new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
+            selection(record, owner(fence, observedAtMs), null),
+            (transaction) =>
+              bindDurableCustodyProofOperation(transaction, record, {
+                requestBody: authority.exactRequest,
+                output: authority.exactOutput,
+                privateMaterial: authority.exactAuthority,
+              }),
+          )
+          return {
+            operationId: operation.operationId,
+            totalWalletDebitMsat: approval.totalWalletDebitMsat,
+          }
+        },
+        input.injectFault === undefined ? {} : { injectFault: input.injectFault },
       )
-    })
-    return {
-      operationId: operation.operationId,
-      totalWalletDebitMsat: approval.totalWalletDebitMsat,
+    } catch (error) {
+      requireOperationFence()
+      const saved = await this.#loadByKey(operation.operationId)
+      requireOperationFence()
+      if (saved !== null)
+        return selectSavedPreparation(
+          saved,
+          operation,
+          input.approvalContext,
+          input.approvedMaxDebitMsat,
+          input.counterTranscript !== undefined,
+        )
+      throw error
     }
   }
 
@@ -571,13 +615,7 @@ export class NativeWalletMeltCoordinator {
       const store = new DurableCustodySqliteStore(database)
       const record = store.getOperation(custodyOperationId)
       if (record === null) return null
-      const exactAuthority = requiredAuthorityArtifact(record, store)
-      const authority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
-      const operation = operationFromRecord(record, exactAuthority)
-      requireMeltApproval(authority, operation)
-      const exactResult =
-        record.operation.result.exactResult === null ? null : exactResultArtifact(record, store)
-      return { record, exactAuthority, exactResult, authority, operation }
+      return loadMeltRecord(record, store)
     })
   }
 
@@ -594,6 +632,43 @@ interface LoadedMelt {
   readonly exactResult: DurableCustodyExactArtifact | null
   readonly authority: DurableCustodyMintOperationAuthority
   readonly operation: DurableWalletMeltOperation
+}
+
+function loadMeltRecord(
+  record: DurableCustodyRecord,
+  store: DurableCustodySqliteStore,
+): LoadedMelt {
+  const exactAuthority = requiredAuthorityArtifact(record, store)
+  const authority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
+  const operation = operationFromRecord(record, exactAuthority)
+  requireMeltApproval(authority, operation)
+  const exactResult =
+    record.operation.result.exactResult === null ? null : exactResultArtifact(record, store)
+  return { record, exactAuthority, exactResult, authority, operation }
+}
+
+function selectSavedPreparation(
+  saved: LoadedMelt,
+  candidate: DurableWalletMeltOperation,
+  context: NativeWalletMeltApprovalContext,
+  approvedMaxDebitMsat: number,
+  speculative: boolean,
+) {
+  const operation = saved.operation
+  const approval = requireMeltApproval(saved.authority, operation)
+  if (
+    (!speculative && !isDeepStrictEqual(candidate, operation)) ||
+    candidate.operationId !== operation.operationId ||
+    candidate.mintUrl !== operation.mintUrl ||
+    candidate.unit !== operation.unit ||
+    candidate.preview.method !== operation.preview.method ||
+    candidate.preview.quote.quote !== operation.preview.quote.quote ||
+    !isDeepStrictEqual(candidate.preview.inputs, operation.preview.inputs) ||
+    !approvalMatchesContext(approval, context) ||
+    approval.approvedMaxDebitMsat !== approvedMaxDebitMsat
+  )
+    throw new Error('native wallet melt retry conflicts with saved quote or approval')
+  return { operationId: operation.operationId, totalWalletDebitMsat: approval.totalWalletDebitMsat }
 }
 
 function writeCompletedWithdrawal(

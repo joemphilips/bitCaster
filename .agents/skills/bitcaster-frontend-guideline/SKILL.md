@@ -1,9 +1,18 @@
 ---
 name: bitcaster-frontend-guideline
-description: Apply bitCaster GUI behavior rules. Use this skill when you change React components, Zustand stores, routes, toasts, notifications, dialogs, browser persistence, order progress, recovery progress, or user-visible error handling in bitCaster-app.
+description: Apply bitCaster GUI layout, interface copy, browser state, durable error, and recovery UX rules when those behaviors change.
 ---
 
 # bitCaster Frontend Guideline
+
+## Interface Copy
+
+- Avoid unnecessary secondary labels and explanations.
+- Use layout, grouping, and visual hierarchy to make the interface clear without extra text.
+- Use concise GUI text that states the action the user must take.
+- Use precise CLI output that supports diagnosis.
+- Keep required recovery actions and material funds warnings in both interfaces.
+- Do not show relay delivery counts for a routine successful profile save.
 
 ## State And Messages
 
@@ -18,6 +27,11 @@ description: Apply bitCaster GUI behavior rules. Use this skill when you change 
 
 - Do not set an automatic timeout for an error message.
 - Remove an error message only after an explicit user action.
+- Exception: resolve the CTF range order alerts `recovery-pending`,
+  `mint-source-uncertain`, and `order-submission-uncertain` when the durable
+  order journal becomes terminal. The terminal journal makes their statement
+  false. Mark them acknowledged and keep the row. Keep alerts with a definitive
+  outcome until the user dismisses them.
 - Persist the acknowledgement for the exact durable message identity.
 - Keep the same acknowledged message dismissed after reload.
 - A later state version or error code can create a new message.
@@ -37,6 +51,9 @@ description: Apply bitCaster GUI behavior rules. Use this skill when you change 
 - Require a new user action and a new order-book observation for a new order attempt.
 
 ## Tests
+
+Apply these checks to the changed behavior. Reuse valid evidence for unchanged
+paths; do not run every listed scenario for a presentation-only edit.
 
 - Mock network calls in `bitCaster-app` unit tests.
 - Test that errors do not expire.

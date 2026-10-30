@@ -1,6 +1,7 @@
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
 import { proofOperationAuthorityDigest } from './ctfProofOperationAuthority.ts'
 import { requireCtfVerifiedLosingAuthority } from './conditionOracleEvidence.ts'
-import { Keyset, isBlsKeyset, verifyProofsForReceive, type Proof } from '@cashu/cashu-ts'
+import { Keyset, type Proof } from '@cashu/cashu-ts'
 import {
   assertDurableCustodyArtifactMatchesReference,
   assertDurableCustodyImmutableAuthorityMatches,
@@ -468,10 +469,9 @@ function verifyAndMapMintProofs(
       mapMintProof(record, authority, group, outputs[index]!, proof, keysets),
     )
   })
-  verifyProofsForReceive(
+  requireValidCashuProofs(
     mapped.map(({ proof }) => proof),
     (id) => keysets.get(id)!,
-    { requireDleq: true },
   )
   const byId = new Map(mapped.map((proof) => [proof.material.proofId, proof]))
   if (byId.size !== mapped.length) throw new Error('custody mint result proof set is duplicated')
@@ -548,16 +548,19 @@ function factsForAuthority(
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: outputIds.size > 0,
     inputKeysetRequirement: operation.kind === 'wallet-mint' ? 'none' : 'required',
-    keysets: authority.keysets.map((keyset) => ({
-      keysetId: keyset.id,
-      unit: keyset.unit,
-      curve: isBlsKeyset(keyset.id) ? 'bls12-381' : 'secp256k1',
-      publicKeys: keyset.keys,
-      keysetExpiryMs: expiryMilliseconds(keyset.finalExpiry),
-      requireDleq: true,
-      usedByInputs: inputIds.has(keyset.id),
-      usedByOutputs: outputIds.has(keyset.id),
-    })),
+    keysets: authority.keysets.map((keyset) => {
+      requireSupportedCashuKeysetId(keyset.id)
+      return {
+        keysetId: keyset.id,
+        unit: keyset.unit,
+        curve: 'secp256k1',
+        publicKeys: keyset.keys,
+        keysetExpiryMs: expiryMilliseconds(keyset.finalExpiry),
+        requireDleq: true,
+        usedByInputs: inputIds.has(keyset.id),
+        usedByOutputs: outputIds.has(keyset.id),
+      }
+    }),
   })
 }
 
@@ -919,7 +922,7 @@ export function verifyDurableCustodyExactMintProofResult(input: {
       return proof
     })
   })
-  verifyProofsForReceive(proofs, (id) => keysets.get(id)!, { requireDleq: true })
+  requireValidCashuProofs(proofs, (id) => keysets.get(id)!)
 }
 
 function assertExactMintOutputProof(
@@ -936,7 +939,7 @@ function assertExactMintOutputProof(
     proof.secret !== output.secret ||
     (proof.p2pk_e ?? null) !== (output.ephemeralE ?? null) ||
     proof.witness !== undefined ||
-    (!isBlsKeyset(proof.id) && proof.dleq?.r !== expectedR)
+    proof.dleq?.r !== expectedR
   ) {
     throw new Error('custody mint proof differs from its persisted output')
   }

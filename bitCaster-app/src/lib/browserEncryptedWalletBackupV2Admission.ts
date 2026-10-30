@@ -1,4 +1,5 @@
-import { isBlsKeyset, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
+import { type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
@@ -72,6 +73,15 @@ export interface BrowserEncryptedWalletBackupV2AdmissionInput {
   readonly setTargetedRecoveryAdmissionStage?: (
     stage: BrowserEncryptedWalletBackupV2AdmissionStage,
   ) => void;
+  /** Internal owner-head fence used only after the owner evidence boundary validates. */
+  readonly ownerRestoreAuthority?: {
+    readonly validate: () => Promise<void>;
+    readonly afterPersist: () => Promise<void>;
+    readonly isDesiredAcknowledged?: (
+      desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
+      evicted: boolean,
+    ) => Promise<boolean>;
+  };
 }
 
 export type BrowserEncryptedWalletBackupV2AdmissionStage =
@@ -103,6 +113,11 @@ export interface BrowserEncryptedWalletBackupV2SealedAdmissionInput {
   readonly setTargetedRecoveryAdmissionStage?: (
     stage: BrowserEncryptedWalletBackupV2AdmissionStage,
   ) => void;
+  /** Internal owner-head fence used only after the owner evidence boundary validates. */
+  readonly ownerRestoreAuthority?: {
+    readonly validate: () => Promise<void>;
+    readonly afterPersist: () => Promise<void>;
+  };
 }
 
 export type BrowserEncryptedWalletBackupV2MixedAdmissionInput =
@@ -696,7 +711,11 @@ export async function admitBrowserEncryptedWalletBackupV2MixedAsset(
   if (selectableEntries.length === 0 || sealedEntries.length === 0) {
     throw new Error("browser V2 mixed admission requires both proof trust levels");
   }
-  requireAdmissionHeadBinding(input, verified, sealedEntries.length > 0);
+  requireAdmissionHeadBinding(
+    input,
+    verified,
+    sealedEntries.length > 0 && input.ownerRestoreAuthority === undefined,
+  );
   if (
     sealedEntries.some(
       ({ selectionAuthority }) => selectionAuthority === "terminal-refusal-history",
@@ -750,7 +769,7 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
   requireProductMsatUnit(input.asset.unit);
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
-  requireAdmissionHeadBinding(input, verified, true);
+  requireAdmissionHeadBinding(input, verified, input.ownerRestoreAuthority === undefined);
   const prepared = prepareSealedAdmission(input, verified);
   input.setTargetedRecoveryAdmissionStage?.("backup-admit-lock");
   await withWalletProfileLock(
@@ -772,8 +791,18 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
           input.database.custodyOperations,
           input.database.custodyActiveWork,
           input.database.custodyScopes,
+          ...(input.ownerRestoreAuthority === undefined
+            ? []
+            : [
+                input.database.encryptedWalletBackupOwnerAcceptedHeads,
+                input.database.encryptedWalletBackupOwnerActiveDescriptors,
+                input.database.encryptedWalletBackupOwnerProofCoverage,
+                input.database.encryptedWalletBackupOwnerDesiredAssets,
+                input.database.encryptedWalletBackupOwnerPreparedMutations,
+              ]),
         ],
         async () => {
+          await input.ownerRestoreAuthority?.validate();
           const authorities = await requireIncomingLiveAuthorities(
             input.database,
             input.scopeId,
@@ -802,6 +831,7 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
             input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
             await input.database.encryptedWalletBackupV2DesiredAssets.put(prepared.desiredRow);
           }
+          await input.ownerRestoreAuthority?.afterPersist();
           input.setTargetedRecoveryAdmissionStage?.("backup-admit-current-profile");
           requireCurrent(input);
           input.setTargetedRecoveryAdmissionStage?.("backup-admit-transaction-commit");
@@ -1537,9 +1567,8 @@ function requireAdmissionAuthority(
   },
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): void {
-  if (verified.counterHighWaterMarks.some(({ keysetId }) => isBlsKeyset(keysetId))) {
-    throw new Error("browser V2 restore BLS keyset is unsupported");
-  }
+  for (const { keysetId } of verified.counterHighWaterMarks)
+    requireSupportedCashuKeysetId(keysetId);
   if (
     verified.proofs.some(({ selectionAuthority }) => selectionAuthority === "live-verified") &&
     input.wallet === undefined
@@ -1782,6 +1811,9 @@ async function commitMixedAuthority(
           );
           await (hadExistingLocal ? reconcile() : persistFreshMixed());
         },
+        ...(input.ownerRestoreAuthority === undefined
+          ? {}
+          : { ownerRestoreAuthority: input.ownerRestoreAuthority }),
         legacyProofCache: {
           spentSecrets: [],
           freshProofs: liveToAdmit.map(({ stored }) => stored),
@@ -1809,10 +1841,21 @@ async function commitMixedAuthority(
       input.database.custodyOperations,
       input.database.custodyActiveWork,
       input.database.custodyScopes,
+      ...(input.ownerRestoreAuthority === undefined
+        ? []
+        : [
+            input.database.encryptedWalletBackupOwnerAcceptedHeads,
+            input.database.encryptedWalletBackupOwnerActiveDescriptors,
+            input.database.encryptedWalletBackupOwnerProofCoverage,
+            input.database.encryptedWalletBackupOwnerDesiredAssets,
+            input.database.encryptedWalletBackupOwnerPreparedMutations,
+          ]),
     ],
     async () => {
+      await input.ownerRestoreAuthority?.validate();
       await recheckClassification();
       await reconcile();
+      await input.ownerRestoreAuthority?.afterPersist();
     },
   );
 }
@@ -1889,7 +1932,7 @@ async function commitAuthority(
   requireCurrent(input);
   input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
   const start = await startingState(input, verified);
-  if (start.kind === "idempotent") return;
+  if (start.kind === "idempotent" && input.ownerRestoreAuthority === undefined) return;
   const sourceOperationId =
     start.kind === "evicted"
       ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
@@ -1898,6 +1941,14 @@ async function commitAuthority(
     start.proofIdsToAdmit.has(proof.proofId) ? [{ verified: proof, stored: proofs[index]! }] : [],
   );
   const beforePersist = async () => {
+    await input.ownerRestoreAuthority?.validate();
+    const current = await startingState(input, verified);
+    if (
+      current.kind !== start.kind ||
+      current.proofIdsToAdmit.size !== start.proofIdsToAdmit.size ||
+      [...current.proofIdsToAdmit].some((id) => !start.proofIdsToAdmit.has(id))
+    )
+      throw new Error("browser restore classification changed before persistence");
     await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
     if (start.kind === "evicted") {
       const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
@@ -1948,6 +1999,9 @@ async function commitAuthority(
       {
         beforePersist,
         afterPersist,
+        ...(input.ownerRestoreAuthority === undefined
+          ? {}
+          : { ownerRestoreAuthority: input.ownerRestoreAuthority }),
       },
     );
     return;
@@ -1961,10 +2015,22 @@ async function commitAuthority(
       input.database.custodyProofBackupAuthorities,
       input.database.custodyConditionalKeysets,
       input.database.encryptedWalletBackupV2DesiredAssets,
+      input.database.custodyReservations,
+      ...(input.ownerRestoreAuthority === undefined
+        ? []
+        : [
+            input.database.encryptedWalletBackupOwnerAcceptedHeads,
+            input.database.encryptedWalletBackupOwnerActiveDescriptors,
+            input.database.encryptedWalletBackupOwnerProofCoverage,
+            input.database.encryptedWalletBackupOwnerDesiredAssets,
+            input.database.encryptedWalletBackupOwnerAssetReceipts,
+            input.database.encryptedWalletBackupOwnerPreparedMutations,
+          ]),
     ],
     async () => {
       await beforePersist();
-      await afterPersist();
+      if (start.kind !== "idempotent") await afterPersist();
+      await input.ownerRestoreAuthority?.afterPersist();
       if (input.fault === "before-commit")
         throw new Error("browser V2 restore injected commit fault");
     },
@@ -2092,10 +2158,15 @@ async function startingState(
   if (row.removalIntent !== null) {
     throw new Error("browser V2 restore desired removal intent is active");
   }
+  const acknowledged =
+    input.ownerRestoreAuthority === undefined
+      ? row.syncState === "acknowledged"
+      : (await input.ownerRestoreAuthority.isDesiredAcknowledged?.(row, proofs.length === 0)) ===
+        true;
   const currentAuthorityConflicts =
     row.custodyRevision !== desired.custodyRevision ||
     row.activeProofCount !== verified.proofs.length ||
-    row.syncState !== "acknowledged" ||
+    !acknowledged ||
     !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext);
   if (!currentAuthorityConflicts) {
     if (proofs.length === 0) return { kind: "evicted", proofIdsToAdmit: allProofIds };
@@ -2106,7 +2177,7 @@ async function startingState(
   }
   if (
     row.desiredAction !== "replace" ||
-    row.syncState !== "acknowledged" ||
+    !acknowledged ||
     row.activeProofCount !== proofs.length ||
     !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext) ||
     input.custodyRevision <= BigInt(row.custodyRevision) ||
@@ -2263,7 +2334,7 @@ function storedProofs(
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): StoredProof[] {
   return verified.proofs.map(({ proof, asset }) => {
-    if (isBlsKeyset(proof.id)) throw new Error("browser V2 restore BLS keyset is unsupported");
+    requireSupportedCashuKeysetId(proof.id);
     return {
       ...proof,
       mintUrl: input.asset.mintUrl,

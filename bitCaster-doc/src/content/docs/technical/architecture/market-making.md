@@ -50,6 +50,16 @@ finish. The bot keeps its trade-derived position `q` unchanged. This change can
 move its bid and ask quotes. It does not change the latest confirmed trade price.
 More funding can support deeper quotes.
 
+Equal price intervals can contain different numbers of shares because the LMSR
+price curve is nonlinear. Bid and ask quantities do not have to be symmetric.
+Whole-share rounding, fees, and available settlement capacity also limit the
+displayed quantities.
+
+The active liquidity parameter `b` uses cumulative funding after receive fees
+that has been activated for market making. Funding that is waiting for earlier
+bot trades to finish does not yet increase `b`. The entered gross payment,
+trade receipts, and the bot's current cash balance are not the basis for `b`.
+
 LMSR is not intended to be the only possible AMM forever. bitCaster may add other
 market-making strategies later, especially if they serve different market types,
 creator preferences, or professional liquidity workflows better.

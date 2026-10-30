@@ -48,8 +48,10 @@ the whole order is refused. Review a fresh quote before confirming a new order.
 The estimated last fill price describes the last match in your proposed order.
 It is not a promise of the next orderbook midpoint.
 The form checks your entered quantity and its fees. It warns when the current
-orders cannot fill that quantity within your price limit. A preview does not
-reserve liquidity. Your order fills in full
+orders cannot fill that quantity within your price limit. A very small buy
+can be refused although the order book shows depth: the market maker's fee
+must cover the mint fee. The form then says **Too few shares**. Buy more shares.
+A preview does not reserve liquidity. Your order fills in full
 within the limit or does not fill. It does not stay on the order book for later.
 Markets can have two outcomes, such as Yes and No, or up to eight named
 outcomes. You can fund your wallet through a Lightning invoice or with an
@@ -67,6 +69,28 @@ fees. This value is not the net change in your wallet balance. A group does not
 mean that the whole order has completed. Fills without a known order stay
 separate. A pending or failed order does not appear as a completed trade.
 
+Activity links to the market and shows its title when available. If the title
+cannot load, the row shows a short market reference. Each fill shows its
+historical price per share. An order group shows the average price weighted by
+the number of shares. These prices use recorded trade values, not the current
+market price. Rounded prices have an approximate label. Very small positive
+prices show a below-precision label instead of zero. The price label also
+provides the exact ratio. Older records without the required amounts show no
+execution price.
+
+Positions with a confirmed result show “Won😋” or “Lost😭”. The text identifies the result;
+the emoji is decorative. Activity labels a received payout as “Payout Claimed”. Removing a losing position permanently deletes its
+local tokens. The confirmation warns that this action cannot be undone.
+Confirm or cancel in the position row. During removal, a spinner replaces the
+action. Routine success needs no extra dialog. Pending results and recovery
+problems remain visible.
+
+A completed claim with a new payout shows a short congratulations message and
+the exact amount credited to your wallet. A bottom bar counts down for about
+three seconds. The amount is the payout, not profit. Pending claims and claims
+with no new credit do not show this message. Any remaining position and oracle
+warning stay visible. Reduced-motion settings turn off the decorative animation.
+
 ### Create your own market
 
 Define the question, the possible outcomes, and how the result will be decided.
@@ -76,10 +100,17 @@ It does not set a market price.
 You can fund the market-making bot after creation. You can add funding more
 than once. This funding is a non-refundable subsidy, not an investment that
 gives you shares, fees, or a right to withdraw. Keep it separate from funding
-your own trading wallet. If there is no available liquidity, the trade form
-directs you to the Liquidity tab. When all outcome books are empty, Buy and
-Sell show that message instead of an order form. A missing or failed book
-request is not treated as an empty market.
+your own trading wallet. An empty order-book snapshot does not prove that more
+funding is needed. When all outcome books are empty and no trade is selected,
+Buy and Sell show a neutral message and a refresh action. A missing or failed
+book request is not treated as an empty market. The Liquidity tab remains
+available for voluntary funding.
+
+If the book becomes empty while a trade is selected, the form and entered
+values stay visible. An active quote wait and its Stop waiting action also stay
+visible. Submission still requires a current preview and fee consent. A current
+preview can suggest funding only when it says that funding may help. Stopping
+the wait does not cancel wallet recovery or release reserved funds.
 
 ### Become an oracle
 
@@ -87,7 +118,7 @@ In prediction markets, the value of a token depends on what actually happens in 
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
 A valid oracle signature identifies who signed the result. It does not prove that the result is true. bitCaster does not provide an oracle trust score. See [Resolution](../../core-concepts/resolution/) for details.
 
-When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
+When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
 
 ### Use the supported mint
 
@@ -111,6 +142,9 @@ total payment or net proceeds before you submit. For example, buying 50 shares a
 costs 15 sats before settlement fees. Those shares pay 50 sats if they win.
 The displayed percentage is a trade price, not a guarantee about the event.
 
+Changing the display language keeps your selected outcome, share amount, and
+unsent comment. Opening another market clears this trade draft.
+
 When the event resolves, winning tokens can be redeemed. Losing tokens have
 no payout. You rely on the oracle to report the result correctly and on the
 mint to honor redemptions. If the mint stops service, trading or redemption
@@ -132,12 +166,19 @@ service can still observe limited account, size, and activity metadata. It
 cannot decrypt or spend your funds.
 
 Like any other cryptocurrency wallet, you are responsible for managing your own
-keys. Back up your 12-word mnemonic and keep it safe.
+keys. Back up your recovery phrase and keep it safe.
 
 Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
-a valid 12-word recovery phrase. Setup does not submit a payment automatically.
+a valid 12-word or 24-word recovery phrase. Enter each word in its numbered field,
+or paste the complete phrase into one field. Setup does not submit a payment automatically.
 Recovery-phrase and backup controls are available only when a wallet exists.
+
+If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
+Use the chooser to create a wallet or import a valid 12-word or 24-word recovery phrase.
+This does not change your Nostr signer or submit a payment or order.
+Create Wallet is hidden when a recovery phrase exists, even with no funds or mints.
+Closing setup after creation starts does not remove an already saved recovery phrase.
 
 To use another wallet, open the wallet section in Settings and import its
 recovery phrase. This replaces the active wallet; it does not add a second
@@ -149,8 +190,47 @@ Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr
 account, connect it instead of generating a new one.
 
-Settings also shows the connected Nostr profile and a refresh control.
-Profile names are display information, not proof of identity.
+Before connecting a Nostr browser extension, the app explains its capability
+limit. Market creation needs a local Nostr private key for oracle signing.
+Other supported features can use the extension. Select OK to request the
+extension identity, or Cancel to keep the current state. Connection stays
+pending until the extension returns a valid identity. A saved identity after
+reload does not mean that the extension has authorized the connection.
+Disconnect cancels pending connection work. Disconnect before switching from
+an extension to a local private key.
+
+Settings and Portfolio show the same connected Nostr profile card.
+The card shows your picture, display name, and description. Settings also has
+a refresh control. An unavailable relay read is different from an absent profile.
+In Nostr Settings, choose **Edit** to change your name, description, and picture URL.
+Choose **Save profile** to publish the changes. Choose **Cancel** to discard an
+unsaved draft. These fields are public. The app publishes standard Nostr profile metadata with your connected
+local key or supported browser extension.
+
+Choose **Choose image**, or drop one image into the picture area. JPEG, PNG, and
+WebP files can contain up to 5 MiB and 16 million pixels. The browser reduces each
+side to at most 1024 pixels and re-encodes the image without its original metadata.
+The upload goes to the public nostr.build service with your Nostr signer.
+Uploading does not publish the profile. Choose **Save profile** to publish its URL.
+You can still enter an existing HTTPS image URL instead.
+
+Keep this editor open to retry a failed profile publication without uploading the
+image again. Cancel an upload or choose another image if needed. A signer change
+prevents publication of the uploaded image from the old edit session.
+The service can be unavailable or change its retention policy. bitCaster does not
+pay upload fees or guarantee image retention. Replacing a picture does not delete
+the old image from the host or other Nostr clients.
+
+Other metadata stays unchanged. A separate display name set in another client
+can still take priority over the name you edit here.
+
+Save first reads all selected relays. If a read or signature request fails,
+your draft stays available. A relay rejection and a missing acknowledgement
+are different results; a missing acknowledgement does not prove rejection.
+If publication succeeds but local retention fails, the app reports both facts.
+After a successful durable save, this client preserves that metadata when a
+later relay reply is older. This does not prevent concurrent edits on other devices.
+Profile names and NIP-05 address claims are not proof of identity.
 Use only your saved relay destinations. An empty relay list is an explicit
 opt-out from Nostr relay traffic, not a request to use fallback relays.
 Liked markets and other preferences are not a backup of wallet funds.
@@ -175,6 +255,13 @@ Retrying does not guarantee that unresolved work or an unpaid invoice is cleared
 The local wallet keeps its funds and unfinished work while recovery is incomplete.
 Do not delete wallet data or start another payment to bypass the pause.
 
+## Switch between environments
+
+When configured, the user menu includes **Go to testnet** or **Go to mainnet**.
+The link opens the other environment in a new tab. It does not transfer your
+wallet, keys, login state, or backups. Each environment keeps its own browser
+state. If no destination is configured, the menu has no environment link.
+
 ## Find a market
 
 Use search, tags, and filters on the market list. The controls stay available
@@ -195,6 +282,12 @@ The market chart shows recorded trades for each primitive outcome. If only one
 outcome has traded, only that line is shown; bitCaster does not invent prices
 for outcomes that have not traded. Before any confirmed trade, the market
 shows **No trades yet** or an em dash.
+During the first load, an unpriced binary or categorical chart uses the
+**Price Chart** heading.
+
+The line continues at the latest confirmed price to the chart edge.
+This extension does not represent a new trade. The endpoint glows gently.
+The chart disables motion when your device requests reduced motion.
 
 When you point at a historical date, the price is the last confirmed trade at
 or before that date. Pointer height does not set the price.
@@ -202,15 +295,21 @@ An outcome with no confirmed trade at or before that date has no available price
 Categorical lines connect confirmed points across alignment gaps.
 Those connections do not add trades or invent prices for untraded outcomes.
 
-If the service cannot read confirmed-trade prices, market details are
-temporarily unavailable. Try again later. This error does not mean that the
-market is missing or has no trades.
+After a buy or sell, the chart keeps the confirmed prices and history that it
+has already loaded while newer data arrives. A message shows when the data is
+updating or its refresh failed. A failed refresh does not mean that the market
+has no trades. If no valid data has loaded, the chart shows an unavailable state.
+
+A previously traded market can have no trades in the selected period. The chart
+then shows **No trades in this period**. Its current price still comes from the
+latest confirmed trade. Categorical price labels show each outcome's latest
+confirmed price when you are not pointing at history.
 
 The order book shows asks (sell orders) above the spread and bids (buy orders)
 below it, with the best prices closest to the spread. Each row combines price,
-cumulative depth, and visual thickness. Longer bars mean more cumulative
-liquidity available at that price or better, normalized across both sides so
-you can compare bid and ask depth at a glance. Market cards and detail pages
+cumulative depth, and visual thickness. Each bar shows the quantity at that
+price. Both sides use the largest visible quantity as their common scale.
+The cumulative value shows the total quantity at that price or better. Market cards and detail pages
 show **Total funding** after receive fees for funded markets. New confirmed
 payments increase it. Trades do not reduce it. It is not current order-book
 liquidity.
@@ -218,12 +317,28 @@ liquidity.
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 
 Chart comment bubbles point to the time and price of the associated confirmed
-trade. Hover over, focus, or tap a bubble to read the comment. A comment stays
+trade. The pointer stays on that trade when new prices arrive or the chart
+size changes. Hover over or focus a bubble to expand it into a comment card.
+Click or tap to keep the card open. Press Escape or use its close button to close it.
+Opening a comment keeps the latest price visible. Move over the chart without
+an open comment to inspect a historical price.
+The chart selects up to ten comments in the period, ranked by their linked
+confirmed trade size. Comments with a known size come first. The selected bubbles
+follow confirmed trade time in chronological order. If they cannot fit near their
+trade points, they appear below the plot, from left to right and then top to bottom.
+Narrow screens use one column. Pointers keep the exact trade time and price.
+Each collapsed bubble shows about twenty characters of text. Expanded cards keep
+the same font size and allow scrolling for long text. Likes increase opacity.
+A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
 
-Each chart comment shows its public author, text, and written date. The author
-is the public key that signed the comment. If a public Nostr profile is
+Each expanded chart comment shows its public author and text. When the linked
+trade facts are available, it also shows the author's buy or sell action, exact
+share quantity, selected outcome, and trade time. This describes the linked fill,
+not the whole order. Missing historical facts do not imply a buy. The card uses
+the comment's written date only when trade time is unavailable. The author is
+the public key that signed the comment. If a public Nostr profile is
 available, the app shows its display name. Otherwise, it shows a shortened
 public key. Profile lookup does not block the market page. A profile name is
 display information, not proof of identity.

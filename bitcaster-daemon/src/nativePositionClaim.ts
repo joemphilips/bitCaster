@@ -1,3 +1,4 @@
+import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparation.ts'
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof, MintKeys } from '@cashu/cashu-ts'
 import type { DatabaseSync } from 'node:sqlite'
@@ -6,7 +7,6 @@ import {
   buildKeysetRedeemOperationId,
   canonicalProofOperationMintIdentity,
   getActiveRegularKeyset,
-  redeemOutcomeLegWithOperation,
   type AuthenticatedCtfRedeemTerminalEvidence,
   type RedeemWallet,
 } from '@bitcaster-market/client-sdk/ctfRedeem'
@@ -213,8 +213,16 @@ async function executeLeg(
     outcomeCollection: operation.metadata.outcomeSetId as string,
   })
   const asset = positionAsset(position)
-  const wallet = fencedClaimWallet(input, operation.mintUrl, operation.operationId, asset)
-  const store = claimOperationStore(input, operation.operationId, asset, wallet)
+  const preparation = createSpeculativeRedeemPreparation({
+    operationId: operation.operationId,
+    mintUrl: operation.mintUrl,
+    seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+    fence: input.fence,
+    wallet: fencedClaimWallet(input, operation.mintUrl, operation.operationId, asset),
+  })
+  const wallet = preparation.wallet
+  const store = claimOperationStore(input, operation.operationId, asset, wallet, preparation)
+  await store.getProofOperation(operation.operationId)
   try {
     const resolution = operation.metadata.oracleResolutionContext as
       | ConditionOracleResolutionContext
@@ -232,7 +240,7 @@ async function executeLeg(
               wallet,
             ),
           ])
-    const result = await redeemOutcomeLegWithOperation({
+    const result = await preparation.run({
       mintUrl: operation.mintUrl,
       operationId: operation.operationId,
       wallet,
@@ -259,7 +267,7 @@ async function executeLeg(
       ),
     }
   } catch (error) {
-    const persisted = await readProofOperationFenced(operation.operationId, mutation(input))
+    const persisted = await store.getProofOperation(operation.operationId)
     if (
       persisted === null ||
       (persisted.state !== 'prepared' &&
@@ -346,6 +354,7 @@ function claimOperationStore(
   operationId: string,
   asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
   wallet: RedeemWallet,
+  preparation: ReturnType<typeof createSpeculativeRedeemPreparation>,
 ): CtfProofOperationStore {
   const authority = claimAuthority(operationId, asset)
   return {
@@ -392,6 +401,7 @@ function claimOperationStore(
     },
     prepareProofOperation: async (operation) => {
       const keysets = await claimKeysets(operation, asset, wallet)
+      await input.walletDependencies?.observeRedeemPrepared?.('claim', structuredClone(operation))
       const context = mutation(input)
       const prepared = await prepareProofOperationWithExactReservation(
         {
@@ -453,9 +463,10 @@ function claimOperationStore(
             )
             .run(context.fence.scopeId, operationId, record.operation.operationId)
         },
-        undefined,
+        preparation.beforePrepare,
         input.walletDependencies?.injectCustodyFault,
       )
+      preparation.prepared()
       await assertPreparedProofOperationDispatchFenced(operationId, authority, mutation(input))
       return prepared as CtfProofOperationRecord
     },
@@ -746,27 +757,19 @@ export function readNativePositionClaimCustody(
   return { store, record, exactAuthority: row.artifact }
 }
 
-export function assertRetainedPositionClaimHistory(
+/** Valid only within the caller's current synchronous database snapshot/transaction. */
+export function readRetainedPositionClaimHistory(
   database: DatabaseSync,
   scopeId: string,
   target: ProofOperationRecord,
-  proof: StoredProofRecord,
-): void {
-  if (
-    target.kind !== 'ctf-redeem' ||
-    target.state !== 'Failed' ||
-    target.failureCode !== 13015 ||
-    proof.state !== 'locked' ||
-    proof.reservedBy !== target.operationId ||
-    proof.mintUrl !== target.mintUrl ||
-    proof.retirement !== undefined ||
-    proof.asset.kind !== 'Outcome' ||
-    proof.asset.unit !== 'msat' ||
-    proof.asset.conditionId !== target.metadata.conditionId ||
-    proof.asset.outcomeSetId !== target.metadata.outcomeSetId
-  )
+) {
+  if (target.kind !== 'ctf-redeem' || target.state !== 'Failed' || target.failureCode !== 13015)
     throw new Error('retained Claim history binding is invalid')
-  const { store, record } = readNativePositionClaimCustody(database, { scopeId }, target)
+  const { store, record, exactAuthority } = readNativePositionClaimCustody(
+    database,
+    { scopeId },
+    target,
+  )
   if (record.operation.state !== 'aborted') throw new Error('retained Claim is not aborted')
   const reference = record.operation.terminalMintRejection?.exactRejection
   if (reference === undefined) throw new Error('retained Claim rejection is absent')
@@ -782,6 +785,28 @@ export function assertRetainedPositionClaimHistory(
     exactRejection: rejection.artifact,
   })
   assertClaimPredecessors(store, record, target)
+  return { store, record, exactAuthority, target, scopeId }
+}
+
+export function assertRetainedPositionClaimProof(
+  history: ReturnType<typeof readRetainedPositionClaimHistory>,
+  proof: StoredProofRecord,
+): void {
+  const { target, store, record, scopeId } = history
+  if (
+    target.kind !== 'ctf-redeem' ||
+    target.state !== 'Failed' ||
+    target.failureCode !== 13015 ||
+    proof.state !== 'locked' ||
+    proof.reservedBy !== target.operationId ||
+    proof.mintUrl !== target.mintUrl ||
+    proof.retirement !== undefined ||
+    proof.asset.kind !== 'Outcome' ||
+    proof.asset.unit !== 'msat' ||
+    proof.asset.conditionId !== target.metadata.conditionId ||
+    proof.asset.outcomeSetId !== target.metadata.outcomeSetId
+  )
+    throw new Error('retained Claim history binding is invalid')
   const index = target.inputs.findIndex((input) => isDeepStrictEqual(input, proof.proof))
   const input = record.operation.reservation.inputs[index]
   if (input === undefined || store.getProof(scopeId, input.proofId)?.selectability !== 'retained')

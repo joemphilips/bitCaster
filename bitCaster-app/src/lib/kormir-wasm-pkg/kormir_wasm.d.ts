@@ -48,6 +48,7 @@ export enum JsError {
     InvalidOutcome = 4,
     Internal = 5,
     Nostr = 6,
+    SigningKeyConflict = 7,
 }
 
 export class Kormir {
@@ -155,14 +156,14 @@ export interface InitOutput {
     readonly rustsecp256k1zkp_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
-    readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
     readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___wasm_bindgen_22d01eaa64b637c9___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_22d01eaa64b637c9___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_Event__Event__core_9b3796e30d99ddb7___result__Result_____rexie_6c96cc34a9f1040a___error__Error___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true__3: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___wasm_bindgen_4120b4884fc5c4df___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_4120b4884fc5c4df___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_Event__Event__core_608f92abc48d28da___result__Result_____rexie_64a4d4d02099c2d4___error__Error___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___js_sys_23a74b2c067383d0___Function_fn_wasm_bindgen_4120b4884fc5c4df___JsValue_____wasm_bindgen_4120b4884fc5c4df___sys__Undefined___js_sys_23a74b2c067383d0___Function_fn_wasm_bindgen_4120b4884fc5c4df___JsValue_____wasm_bindgen_4120b4884fc5c4df___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_CloseEvent__CloseEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke___web_sys_2404ff2a227f4746___features__gen_CloseEvent__CloseEvent______true__3: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_4120b4884fc5c4df___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

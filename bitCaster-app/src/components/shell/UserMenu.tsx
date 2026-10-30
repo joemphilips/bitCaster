@@ -14,6 +14,7 @@ import {
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { useTranslation } from "react-i18next";
 import { LANGUAGES } from "@/i18n";
+import { EnvironmentLink } from "./EnvironmentLink";
 
 interface UserMenuProps {
   user: { name: string; avatarUrl?: string; balance?: number };
@@ -99,6 +100,10 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
               <span>{t("nav.settings")}</span>
             </button>
             <div className="border-t border-slate-200 dark:border-slate-700" />
+            <EnvironmentLink
+              onClick={() => setIsOpen(false)}
+              className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+            />
             {/* Language selector — inline within dropdown */}
             <div>
               <button

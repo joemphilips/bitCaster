@@ -1,18 +1,10 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  collectEncryptedWalletBackupV2DescriptorPages,
-  createEncryptedWalletBackupV2CurrentHead,
-  encodeEncryptedWalletBackupV2UploadGroup,
-  enumerateEncryptedWalletBackupV2DescriptorPages,
-  prepareEncryptedWalletBackupV2AssetMutation,
-} from "@bitcaster/client-sdk";
 import { readBrowserEncryptedWalletBackupV2AssetSnapshot } from "../../stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { BitcasterDB } from "../../stores/proof-db";
-import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
   CONDITION,
@@ -20,19 +12,13 @@ import {
   immediateLockManager,
   MINT,
   MINT_PUBLIC_KEY,
-  OUTCOME,
   REGULAR_KEYSET,
-  SEED,
 } from "./fixtures/browserCtfRedeemFixture";
-import { createMixedCtfRemoveFixture } from "./fixtures/browserMixedCtfRemoveFixture";
+import { createMixedCtfRemoveFixture } from "./fixtures/ownerMixedCtfRemoveFixture";
 import { removePortfolioPosition } from "../browserPortfolioRemove";
 import type { BrowserCtfRemoveTarget } from "../browserCtfRemoveCoordinator";
 import type { EncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk";
-import {
-  cancelDefinitivelyRejectedBrowserCtfRemove,
-  finalizeBrowserCtfRemove,
-  startBrowserCtfRemove,
-} from "../browserCtfRemoveCoordinator";
+import { finalizeBrowserCtfRemove, startBrowserCtfRemove } from "../browserCtfRemoveCoordinator";
 
 const mocks = vi.hoisted(() => ({
   database: null as BitcasterDB | null,
@@ -84,6 +70,8 @@ vi.mock("../encryptedWalletBackupDriver", async () => {
   };
 });
 
+import { removalSeed as SEED } from "./fixtures/ownerCtfRemovalProofs";
+const OUTCOME = "YES";
 const databases: BitcasterDB[] = [];
 const position = { mintUrl: MINT, conditionId: CONDITION, outcomeCollection: OUTCOME };
 
@@ -300,7 +288,7 @@ describe("mixed local-only and remote-backed CTF removal", () => {
         mixed.scopeId,
         mixed.desired.localAssetKey,
       ]),
-    ).toMatchObject({ custodyRevision: "1", activeProofCount: 2, removalIntent: null });
+    ).toMatchObject({ custodyRevision: "1", activeProofCount: 1, removalIntent: null });
   });
 
   it("rolls back the mixed local and managed changes at the transaction boundary", async () => {
@@ -323,7 +311,7 @@ describe("mixed local-only and remote-backed CTF removal", () => {
         mixed.scopeId,
         mixed.desired.localAssetKey,
       ]),
-    ).toMatchObject({ custodyRevision: "1", activeProofCount: 2, removalIntent: null });
+    ).toMatchObject({ custodyRevision: "1", activeProofCount: 1, removalIntent: null });
     expect(
       await mixed.database.custodyProofBackupAuthorities.get([
         mixed.scopeId,
@@ -332,105 +320,61 @@ describe("mixed local-only and remote-backed CTF removal", () => {
     ).not.toMatchObject({ recordKind: "completed-local-removal" });
   });
 
-  it("restores only the managed target after a definitive backup rejection", async () => {
+  it("retains managed pending work after rejected Owner dispatch without restoring the local target", async () => {
     const mixed = await createMixedCtfRemoveFixture();
     databases.push(mixed.database);
     await startBrowserCtfRemove(mixed.input());
-    const rejectedPreparedMutation = await prepareRemovalCandidate(mixed);
-
-    await expect(
-      cancelDefinitivelyRejectedBrowserCtfRemove({
-        database: mixed.database,
-        scopeId: mixed.scopeId,
-        keyHandle: mixed.keyHandle,
-        enrollmentEpoch: 1,
-        localAssetKey: mixed.desired.localAssetKey,
-        assetLocator: mixed.assetLocator,
-        rejectedPreparedMutation,
-        observedAtMs: 60,
-        lockManager: immediateLockManager,
-        isCurrentProfile: () => true,
-      }),
-    ).resolves.toMatchObject({ kind: "cancelled" });
-
+    mixed.remote.remote.mutateHead.mockRejectedValueOnce(new Error("controlled Owner refusal"));
+    await expect(mixed.cycle()).rejects.toThrow("controlled Owner refusal");
+    const prepared = await mixed.remote.store.readPreparedMutation();
+    expect(prepared).not.toBeNull();
     expect(
       await mixed.database.custodyProofs.get([mixed.scopeId, mixed.managedProof.proofId]),
-    ).toMatchObject({ selectability: "verified-losing" });
+    ).toMatchObject({ selectability: "pending-removal" });
     expect(
       await mixed.database.custodyProofs.get([mixed.scopeId, mixed.localProof.proofId]),
     ).toBeUndefined();
+    expect(await mixed.remote.store.readPreparedMutation()).toEqual(prepared);
     expect(
-      await mixed.database.custodyProofBackupAuthorities.get([
-        mixed.scopeId,
-        mixed.localProof.proofId,
-      ]),
-    ).toMatchObject({ recordKind: "completed-local-removal" });
-    expect(
-      await mixed.database.encryptedWalletBackupV2DesiredAssets.get([
-        mixed.scopeId,
-        mixed.desired.localAssetKey,
-      ]),
-    ).toMatchObject({ activeProofCount: 1, syncState: "acknowledged", removalIntent: null });
+      (
+        await mixed.database.encryptedWalletBackupV2DesiredAssets.get([
+          mixed.scopeId,
+          mixed.desired.localAssetKey,
+        ])
+      )?.removalIntent?.state,
+    ).toBe("pending");
   });
 
   it("finalizes managed removal without replacing the local completion marker", async () => {
     const mixed = await createMixedCtfRemoveFixture();
     databases.push(mixed.database);
     await startBrowserCtfRemove(mixed.input());
-    const prepared = await prepareRemovalCandidate(mixed);
-    const successor = createEncryptedWalletBackupV2CurrentHead({
-      realm: "backup.example",
-      walletId: mixed.keyHandle.walletId,
-      enrollmentEpoch: 1,
-      headVersion: 2,
-      bundles: [],
-    });
-    const successorEvidence = collectEncryptedWalletBackupV2DescriptorPages(
-      enumerateEncryptedWalletBackupV2DescriptorPages({ head: successor, bundles: [] }),
-    );
-    await mixed.authorityStore.acceptCompetingHead({
-      collectedHeadEvidence: successorEvidence,
-      stalePreparedMutation: prepared,
-    });
-    const rawDesired = await mixed.database.encryptedWalletBackupV2DesiredAssets.get([
+    expect((await mixed.cycle()).kind).toBe("committed");
+    const localMarker = await mixed.database.custodyProofBackupAuthorities.get([
       mixed.scopeId,
-      mixed.desired.localAssetKey,
+      mixed.localProof.proofId,
     ]);
-    if (rawDesired === undefined) throw new Error("mixed removal intent is missing");
-    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-    const intent = desired.removalIntent;
-    if (intent === null) throw new Error("mixed removal intent is missing");
-    await mixed.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...desired,
-      syncState: "acknowledged",
-      removalIntent: {
-        ...intent,
-        state: "exclusion-acknowledged",
-        acknowledgedExclusionEvidence: {
-          kind: "current-head",
-          headVersion: successor.headVersion,
-          activeSetDigest: successor.activeSetDigest,
-          bundleId: null,
-          bundleDescriptorDigest: null,
-          acknowledgedAtMs: 61,
-        },
-      },
-    });
-
     await expect(
       finalizeBrowserCtfRemove({
         database: mixed.database,
         scopeId: mixed.scopeId,
         keyHandle: mixed.keyHandle,
         enrollmentEpoch: 1,
+        ownerScopeId: mixed.owner.ownerScopeId,
         localAssetKey: mixed.desired.localAssetKey,
         assetLocator: mixed.assetLocator,
-        observedAtMs: 62,
+        observedAtMs: Date.now(),
         lockManager: immediateLockManager,
         isCurrentProfile: () => true,
       }),
     ).resolves.toEqual({ kind: "completed" });
 
+    expect(
+      await mixed.database.custodyProofBackupAuthorities.get([
+        mixed.scopeId,
+        mixed.localProof.proofId,
+      ]),
+    ).toEqual(localMarker);
     expect(await mixed.database.custodyProofs.count()).toBe(0);
     expect(
       await mixed.database.custodyProofBackupAuthorities.get([
@@ -449,44 +393,3 @@ describe("mixed local-only and remote-backed CTF removal", () => {
     });
   });
 });
-
-async function prepareRemovalCandidate(
-  mixed: Awaited<ReturnType<typeof createMixedCtfRemoveFixture>>,
-) {
-  const rawDesired = await mixed.database.encryptedWalletBackupV2DesiredAssets.get([
-    mixed.scopeId,
-    mixed.desired.localAssetKey,
-  ]);
-  if (rawDesired === undefined) throw new Error("mixed removal desired row is missing");
-  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-  const envelope = await prepareEncryptedWalletBackupV2AssetMutation({
-    keyHandle: mixed.keyHandle,
-    expectedHeadEvidence: mixed.headEvidence,
-    assetLocator: mixed.assetLocator,
-    desiredAction: desired.desiredAction,
-    addedBundle: null,
-    runtime: { getRandomValues: (target) => crypto.getRandomValues(target) },
-  });
-  const canonicalUploadGroup = encodeEncryptedWalletBackupV2UploadGroup({
-    envelope,
-    objects: [],
-  });
-  const binding = {
-    localAssetKey: desired.localAssetKey,
-    assetLocator: mixed.assetLocator,
-    custodyRevision: desired.custodyRevision,
-    desiredAction: desired.desiredAction,
-    activeProofCount: desired.activeProofCount,
-  };
-  await mixed.authorityStore.insertPreparedMutationForDesired({
-    prepared: {
-      mutationId: envelope.mutation.mutationId,
-      requestDigest: envelope.requestDigest,
-      canonicalUploadGroup,
-      createdAtUnixMilliseconds: 55,
-      ...binding,
-    },
-    desired: binding,
-  });
-  return { mutationId: envelope.mutation.mutationId, requestDigest: envelope.requestDigest };
-}

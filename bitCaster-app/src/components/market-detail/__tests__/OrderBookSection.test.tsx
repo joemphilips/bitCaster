@@ -1,8 +1,54 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import i18n from "@/i18n";
 import { OrderBookSection } from "../OrderBookSection";
 
 describe("OrderBookSection", () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("shows loading until a snapshot arrives and distinguishes successful zero depth", () => {
+    const book = { bids: [], asks: [], spread: 0 };
+    const view = render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={book}
+        snapshotAvailable={false}
+      />,
+    );
+    expect(screen.getByRole("status", { name: "Loading..." })).toBeInTheDocument();
+    expect(screen.queryByText("No asks")).not.toBeInTheDocument();
+    expect(screen.queryByText("No bids")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("order-book-spread-row")).not.toBeInTheDocument();
+    view.rerender(
+      <OrderBookSection baseAsset="sat" divisibility={1_000} orderBook={book} snapshotAvailable />,
+    );
+    expect(screen.queryByTestId("order-book-loading")).not.toBeInTheDocument();
+    expect(screen.getByText("No asks")).toBeInTheDocument();
+    expect(screen.getByText("No bids")).toBeInTheDocument();
+  });
+
+  it("shows share counts in the selected language", async () => {
+    await i18n.changeLanguage("ja");
+    render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{
+          bids: [{ price: 50, amount: 1_000, total: 1_000 }],
+          asks: [{ price: 60, amount: 871_000, total: 871_000 }],
+          spread: 10,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("1 枚")).toBeInTheDocument();
+    expect(screen.getByText("871 枚")).toBeInTheDocument();
+    expect(screen.queryByText(/shares?/)).not.toBeInTheDocument();
+  });
+
   it("formats amounts as shares and price numerators with the market divisibility", () => {
     render(
       <OrderBookSection

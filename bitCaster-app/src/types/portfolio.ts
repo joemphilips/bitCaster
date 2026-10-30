@@ -1,3 +1,5 @@
+import type { NostrProfileFetchStatus } from "./settings";
+
 // =============================================================================
 // Wallet & Currency Types
 // =============================================================================
@@ -28,10 +30,9 @@ export interface PLChartData {
 // =============================================================================
 
 export interface UserProfile {
-  userId: string;
   displayName: string;
   avatarUrl: string | null;
-  registeredDate: string;
+  bio?: string;
 }
 
 // =============================================================================
@@ -158,7 +159,12 @@ export type {
   TradeActivityDetails,
   ActivityItem,
 } from "@bitcaster/client-sdk/activityLog";
-import type { ActivityItem } from "@bitcaster/client-sdk/activityLog";
+import type { ActivityItem as RecordedActivityItem } from "@bitcaster/client-sdk/activityLog";
+
+/** Catalogue display metadata. Never persist this projection as activity facts. */
+export interface ActivityDisplayItem extends RecordedActivityItem {
+  activityMarket?: { title: string | null; outcomes: readonly string[] };
+}
 
 // =============================================================================
 // Created Market Types
@@ -167,27 +173,50 @@ import type { ActivityItem } from "@bitcaster/client-sdk/activityLog";
 export type CreatedMarketStatus = "active" | "resolved" | "refunded" | "unknown";
 export type CreatorEngineDataStatus = "current" | "stale" | "unavailable";
 
-export interface CreatedMarket {
+interface CreatedMarketDisplay {
   id: string;
   title: string;
   imageUrl: string;
   status: CreatedMarketStatus;
   /** Display freshness only. It does not authorize oracle or lifecycle changes. */
   engineDataStatus?: CreatorEngineDataStatus;
-  createdDate: string;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
   resolvedDate?: string;
   refundedDate?: string;
-  volume: number;
-  creatorFeesEarned: number;
-  creatorFeePercent: number;
   oracle?: import("@/stores/creatorMarkets").StoredCreatorOracleMetadata;
 }
+
+/** Imported oracle authority does not establish paid creation or economic facts. */
+export type CreatedMarket = CreatedMarketDisplay &
+  (
+    | {
+        oracleOwnerKind?: "created";
+        createdDate: string;
+        volume: number;
+        creatorFeesEarned: number;
+        creatorFeePercent: number;
+      }
+    | {
+        oracleOwnerKind: "imported";
+        createdDate: null;
+        volume: null;
+        creatorFeesEarned: null;
+        creatorFeePercent: null;
+      }
+  );
 
 // =============================================================================
 // Component Props
 // =============================================================================
+
+/** Completed claim feedback. This snapshot is not custody or an actionable holding. */
+export interface ClaimCelebration {
+  id: string;
+  position: Position;
+  creditedAmountSubunits: number;
+  expiresAtMs: number;
+}
 
 export interface PortfolioProps {
   /** Wallet state — determines whether to show portfolio or onboarding CTA */
@@ -201,6 +230,7 @@ export interface PortfolioProps {
 
   /** User profile information */
   profile: UserProfile;
+  profileFetchStatus?: NostrProfileFetchStatus;
 
   /** Estimated portfolio-value history for each time range */
   plChartData: PLChartData;
@@ -212,7 +242,7 @@ export interface PortfolioProps {
   positions: Position[];
 
   /** Activity feed (deposits, withdrawals, trades, payouts, fees) */
-  activity: ActivityItem[];
+  activity: ActivityDisplayItem[];
 
   /** Base ecash fund balances */
   funds: Fund[];
@@ -225,9 +255,6 @@ export interface PortfolioProps {
 
   /** Called when user clicks "Get Started" (no-wallet state). */
   onGetStarted?: () => void;
-
-  /** Called when user uploads a new avatar image */
-  onAvatarUpload?: (file: File) => void;
 
   /** Called when user selects a P/L time range */
   onTimeRangeChange?: (range: PLTimeSelector) => void;
@@ -259,8 +286,11 @@ export interface PortfolioProps {
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
 
-  /** Called when user opens Settings */
-  onOpenSettings?: () => void;
+  positionAction?: { positionId: string; kind: "claim" | "remove" };
+  claimCelebrations?: readonly ClaimCelebration[];
+  removalConfirmationPositionId?: string;
+  onConfirmDiscardLostPosition?: (positionId: string) => void;
+  onCancelDiscardLostPosition?: () => void;
 
   /** Display-only status from the authenticated portfolio monitor. */
   monitoring?: PortfolioMonitoringState;
@@ -283,6 +313,7 @@ export interface PortfolioProps {
    * profile (Anon state) — P5 item 4.
    */
   showConnectNostrCta?: boolean;
+  nostrConnectionPending?: boolean;
 
   /** Called when user clicks "Connect Nostr" (navigates to Nostr settings) */
   onConnectNostr?: () => void;

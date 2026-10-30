@@ -1,11 +1,9 @@
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from './cashuProofAdmission.ts'
 import {
   Amount,
   JSONInt,
   Mint as CashuMint,
   hashToCurve,
-  hashToCurveBls,
-  isBlsKeyset,
-  verifyProofsForReceive,
   type CheckStatePayload,
   type CheckStateResponse,
   type GetKeysResponse,
@@ -264,14 +262,10 @@ export function verifyDurableCtfRangeRefundSignatures(input: {
     const proofs = outputs.map((output, index) =>
       output.toProof({ ...signatures[index]!, amount: output.blindedMessage.amount }, keyset),
     )
-    verifyProofsForReceive(
-      proofs,
-      (keysetId) => {
-        if (keysetId !== keyset.id) throw new Error('CTF range refund proof keyset is foreign')
-        return keyset
-      },
-      { requireDleq: true },
-    )
+    requireValidCashuProofs(proofs, (keysetId) => {
+      if (keysetId !== keyset.id) throw new Error('CTF range refund proof keyset is foreign')
+      return keyset
+    })
     return proofs
   } catch (error) {
     throw new Error('CTF range refund proof cryptographic verification failed', { cause: error })
@@ -462,7 +456,8 @@ export async function checkCtfRangeInputProofStates(
     requireBoundedText(id)
     requireBoundedText(secret)
     const bytes = new TextEncoder().encode(secret)
-    return isBlsKeyset(id) ? hashToCurveBls(bytes).toHex(true) : hashToCurve(bytes).toHex(true)
+    requireSupportedCashuKeysetId(id)
+    return hashToCurve(bytes).toHex(true)
   })
   try {
     const ordered: ProofState[] = []
@@ -622,6 +617,7 @@ export class CtfRangeMintRecoveryAdapter {
     const authorizedIds = [
       ...new Set(record.operation.verification.outputKeysets.map(({ keysetId }) => keysetId)),
     ]
+    for (const id of authorizedIds) requireSupportedCashuKeysetId(id)
     const keysets = new Map<string, HasKeysetKeys>()
     for (const authorizedId of authorizedIds) {
       let response: GetKeysResponse
@@ -645,7 +641,7 @@ export class CtfRangeMintRecoveryAdapter {
       deriveDurableCustodyKeysetFingerprint({
         keysetId: authorizedId,
         unit: keyset.unit,
-        curve: isBlsKeyset(authorizedId) ? 'bls12-381' : 'secp256k1',
+        curve: 'secp256k1',
         publicKeys: keyset.keys,
       })
       keysets.set(canonicalId, { id: authorizedId, keys: keyset.keys })
@@ -814,6 +810,7 @@ function assertRestoredPair(
   if (typeof output?.B_ !== 'string' || output.B_.length > 192 || restored.has(output.B_)) {
     throw new Error('range restore output is invalid')
   }
+  requireSupportedCashuKeysetId(output.id)
   const queried = expected.get(output.B_)
   if (
     queried === undefined ||
@@ -822,7 +819,7 @@ function assertRestoredPair(
     signature.id !== output.id ||
     !boundedAmountEquals(signature.amount, output.amount) ||
     typeof signature.C_ !== 'string' ||
-    signature.C_.length !== (isBlsKeyset(output.id) ? 96 : 66) ||
+    signature.C_.length !== 66 ||
     !/^[0-9a-f]+$/.test(signature.C_)
   ) {
     throw new Error('range restore authority is foreign')

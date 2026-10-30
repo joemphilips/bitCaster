@@ -2,7 +2,7 @@ import { NDKEvent, type NostrEvent } from "@nostr-dev-kit/ndk";
 import { withTemporaryRelayNdk } from "./nostr";
 
 export async function boundedOracleRelay<T>(
-  relays: string[],
+  relays: readonly string[],
   action: Parameters<typeof withTemporaryRelayNdk<T>>[2],
 ) {
   const controller = new AbortController();
@@ -16,7 +16,7 @@ export async function boundedOracleRelay<T>(
 
 /** Transport for an exact public artifact already validated by its owning coordinator. */
 export async function publishRetainedOracleEvent(
-  relays: string[],
+  relays: readonly string[],
   eventJson: string,
 ): Promise<string> {
   const signed = JSON.parse(eventJson) as NostrEvent;

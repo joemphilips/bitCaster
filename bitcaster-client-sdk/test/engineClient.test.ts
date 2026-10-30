@@ -17,6 +17,7 @@ import {
   SUBMIT_ORDER_RESPONSE_BYTES_MAX,
   type EngineAuthorizationRequest,
   type CreateSettlementCapabilityRequest,
+  type MarketPriceHistoryReadOptions,
 } from '../src/engineClient.ts'
 import type { components } from '../src/generated/api.ts'
 import { decodeOrderQuotePaymentBounds } from '../src/tradeTicket.ts'
@@ -410,6 +411,7 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
               data: [
                 {
                   timestamp: '2026-05-25T10:00:00Z',
+                  source: 'fill',
                   eventOrder: '00000000000000000042',
                   price: 42,
                   volumeSubunits: 100,
@@ -499,17 +501,30 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
 })
 
 for (const kind of ['comments', 'history'] as const) {
-  for (const [options, expectedQuery] of [
-    [undefined, ''],
-    [{ refresh: false }, ''],
-    [{ minimumEventOrder: 'source /+?&=Ω' }, 'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9'],
-    [{ refresh: true }, 'refresh=true'],
-    [
-      { minimumEventOrder: 'source /+?&=Ω', refresh: true },
-      'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9&refresh=true',
-    ],
-  ] as const) {
-    test(`public ${kind} snapshot read preserves opaque metadata and query (${expectedQuery || 'none'})`, async () => {
+  // Price history returns the latest applied state. It sends no snapshot options,
+  // even when an untyped caller supplies the removed comment options.
+  const cases =
+    kind === 'comments'
+      ? ([
+          [undefined, ''],
+          [{ refresh: false }, ''],
+          [
+            { minimumEventOrder: 'source /+?&=Ω' },
+            'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9',
+          ],
+          [{ refresh: true }, 'refresh=true'],
+          [
+            { minimumEventOrder: 'source /+?&=Ω', refresh: true },
+            'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9&refresh=true',
+          ],
+        ] as const)
+      : ([
+          [undefined, ''],
+          [{}, ''],
+          [{ minimumEventOrder: 'source /+?&=Ω', refresh: true }, ''],
+        ] as const)
+  for (const [options, expectedQuery] of cases) {
+    test(`public ${kind} snapshot read preserves opaque metadata and query (${expectedQuery || `none ${JSON.stringify(options)}`})`, async () => {
       const signal = new AbortController().signal
       const body =
         kind === 'comments'
@@ -540,7 +555,11 @@ for (const kind of ['comments', 'history'] as const) {
       const result =
         kind === 'comments'
           ? await client.getMarketComments('condition', readOptions)
-          : await client.getMarketPriceHistory('condition', undefined, readOptions)
+          : await client.getMarketPriceHistory(
+              'condition',
+              undefined,
+              readOptions as MarketPriceHistoryReadOptions | undefined,
+            )
       assert.deepEqual(result, body)
       assert.equal(calls, 1)
     })
@@ -558,7 +577,7 @@ for (const kind of ['comments', 'history'] as const) {
     await assert.rejects(
       kind === 'comments'
         ? client.getMarketComments('condition', { refresh: true })
-        : client.getMarketPriceHistory('condition', 'all', { refresh: true }),
+        : client.getMarketPriceHistory('condition', 'all'),
       (error: unknown) => error instanceof EngineClientError && error.status === 503,
     )
     assert.equal(calls, 1)
@@ -837,6 +856,42 @@ test('BitcasterEngineClient durable delivery timeout covers response-body consum
     /durable recipient delivery request failed/,
   )
   assert.equal(bodySignalAborted, true)
+})
+
+test('BitcasterEngineClient durable delivery waits 30 seconds by default for a hosted response', async (t) => {
+  // A hosted engine can take more than 10 seconds to finish the first
+  // custody receive. The default must not abandon that completed work.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const submission = durableRecipientSubmission('88888888-8888-4888-8888-888888888888')
+  let fetchSignal: AbortSignal | undefined
+  let enterFetch!: () => void
+  const fetchEntered = new Promise<void>((resolve) => {
+    enterFetch = resolve
+  })
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        fetchSignal = init?.signal ?? undefined
+        fetchSignal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true },
+        )
+        enterFetch()
+      }),
+  })
+
+  const assertion = assert.rejects(
+    () => client.submitDurableRecipientDelivery(submission),
+    /durable recipient delivery request failed/,
+  )
+  await fetchEntered
+  t.mock.timers.tick(29_999)
+  assert.equal(fetchSignal?.aborted, false)
+  t.mock.timers.tick(1)
+  assert.equal(fetchSignal?.aborted, true)
+  await assertion
 })
 
 test('BitcasterEngineClient durable delivery timeout covers authorization before fetch', async () => {

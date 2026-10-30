@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { finalizeEvent } from "nostr-tools/pure";
 import {
   CreateMarketError,
+  MarketCreationThumbnailMismatchError,
   completeDurableMarketCreation,
   deriveDurableCustodyScopeId,
   type MarketCreationPreparation,
@@ -107,6 +108,7 @@ it("reloads the original thumbnail and resumes a paid engine rejection with one 
   }));
   const result = {
     conditionId: input.announcement.conditionId,
+    thumbnailUrl: "/original-thumbnail",
     baseAsset: "sat" as const,
     divisibility: 1000 as const,
     marketsCreated: input.metadata.outcomes.map(
@@ -220,4 +222,57 @@ it("stops every external effect if the IndexedDB preparation write fails", async
   ).rejects.toThrow("storage unavailable");
   expect(effect).not.toHaveBeenCalled();
   expect(await database.marketCreations.count()).toBe(0);
+});
+
+it("keeps a historical missing-image result readable after cold IndexedDB reload but refuses cached completion", async () => {
+  const input = preparation();
+  const first = open(input);
+  await first.store.reserve(input);
+  await first.store.confirmMint(input.creationId);
+  await first.store.confirmEngine(input.creationId, {
+    conditionId: input.announcement.conditionId,
+    baseAsset: "sat",
+    divisibility: 1000,
+    marketsCreated: input.metadata.outcomes.map(
+      ({ name }) => `${input.announcement.conditionId}-${name}`,
+    ),
+    thumbnailUrl: null,
+  });
+  first.database.close();
+  const restarted = open(input);
+  const retained = await restarted.store.read(input.creationId);
+  expect(retained?.mintConfirmed).toBe(true);
+  expect(retained?.engineResult?.thumbnailUrl).toBeNull();
+  expect(retained?.thumbnail?.filename).toBe("original.png");
+  const writing = vi.fn(() => {
+    throw new Error("unexpected retained-row write");
+  });
+  restarted.database.marketCreations.hook("creating", writing);
+  restarted.database.marketCreations.hook("updating", writing);
+  restarted.database.marketCreations.hook("deleting", writing);
+  const effect = vi.fn(async () => {
+    throw new Error("unexpected effect");
+  });
+  await expect(
+    completeDurableMarketCreation(
+      {
+        store: restarted.store,
+        prepareFee: effect,
+        confirmFee: effect,
+        publishAnnouncement: effect,
+        lookupMint: effect,
+        registerMint: effect,
+        lookupEngine: effect,
+        createEngine: effect,
+      },
+      retained!,
+      input,
+    ),
+  ).rejects.toBeInstanceOf(MarketCreationThumbnailMismatchError);
+  expect(effect).not.toHaveBeenCalled();
+  expect(writing).not.toHaveBeenCalled();
+  const after = await restarted.store.read(input.creationId);
+  expect(after?.engineResult?.thumbnailUrl).toBeNull();
+  expect(after?.thumbnail?.data.byteLength).toBe(2 * 1024 * 1024);
+  expect(after?.thumbnail?.data.every((value) => value === 42)).toBe(true);
 });

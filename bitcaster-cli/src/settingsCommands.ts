@@ -1,16 +1,7 @@
 import { type Command } from 'commander'
-import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk'
+import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk/engineUrlSecurity'
 import { normalizeNostrRelayUrl } from '@bitcaster-market/client-sdk/nostrRelays'
-import {
-  addNativeMint,
-  addNativeRelay,
-  listNativeMints,
-  listNativeRelays,
-  removeNativeMint,
-  removeNativeRelay,
-  selectNativeMint,
-  type NativeSettingsOptions,
-} from '@bitcaster-market/daemon/nativeSettings'
+import type { NativeSettingsOptions } from '@bitcaster-market/daemon/nativeSettings'
 import type { NativeConfigSnapshot } from '@bitcaster-market/daemon/nativeConfig'
 import { isCliSpawnedDaemonRunning, restartDaemon } from './rpc.ts'
 
@@ -18,53 +9,67 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
   mint
     .command('list')
     .description('List saved mints and the selected mint without network access.')
-    .action(() => printJson(listNativeMints()))
+    .action(async () =>
+      printJson((await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints()),
+    )
   const mintUrl = (url: string) => normalizeEndpointUrl(url, 'mint URL')
   registerMutation(
     mint,
     'add',
     'Add and select an msat mint.',
-    addNativeMint,
+    async (url, options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).addNativeMint(url, options),
     mintUrl,
-    listNativeMints,
+    async (options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
   )
   registerMutation(
     mint,
     'select',
     'Select a saved msat mint.',
-    selectNativeMint,
+    async (url, options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).selectNativeMint(url, options),
     mintUrl,
-    listNativeMints,
+    async (options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
   )
   registerMutation(
     mint,
     'remove',
     'Remove a saved mint from configuration.',
-    removeNativeMint,
+    async (url, options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).removeNativeMint(url, options),
     mintUrl,
-    listNativeMints,
+    async (options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
   )
 
   const relay = program.command('relay').description('Manage saved Nostr relay destinations.')
   relay
     .command('list')
     .description('List saved relays without network access.')
-    .action(() => printJson(listNativeRelays()))
+    .action(async () =>
+      printJson((await import('@bitcaster-market/daemon/nativeSettings')).listNativeRelays()),
+    )
   registerMutation(
     relay,
     'add',
     'Add a Nostr relay.',
-    addNativeRelay,
+    async (url, options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).addNativeRelay(url, options),
     normalizeNostrRelayUrl,
-    listNativeRelays,
+    async (options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).listNativeRelays(options),
   )
   registerMutation(
     relay,
     'remove',
     'Remove a Nostr relay.',
-    removeNativeRelay,
+    async (url, options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).removeNativeRelay(url, options),
     normalizeNostrRelayUrl,
-    listNativeRelays,
+    async (options) =>
+      (await import('@bitcaster-market/daemon/nativeSettings')).listNativeRelays(options),
   )
 }
 
@@ -103,7 +108,7 @@ function registerMutation(
                 options.expectedRevision === 'missing' ? null : options.expectedRevision,
             }
       if (command.optsWithGlobals<{ dryRun?: boolean }>().dryRun === true) {
-        readSettings(settingsOptions)
+        await readSettings(settingsOptions)
         printJson({
           dryRun: true,
           method: `${parent.name()}.${name}`,

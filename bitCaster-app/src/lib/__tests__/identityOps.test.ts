@@ -1,254 +1,316 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => {
-  let hydrationCallback: (() => void) | null = null;
-  const settingsState = {
-    nostrSignerMode: "none" as "none" | "nsec" | "nip07",
-    signerSource: "none" as "none" | "implicit-generated" | "user-nsec" | "nip07",
-    signerBackupState: "none" as "none" | "needs_backup" | "confirmed",
-    nsecSecret: null as string | null,
-    setSignerMode: vi.fn((mode: "none" | "nsec" | "nip07") => {
-      settingsState.nostrSignerMode = mode;
-      if (mode !== "nsec") settingsState.nsecSecret = null;
-    }),
-    setSignerSource: vi.fn((source: "none" | "implicit-generated" | "user-nsec" | "nip07") => {
-      settingsState.signerSource = source;
-    }),
-    setSignerBackupState: vi.fn((state: "none" | "needs_backup" | "confirmed") => {
-      settingsState.signerBackupState = state;
-    }),
-    setNsecSecret: vi.fn((nsec: string | null) => {
-      settingsState.nsecSecret = nsec;
-    }),
-    setProfile: vi.fn(),
-  };
-  const walletState = {
-    ensureImplicitWallet: vi.fn().mockResolvedValue(undefined),
-  };
-  return {
-    settingsState,
-    walletState,
-    persist: {
-      hydrated: true,
-      hasHydrated: vi.fn(() => true),
-      onFinishHydration: vi.fn((cb: () => void) => {
-        hydrationCallback = cb;
-        return vi.fn();
-      }),
-      triggerHydration: () => hydrationCallback?.(),
-    },
-    rehydrateNostrSigner: vi.fn().mockResolvedValue(undefined),
-    fetchAndStoreNostrProfile: vi.fn().mockResolvedValue(undefined),
-    loginWithExtension: vi.fn().mockResolvedValue({}),
-    loginWithNsec: vi.fn().mockResolvedValue({}),
-    loginWithNsecOrNcryptsec: vi.fn().mockResolvedValue({ signer: {}, nsec: "nsec1decrypted" }),
-    generateSecretKey: vi.fn(() => new Uint8Array(32).fill(7)),
-    nsecEncode: vi.fn(() => "nsec1generated"),
-    nsecDecode: vi.fn(() => ({ type: "nsec", data: new Uint8Array(32).fill(8) })),
-  };
-});
-
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: {
-    getState: () => mocks.settingsState,
-    persist: mocks.persist,
-  },
+const mocks = vi.hoisted(() => ({
+  ensureImplicitWallet: vi.fn().mockResolvedValue(undefined),
+  invalidateOracle: vi.fn(),
 }));
-
 vi.mock("@/stores/wallet", () => ({
-  useWalletStore: {
-    getState: () => mocks.walletState,
-  },
+  useWalletStore: { getState: () => ({ ensureImplicitWallet: mocks.ensureImplicitWallet }) },
+}));
+vi.mock("../kormir", () => ({ setPendingKormirNsec: mocks.invalidateOracle }));
+vi.mock("@nostr-dev-kit/ndk-wallet", () => ({ NDKNWCWallet: class {} }));
+vi.mock("../browserNostrProfile", () => ({
+  captureBrowserNostrProfileSelection: vi.fn().mockRejectedValue(new Error("No relay fixture")),
 }));
 
-vi.mock("../nostr", () => ({
-  rehydrateNostrSigner: mocks.rehydrateNostrSigner,
-  fetchAndStoreNostrProfile: mocks.fetchAndStoreNostrProfile,
-  loginWithExtension: mocks.loginWithExtension,
-  loginWithNsec: mocks.loginWithNsec,
-  loginWithNsecOrNcryptsec: mocks.loginWithNsecOrNcryptsec,
-}));
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+const publicKey = "22".repeat(32);
+const privateKey = "11".repeat(32);
 
-vi.mock("nostr-tools", () => ({
-  generateSecretKey: mocks.generateSecretKey,
-  nip19: {
-    nsecEncode: mocks.nsecEncode,
-    decode: mocks.nsecDecode,
-  },
-}));
-
-describe("identityOps", () => {
-  let identityOps: typeof import("../identityOps");
+describe("identity lifecycle with real NDK and settings", () => {
+  let identity: typeof import("../identityOps");
+  let nostr: typeof import("../nostr");
+  let store: typeof import("@/stores/settings").useSettingsStore;
+  let extension: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     vi.resetModules();
-    mocks.settingsState.nostrSignerMode = "none";
-    mocks.settingsState.signerSource = "none";
-    mocks.settingsState.signerBackupState = "none";
-    mocks.settingsState.nsecSecret = null;
-    mocks.persist.hydrated = true;
-    mocks.persist.hasHydrated.mockImplementation(() => mocks.persist.hydrated);
-    mocks.persist.onFinishHydration.mockClear();
-    mocks.rehydrateNostrSigner.mockClear();
-    mocks.fetchAndStoreNostrProfile.mockClear();
-    mocks.loginWithExtension.mockClear();
-    mocks.loginWithNsec.mockClear();
-    mocks.loginWithNsecOrNcryptsec.mockClear();
-    mocks.walletState.ensureImplicitWallet.mockClear();
-    mocks.generateSecretKey.mockClear();
-    mocks.nsecEncode.mockClear();
-    mocks.nsecDecode.mockClear();
-    vi.mocked(mocks.settingsState.setSignerMode).mockClear();
-    vi.mocked(mocks.settingsState.setSignerSource).mockClear();
-    vi.mocked(mocks.settingsState.setSignerBackupState).mockClear();
-    vi.mocked(mocks.settingsState.setNsecSecret).mockClear();
-    vi.mocked(mocks.settingsState.setProfile).mockClear();
-    identityOps = await import("../identityOps");
+    localStorage.clear();
+    mocks.ensureImplicitWallet.mockReset().mockResolvedValue(undefined);
+    mocks.invalidateOracle.mockClear();
+    extension = vi.fn().mockResolvedValue(publicKey);
+    Object.defineProperty(window, "nostr", {
+      configurable: true,
+      value: { getPublicKey: extension },
+    });
+    const { default: NDK } = await import("@nostr-dev-kit/ndk");
+    vi.spyOn(NDK.prototype, "connect").mockResolvedValue(undefined);
+    store = (await import("@/stores/settings")).useSettingsStore;
+    store.setState({ relays: [] });
+    nostr = await import("../nostr");
+    identity = await import("../identityOps");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("rehydrates immediately when settings persist has already hydrated", async () => {
-    await identityOps.rehydratePersistedNostrIdentity();
-
-    expect(mocks.rehydrateNostrSigner).toHaveBeenCalledOnce();
-    expect(mocks.persist.onFinishHydration).not.toHaveBeenCalled();
+  it("waits for extension authorization before changing mode or reporting success", async () => {
+    const pending = deferred<string>();
+    extension.mockReturnValue(pending.promise);
+    const result = identity.userConnectNostrSignerMode("nip07");
+    expect(store.getState().nostrSignerMode).toBe("none");
+    expect(store.getState().signerConnectionStatus).toBe("connecting");
+    expect(nostr.getNdk().signer).toBeUndefined();
+    pending.resolve(publicKey);
+    expect(await result).toEqual({ ok: true });
+    expect(store.getState().nostrSignerMode).toBe("nip07");
+    expect(store.getState().signerConnectionStatus).toBe("connected");
+    expect(nostr.getNdk().activeUser?.pubkey).toBe(publicKey);
   });
 
-  it("waits for settings hydration before rehydrating the signer", async () => {
-    mocks.persist.hydrated = false;
-    const promise = identityOps.rehydratePersistedNostrIdentity();
-
-    expect(mocks.rehydrateNostrSigner).not.toHaveBeenCalled();
-    expect(mocks.persist.onFinishHydration).toHaveBeenCalledOnce();
-
-    mocks.persist.triggerHydration();
-    await promise;
-
-    expect(mocks.rehydrateNostrSigner).toHaveBeenCalledOnce();
+  it.each(["", "bad", "z".repeat(64)])("refuses invalid extension identity %s", async (key) => {
+    extension.mockResolvedValue(key);
+    expect((await identity.userConnectNostrSignerMode("nip07")).ok).toBe(false);
+    expect(nostr.getNdk().signer).toBeUndefined();
+    expect(store.getState().nostrSignerMode).toBe("none");
   });
 
-  it("connects NIP-07 through one identity operation and refreshes profile best-effort", async () => {
-    const result = await identityOps.userConnectNostrSignerMode("nip07");
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith("nip07");
-    expect(mocks.loginWithExtension).toHaveBeenCalledOnce();
-    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith("nip07");
-    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith("confirmed");
-    expect(mocks.fetchAndStoreNostrProfile).toHaveBeenCalledOnce();
+  it("preserves local generated-key provenance after rejected replacement", async () => {
+    await identity.createGeneratedNostrIdentity();
+    const old = store.getState();
+    const signer = nostr.getNdk().signer;
+    extension.mockRejectedValue(new Error("Denied"));
+    expect((await identity.userConnectNostrSignerMode("nip07")).ok).toBe(false);
+    expect(nostr.getNdk().signer).toBe(signer);
+    expect(store.getState().nsecSecret === old.nsecSecret).toBe(true);
+    expect(store.getState().signerSource).toBe("implicit-generated");
+    expect(store.getState().signerBackupState).toBe("needs_backup");
+    expect(store.getState().signerConnectionStatus).toBe("connected");
   });
 
-  it("persists decrypted nsec and refreshes profile on nsec connect", async () => {
-    const result = await identityOps.userConnectNsecIdentity("ncryptsec1cipher", "pw");
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith("nsec");
-    expect(mocks.loginWithNsecOrNcryptsec).toHaveBeenCalledWith("ncryptsec1cipher", "pw");
-    expect(mocks.settingsState.setNsecSecret).toHaveBeenCalledWith("nsec1decrypted");
-    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith("user-nsec");
-    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith("confirmed");
-    expect(mocks.fetchAndStoreNostrProfile).toHaveBeenCalledOnce();
+  it("ignores late extension success after disconnect", async () => {
+    const pending = deferred<string>();
+    extension.mockReturnValue(pending.promise);
+    const result = identity.userConnectNostrSignerMode("nip07");
+    identity.disconnectNostrIdentity();
+    pending.resolve(publicKey);
+    expect(await result).toEqual({ ok: false, superseded: true });
+    expect(nostr.getNdk().signer).toBeUndefined();
+    expect(nostr.getNdk().activeUser).toBeUndefined();
+    expect(store.getState().nostrSignerMode).toBe("none");
   });
 
-  it("resets signer state on invalid nsec input", async () => {
-    mocks.loginWithNsecOrNcryptsec.mockRejectedValueOnce(new Error("bad key"));
-
-    const result = await identityOps.userConnectNsecIdentity("bad");
-
-    expect(result).toEqual({ ok: false, error: "Invalid private key or connection failed" });
-    expect(mocks.settingsState.setSignerMode).toHaveBeenLastCalledWith("none");
-    expect(mocks.settingsState.setProfile).toHaveBeenCalledWith(null, "not-found");
+  it("settles a cancelled extension request without waiting for the extension", async () => {
+    extension.mockReturnValue(new Promise<string>(() => {}));
+    const result = identity.userConnectNostrSignerMode("nip07");
+    identity.disconnectNostrIdentity();
+    expect(await result).toEqual({ ok: false, superseded: true });
+    expect(store.getState().signerConnectionStatus).toBe("disconnected");
   });
 
-  it("disconnects the Nostr identity without requiring Settings page store logic", () => {
-    identityOps.disconnectNostrIdentity();
-
-    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith("none");
-    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith("none");
-    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith("none");
-    expect(mocks.settingsState.setProfile).toHaveBeenCalledWith(null, "idle");
+  it("rejects an absent extension without committing an identity", async () => {
+    Object.defineProperty(window, "nostr", { configurable: true, value: undefined });
+    expect((await identity.userConnectNostrSignerMode("nip07")).ok).toBe(false);
+    expect(nostr.getNdk().signer).toBeUndefined();
+    expect(store.getState().nostrSignerMode).toBe("none");
+    expect(store.getState().signerConnectionStatus).toBe("disconnected");
   });
 
-  it("creates an implicit wallet and generated nsec when no signer exists", async () => {
-    const result = await identityOps.createImplicitWalletAndNostrIdentity();
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.walletState.ensureImplicitWallet).toHaveBeenCalledOnce();
-    expect(mocks.generateSecretKey).toHaveBeenCalledOnce();
-    expect(mocks.nsecEncode).toHaveBeenCalledWith(new Uint8Array(32).fill(7));
-    expect(mocks.loginWithNsec).toHaveBeenCalledWith("nsec1generated");
-    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith("nsec");
-    expect(mocks.settingsState.setNsecSecret).toHaveBeenCalledWith("nsec1generated");
-    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith("implicit-generated");
-    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith("needs_backup");
+  it("keeps persisted extension provenance unverified after reload rejection", async () => {
+    store.setState({
+      nostrSignerMode: "nip07",
+      signerSource: "nip07",
+      signerBackupState: "confirmed",
+    });
+    extension.mockRejectedValue(new Error("Denied"));
+    await identity.rehydratePersistedNostrIdentity();
+    expect(store.getState().signerConnectionStatus).toBe("disconnected");
+    expect(store.getState().signerSource).toBe("nip07");
+    expect(nostr.getNdk().signer).toBeUndefined();
   });
 
-  it("creates a generated nsec identity without touching wallet state", async () => {
-    const result = await identityOps.createGeneratedNostrIdentity();
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.walletState.ensureImplicitWallet).not.toHaveBeenCalled();
-    expect(mocks.generateSecretKey).toHaveBeenCalledOnce();
-    expect(mocks.nsecEncode).toHaveBeenCalledWith(new Uint8Array(32).fill(7));
-    expect(mocks.loginWithNsec).toHaveBeenCalledWith("nsec1generated");
-    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith("nsec");
-    expect(mocks.settingsState.setNsecSecret).toHaveBeenCalledWith("nsec1generated");
-    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith("implicit-generated");
-    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith("needs_backup");
+  it("does not wait for optional old-signer teardown before installing an authorized replacement", async () => {
+    await identity.userConnectNsecIdentity(privateKey);
+    const teardown = deferred<void>();
+    const destroy = vi.fn(() => teardown.promise);
+    Object.assign(nostr.getNdk().signer!, { destroy });
+    expect(await identity.userConnectNostrSignerMode("nip07")).toEqual({ ok: true });
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(nostr.getNdk().activeUser?.pubkey).toBe(publicKey);
+    teardown.resolve();
   });
 
-  it("does not overwrite an existing NIP-07 signer during implicit wallet setup", async () => {
-    mocks.settingsState.nostrSignerMode = "nip07";
-    mocks.settingsState.signerSource = "nip07";
+  it.each([true, false])(
+    "ignores late extension completion after local replacement (success=%s)",
+    async (success) => {
+      const pending = deferred<string>();
+      extension.mockReturnValue(pending.promise);
+      const result = identity.userConnectNostrSignerMode("nip07");
+      await identity.userConnectNsecIdentity(privateKey);
+      const selected = nostr.getNdk().signer;
+      if (success) pending.resolve(publicKey);
+      else pending.reject(new Error("Denied"));
+      expect(await result).toEqual({ ok: false, superseded: true });
+      expect(nostr.getNdk().signer).toBe(selected);
+      expect(store.getState().nostrSignerMode).toBe("nsec");
+      expect(store.getState().signerConnectionStatus).toBe("connected");
+    },
+  );
 
-    const result = await identityOps.createImplicitWalletAndNostrIdentity();
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.walletState.ensureImplicitWallet).toHaveBeenCalledOnce();
-    expect(mocks.generateSecretKey).not.toHaveBeenCalled();
-    expect(mocks.loginWithNsec).not.toHaveBeenCalled();
-    expect(mocks.settingsState.setNsecSecret).not.toHaveBeenCalled();
+  it("does not revive an older request when the newest request fails", async () => {
+    const pending = deferred<string>();
+    extension.mockReturnValue(pending.promise);
+    const result = identity.userConnectNostrSignerMode("nip07");
+    expect((await identity.userConnectNsecIdentity("invalid")).ok).toBe(false);
+    pending.resolve(publicKey);
+    expect(await result).toEqual({ ok: false, superseded: true });
+    expect(nostr.getNdk().signer).toBeUndefined();
   });
 
-  it("does not overwrite an existing user-provided nsec signer during implicit wallet setup", async () => {
-    mocks.settingsState.nostrSignerMode = "nsec";
-    mocks.settingsState.signerSource = "user-nsec";
-    mocks.settingsState.nsecSecret = "nsec1user";
-
-    const result = await identityOps.createImplicitWalletAndNostrIdentity();
-
-    expect(result).toEqual({ ok: true });
-    expect(mocks.walletState.ensureImplicitWallet).toHaveBeenCalledOnce();
-    expect(mocks.generateSecretKey).not.toHaveBeenCalled();
-    expect(mocks.loginWithNsec).not.toHaveBeenCalled();
-    expect(mocks.settingsState.nsecSecret).toBe("nsec1user");
+  it("prevents the real NDK activeUser microtask from restoring a disconnected identity", async () => {
+    const unsubscribe = nostr.subscribeToNostrSignerRevision(() => {
+      if (nostr.getNdk().signer) identity.disconnectNostrIdentity();
+    });
+    const result = await identity.userConnectNsecIdentity(privateKey);
+    await Promise.resolve();
+    unsubscribe();
+    expect(result).toEqual({ ok: false, superseded: true });
+    expect(nostr.getNdk().signer).toBeUndefined();
+    expect(nostr.getNdk().activeUser).toBeUndefined();
+    expect(store.getState().nostrSignerMode).toBe("none");
   });
 
-  it("resolves creator pubkey from active nsec signer before wallet mnemonic", () => {
-    const signerPrivateKeyHex = "11".repeat(32);
+  it("retains an imported key after invalid replacement", async () => {
+    expect(await identity.userConnectNsecIdentity(privateKey)).toEqual({ ok: true });
+    const secret = store.getState().nsecSecret;
+    expect(store.getState().signerSource).toBe("user-nsec");
+    expect(store.getState().signerBackupState).toBe("confirmed");
+    expect((await identity.userConnectNsecIdentity("invalid")).ok).toBe(false);
+    expect(store.getState().nsecSecret === secret).toBe(true);
+    expect(store.getState().nostrSignerMode).toBe("nsec");
+  });
 
-    const pubkey = identityOps.resolveCreatorPubkey({
+  it("rehydrates persisted extension mode without treating cached mode as authorization", async () => {
+    store.setState({ nostrSignerMode: "nip07", signerSource: "nip07" });
+    const pending = deferred<string>();
+    extension.mockReturnValue(pending.promise);
+    const result = identity.rehydratePersistedNostrIdentity();
+    await Promise.resolve();
+    expect(store.getState().signerConnectionStatus).toBe("connecting");
+    expect(nostr.getNdk().signer).toBeUndefined();
+    pending.resolve(publicKey);
+    await result;
+    expect(store.getState().signerConnectionStatus).toBe("connected");
+  });
+
+  it.each([true, false])(
+    "rehydration atomically keeps only the authorized identity's cached profile (matching=%s)",
+    async (matching) => {
+      const profile = {
+        pubkey: matching ? publicKey : "33".repeat(32),
+        displayName: "Cached profile",
+        avatar: "",
+        bio: "",
+        nip05: "",
+        nip05verified: false,
+      };
+      store.setState({
+        nostrSignerMode: "nip07",
+        nostrProfile: profile,
+        nostrProfileFetchStatus: "found",
+      });
+      const connectedProfiles: Array<string | null> = [];
+      const unsubscribe = store.subscribe((state) => {
+        if (state.signerConnectionStatus === "connected") {
+          connectedProfiles.push(state.nostrProfile?.pubkey ?? null);
+        }
+      });
+      await identity.rehydratePersistedNostrIdentity();
+      unsubscribe();
+      expect(connectedProfiles.length).toBeGreaterThan(0);
+      expect(connectedProfiles.every((key) => key === (matching ? publicKey : null))).toBe(true);
+      expect(store.getState().nostrProfile).toEqual(matching ? profile : null);
+      expect(store.getState().nostrProfileFetchStatus).toBe(matching ? "found" : "idle");
+    },
+  );
+
+  it("ignores a rejected reload attempt after an explicit local connection", async () => {
+    store.setState({ nostrSignerMode: "nip07" });
+    const pending = deferred<string>();
+    extension.mockReturnValue(pending.promise);
+    const result = identity.rehydratePersistedNostrIdentity();
+    await Promise.resolve();
+    await identity.userConnectNsecIdentity(privateKey);
+    pending.reject(new Error("Denied"));
+    await result;
+    expect(store.getState().nostrSignerMode).toBe("nsec");
+    expect(store.getState().signerConnectionStatus).toBe("connected");
+  });
+
+  it("does not start deferred hydration after a newer disconnect", async () => {
+    store.setState({ nostrSignerMode: "nip07" });
+    let hydrated!: () => void;
+    vi.spyOn(store.persist, "hasHydrated").mockReturnValue(false);
+    vi.spyOn(store.persist, "onFinishHydration").mockImplementation((callback) => {
+      hydrated = () => callback(store.getState());
+      return () => {};
+    });
+    const result = identity.rehydratePersistedNostrIdentity();
+    identity.disconnectNostrIdentity();
+    hydrated();
+    await result;
+    expect(extension).not.toHaveBeenCalled();
+  });
+
+  it("preserves generated-key provenance on local rehydration", async () => {
+    store.setState({
       nostrSignerMode: "nsec",
-      nsecSecret: signerPrivateKeyHex,
-      nostrProfilePubkey: null,
+      nsecSecret: privateKey,
+      signerSource: "implicit-generated",
+      signerBackupState: "needs_backup",
     });
-
-    expect(pubkey).toMatch(/^[0-9a-f]{64}$/);
+    await identity.rehydratePersistedNostrIdentity();
+    expect(store.getState().signerSource).toBe("implicit-generated");
+    expect(store.getState().signerBackupState).toBe("needs_backup");
+    expect(store.getState().signerConnectionStatus).toBe("connected");
   });
 
-  it("does not resolve creator pubkey from wallet mnemonic when no signer identity is configured", () => {
-    const pubkey = identityOps.resolveCreatorPubkey({
-      nostrSignerMode: "none",
-      nsecSecret: null,
-      nostrProfilePubkey: null,
-    });
-
-    expect(pubkey).toBeNull();
+  it("does not persist runtime connection status", async () => {
+    await identity.userConnectNsecIdentity(privateKey);
+    const persisted = JSON.parse(localStorage.getItem("bitcaster-settings") ?? "{}");
+    expect(persisted.state).toBeDefined();
+    expect(persisted.state.signerConnectionStatus).toBeUndefined();
   });
 
-  it("returns nsec private/public keys for NIP-78 sync", () => {
-    const identity = identityOps.resolveNsecIdentity("11".repeat(32));
+  it("creates an implicit wallet and a generated identity", async () => {
+    expect(await identity.createImplicitWalletAndNostrIdentity()).toEqual({ ok: true });
+    expect(mocks.ensureImplicitWallet).toHaveBeenCalledOnce();
+    expect(store.getState().signerSource).toBe("implicit-generated");
+    expect(store.getState().signerBackupState).toBe("needs_backup");
+  });
 
-    expect(identity?.privateKeyHex).toBe("11".repeat(32));
-    expect(identity?.publicKey).toMatch(/^[0-9a-f]{64}$/);
+  it("does not generate an identity after explicit selection during wallet creation", async () => {
+    const pending = deferred<void>();
+    mocks.ensureImplicitWallet.mockReturnValue(pending.promise);
+    const result = identity.createImplicitWalletAndNostrIdentity();
+    await identity.userConnectNsecIdentity(privateKey);
+    pending.resolve();
+    expect(await result).toEqual({ ok: false, superseded: true });
+    expect(store.getState().signerSource).toBe("user-nsec");
+  });
+
+  it("does not replace an existing identity during implicit wallet creation", async () => {
+    await identity.userConnectNostrSignerMode("nip07");
+    const signer = nostr.getNdk().signer;
+    expect(await identity.createImplicitWalletAndNostrIdentity()).toEqual({ ok: true });
+    expect(nostr.getNdk().signer).toBe(signer);
+  });
+
+  it("resolves the active local identity, not a wallet mnemonic", () => {
+    const resolved = identity.resolveNsecIdentity(privateKey);
+    expect(resolved?.publicKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(resolved?.privateKeyHex === privateKey).toBe(true);
+    expect(identity.resolveCreatorPubkey({ nostrSignerMode: "nsec", nsecSecret: privateKey })).toBe(
+      resolved?.publicKey,
+    );
+    expect(identity.resolveCreatorPubkey({ nostrSignerMode: "none", nsecSecret: null })).toBeNull();
   });
 });

@@ -11,7 +11,8 @@ interface ResumeBannerProps {
 export function ResumeBanner({ lastModified, onDismiss, onStartOver }: ResumeBannerProps) {
   const { t } = useTranslation();
   return (
-    <div className="w-full max-w-2xl mx-auto px-4 pt-4">
+    // Below md, the right padding keeps the dismiss button clear of the fixed wizard close button.
+    <div className="w-full max-w-2xl mx-auto pl-4 pr-16 md:pr-4 pt-4">
       <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
         <div className="flex items-center gap-2.5 min-w-0">
           <Clock className="w-4 h-4 text-blue-400 flex-shrink-0" strokeWidth={1.75} />

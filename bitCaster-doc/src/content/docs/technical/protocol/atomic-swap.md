@@ -26,6 +26,23 @@ A Participation Score purchase must be a positive multiple of 1,000 msats.
 Each 1,000 msats buys one Score point. Receive fees do not reduce the purchased
 Score. Score points and receipt amounts are separate values.
 
+## Conditional outcome collections
+
+Mint outcome collections use the outcome order in the registered oracle
+announcement. Do not sort the labels to form a mint request. For example, with
+announcement order `Alpha, Beta, Gamma, Delta`, the complement of `Alpha` is
+`Beta|Gamma|Delta`.
+
+Validate the public announcement signatures and the condition registration
+before selecting conditional keysets. Match each keyset to the exact wire
+collection and its collection ID. A valid oracle signature authenticates the
+announcement contents. It does not, by itself, prove which announcements or
+threshold the mint registered. Use the configured mint's registration and any
+existing registered authority for that check.
+
+Keep existing proofs, keyset IDs, and saved signed requests unchanged. Retry an
+unfinished operation with its original request bytes.
+
 ## Order authorization
 
 A wallet authorizes one public FOK attempt with one `PAY_TO_UNLOCK` capability.
@@ -68,6 +85,12 @@ not authorize a refund or deletion of local records. Keep the original operation
 and capability when the response is uncertain. Retry the original request
 without changes.
 
+A successful capability retry does not mean that wallet recovery is complete.
+If no order was submitted, keep recovery active until the authorization reaches
+a terminal result. Do not submit an order only because capability recovery
+succeeded. An unspent authorization can refund after its original expiry, once
+the mint confirms the required recovery facts.
+
 ## Order submission errors
 
 Single-order submission also returns application Problem Details. The `type`
@@ -93,6 +116,16 @@ that rule to every conflict. The SDK retains the original operation for `403`
 and `503` responses. An error does not prove that a refund is complete or
 authorize deletion of wallet records. An exact accepted replay returns the
 prior admission result. Missing and foreign capabilities have the same response.
+A visible order book does not guarantee immediate order admission. Temporary
+quote readiness can return `order-processing-unavailable`. This response alone
+does not prove insufficient liquidity or require more funding. It also does not
+prove that no order was accepted. Retain the original operation and reconcile
+its status. An accepted order can also return this response if its result cannot
+be returned. It can still settle. Do not create a replacement order from this
+response alone. The CLI does not automatically submit the order again after this
+response. Any protocol retry must preserve the original request, consent, and
+authorization expiry.
+
 The shared closed-market check also returns `market-closed` for deposits.
 Framework errors can use another body shape.
 
@@ -128,12 +161,20 @@ not a `market-closed` error. The SDK returns `null` for a status-read `404` and
 order-book reads still return successful empty data. This is distinct from a
 failed read. Framework errors can use another body shape.
 
+A bound capability does not create an accepted order. Its order-status read
+returns `404` with `order-not-found` until an order is accepted. This response
+does not authorize an early refund. Keep the original authorization and recovery
+rules. After a submission result is committed and available, a later live
+notification failure does not replace that result with a submission error.
+
 ## Market-funding delivery errors
 
 `POST /api/v1/cashu-deliveries/{deliveryId}` submits an exact delivery.
 `GET` on the same path reads its saved status. A failed request does not prove
 that no funds were received. Keep the original delivery ID, token, and immutable
 request for recovery. Do not create a replacement payment for an uncertain result.
+After the engine admits a delivery, it completes the delivery even if the client
+disconnects before the response. A later status read returns that result.
 
 The following application errors use `application/problem+json`. Their `type`
 is `/errors/{code}`. Use the HTTP status and `code`, not the wording of `detail`.
@@ -143,7 +184,7 @@ is `/errors/{code}`. Use the HTTP status and `code`, not the wording of `detail`
 | 400 | `cashu-delivery-invalid-request` | Invalid delivery identity or metadata. |
 | 403 | `cashu-delivery-forbidden` | The authenticated subject cannot access this delivery. |
 | 409 | `cashu-delivery-conflict` | The request conflicts with saved state, or the delivery was rejected. |
-| 400 | `market-funding-invalid-request` | Invalid funding amount, unit, or product binding. |
+| 400 | `market-funding-invalid-request` | Invalid funding amount, unit, token structure, mint binding, or product binding. |
 | 404 | `market-funding-market-not-found` | The funding market was not found. |
 | 403 | `market-closed` | The market is closed to new funding. |
 | 500 | `cashu-delivery-state-unavailable` | The delivery state could not be read after admission. |
@@ -160,6 +201,7 @@ to every response with the same HTTP status.
 
 The SDK delivery methods discard error bodies because a recipient can echo a
 bearer token. They report status-only errors and do not retry automatically.
+Each SDK delivery request waits at most 30 seconds by default.
 The status method returns `null` for `404`. This SDK behavior is separate from
 the API's structured error format.
 
@@ -188,6 +230,13 @@ the group stopped before committing a mint request for another reason.
 Both have a null `frozenAt`. Neither confirms wallet recovery or authorizes
 a refund. Clients read the authoritative order status and keep their recovery
 records if that read fails. Only `Confirmed` signals confirmed-result recovery.
+
+While its group settles, a FOK order that reserved its complete amount has the
+order status `matched`. The submission response also reports `matched`. Its
+`filledAmountSubunits` is the reserved amount, and its `remainingAmountSubunits`
+is `0`. After the group is `Confirmed`, the order status is `filled`. If the
+group ends in another terminal status, the order status is `failed`. A FOK
+order that cannot reserve its complete amount is `cancelled`.
 
 On confirmation, the mint returns exact result entries for the group. Clients
 persist the submitted operation and its result. This lets a client recover the

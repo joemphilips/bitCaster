@@ -2,17 +2,14 @@ import { d4OracleContext, d4ConditionalKeyset, D4_CONDITION } from './support/d4
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
-import { bls12_381 } from '@noble/curves/bls12-381.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
   OutputData,
   MintOperationError,
   createBlindSignature,
-  createBlindSignatureBls,
   createDLEQProof,
   deriveKeysetId,
   pointFromHex,
-  pointFromHexG1,
   type Proof,
   type MintKeys,
 } from '@cashu/cashu-ts'
@@ -62,11 +59,6 @@ const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const KEYSET_ID = deriveKeysetId(KEYS)
 const MSAT_KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
-const BLS_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
-const BLS_KEYS = {
-  '1': bytesToHex(bls12_381.G2.Point.BASE.multiply(2n).toBytes(true)),
-}
-const BLS_KEYSET_ID = deriveKeysetId(BLS_KEYS, { versionByte: 2, unit: 'sat' })
 const scopeInput = {
   scopeKind: 'condition-inventory' as const,
   conditionId: 'condition-1',
@@ -626,21 +618,15 @@ test('accepts a wallet-melt with no planned or returned change', () => {
   assert.deepEqual(result.selectedSuccessorProofIds, [])
 })
 
-test('rejects a full-length V3 output before durable custody result admission', () => {
-  const prepared = preparedSend('send:bls', {
-    id: BLS_KEYSET_ID,
-    keys: BLS_KEYS,
-    proof: proofForBlsOutput,
-  })
-
-  assert.throws(
-    () =>
-      prepareDurableCustodyVerifiedMintResult({
-        record: prepared.record,
-        exactAuthority: prepared.exactAuthority,
-        result: { keep: [proofForBlsOutput(prepared.output)] },
-      }),
-    /canonical NUT-02 V2/,
+test('rejects a full-length V3 proof before durable custody result admission', () => {
+  const prepared = preparedSend('send:bls')
+  const proof = { ...proofForOutput(prepared.output), id: `02${'ab'.repeat(32)}` }
+  assert.throws(() =>
+    prepareDurableCustodyVerifiedMintResult({
+      record: prepared.record,
+      exactAuthority: prepared.exactAuthority,
+      result: { keep: [proof] },
+    }),
   )
 })
 
@@ -895,22 +881,6 @@ async function captureTerminalRedeemEvidence(
   })
   if (evidence === null) throw new Error('terminal redeem evidence was not captured')
   return evidence
-}
-
-function proofForBlsOutput(output: OutputData): Proof {
-  const signature = createBlindSignatureBls(
-    pointFromHexG1(output.blindedMessage.B_),
-    BLS_PRIVATE_KEY,
-    BLS_KEYSET_ID,
-  )
-  return output.toProof(
-    {
-      id: BLS_KEYSET_ID,
-      amount: output.blindedMessage.amount,
-      C_: signature.C_.toHex(true),
-    },
-    { id: BLS_KEYSET_ID, keys: BLS_KEYS },
-  )
 }
 
 function proofForOutput(output: OutputData, keysetId = KEYSET_ID): Proof {

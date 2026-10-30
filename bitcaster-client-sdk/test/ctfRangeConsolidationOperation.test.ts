@@ -356,7 +356,7 @@ test('rejects duplicate input secrets before mint completion', async () => {
       ...deterministicInput(),
       wallet: regularWallet(),
     }),
-    /input secrets are not unique/,
+    /substituted exact proof consolidation inputs/,
   )
 })
 
@@ -474,3 +474,72 @@ function proofFromOutput(output: OutputData): Proof {
     C: 'C-result',
   }
 }
+
+async function prepareWithInputTransform(
+  transform: (inputs: readonly Proof[]) => Proof[],
+  inputs = INPUTS,
+) {
+  const fixture = completingRegularWallet()
+  const prepare = fixture.wallet.prepareSwapToSend.bind(fixture.wallet)
+  fixture.wallet.prepareSwapToSend = async (...args) => ({
+    ...(await prepare(...args)),
+    inputs: transform(args[1]),
+  })
+  return prepareCtfRangeConsolidationOperation({
+    operationId: 'reordered-consolidation',
+    rangeOperationId: 'range-1',
+    mintUrl: MINT_URL,
+    keysetId: KEYSET_ID,
+    inputs,
+    conditional: false,
+    inputFeePpk: 100,
+    plannedRound: ROUND,
+    ...deterministicInput(),
+    wallet: fixture.wallet,
+  })
+}
+
+test('exact consolidation accepts unique proof reordering and stores the wallet request order', async () => {
+  const operation = await prepareWithInputTransform((inputs) => [...inputs].reverse())
+  assert.deepEqual(
+    operation.inputs.map((proof) => proof.secret),
+    INPUTS.map((proof) => proof.secret).reverse(),
+  )
+})
+for (const [label, transform] of [
+  ['duplicate', (inputs: readonly Proof[]) => [inputs[0]!, inputs[0]!, inputs[2]!]],
+  ['omission', (inputs: readonly Proof[]) => inputs.slice(1)],
+  ['extra', (inputs: readonly Proof[]) => [...inputs, { ...inputs[0]!, secret: 'extra' }]],
+  [
+    'secret',
+    (inputs: readonly Proof[]) =>
+      inputs.map((proof, i) => (i ? proof : { ...proof, secret: 'replacement' })),
+  ],
+  [
+    'amount',
+    (inputs: readonly Proof[]) =>
+      inputs.map((proof, i) => (i ? proof : { ...proof, amount: 4095 })),
+  ],
+  [
+    'signature',
+    (inputs: readonly Proof[]) =>
+      inputs.map((proof, i) => (i ? proof : { ...proof, C: 'foreign' })),
+  ],
+  [
+    'keyset',
+    (inputs: readonly Proof[]) =>
+      inputs.map((proof, i) => (i ? proof : { ...proof, id: `01${'b'.repeat(64)}` })),
+  ],
+] as const)
+  test(`exact consolidation refuses ${label} input mutation`, async () => {
+    await assert.rejects(
+      prepareWithInputTransform(transform),
+      /substituted exact proof consolidation inputs/,
+    )
+  })
+test('exact consolidation refuses duplicates in both planned and wallet input lists', async () => {
+  await assert.rejects(
+    prepareWithInputTransform((inputs) => [...inputs], [INPUTS[0]!, INPUTS[0]!, INPUTS[2]!]),
+    /substituted exact proof consolidation inputs/,
+  )
+})

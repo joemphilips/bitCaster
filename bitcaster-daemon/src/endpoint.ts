@@ -1,1 +1,1 @@
-export { normalizeEndpointUrl } from '@bitcaster-market/client-sdk'
+export { normalizeEndpointUrl } from '@bitcaster-market/client-sdk/engineUrlSecurity'

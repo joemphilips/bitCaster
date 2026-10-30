@@ -15,9 +15,10 @@
     "lint:identity-ops": "bash scripts/check-identity-ops-boundary.sh",
     "lint:wallet-ops": "bash scripts/check-wallet-ops-boundary.sh",
     "test": "vitest run",
+    "test:server": "node --test server-tests/*.node-test.mjs",
     "test:nut16-browser": "vitest run --config vitest.browser.config.ts",
     "test:watch": "vitest",
-    "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts && openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o ../bitcaster-client-sdk/src/generated/api.ts"
+    "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts && openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o ../bitcaster-client-sdk/src/generated/api.ts && prettier --write ../bitcaster-client-sdk/src/generated/api.ts"
   },
   "dependencies": {
     "@cashu/cashu-ts": "file:../cashu-ts",
@@ -26,10 +27,11 @@
     "@nostr-dev-kit/ndk": "3.0.3",
     "@nostr-dev-kit/ndk-wallet": "^0.3.8",
     "@scure/bip39": "^2.2.0",
-    "compression": "^1.8.1",
+    "chart.js": "4.5.1",
+    "compression": "^1.8.2",
     "dexie": "^4.4.4",
     "dexie-react-hooks": "^4.4.0",
-    "express": "^4.21.0",
+    "express": "^4.22.3",
     "http-proxy-middleware": "^4.1.1",
     "i18next": "^26.3.1",
     "i18next-browser-languagedetector": "^8.2.1",
@@ -42,7 +44,6 @@
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.8",
     "react-router": "^8.0.1",
-    "uplot": "^1.6.32",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -52,17 +53,17 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "@vitest/browser-playwright": "^4.1.8",
+    "@vitest/browser-playwright": "4.1.12",
     "autoprefixer": "^10.5.1",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "openapi-typescript": "^7.13.0",
-    "postcss": "^8.5.15",
+    "postcss": "^8.5.31",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5",
+    "vite": "^6.4.5",
     "vite-plugin-node-polyfills": "^0.28.0",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^4.0.18"
+    "vitest": "4.1.12"
   }
 }

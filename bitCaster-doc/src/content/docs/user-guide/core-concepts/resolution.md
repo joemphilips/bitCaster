@@ -51,13 +51,18 @@ before you trade and before you claim.
 
 ## Report a result as the browser oracle
 
-Open Your Markets in the creator page. For a self-oracle market, select the
-registered outcome and choose Close market. The Resolve this market dialog
-shows the chosen outcome. You can add an optional public plain-text explanation.
+Open Your Markets in the creator page. For a self-oracle market, choose Close
+market. The Close this market dialog shows the market title and its registered
+outcomes. Select the winning outcome inside the dialog. You can add an optional
+public plain-text explanation. Restored oracle records use the same dialog.
 The explanation limit is 4096 UTF-8 bytes. Do not include private information.
-Select Confirm and deliver saved resolution to save the choice and start delivery.
+Select Close market with this outcome to save the choice and start delivery.
+Opening the dialog, changing an unsaved selection, or cancelling does not sign
+or publish a result. Reopening discards unsaved dialog changes.
+Here, closing the market means publishing its oracle result.
 
 Once the choice is saved, the outcome and original explanation draft cannot change.
+The dialog shows that saved outcome without an outcome selector.
 The browser retains the exact signed kind-89 result before delivery.
 Keep browser storage enabled. If delivery is incomplete, choose Retry saved resolution
 and confirm the dialog. Retry delivers the saved result without signing another
@@ -117,16 +122,18 @@ remains available. It does not create a native explanation.
 
 ## Resolve a restored oracle or publish while the engine is unavailable
 
-Settings lists restored oracle records separately from markets created on
+Creator lists restored oracle records separately from markets created on
 this device. An unresolved restored record can select a registered outcome
 and publish it with the original authority and destinations.
+Review and confirm the action in the resolution dialog. Opening or cancelling
+the dialog does not publish an outcome. Automatic recovery does not publish it.
 The first saved outcome on this device cannot change.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 
 Ordinary retry skips an attestation with a retained relay acknowledgment.
-Choose **Republish exact resolution** in Settings to send the saved kind-89
-event again. This action uses identical bytes without fresh signing.
+Choose **Republish exact resolution** in Creator and confirm the action to send
+the saved kind-89 event again. This action uses identical bytes without fresh signing.
 A terminal restore can use this action without the signing key.
 After durable result acknowledgment, the client attempts the terminal backup.
 Backup failure does not undo successful result delivery.

@@ -25,6 +25,8 @@ or reduce the relay list before trying again.
 
 For a yes/no market, the wizard uses Yes and No automatically. It skips the
 outcome-entry step. For a categorical market, enter the outcome names.
+Use only letters and digits. Each name must differ from the others in more
+than letter case: "Red" and "red" are the same outcome.
 If a payment needs a wallet, choose Create wallet or Restore wallet.
 Setup and cancellation preserve your draft. Setup does not submit the market
 or pay its fee. Continue only after you review the next action.
@@ -40,7 +42,28 @@ API clients can set the optional `color` field to a six-digit hexadecimal
 value with a leading `#`. Omit it for automatic assignment. See the
 [Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
 
+## Keep a draft image
+
+The browser saves your selected JPG, PNG, or WebP image before payment.
+The image must contain data and must not exceed 5 MiB.
+Reloading in the same browser restores the image preview, even before wallet setup.
+If the browser cannot save or restore the selected image, creation stops.
+Select the image again or remove it before continuing.
+You can replace or remove the image before creation preparation starts.
+After preparation, retries use the original saved image.
+Keep browser storage enabled. Clearing site data removes the local draft.
+
 ## Resume an incomplete creation
+
+The app shows a spinner while it creates the market or loads a saved attempt.
+Fee confirmation remains available when payment needs your approval.
+Resume controls appear when a saved attempt is incomplete and work has stopped.
+
+Before mint registration, the client publishes the saved announcement to the
+saved relays. A relay that does not connect within a few seconds does not delay
+the others. If no saved relay accepts the announcement, creation stops before
+mint registration and shows an error. Resume the same creation later. Do not
+start another payment. A saved creation keeps its original relay list.
 
 Mint registration can succeed before the engine accepts the market.
 If the engine request fails, resume the saved creation instead of starting
@@ -53,6 +76,16 @@ the thumbnail again. After mint registration is confirmed, resuming does not
 charge another registration fee. If a response is lost, the client checks
 the existing registration before it sends another request.
 A paid mint registration alone does not mean that the market is ready.
+
+After the engine accepts a new market, its detail page can show **Preparing your market…**.
+The page checks for a limited time and shows the market details automatically
+when they become available. You do not need to reload. If the details are still
+unavailable, choose **Retry** to check again.
+
+If the registered image presence differs from the saved creation, the client
+refuses to report completion. Keep the saved creation and its local data.
+Do not pay again or create a replacement market. Automatic image repair is
+not available. Retrying keeps the original image and payment reference.
 
 CLI users can check and resume the same creation in the original daemon profile:
 
@@ -93,19 +126,37 @@ After creation finishes, the client attempts an encrypted oracle backup on
 the original relays. Backup failure does not undo creation or charge another fee.
 Keep the local oracle record until backup delivery is confirmed.
 
-Open Settings, then Oracle backups. Use the original local Nostr key to
-list backups or restore one version. The client fetches the selected event
-again and checks its signature, encryption, and oracle binding before import.
+Changing your Nostr identity does not erase retained oracle data.
+If a different key owns that data, private oracle preparation and recovery
+refuse the key change. Keep the data and return to its original key.
+Saved public artifacts remain available for exact delivery retry without a signer.
+
+Use the original local Nostr key. When that identity becomes ready, the browser
+resumes pending backup delivery and searches configured relays for missing
+oracle records. It also retries when relay settings change or connectivity
+returns. Discovery uses bounded pages. Recovery never selects or publishes
+an outcome automatically.
+
+Open Creator to see restored oracle records in the normal market list.
+Use the row's Close market action to choose an outcome. Confirm the choice
+before publication. A saved outcome offers exact delivery retry and republication.
+The client fetches each selected backup event again and checks its signature,
+encryption, and oracle binding before import.
 The browser and native client use the same portable backup format.
 Restore retains the original announcement, signing authority, mint, engine,
 and relay destinations. It restores an oracle record, not a paid creation record.
+NIP-07 extension signing does not support this private recovery path. It needs
+the matching local Nostr key.
 
 Discovery depends on relay retention. A page or an empty result does not
-prove that all backups were found. Try another relay or use the exact backup
-event ID and source relay URL. Settings shows one remote page at a time.
+prove that all backups were found. Configure another relay for automatic recovery,
+or use the CLI commands below with the exact backup event ID and source relay URL.
+Manual discovery and exact restore are CLI operations. Creator has no manual
+recovery panel. CLI exact restore also works without configured discovery relays.
 
-Local status distinguishes incomplete import, pending preparation, initial
-delivery, terminal replacement, deletion requests, and pending local updates.
+The market row shows incomplete restoration and pending backup delivery.
+CLI status distinguishes preparation, initial delivery, terminal replacement,
+deletion requests, and pending local updates.
 Initial backup confirmation does not confirm the terminal replacement.
 If import is incomplete, restore the same version again before signing.
 Retry preparation with the original key. A saved exact backup retry can run

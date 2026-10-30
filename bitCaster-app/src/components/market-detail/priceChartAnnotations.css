@@ -1,0 +1,46 @@
+.price-chart-comment-bubble {
+  transition:
+    left 160ms ease-out,
+    top 160ms ease-out,
+    width 160ms ease-out,
+    height 160ms ease-out,
+    opacity 160ms ease-out;
+}
+.price-chart-comment-tail {
+  transition:
+    d 160ms ease-out,
+    opacity 160ms ease-out;
+}
+.price-chart-comment-content {
+  animation: price-chart-comment-reveal 160ms ease-out;
+}
+.price-chart-endpoint-pulse {
+  animation: price-chart-endpoint-glow 2.4s ease-in-out infinite;
+}
+@keyframes price-chart-comment-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes price-chart-endpoint-glow {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .price-chart-comment-bubble,
+  .price-chart-comment-tail {
+    transition: none;
+  }
+  .price-chart-comment-content,
+  .price-chart-endpoint-pulse {
+    animation: none;
+  }
+}

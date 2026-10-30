@@ -25,7 +25,7 @@ vi.mock("../../stores/durable-custody-db", () => ({
   },
 }));
 vi.mock("../../stores/browser-wallet-counter-db", () => ({
-  createActiveBrowserWalletCounterSource: () => ({}),
+  BrowserWalletCounterDexieStore: class {},
 }));
 vi.mock("../../stores/wallet", () => ({
   useWalletStore: { getState: () => ({ mnemonic: "captured wallet" }) },

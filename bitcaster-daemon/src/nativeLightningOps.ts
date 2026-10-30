@@ -52,13 +52,15 @@ export function createNativeLightningOps(input: {
   const coordinatorOptions: NativeBolt11MintQuoteCoordinatorOptions = {
     directory: input.directory,
     getFence: input.getCustodyFence,
-    walletFor: async (mintUrl, unit) =>
+    walletFor: async (mintUrl, unit, counterSource) =>
       createWallet(
         mintUrl,
         { walletSeedHex: input.walletSeedHex },
         { getCustodyFence: input.getCustodyFence },
         'sat',
         unit,
+        undefined,
+        counterSource,
       ) as unknown as NativeBolt11MintQuoteWallet,
     restoreExactOutputs: (restore) => restoreNativeMintOutputs(restore),
     ...(input.now === undefined ? {} : { now: input.now }),

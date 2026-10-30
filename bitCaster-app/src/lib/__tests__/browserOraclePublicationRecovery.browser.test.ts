@@ -1,14 +1,13 @@
 import { beforeEach, expect, it } from "vitest";
 import { deriveDlcConditionId } from "@bitcaster/client-sdk";
 import { createCreatorMarketsStore } from "@/stores/creatorMarkets";
+import { browserOracleBackupValidator, resetKormir } from "@/lib/kormir";
 import {
-  browserOracleBackupValidator,
-  getKormir,
-  prepareEnumAnnouncement,
-  prepareEnumAttestation,
-  resetKormir,
-  restoreKormirWithNsec,
-} from "../kormir";
+  fixtureOracleCore as getKormir,
+  prepareFixtureAnnouncement as prepareEnumAnnouncement,
+  prepareFixtureAttestation as prepareEnumAttestation,
+  restoreFixtureOracleKey as restoreKormirWithNsec,
+} from "@/test/localOracleProvider";
 import {
   browserOraclePrivateAuthorityPort,
   reconcileBrowserOraclePublication,

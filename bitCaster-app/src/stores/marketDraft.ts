@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { marketDraftImages } from "./marketDraftImage";
 import type { WizardDraft } from "@/types/market-creation";
 
 export function defaultDraft(): WizardDraft {
@@ -43,19 +44,24 @@ export const useMarketDraftStore = create<MarketDraftState>()(
       },
       // Starting over must not lose the reference to unfinished paid work.
       clearDraft: () => {
-        const creation = get().draft.creation;
+        const { creation, thumbnailId } = get().draft;
         set({
           draft: {
             ...defaultDraft(),
-            ...(creation === undefined ? {} : { creation }),
+            ...(creation === undefined
+              ? {}
+              : { creation, ...(thumbnailId ? { thumbnailId } : {}) }),
           },
           hasSavedDraft: creation !== undefined,
         });
+        if (!creation && thumbnailId) void marketDraftImages.remove(thumbnailId).catch(() => {});
       },
       completeCreation: (creationId) => {
         if (get().draft.creation?.creationId !== creationId)
           throw new Error("Creation draft reference changed during completion.");
+        const thumbnailId = get().draft.thumbnailId;
         set({ draft: defaultDraft(), hasSavedDraft: false });
+        if (thumbnailId) void marketDraftImages.remove(thumbnailId).catch(() => {});
       },
     }),
     {

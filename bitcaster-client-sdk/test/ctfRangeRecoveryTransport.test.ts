@@ -1,3 +1,4 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
@@ -15,7 +16,6 @@ import {
   deriveCtfRangeRefundKey,
   deriveKeysetId,
   hashToCurve,
-  hashToCurveBls,
   pointFromHex,
   type CheckStatePayload,
   type CheckStateResponse,
@@ -62,9 +62,16 @@ const OUTCOME_COLLECTION = 'YES'
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 200
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
-const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = `02${'79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'}`
-const MINT_KEYS = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY, '4': MINT_PUBLIC_KEY }
+const MINT_PRIVATE_KEYS = Object.fromEntries(
+  [1, 2, 4].map((amount) => [String(amount), Uint8Array.from([...new Uint8Array(31), amount])]),
+)
+const MINT_KEYS = Object.fromEntries(
+  Object.entries(MINT_PRIVATE_KEYS).map(([amount, key]) => [
+    amount,
+    Buffer.from(secp256k1.getPublicKey(key, true)).toString('hex'),
+  ]),
+)
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
@@ -609,17 +616,24 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
   assert.deepEqual(batchSizes, [100, 1])
 
   const blsId = `02${'12'.repeat(32)}`
-  let blsY = ''
-  await checkCtfRangeInputProofStates(
-    {
-      async check(payload) {
-        blsY = payload.Ys[0]!
-        return unspentStates(payload)
-      },
-    },
-    [{ id: blsId, secret: 'bls-secret' }],
+  let calls = 0
+  await assert.rejects(
+    () =>
+      checkCtfRangeInputProofStates(
+        {
+          async check(payload) {
+            calls++
+            return unspentStates(payload)
+          },
+        },
+        [
+          { id: OFFER_KEYSET_ID, secret: 'supported' },
+          { id: blsId, secret: 'bls-secret' },
+        ],
+      ),
+    /supported resolved/,
   )
-  assert.equal(blsY, hashToCurveBls(new TextEncoder().encode('bls-secret')).toHex(true))
+  assert.equal(calls, 0)
 
   await assert.rejects(
     () =>
@@ -1097,8 +1111,9 @@ async function createRangeBinding(operation: DurableCtfRangeOperation) {
 }
 
 function signBlindedOutput(output: SerializedBlindedMessage): SerializedBlindedSignature {
-  const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
-  const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+  const privateKey = MINT_PRIVATE_KEYS[output.amount.toString()]!
+  const signature = createBlindSignature(pointFromHex(output.B_), privateKey, output.id)
+  const dleq = createDLEQProof(pointFromHex(output.B_), privateKey)
   return {
     id: output.id,
     amount: output.amount,
@@ -1224,3 +1239,23 @@ function mintKeysetById(keysetId: string) {
     final_expiry: FINAL_EXPIRY,
   }
 }
+
+test('unsupported bound output keysets never reach the mint key endpoint', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const record = structuredClone(binding.record)
+  record.operation.verification.outputKeysets[0]!.keysetId = `02${'ab'.repeat(32)}`
+  let keyCalls = 0
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, {
+    restore: async () => ({ outputs: [], signatures: [] }),
+    check: unspentStates,
+    getKeys: async () => {
+      keyCalls++
+      return { keysets: [] }
+    },
+  })
+  await assert.rejects(() =>
+    adapter.loadUncertainRecoveryObservation({ record, selection: null, now: 50 }),
+  )
+  assert.equal(keyCalls, 0)
+})

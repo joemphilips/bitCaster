@@ -23,8 +23,6 @@ import {
   Landmark,
   Radio,
   Loader2,
-  UserCircle,
-  BadgeCheck,
   Plug,
   KeyRound,
   AlertTriangle,
@@ -36,6 +34,8 @@ import { getRelayUrlValidationError } from "@/lib/walletOps";
 import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { NativeDialog } from "@/components/shared/NativeDialog";
+import { NostrProfilePanel } from "./NostrProfilePanel";
+import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -135,6 +135,7 @@ export function Settings({
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
+  onCreateWallet,
   onReplaceWallet,
   onMintClick,
   onSignerModeChange,
@@ -144,9 +145,10 @@ export function Settings({
   onConfirmWalletBackup,
   onDisconnectNostr,
   onRetryNostrProfile,
+  onLoadNostrProfileEdit,
+  onSaveNostrProfileEdit,
   onAddRelay,
   onRemoveRelay,
-  oracleBackupPanel,
 }: SettingsProps) {
   const { t } = useTranslation();
   const { general, cashu, nostr } = settings;
@@ -171,10 +173,22 @@ export function Settings({
   const [showAddRelay, setShowAddRelay] = useState(false);
   const [newRelayUrl, setNewRelayUrl] = useState("");
   const [isConnectingNip07, setIsConnectingNip07] = useState(false);
+  const [showNip07Warning, setShowNip07Warning] = useState(false);
   const [isConnectingNsec, setIsConnectingNsec] = useState(false);
   const [isRetryingProfile, setIsRetryingProfile] = useState(false);
   const seedClipboardClearRef = useRef<number | null>(null);
   const nsecClipboardClearRef = useRef<number | null>(null);
+  const signerConnected = nostr.connectionStatus === "connected";
+  const connectionPending =
+    nostr.connectionStatus === "connecting" || isConnectingNip07 || isConnectingNsec;
+
+  useEffect(() => {
+    if (nostr.signerMode !== "nip07" || !signerConnected) return;
+    setShowNsecInput(false);
+    setNsecValue("");
+    setNcryptsecPassphrase("");
+    setShowNsec(false);
+  }, [nostr.signerMode, signerConnected]);
 
   const dismissSeedConfirm = useCallback(() => {
     setShowSeedConfirm(false);
@@ -335,10 +349,11 @@ export function Settings({
   };
 
   const handleNip07Connect = async () => {
+    setShowNip07Warning(false);
     if (!isNip07Available()) {
       useToastStore.getState().addToast({
         type: "error",
-        message: "You need to install a Nostr extension like Alby. Visit https://getalby.com",
+        message: t("settings.nip07Missing"),
       });
       return;
     }
@@ -348,7 +363,7 @@ export function Settings({
       if (success) {
         useToastStore.getState().addToast({
           type: "success",
-          message: "Connected via NIP-07 extension",
+          message: t("settings.nip07Connected"),
         });
       }
     } finally {
@@ -484,6 +499,13 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
+        {!hasWallet && onCreateWallet && (
+          <div className="mb-4" data-testid="settings-create-wallet">
+            <PrimaryGradientButton onClick={onCreateWallet} icon={Landmark}>
+              {t("wallet.createWallet")}
+            </PrimaryGradientButton>
+          </div>
+        )}
         {/* Connected Mints */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
@@ -615,9 +637,8 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
-        {oracleBackupPanel}
         {/* Nostr Connection — only show connect buttons if not already connected */}
-        {nostr.signerMode === "none" && (
+        {!signerConnected && !connectionPending && (
           <div>
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
               Connect to Nostr
@@ -627,8 +648,8 @@ export function Settings({
             </p>
             <div className="space-y-3">
               <button
-                onClick={handleNip07Connect}
-                disabled={isConnectingNip07}
+                onClick={() => setShowNip07Warning(true)}
+                disabled={connectionPending}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isConnectingNip07 ? (
@@ -649,142 +670,140 @@ export function Settings({
           </div>
         )}
 
-        {/* nsec Input (when user clicks Connect with Private Key) */}
-        {showNsecInput && (
-          <div className="space-y-3">
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
-              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is
-                necessary for now if you want to become an oracle. It is left for future improvement
-                to make this not mandatory.
-              </p>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                Private Key (nsec or ncryptsec)
-              </h3>
-              <div className="relative">
-                <input
-                  type={showNsec ? "text" : "password"}
-                  value={nsecValue}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setNsecValue(v);
-                    if (!v.trim().startsWith("ncryptsec1")) setNcryptsecPassphrase("");
-                  }}
-                  onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
-                  placeholder="nsec1... or ncryptsec1..."
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  autoFocus
-                />
-                <button
-                  onClick={() => setShowNsec(!showNsec)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                >
-                  {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-              {isNcryptsec && (
-                <div className="mt-3">
-                  <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                    Passphrase
-                  </label>
-                  <input
-                    type="password"
-                    value={ncryptsecPassphrase}
-                    onChange={(e) => setNcryptsecPassphrase(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
-                    placeholder="Decrypt passphrase (NIP-49)"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              )}
+        {showNip07Warning && (
+          <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700/50 dark:bg-amber-900/20">
+            <p id="nip07-capability-warning" className="text-sm text-amber-800 dark:text-amber-300">
+              {t("settings.nip07CapabilityWarning")}
+            </p>
+            <div className="flex gap-2">
               <button
-                onClick={handleNsecSubmit}
-                disabled={isConnectingNsec || !trimmedNsec || (isNcryptsec && !ncryptsecPassphrase)}
-                className="mt-3 w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                type="button"
+                onClick={handleNip07Connect}
+                aria-describedby="nip07-capability-warning"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
-                {isNcryptsec ? "Decrypt & Connect" : "Connect"}
+                {t("common.ok")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNip07Warning(false)}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
+              >
+                {t("common.cancel")}
               </button>
             </div>
           </div>
         )}
 
-        {/* Profile Preview */}
-        {nostr.signerMode !== "none" && (
-          <div>
-            <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-              Profile
-            </h3>
-            {nostr.profileFetchStatus === "fetching" && !nostr.profile && (
-              <div className="flex items-center gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                <span className="text-sm text-slate-500 dark:text-slate-400">
-                  Fetching profile...
-                </span>
+        {connectionPending && (
+          <div className="flex items-center justify-between gap-3 text-sm text-slate-600 dark:text-slate-300">
+            <p role="status" className="flex items-center gap-2">
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              {t("settings.nostrConnecting")}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsConnectingNip07(false);
+                setIsConnectingNsec(false);
+                setShowNip07Warning(false);
+                onDisconnectNostr?.();
+              }}
+              className="rounded-lg px-3 py-2 font-medium hover:bg-slate-100 dark:hover:bg-slate-700"
+            >
+              {t("common.cancel")}
+            </button>
+          </div>
+        )}
+
+        {/* nsec Input (when user clicks Connect with Private Key) */}
+        {showNsecInput &&
+          !(nostr.signerMode === "nip07" && (signerConnected || connectionPending)) &&
+          !isConnectingNip07 && (
+            <div className="space-y-3">
+              <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-sm text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is
+                  necessary for now if you want to become an oracle. It is left for future
+                  improvement to make this not mandatory.
+                </p>
               </div>
-            )}
-            {nostr.profileFetchStatus === "not-found" && (
-              <div className="flex items-center justify-between gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <div className="flex items-center gap-2 min-w-0">
-                  <UserCircle className="w-5 h-5 text-slate-400 shrink-0" />
-                  <span className="text-sm text-slate-500 dark:text-slate-400 truncate">
-                    Profile not found on connected relays
-                  </span>
+              <div>
+                <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                  Private Key (nsec or ncryptsec)
+                </h3>
+                <div className="relative">
+                  <input
+                    type={showNsec ? "text" : "password"}
+                    value={nsecValue}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setNsecValue(v);
+                      if (!v.trim().startsWith("ncryptsec1")) setNcryptsecPassphrase("");
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
+                    placeholder="nsec1... or ncryptsec1..."
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => setShowNsec(!showNsec)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                  >
+                    {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
+                {isNcryptsec && (
+                  <div className="mt-3">
+                    <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                      Passphrase
+                    </label>
+                    <input
+                      type="password"
+                      value={ncryptsecPassphrase}
+                      onChange={(e) => setNcryptsecPassphrase(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
+                      placeholder="Decrypt passphrase (NIP-49)"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
                 <button
-                  onClick={handleRetryProfile}
-                  disabled={isRetryingProfile}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors disabled:opacity-60 shrink-0"
+                  onClick={handleNsecSubmit}
+                  disabled={
+                    isConnectingNsec || !trimmedNsec || (isNcryptsec && !ncryptsecPassphrase)
+                  }
+                  className="mt-3 w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  {isRetryingProfile && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Retry
+                  {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isNcryptsec ? "Decrypt & Connect" : "Connect"}
                 </button>
               </div>
-            )}
-            {nostr.profile && (
-              <div className="flex items-start gap-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <img
-                  src={nostr.profile.avatar}
-                  alt={nostr.profile.displayName}
-                  className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-600 object-cover"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-900 dark:text-white">
-                      {nostr.profile.displayName}
-                    </span>
-                    {nostr.profileFetchStatus === "fetching" && (
-                      <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                    )}
-                    {nostr.profile.nip05verified && (
-                      <BadgeCheck className="w-4 h-4 text-blue-500" />
-                    )}
-                  </div>
-                  {nostr.profile.nip05 && (
-                    <p className="text-sm text-slate-500 dark:text-slate-400 truncate">
-                      {nostr.profile.nip05}
-                    </p>
-                  )}
-                  {nostr.profile.bio && (
-                    <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 line-clamp-2">
-                      {nostr.profile.bio}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
+            </div>
+          )}
+
+        {/* Profile Preview */}
+        {signerConnected && (
+          <div>
+            <NostrProfilePanel
+              key={nostr.profileEditorKey ?? nostr.signerMode}
+              profile={nostr.profile}
+              status={nostr.profileFetchStatus}
+              retry={handleRetryProfile}
+              retrying={isRetryingProfile}
+              load={onLoadNostrProfileEdit}
+              save={onSaveNostrProfileEdit}
+            />
             <div className="mt-3 flex items-center gap-3">
               {nostr.signerMode === "nip07" && (
                 <button
-                  onClick={handleNip07Connect}
-                  disabled={isConnectingNip07}
+                  onClick={() => setShowNip07Warning(true)}
+                  disabled={connectionPending}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors disabled:opacity-60"
                 >
                   {isConnectingNip07 ? (

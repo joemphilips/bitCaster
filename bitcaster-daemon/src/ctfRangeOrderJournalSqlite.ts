@@ -187,6 +187,22 @@ export function readRangePreparation(
   return row === undefined ? null : decodePreparationRow(row)
 }
 
+export function readRangePreparationHistoryByClientOrderId(
+  database: DatabaseSync,
+  scopeId: string,
+  clientOrderId: string,
+): RangePreparationRecord[] {
+  requireText(scopeId, 'scope id')
+  requireText(clientOrderId, 'client order id', 1024)
+  return (
+    database
+      .prepare(
+        `SELECT * FROM daemon_ctf_range_preparations WHERE scope_id = ? AND client_order_id = ? ORDER BY created_at_ms DESC, range_operation_id DESC LIMIT 33`,
+      )
+      .all(scopeId, clientOrderId) as Array<Record<string, unknown>>
+  ).map(decodePreparationRow)
+}
+
 export function readActiveRangePreparationByClientOrderId(
   database: DatabaseSync,
   scopeId: string,

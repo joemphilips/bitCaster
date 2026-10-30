@@ -294,3 +294,39 @@ function sameAsset(left: DurableCtfRangeAsset, right: DurableCtfRangeAsset): boo
 function assertNever(value: never): never {
   throw new Error(`unsupported CTF range fee variant: ${String(value)}`)
 }
+
+export interface CtfRangeOrderFeeTotal {
+  readonly asset: DurableCtfRangeAsset
+  readonly amountSubunits: bigint
+}
+
+/** Keep distinct conditional collections separate from each other and cash. */
+export function summarizeCtfRangeOrderFees(
+  input: CtfRangeOrderFeeFacts,
+): readonly CtfRangeOrderFeeTotal[] {
+  const facts = requireFeeFacts(input, 'trade fee summary')
+  const totals: { asset: DurableCtfRangeAsset; amountSubunits: bigint }[] = []
+  for (const [asset, amount] of [
+    [facts.settlementAsset, facts.settlementInputFeeSubunits],
+    [facts.sourcePreparationAsset, facts.sourcePreparationFeeSubunits],
+    [facts.consolidationAsset, facts.consolidationFeeSubunits],
+  ] as const) {
+    const existing = totals.find((total) => sameAsset(total.asset, asset))
+    if (existing) existing.amountSubunits += BigInt(amount)
+    else totals.push({ asset, amountSubunits: BigInt(amount) })
+  }
+  return totals
+}
+
+export function regularCtfRangeOrderFeeTotal(input: CtfRangeOrderFeeFacts): bigint {
+  return summarizeCtfRangeOrderFees(input).reduce((total, fee) => {
+    switch (fee.asset.kind) {
+      case 'regular':
+        return total + fee.amountSubunits
+      case 'conditional':
+        return total
+      default:
+        throw new Error('Unsupported fee asset')
+    }
+  }, 0n)
+}

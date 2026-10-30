@@ -14,10 +14,10 @@ import {
 
 export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 // The unit reset intentionally refuses every pre-release profile authority.
-export const FINAL_PROFILE_SCHEMA_VERSION = 15
+export const FINAL_PROFILE_SCHEMA_VERSION = 16
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'fc13f1764e4b4add56c62e74441fe4d10bd3e53f95ed4ee4c837732e648edd9f'
+  'f223b7f46405480d620fc6a6e270279442b6f0b5d0bef4645a8a521701ad2d9f'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -1125,29 +1125,48 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
+    scan_policy_version INTEGER NOT NULL CHECK (scan_policy_version = 1),
+    scan_scope TEXT NOT NULL CHECK (scan_scope IN ('regular-msat', 'condition')),
+    condition_selector TEXT NOT NULL CHECK (
+      (scan_scope = 'regular-msat' AND condition_selector = '') OR
+      (scan_scope = 'condition' AND length(condition_selector) = 64 AND condition_selector NOT GLOB '*[^0-9a-f]*')
+    ),
+    gap_limit INTEGER NOT NULL CHECK (gap_limit BETWEEN 1 AND 2147483648),
+    discovery_state TEXT NOT NULL CHECK (discovery_state IN ('pending', 'complete')),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     scan_offset INTEGER NOT NULL CHECK (scan_offset BETWEEN 0 AND 2047),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
     ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    UNIQUE (recovery_id, scan_policy_version, scan_scope, condition_selector, gap_limit),
+    CHECK (state <> 'completed' OR discovery_state = 'complete')
   ) STRICT`,
   `CREATE TABLE seed_recovery_keysets (
     recovery_id TEXT NOT NULL,
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
-    next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
+    scan_policy_version INTEGER NOT NULL CHECK (scan_policy_version = 1),
+    scan_scope TEXT NOT NULL CHECK (scan_scope IN ('regular-msat', 'condition')),
+    condition_selector TEXT NOT NULL CHECK (
+      (scan_scope = 'regular-msat' AND condition_selector = '') OR
+      (scan_scope = 'condition' AND length(condition_selector) = 64 AND condition_selector NOT GLOB '*[^0-9a-f]*')
+    ),
+    gap_limit INTEGER NOT NULL CHECK (gap_limit BETWEEN 1 AND 2147483648),
+    stop_reason TEXT CHECK (stop_reason IN ('gap-limit', 'counter-exhausted')),
+    next_counter INTEGER NOT NULL CHECK (next_counter BETWEEN 0 AND 2147483648),
     trailing_empty_counters INTEGER NOT NULL CHECK (
       trailing_empty_counters BETWEEN 0 AND 9007199254740991
     ),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     PRIMARY KEY (recovery_id, keyset_id),
-    FOREIGN KEY (recovery_id)
-      REFERENCES seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
+    FOREIGN KEY (recovery_id, scan_policy_version, scan_scope, condition_selector, gap_limit)
+      REFERENCES seed_recovery_jobs(recovery_id, scan_policy_version, scan_scope, condition_selector, gap_limit) ON DELETE RESTRICT,
     CHECK (
-      state = 'active'
-      OR (state = 'completed' AND trailing_empty_counters >= 300)
+      (state = 'active' AND stop_reason IS NULL AND next_counter < 2147483648)
+      OR (state = 'completed' AND stop_reason IS NOT NULL AND ((stop_reason = 'gap-limit' AND trailing_empty_counters >= gap_limit AND next_counter < 2147483648)
+        OR (stop_reason = 'counter-exhausted' AND next_counter = 2147483648)))
     )
   ) STRICT`,
   `CREATE TABLE daemon_outgoing_cashu_transfers (
@@ -1395,12 +1414,12 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     END`,
   `CREATE TRIGGER seed_recovery_jobs_no_rebind
     BEFORE UPDATE OF recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-      normalized_mint, unit ON seed_recovery_jobs
+      normalized_mint, unit, scan_policy_version, scan_scope, condition_selector, gap_limit ON seed_recovery_jobs
     BEGIN
       SELECT RAISE(ABORT, 'seed recovery job identity is immutable');
     END`,
   `CREATE TRIGGER seed_recovery_keysets_no_rekey
-    BEFORE UPDATE OF recovery_id, keyset_id ON seed_recovery_keysets
+    BEFORE UPDATE OF recovery_id, keyset_id, scan_policy_version, scan_scope, condition_selector, gap_limit ON seed_recovery_keysets
     BEGIN
       SELECT RAISE(ABORT, 'seed recovery keyset identity is immutable');
     END`,

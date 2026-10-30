@@ -11,6 +11,43 @@ servers:
     description: Local development (via Aspire AppHost)
 
 paths:
+  /api/deployment-identity:
+    get:
+      operationId: getDeploymentIdentity
+      summary: Read the running API package identity
+      security: []
+      description: >
+        Returns a startup-captured opaque build identity. This response does not
+        authorize any operation and is not cryptographic attestation.
+      responses:
+        '200':
+          description: The running package has a valid identity
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentIdentityResponse'
+        '503':
+          description: The running package identity is unavailable
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    const: deployment-identity-unavailable
   /api/v1/markets/{conditionId}:
     post:
       operationId: createMarket
@@ -53,7 +90,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateMarketResponse'
         '400':
-          description: Validation error
+          description: >
+            Validation error, for example an outcome name that is not ASCII
+            letters or digits, or that repeats another name in any letter case.
           content:
             application/json:
               schema:
@@ -151,22 +190,12 @@ paths:
         commits and are filtered to the requested timeframe. Compound
         outcome-set matches are projected only when settlement commits, and
         the response never uses compound outcome ids.
+        The response is the latest applied history. The read does not wait for
+        newer trades. The server sends `ConfirmedTradeRecorded` after this
+        history includes the trade, or after a bounded wait. Read the history
+        again after that notification.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
-        - name: minimumEventOrder
-          in: query
-          required: false
-          description: Opaque source position from a server response. Do not compare positions on the client.
-          schema:
-            type: string
-            maxLength: 30
-        - name: refresh
-          in: query
-          required: false
-          description: Capture the current source position once. Wait for that position before returning the snapshot.
-          schema:
-            type: boolean
-            default: false
         - name: timeframe
           in: query
           required: false
@@ -187,9 +216,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/MarketPriceHistoryResponse'
         '400':
-          description: Invalid condition id, timeframe, or event order
+          description: Invalid condition id or timeframe
         '503':
-          description: The snapshot could not prove the requested position within the read deadline.
+          description: >
+            The price history is not serving. This occurs while the server
+            builds or restarts the history, or after a server fault. It does
+            not mean an empty history.
 
   /api/v1/markets/{conditionId}/comments:
     get:
@@ -493,8 +525,21 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '503':
           description: >
-            order-admission-unavailable or order-processing-unavailable.
-            Retain the original operation for retry and recovery.
+            order-quotes-refreshing with type /errors/order-quotes-refreshing
+            and status 503 means this attempt was refused before acceptance.
+            Clients may automatically retry only this exact problem with the
+            identical serialized request, capability and signed comment.
+            Authentication headers may be refreshed. Bound waiting to 60 seconds
+            from first submission, at most 30 attempts and the original authorization
+            expiry. Use a 1-second first delay and 2-second later delays. Each attempt
+            is at most 30 seconds and ends no later than the wait and expiry limits;
+            preserve shorter caller limits. Start an attempt only while time remains
+            before both limits.
+            Waiting can be stopped. Stopping or this refusal does not authorize
+            custody release or prove that another copy cannot be accepted.
+            order-admission-unavailable, order-processing-unavailable, generic 503,
+            timeout and malformed problems do not permit this automatic retry.
+            Retain the original operation for reconciliation and recovery.
           content:
             application/problem+json:
               schema:
@@ -759,6 +804,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+        '503':
+          description: >
+            order-quotes-refreshing with type /errors/order-quotes-refreshing
+            and status 503 means current depth is temporarily unavailable.
+            Retry this read with a bounded policy. Keep a previously received
+            snapshot as last-known display data. A client without a snapshot
+            keeps its loading state. This response does not mean the book is
+            empty or that more funding is required. Market subscriptions and
+            order, fill and settlement notifications remain available.
+            Current order preview and admission are still required before a trade.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{marketId}/metadata:
     get:
@@ -827,6 +886,8 @@ paths:
         Route constraints, framework binding, authentication, rate limits, and
         Score-specific failures can use other bodies. A request failure does not
         prove that no value was received. Preserve the original delivery identity.
+        An admitted delivery completes even if the client disconnects before the
+        response; read its status later.
       security:
         - nip98: []
       parameters:
@@ -1663,6 +1724,24 @@ components:
       description: Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId.
 
   schemas:
+    DeploymentIdentityResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, component, buildId]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        component:
+          type: string
+          const: api
+          description: Identifies the API package.
+        buildId:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: Opaque identity of the running package.
     Sha256Digest:
       type: string
       pattern: '^[0-9a-f]{64}$'
@@ -2862,8 +2941,13 @@ components:
         - failed
       description: >
         Order lifecycle for public FOK orders and internal GTC quotes. A public
-        FOK order is filled or cancelled. An internal GTC quote can rest or
-        partially fill.
+        FOK order that reserves its complete amount is `matched`, and the
+        submission response reports `matched`. Its order status becomes
+        `filled` after its settlement group is `Confirmed`, or `failed` when
+        the group ends in another terminal status. A public FOK order that
+        cannot reserve its complete amount is `cancelled`. The engine also
+        reports `failed` when it cannot process an accepted order. An internal
+        GTC quote can rest or partially fill.
 
     SettlementGroupStatus:
       type: string
@@ -3816,7 +3900,12 @@ components:
       properties:
         name:
           type: string
-          description: Outcome label (e.g. "Yes", "Alice").
+          minLength: 1
+          maxLength: 191
+          pattern: '^[A-Za-z0-9]{1,191}$'
+          description: >
+            Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or
+            digits, with no spaces or symbols.
         color:
           type: string
           pattern: '^#[0-9A-Fa-f]{6}$'
@@ -3868,7 +3957,10 @@ components:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
           maxItems: 8
-          description: The outcomes for the market (2 through 8).
+          description: >
+            The outcomes for the market (2 through 8). Outcome names must be
+            unique when letter case is ignored: "Red" and "red" are the same
+            outcome. A duplicate returns 400.
         outcomeType:
           type: string
           enum: [yesno, categorical, numeric]
@@ -3994,7 +4086,6 @@ components:
           minLength: 1
           description: >
             Opaque source position for this confirmed trade.
-            Pass the value unchanged to minimumEventOrder when requesting a snapshot.
             Do not compare positions on the client.
             Do not merge live trade points into retained history snapshots.
         timestamp:
@@ -4106,6 +4197,11 @@ components:
         - price
         - priceDenominator
       properties:
+        authorTrade:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/MarketCommentAuthorTrade'
+          description: The comment author's order intent for this linked fill. Null means historical intent is unknown.
         faceAmountSubunits:
           type: integer
           format: int64
@@ -4133,6 +4229,21 @@ components:
           format: int32
           minimum: 2
           description: Market divisibility used as the price denominator.
+
+    MarketCommentAuthorTrade:
+      type: object
+      required:
+        - side
+        - outcomeId
+        - tokenSide
+      properties:
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        outcomeId:
+          type: string
+          description: Primitive outcome selected by the author. This can differ from the chart's price-history route.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
 
     MarketCommentsResponse:
       type: object

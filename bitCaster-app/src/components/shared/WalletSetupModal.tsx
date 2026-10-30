@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, X } from "lucide-react";
+import { SeedWordGrid } from "./SeedWordGrid";
 import { NativeDialog } from "./NativeDialog";
 
 import { validate, validateWord } from "@/lib/bip39";
@@ -24,15 +25,9 @@ export function WalletSetupModal({
 }: WalletSetupModalProps) {
   const { t } = useTranslation();
   const [showImport, setShowImport] = useState(mode === "replace");
-  const [seedPhrase, setSeedPhrase] = useState("");
-
-  const words = seedPhrase
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => word.toLowerCase());
-  const hasSeedPhraseInput = words.length > 0;
-  const wordCountIsValid = words.length === 12;
+  const [words, setWords] = useState<string[]>(Array(12).fill(""));
+  const hasSeedPhraseInput = words.some(Boolean);
+  const wordCountIsValid = (words.length === 12 || words.length === 24) && words.every(Boolean);
   const invalidWord = wordCountIsValid ? words.find((word) => !validateWord(word)) : undefined;
   const seedPhraseError =
     hasSeedPhraseInput && !wordCountIsValid
@@ -114,34 +109,12 @@ export function WalletSetupModal({
 
               {showImport && (
                 <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-left dark:border-slate-700 dark:bg-slate-900/60">
-                  <label
-                    htmlFor="wallet-seed-phrase"
-                    className="block text-sm font-medium text-slate-700 dark:text-slate-200"
-                  >
-                    {t("wallet.enterSeedPhrase")}
-                  </label>
-                  <textarea
-                    id="wallet-seed-phrase"
-                    value={seedPhrase}
-                    onChange={(event) => setSeedPhrase(event.target.value)}
-                    rows={4}
-                    aria-invalid={seedPhraseError ? "true" : "false"}
-                    aria-describedby={seedPhraseError ? "wallet-seed-phrase-error" : undefined}
-                    className={`w-full resize-y rounded-lg border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 dark:bg-slate-800 dark:text-white ${
-                      seedPhraseError
-                        ? "border-rose-500 focus:border-rose-500 focus:ring-rose-500/20 dark:border-rose-500"
-                        : "border-slate-300 focus:border-blue-500 focus:ring-blue-500/20 dark:border-slate-700"
-                    }`}
-                    placeholder={t("wallet.enterSeedPhrase")}
+                  <SeedWordGrid
+                    words={words}
+                    onChange={setWords}
+                    disabled={isCreating}
+                    error={seedPhraseError}
                   />
-                  {seedPhraseError && (
-                    <p
-                      id="wallet-seed-phrase-error"
-                      className="text-sm text-rose-600 dark:text-rose-300"
-                    >
-                      {seedPhraseError}
-                    </p>
-                  )}
                   <button
                     type="button"
                     onClick={() => void onImportSeed(words)}

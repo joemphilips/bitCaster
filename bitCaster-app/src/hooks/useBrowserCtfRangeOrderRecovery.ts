@@ -6,9 +6,12 @@ import {
   recoverPendingWalletMints,
 } from "@/lib/cashu";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
-import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import {
-  hasActiveBrowserCtfRangeOrderAttempt,
+  activeBrowserWalletScopeId,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
+import {
+  deferBrowserCtfRangeOrderRecovery,
   listenForBrowserCtfRangeRecoveryWake,
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
@@ -39,14 +42,21 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     let countersRecovered = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
+    const isCurrent = () => !cancelled && activeBrowserWalletScopeId() === scopeId;
+    const clearRetry = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    };
     const schedule = () => {
-      if (cancelled || timer !== undefined) return;
+      if (!isCurrent() || timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
         void runRecovery();
       }, RANGE_RECOVERY_RETRY_MS);
     };
     const runRecovery = async () => {
+      if (!isCurrent()) return;
+      clearRetry();
       if (running) {
         rerunRequested = true;
         return;
@@ -68,6 +78,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryRequired = true;
           }
         }
+        if (!isCurrent()) return;
         if (!mintsRecovered) {
           try {
             const result = await recoverPendingWalletMints();
@@ -77,7 +88,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryRequired = true;
           }
         }
-        if (hasActiveBrowserCtfRangeOrderAttempt(scopeId)) {
+        if (!isCurrent()) return;
+        if (deferBrowserCtfRangeOrderRecovery(scopeId)) {
           retryRequired = true;
         } else {
           try {
@@ -90,6 +102,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryRequired = true;
           }
         }
+        if (!isCurrent()) return;
         try {
           const result = await recoverBrowserDurableOutgoingCashuTransfersInPass({
             mintUrls,
@@ -99,11 +112,13 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         } catch {
           retryRequired = true;
         }
+        if (!isCurrent()) return;
         if (!countersRecovered) {
           try {
             let complete = true;
             for (const mintUrl of mintUrls) {
               const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
+              if (!isCurrent()) return;
               complete &&= result.complete;
             }
             countersRecovered = complete;
@@ -114,11 +129,13 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         }
       } finally {
         running = false;
+        if (!isCurrent()) return;
         resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
-        if (retryRequired) schedule();
-        if (rerunRequested && !cancelled) {
+        if (rerunRequested) {
           rerunRequested = false;
           void runRecovery();
+        } else if (retryRequired) {
+          schedule();
         }
       }
     };
@@ -130,7 +147,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     void runRecovery();
     return () => {
       cancelled = true;
-      if (timer !== undefined) clearTimeout(timer);
+      rerunRequested = false;
+      clearRetry();
       window.removeEventListener("online", onOnline);
       stopRecoveryWake();
     };

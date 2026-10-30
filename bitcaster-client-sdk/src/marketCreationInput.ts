@@ -48,6 +48,39 @@ export interface NormalizedMarketCreationInput {
 }
 
 /** Normalize metadata shared by CLI and browser market creation. */
+export type MarketOutcomeLabelProblem = 'empty' | 'invalid' | 'duplicate'
+
+export interface MarketOutcomeLabelIssue {
+  readonly index: number
+  readonly problem: MarketOutcomeLabelProblem
+}
+
+/**
+ * Applies one outcome label rule for every client. A label is trimmed once.
+ * It must then be 1 to 191 ASCII letters or digits. Two labels that differ
+ * only in letter case are duplicates; the later one is reported.
+ */
+export function validateMarketOutcomeLabels(
+  labels: readonly string[],
+): readonly MarketOutcomeLabelIssue[] {
+  const seen = new Set<string>()
+  const issues: MarketOutcomeLabelIssue[] = []
+  labels.forEach((label, index) => {
+    const trimmed = label.trim()
+    if (trimmed.length === 0) {
+      issues.push({ index, problem: 'empty' })
+    } else if (!/^[A-Za-z0-9]{1,191}$/.test(trimmed)) {
+      issues.push({ index, problem: 'invalid' })
+    } else {
+      // Labels are ASCII, so lower case is a complete case fold.
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) issues.push({ index, problem: 'duplicate' })
+      seen.add(key)
+    }
+  })
+  return issues
+}
+
 export function normalizeMarketCreationInput(
   input: MarketCreationInput,
 ): NormalizedMarketCreationInput {
@@ -90,20 +123,25 @@ export function normalizeMarketCreationInput(
   }
 
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  const seenLabels = new Set<string>()
-  const outcomeLabels = input.outcomeDetails.map((outcome) => {
+  for (const outcome of input.outcomeDetails) {
     if (!outcome || typeof outcome !== 'object' || typeof outcome.name !== 'string') {
       throw new Error('Every market outcome must have a label.')
     }
-    if (!/^[A-Za-z0-9]{1,191}$/.test(outcome.name)) {
+  }
+  const outcomeLabels = input.outcomeDetails.map((outcome) => outcome.name.trim())
+  const issue = validateMarketOutcomeLabels(outcomeLabels)[0]
+  switch (issue?.problem) {
+    case undefined:
+      break
+    case 'empty':
+      throw new Error('Every market outcome must have a label.')
+    case 'invalid':
       throw new Error('Outcome labels must be 1 to 191 ASCII letters or digits.')
-    }
-    if (seenLabels.has(outcome.name)) {
-      throw new Error('Outcome labels must be unique.')
-    }
-    seenLabels.add(outcome.name)
-    return outcome.name
-  })
+    case 'duplicate':
+      throw new Error('Outcome labels must be unique, ignoring letter case.')
+    default:
+      return assertNever(issue.problem)
+  }
   if (
     input.outcomeType === 'yesno' &&
     (outcomeLabels.length !== 2 || outcomeLabels[0] !== 'Yes' || outcomeLabels[1] !== 'No')
@@ -118,7 +156,7 @@ export function normalizeMarketCreationInput(
       /^#[0-9A-Fa-f]{6}$/.test(outcome.color)
         ? outcome.color
         : undefined
-    return { name: outcome.name, ...(color ? { color } : {}) }
+    return { name: outcome.name.trim(), ...(color ? { color } : {}) }
   })
   const categoryTags = [...input.categoryTags]
   const metadata: MarketCreationMetadata = {
@@ -154,4 +192,8 @@ export function assertMarketCreationMetadataSize(
   if (serialized.length > MAX_MARKET_CREATION_METADATA_JSON_CODE_UNITS) {
     throw new Error('Market metadata exceeds the 64 KB engine limit.')
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected outcome label problem: ${String(value)}`)
 }

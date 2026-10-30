@@ -181,6 +181,8 @@ export async function prepareConditionRegistrationFee(input: {
       return prepareBrowserDeterministicOutgoingCashuSend({
         operationId: transferId,
         wallet,
+        database: context.database,
+        requireCapturedProfile: context.requireCapturedProfile,
         proofs,
         amount: input.requiredFeeSubunits,
         mintUrl: input.mintUrl,

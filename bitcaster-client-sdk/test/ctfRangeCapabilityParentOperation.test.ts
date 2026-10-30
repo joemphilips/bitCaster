@@ -1,3 +1,4 @@
+import { mintDenominationKeys, mintDenominationPrivateKey } from './support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
@@ -40,8 +41,9 @@ const MINT_URL = 'https://mint.example'
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
-const KEYS = Object.fromEntries(
-  Array.from({ length: 20 }, (_, index) => [(1 << index).toString(), MINT_PUBLIC_KEY]),
+const KEYS = mintDenominationKeys(
+  MINT_PRIVATE_KEY,
+  Array.from({ length: 20 }, (_, index) => (1 << index).toString()),
 )
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 1_000
@@ -475,6 +477,16 @@ function reviewedMintFacts() {
   const yes = conditionalKeyset(YES_KEYSET_ID, 'YES', YES_COLLECTION_ID)
   const no = conditionalKeyset(NO_KEYSET_ID, 'NO', NO_COLLECTION_ID)
   return {
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: 'msat' as const,
+      eventId: 'test-event',
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [],
+    },
     regular: [regular],
     conditional: [yes, no],
     maxInputs: 64,
@@ -543,8 +555,15 @@ function proof(id: string, amount: number): Proof {
 }
 
 function signOutput(output: SerializedBlindedMessage): SerializedBlindedSignature {
-  const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
-  const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+  const signature = createBlindSignature(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+    output.id,
+  )
+  const dleq = createDLEQProof(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+  )
   return {
     id: signature.id,
     amount: Amount.from(output.amount),

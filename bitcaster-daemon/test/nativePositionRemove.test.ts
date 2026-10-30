@@ -1,3 +1,10 @@
+import { DatabaseSync } from 'node:sqlite'
+import { withDurableCustodyFencedRead } from '../src/durableCustodyUnitOfWork.ts'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import {
   prepareDurableCustodyExactArtifact,
   deriveDurableCustodyScopeId,
@@ -31,7 +38,12 @@ import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedCondit
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { createDurableCustodyProofMaterialRecord } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import { DurableWalletProofImportCoordinator } from '../src/durableWalletProofImportCoordinator.ts'
-import { claimDaemonPosition, readNativePositionClaimCustody } from '../src/nativePositionClaim.ts'
+import {
+  claimDaemonPosition,
+  readNativePositionClaimCustody,
+  readRetainedPositionClaimHistory,
+  assertRetainedPositionClaimProof,
+} from '../src/nativePositionClaim.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
@@ -40,7 +52,11 @@ import { previewDaemonPositionRemove, removeDaemonPosition } from '../src/native
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readProfile } from '../src/profile.ts'
-import { openDaemonStateSqlite, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
+import {
+  createDaemonStateSqliteSession,
+  openDaemonStateSqlite,
+  type StateSqliteFaultPhase,
+} from '../src/stateSqlite.ts'
 import { readWalletBalanceFromDatabase } from '../src/walletBalance.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DurableCustodyTransactionSqlite } from '../src/durableCustodyTransactionSqlite.ts'
@@ -48,7 +64,14 @@ import { dispatch } from '../src/server.ts'
 import { buildDaemonAssetMonitoringHoldings } from '../src/assetMonitoring.ts'
 import { subscribeToDaemonWalletHoldingsCommits } from '../src/stateSqlite.ts'
 import { createDurableCustodyConformancePrepared } from '../../bitcaster-client-sdk/test/support/durableCustodyAdapterConformance.ts'
-import { addAvailableProofs, emptyDaemonState, readState, writeState } from '../src/state.ts'
+import {
+  addAvailableProofs,
+  emptyDaemonState,
+  readState,
+  writeState,
+  readDaemonProofOperationFromDatabase,
+  readDaemonWalletProofFromDatabase,
+} from '../src/state.ts'
 
 test('Remove keeps raw proofs, exact journals and immutable markers through retry, save and reimport', async () => {
   const fixture = await createFixture(3)
@@ -741,8 +764,10 @@ async function createFixture(
     outcomeCount: 2,
     oraclePublicKeys: [publicKey],
   })
-  const key = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries(Array.from({ length: 13 }, (_, power) => [2 ** power, key]))
+  const keys = mintDenominationKeys(
+    privateKey,
+    Array.from({ length: 13 }, (_, power) => String(2 ** power)),
+  )
   const regularId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 })
   const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
     conditionId,
@@ -768,8 +793,15 @@ async function createFixture(
     const secret = `losing-secret-${index}`
     if (imported) {
       const output = OutputData.createSingleData(8, id, secret, BigInt(index + 1))
-      const signature = createBlindSignature(pointFromHex(output.blindedMessage.B_), privateKey, id)
-      const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
+      const signature = createBlindSignature(
+        pointFromHex(output.blindedMessage.B_),
+        mintDenominationPrivateKey(privateKey, '8'),
+        id,
+      )
+      const dleq = createDLEQProof(
+        pointFromHex(output.blindedMessage.B_),
+        mintDenominationPrivateKey(privateKey, '8'),
+      )
       const proof = output.toProof(
         {
           id,
@@ -1092,7 +1124,10 @@ test('retained Claim recovery refuses a profile containing a foreign scope', asy
       observedAtMs: Date.now(),
     })
     await assert.rejects(
-      store.readRetainedClaimPage('https://mint.example'),
+      store.readRetainedClaimPage('https://mint.example', '', {
+        recoveryId: 'foreign-scope',
+        scanPolicy: createSeedRecoveryScanPolicy(),
+      }),
       /daemon profile SQLite schema does not match/,
     )
   } finally {
@@ -1100,15 +1135,44 @@ test('retained Claim recovery refuses a profile containing a foreign scope', asy
   }
 })
 
-test('retained Claim SQLite cursor pages exact sorted records and filters mint', async () => {
+test('retained Claim SQLite cursor pages exact sorted records and filters mint', async (t) => {
+  const fixtureStarted = performance.now()
   const fixture = await createFixture(1025)
+  const fixtureSetupMs = performance.now() - fixtureStarted
   try {
+    const observedAtMs = Date.now()
+    const fence = fixture.context.fence
+    const storage = createDaemonStateSqliteSession(fixture.directory)
+    await storage.read(() => undefined)
     const store = new SeedRecoverySqliteStore({
+      storage,
       directory: fixture.directory,
-      fence: fixture.context.fence,
+      fence,
       invocationId: 'retained-cursor-test',
-      observedAtMs: Date.now(),
+      observedAtMs,
     })
+    const binding = {
+      recoveryId: 'retained-reader-policy',
+      scanPolicy: createSeedRecoveryScanPolicy(),
+    }
+    const initializationStarted = performance.now()
+    await store.initializeRecoveryRoster({
+      ...binding,
+      walletScopeId: fence.scopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+      disclosureAcknowledged: true,
+      keysetIds: [],
+      authority: {
+        walletScopeId: fence.scopeId,
+        incarnationId: fence.incarnationId,
+        fencingEpoch: fence.fencingEpoch,
+        leaseExpiresAtMs: fence.leaseExpiresAtMs,
+        observedAtMs,
+        effectiveClockHighWaterMarkMs: observedAtMs,
+      },
+    })
+    const jobInitializationMs = performance.now() - initializationStarted
     const expected = Object.values((await readState())!.proofOperations)
       .filter(
         ({ kind, state, failureCode }) =>
@@ -1117,11 +1181,13 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       .map(({ operationId }) => operationId)
       .sort()
     assert.equal(expected.length, 17)
-    const first = await store.readRetainedClaimPage('https://mint.example')
+    const pagesStarted = performance.now()
+    const first = await store.readRetainedClaimPage('https://mint.example', '', binding)
     assert.equal(first.length, 16)
     const second = await store.readRetainedClaimPage(
       'https://mint.example',
       first.at(-1)!.target.operationId,
+      binding,
     )
     assert.equal(second.length, 1)
     assert.deepEqual(
@@ -1129,10 +1195,24 @@ test('retained Claim SQLite cursor pages exact sorted records and filters mint',
       expected,
     )
     assert.deepEqual(
-      await store.readRetainedClaimPage('https://mint.example', second[0]!.target.operationId),
+      await store.readRetainedClaimPage(
+        'https://mint.example',
+        second[0]!.target.operationId,
+        binding,
+      ),
       [],
     )
-    assert.deepEqual(await store.readRetainedClaimPage('https://another-mint.example'), [])
+    await assert.rejects(
+      store.readRetainedClaimPage('https://another-mint.example', '', binding),
+      /binding is foreign/,
+    )
+    t.diagnostic(
+      `retained-claim-benchmark ${JSON.stringify({
+        fixtureSetupMs: Number(fixtureSetupMs.toFixed(3)),
+        jobInitializationMs: Number(jobInitializationMs.toFixed(3)),
+        pageReadsMs: Number((performance.now() - pagesStarted).toFixed(3)),
+      })}`,
+    )
   } finally {
     await fixture.dispose()
   }
@@ -1231,7 +1311,10 @@ async function recoverHistoricalClaimPayout(
   )
   const privateKey = Uint8Array.from([...new Uint8Array(31), 1])
   const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries(Array.from({ length: 13 }, (_, power) => [2 ** power, publicKey]))
+  const keys = mintDenominationKeys(
+    privateKey,
+    Array.from({ length: 13 }, (_, power) => String(2 ** power)),
+  )
   const regular = {
     id: deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 }),
     unit: 'msat',
@@ -1279,6 +1362,41 @@ async function recoverHistoricalClaimPayout(
     mode === 'takeover' && takeover
       ? { ...fixture.context.fence, fencingEpoch: fixture.context.fence.fencingEpoch + 1 }
       : fixture.context.fence
+  // Claim payouts are seed-derived. The exact seed scan also requests them, with amount 0.
+  // The retained-output request carries the stored output amounts.
+  const committedRequests = (candidates: readonly unknown[]) => {
+    const matches = candidates.flatMap((candidate) => {
+      const request = candidate as { id: string; amount: unknown; B_: string }
+      const planned = committed.get(request.B_)
+      return planned === undefined ? [] : [{ request, amount: Number(planned.amount) }]
+    })
+    return {
+      matches,
+      seedScan: matches.some(({ request, amount }) => String(request.amount) !== String(amount)),
+    }
+  }
+  // A NUT-09 mint echoes each requested output. The signature carries the signed amount.
+  const signedRestore = (matches: ReturnType<typeof committedRequests>['matches']) => ({
+    outputs: matches.map(({ request }) => request),
+    signatures: matches.map(({ request, amount }) => {
+      const point = pointFromHex(request.B_)
+      const signature = createBlindSignature(
+        point,
+        mintDenominationPrivateKey(privateKey, String(amount)),
+        regular.id,
+      )
+      const dleq = createDLEQProof(point, mintDenominationPrivateKey(privateKey, String(amount)))
+      return {
+        id: regular.id,
+        amount,
+        C_: signature.C_.toHex(true),
+        dleq: {
+          e: mode === 'bad-dleq' ? '01'.repeat(32) : bytesToHex(dleq.e),
+          s: bytesToHex(dleq.s),
+        },
+      }
+    }),
+  })
   const transport: AllKeysetSeedRecoveryTransport = {
     wallet: {
       loadMint: async () => {},
@@ -1311,11 +1429,8 @@ async function recoverHistoricalClaimPayout(
       throw new Error('ordinary payout recovery must not fetch conditional keys')
     },
     restoreCandidates: async (candidates) => {
-      const matches = candidates.flatMap((candidate) => {
-        const planned = committed.get((candidate as { B_: string }).B_)
-        return planned === undefined ? [] : [planned]
-      })
-      if (matches.length > 0) retainedCounters = await readCounters()
+      const { matches, seedScan } = committedRequests(candidates)
+      if (matches.length > 0 && !seedScan) retainedCounters = await readCounters()
       else if (retainedCounters !== undefined) {
         assert.deepEqual(
           await readCounters(),
@@ -1326,6 +1441,8 @@ async function recoverHistoricalClaimPayout(
         counterChecks += 1
       }
       if (mode === 'empty') matches.length = 0
+      // The fault modes target only the retained-output request.
+      if (seedScan) return signedRestore(matches)
       if (mode === 'partial' && matches.length > 1) matches.length = 1
       if (mode === 'takeover' && matches.length > 0) takeover = true
       if (mode === 'changed-authority' && matches.length > 0) {
@@ -1388,23 +1505,7 @@ async function recoverHistoricalClaimPayout(
       }
       matches.reverse()
       if (mode === 'valid') restored += matches.length
-      return {
-        outputs: matches,
-        signatures: matches.map((output) => {
-          const point = pointFromHex(output.B_)
-          const signature = createBlindSignature(point, privateKey, regular.id)
-          const dleq = createDLEQProof(point, privateKey)
-          return {
-            id: regular.id,
-            amount: Number(output.amount),
-            C_: signature.C_.toHex(true),
-            dleq: {
-              e: mode === 'bad-dleq' ? '01'.repeat(32) : bytesToHex(dleq.e),
-              s: bytesToHex(dleq.s),
-            },
-          }
-        }),
-      }
+      return signedRestore(matches)
     },
   }
   const pagingDatabase = await openDaemonStateSqlite(fixture.directory)
@@ -1417,6 +1518,7 @@ async function recoverHistoricalClaimPayout(
   for (const total of [1023, 1024, 1025]) {
     let reads = 0
     let restoredRecords = 0
+    let seedScanRequests = 0
     const pageMock = mock.method(
       SeedRecoverySqliteStore.prototype,
       'readRetainedClaimPage',
@@ -1447,8 +1549,9 @@ async function recoverHistoricalClaimPayout(
           transport: {
             ...transport,
             restoreCandidates: async (candidates) => {
-              if (candidates.some((candidate) => committed.has((candidate as { B_: string }).B_)))
-                restoredRecords += 1
+              const { matches, seedScan } = committedRequests(candidates)
+              if (matches.length > 0 && seedScan) seedScanRequests += 1
+              else if (matches.length > 0) restoredRecords += 1
               return { outputs: [], signatures: [] }
             },
           },
@@ -1458,6 +1561,7 @@ async function recoverHistoricalClaimPayout(
         await assert.rejects(recovery, /retained payout recovery record bound exceeded/)
       else assert.equal((await recovery).state, 'completed')
       assert.equal(restoredRecords, Math.min(total, 1024))
+      assert.equal(seedScanRequests, total === 1025 ? 0 : 1)
       assert.equal(reads, total === 1023 ? 64 : 65)
       assert.deepEqual((await readState())!.wallet.proofs, original.wallet.proofs)
     } finally {
@@ -1776,6 +1880,244 @@ test('native Remove rechecks original frozen intended scope rather than mutable 
     assert.equal(
       (await readState())!.wallet.proofs.some(({ retirement }) => retirement !== undefined),
       false,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained reader fixture awaits storage and exposes an incomplete authority rejection', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const storage = createDaemonStateSqliteSession(fixture.directory)
+    await storage.read(() => undefined)
+    const observedAtMs = Date.now()
+    const fence = fixture.context.fence
+    const store = new SeedRecoverySqliteStore({
+      storage,
+      directory: fixture.directory,
+      fence,
+      invocationId: 'retained-invalid-authority',
+      observedAtMs,
+    })
+    await assert.rejects(
+      store.initializeRecoveryRoster({
+        recoveryId: 'invalid-authority',
+        scanPolicy: createSeedRecoveryScanPolicy(),
+        walletScopeId: fence.scopeId,
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        disclosureAcknowledged: true,
+        keysetIds: [],
+        authority: {
+          walletScopeId: fence.scopeId,
+          incarnationId: fence.incarnationId,
+          fencingEpoch: fence.fencingEpoch,
+          leaseExpiresAtMs: fence.leaseExpiresAtMs,
+          observedAtMs,
+        } as never,
+      }),
+      /finalization authority is invalid/,
+    )
+    await storage.read((database) =>
+      assert.equal(
+        database.prepare('SELECT count(*) AS count FROM seed_recovery_jobs').get()!.count,
+        0,
+      ),
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+async function retainedReader(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  const storage = createDaemonStateSqliteSession(fixture.directory)
+  await storage.read(() => undefined)
+  const fence = fixture.context.fence
+  const observedAtMs = Date.now()
+  const store = new SeedRecoverySqliteStore({
+    storage,
+    directory: fixture.directory,
+    fence,
+    invocationId: 'retained-validation-reader',
+    observedAtMs,
+  })
+  const binding = {
+    recoveryId: 'retained-validation-job',
+    scanPolicy: createSeedRecoveryScanPolicy(),
+  }
+  await store.initializeRecoveryRoster({
+    ...binding,
+    walletScopeId: fence.scopeId,
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    disclosureAcknowledged: true,
+    keysetIds: [],
+    authority: {
+      walletScopeId: fence.scopeId,
+      incarnationId: fence.incarnationId,
+      fencingEpoch: fence.fencingEpoch,
+      leaseExpiresAtMs: fence.leaseExpiresAtMs,
+      observedAtMs,
+      effectiveClockHighWaterMarkMs: observedAtMs,
+    },
+  })
+  return {
+    storage,
+    store,
+    binding,
+    observedAtMs,
+    readPage: () => store.readRetainedClaimPage('https://mint.example', '', binding),
+  }
+}
+
+test('retained snapshot validates each Claim once and creates fresh contexts on the next read', async () => {
+  const fixture = await createFixture(65)
+  try {
+    const reader = await retainedReader(fixture)
+    let claimReads = 0
+    const prepare = DatabaseSync.prototype.prepare
+    const counted = mock.method(
+      DatabaseSync.prototype,
+      'prepare',
+      function (this: DatabaseSync, sql: string) {
+        if (
+          sql.includes(
+            'SELECT custody_operation_id AS operationId FROM custody_position_claim_links',
+          )
+        )
+          claimReads++
+        return prepare.call(this, sql)
+      },
+    )
+    try {
+      assert.equal((await reader.readPage()).length, 2)
+      assert.equal(claimReads, 2)
+      assert.equal((await reader.readPage()).length, 2)
+      assert.equal(claimReads, 4)
+    } finally {
+      counted.mock.restore()
+    }
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const row = database
+        .prepare(
+          `SELECT a.artifact_id AS id,a.body AS body FROM custody_artifacts a
+        JOIN custody_terminal_mint_rejections r ON r.rejection_artifact_id=a.artifact_id LIMIT 1`,
+        )
+        .get()!
+      const body = Buffer.from(row.body as Uint8Array)
+      body[0] = body[0]! ^ 1
+      database.prepare('UPDATE custody_artifacts SET body=? WHERE artifact_id=?').run(body, row.id)
+    } finally {
+      database.close()
+    }
+    await assert.rejects(reader.readPage(), /durable owner blocker target-wallet-proof-reserved/)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained snapshot keeps every second-proof binding guard after Claim-wide validation', async () => {
+  const fixture = await createFixture(2)
+  try {
+    const reader = await retainedReader(fixture)
+    await withDurableCustodyFencedRead(
+      reader.storage,
+      fixture.context.fence,
+      reader.observedAtMs,
+      (database) => {
+        const rows = database
+          .prepare(
+            "SELECT proof_id,reserved_by FROM target_wallet_proofs WHERE state='locked' ORDER BY proof_id",
+          )
+          .all()
+        assert.equal(rows.length, 2)
+        const target = readDaemonProofOperationFromDatabase(database, String(rows[0]!.reserved_by))!
+        const history = readRetainedPositionClaimHistory(
+          database,
+          fixture.context.fence.scopeId,
+          target,
+        )
+        const first = readDaemonWalletProofFromDatabase(database, String(rows[0]!.proof_id))!
+        const second = readDaemonWalletProofFromDatabase(database, String(rows[1]!.proof_id))!
+        assertRetainedPositionClaimProof(history, first)
+        const invalid = [
+          { ...second, state: 'reserved' },
+          { ...second, reservedBy: 'foreign-reservation' },
+          { ...second, reservedBy: undefined },
+          { ...second, mintUrl: 'https://foreign.example' },
+          { ...second, retirement: {} },
+          { ...second, asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
+          { ...second, asset: { ...second.asset, unit: 'sat' } },
+          { ...second, asset: { ...second.asset, conditionId: 'ff'.repeat(32) } },
+          { ...second, asset: { ...second.asset, outcomeSetId: 'YES' } },
+          { ...second, proof: { ...second.proof, secret: 'foreign-input' } },
+        ]
+        for (const proof of invalid)
+          assert.throws(
+            () => assertRetainedPositionClaimProof(history, proof as never),
+            /retained Claim/,
+          )
+        assertRetainedPositionClaimProof(history, second)
+      },
+      { snapshot: true },
+    )
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const rows = database.prepare('SELECT proof_id FROM custody_proofs ORDER BY proof_id').all()
+      assert.equal(rows.length, 2)
+      database
+        .prepare("UPDATE custody_proofs SET selectability='spent' WHERE proof_id=?")
+        .run(rows[1]!.proof_id)
+    } finally {
+      database.close()
+    }
+    await assert.rejects(reader.readPage(), /durable owner blocker target-wallet-proof-reserved/)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('empty retained page cannot bypass non-Claim ownership and schema rejects null ownership', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const reader = await retainedReader(fixture)
+    const database = await openDaemonStateSqlite(fixture.directory)
+    let proofId: string
+    try {
+      proofId = String(
+        database
+          .prepare("SELECT proof_id FROM target_wallet_proofs WHERE state='locked' LIMIT 1")
+          .get()!.proof_id,
+      )
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              "UPDATE target_wallet_proofs SET state='reserved',reserved_by=NULL WHERE proof_id=?",
+            )
+            .run(proofId),
+        /CHECK constraint failed/,
+      )
+    } finally {
+      database.close()
+    }
+    assert.deepEqual(
+      await reader.store.readRetainedClaimPage('https://mint.example', '\uffff', reader.binding),
+      [],
+    )
+    const next = await openDaemonStateSqlite(fixture.directory)
+    try {
+      next
+        .prepare("UPDATE target_wallet_proofs SET reserved_by='non-Claim-owner' WHERE proof_id=?")
+        .run(proofId)
+    } finally {
+      next.close()
+    }
+    await assert.rejects(
+      reader.store.readRetainedClaimPage('https://mint.example', '\uffff', reader.binding),
+      /durable owner blocker target-wallet-proof-reserved/,
     )
   } finally {
     await fixture.dispose()

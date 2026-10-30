@@ -1,50 +1,24 @@
-/**
- * Browser-side wrapper around the kormir-wasm DLC oracle library.
- *
- * Kormir is a Rust crate that exposes DLC oracle operations (announcement
- * creation, attestation signing) and publishes the resulting events to Nostr
- * relays. The wasm bundle in `kormir-wasm-pkg/` is ~3MB, so this module loads
- * it lazily via dynamic `import()` — the browser only pays the download cost
- * once the user actually enters the become-oracle flow.
- *
- * Key identity model
- * ------------------
- * Kormir stores its signing secret key (nsec) in IndexedDB. bitCaster keeps
- * the DLC oracle identity unified with the user's Nostr identity, so on every
- * nsec login we immediately push that key into kormir via `Kormir.restore`.
- * The NIP-07 signer path is intentionally unsupported: the extension only
- * exposes opaque signing, which cannot power the secp256k1 Schnorr operations
- * kormir performs locally.
- *
- * Singletons
- * ----------
- * - The wasm module is imported once and cached.
- * - The `Kormir` instance is cached per-key. If the user changes their nsec
- *   (e.g. logs in with a new one), call `resetKormir()` before re-fetching.
- */
-
+/** Browser oracle preparation uses captured local authority under the creator document lock. */
 import type {
   Kormir as KormirType,
   Announcement as KormirAnnouncement,
   Attestation as KormirAttestation,
 } from "./kormir-wasm-pkg/kormir_wasm";
-import { nip19 } from "nostr-tools";
-import { getPublicKey } from "nostr-tools/pure";
 import {
   normalizeOracleAnnouncementTags,
+  decodePrivateNostrSignerKey,
   OracleBackupError,
   type OracleBackupValidator,
 } from "@bitcaster/client-sdk";
+import { OracleBackupDeliveryError } from "@bitcaster/client-sdk/oracleBackupDelivery";
+import { hexToBytes } from "nostr-tools/utils";
+import { useSettingsStore } from "@/stores/settings";
+import { getNostrSignerRevision } from "./nostrSignerRevision";
+import { withCreatorDocumentLock } from "./browserCreatorDocumentLock";
 
-// Re-export the wasm-bindgen types under friendlier names so callers do not
-// have to reach into the generated `kormir-wasm-pkg` directory.
 export type Kormir = KormirType;
 export type { KormirAnnouncement, KormirAttestation };
-
-export type PreparedOracleArtifact = {
-  artifactHex: string;
-  eventJson: string;
-};
+export type PreparedOracleArtifact = { artifactHex: string; eventJson: string };
 
 /** Validate private authority without constructing an oracle or changing IndexedDB. */
 export const browserOracleBackupValidator: OracleBackupValidator = {
@@ -93,192 +67,158 @@ export async function decodeOracleAttestation(artifactHex: string) {
 }
 
 type KormirModule = typeof import("./kormir-wasm-pkg/kormir_wasm");
-
 let modulePromise: Promise<KormirModule> | null = null;
-let instancePromise: Promise<KormirType> | null = null;
-// Relay list used to build the currently-cached Kormir instance. Tracked so
-// that a subsequent getKormir() call with different relays rebuilds instead
-// of silently returning the stale instance.
-let instanceRelayKey: string | null = null;
-// The nsec that should be installed into kormir's IndexedDB on next load.
-// Tracked separately from the wasm module so that `loginWithNsec` can remember
-// the key without triggering the 3MB wasm download — the download is deferred
-// until the user actually enters the become-oracle flow.
-let pendingNsec: string | null = null;
+let identityGeneration = 0;
+useSettingsStore.subscribe((current, previous) => {
+  if (
+    current.nostrSignerMode !== previous.nostrSignerMode ||
+    current.nsecSecret !== previous.nsecSecret
+  )
+    identityGeneration += 1;
+});
 
-function relayKey(relays: string[]): string {
-  // Join with a delimiter unlikely to appear in URLs so key comparisons are
-  // order-sensitive (changing relay order rebuilds the instance, which is
-  // what we want — Kormir treats the first relay list as canonical).
-  return relays.join("|");
-}
-
-/**
- * Override hook used by tests to swap in a mocked wasm module. Production code
- * should never call this — always use the dynamic `loadKormirModule`.
- */
 export function __setKormirModuleForTest(mod: KormirModule | null): void {
   modulePromise = mod ? Promise.resolve(mod) : null;
-  instancePromise = null;
-  instanceRelayKey = null;
-  pendingNsec = null;
+  identityGeneration += 1;
 }
 
-/**
- * Lazily load and initialize the kormir-wasm module. Subsequent calls return
- * the cached promise so the wasm binary is only fetched once per session.
- *
- * If the load fails, the cache is cleared so that a retry can re-attempt the
- * import instead of forever resurfacing the original error.
- */
 async function loadKormirModule(): Promise<KormirModule> {
   if (!modulePromise) {
     modulePromise = (async () => {
       const mod = await import("./kormir-wasm-pkg/kormir_wasm");
-      // wasm-pack --target web exposes a default export that must be awaited
-      // before any class methods are available.
       await mod.default();
       return mod;
-    })().catch((e) => {
+    })().catch(() => {
       modulePromise = null;
-      throw e;
+      throw new BrowserOracleMutationError("authority-unavailable");
     });
   }
   return modulePromise;
 }
 
-/**
- * Remember the nsec the user just logged in with. The actual write to kormir's
- * IndexedDB is deferred to the next {@link getKormir} call so that a simple
- * Nostr login does not trigger the 3MB wasm download. If the user never
- * enters the oracle flow, kormir is never loaded.
- *
- * Call with `null` to forget the pending nsec (e.g. on logout or when
- * switching to a NIP-07 signer that cannot drive kormir).
- *
- * @param nsec - hex or bech32 (nsec1…) encoded secp256k1 private key, or null
- */
-export function setPendingKormirNsec(nsec: string | null): void {
-  pendingNsec = nsec;
-  // Force a fresh instance on the next getKormir() call so it picks up the
-  // new key from IndexedDB.
-  instancePromise = null;
+/** Login stages identity changes without loading WASM or writing oracle authority. */
+export function setPendingKormirNsec(_nsec: string | null): void {
+  identityGeneration += 1;
 }
 
-/**
- * Eagerly push the given nsec into kormir's IndexedDB store, loading the
- * wasm module if necessary. Mostly useful for tests and for callers that
- * want to surface wasm load errors up front. Normal login should prefer
- * {@link setPendingKormirNsec}.
- */
-export async function restoreKormirWithNsec(nsec: string): Promise<void> {
-  const mod = await loadKormirModule();
-  await mod.Kormir.restore(nsec);
-  pendingNsec = null;
-  instancePromise = null;
-}
-
-export async function ensureKormirNsec(relays: string[], nsec: string): Promise<void> {
-  const desiredPubkey = pubkeyFromNsec(nsec);
-  try {
-    const currentPubkey = normalizeKormirPublicKey((await getKormir(relays)).get_public_key());
-    if (currentPubkey === desiredPubkey) return;
-  } catch {
-    // If kormir cannot construct with the current browser store, restore the
-    // requested nsec below. Same-key restore preserves its retained authority.
-  }
-  await restoreKormirWithNsec(nsec);
-}
-
-/**
- * Get a connected {@link Kormir} instance, initializing and connecting it to
- * the provided relays on first call.
- *
- * If a pending nsec has been recorded via {@link setPendingKormirNsec}, it is
- * applied (via `Kormir.restore`) before constructing the instance so that the
- * oracle identity matches the user's Nostr identity.
- *
- * The instance is cached and reused as long as the relay list is unchanged.
- * Passing a different relay list (or different order) rebuilds the instance
- * so the caller's relays are actually honored. If construction fails, the
- * cache is cleared so that subsequent calls can retry.
- */
-export async function getKormir(relays: string[]): Promise<KormirType> {
-  const key = relayKey(relays);
-  if (!instancePromise || instanceRelayKey !== key) {
-    instanceRelayKey = key;
-    instancePromise = (async () => {
-      const mod = await loadKormirModule();
-      if (pendingNsec !== null) {
-        const stagedNsec = pendingNsec;
-        const existing = await mod.Kormir.new(relays).catch(() => null);
-        if (
-          existing &&
-          normalizeKormirPublicKey(existing.get_public_key()) === pubkeyFromNsec(stagedNsec)
-        ) {
-          pendingNsec = null;
-          return existing;
-        }
-        await mod.Kormir.restore(stagedNsec);
-        pendingNsec = null;
-      }
-      return mod.Kormir.new(relays);
-    })().catch((e) => {
-      instancePromise = null;
-      instanceRelayKey = null;
-      throw e;
-    });
-  }
-  return instancePromise;
-}
-
-/**
- * Drop the cached Kormir instance so the next {@link getKormir} rebuilds
- * with fresh state. Does NOT clear a staged nsec — callers that want to
- * forget the key must use `setPendingKormirNsec(null)` explicitly.
- */
+/** Reset invalidates captured admissions; it does not remove retained oracle data. */
 export function resetKormir(): void {
-  instancePromise = null;
-  instanceRelayKey = null;
+  identityGeneration += 1;
 }
 
-/**
- * Create an enum oracle event, publish its announcement to the connected
- * relays, and return the announcement encoded as a hex string (the shape
- * expected by the CDK mint's condition registration endpoint).
- *
- * @param relays - websocket URLs of Nostr relays to publish to
- * @param eventId - DLC event_id (slug derived from the market title)
- * @param outcomes - list of possible outcome strings
- * @param maturityEpoch - Unix timestamp (seconds) when the event matures
- * @param title - short plain-text market title for the kind-88 NIP-88 title tag
- * @param description - plain-text market summary for the kind-88 NIP-88 description tag
- */
-export async function createEnumAnnouncement(
-  relays: string[],
-  eventId: string,
-  outcomes: string[],
-  maturityEpoch: number,
-  title = eventId,
-  description = title,
-): Promise<string> {
-  const tags = normalizeOracleAnnouncementTags(title, description);
-  const kormir = await getKormir(relays);
-  try {
-    return await kormir.create_enum_event(
-      eventId,
-      outcomes,
-      maturityEpoch,
-      tags.title,
-      tags.description,
+export class BrowserOracleMutationError extends Error {
+  constructor(
+    readonly reason:
+      | "identity-unavailable"
+      | "identity-changed"
+      | "authority-unavailable"
+      | "key-conflict"
+      | "import-incomplete"
+      | "expired",
+  ) {
+    super(
+      reason === "import-incomplete"
+        ? "Complete the oracle backup import before signing."
+        : reason === "key-conflict"
+          ? "The retained local oracle data was preserved. Use the original oracle key where available."
+          : reason === "authority-unavailable"
+            ? "Local oracle data is unavailable. Retry recovery without changing the oracle outcome."
+            : reason === "expired"
+              ? "The local oracle mutation has expired."
+              : reason === "identity-changed"
+                ? "The oracle identity changed. Retry with the original oracle key."
+                : "Use the original local oracle key to prepare this operation.",
     );
-  } catch (err) {
-    throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`);
   }
+}
+
+/** Capture before async work. Loading WASM happens before document lock admission. */
+export async function prepareBrowserOracleMutation(expectedPubkey?: string) {
+  const settings = useSettingsStore.getState();
+  let identity: ReturnType<typeof decodePrivateNostrSignerKey>;
+  try {
+    identity = decodePrivateNostrSignerKey(settings.nsecSecret ?? "");
+  } catch {
+    throw new BrowserOracleMutationError("identity-unavailable");
+  }
+  if (
+    settings.nostrSignerMode !== "nsec" ||
+    (expectedPubkey !== undefined && identity.publicKeyHex !== expectedPubkey)
+  )
+    throw new BrowserOracleMutationError("identity-unavailable");
+  const capturedKey = settings.nsecSecret!;
+  const generation = identityGeneration;
+  const signerRevision = getNostrSignerRevision();
+  const isCurrent = () =>
+    generation === identityGeneration && signerRevision === getNostrSignerRevision();
+  const requireCurrent = () => {
+    if (!isCurrent()) throw new BrowserOracleMutationError("identity-changed");
+  };
+  const module = await loadKormirModule();
+  let used = false;
+  return {
+    publicKey: identity.publicKeyHex,
+    isCurrent,
+    requireCurrent,
+    /** The caller already owns the creator document lock. Do not reacquire it here. */
+    async withCoreLocked<T>(
+      action: (core: Kormir, privateKey: Uint8Array) => Promise<T>,
+    ): Promise<T> {
+      requireCurrent();
+      if (used) throw new BrowserOracleMutationError("expired");
+      used = true;
+      let core: Kormir | undefined;
+      let active = true;
+      try {
+        // Restore is guarded by the provider. Construction must read the actual stored key.
+        await module.Kormir.restore(capturedKey);
+        core = await module.Kormir.new([]);
+        if (normalizeKormirPublicKey(core.get_public_key()) !== identity.publicKeyHex)
+          throw new BrowserOracleMutationError("authority-unavailable");
+        const admitted = new Proxy(core, {
+          get(target, property) {
+            const value = Reflect.get(target, property);
+            if (typeof value !== "function") return value;
+            return (...args: unknown[]) => {
+              if (!active) throw new BrowserOracleMutationError("expired");
+              return value.apply(target, args);
+            };
+          },
+        });
+        return await action(admitted, hexToBytes(identity.secretKeyHex));
+      } catch (error) {
+        if (
+          error instanceof BrowserOracleMutationError ||
+          error instanceof OracleBackupError ||
+          error instanceof OracleBackupDeliveryError
+        )
+          throw error;
+        if (error === module.JsError.SigningKeyConflict)
+          throw new BrowserOracleMutationError("key-conflict");
+        throw new BrowserOracleMutationError("authority-unavailable");
+      } finally {
+        active = false;
+        core?.free();
+      }
+    },
+  };
+}
+
+export type BrowserOracleMutation = Awaited<ReturnType<typeof prepareBrowserOracleMutation>>;
+
+/** Standalone preparation uses the same lock as creator-document handoff. */
+export async function withBrowserOracleMutation<T>(
+  expectedPubkey: string,
+  action: (core: Kormir) => Promise<T>,
+): Promise<T> {
+  const admission = await prepareBrowserOracleMutation(expectedPubkey);
+  const result = await withCreatorDocumentLock(() => admission.withCoreLocked(action));
+  admission.requireCurrent();
+  return result;
 }
 
 export async function prepareEnumAnnouncement(
-  relays: string[],
+  core: Kormir,
   eventId: string,
   outcomes: string[],
   maturityEpoch: number,
@@ -286,9 +226,7 @@ export async function prepareEnumAnnouncement(
   description = title,
 ): Promise<PreparedOracleArtifact> {
   const tags = normalizeOracleAnnouncementTags(title, description);
-  const kormir = await getKormir(relays);
-  // The caller must save the exact envelope before payment or publication.
-  const prepared = await kormir.prepare_enum_event(
+  const prepared = await core.prepare_enum_event(
     eventId,
     outcomes,
     maturityEpoch,
@@ -296,110 +234,29 @@ export async function prepareEnumAnnouncement(
     tags.description,
   );
   try {
-    return {
-      artifactHex: prepared.artifact_hex,
-      eventJson: prepared.nostr_event_json,
-    };
+    return { artifactHex: prepared.artifact_hex, eventJson: prepared.nostr_event_json };
   } finally {
     prepared.free();
   }
 }
 
 export async function prepareEnumAttestation(
-  relays: string[],
+  core: Kormir,
   eventId: string,
   outcome: string,
   announcementEventJson: string,
   announcementHex?: string,
 ): Promise<PreparedOracleArtifact> {
-  const kormir = await getKormir(relays);
-  if (announcementHex) await importEnumAnnouncement(relays, announcementHex);
-  // Local preparation validates the retained announcement and rejects a conflicting outcome.
-  const prepared = await kormir.prepare_enum_attestation(eventId, outcome, announcementEventJson);
+  if (announcementHex) await core.import_enum_event(announcementHex);
+  const prepared = await core.prepare_enum_attestation(eventId, outcome, announcementEventJson);
   try {
-    return {
-      artifactHex: prepared.artifact_hex,
-      eventJson: prepared.nostr_event_json,
-    };
+    return { artifactHex: prepared.artifact_hex, eventJson: prepared.nostr_event_json };
   } finally {
     prepared.free();
   }
 }
 
-/**
- * Re-import a previously-created enum announcement into kormir's local storage
- * so its outcome can be signed again on a fresh browser profile.
- *
- * Same-key restore preserves retained authority. For older deterministic
- * announcements whose event record is missing, the public TLV carries the
- * committed nonce point. Kormir recovers the original index by a bounded scan.
- * New random nonce authority requires its private backup instead.
- *
- * Non-destructive and idempotent: if the event already exists in this profile
- * (created or imported here), the call is a no-op and never clobbers a stored
- * attestation. Returns the recovered DLC event_id.
- *
- * @param relays - websocket URLs of Nostr relays (only used to obtain a kormir instance)
- * @param announcementHex - TLV-hex of the kormir oracle announcement (from `createEnumAnnouncement`)
- */
-export async function importEnumAnnouncement(
-  relays: string[],
-  announcementHex: string,
-): Promise<string> {
-  const kormir = await getKormir(relays);
-  try {
-    return await kormir.import_enum_event(announcementHex);
-  } catch (err) {
-    throw new Error(`Failed to re-import DLC oracle announcement: ${describeThrown(err)}`);
-  }
-}
-
-/**
- * Return the oracle public key (hex-encoded 32-byte x-only Schnorr key).
- * This matches the Nostr pubkey derived from the same nsec.
- */
-export async function getOraclePublicKey(relays: string[]): Promise<string> {
-  const kormir = await getKormir(relays);
-  return kormir.get_public_key();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function describeThrown(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message;
-  if (typeof err === "string" && err.length > 0) return err;
-  if (isRecord(err)) {
-    const message = err.message;
-    if (typeof message === "string" && message.length > 0) return message;
-  }
-  return String(err);
-}
-
-function pubkeyFromNsec(nsec: string): string {
-  const trimmed = nsec.trim();
-  if (trimmed.startsWith("nsec1")) {
-    const decoded = nip19.decode(trimmed);
-    if (decoded.type !== "nsec") throw new Error("Expected an nsec private key");
-    return getPublicKey(decoded.data);
-  }
-  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return getPublicKey(hexToBytes(trimmed));
-  }
-  throw new Error("Expected an nsec1... or 64-character hex private key");
-}
-
 function normalizeKormirPublicKey(pubkey: string): string {
   const trimmed = pubkey.trim().toLowerCase();
-  if (/^(02|03)[0-9a-f]{64}$/.test(trimmed)) return trimmed.slice(2);
-  return trimmed;
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
+  return /^(02|03)[0-9a-f]{64}$/.test(trimmed) ? trimmed.slice(2) : trimmed;
 }

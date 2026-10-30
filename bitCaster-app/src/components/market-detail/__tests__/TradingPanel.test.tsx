@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -196,7 +196,225 @@ function sellHoldings(
   };
 }
 
+function getFeeBreakdownRow(testId: string): HTMLElement {
+  const row = screen.getByTestId(testId);
+  const disclosure = row.closest("details");
+  if (disclosure && !disclosure.open) fireEvent.click(disclosure.querySelector("summary")!);
+  return row;
+}
+
 describe("TradingPanel", () => {
+  it.each(["Buy", "Sell"] as const)(
+    "preserves a selected %s form through empty and restored books with current preview checks",
+    (tradeSide) => {
+      const confirm = vi.fn();
+      const market = makeMarket({ outcomes: makeEmptyBookMarket().outcomes });
+      const props = {
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        sellHoldings: sellHoldings({ Yes: { selectableSubunits: 10_000 } }),
+        onTradeConfirm: confirm,
+      };
+      const { rerender } = render(
+        <TradingPanel {...props} market={market} tradePreview={readyPreview()} />,
+      );
+      const amount = screen.getByTestId("trade-amount-input");
+      const comment = screen.getByRole("textbox");
+      fireEvent.change(comment, { target: { value: "Keep this reasoning" } });
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      rerender(
+        <TradingPanel
+          {...props}
+          market={makeEmptyBookMarket()}
+          isFullyEmptyBook
+          tradePreview={loadingPreview()}
+        />,
+      );
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByRole("textbox")).toBe(comment);
+      expect(comment).toHaveValue("Keep this reasoning");
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("trade-confirm"));
+      expect(confirm).not.toHaveBeenCalled();
+      rerender(<TradingPanel {...props} market={market} tradePreview={readyPreview()} />);
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+    },
+  );
+
+  it.each(["Buy", "Sell"] as const)(
+    "keeps the original %s wait and Stop in place when the book becomes empty",
+    (tradeSide) => {
+      const stop = vi.fn();
+      const props = {
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide,
+        isTradeSubmitting: true,
+        tradePreview: null,
+        quoteRefreshWait: "waiting" as const,
+        onCancelQuoteRefresh: stop,
+      };
+      const { rerender } = render(<TradingPanel {...props} market={makeMarket()} />);
+      const amount = screen.getByTestId("trade-amount-input");
+      const waiting = screen.getByTestId("trade-quotes-refreshing");
+      rerender(<TradingPanel {...props} market={makeEmptyBookMarket()} isFullyEmptyBook />);
+      expect(screen.getByTestId("trade-amount-input")).toBe(amount);
+      expect(amount).toHaveValue(5);
+      expect(screen.getByTestId("trade-quotes-refreshing")).toBe(waiting);
+      expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
+      expect(stop).toHaveBeenCalledTimes(1);
+      rerender(
+        <TradingPanel
+          {...props}
+          market={makeEmptyBookMarket()}
+          isFullyEmptyBook
+          quoteRefreshWait="stopping"
+        />,
+      );
+      expect(waiting).toHaveTextContent("Stopping the wait");
+      expect(within(waiting).getByRole("button", { name: "Stop waiting" })).toBeDisabled();
+    },
+  );
+
+  it.each(["wallet-recovery", "result-saved", "refresh"] as const)(
+    "does not recommend funding an empty snapshot during %s",
+    (state) => {
+      const refresh = vi.fn();
+      const props = {
+        market: makeEmptyBookMarket(),
+        tradeSelection: null,
+        tradeAmount: 0,
+        tradePreview: loadingPreview(),
+        tradeSide: "Buy" as const,
+        isFullyEmptyBook: true,
+        suppressFundingHint: true,
+        onTradeMarketRefresh: refresh,
+        tradeRecovery: {
+          stages: state === "refresh" ? [] : [state],
+          suppressFundingHint: true,
+          invalidationKey: state,
+        },
+      };
+      render(<TradingPanel {...props} />);
+      expect(screen.getByTestId("empty-trade-liquidity")).not.toHaveTextContent("Add liquidity");
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      if (state !== "refresh")
+        expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
+      expect(screen.getByTestId("empty-book-refresh")).toBeEnabled();
+      fireEvent.click(screen.getByTestId("empty-book-refresh"));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByTestId("trade-tab-liquidity"));
+      expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    "order-pending",
+    "settlement-pending",
+    "wallet-recovery",
+    "result-saved",
+    "unavailable",
+  ] as const)(
+    "suppresses funding advice during %s without blocking an independently funded trade",
+    (stage) => {
+      const confirm = vi.fn();
+      const recovery = { stages: [stage], suppressFundingHint: true, invalidationKey: "recovery" };
+      const props = {
+        market: makeMarket(),
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide: "Buy" as const,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        tradeRecovery: recovery,
+        suppressFundingHint: true,
+        onTradeConfirm: confirm,
+      };
+      const { rerender } = render(<TradingPanel {...props} tradePreview={nonfillablePreview()} />);
+      expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
+      expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+      expect(screen.getByTestId("fok-preview-response-retry")).toBeEnabled();
+      if (stage === "result-saved") {
+        expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent("partial result");
+        expect(screen.getByTestId("trade-recovery-status")).not.toHaveTextContent(
+          /complete|acknowledgement/i,
+        );
+      }
+      rerender(<TradingPanel {...props} tradePreview={readyPreview()} />);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      fireEvent.click(screen.getByTestId("trade-confirm"));
+      expect(confirm).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("suppresses a stale funding hint while the active attempt is running", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradeSide="Buy"
+        tradePreview={nonfillablePreview()}
+        isTradeSubmitting
+      />,
+    );
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["wallet", readyPreview, "Checking wallet funds and fees..."],
+    ["market", loadingPreview, "Checking the current market preview..."],
+  ] as const)("names the pending %s check accurately", (_kind, preview, message) => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={preview()}
+        tradeFeeFacts={null}
+        feeConsentCurrent={false}
+        walletReady
+        tradeSide="Buy"
+      />,
+    );
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent(message);
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it("retains the draft at confirmation and passes its comment to the order callback once", () => {
+    const confirm = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={confirm}
+      />,
+    );
+    const comment = screen.getByPlaceholderText("Share your reasoning...");
+    fireEvent.change(comment, { target: { value: "  My reasoning  " } });
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(confirm).toHaveBeenCalledExactlyOnceWith("My reasoning");
+    expect(comment).toHaveValue("  My reasoning  ");
+  });
+
   it.each(["funds", "outcome-tokens", "unavailable"] as const)(
     "ends the fee loading message after a %s refusal",
     (reason) => {
@@ -218,6 +436,29 @@ describe("TradingPanel", () => {
       expect(screen.getByTestId("trade-confirm")).toBeDisabled();
     },
   );
+
+  it("shows no fee loading message before the identity exists", () => {
+    // A wallet created in Settings has no Nostr signer. The cost check needs one,
+    // so the panel offers the identity setup instead of a check that never runs.
+    const onWalletRequired = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradeSide="Buy"
+        tradePreview={readyPreview()}
+        tradeFeeFacts={null}
+        walletReady={false}
+        onWalletRequired={onWalletRequired}
+      />,
+    );
+
+    expect(screen.queryByTestId("trade-fees-loading")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-feasibility-status")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(onWalletRequired).toHaveBeenCalledOnce();
+  });
 
   const emptyBook = {
     bids: [],
@@ -293,11 +534,11 @@ describe("TradingPanel", () => {
         "data-quote-payment-subunits",
         "400",
       );
-      expect(screen.getByTestId("trade-worst-price")).toHaveAttribute(
-        "data-price-numerator",
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
         "500",
       );
-      expect(screen.getByTestId("trade-settlement-input-fee")).toBeInTheDocument();
+      expect(getFeeBreakdownRow("trade-settlement-input-fee")).toBeInTheDocument();
     },
   );
 
@@ -328,15 +569,15 @@ describe("TradingPanel", () => {
   });
 
   it.each(["Buy", "Sell"] as const)(
-    "shows only a liquidity route for a confirmed empty %s book",
+    "keeps an initial empty %s book neutral with voluntary Liquidity available",
     async (tradeSide) => {
       const user = userEvent.setup();
       render(
         <TradingPanel
           market={makeEmptyBookMarket()}
           isFullyEmptyBook
-          tradeSelection={{ side: "yes" }}
-          tradeAmount={2}
+          tradeSelection={null}
+          tradeAmount={0}
           tradePreview={loadingPreview()}
           tradeSide={tradeSide}
         />,
@@ -347,7 +588,10 @@ describe("TradingPanel", () => {
       expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
       expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
       expect(screen.queryByTestId("fok-preview-loading")).not.toBeInTheDocument();
-      await user.click(screen.getByTestId("open-liquidity-tab"));
+      expect(screen.getByTestId("empty-trade-liquidity")).toHaveTextContent("Refresh the market");
+      expect(screen.getByTestId("empty-trade-liquidity")).not.toHaveTextContent("Add liquidity");
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      await user.click(screen.getByTestId("trade-tab-liquidity"));
       expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
     },
   );
@@ -761,7 +1005,7 @@ describe("TradingPanel", () => {
   it("uses a share input and shows the authoritative Buy quote and exact fees", () => {
     render(
       <TradingPanel
-        market={makeMarket()}
+        market={makeMarket({ divisibility: 1_000_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
         tradePreview={readyPreview({ priceDenominator: 1_000_000 })}
@@ -773,18 +1017,17 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByText("Shares")).toBeInTheDocument();
-    expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
-    expect(screen.getByTestId("trade-average-execution-price")).toHaveTextContent(
-      "0.30 sats (0.0300%)",
-    );
-    expect(screen.getByTestId("trade-worst-price")).toHaveTextContent("0.32 sats (0.0320%)");
-    expect(screen.getByTestId("trade-current-latest-price")).toHaveTextContent("0.0280%");
+    expect(screen.getByText("1 share = 1,000 sats if it wins")).toBeInTheDocument();
     expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("0.0310%");
+    expect(screen.getByTestId("trade-winning-payout")).toHaveTextContent("50,000.000 sats");
+    expect(screen.queryByTestId("trade-average-execution-price")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-worst-price")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-current-latest-price")).not.toBeInTheDocument();
     expect(screen.getByText("Maximum trade payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^2\.000 sats$/);
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^3\.000 sats$/);
+    expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
+    expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent(/^2\.000 sats$/);
+    expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent(/^3\.000 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("30.000 sats");
     expect(screen.getByRole("button", { name: "Buy YES for 50 shares" })).toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
@@ -1109,10 +1352,11 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.150 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^0\.200 sats$/);
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^0\.300 sats$/);
+    expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
+    expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent(/^0\.200 sats$/);
+    expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent(/^0\.300 sats$/);
     expect(screen.getByTestId("trade-fee-consent-required")).toBeInTheDocument();
+    expect(screen.getByTestId("trade-fee-summary")).toHaveTextContent("0.600 sats");
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
   });
 
@@ -1132,7 +1376,7 @@ describe("TradingPanel", () => {
 
     expect(screen.getByText("Maximum trade payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
+    expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("30.000 sats");
     expect(screen.queryByText("Shares you receive if order fills")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
@@ -1141,6 +1385,96 @@ describe("TradingPanel", () => {
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();
+  });
+
+  it.each(["loading", "fees"] as const)(
+    "retains an opened fee disclosure across %s refresh",
+    async (transition) => {
+      const user = userEvent.setup();
+      const props = {
+        market: makeMarket({
+          baseAsset: "sat",
+          baseUnit: "sats",
+          divisibility: 1_000,
+        }),
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 50,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        tradeSide: "Buy" as const,
+        tradePreview: readyPreview(),
+        onTradeConfirm: vi.fn(),
+      };
+      const { rerender } = render(<TradingPanel {...props} />);
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      expect(screen.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      rerender(
+        <TradingPanel
+          {...props}
+          tradePreview={transition === "loading" ? loadingPreview() : props.tradePreview}
+          tradeFeeFacts={transition === "fees" ? null : props.tradeFeeFacts}
+          feeConsentCurrent={false}
+        />,
+      );
+      expect(screen.queryByTestId("trade-fee-breakdown")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      rerender(
+        <TradingPanel {...props} tradeFeeFacts={feeFacts({ consolidationFeeSubunits: "7" })} />,
+      );
+      expect(screen.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("0.007 sats");
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      rerender(<TradingPanel {...props} tradePreview={loadingPreview()} />);
+      rerender(<TradingPanel {...props} />);
+      expect(screen.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+      await user.click(screen.getByTestId("trade-fee-summary"));
+      rerender(<TradingPanel {...props} tradeSelection={{ side: "no" }} />);
+      expect(screen.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+    },
+  );
+
+  it("keeps disclosure preferences local to each panel and resets them for a new trade context", async () => {
+    const user = userEvent.setup();
+    const props = {
+      market: makeMarket({
+        baseAsset: "sat",
+        baseUnit: "sats",
+        divisibility: 1_000,
+      }),
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 50,
+      tradeSide: "Buy" as const,
+      tradeFeeFacts: feeFacts(),
+      feeConsentCurrent: true,
+      tradePreview: readyPreview(),
+    };
+    const view = (changed: Partial<ComponentProps<typeof TradingPanel>> = {}) => (
+      <>
+        <section data-testid="first-panel">
+          <TradingPanel {...props} {...changed} />
+        </section>
+        <section data-testid="second-panel">
+          <TradingPanel {...props} />
+        </section>
+      </>
+    );
+    const { rerender } = render(view());
+    const first = within(screen.getByTestId("first-panel"));
+    const second = within(screen.getByTestId("second-panel"));
+    for (const change of [
+      { market: { ...props.market, id: "another-market" } },
+      { tradeTab: "Sell" as const },
+      {
+        tradeSelection: { side: "yes" as const, outcomeId: "another-outcome" },
+      },
+    ]) {
+      rerender(view());
+      await user.click(first.getByTestId("trade-fee-summary"));
+      expect(first.getByTestId("trade-fee-breakdown")).toHaveAttribute("open");
+      expect(second.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+      rerender(view(change));
+      expect(first.getByTestId("trade-fee-breakdown")).not.toHaveAttribute("open");
+    }
   });
 
   it("formats exact msat quote and fee facts as display sats", () => {
@@ -1167,11 +1501,11 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 1 sats if it wins")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.100 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.001 sats$/);
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^0\.002 sats$/);
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^0\.003 sats$/);
+    expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^0\.001 sats$/);
+    expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent(/^0\.002 sats$/);
+    expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent(/^0\.003 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("0.106 sats");
   });
 
@@ -1187,7 +1521,7 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 1 sats if it wins")).toBeInTheDocument();
   });
 
   it("shows loading state while the authoritative preview is pending", () => {
@@ -1285,6 +1619,9 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("trade-quote-payment")).not.toBeInTheDocument();
     expect(screen.queryByText(/0\.000 sats/)).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    // The preview box states the refusal; the disabled button keeps its action label.
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Buy YES for 50 shares");
+    expect(screen.getByTestId("trade-confirm")).not.toHaveTextContent("cannot be filled");
 
     rerender(
       <TradingPanel
@@ -1366,6 +1703,45 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["Buy", "preview-revision", 1, true],
+    ["Sell", "preview-revision", 1, true],
+    ["Buy", "older-revision", 1, false],
+    ["Buy", "preview-revision", 50, false],
+  ] as const)(
+    "explains a %s order below the maker minimum only from a matching larger capacity (%s, %i shares)",
+    (tradeSide, capacityRevision, tradeAmount, belowMinimum) => {
+      render(
+        <TradingPanel
+          market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={tradeAmount}
+          tradePreview={nonfillablePreview("insufficient_liquidity", true)}
+          tradeCapacityPreview={readyCapacityPreview({
+            maxFaceAmountSubunits: 9_000,
+            previewRevision: capacityRevision,
+          })}
+          tradeSide={tradeSide}
+        />,
+      );
+
+      const refusal = screen.getByTestId("fok-preview-nonfillable");
+      if (belowMinimum) {
+        expect(refusal).toHaveTextContent(
+          "Too few shares. The market maker cannot fill an order this small, because its fee would not cover the mint fee. Try more shares.",
+        );
+        expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+        // A refresh cannot make a too-small order fillable.
+        expect(refusal).not.toHaveTextContent("This is a snapshot.");
+        expect(screen.queryByTestId("fok-preview-response-retry")).not.toBeInTheDocument();
+      } else {
+        expect(refusal).toHaveTextContent(/There aren't enough (sell|buy) orders/);
+        expect(screen.getByTestId("fok-preview-subsidy")).toBeInTheDocument();
+        expect(screen.getByTestId("fok-preview-response-retry")).toBeInTheDocument();
+      }
+    },
+  );
+
   it("gives a Sell price-limit refusal in minimum-price terms", () => {
     render(
       <TradingPanel
@@ -1401,9 +1777,15 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(message);
   });
 
-  it("offers a retry for a temporarily unavailable response", () => {
+  it.each([
+    "insufficient_liquidity",
+    "price_limit",
+    "request_too_large",
+    "market_unavailable",
+    "temporarily_unavailable",
+  ] as const)("offers explicit refresh for a ready %s response", (reason) => {
     const refresh = vi.fn();
-    const preview = nonfillablePreview("temporarily_unavailable", false);
+    const preview = nonfillablePreview(reason, false);
     preview.refresh = refresh;
     render(
       <TradingPanel
@@ -1419,7 +1801,7 @@ describe("TradingPanel", () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
-  it("complements only confirmed and projected prices for categorical No B", () => {
+  it("complements the projected probability for categorical No B", () => {
     const categoricalMarket = {
       ...makeMarket(),
       type: "categorical" as const,
@@ -1450,16 +1832,11 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByTestId("trade-average-execution-price")).toHaveTextContent(
-      "0.47 sats (47.0%)",
-    );
-    expect(screen.getByTestId("trade-worst-price")).toHaveTextContent("0.48 sats (48.0%)");
-    expect(screen.getByTestId("trade-current-latest-price")).toHaveTextContent("60.0%");
     expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("55.0%");
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("23.500 sats");
   });
 
-  it("renders a missing confirmed price as no trades rather than zero", () => {
+  it("omits the confirmed-price row from the trade summary", () => {
     render(
       <TradingPanel
         market={makeMarket()}
@@ -1472,9 +1849,7 @@ describe("TradingPanel", () => {
         onTradeConfirm={vi.fn()}
       />,
     );
-
-    expect(screen.getByTestId("trade-current-latest-price")).toHaveTextContent("No trades yet");
-    expect(screen.getByTestId("trade-current-latest-price")).not.toHaveTextContent("0");
+    expect(screen.queryByTestId("trade-current-latest-price")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -1484,8 +1859,8 @@ describe("TradingPanel", () => {
       consolidationAsset: conditionalAsset,
       sourceMode: "conditional-keyset-swap" as const,
       expectedNet: "-0.050 sats",
-      sourceLabel: "5.000 sats (conditional tokens)",
-      consolidationLabel: "1.000 sats (conditional tokens)",
+      sourceLabel: "5 conditional shares (YES)",
+      consolidationLabel: "1 conditional shares (YES)",
     },
     {
       name: "cash preparation and conditional consolidation",
@@ -1494,7 +1869,7 @@ describe("TradingPanel", () => {
       sourceMode: "mixed-source-ctf-convert" as const,
       expectedNet: "-5.050 sats",
       sourceLabel: "5.000 sats",
-      consolidationLabel: "1.000 sats (conditional tokens)",
+      consolidationLabel: "1 conditional shares (YES)",
     },
     {
       name: "cash preparation and consolidation",
@@ -1529,11 +1904,12 @@ describe("TradingPanel", () => {
     expect(screen.getByText("Minimum trade proceeds")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.050 sats");
     expect(screen.getByTestId("trade-net-proceeds")).toHaveTextContent(scenario.expectedNet);
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
+    expect(screen.queryByTestId("trade-winning-payout")).not.toBeInTheDocument();
+    expect(getFeeBreakdownRow("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
+    expect(getFeeBreakdownRow("trade-source-preparation-fee")).toHaveTextContent(
       scenario.sourceLabel,
     );
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(
+    expect(getFeeBreakdownRow("trade-consolidation-fee")).toHaveTextContent(
       scenario.consolidationLabel,
     );
   });
@@ -1651,10 +2027,10 @@ describe("TradingPanel", () => {
   });
 
   it.each([
-    { divisibility: 1_000, worstPrice: 300, expected: "0.30 sats (30.0%)" },
-    { divisibility: 1_000_000, worstPrice: 301_000, expected: "301.00 sats (30.1000%)" },
+    { divisibility: 1_000, worstPrice: 300, expected: "1.000 sats" },
+    { divisibility: 1_000_000, worstPrice: 301_000, expected: "1,000.000 sats" },
   ] as const)(
-    "shows the accepted price for D=$divisibility",
+    "uses registered winning face value and retains hidden accepted bound for D=$divisibility",
     ({ divisibility, worstPrice, expected }) => {
       render(
         <TradingPanel
@@ -1665,7 +2041,106 @@ describe("TradingPanel", () => {
           tradeSide="Buy"
         />,
       );
-      expect(screen.getByTestId("trade-worst-price")).toHaveTextContent(expected);
+      expect(screen.getByTestId("trade-winning-payout")).toHaveTextContent(expected);
+      expect(screen.getByTestId("fok-preview-ready")).toHaveAttribute(
+        "data-worst-price-numerator",
+        String(worstPrice),
+      );
+    },
+  );
+  it("keeps exact fee totals visible while the accessible breakdown starts collapsed", async () => {
+    const user = userEvent.setup();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts({
+          settlementInputFeeSubunits: "1",
+          sourcePreparationFeeSubunits: "2",
+          consolidationFeeSubunits: "3",
+        })}
+        feeConsentCurrent
+        tradeSide="Buy"
+      />,
+    );
+    const disclosure = screen.getByTestId("trade-fee-breakdown");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByTestId("trade-fee-summary")).toHaveTextContent("Fees: 0.006 sats");
+    expect(screen.getByTestId("trade-settlement-input-fee")).not.toBeVisible();
+    expect(screen.getByTestId("trade-grand-total")).toBeVisible();
+    await user.click(screen.getByTestId("trade-fee-summary"));
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByTestId("trade-settlement-input-fee")).toBeVisible();
+    await user.click(screen.getByTestId("trade-fee-summary"));
+    expect(disclosure).not.toHaveAttribute("open");
+  });
+
+  it("keeps conditional asset totals separate and excludes source fees from Buy cash and delivered payout", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "no" }}
+        tradeAmount={2}
+        tradePreview={readyPreview({ quotePaymentSubunits: 1001 })}
+        feeConsentCurrent
+        tradeSide="Buy"
+        tradeFeeFacts={feeFacts({
+          settlementInputFeeSubunits: "1",
+          sourcePreparationFeeSubunits: "2001",
+          consolidationFeeSubunits: "3002",
+          sourcePreparationAsset: conditionalAsset,
+          consolidationAsset: { ...conditionalAsset, outcomeCollection: "NO" },
+          sourceMode: "conditional-keyset-swap",
+        })}
+      />,
+    );
+    expect(screen.getByTestId("trade-fee-summary")).toHaveTextContent(
+      "0.001 sats; 2.001 conditional shares (YES); 3.002 conditional shares (NO)",
+    );
+    expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("1.002 sats");
+    expect(screen.getByTestId("trade-winning-payout")).toHaveTextContent("2.000 sats");
+  });
+
+  it("keeps a failed attempt's reviewed preparation fees available without making a stale quote spendable", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={nonfillablePreview("insufficient_liquidity", false)}
+        tradeSide="Buy"
+        tradeSubmitStatus={{ kind: "error", message: "Order refused." }}
+        attemptedTradeFeeFacts={feeFacts()}
+        feeConsentCurrent={false}
+      />,
+    );
+    expect(screen.getByTestId("trade-attempt-fees")).toHaveTextContent(
+      "These amounts do not show which fees were paid",
+    );
+    expect(screen.getByTestId("trade-attempt-fee-summary")).toHaveTextContent("15.000 sats");
+    expect(getFeeBreakdownRow("trade-attempt-source-preparation-fee")).toHaveTextContent(
+      "2.000 sats",
+    );
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("trade-winning-payout")).not.toBeInTheDocument();
+  });
+
+  it.each([Number.MAX_VALUE, Number.MAX_SAFE_INTEGER, 0.5])(
+    "does not throw for invalid input %s with an old supplied preview",
+    (amount) => {
+      render(
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={amount}
+          tradePreview={readyPreview()}
+          tradeSide="Buy"
+        />,
+      );
+      if (!Number.isSafeInteger(amount * 1000))
+        expect(screen.queryByTestId("trade-winning-payout")).not.toBeInTheDocument();
     },
   );
 });

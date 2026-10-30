@@ -144,7 +144,7 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     expect(onDismissCreationError).toHaveBeenCalledTimes(1);
   });
 
-  it("disables resume while the saved creation is loading", () => {
+  it("shows progress instead of recovery while the saved creation is loading", () => {
     render(
       <MarketCreationWizard
         {...makeProps("yesno")}
@@ -152,7 +152,44 @@ describe("MarketCreationWizard outcome-step rendering", () => {
         isLoadingCreation
       />,
     );
-    expect(screen.getByTestId("resume-market-creation")).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("common.loading"));
+    expect(screen.queryByTestId("market-creation-resume")).not.toBeInTheDocument();
+  });
+
+  it("keeps recovery hidden during creation and exposes the paid attempt only after failure", () => {
+    const props = makeProps("yesno");
+    const { rerender } = render(<MarketCreationWizard {...props} isSubmitting />);
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("marketCreation.creatingMarket"));
+    const retainedCreation = { title: "Original paid attempt", mintConfirmed: true };
+    rerender(<MarketCreationWizard {...props} isSubmitting retainedCreation={retainedCreation} />);
+    expect(screen.queryByTestId("market-creation-resume")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("marketCreation.creatingMarket"));
+    rerender(
+      <MarketCreationWizard
+        {...props}
+        retainedCreation={retainedCreation}
+        submitError="The paid creation is incomplete."
+      />,
+    );
+    expect(screen.getByTestId("resume-market-creation")).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("The paid creation is incomplete.");
+    expect(screen.getByText("Original paid attempt")).toBeInTheDocument();
+  });
+
+  it("keeps fee confirmation usable while creation is busy", () => {
+    const props = makeProps("yesno");
+    render(
+      <MarketCreationWizard
+        {...props}
+        isSubmitting
+        registrationFeePrompt={{ feeSubunits: 7, balanceSubunits: 20, baseAsset: "sat" }}
+      />,
+    );
+    expect(screen.queryByTestId("market-creation-resume")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("registration-fee-confirm"));
+    expect(props.onConfirmRegistrationFee).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("registration-fee-cancel"));
+    expect(props.onCancelRegistrationFee).toHaveBeenCalledTimes(1);
   });
 
   it("renders binary drafts directly in review without an outcomes editor", () => {

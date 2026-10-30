@@ -1,3 +1,22 @@
+import {
+  requireOrderRequestTimeoutMs,
+  runOrderQuoteRefreshRetry,
+  type SubmitOrderOptions,
+} from './orderQuoteRefreshRetry.ts'
+export {
+  ORDER_REQUEST_TIMEOUT_MS,
+  OrderQuoteRefreshWaitStopped,
+  type SubmitOrderOptions,
+  type OrderQuotesRefreshingProgress,
+} from './orderQuoteRefreshRetry.ts'
+import {
+  decodeMarketPriceHistoryResponse,
+  type MarketPriceHistoryValidationContext,
+} from './marketPriceHistory.ts'
+export {
+  decodeMarketPriceHistoryResponse,
+  type MarketPriceHistoryValidationContext,
+} from './marketPriceHistory.ts'
 import type { components, operations } from './generated/api.ts'
 import {
   parseMarketDivisibility,
@@ -59,7 +78,9 @@ export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
 export const DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX = 64 * 1_024
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
-const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS = 10_000
+// The first hosted custody receive can take more than 10 seconds. The engine
+// completes it after a disconnect, but a shorter wait reports a false failure.
+const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS = 30_000
 const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS_MAX = 60_000
 
 export interface EngineClientOptions {
@@ -415,6 +436,17 @@ export type MarketSnapshotReadOptions = NonNullable<
   operations['getMarketComments']['parameters']['query']
 > & { signal?: AbortSignal }
 
+export interface OrderBookReadOptions {
+  /** Retry only the exact depth-refresh problem, at most five attempts two seconds apart. */
+  retryRefreshing?: boolean
+}
+
+/** Price history returns the latest applied state. It has no source-position options. */
+export type MarketPriceHistoryReadOptions = { signal?: AbortSignal } & Pick<
+  MarketPriceHistoryValidationContext,
+  'minimumAsOf' | 'outcomeIds' | 'divisibility'
+>
+
 export type MarketComment = components['schemas']['MarketComment']
 export type MarketCommentsResponse = components['schemas']['MarketCommentsResponse']
 
@@ -619,20 +651,45 @@ export class BitcasterEngineClient {
     )
   }
 
-  async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
+  async submitOrder(
+    marketId: string,
+    request: SubmitOrderRequest,
+    options: SubmitOrderOptions = {},
+  ): Promise<SubmitOrderResponse> {
+    // Capture the complete signed protocol body once. Only HTTP authentication changes.
     const bodyText = JSON.stringify(request)
-    const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders`,
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
+    const submit = async (signal?: AbortSignal) => {
+      const response = await this.request(
+        `/api/v1/${encodePathSegment(marketId)}/orders`,
+        {
+          method: 'POST',
+          body: bodyText,
+          headers: { 'content-type': 'application/json' },
+          signal,
+        },
+        bodyText,
+        false,
+        16 * 1024,
+      )
+      return decodeSubmitOrderResponse(
+        await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
+      )
+    }
+    if (options.quoteRefreshRetry !== undefined)
+      return runOrderQuoteRefreshRetry(submit, isOrderQuotesRefreshingError, {
+        ...options,
+        quoteRefreshRetry: options.quoteRefreshRetry,
+      })
+    if (options.requestTimeoutMs === undefined) return submit(options.signal)
+    const lifetime = createBoundedRequestLifetime(
+      options.signal,
+      requireOrderRequestTimeoutMs(options.requestTimeoutMs),
     )
-    return decodeSubmitOrderResponse(
-      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
+    try {
+      return await awaitAbortable(submit(lifetime.signal), lifetime.signal)
+    } finally {
+      lifetime.dispose()
+    }
   }
 
   async previewFokOrder(
@@ -751,11 +808,32 @@ export class BitcasterEngineClient {
     return response.status !== 404
   }
 
-  async getOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBookSnapshot> {
-    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
-      signal,
-    })
-    return (await response.json()) as OrderBookSnapshot
+  async getOrderBook(
+    marketId: string,
+    signal?: AbortSignal,
+    options: OrderBookReadOptions = {},
+  ): Promise<OrderBookSnapshot> {
+    const attempts = options.retryRefreshing ? 5 : 1
+    for (let attempt = 1; ; attempt++) {
+      const lifetime = options.retryRefreshing
+        ? createBoundedRequestLifetime(signal, 10_000)
+        : undefined
+      const requestSignal = lifetime?.signal ?? signal
+      try {
+        const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
+          signal: requestSignal,
+        })
+        const snapshot = (await response.json()) as OrderBookSnapshot
+        requestSignal?.throwIfAborted()
+        return snapshot
+      } catch (error) {
+        requestSignal?.throwIfAborted()
+        if (attempt >= attempts || !isOrderBookRefreshingError(error)) throw error
+      } finally {
+        lifetime?.dispose()
+      }
+      await waitForOrderBookRetry(signal)
+    }
   }
 
   async queryMarkets(
@@ -778,17 +856,20 @@ export class BitcasterEngineClient {
   async getMarketPriceHistory(
     conditionId: string,
     timeframe: PriceHistoryTimeframe = '7d',
-    options: MarketSnapshotReadOptions = {},
+    options: MarketPriceHistoryReadOptions = {},
   ): Promise<MarketPriceHistoryResponse> {
     const query = new URLSearchParams({ timeframe })
-    if (options.minimumEventOrder !== undefined)
-      query.set('minimumEventOrder', options.minimumEventOrder)
-    if (options.refresh === true) query.set('refresh', 'true')
     const response = await this.request(
       `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
       { signal: options.signal },
     )
-    return (await response.json()) as MarketPriceHistoryResponse
+    return decodeMarketPriceHistoryResponse(await response.json(), {
+      conditionId,
+      timeframe,
+      minimumAsOf: options.minimumAsOf,
+      outcomeIds: options.outcomeIds,
+      divisibility: options.divisibility,
+    })
   }
 
   async getMarketComments(
@@ -1614,6 +1695,21 @@ function createBoundedRequestLifetime(
   }
 }
 
+function waitForOrderBookRetry(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, 2_000)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function decodeSettlementCapabilityAdmissionPolicy(
   value: unknown,
 ): SettlementCapabilityAdmissionPolicyResponse {
@@ -1800,4 +1896,30 @@ function normalizeHeaders(headers: HeadersInit | undefined): Record<string, stri
   }
   if (Array.isArray(headers)) return Object.fromEntries(headers)
   return { ...headers }
+}
+
+/** In an order submission, this exact problem permits exact-original resubmission. */
+export function isOrderQuotesRefreshingError(error: unknown): boolean {
+  return isQuotesRefreshingProblem(error)
+}
+
+/** A failed depth read preserves last-known display data; it is not an empty book. */
+export function isOrderBookRefreshingError(error: unknown): boolean {
+  return isQuotesRefreshingProblem(error)
+}
+
+function isQuotesRefreshingProblem(error: unknown): boolean {
+  if (!(error instanceof EngineClientError) || error.status !== 503) return false
+  try {
+    const problem: unknown = JSON.parse(error.detail)
+    if (typeof problem !== 'object' || problem === null || Array.isArray(problem)) return false
+    const value = problem as Record<string, unknown>
+    return (
+      value.type === '/errors/order-quotes-refreshing' &&
+      value.status === 503 &&
+      value.code === 'order-quotes-refreshing'
+    )
+  } catch {
+    return false
+  }
 }

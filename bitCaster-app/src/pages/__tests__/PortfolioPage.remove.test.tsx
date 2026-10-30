@@ -2,16 +2,35 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Position } from "@/types/portfolio";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 
 // --- mocks -----------------------------------------------------------------
 
 const removeProofs = vi.fn().mockResolvedValue(undefined);
-const cashuMocks = vi.hoisted(() => ({
-  claimPortfolioPosition: vi.fn(),
-  removePortfolioPosition: vi.fn(),
-  addActivity: vi.fn(),
-  walletState: { mnemonic: "fresh fake wallet seed" },
-}));
+const cashuMocks = vi.hoisted(() => {
+  const walletListeners = new Set<
+    (current: { mnemonic: string }, previous: { mnemonic: string }) => void
+  >();
+  const walletState = new Proxy(
+    { mnemonic: "fresh fake wallet seed" },
+    {
+      set(target, property, value) {
+        const previous = { ...target };
+        Reflect.set(target, property, value);
+        walletListeners.forEach((listener) => listener({ ...target }, previous));
+        return true;
+      },
+    },
+  );
+  return {
+    claimPortfolioPosition: vi.fn(),
+    removePortfolioPosition: vi.fn(),
+    addActivity: vi.fn(),
+    walletState,
+    walletListeners,
+  };
+});
 
 vi.mock("@/stores/proof-db", () => ({
   removeProofs: (...args: unknown[]) => removeProofs(...args),
@@ -32,10 +51,15 @@ vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: () => null,
 }));
 
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (s: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = { nostrSignerMode: "none", nostrProfile: null, relays: [] };
+  return {
+    useSettingsStore: Object.assign((selector: (s: unknown) => unknown) => selector(state), {
+      getState: () => state,
+      subscribe: () => () => {},
+    }),
+  };
+});
 
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
@@ -43,7 +67,15 @@ vi.mock("@/stores/activity-log", () => ({
 }));
 
 vi.mock("@/stores/wallet", () => ({
-  useWalletStore: { getState: () => cashuMocks.walletState },
+  useWalletStore: {
+    getState: () => cashuMocks.walletState,
+    subscribe: (
+      listener: (current: { mnemonic: string }, previous: { mnemonic: string }) => void,
+    ) => {
+      cashuMocks.walletListeners.add(listener);
+      return () => cashuMocks.walletListeners.delete(listener);
+    },
+  },
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
@@ -117,6 +149,7 @@ function positionFor(operation: Operation, overrides: Partial<Position> = {}) {
     ...overrides,
   });
 }
+const removalConfirmation = () => screen.getByTestId("position-removal-confirmation");
 const actionDialog = () => screen.getByRole("dialog", { name: "Position action" });
 async function startAction(operation: Operation, confirm = true) {
   await userEvent.click(
@@ -125,8 +158,7 @@ async function startAction(operation: Operation, confirm = true) {
     ),
   );
   if (operation === "remove" && confirm) {
-    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
   }
 }
 function expectCommittedPayout(amount = 125) {
@@ -185,11 +217,8 @@ describe("PortfolioPage position action dialogs", () => {
         operation === "claim" ? "Claiming your payout" : "Removing the position",
       );
       // A repeated action must not start another coordinator.
-      await userEvent.click(
-        screen.getByLabelText(
-          operation === "claim" ? /claim payout for/i : /remove losing position for/i,
-        ),
-      );
+      if (operation === "claim") await userEvent.click(screen.getByLabelText(/claim payout for/i));
+      else expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
       expect(coordinator(operation)).toHaveBeenCalledOnce();
       cashuMocks.walletState.mnemonic = "other fake wallet seed";
       view.rerender(<PortfolioPage />);
@@ -202,6 +231,248 @@ describe("PortfolioPage position action dialogs", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     },
   );
+
+  it("keeps slow removal in place and synchronously rejects duplicate confirmation", async () => {
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.removePortfolioPosition.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PortfolioPage />);
+    await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
+    act(() => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
+    expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Removing the position");
+    await act(async () => finish({ kind: "completed", committedPayoutAmount: 0 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("invalidates confirmation across batched wallet A to B to A", async () => {
+    render(<PortfolioPage />);
+    await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
+    act(() => {
+      cashuMocks.walletState.mnemonic = "other fake wallet seed";
+      cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+      fireEvent.click(confirm);
+    });
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("position-removal-confirmation")).not.toBeInTheDocument();
+  });
+
+  it.each(["claim", "remove"] as const)(
+    "keeps a newer operation busy after stale %s completion",
+    async (kind) => {
+      mockPositions = [positionFor(kind)];
+      const finish: Array<(value: { kind: string; committedPayoutAmount: number }) => void> = [];
+      coordinator(kind).mockImplementation(() => new Promise((resolve) => finish.push(resolve)));
+      render(<PortfolioPage />);
+      await startAction(kind);
+      act(() => {
+        cashuMocks.walletState.mnemonic = "other fake wallet seed";
+        cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+      });
+      await startAction(kind);
+      expect(coordinator(kind)).toHaveBeenCalledTimes(2);
+      await act(async () => finish[0]({ kind: "pending", committedPayoutAmount: 0 }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        kind === "claim" ? "Claiming your payout" : "Removing the position",
+      );
+      await act(async () => finish[1]({ kind: "completed", committedPayoutAmount: 0 }));
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not publish stale removal feedback after unmount", async () => {
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.removePortfolioPosition.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = render(<PortfolioPage />);
+    await startAction("remove");
+    view.unmount();
+    await act(async () => finish({ kind: "pending", committedPayoutAmount: 0 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  async function claimWithTimers() {
+    await act(async () => fireEvent.click(screen.getByLabelText(/claim payout for/i)));
+  }
+
+  it("celebrates only completed exact fractional credit and never hides a residual holding", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1234,
+      });
+      const view = render(<PortfolioPage />);
+      await claimWithTimers();
+      const snapshot = screen.getByTestId("claim-celebration");
+      expect(within(snapshot).getByRole("group", { name: "1.234 sats" })).toBeVisible();
+      mockPositions = [positionFor("claim", { marketTitle: "Residual holding", shares: 7 })];
+      view.rerender(<PortfolioPage />);
+      expect(screen.getByText("Residual holding")).toBeVisible();
+      expect(snapshot).toHaveTextContent("Lost market");
+      await act(async () => vi.advanceTimersByTimeAsync(2999));
+      expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      expect(screen.getByText("Residual holding")).toBeVisible();
+      expect(removeProofs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN])(
+    "does not celebrate invalid/zero completed credit %s",
+    async (amount) => {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: amount,
+      });
+      render(<PortfolioPage />);
+      await startAction("claim");
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["pending", "partial", "error", "stopped"])(
+    "does not celebrate %s despite a committed leg",
+    async (kind) => {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+        onCommittedLeg({ payoutAmount: 1234, keysetId: "credited" });
+        return { kind, committedPayoutAmount: 1234, error: claimFailure };
+      });
+      render(<PortfolioPage />);
+      await startAction("claim");
+      expectCommittedPayout(1234);
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    },
+  );
+
+  it("creates one snapshot from the terminal result, not repeated credit callbacks", async () => {
+    mockPositions = [positionFor("claim")];
+    cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+      onCommittedLeg({ payoutAmount: 1000, keysetId: "one" });
+      onCommittedLeg({ payoutAmount: 2000, keysetId: "two" });
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      return { kind: "completed", committedPayoutAmount: 3000 };
+    });
+    render(<PortfolioPage />);
+    await startAction("claim");
+    expect(screen.getAllByTestId("claim-celebration")).toHaveLength(1);
+    expect(
+      within(screen.getByTestId("claim-celebration")).getByRole("group", { name: "3 sats" }),
+    ).toBeVisible();
+  });
+
+  it("expires only the matching completed claim while a newer same-id claim stays visible", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1000,
+      });
+      render(<PortfolioPage />);
+      await claimWithTimers();
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 2000,
+      });
+      await claimWithTimers();
+      expect(screen.getAllByTestId("claim-celebration")).toHaveLength(2);
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      const remaining = screen.getByTestId("claim-celebration");
+      expect(within(remaining).getByRole("group", { name: "2 sats" })).toBeVisible();
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the unverified warning after the completed credit celebration expires", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 125,
+        oracleEvidence: { status: "unverified" },
+      });
+      render(<PortfolioPage />);
+      await claimWithTimers();
+      expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+      expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+      expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops celebration across batched wallet changes and rejects old positive completion", async () => {
+    mockPositions = [positionFor("claim")];
+    let finish!: (value: { kind: string; committedPayoutAmount: number }) => void;
+    cashuMocks.claimPortfolioPosition.mockResolvedValueOnce({
+      kind: "completed",
+      committedPayoutAmount: 1000,
+    });
+    cashuMocks.claimPortfolioPosition.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PortfolioPage />);
+    await startAction("claim");
+    expect(screen.getByTestId("claim-celebration")).toBeInTheDocument();
+    await startAction("claim");
+    act(() => {
+      cashuMocks.walletState.mnemonic = "other fake wallet seed";
+      cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
+    });
+    await act(async () => finish({ kind: "completed", committedPayoutAmount: 2000 }));
+    expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+  });
+
+  it("does not create or retain celebration after unmount", async () => {
+    vi.useFakeTimers();
+    try {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind: "completed",
+        committedPayoutAmount: 1000,
+      });
+      const view = render(<PortfolioPage />);
+      await claimWithTimers();
+      view.unmount();
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(screen.queryByTestId("claim-celebration")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("claims an unvalued local winner with the exact canonical target", async () => {
     mockPositions = [
@@ -226,12 +497,29 @@ describe("PortfolioPage position action dialogs", () => {
     expect(cashuMocks.addActivity).not.toHaveBeenCalled();
   });
 
+  it("keeps the irreversible deletion warning in the Japanese confirmation", async () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <PortfolioPage />
+      </I18nextProvider>,
+    );
+    await userEvent.click(screen.getByLabelText(/ハズレのポジションを削除/));
+    const dialog = removalConfirmation();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent("このハズレのポジションをウォレットから削除しますか？");
+    expect(dialog).toHaveTextContent("ローカルの CTF プルーフは削除され、元に戻せません。");
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+  });
+
   it("passes the explicitly confirmed target to removal without deleting cached proofs", async () => {
     render(<PortfolioPage />);
     await startAction("remove", false);
-    expect(actionDialog()).toHaveTextContent("cannot be undone");
+    expect(removalConfirmation()).toHaveTextContent("cannot be undone");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
     expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         mintUrl: "https://mint.example",
@@ -249,9 +537,11 @@ describe("PortfolioPage position action dialogs", () => {
       render(<PortfolioPage />);
       await startAction("remove", false);
       if (dismissal === "Cancel") {
-        await userEvent.click(within(actionDialog()).getByRole("button", { name: "Cancel" }));
+        await userEvent.click(
+          within(removalConfirmation()).getByRole("button", { name: "Cancel" }),
+        );
       } else {
-        fireEvent(actionDialog(), new Event("cancel", { bubbles: true, cancelable: true }));
+        fireEvent.keyDown(removalConfirmation(), { key: "Escape" });
       }
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
@@ -263,7 +553,7 @@ describe("PortfolioPage position action dialogs", () => {
   it("discards an open confirmation when the wallet changes, even if it later changes back", async () => {
     const view = render(<PortfolioPage />);
     await startAction("remove", false);
-    const staleConfirm = within(actionDialog()).getByRole("button", {
+    const staleConfirm = within(removalConfirmation()).getByRole("button", {
       name: "Remove",
     });
     cashuMocks.walletState.mnemonic = "other fake wallet seed";
@@ -287,9 +577,12 @@ describe("PortfolioPage position action dialogs", () => {
   ])("revalidates the confirmed position after it changes: %j", async (changed) => {
     const view = render(<PortfolioPage />);
     await startAction("remove", false);
+    const confirm = within(removalConfirmation()).getByRole("button", { name: "Remove" });
     mockPositions = [closedPosition(changed)];
     view.rerender(<PortfolioPage />);
-    await userEvent.click(within(actionDialog()).getByRole("button", { name: "Remove" }));
+    if (screen.queryByTestId("position-removal-confirmation"))
+      await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
+    else fireEvent.click(confirm);
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
     expect(removeProofs).not.toHaveBeenCalled();
   });
@@ -526,7 +819,7 @@ describe("PortfolioPage position action dialogs", () => {
     render(<PortfolioPage />);
     expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
     if (kind === "winner") {
-      expect(screen.getByText("Won ☺")).toBeInTheDocument();
+      expect(screen.getByText("Won")).toBeInTheDocument();
       expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
       expect(screen.getByLabelText(/claim payout for/i)).toBeInTheDocument();
     } else {

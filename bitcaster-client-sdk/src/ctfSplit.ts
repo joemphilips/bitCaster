@@ -1,3 +1,4 @@
+import { prepareDeterministicOutgoingCashuSend } from './deterministicOutgoingCashuPreparation.ts'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from './ctfListing.ts'
 import {
   Amount,
@@ -6,7 +7,7 @@ import {
   OutputData as RegularOutputData,
   Wallet as CashuWallet,
   type MintKeys,
-  type P2PKOptions,
+  type OperationCounters,
   type Proof,
   type ProofState,
   type CtfConvertRequest,
@@ -187,28 +188,6 @@ export interface CtfGrossInputPlanningKeyset {
   input_fee_ppk: number
 }
 
-export interface MintSplitForSwapResult {
-  resolvedLockOutcomeSetId: string
-  resolvedKeepOutcomeSetId: string
-  lockCollections: string[]
-  keepCollections: string[]
-  lockedProofs: Proof[]
-  keepProofs: Proof[]
-  proofsByCollection: Record<string, Proof[]>
-  spentCollateralProofs: Proof[]
-}
-
-export interface PreflightCompleteSetSplitResult {
-  resolvedLockOutcomeSetId: string
-  resolvedKeepOutcomeSetId: string
-  lockCollections: string[]
-  keepCollections: string[]
-  lockProofs: Proof[]
-  keepProofs: Proof[]
-  proofsByCollection: Record<string, Proof[]>
-  spentCollateralProofs: Proof[]
-}
-
 export interface ComplementaryOutcomeLegResolution {
   resolvedLockOutcomeSetId: string
   resolvedKeepOutcomeSetId: string
@@ -276,6 +255,7 @@ export interface CtfSplitOptions {
 }
 
 export interface RegularSplitWallet {
+  getKeyset?(keysetId?: string): { id: string }
   prepareSwapToSend?(
     amount: number,
     proofs: Proof[],
@@ -317,6 +297,8 @@ export async function splitRegularProofsWithOperation(params: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
+  /** Opt in for fresh regular outputs. Saved requests retain their exact authority. */
+  deterministicPreparation?: { readonly seed: Uint8Array }
   /** Run after durable preparation and immediately before the mint request. */
   beforeMintMutation?: () => Promise<void>
 }): Promise<RegularProofSplitResult> {
@@ -350,12 +332,43 @@ export async function splitRegularProofsWithOperation(params: {
     throw new Error('Cashu wallet adapter does not support resumable split preparation')
   }
 
-  const preview = await params.wallet.prepareSwapToSend(
-    amountSubunits,
-    normalizedProofs,
-    undefined,
-    { send: { type: 'random' }, keep: { type: 'random' } },
-  )
+  let reservationCallbacks = 0
+  const deterministic = params.deterministicPreparation
+    ? await prepareDeterministicOutgoingCashuSend({
+        amount: amountSubunits,
+        proofs: normalizedProofs,
+        seed: params.deterministicPreparation.seed,
+        wallet: {
+          getKeyset: (id) => {
+            if (!params.wallet.getKeyset)
+              throw new Error('deterministic regular split requires an output keyset')
+            return params.wallet.getKeyset(id)
+          },
+          prepareSwapToSend: (amount, proofs, config, outputs) =>
+            params.wallet.prepareSwapToSend!(
+              amount,
+              proofs,
+              {
+                ...config,
+                onCountersReserved: (reserved: OperationCounters) => {
+                  reservationCallbacks++
+                  config.onCountersReserved(reserved)
+                },
+              },
+              outputs,
+            ),
+        },
+        diagnosticLabel: 'complete-set regular collateral',
+      })
+    : null
+  if (deterministic && reservationCallbacks !== 1)
+    throw new Error('deterministic regular split counter callback count is invalid')
+  const preview =
+    deterministic?.preview ??
+    (await params.wallet.prepareSwapToSend(amountSubunits, normalizedProofs, undefined, {
+      send: { type: 'random' },
+      keep: { type: 'random' },
+    }))
   if (
     (preview.sendOutputs?.length ?? 0) + (preview.keepOutputs?.length ?? 0) >
     DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX
@@ -484,150 +497,6 @@ export function computeGrossCtfInputAmountSubunits(params: {
   throw new Error(
     `Could not find gross CTF input amount that nets ${faceAmountSubunits} subunits after input fees`,
   )
-}
-
-export async function splitRootCompleteSetForSwap(params: {
-  mintUrl: string
-  baseAsset: CtfCollateralBaseAsset
-  parentCollectionId?: unknown
-  conditionId: string
-  collateralProofs: Proof[]
-  amountSubunits: number
-  lockOutcomeSetId: string
-  keepOutcomeSetId: string
-  p2pk: P2PKOptions
-  operationId: string
-  proofOperationStore: CtfProofOperationStore
-  transport?: CtfSplitTransport
-  proofStateChecker?: Pick<RegularSplitWallet, 'checkProofsStates'>
-  restoreOutputGroups?: (
-    mintUrl: string,
-    outputs: Record<string, StoredOutputData[]>,
-  ) => Promise<Record<string, Proof[]>>
-}): Promise<MintSplitForSwapResult> {
-  const amountSubunits = requirePositiveSafeInteger(params.amountSubunits, 'amountSubunits')
-  const transport = params.transport ?? new CashuMintCtfSplitTransport(params.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(params.conditionId, {
-    lockOutcomeSetId: params.lockOutcomeSetId,
-    keepOutcomeSetId: params.keepOutcomeSetId,
-    baseAsset: params.baseAsset,
-  })
-  const outcomeLegs = resolveComplementaryOutcomeLegs(
-    params.lockOutcomeSetId,
-    params.keepOutcomeSetId,
-    outcomeCollectionKeysets,
-  )
-  const lockCollections = new Set(outcomeLegs.lockCollections)
-  const keepCollections = new Set(outcomeLegs.keepCollections)
-  const normalizedCollateral = params.collateralProofs.map(normalizeProof)
-  const proofsByCollection = await splitCompleteSetWithOperation({
-    mintUrl: params.mintUrl,
-    operationId: params.operationId,
-    transport,
-    conditionId: params.conditionId,
-    collateralProofs: normalizedCollateral,
-    outcomeCollectionKeysets,
-    amountSubunits,
-    baseAsset: params.baseAsset,
-    parentCollectionId: params.parentCollectionId,
-    proofOperationStore: params.proofOperationStore,
-    proofStateChecker: params.proofStateChecker,
-    restoreOutputGroups: params.restoreOutputGroups,
-    outputMode: {
-      kind: 'custom',
-      makeOutputs: ({ collection, amountSubunits, keyset }) => {
-        if (lockCollections.has(collection)) {
-          return RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSubunits), keyset)
-        }
-        if (keepCollections.has(collection)) {
-          return RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset)
-        }
-        throw new Error(`CTF split has no lock/keep branch for outcome collection ${collection}`)
-      },
-    },
-  })
-
-  return {
-    resolvedLockOutcomeSetId: outcomeLegs.resolvedLockOutcomeSetId,
-    resolvedKeepOutcomeSetId: outcomeLegs.resolvedKeepOutcomeSetId,
-    lockCollections: outcomeLegs.lockCollections,
-    keepCollections: outcomeLegs.keepCollections,
-    lockedProofs: requireOutcomeProofsForCollections(
-      proofsByCollection,
-      outcomeLegs.lockCollections,
-      params.operationId,
-    ),
-    keepProofs: requireOutcomeProofsForCollections(
-      proofsByCollection,
-      outcomeLegs.keepCollections,
-      params.operationId,
-    ),
-    proofsByCollection,
-    spentCollateralProofs: normalizedCollateral,
-  }
-}
-
-export async function splitRootCompleteSetForPreflightOrder(params: {
-  mintUrl: string
-  baseAsset: CtfCollateralBaseAsset
-  parentCollectionId?: unknown
-  conditionId: string
-  collateralProofs: Proof[]
-  amountSubunits: number
-  lockOutcomeSetId: string
-  keepOutcomeSetId: string
-  operationId: string
-  proofOperationStore: CtfProofOperationStore
-}): Promise<PreflightCompleteSetSplitResult> {
-  const amountSubunits = requirePositiveSafeInteger(params.amountSubunits, 'amountSubunits')
-  const transport = new CashuMintCtfSplitTransport(params.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(params.conditionId, {
-    lockOutcomeSetId: params.lockOutcomeSetId,
-    keepOutcomeSetId: params.keepOutcomeSetId,
-    baseAsset: params.baseAsset,
-  })
-  const outcomeLegs = resolveComplementaryOutcomeLegs(
-    params.lockOutcomeSetId,
-    params.keepOutcomeSetId,
-    outcomeCollectionKeysets,
-  )
-  const normalizedCollateral = params.collateralProofs.map(normalizeProof)
-  const proofsByCollection = await splitCompleteSetWithOperation({
-    mintUrl: params.mintUrl,
-    operationId: params.operationId,
-    transport,
-    conditionId: params.conditionId,
-    collateralProofs: normalizedCollateral,
-    outcomeCollectionKeysets,
-    amountSubunits,
-    baseAsset: params.baseAsset,
-    parentCollectionId: params.parentCollectionId,
-    proofOperationStore: params.proofOperationStore,
-    outputMode: {
-      kind: 'custom',
-      makeOutputs: ({ amountSubunits, keyset }) =>
-        RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset),
-    },
-  })
-
-  return {
-    resolvedLockOutcomeSetId: outcomeLegs.resolvedLockOutcomeSetId,
-    resolvedKeepOutcomeSetId: outcomeLegs.resolvedKeepOutcomeSetId,
-    lockCollections: outcomeLegs.lockCollections,
-    keepCollections: outcomeLegs.keepCollections,
-    lockProofs: requireOutcomeProofsForCollections(
-      proofsByCollection,
-      outcomeLegs.lockCollections,
-      params.operationId,
-    ),
-    keepProofs: requireOutcomeProofsForCollections(
-      proofsByCollection,
-      outcomeLegs.keepCollections,
-      params.operationId,
-    ),
-    proofsByCollection,
-    spentCollateralProofs: normalizedCollateral,
-  }
 }
 
 export async function resolveRootPreflightOutputAmountSubunits(params: {

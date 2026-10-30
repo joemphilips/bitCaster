@@ -16,6 +16,14 @@ vi.mock("react-i18next", async () => {
     "walletBackupRecovery.description": copy.description,
     "walletBackupRecovery.retry": copy.retry,
     ...Object.fromEntries(
+      Object.entries(copy.blocked).flatMap(([reason, value]) =>
+        Object.entries(value).map(([field, text]) => [
+          `walletBackupRecovery.blocked.${reason}.${field}`,
+          text,
+        ]),
+      ),
+    ),
+    ...Object.fromEntries(
       Object.entries(copy.reasons).map(([key, value]) => [
         `walletBackupRecovery.reasons.${key}`,
         value,
@@ -132,3 +140,25 @@ it("keeps startup and failure copy complete in English and Japanese", async () =
   expect(ja.walletBackupRecovery.failedTitle).toBe("ウォレットバックアップが停止しました");
   expect(ja.walletBackupRecovery.retryStartup).toBe("バックアップを再試行");
 });
+
+it.each(["wrong-account", "inactive", "incompatible-discovery"] as const)(
+  "keeps local authority visible for %s",
+  (reason) => {
+    render(
+      <EncryptedWalletBackupRecoveryStatus
+        recoveryStatus={{ kind: "blocked", reason }}
+        retryRecovery={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Your local wallet, funds, and unfinished work are unchanged.",
+    );
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    if (reason === "wrong-account")
+      expect(screen.getByRole("link", { name: "Open ID settings" })).toHaveAttribute(
+        "href",
+        "/settings?category=nostr",
+      );
+    else expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  },
+);

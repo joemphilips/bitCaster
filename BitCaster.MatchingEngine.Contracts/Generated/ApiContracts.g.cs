@@ -29,6 +29,34 @@ namespace BitCaster.MatchingEngine.Contracts
 
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DeploymentIdentityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DeploymentIdentityResponse(string @buildId, string @component, int @schemaVersion)
+        {
+            this.SchemaVersion = @schemaVersion;
+            this.Component = @component;
+            this.BuildId = @buildId;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public int SchemaVersion { get; }
+
+        /// <summary>
+        /// Identifies the API package.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("component")]
+        public string Component { get; }
+
+        /// <summary>
+        /// Opaque identity of the running package.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("buildId")]
+        public string BuildId { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DurableCashuRecipientKind
     {
 
@@ -1476,7 +1504,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
+    /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order that reserves its complete amount is `matched`, and the submission response reports `matched`. Its order status becomes `filled` after its settlement group is `Confirmed`, or `failed` when the group ends in another terminal status. A public FOK order that cannot reserve its complete amount is `cancelled`. The engine also reports `failed` when it cannot process an accepted order. An internal GTC quote can rest or partially fill.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -2941,7 +2969,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Outcome label (e.g. "Yes", "Alice").
+        /// Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or digits, with no spaces or symbols.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("name")]
         public string Name { get; }
@@ -3012,7 +3041,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Description { get; }
 
         /// <summary>
-        /// The outcomes for the market (2 through 8).
+        /// The outcomes for the market (2 through 8). Outcome names must be unique when letter case is ignored: "Red" and "red" are the same outcome. A duplicate returns 400.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
@@ -3194,7 +3224,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots.
+        /// Opaque source position for this confirmed trade. Do not compare positions on the client. Do not merge live trade points into retained history snapshots.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("eventOrder")]
@@ -3367,8 +3397,9 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCommentTrade
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCommentTrade(System.DateTimeOffset @executedAt, long? @faceAmountSubunits, System.Guid @fillId, string @outcomeId, int @price, int @priceDenominator)
+        public MarketCommentTrade(MarketCommentAuthorTrade? @authorTrade, System.DateTimeOffset @executedAt, long? @faceAmountSubunits, System.Guid @fillId, string @outcomeId, int @price, int @priceDenominator)
         {
+            this.AuthorTrade = @authorTrade;
             this.FaceAmountSubunits = @faceAmountSubunits;
             this.FillId = @fillId;
             this.OutcomeId = @outcomeId;
@@ -3376,6 +3407,12 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Price = @price;
             this.PriceDenominator = @priceDenominator;
         }
+
+        /// <summary>
+        /// The comment author's order intent for this linked fill. Null means historical intent is unknown.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("authorTrade")]
+        public MarketCommentAuthorTrade? AuthorTrade { get; }
 
         /// <summary>
         /// Linked confirmed fill size in market face-amount subunits. Null means unknown size.
@@ -3412,6 +3449,42 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("priceDenominator")]
         public int PriceDenominator { get; }
+
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCommentAuthorTrade
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCommentAuthorTrade(string @outcomeId, OrderSide @side, TokenSide @tokenSide)
+        {
+            this.Side = @side;
+            this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        /// <summary>
+        /// Primitive outcome selected by the author. This can differ from the chart's price-history route.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
@@ -4105,6 +4178,20 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class Response
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public Response(string @error)
+        {
+            this.Error = @error;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("error")]
+        public string Error { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DurableCashuDeliverySubmissionUnit
     {
 
@@ -4400,12 +4487,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class FileParameter
     {
         public FileParameter(System.IO.Stream data)
-            : this (data, null, null)
+            : this(data, null, null)
         {
         }
 
         public FileParameter(System.IO.Stream data, string? fileName)
-            : this (data, fileName, null)
+            : this(data, fileName, null)
         {
         }
 
@@ -4497,11 +4584,11 @@ namespace BitCaster.MatchingEngine.Contracts
 
 }
 
-#pragma warning restore  108
-#pragma warning restore  114
-#pragma warning restore  472
-#pragma warning restore  612
-#pragma warning restore  649
+#pragma warning restore 108
+#pragma warning restore 114
+#pragma warning restore 472
+#pragma warning restore 612
+#pragma warning restore 649
 #pragma warning restore 1573
 #pragma warning restore 1591
 #pragma warning restore 8073

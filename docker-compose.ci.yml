@@ -1,10 +1,12 @@
 services:
+  mintd-setup:
+    image: ${MINT_IMAGE:?Set MINT_IMAGE to the reviewed immutable mint image}
+    build: !reset null
   mintd:
-    image: joemphilips/bitcaster-mintd
-    environment:
-      CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION: "one-vs-rest"
+    image: ${MINT_IMAGE:?Set MINT_IMAGE to the reviewed immutable mint image}
+    build: !reset null
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8085"]
+      test: ["CMD", "curl", "-f", "http://localhost:8085/v1/info"]
       interval: 5s
       timeout: 5s
       retries: 60

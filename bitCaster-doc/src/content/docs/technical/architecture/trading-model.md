@@ -36,6 +36,25 @@ It does not reserve funds or liquidity. It does not authorize or submit an order
 Final admission checks the current book again with the user's price limit.
 The opaque `previewRevision` is display metadata, not authorization.
 
+If the preview cannot fill the order, the browser shows the reason and a
+**Refresh quote** action. The result is a snapshot. Refresh checks the current
+market without submitting an order. The browser labels a pending wallet funds
+and fee check separately from a pending market preview.
+
+The detail page separates settlement checks from wallet recovery. A saved
+result can be a partial result. It does not prove that the earlier operation
+is complete or that its outputs are still spendable. A new trade can proceed
+when current market checks and wallet funds and fee checks pass, and the user
+confirms that trade.
+
+The browser hides additional-funding advice while an operation is active,
+recovery remains pending, or estimates need refresh. Funding does not resolve
+an incomplete wallet operation. Completion and live market events invalidate
+estimates. The next response must match the current form and wallet. If an
+update is missing, use **Refresh quote** in the trade form or **Refresh market**
+beside an empty book. A visible older book does not prove that the next order
+can fill.
+
 The response reports full-fill availability and one reason: `fillable`,
 `insufficient_liquidity`, `price_limit`, `request_too_large`,
 `market_unavailable`, or `temporarily_unavailable`. Recommend a separate subsidy
@@ -62,6 +81,11 @@ The user confirms the quoted trade value and reviews fees separately.
 The order keeps that accepted total and the preview's worst execution price.
 The engine checks the complete current FOK plan before accepting fills.
 Equal or better execution can proceed. Worse execution refuses the whole order.
+
+Order acceptance keeps the selected outcome. It clears the submitted quantity
+and comment only if the user has not changed the draft. Newer input remains
+in the form. A confirmation click or a refused attempt does not clear the
+comment. The comment accompanies the signed order.
 
 Buy uses `maxQuotePaymentSubunits` as the maximum trade payment.
 Sell uses `minQuotePaymentSubunits` as the minimum gross trade proceeds.
@@ -103,8 +127,29 @@ longer fits, review a fresh preview and confirm a new attempt. The GUI does
 not retry the order automatically. Wallet or Nostr setup, or a change of
 trading identity, also requires a fresh preview and confirmation.
 
-The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
-settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
+The trade summary shows `New probability` for the selected outcome. This is the
+estimated final execution price. It is not a forecast or the theoretical
+post-trade LMSR probability. The current market price stays in the market header.
+The summary does not show average, worst, or latest-confirmed token price rows.
+The accepted worst per-fill price still protects the submitted order.
+
+For Buy, `Payout if you win` shows the face value of the conditional shares that
+the accepted trade will deliver. Use the registered payout denomination. This
+value is not net profit. Redemption fees can apply. Sell shows expected proceeds
+and no winning payout for sold shares.
+
+One fee summary has a collapsed, accessible breakdown. It groups fees only when
+the asset and unit match. Distinct conditional collections stay separate.
+A cancelled or failed attempt keeps its reviewed preparation fees in a separate labelled
+breakdown. These amounts do not show which fees were paid. A new draft does
+not reuse them as current consent. Dismissal, a new attempt, or an identity
+change clears this display. After reload, the durable recovery notice states
+that preparation and refund fees can apply even when no trade completes.
+Zero, pending, unavailable, and changed-fee states remain explicit.
+Current fee consent is required before confirmation.
+
+The UI displays amounts in sats: 100 msat is 0.1 sats. Buy cash totals add the quote and
+only fees paid in regular collateral. Sell totals
 show gross collateral proceeds and net proceeds after the settlement-input fee
 and preparation costs paid in regular cash.
 Show conditional-token preparation and consolidation fees separately. Do not
@@ -148,6 +193,12 @@ order ID with the same operation facts returns the stored result.
 Changed facts return a conflict. If the result is uncertain, clients reconcile
 with the durable engine and mint authority.
 
+The browser uses completion notifications to recheck pending wallet recovery.
+If a recheck is already running, it retains one follow-up request. Work deferred
+during an active order attempt resumes when the last active attempt finishes.
+An uncertain result keeps its recovery retry. A notification or elapsed time
+alone does not make funds spendable. Recovery does not submit a new order.
+
 ## Participation Score
 
 Participation Score protects public order admission. A successful public
@@ -187,3 +238,63 @@ The implementation differs. bitCaster currently exposes complementary and mint
 conversion only. It uses one mint conversion for an atomic settlement group. It
 does not use a peer-to-peer settlement exchange or an on-chain operator
 transaction.
+
+## Waiting for fresh quotes
+
+For a single order, the server can briefly retry the same order before returning
+`order-quotes-refreshing`. It preserves the original authorization, consent,
+and expiry. This optional wait does not guarantee acceptance or settlement.
+It does not change the client's retry limits below. A disconnect stops further
+retries; it does not cancel an order that was already accepted.
+
+For a batch, the server can retry the same batch only when every submitted
+item was refused before acceptance because quotes were refreshing. It rechecks
+the market and the original authorizations before retrying. All server waits
+share the original request budget of at most five seconds and four attempts.
+A partial success or another refusal does not trigger a whole-batch retry.
+The server does not extend price limits, consent, or expiry. If the quote wait
+ends without acceptance, the batch reports `authorityUnavailable` for the
+remaining current items. This does not guarantee a fill.
+
+The GUI and CLI can wait when the engine returns the exact
+`order-quotes-refreshing` pre-acceptance problem. The client retries the same
+serialized request and signed comment. It keeps the original capability,
+price limit, fee consent and expiry. It does not prepare a replacement order.
+
+Waiting lasts at most 60 seconds from the first submission and 30 attempts.
+The first delay is one second. Later delays are two seconds. Each request has
+at most 30 seconds. It also ends no later than the wait deadline and the
+original authorization expiry. A shorter caller timeout stays in effect. A new
+attempt starts only while time remains before both limits.
+
+The GUI shows progress and lets you stop waiting. The CLI shows progress on
+stderr. Press Ctrl-C to stop waiting. Stopping does not release reserved funds
+or prove that the order was never accepted. Check the original order status.
+The wallet keeps its existing recovery and expiry process.
+
+A generic service error, timeout, malformed response or uncertain result stops
+automatic submission. The client reconciles the original operation. Restarting
+the app does not restart this submission loop.
+
+## Reading depth while quotes refresh
+
+`GET /api/v1/{marketId}/orderbook` can return HTTP 503 with code
+`order-quotes-refreshing`, type `/errors/order-quotes-refreshing`, and status
+`503`. This response means that current depth is temporarily unavailable.
+It does not mean that the book is empty or that the market needs more funding.
+
+The GUI keeps the last received snapshot while a depth read retries. Without a
+snapshot, it keeps the initial depth display pending. The market page and its
+subscriptions remain available. Order, fill, and settlement notifications
+continue. A fresh snapshot replaces the previous display normally.
+
+The browser makes at most five attempts for this exact response, including the
+first request. It waits two seconds between attempts. Each request has a
+ten-second deadline. Leaving the page cancels its pending reads. Other errors
+and timeouts stop the retry. The SDK uses one attempt by default; callers can
+opt into this bounded policy. A reconnect can start the existing snapshot
+repair. These reads do not resubmit an order.
+
+A successful response with zero depth remains valid, including for a closed
+market. A previous snapshot is display data only. Obtain a current order
+preview and submit through normal order admission before trading.

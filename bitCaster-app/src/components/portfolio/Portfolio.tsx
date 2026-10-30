@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PortfolioProps } from "@/types/portfolio";
-import { Settings, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import { ProfileCard } from "./ProfileCard";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 import { PLChart } from "./PLChart";
@@ -150,18 +150,6 @@ export function Portfolio(props: PortfolioProps) {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-      {/* Header with Settings */}
-      <div className="flex items-start justify-between">
-        <div className="flex-1" />
-        <button
-          onClick={() => props.onOpenSettings?.()}
-          className="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-          aria-label="Settings"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-      </div>
-
       <MonitoringStatus
         monitoring={props.monitoring}
         onDismissError={props.onDismissMonitoringError}
@@ -175,7 +163,12 @@ export function Portfolio(props: PortfolioProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Profile */}
           <div className="flex flex-col gap-3">
-            <ProfileCard profile={props.profile} onAvatarUpload={props.onAvatarUpload} />
+            <ProfileCard profile={props.profile} status={props.profileFetchStatus} />
+            {props.nostrConnectionPending && (
+              <p role="status" className="text-sm text-slate-500 dark:text-slate-400">
+                {t("settings.nostrConnecting")}
+              </p>
+            )}
             {/* P5 item 4: Anon users have no identity across reloads —
                 surface the Nostr connect flow here so they can find it
                 without hunting through the Settings category list. */}
@@ -250,6 +243,11 @@ export function Portfolio(props: PortfolioProps) {
                 onSellPosition={props.onSellPosition}
                 onClaimPayout={props.onClaimPayout}
                 onDiscardLostPosition={props.onDiscardLostPosition}
+                positionAction={props.positionAction}
+                claimCelebrations={props.claimCelebrations}
+                removalConfirmationPositionId={props.removalConfirmationPositionId}
+                onConfirmDiscardLostPosition={props.onConfirmDiscardLostPosition}
+                onCancelDiscardLostPosition={props.onCancelDiscardLostPosition}
                 onViewPosition={props.onViewPosition}
               />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />

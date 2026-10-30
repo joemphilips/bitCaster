@@ -5,6 +5,7 @@ import { fetchBookmarks, publishBookmarks } from "@/lib/nip78Bookmarks";
 import { bookmarkSetsEqual, useBookmarkStore } from "./bookmarks";
 import { useSettingsStore } from "./settings";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import { createRelaySyncRetry } from "@/lib/relaySyncRetry";
 
 const PUBLISH_DEBOUNCE_MS = 800;
 
@@ -46,8 +47,17 @@ export function useBookmarkSync(): void {
     let cancelled = false;
     const controller = new AbortController();
     const options = { relays, signal: controller.signal };
-    void (async () => {
-      const remote = await fetchBookmarks(keys.publicKey, options).catch(() => null);
+    const retry = createRelaySyncRetry();
+    const sync = async () => {
+      let remote: string[] | null;
+      try {
+        remote = await fetchBookmarks(keys.publicKey, options);
+      } catch {
+        // A failed or partial read cannot prove that no remote set exists.
+        // Seeding now could replace a newer set on a slow relay.
+        if (!cancelled) retry.schedule(() => void sync());
+        return;
+      }
       if (cancelled) return;
 
       const local = useBookmarkStore.getState().markets;
@@ -71,10 +81,12 @@ export function useBookmarkSync(): void {
       if (!bookmarkSetsEqual(merged, remote)) {
         await publishBookmarks(keys.privateKeyHex, merged, options).catch(() => {});
       }
-    })();
+    };
+    void sync();
 
     return () => {
       cancelled = true;
+      retry.cancel();
       controller.abort();
     };
   }, [nostrSignerMode, nsecSecret, replace, relaySelectionKey]);

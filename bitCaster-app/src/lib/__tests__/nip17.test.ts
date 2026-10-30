@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { mnemonicToSeedSync } from "@scure/bip39";
-import { getPublicKey } from "nostr-tools/pure";
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
+import { nip44 } from "nostr-tools";
+import { hexToBytes } from "nostr-tools/utils";
+import { NDKRelayStatus, type NDKEvent } from "@nostr-dev-kit/ndk";
 import { useSettingsStore } from "@/stores/settings";
 
 vi.mock("../nostr", () => ({
   DEFAULT_RELAYS: ["wss://relay.example"],
+  RELAY_CONNECT_TIMEOUT_MS: 4_000,
   createExplicitRelayNdk: vi.fn(() => {
     throw new Error("Relay I/O is not permitted in this unit test");
   }),
@@ -51,5 +55,64 @@ describe("payment request receive identity", () => {
     } finally {
       useSettingsStore.setState({ nsecSecret: savedSigner });
     }
+  });
+});
+
+describe("encrypted message diagnostics", () => {
+  it.each(["seal", "rumor"])("does not log malformed %s plaintext", async (layer) => {
+    const receiver = deriveNostrKeyPair(
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    );
+    const senderKey = hexToBytes("12".repeat(32));
+    const senderPublicKey = getPublicKey(senderKey);
+    const conversationKey = nip44.v2.utils.getConversationKey(senderKey, receiver.publicKey);
+    const canary = "PRIVATE_DM";
+    const malformed = `${canary}: not JSON`;
+    const seal = finalizeEvent(
+      {
+        kind: 13,
+        content: nip44.v2.encrypt(malformed, conversationKey),
+        tags: [],
+        created_at: 1,
+      },
+      senderKey,
+    );
+    const content = nip44.v2.encrypt(
+      layer === "seal" ? malformed : JSON.stringify(seal),
+      conversationKey,
+    );
+    let deliver: ((event: NDKEvent) => void) | undefined;
+    const stop = vi.fn();
+    const ndk = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      pool: { relays: new Map([["test", { status: NDKRelayStatus.CONNECTED }]]) },
+      subscribe: vi.fn(() => ({
+        on: (_event: string, callback: (event: NDKEvent) => void) => {
+          deliver = callback;
+        },
+        stop,
+      })),
+      explicitRelayUrls: ["wss://relay.example"],
+    };
+    vi.mocked(createExplicitRelayNdk).mockReturnValueOnce(
+      ndk as unknown as ReturnType<typeof createExplicitRelayNdk>,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const onMessage = vi.fn();
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = await subscribeNip17DMs(receiver.privateKeyHex, receiver.publicKey, onMessage, [
+        "wss://relay.example",
+      ]);
+      expect(deliver).toBeDefined();
+      deliver!({ id: layer, pubkey: senderPublicKey, content } as NDKEvent);
+      expect(onMessage).not.toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls).includes(canary)).toBe(false);
+      expect(warn).toHaveBeenCalledExactlyOnceWith("[nip17] DM_UNWRAP_FAILED");
+    } finally {
+      unsubscribe?.();
+      warn.mockRestore();
+    }
+    expect(stop).toHaveBeenCalledOnce();
   });
 });

@@ -1,3 +1,13 @@
+import type { DatabaseSync } from 'node:sqlite'
+import {
+  createSpeculativeCounterTranscript,
+  type SpeculativeCounterTranscript,
+} from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
+import { reserveAndConstructDurableSeedDerivedOutputs } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
+import type { CtfPrepareProofOperationInput } from '@bitcaster-market/client-sdk/ctfSplit'
+import { retryOutgoingPreparation } from './speculativeWalletSendPreparation.ts'
+import { prepareSpeculativeWalletReceive } from './speculativeWalletReceivePreparation.ts'
+import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import {
   Amount,
@@ -5,8 +15,8 @@ import {
   Wallet as CashuWallet,
   MintOperationError,
   OutputData,
+  splitAmount,
   getDecodedToken,
-  verifyProofsForReceive,
   type CounterRange,
   type CounterSource,
   type CtfConvertRequest,
@@ -34,6 +44,8 @@ import {
 import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import {
   COLLATERAL_COLLECTION,
+  materializeCtfConsolidationPlan,
+  type CtfConsolidationAmountPlan,
   type CtfConsolidationPlan,
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
@@ -81,7 +93,6 @@ import {
   type ResolveTokenImportKeysets,
   type TokenImportUnit,
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
-import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
 import {
   redactedTransferMetadata,
   type DurableOutgoingCashuTransfer,
@@ -105,6 +116,10 @@ import {
   type MarketFundingDeliveryAttempt,
 } from '@bitcaster-market/client-sdk/marketFundingDelivery'
 import {
+  commitDaemonCounterTranscript,
+  readDaemonCounterSnapshots,
+  readDaemonProofOperationFromDatabase,
+  DaemonCounterSnapshotConflictError,
   advanceDaemonKeysetCounter,
   ensureState,
   getProofOperation,
@@ -146,11 +161,13 @@ import { DurableWalletProofImportCoordinator } from './durableWalletProofImportC
 import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 
 export interface CashuWalletLike {
+  ensureOperableKeysets?(ids: string[]): Promise<void>
   loadMint(): Promise<void>
   receive(token: string, config?: { proofsWeHave?: Array<Pick<Proof, 'amount'>> }): Promise<Proof[]>
   prepareSwapToReceive?(
     token: string,
     config?: {
+      keysetId?: string
       proofsWeHave?: Array<Pick<Proof, 'amount'>>
       onCountersReserved?: (range: OperationCounters) => void
     },
@@ -190,7 +207,12 @@ export interface CashuWalletLike {
 }
 
 export interface WalletOpsDependencies {
-  createCashuWallet?: (mintUrl: string, unit?: TokenImportUnit) => CashuWalletLike
+  createCashuMint?: (mintUrl: string) => CashuMint
+  createCashuWallet?: (
+    mintUrl: string,
+    unit?: TokenImportUnit,
+    counterSource?: CounterSource,
+  ) => CashuWalletLike
   getCustodyFence?: () => CustodyScopeFence
   resolveTokenImportKeysets?: ResolveTokenImportKeysets
   ctfConvert?: (
@@ -221,7 +243,21 @@ export interface WalletOpsDependencies {
   ) => Promise<Record<string, Proof[]>>
   resolveMintKeysetIds?: (mintUrl: string) => Promise<string[]>
   resolveConditionKeysetIds?: (mintUrl: string, conditionId: string) => Promise<string[]>
+  observeMarketConsolidationPrepared?: (
+    draft: Readonly<{
+      plan: CtfConsolidationPlan
+      outputsByCollection: Record<string, StoredOutputData[]>
+    }>,
+  ) => Promise<void>
+  observeRedeemPrepared?: (
+    owner: 'claim' | 'retirement',
+    draft: Readonly<CtfPrepareProofOperationInput>,
+  ) => Promise<void>
   injectCustodyFault?: (phase: StateSqliteFaultPhase) => void
+  injectReclaimFault?: (phase: 'counter-written' | 'journal-bound') => void
+  injectSendFault?: (
+    phase: 'counter-written' | 'inputs-reserved' | 'journal-bound' | 'transfer-bound',
+  ) => void
 }
 
 export interface WalletOpsSecrets {
@@ -300,6 +336,12 @@ export interface CtfCollateralOperationAuthority {
   readonly proofOperationStore: CtfProofOperationStore
   readonly beforeMintMutation: () => Promise<void>
   readonly readAvailableProofs: () => Promise<Proof[]>
+  readonly regularCounterSource?: CounterSource
+  readonly prepareRegularSplit?: (input: {
+    readonly wallet: CashuWalletLike
+    readonly proofs: readonly Proof[]
+    readonly amountSubunits: number
+  }) => Promise<Awaited<ReturnType<typeof splitRegularProofsWithOperation>>>
 }
 
 export interface ExecuteCtfConsolidationPlanInput {
@@ -411,51 +453,31 @@ export async function prepareRegularWalletReceive(input: {
   readonly unit: TokenImportUnit
   readonly secrets: WalletOpsSecrets
   readonly deps: WalletOpsDependencies
+  readonly operationId?: string
 }): Promise<{
   readonly prepared: PreparedDaemonWalletReceive
   readonly wallet: CashuWalletLike
 }> {
   const { mintUrl, unit, secrets, deps } = input
   if (!deps.getCustodyFence) throw new Error('daemon wallet receive requires custody authority')
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', unit)
-  await wallet.loadMint()
-  const receiveMutation = { fence: deps.getCustodyFence(), observedAtMs: Date.now() }
-  const proofsWeHave = (
-    await readAvailableWalletProofAmountSamplesForReceive({
-      mintUrl,
-      unit,
-      mutation: receiveMutation,
-    })
-  ).map(({ amount }) => ({ amount: Amount.from(amount) }))
-  if (!wallet.prepareSwapToReceive) {
-    throw new Error('cashu wallet does not support durable receive preparation')
-  }
-  let reserved: OperationCounters | undefined
-  const preview = await wallet.prepareSwapToReceive(
-    input.encodedToken,
-    {
-      proofsWeHave,
-      onCountersReserved: (range) => {
-        reserved = range
-      },
-    },
-    { type: 'deterministic', counter: 0 },
-  )
-  if (reserved === undefined) {
-    throw new Error('daemon wallet receive did not reserve a deterministic output range')
-  }
-  const operation = serializeDurableWalletReceiveOperation({
-    operationId: `wallet-receive:${randomUUID()}`,
+  const operationId = input.operationId ?? `wallet-receive:${randomUUID()}`
+  return prepareSpeculativeWalletReceive({
+    encodedToken: input.encodedToken,
     mintUrl,
     unit,
-    preview,
-    derivationRange: {
-      keysetId: reserved.keysetId,
-      counterStart: reserved.start,
-      counterCount: reserved.count,
-    },
+    operationId,
+    directory: profileDir(),
+    getFence: deps.getCustodyFence,
+    createWallet: (source) => createWallet(mintUrl, secrets, deps, 'sat', unit, undefined, source),
+    proofsWeHave: async () =>
+      (
+        await readAvailableWalletProofAmountSamplesForReceive({
+          mintUrl,
+          unit,
+          mutation: { fence: deps.getCustodyFence!(), observedAtMs: Date.now() },
+        })
+      ).map(({ amount }) => ({ amount: Amount.from(amount) })),
   })
-  return { prepared: { operation }, wallet }
 }
 
 /** Recover bounded active ordinary receives without creating a new output plan. */
@@ -532,35 +554,39 @@ export async function sendWalletToken(
   if (!deps.getCustodyFence) throw new Error('daemon wallet send requires custody authority')
 
   const transferId = operationId ?? `wallet-send-${randomUUID()}`
-  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
-    profileDir(),
-    deps.getCustodyFence,
-    deps,
-  )
-  const existing = await coordinator.loadTransfer(transferId)
-  if (existing !== null && existing.unit !== 'msat') {
-    throw new Error('durable outgoing Cashu transfers require msat')
-  }
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'msat')
-  await wallet.loadMint()
-  const transfer =
-    existing === null
-      ? await coordinator.execute({
-          transferId,
-          amountMsat,
-          mintUrl,
-          wallet,
-          seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-        })
-      : await coordinator.recover({ transfer: existing, amountMsat, mintUrl, wallet })
-  if (transfer.token === null) throw new Error('durable outgoing Cashu token admission is absent')
-  return {
-    operationId: transfer.walletSendOperation.operationId,
-    mintUrl: transfer.mintUrl,
-    amountMsat,
-    proofCount: transfer.token.proofs.length,
-    token: transfer.token.encodedToken,
-  }
+  return retryOutgoingPreparation(async () => {
+    const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+      profileDir(),
+      deps.getCustodyFence!,
+      deps,
+    )
+    const existing = await coordinator.loadSendForRecovery(transferId)
+    if (existing !== null && existing.unit !== 'msat') {
+      throw new Error('durable outgoing Cashu transfers require msat')
+    }
+    const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'msat')
+    await wallet.loadMint()
+    const transfer =
+      existing === null
+        ? await coordinator.execute({
+            transferId,
+            amountMsat,
+            mintUrl,
+            wallet,
+            seed: Buffer.from(secrets.walletSeedHex, 'hex'),
+            createWallet: (source) =>
+              createWallet(mintUrl, secrets, deps, 'sat', 'msat', undefined, source),
+          })
+        : await coordinator.recover({ transfer: existing, amountMsat, mintUrl, wallet })
+    if (transfer.token === null) throw new Error('durable outgoing Cashu token admission is absent')
+    return {
+      operationId: transfer.walletSendOperation.operationId,
+      mintUrl: transfer.mintUrl,
+      amountMsat,
+      proofCount: transfer.token.proofs.length,
+      token: transfer.token.encodedToken,
+    }
+  })
 }
 
 /** Create and reconcile one exact Score delivery without returning its bearer token. */
@@ -577,160 +603,162 @@ export async function deliverParticipationScoreCashu(input: {
   readonly client: DurableRecipientDeliveryClient
   readonly deps?: WalletOpsDependencies
 }): Promise<DurableParticipationScoreDeliveryResult> {
-  if (!Number.isSafeInteger(input.amountMsat) || input.amountMsat <= 0) {
-    throw new Error('Participation Score amount must be a positive safe integer')
-  }
-  const deps = input.deps ?? {}
-  if (!deps.getCustodyFence)
-    throw new Error('Participation Score delivery requires custody authority')
-  if (!Number.isSafeInteger(input.purchasedTotalEpoch) || input.purchasedTotalEpoch < 0) {
-    throw new Error('Participation Score purchase epoch is invalid')
-  }
-  if (
-    input.requireExactRequest === true &&
-    (!Number.isSafeInteger(input.maxWalletDebitMsat) || (input.maxWalletDebitMsat ?? 0) < 1)
-  ) {
-    throw new Error('standalone Participation Score purchase requires an approved wallet debit')
-  }
-  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
-    profileDir(),
-    deps.getCustodyFence,
-    deps,
-  )
-  const standalone = input.requireExactRequest === true
-  if (input.retryOnly === true && !standalone) {
-    throw new Error('recipient retry requires an exact standalone Score purchase')
-  }
-  let transferId = input.deliveryId
-  let amountMsat = input.amountMsat
-  let existing: DurableOutgoingCashuTransfer | null
-  if (standalone) {
-    existing = await coordinator.loadTransfer(input.deliveryId)
-    if (
-      input.retryOnly === true &&
-      (existing === null ||
-        existing.deliveryState !== 'delivery-pending' ||
-        existing.token === null)
-    ) {
-      throw new ParticipationScoreRetryUnavailableError()
+  return retryOutgoingPreparation(async () => {
+    if (!Number.isSafeInteger(input.amountMsat) || input.amountMsat <= 0) {
+      throw new Error('Participation Score amount must be a positive safe integer')
     }
-    if (existing !== null) {
-      const pointer = await coordinator.preflightParticipationScoreDelivery({
+    const deps = input.deps ?? {}
+    if (!deps.getCustodyFence)
+      throw new Error('Participation Score delivery requires custody authority')
+    if (!Number.isSafeInteger(input.purchasedTotalEpoch) || input.purchasedTotalEpoch < 0) {
+      throw new Error('Participation Score purchase epoch is invalid')
+    }
+    if (
+      input.requireExactRequest === true &&
+      (!Number.isSafeInteger(input.maxWalletDebitMsat) || (input.maxWalletDebitMsat ?? 0) < 1)
+    ) {
+      throw new Error('standalone Participation Score purchase requires an approved wallet debit')
+    }
+    const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+      profileDir(),
+      deps.getCustodyFence,
+      deps,
+    )
+    const standalone = input.requireExactRequest === true
+    if (input.retryOnly === true && !standalone) {
+      throw new Error('recipient retry requires an exact standalone Score purchase')
+    }
+    const pointerRequest = {
+      transferId: input.deliveryId,
+      amountMsat: input.amountMsat,
+      purchasedTotal: input.purchasedTotalEpoch,
+      requireExactRequest: standalone,
+    }
+    let selectedEpoch = input.purchasedTotalEpoch
+    let transferId = input.deliveryId
+    let amountMsat = input.amountMsat
+    let existing: DurableOutgoingCashuTransfer | null
+    if (standalone) {
+      existing = await coordinator.loadSendForRecovery(input.deliveryId)
+      if (
+        input.retryOnly === true &&
+        (existing === null ||
+          existing.deliveryState !== 'delivery-pending' ||
+          existing.token === null)
+      ) {
+        throw new ParticipationScoreRetryUnavailableError()
+      }
+      if (existing !== null) {
+        const pointer = await coordinator.preflightParticipationScoreDelivery({
+          transferId: input.deliveryId,
+          amountMsat: input.amountMsat,
+          purchasedTotal: input.purchasedTotalEpoch,
+          accountSubject: input.accountSubject,
+          mintUrl: input.profile.mintUrl,
+          requireExactRequest: true,
+        })
+        transferId = pointer.transferId
+        amountMsat = pointer.amountMsat
+      }
+    } else {
+      const pointer = await coordinator.resolveParticipationScoreDelivery({
         transferId: input.deliveryId,
         amountMsat: input.amountMsat,
         purchasedTotal: input.purchasedTotalEpoch,
         accountSubject: input.accountSubject,
         mintUrl: input.profile.mintUrl,
-        requireExactRequest: true,
       })
       transferId = pointer.transferId
       amountMsat = pointer.amountMsat
+      selectedEpoch = pointer.purchasedTotalEpoch
+      existing = await coordinator.loadSendForRecovery(pointer.transferId)
     }
-  } else {
-    const pointer = await coordinator.preflightParticipationScoreDelivery({
-      transferId: input.deliveryId,
-      amountMsat: input.amountMsat,
-      purchasedTotal: input.purchasedTotalEpoch,
+    const requestedAmount = String(amountMsat)
+    const initialMetadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: transferId,
       accountSubject: input.accountSubject,
       mintUrl: input.profile.mintUrl,
+      requestedAmount,
     })
-    transferId = pointer.transferId
-    amountMsat = pointer.amountMsat
-    existing = await coordinator.loadTransfer(pointer.transferId)
-  }
-  const requestedAmount = String(amountMsat)
-  const initialMetadata = createParticipationScoreDeliveryMetadata({
-    deliveryId: transferId,
-    accountSubject: input.accountSubject,
-    mintUrl: input.profile.mintUrl,
-    requestedAmount,
-  })
-  const metadata =
-    existing === null
-      ? initialMetadata
-      : createParticipationScoreDeliveryMetadata({
-          deliveryId: existing.transferId,
-          accountSubject: input.accountSubject,
-          mintUrl: existing.mintUrl,
-          requestedAmount: existing.requestedAmount,
-        })
-  const intent = participationScoreDeliveryIntent({
-    accountSubject: metadata.accountSubject,
-    productBindingSha256: metadata.productBindingSha256,
-    tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
-  })
-  const transfer =
-    existing === null
-      ? await executeScoreTransfer()
-      : existing.deliveryState === 'recipient-acknowledged'
-        ? existing
-        : existing.deliveryState === 'delivery-pending' && existing.token !== null
+    const metadata =
+      existing === null
+        ? initialMetadata
+        : createParticipationScoreDeliveryMetadata({
+            deliveryId: existing.transferId,
+            accountSubject: input.accountSubject,
+            mintUrl: existing.mintUrl,
+            requestedAmount: existing.requestedAmount,
+          })
+    const intent = participationScoreDeliveryIntent({
+      accountSubject: metadata.accountSubject,
+      productBindingSha256: metadata.productBindingSha256,
+      tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+    })
+    const transfer =
+      existing === null
+        ? await executeScoreTransfer()
+        : existing.deliveryState === 'recipient-acknowledged'
           ? existing
-          : await recoverScoreTransfer(existing)
-  if (transfer.deliveryState === 'recipient-acknowledged') {
+          : existing.deliveryState === 'delivery-pending' && existing.token !== null
+            ? existing
+            : await recoverScoreTransfer(existing)
+    if (transfer.deliveryState === 'recipient-acknowledged') {
+      return {
+        deliveryId: metadata.deliveryId,
+        transferId: transfer.transferId,
+        state: 'credited',
+      }
+    }
+    if (transfer.token === null) throw new Error('Participation Score token admission is absent')
+    const status = await coordinator.reconcileRecipientDelivery({
+      transfer,
+      submission: createParticipationScoreDeliverySubmission({
+        metadata,
+        token: transfer.token.encodedToken,
+      }),
+      client: input.client,
+      acknowledge: (candidate) => candidate.state === 'credited',
+    })
     return {
       deliveryId: metadata.deliveryId,
-      transferId: transfer.transferId,
-      state: 'credited',
+      transferId: status.transfer.transferId,
+      state:
+        status.transfer.deliveryState === 'recipient-acknowledged'
+          ? 'credited'
+          : (status.status?.state ?? 'pending'),
     }
-  }
-  if (transfer.token === null) throw new Error('Participation Score token admission is absent')
-  const status = await coordinator.reconcileRecipientDelivery({
-    transfer,
-    submission: createParticipationScoreDeliverySubmission({
-      metadata,
-      token: transfer.token.encodedToken,
-    }),
-    client: input.client,
-    acknowledge: (candidate) => candidate.state === 'credited',
-  })
-  return {
-    deliveryId: metadata.deliveryId,
-    transferId: status.transfer.transferId,
-    state:
-      status.transfer.deliveryState === 'recipient-acknowledged'
-        ? 'credited'
-        : (status.status?.state ?? 'pending'),
-  }
 
-  async function executeScoreTransfer() {
-    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
-    await wallet.loadMint()
-    if (standalone) {
+    async function executeScoreTransfer() {
+      const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
+      await wallet.loadMint()
       return coordinator.executeParticipationScore({
         transferId: metadata.deliveryId,
         amountMsat: Number(metadata.requestedAmount),
-        purchasedTotalEpoch: input.purchasedTotalEpoch,
+        purchasedTotalEpoch: selectedEpoch,
+        pointerRequest,
         accountSubject: input.accountSubject,
         mintUrl: metadata.mintUrl,
         wallet,
         seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+        createWallet: (source) =>
+          createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat', undefined, source),
         deliveryIntent: intent,
-        maxWalletDebitMsat: input.maxWalletDebitMsat!,
+        maxWalletDebitMsat: input.maxWalletDebitMsat,
       })
     }
-    return coordinator.execute({
-      transferId: metadata.deliveryId,
-      amountMsat: Number(metadata.requestedAmount),
-      mintUrl: metadata.mintUrl,
-      wallet,
-      seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
-      deliveryIntent: intent,
-      maxWalletDebitMsat: input.maxWalletDebitMsat,
-    })
-  }
 
-  async function recoverScoreTransfer(existingTransfer: DurableOutgoingCashuTransfer) {
-    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
-    await wallet.loadMint()
-    return coordinator.recover({
-      transfer: existingTransfer,
-      amountMsat: Number(metadata.requestedAmount),
-      mintUrl: metadata.mintUrl,
-      wallet,
-      deliveryIntent: intent,
-    })
-  }
+    async function recoverScoreTransfer(existingTransfer: DurableOutgoingCashuTransfer) {
+      const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
+      await wallet.loadMint()
+      return coordinator.recover({
+        transfer: existingTransfer,
+        amountMsat: Number(metadata.requestedAmount),
+        mintUrl: metadata.mintUrl,
+        wallet,
+        deliveryIntent: intent,
+      })
+    }
+  })
 }
 
 /** Quote one gross Score purchase without reserving proofs or calling a mint mutation. */
@@ -873,75 +901,80 @@ export async function deliverMarketFundingCashu(input: {
   transferId: string
   state: 'pending' | 'received' | 'credited'
 }> {
-  const deps = input.deps ?? {}
-  if (!deps.getCustodyFence) throw new Error('market funding requires custody authority')
-  const product = {
-    accountSubject: input.accountSubject,
-    conditionId: input.conditionId,
-    divisibility: input.divisibility,
-    mintUrl: input.profile.mintUrl,
-    unit: 'msat' as const,
-  }
-  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
-    profileDir(),
-    deps.getCustodyFence,
-    deps,
-  )
-  const result = await executeMarketFundingDelivery({
-    funding: product,
-    attempt: input.attempt,
-    ports: {
-      readTransfer: (transferId) => coordinator.loadTransfer(transferId),
-      findSuccessor: ({ predecessorTransferId }) =>
-        coordinator.findMarketFundingSuccessor(product, predecessorTransferId),
-      prepareTransfer: async ({ metadata, attempt, requireCredited }) => {
-        if (!Number.isSafeInteger(input.maxWalletDebitMsat) || input.maxWalletDebitMsat! < 1) {
-          throw new Error('market funding requires an approved maximum wallet debit')
-        }
-        const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
-        await wallet.loadMint()
-        return coordinator.executeMarketFundingTransfer({
-          transferId: attempt.newAttemptId,
-          amountMsat: Number(metadata.requestedAmount),
-          mintUrl: metadata.mintUrl,
-          wallet,
-          seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
-          deliveryIntent: marketFundingDeliveryIntent({
-            accountSubject: metadata.accountSubject,
-            productBindingSha256: metadata.productBindingSha256,
-            tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
-          }),
-          product,
-          expectedPreviousTransferId: attempt.expectedPreviousTransferId,
-          outcomeCount: input.outcomeCount,
-          maxWalletDebitMsat: input.maxWalletDebitMsat!,
-          requireCredited,
-        })
+  return retryOutgoingPreparation(async () => {
+    const deps = input.deps ?? {}
+    if (!deps.getCustodyFence) throw new Error('market funding requires custody authority')
+    const product = {
+      accountSubject: input.accountSubject,
+      conditionId: input.conditionId,
+      divisibility: input.divisibility,
+      mintUrl: input.profile.mintUrl,
+      unit: 'msat' as const,
+    }
+    const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+      profileDir(),
+      deps.getCustodyFence,
+      deps,
+    )
+    const result = await executeMarketFundingDelivery({
+      funding: product,
+      attempt: input.attempt,
+      ports: {
+        readTransfer: (transferId) => coordinator.loadSendForRecovery(transferId),
+        findSuccessor: ({ predecessorTransferId }) =>
+          coordinator.findMarketFundingSuccessor(product, predecessorTransferId),
+        prepareTransfer: async ({ metadata, attempt, requireCredited }) => {
+          if (!Number.isSafeInteger(input.maxWalletDebitMsat) || input.maxWalletDebitMsat! < 1) {
+            throw new Error('market funding requires an approved maximum wallet debit')
+          }
+          const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
+          await wallet.loadMint()
+          return coordinator.executeMarketFundingTransfer({
+            transferId: attempt.newAttemptId,
+            amountMsat: Number(metadata.requestedAmount),
+            mintUrl: metadata.mintUrl,
+            wallet,
+            seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+            createWallet: (source) =>
+              createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat', undefined, source),
+            deliveryIntent: marketFundingDeliveryIntent({
+              accountSubject: metadata.accountSubject,
+              productBindingSha256: metadata.productBindingSha256,
+              tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+            }),
+            product,
+            expectedPreviousTransferId: attempt.expectedPreviousTransferId,
+            outcomeCount: input.outcomeCount,
+            maxWalletDebitMsat: input.maxWalletDebitMsat!,
+            requireCredited,
+          })
+        },
+        recoverTransfer: async (transfer) => {
+          await coordinator.loadSendForRecovery(transfer.transferId)
+          const wallet = createWallet(transfer.mintUrl, input.secrets, deps, 'sat', 'msat')
+          await wallet.loadMint()
+          return coordinator.recover({
+            transfer,
+            amountMsat: Number(transfer.requestedAmount),
+            mintUrl: transfer.mintUrl,
+            wallet,
+            deliveryIntent: transfer.deliveryIntent,
+          })
+        },
+        getDurableRecipientDeliveryStatus: (deliveryId) =>
+          input.client.getDurableRecipientDeliveryStatus(deliveryId),
+        submitDurableRecipientDelivery: (submission) =>
+          input.client.submitDurableRecipientDelivery(submission),
+        acknowledgeRecipient: ({ transfer, receipt }) =>
+          coordinator.acknowledgeRecipientReceipt({ transfer, receipt }),
       },
-      recoverTransfer: async (transfer) => {
-        const wallet = createWallet(transfer.mintUrl, input.secrets, deps, 'sat', 'msat')
-        await wallet.loadMint()
-        return coordinator.recover({
-          transfer,
-          amountMsat: Number(transfer.requestedAmount),
-          mintUrl: transfer.mintUrl,
-          wallet,
-          deliveryIntent: transfer.deliveryIntent,
-        })
-      },
-      getDurableRecipientDeliveryStatus: (deliveryId) =>
-        input.client.getDurableRecipientDeliveryStatus(deliveryId),
-      submitDurableRecipientDelivery: (submission) =>
-        input.client.submitDurableRecipientDelivery(submission),
-      acknowledgeRecipient: ({ transfer, receipt }) =>
-        coordinator.acknowledgeRecipientReceipt({ transfer, receipt }),
-    },
+    })
+    return {
+      deliveryId: result.transfer.transferId,
+      transferId: result.transfer.transferId,
+      state: result.progress,
+    }
   })
-  return {
-    deliveryId: result.transfer.transferId,
-    transferId: result.transfer.transferId,
-    state: result.progress,
-  }
 }
 
 /** Recover one bounded page of due outgoing Cashu transfers without exposing tokens. */
@@ -1037,7 +1070,23 @@ export async function reclaimDurableOutgoingCashuTransfer(
   }
   const wallet = createWallet(transfer.mintUrl, secrets, deps, 'sat', 'msat')
   await wallet.loadMint()
-  return redactedTransferMetadata(await coordinator.reclaim({ transferId, wallet }))
+  return redactedTransferMetadata(
+    await coordinator.reclaim({
+      transferId,
+      wallet,
+      prepareReceive: (encodedToken, operationId) =>
+        prepareSpeculativeWalletReceive({
+          encodedToken,
+          operationId,
+          mintUrl: transfer.mintUrl,
+          unit: 'msat',
+          directory: profileDir(),
+          getFence: deps.getCustodyFence!,
+          createWallet: (source) =>
+            createWallet(transfer.mintUrl, secrets, deps, 'sat', 'msat', undefined, source),
+        }),
+    }),
+  )
 }
 
 export async function splitAvailableMsatProofsForCtfCollateral(
@@ -1056,7 +1105,15 @@ export async function splitAvailableMsatProofsForCtfCollateral(
   const proofOperationStore =
     operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
   const existing = await proofOperationStore.getProofOperation(operationId)
-  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
+  const wallet = createWallet(
+    mintUrl,
+    secrets,
+    deps,
+    baseAsset,
+    undefined,
+    undefined,
+    operationAuthority?.regularCounterSource,
+  )
   if (existing) {
     if (existing.state !== 'completed') await wallet.loadMint()
     const split = await splitRegularProofsWithOperation({
@@ -1102,16 +1159,22 @@ export async function splitAvailableMsatProofsForCtfCollateral(
   if (selected.send.length === 0) {
     throw new Error(`insufficient available msat in mint ${mintUrl}`)
   }
-  const split = await splitRegularProofsWithOperation({
-    mintUrl,
-    baseAsset,
-    operationId,
-    wallet,
-    proofs: selected.send,
-    amountSubunits: grossCtfInputSubunits,
-    proofOperationStore,
-    beforeMintMutation: operationAuthority?.beforeMintMutation,
-  })
+  const split = operationAuthority?.prepareRegularSplit
+    ? await operationAuthority.prepareRegularSplit({
+        wallet,
+        proofs: selected.send,
+        amountSubunits: grossCtfInputSubunits,
+      })
+    : await splitRegularProofsWithOperation({
+        mintUrl,
+        baseAsset,
+        operationId,
+        wallet,
+        proofs: selected.send,
+        amountSubunits: grossCtfInputSubunits,
+        proofOperationStore,
+        beforeMintMutation: operationAuthority?.beforeMintMutation,
+      })
   const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
 }
@@ -1209,6 +1272,7 @@ async function createCtfCustodyBinding(
   deps: WalletOpsDependencies,
   fence: CustodyScopeFence,
   operationId: string,
+  pinnedKeysets?: readonly DurableCustodyMintKeysetAuthority[],
 ): Promise<CtfCustodyBinding> {
   const inputEntries = Object.entries(input.plan.request.inputs)
   const inputAssets = inputEntries.flatMap(([collection, proofs]) =>
@@ -1275,14 +1339,16 @@ async function createCtfCustodyBinding(
       ),
     ]),
   ]
-  const keysets = await resolveDurableCustodyKeysetAuthorities(
-    input.mintUrl,
-    keysetIds,
-    input.conditionId,
-    deps,
-    inputEntries,
-    Object.keys(input.outputsByCollection),
-  )
+  const keysets =
+    pinnedKeysets ??
+    (await resolveDurableCustodyKeysetAuthorities(
+      input.mintUrl,
+      keysetIds,
+      input.conditionId,
+      deps,
+      inputEntries,
+      Object.keys(input.outputsByCollection),
+    ))
   const authority = prepareDurableCustodyMintOperationAuthority({
     operation,
     keysets,
@@ -1526,9 +1592,171 @@ async function readCtfConsolidationInputStates(
   return states
 }
 
+class SavedMarketConsolidation extends Error {
+  readonly operationId: string
+  constructor(operationId: string) {
+    super('market consolidation saved authority selected')
+    this.operationId = operationId
+  }
+}
+
 export async function executeCtfConsolidationPlan(
-  input: ExecuteCtfConsolidationPlanInput,
+  input: Omit<ExecuteCtfConsolidationPlanInput, 'plan' | 'outputsByCollection'> & {
+    plan: CtfConsolidationAmountPlan
+    outputKeysets: Record<string, MintKeys>
+  },
   deps: WalletOpsDependencies = {},
+): Promise<WalletConsolidationResult> {
+  const fence = deps.getCustodyFence?.()
+  if (!fence) throw new Error('wallet CTF consolidation requires custody authority')
+  const selectedInputs = flattenProofGroups(input.plan.inputs)
+  const operationId = ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs)
+  const validateSaved = (database: DatabaseSync) => {
+    const entry = readDaemonProofOperationFromDatabase(database, operationId)
+    if (!entry) return null
+    assertCtfConsolidationOperation(entry)
+    if (
+      entry.mintUrl !== input.mintUrl ||
+      entry.metadata.conditionId !== input.conditionId ||
+      entry.metadata.type !== input.type ||
+      entry.metadata.marketId !== input.marketId ||
+      !isDeepStrictEqual(
+        entry.inputs.map((proof) => {
+          if (!proof.id) throw new Error('market consolidation input keyset is missing')
+          return serializeDurableCustodyProofInput(normalizeProof(proof as Proof))
+        }),
+        selectedInputs.map(serializeDurableCustodyProofInput),
+      ) ||
+      !isDeepStrictEqual(
+        entry.metadata.inputCollections,
+        Object.entries(input.plan.inputs).flatMap(([collection, proofs]) =>
+          proofs.map(() => collection),
+        ),
+      )
+    )
+      throw new Error('market consolidation saved input authority is foreign')
+    readPersistedCtfCustodyBindingFromDatabase(database, entry, fence.scopeId)
+    return entry
+  }
+  const readSaved = () =>
+    withDurableCustodyFencedRead(
+      createDaemonStateSqliteSession(profileDir()),
+      fence,
+      Date.now(),
+      validateSaved,
+      { snapshot: true },
+    )
+  const recover = async (entry: ProofOperationRecord): Promise<WalletConsolidationResult> => {
+    const fee = entry.metadata.feeSubunits
+    const returned = entry.metadata.collateralOutputSubunits
+    if (
+      !Number.isSafeInteger(fee) ||
+      (fee as number) < 0 ||
+      !Number.isSafeInteger(returned) ||
+      (returned as number) < 0
+    )
+      throw new Error('market consolidation saved amounts are invalid')
+    const binding = await loadPersistedCtfCustodyBinding(entry, deps)
+    const resultProofs = await resumeCtfConsolidationOperation(entry, input.secrets, deps)
+    return {
+      marketId: input.marketId,
+      conditionId: input.conditionId,
+      type: input.type,
+      status: 'consolidated',
+      convertFeeMsat: fee as number,
+      collateralReturnedMsat: returned as number,
+      spentInputs: summarizeProofGroups(ctfInputGroupsFromBinding(binding)),
+      outputs: summarizeProofGroups(resultProofs),
+    }
+  }
+  const existing = await readSaved()
+  if (existing) return recover(existing)
+  const outputIds = [...new Set(input.plan.outputs.map(({ keysetId }) => keysetId))]
+  const pinnedKeys = structuredClone(input.outputKeysets)
+  const authorityKeys = structuredClone(
+    await resolveDurableCustodyKeysetAuthorities(
+      input.mintUrl,
+      [...new Set([...selectedInputs.map(({ id }) => id), ...outputIds])],
+      input.conditionId,
+      deps,
+      Object.entries(input.plan.inputs),
+      input.plan.outputs.map(({ collection }) => collection),
+    ),
+  )
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const transcript = createSpeculativeCounterTranscript(
+      await readDaemonCounterSnapshots({
+        storage: createDaemonStateSqliteSession(profileDir()),
+        mutation: { fence, observedAtMs: Date.now() },
+        keysetIds: outputIds,
+        binding: { normalizedMint: input.mintUrl, unit: 'msat' },
+      }),
+    )
+    const outputsByCollection: Record<string, OutputData[]> = {}
+    for (const output of input.plan.outputs) {
+      const keyset = pinnedKeys[output.keysetId]
+      if (!keyset || keyset.id !== output.keysetId || keyset.unit !== 'msat')
+        throw new Error('market consolidation output keyset is foreign')
+      const amounts = splitAmount(Amount.from(output.amountSubunits), keyset.keys).map(
+        amountToNumber,
+      )
+      const constructed = await reserveAndConstructDurableSeedDerivedOutputs({
+        seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+        keyset,
+        amounts,
+        counterSource: transcript.counterSource,
+      })
+      outputsByCollection[output.collection] = [...constructed.outputData]
+    }
+    const plan = materializeCtfConsolidationPlan(input.plan, ({ collection }) =>
+      outputsByCollection[collection]!.map(({ blindedMessage }) => ({
+        ...blindedMessage,
+        amount: Amount.from(blindedMessage.amount),
+      })),
+    )
+    await deps.observeMarketConsolidationPrepared?.(
+      structuredClone({
+        plan,
+        outputsByCollection: Object.fromEntries(
+          Object.entries(outputsByCollection).map(([group, outputs]) => [
+            group,
+            serializeOutputDataArray(outputs),
+          ]),
+        ),
+      }),
+    )
+    let committing = false
+    try {
+      return await executePreparedCtfConsolidationPlan(
+        { ...input, plan, outputsByCollection },
+        deps,
+        transcript,
+        authorityKeys,
+        (database) => {
+          committing = true
+          if (validateSaved(database)) throw new SavedMarketConsolidation(operationId)
+        },
+        () => {
+          committing = false
+        },
+      )
+    } catch (error) {
+      if (!committing) throw error
+      const saved = await readSaved()
+      if (saved) return recover(saved)
+      if (!(error instanceof DaemonCounterSnapshotConflictError) || attempt === 2) throw error
+    }
+  }
+  throw new Error('market consolidation counter attempts exhausted')
+}
+
+async function executePreparedCtfConsolidationPlan(
+  input: ExecuteCtfConsolidationPlanInput,
+  deps: WalletOpsDependencies,
+  transcript: SpeculativeCounterTranscript,
+  pinnedKeysets: readonly DurableCustodyMintKeysetAuthority[],
+  beforeCompare: (database: DatabaseSync) => void,
+  afterPrepared: () => void,
 ): Promise<WalletConsolidationResult> {
   const selectedInputs = flattenProofGroups(input.plan.request.inputs)
   if (selectedInputs.length === 0) {
@@ -1540,7 +1768,7 @@ export async function executeCtfConsolidationPlan(
   if (fence === undefined) {
     throw new Error('wallet CTF consolidation requires custody authority')
   }
-  const binding = await createCtfCustodyBinding(input, deps, fence, operationId)
+  const binding = await createCtfCustodyBinding(input, deps, fence, operationId, pinnedKeysets)
   await prepareCtfConsolidationProofOperationWithExactReservation(
     {
       operationId,
@@ -1596,7 +1824,19 @@ export async function executeCtfConsolidationPlan(
       }
     },
     deps.injectCustodyFault,
+    (database) => {
+      beforeCompare(database)
+      commitDaemonCounterTranscript(
+        database,
+        fence.scopeId,
+        { normalizedMint: input.mintUrl, unit: 'msat' },
+        transcript,
+        Date.now(),
+      )
+    },
   )
+
+  afterPrepared()
 
   let resultProofs: Record<string, Proof[]>
   try {
@@ -2004,15 +2244,11 @@ function verifyConsolidatedResultProofs(
       } as MintKeys,
     ]),
   )
-  verifyProofsForReceive(
-    proofs,
-    (keysetId) => {
-      const keyset = keysets.get(keysetId)
-      if (keyset === undefined) throw new Error('CTF consolidation output keyset is missing')
-      return keyset
-    },
-    { requireDleq: true },
-  )
+  requireValidCashuProofs(proofs, (keysetId) => {
+    const keyset = keysets.get(keysetId)
+    if (keyset === undefined) throw new Error('CTF consolidation output keyset is missing')
+    return keyset
+  })
 }
 
 function assertConsolidatedResultMatchesOutputPlan(
@@ -2178,59 +2414,66 @@ async function loadPersistedCtfCustodyBinding(
 ): Promise<CtfCustodyBinding> {
   const fence = deps.getCustodyFence?.()
   if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
-  const custodyOperationId = deriveDurableCustodyOperationId(fence.scopeId, {
-    retainedOperationKey: entry.operationId,
-    binding: { kind: 'wallet', activityId: entry.operationId, stage: 'ctf-merge' },
-  })
   return withDurableCustodyFencedRead(
     createDaemonStateSqliteSession(profileDir()),
     fence,
     Date.now(),
-    (database) => {
-      const custody = new DurableCustodySqliteStore(database)
-      const record = custody.getOperation(custodyOperationId)
-      if (record === null) {
-        throw new Error('CTF consolidation recovery lacks canonical custody authority')
-      }
-      if (
-        record.operation.retainedOperationKey !== entry.operationId ||
-        record.operation.semanticKind !== 'ctf-merge' ||
-        record.operation.custodyContext.normalizedMint !== entry.mintUrl ||
-        record.operation.custodyContext.unit !== 'msat'
-      ) {
-        throw new Error('CTF consolidation persisted custody authority is foreign')
-      }
-      const exactAuthority = requiredCustodyAuthorityArtifact(record, custody)
-      const authority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
-      if (authority.operation.kind !== 'ctf-consolidation') {
-        throw new Error('CTF consolidation persisted custody operation is foreign')
-      }
-      const inputs = authority.operation.inputs.map((input) => durableInputToProof(input))
-      const conditionId = readStringMetadata(entry, 'conditionId')
-      const inputAssets = authority.operation.inputs.map((input) =>
-        consolidatedAsset(conditionId, input.outcomeCollection ?? COLLATERAL_COLLECTION),
-      )
-      const successorAssets = Object.fromEntries(
-        Object.keys(authority.operation.outputs).map((collection) => [
-          collection,
-          consolidatedAsset(conditionId, collection),
-        ]),
-      )
-      assertPersistedCtfTargetMatchesAuthority(entry, authority, inputAssets, successorAssets)
-      return {
-        record,
-        authority,
-        inputs,
-        artifacts: {
-          requestBody: requiredCustodyRequestArtifact(record, custody),
-          output: requiredCustodyOutputArtifact(record, custody),
-          privateMaterial: exactAuthority,
-        },
-        inputAssets,
-        successorAssets,
-      }
-    },
+    (database) => readPersistedCtfCustodyBindingFromDatabase(database, entry, fence.scopeId),
+    { snapshot: true },
   )
+}
+
+function readPersistedCtfCustodyBindingFromDatabase(
+  database: DatabaseSync,
+  entry: ProofOperationRecord,
+  scopeId: string,
+): CtfCustodyBinding {
+  const custodyOperationId = deriveDurableCustodyOperationId(scopeId, {
+    retainedOperationKey: entry.operationId,
+    binding: { kind: 'wallet', activityId: entry.operationId, stage: 'ctf-merge' },
+  })
+  const custody = new DurableCustodySqliteStore(database)
+  const record = custody.getOperation(custodyOperationId)
+  if (record === null) {
+    throw new Error('CTF consolidation recovery lacks canonical custody authority')
+  }
+  if (
+    record.operation.retainedOperationKey !== entry.operationId ||
+    record.operation.semanticKind !== 'ctf-merge' ||
+    record.operation.custodyContext.normalizedMint !== entry.mintUrl ||
+    record.operation.custodyContext.unit !== 'msat'
+  ) {
+    throw new Error('CTF consolidation persisted custody authority is foreign')
+  }
+  const exactAuthority = requiredCustodyAuthorityArtifact(record, custody)
+  const authority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
+  if (authority.operation.kind !== 'ctf-consolidation') {
+    throw new Error('CTF consolidation persisted custody operation is foreign')
+  }
+  const inputs = authority.operation.inputs.map((input) => durableInputToProof(input))
+  const conditionId = readStringMetadata(entry, 'conditionId')
+  const inputAssets = authority.operation.inputs.map((input) =>
+    consolidatedAsset(conditionId, input.outcomeCollection ?? COLLATERAL_COLLECTION),
+  )
+  const successorAssets = Object.fromEntries(
+    Object.keys(authority.operation.outputs).map((collection) => [
+      collection,
+      consolidatedAsset(conditionId, collection),
+    ]),
+  )
+  assertPersistedCtfTargetMatchesAuthority(entry, authority, inputAssets, successorAssets)
+  return {
+    record,
+    authority,
+    inputs,
+    artifacts: {
+      requestBody: requiredCustodyRequestArtifact(record, custody),
+      output: requiredCustodyOutputArtifact(record, custody),
+      privateMaterial: exactAuthority,
+    },
+    inputAssets,
+    successorAssets,
+  }
 }
 
 function durableInputToProof(input: DurableCustodyProofOperationInput['inputs'][number]): Proof {
@@ -2597,17 +2840,19 @@ export function createWallet(
   baseAsset: 'sat',
   exactUnit?: TokenImportUnit,
   counterMutation?: () => FencedStateMutation,
+  counterSource?: CounterSource,
 ): CashuWalletLike {
   const unit = exactUnit ?? defaultCollateralUnit(baseAsset)
-  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
+  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit, counterSource)
   const mutation = counterMutation ?? mutationFromRuntimeFence(deps.getCustodyFence)
   if (!mutation) {
     throw new Error('default Cashu wallet requires a runtime custody fence provider')
   }
-  return new CashuWallet(new CashuMint(mintUrl), {
+  return new CashuWallet(deps.createCashuMint?.(mintUrl) ?? new CashuMint(mintUrl), {
     unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
+    counterSource:
+      counterSource ?? createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
   }) as CashuWalletLike
 }
 

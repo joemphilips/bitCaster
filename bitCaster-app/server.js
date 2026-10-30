@@ -1,5 +1,6 @@
 // Production server for Azure App Service.
 // Mirrors Vite dev proxy (vite.config.ts) so frontend code uses relative URLs everywhere.
+import { captureDeploymentIdentity, deploymentIdentityHandler } from "./deployment-identity.js";
 import compression from "compression";
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
@@ -9,6 +10,7 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const identity = captureDeploymentIdentity(__dirname);
 const app = express();
 const PORT = process.env.PORT || 8080;
 const MINT_URL = process.env.MINT_URL;
@@ -105,9 +107,18 @@ if (BACKEND_URL) {
   console.log(`/hubs/* -> ${BACKEND_URL} (ws)`);
 }
 
+app.get("/deployment-identity", deploymentIdentityHandler(identity));
+
 // Block server-side files from being served as static assets
-app.use(["/server.js", "/package.json", "/package-lock.json"], (_req, res) =>
-  res.status(404).end(),
+app.use(
+  [
+    "/server.js",
+    "/deployment-identity.js",
+    "/deployment-identity.json",
+    "/package.json",
+    "/package-lock.json",
+  ],
+  (_req, res) => res.status(404).end(),
 );
 app.use(express.static(__dirname));
 app.get("*", (_req, res) => res.sendFile(join(__dirname, "index.html")));

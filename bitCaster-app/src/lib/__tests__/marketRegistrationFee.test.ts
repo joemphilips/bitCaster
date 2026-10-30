@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   registerCondition: vi.fn(),
   restoreExactMintOutputs: vi.fn(),
   requireCapturedProfile: vi.fn(),
+  counterSource: null as import("@cashu/cashu-ts").CounterSource | null,
   wallet: null as ReturnType<typeof registrationWallet> | null,
 }));
 
@@ -53,8 +54,26 @@ vi.mock("@/lib/markets", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
+  db: {},
   getBoundedCanonicalRegularProofs: (...args: unknown[]) =>
     mocks.getBoundedCanonicalRegularProofs(...args),
+}));
+
+vi.mock("@/stores/browser-wallet-counter-db", () => ({
+  BrowserWalletCounterDexieStore: class {
+    async readSnapshotInContext(_context: unknown, keysetId: string) {
+      return { keysetId, nextCounter: 0 };
+    }
+  },
+}));
+
+vi.mock("@/stores/wallet", () => ({
+  createUncachedWalletForSeedUnit: async (input: {
+    counterSource: import("@cashu/cashu-ts").CounterSource;
+  }) => {
+    mocks.counterSource = input.counterSource;
+    return mocks.wallet;
+  },
 }));
 
 const {
@@ -89,16 +108,22 @@ function registrationProof(secret = "registration-input-proof") {
 function registrationWallet(keysetId = V2_KEYSET_ID) {
   return {
     checkProofsStates: vi.fn().mockResolvedValue([{ Y: "y-registration-fee", state: "SPENT" }]),
-    getKeyset: vi.fn(() => ({ id: keysetId })),
+    getKeyset: vi.fn(() => ({ id: keysetId, verify: () => true })),
     prepareSwapToSend: vi.fn(async (amount, proofs, config) => {
-      config.onCountersReserved({ keysetId, start: 0, count: 2 });
+      const counters = await mocks.counterSource?.reserve(keysetId, 2);
+      const start = counters?.start ?? 0;
+      config.onCountersReserved({ keysetId, start, count: 2, next: start + 2 });
       return {
         amount: Amount.from(amount),
         fees: Amount.zero(),
         keysetId,
         inputs: proofs,
-        sendOutputs: [OutputData.createSingleDeterministicData(amount, WALLET_SEED, 0, keysetId)],
-        keepOutputs: [OutputData.createSingleDeterministicData(1, WALLET_SEED, 1, keysetId)],
+        sendOutputs: [
+          OutputData.createSingleDeterministicData(amount, WALLET_SEED, start, keysetId),
+        ],
+        keepOutputs: [
+          OutputData.createSingleDeterministicData(1, WALLET_SEED, start + 1, keysetId),
+        ],
         unselectedProofs: [],
       };
     }),
@@ -149,6 +174,7 @@ function transfer(overrides: Record<string, unknown> = {}) {
 describe("registerConditionWithFee", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.counterSource = null;
     mocks.wallet = registrationWallet();
     mocks.getWalletForUnit.mockResolvedValue(mocks.wallet);
     mocks.readOutgoing.mockResolvedValue(null);

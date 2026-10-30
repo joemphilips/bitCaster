@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { BasicInfo } from "../BasicInfo";
@@ -24,6 +24,41 @@ const defaultData: WizardStepBasicInfo = {
 const categoryTags = ["politics", "sports", "crypto"];
 
 describe("BasicInfo", () => {
+  it("sends a dropped image through the same thumbnail callback", () => {
+    const onThumbnailUpload = vi.fn();
+    render(
+      <BasicInfo
+        data={defaultData}
+        categoryTags={categoryTags}
+        onThumbnailUpload={onThumbnailUpload}
+      />,
+    );
+    const file = new File(["synthetic"], "thumbnail.png", { type: "image/png" });
+    fireEvent.drop(screen.getByTestId("market-thumbnail-drop"), {
+      dataTransfer: { files: [file] },
+    });
+    expect(onThumbnailUpload).toHaveBeenCalledWith(file);
+  });
+
+  it.each([{ thumbnailLocked: true }, { thumbnailPending: true }])(
+    "ignores drops while thumbnail input is unavailable: %j",
+    (state) => {
+      const onThumbnailUpload = vi.fn();
+      render(
+        <BasicInfo
+          data={defaultData}
+          categoryTags={categoryTags}
+          onThumbnailUpload={onThumbnailUpload}
+          {...state}
+        />,
+      );
+      fireEvent.drop(screen.getByTestId("market-thumbnail-drop"), {
+        dataTransfer: { files: [new File(["synthetic"], "image.png")] },
+      });
+      expect(onThumbnailUpload).not.toHaveBeenCalled();
+    },
+  );
+
   it("disables Next when title and closing date are empty", () => {
     render(<BasicInfo data={defaultData} categoryTags={categoryTags} />);
     const nextBtn = screen.getByRole("button", { name: "Next" });
@@ -90,5 +125,24 @@ describe("BasicInfo", () => {
     );
     await user.click(screen.getByRole("button", { name: "Next" }));
     expect(onNext).toHaveBeenCalledOnce();
+  });
+});
+
+describe("thumbnail retention controls", () => {
+  it("blocks Next while retention is pending or failed and exposes explicit removal", async () => {
+    const onRemove = vi.fn();
+    const props = {
+      data: { ...defaultData, title: "Test", closingDate: futureDate() },
+      categoryTags,
+      onThumbnailRemove: onRemove,
+    };
+    const view = render(<BasicInfo {...props} thumbnailPending />);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    view.rerender(<BasicInfo {...props} thumbnailError="Image could not be retained" />);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Image could not be retained");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Remove" }));
+    expect(onRemove).toHaveBeenCalledOnce();
   });
 });

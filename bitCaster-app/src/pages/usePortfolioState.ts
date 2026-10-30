@@ -1,3 +1,4 @@
+import { createDisplayResyncRepair } from "@bitcaster/client-sdk/displayResync";
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
@@ -41,7 +42,7 @@ import type {
   UserProfile,
   Position,
   Fund,
-  ActivityItem,
+  ActivityDisplayItem,
   CreatedMarket,
   PortfolioMonitoringState,
 } from "@/types/portfolio";
@@ -64,6 +65,7 @@ import {
 } from "@/lib/portfolioInvalidation";
 import { observePortfolioValuations } from "@/lib/marketHub";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
+import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
 
 const automaticPortfolioRefreshDelayMs = 10_000;
 const maximumBuildingPortfolioExtraReads = 3;
@@ -83,7 +85,7 @@ interface PortfolioState {
   stats: PortfolioStats;
   positions: Position[];
   funds: Fund[];
-  activity: ActivityItem[];
+  activity: ActivityDisplayItem[];
   createdMarkets: CreatedMarket[];
   positionsTab: "active" | "closed";
   monitoring: PortfolioMonitoringState;
@@ -91,22 +93,7 @@ interface PortfolioState {
 
 const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
 
-const DEFAULT_PROFILE: UserProfile = {
-  userId: "",
-  displayName: "Anon",
-  avatarUrl: null,
-  registeredDate: new Date().toISOString(),
-};
-
-function loadProfile(): UserProfile {
-  try {
-    const stored = localStorage.getItem("bitcaster-profile");
-    if (stored) return JSON.parse(stored);
-  } catch {
-    // ignore
-  }
-  return DEFAULT_PROFILE;
-}
+const DEFAULT_PROFILE: UserProfile = { displayName: "", avatarUrl: null, bio: "" };
 
 export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === "active");
@@ -518,7 +505,6 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
 export function usePortfolioState(): PortfolioState & {
   setSelectedTimeRange: (range: PLTimeSelector) => void;
   setPositionsTab: (tab: "active" | "closed") => void;
-  saveProfile: (profile: UserProfile) => void;
   dismissMonitoringError: () => void;
   loadMoreAssets: () => void;
   dismissAssetPageError: () => void;
@@ -576,21 +562,29 @@ export function usePortfolioState(): PortfolioState & {
     extraReadsStarted: number;
   } | null>(null);
   const portfolioObserver = useRef<ReturnType<typeof observePortfolioValuations> | null>(null);
+  const portfolioRepair = useRef<ReturnType<typeof createDisplayResyncRepair> | null>(null);
+  const portfolioRepairWaiter = useRef<{
+    key: string;
+    minimumRequest: number;
+    signal: AbortSignal;
+    controller?: AbortController;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null>(null);
   const portfolioObserverRefresh = useRef<() => void>(() => {});
   const subscribedConditionIds = useRef<string[] | null>(null);
-  const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
-  // Merge nostr profile into local profile when available
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
+  const connectionStatus = useSettingsStore((s) => s.signerConnectionStatus);
   const profile: UserProfile = useMemo(() => {
-    if (!nostrProfile) return localProfile;
+    if (connectionStatus !== "connected" || !nostrProfile) return DEFAULT_PROFILE;
     return {
-      ...localProfile,
-      displayName: nostrProfile.displayName || localProfile.displayName,
-      avatarUrl: nostrProfile.avatar || localProfile.avatarUrl,
+      displayName: nostrProfile.displayName,
+      avatarUrl: nostrProfile.avatar || null,
+      bio: nostrProfile.bio,
     };
-  }, [localProfile, nostrProfile]);
+  }, [connectionStatus, nostrProfile]);
 
   const activityItems = useActivityLogStore((s) => s.items);
   const [createdMarkets] = useState<CreatedMarket[]>([]);
@@ -694,7 +688,10 @@ export function usePortfolioState(): PortfolioState & {
   portfolioObserverRefresh.current = () => scheduleAutomaticPortfolioRefresh("notification");
 
   useEffect(() => {
-    const observer = observePortfolioValuations(() => portfolioObserverRefresh.current());
+    const observer = observePortfolioValuations(
+      () => portfolioObserverRefresh.current(),
+      (token) => portfolioRepair.current?.request(token),
+    );
     portfolioObserver.current = observer;
     subscribedConditionIds.current = null;
     return () => {
@@ -703,6 +700,14 @@ export function usePortfolioState(): PortfolioState & {
       observer.dispose();
     };
   }, []);
+
+  const portfolioMembershipScope = useRef(displayScopeKey);
+  useEffect(() => {
+    if (portfolioMembershipScope.current === displayScopeKey) return;
+    portfolioMembershipScope.current = displayScopeKey;
+    subscribedConditionIds.current = null;
+    void portfolioObserver.current?.replaceConditionIds([]).catch(() => {});
+  }, [displayScopeKey]);
 
   useEffect(() => {
     activeMonitoringKey.current = monitoringKey;
@@ -723,6 +728,45 @@ export function usePortfolioState(): PortfolioState & {
       if (activeMonitoringKey.current === monitoringKey) activeMonitoringKey.current = null;
     };
   }, [abortActivePortfolioRead, clearAutomaticRefreshTimer, monitoringKey]);
+
+  useEffect(() => {
+    if (monitoringKey === null || walletId === null) return;
+    const repair = createDisplayResyncRepair({
+      initialJitterMs: 250,
+      repair: async (signal) => {
+        signal.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const waiter: NonNullable<typeof portfolioRepairWaiter.current> = {
+            key: monitoringKey,
+            signal,
+            minimumRequest: activeMonitoringRequest.current + 1,
+            resolve: () => finish(),
+            reject: (error: Error) => finish(error),
+          };
+          const abort = () => {
+            if (waiter.controller) waiter.controller.abort();
+            else finish(new Error("Portfolio repair scope changed."));
+          };
+          const finish = (error?: Error) => {
+            signal.removeEventListener("abort", abort);
+            if (portfolioRepairWaiter.current === waiter) portfolioRepairWaiter.current = null;
+            if (error) reject(error);
+            else resolve();
+          };
+          portfolioRepairWaiter.current = waiter;
+          signal.addEventListener("abort", abort, { once: true });
+          clearAutomaticRefreshTimer();
+          setPortfolioRefreshEpoch((current) => current + 1);
+        });
+        signal.throwIfAborted();
+      },
+    });
+    portfolioRepair.current = repair;
+    return () => {
+      if (portfolioRepair.current === repair) portfolioRepair.current = null;
+      void repair.dispose();
+    };
+  }, [monitoringKey, walletId, clearAutomaticRefreshTimer]);
 
   const invalidatePortfolio = useCallback(
     (invalidation: PortfolioInvalidation) => {
@@ -753,6 +797,12 @@ export function usePortfolioState(): PortfolioState & {
     const requestId = ++activeMonitoringRequest.current;
     const controller = new AbortController();
     const read = { monitoringKey, requestKey, requestId, controller };
+    const pendingRepair = portfolioRepairWaiter.current;
+    const repairForRead =
+      pendingRepair?.key === monitoringKey && requestId >= pendingRepair.minimumRequest
+        ? pendingRepair
+        : null;
+    if (repairForRead) repairForRead.controller = controller;
     activePortfolioRead.current = read;
     setLoadingMonitoringKey(monitoringKey);
     activeAssetPageRequest.current += 1;
@@ -774,6 +824,9 @@ export function usePortfolioState(): PortfolioState & {
         if (initialAssets.kind !== "appended") {
           setMonitoringUnavailable(true);
           setMonitoringError("unavailable");
+          const waiter = portfolioRepairWaiter.current;
+          if (waiter?.key === monitoringKey && requestId >= waiter.minimumRequest)
+            waiter.reject(new Error("Portfolio assets are unavailable."));
           return;
         }
         setMonitoringResponse({ key: monitoringKey, value });
@@ -798,6 +851,19 @@ export function usePortfolioState(): PortfolioState & {
         });
         setLoadingMoreAssets(false);
         setMonitoringError(null);
+        const waiter = portfolioRepairWaiter.current;
+        if (waiter?.key === monitoringKey && requestId >= waiter.minimumRequest) {
+          if (
+            value.summary.building ||
+            value.assets.building ||
+            value.history.building ||
+            value.summary.incomplete ||
+            value.assets.incomplete ||
+            value.history.incomplete
+          )
+            waiter.reject(new Error("Portfolio repair is not complete."));
+          else waiter.resolve();
+        }
         const building = value.summary.building || value.assets.building || value.history.building;
         const cycle = buildingRefreshCycle.current;
         if (
@@ -837,8 +903,13 @@ export function usePortfolioState(): PortfolioState & {
         }
         setMonitoringUnavailable(true);
         setMonitoringError("unavailable");
+        const waiter = portfolioRepairWaiter.current;
+        if (waiter?.key === monitoringKey && requestId >= waiter.minimumRequest)
+          waiter.reject(new Error("Portfolio repair is unavailable."));
       })
       .finally(() => {
+        if (repairForRead?.signal.aborted)
+          repairForRead.reject(new Error("Portfolio repair scope changed."));
         if (activePortfolioRead.current !== read) return;
         activePortfolioRead.current = null;
         setLoadingMonitoringKey(null);
@@ -1137,6 +1208,11 @@ export function usePortfolioState(): PortfolioState & {
   );
   const currentLocalPositions =
     positionsFromDb?.scopeId === walletScopeId ? positionsFromDb : undefined;
+  const displayedActivity = useActivityCatalogue(
+    activity,
+    walletId,
+    currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE,
+  );
   const positions: Position[] = currentLocalPositions?.positions ?? [];
   const localPositionsUnavailable = currentLocalPositions === undefined;
   const fundsFromDb = useLiveQuery(
@@ -1246,11 +1322,6 @@ export function usePortfolioState(): PortfolioState & {
     setSelectedTimeRange(range);
   }, []);
 
-  const saveProfile = useCallback((updated: UserProfile) => {
-    setLocalProfile(updated);
-    localStorage.setItem("bitcaster-profile", JSON.stringify(updated));
-  }, []);
-
   return {
     walletState,
     baseCurrency,
@@ -1260,13 +1331,12 @@ export function usePortfolioState(): PortfolioState & {
     stats,
     positions: visiblePositions,
     funds,
-    activity,
+    activity: displayedActivity,
     createdMarkets,
     positionsTab,
     monitoring,
     setSelectedTimeRange: selectTimeRange,
     setPositionsTab,
-    saveProfile,
     dismissMonitoringError: () => setMonitoringError(null),
     loadMoreAssets,
     dismissAssetPageError: () => setAssetPageError(null),

@@ -27,6 +27,11 @@ vi.mock("../nostr", () => ({
     _signer: unknown,
     run: (ndk: { fetchEvent: typeof transport.fetch }) => Promise<unknown>,
   ) => run({ fetchEvent: transport.fetch }),
+  // Every selected relay connected, so the read result is authoritative.
+  fetchTemporaryRelayRecord: async (
+    _options: unknown,
+    read: (ndk: { fetchEvent: typeof transport.fetch }) => Promise<unknown>,
+  ) => read({ fetchEvent: transport.fetch }),
 }));
 
 beforeEach(() => vi.clearAllMocks());

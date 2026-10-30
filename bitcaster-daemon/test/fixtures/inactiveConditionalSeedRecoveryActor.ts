@@ -1,3 +1,6 @@
+import { seedRecoveryMnemonicBytes } from '../../../bitcaster-client-sdk/src/seedRecoveryMnemonic.ts'
+import { ownedRecoveryCommand } from './ownedRecoveryCommand.ts'
+import { requireValidCashuProofs } from '../../../bitcaster-client-sdk/src/cashuProofAdmission.ts'
 // This parent E2E actor uses real clients. It prints only fixed, public summaries.
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -15,7 +18,6 @@ import {
   MintOperationError,
   NetworkError,
   createEphemeralCounterSource,
-  verifyProofsForReceive,
   type Proof,
 } from '@cashu/cashu-ts'
 import {
@@ -39,7 +41,10 @@ import {
   serializeDurableCustodyProofArtifact,
 } from '../../../bitcaster-client-sdk/src/durableCustodyProofMaterial.ts'
 import { createConditionOracleEvidenceResolver } from '../../../bitcaster-client-sdk/src/conditionOracleEvidence.ts'
-import { deriveDurableCustodyScopeId } from '../../../bitcaster-client-sdk/src/durableCustody.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+} from '../../../bitcaster-client-sdk/src/durableCustody.ts'
 import { configureDataDir } from '../../src/dataDir.ts'
 import { openDaemonStateSqlite } from '../../src/stateSqlite.ts'
 import { readAvailableWalletProofPage } from '../../src/state.ts'
@@ -50,6 +55,7 @@ const repo = resolve(import.meta.dirname, '../../..')
 const amountMsat = 8_192
 const recoveryId = 'd6-inactive-conditional-recovery'
 const seedFile = join(inputDirectory, 'wallet-seed.hex')
+const phraseFile = join(inputDirectory, 'wallet-phrase.txt')
 type ActorStage =
   | 'input'
   | 'issuance'
@@ -58,6 +64,8 @@ type ActorStage =
   | 'mint-quote'
   | 'mint-payment'
   | 'mint-collateral'
+  | 'regular-control'
+  | 'target-pagination'
   | 'deterministic-outputs'
   | 'split'
   | 'split-outputs'
@@ -67,17 +75,25 @@ type ActorStage =
   | 'listing'
   | 'fresh-profile'
   | 'recovery'
+  | 'recovery-active-limit'
+  | 'recovery-cli'
+  | 'recovery-summary'
   | 'observations'
   | 'exact-authority'
   | 'repeat'
   | 'restart'
   | 'payout'
+  | 'payout-recovery'
 let stage: ActorStage = 'input'
 interface Metadata {
   foreign: { condition_id: string; keysets: Record<string, string> }
   target: {
     condition_id: string
     keysets: Record<string, string>
+    complement_collections: Record<string, string>
+    split_keysets: Record<string, string>
+    funded_collection: string
+    winning_outcome: string
     fixture_oracle_registration: {
       eventId: string
       outcomes: string[]
@@ -86,12 +102,14 @@ interface Metadata {
     }
   }
   witness: { oracle_sigs: unknown[] }
+  witnesses: Record<string, { oracle_sigs: unknown[] }>
 }
 interface Observation {
   route: string
   cursor_present?: boolean
   limit_100?: boolean
-  unfiltered?: boolean
+  condition_id?: string
+  no_active_or_unit_filter?: boolean
   count: number
   ids?: string[]
   has_next?: boolean
@@ -106,39 +124,15 @@ async function jsonFetch(path: string): Promise<any> {
 
 // Private outputs and errors stay in memory. A command failure exposes a fixed label.
 async function command(script: string, args: string[], timeout = 45_000): Promise<any> {
-  const child = spawn(
+  const output = await ownedRecoveryCommand(
     process.execPath,
     ['--experimental-strip-types', join(repo, script), '--datadir', home, ...args],
-    {
-      cwd: repo,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
-    },
+    repo,
+    timeout,
+    2 * 1024 * 1024,
   )
-  let output = ''
-  let bytes = 0
-  child.stdout!.on('data', (data: Buffer) => {
-    bytes += data.length
-    if (bytes > 2 * 1024 * 1024) child.kill('SIGKILL')
-    else output += data.toString()
-  })
-  child.stderr!.on('data', () => {})
-  const timer = setTimeout(() => child.kill('SIGKILL'), timeout)
-  try {
-    const code = await new Promise<number | null>((resolveExit, reject) => {
-      child.once('error', () => reject(new Error('fixture command could not start')))
-      child.once('close', resolveExit)
-    })
-    assert.equal(
-      code === 0,
-      true,
-      `fixture ${script.includes('cli') ? 'CLI' : 'daemon'} command must succeed`,
-    )
-    if (script === 'bitcaster-daemon/src/main.ts' && args[0] === 'init') return null
-    return output.trim() ? JSON.parse(output) : null
-  } finally {
-    clearTimeout(timer)
-  }
+  if (script === 'bitcaster-daemon/src/main.ts' && args[0] === 'init') return null
+  return output.trim() ? JSON.parse(output) : null
 }
 const cli = (args: string[], timeout?: number) =>
   command('bitcaster-cli/src/main.ts', args, timeout)
@@ -154,6 +148,55 @@ async function issue(metadata: Metadata): Promise<void> {
     true,
     'fixture mint must advertise actual bolt11 msat capability',
   )
+  stage = 'target-pagination'
+  const conditionQuery = `condition_id=${metadata.target.condition_id}`
+  const firstTargetPage = await jsonFetch(`/v1/conditional_keysets?limit=100&${conditionQuery}`)
+  assert.equal(firstTargetPage.keysets.length, 100)
+  assert.equal(typeof firstTargetPage.next_cursor, 'string')
+  const secondTargetPage = await jsonFetch(
+    `/v1/conditional_keysets?limit=100&${conditionQuery}&cursor=${encodeURIComponent(firstTargetPage.next_cursor)}`,
+  )
+  assert.equal(secondTargetPage.keysets.length, 2)
+  assert.equal(secondTargetPage.next_cursor, null)
+  assert.equal(
+    [...firstTargetPage.keysets, ...secondTargetPage.keysets].every(
+      (row: any) =>
+        row.condition_id === metadata.target.condition_id &&
+        row.unit === 'msat' &&
+        row.active === true &&
+        Object.values(metadata.target.keysets).includes(row.id),
+    ),
+    true,
+    'registration pages must contain only the 102 authentic target descriptors',
+  )
+  const laterPageRow = secondTargetPage.keysets[0]
+  assert.equal(
+    laterPageRow.condition_id === metadata.target.condition_id &&
+      laterPageRow.unit === 'msat' &&
+      laterPageRow.active === true,
+    true,
+    'funded descriptor must come from this condition’s actual later page',
+  )
+  const fundedCollection = laterPageRow.outcome_collection as string
+  const complement = metadata.target.complement_collections[fundedCollection]
+  const fundedKeysetId = metadata.target.keysets[fundedCollection]
+  const complementKeysetId = metadata.target.keysets[complement]
+  assert.equal(
+    fundedKeysetId === laterPageRow.id &&
+      typeof complement === 'string' &&
+      typeof complementKeysetId === 'string' &&
+      complement !== fundedCollection,
+    true,
+    'funded later-page collection must have its actual registered complement',
+  )
+  metadata.target.split_keysets = {
+    [fundedCollection]: fundedKeysetId,
+    [complement]: complementKeysetId,
+  }
+  metadata.target.funded_collection = fundedCollection
+  metadata.target.winning_outcome = fundedCollection.split('|')[0]!
+  metadata.witness = metadata.witnesses[metadata.target.winning_outcome]!
+  await writeFile(join(inputDirectory, 'public.json'), JSON.stringify(metadata))
   const regular = wallet.keyChain.getKeyset().toMintKeys()!
   assert.equal(regular.input_fee_ppk, 1, 'authentic regular keyset must carry the fixture fee')
   const grossCollateralMsat = computeGrossCtfInputAmountSubunits({
@@ -163,17 +206,7 @@ async function issue(metadata: Metadata): Promise<void> {
   stage = 'mint-quote'
   const quote = await wallet.createMintQuote(grossCollateralMsat)
   stage = 'mint-payment'
-  const deadline = Date.now() + 20_000
-  let paid = false
-  while (Date.now() < deadline) {
-    const state = await wallet.checkMintQuote(quote.quote)
-    if (state.state === 'PAID') {
-      paid = true
-      break
-    }
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  assert.equal(paid, true, 'real FakeWallet quote must be paid')
+  await waitForMintQuote(wallet, quote.quote)
   stage = 'mint-collateral'
   const collateral = await wallet.mintProofs(grossCollateralMsat, quote.quote)
   const collateralFee = computeInputFeeSubunitsForProofs(
@@ -187,14 +220,47 @@ async function issue(metadata: Metadata): Promise<void> {
     true,
     'authentic collateral and positive fee must preserve exact outcome value',
   )
+  stage = 'regular-control'
+  const seed = seedRecoveryMnemonicBytes(await readFile(phraseFile, 'utf8'))
+  await writeFile(seedFile, Buffer.from(seed).toString('hex'), { mode: 0o600, flag: 'wx' })
+  const regularControlKeyset = wallet.keyChain.getKeyset().toMintKeys()!
+  const controlCounterSource = createEphemeralCounterSource({ [regularControlKeyset.id]: 3 })
+  const controlWallet = new Wallet(mint, {
+    unit: 'msat',
+    bip39seed: seed,
+    counterSource: controlCounterSource,
+  })
+  await controlWallet.loadMint()
+  assert.equal(
+    controlWallet.keyChain.getKeyset().id,
+    regularControlKeyset.id,
+    'regular control must use the same active msat keyset as the target wallet',
+  )
+  const controlQuote = await controlWallet.createMintQuote(1)
+  await waitForMintQuote(controlWallet, controlQuote.quote)
+  const controlProofs = await controlWallet.mintProofs(1, controlQuote.quote)
+  assert.equal(controlProofs.length, 1, 'mint must issue one real regular negative-control proof')
+  const regularControlProof = controlProofs[0]!
+  assert.equal(regularControlProof.id, regularControlKeyset.id)
+  assert.equal(
+    (await controlWallet.counters.snapshot())[regularControlKeyset.id],
+    4,
+    'regular control proof must consume exactly deterministic counter three',
+  )
+  requireValidCashuProofs([regularControlProof], (id) => controlWallet.keyChain.getKeyset(id))
+  await assertUnspent(controlWallet, [regularControlProof])
+  await writeFile(
+    join(inputDirectory, 'regular-control-proof.json'),
+    JSON.stringify(serializeDurableCustodyProofArtifact(regularControlProof)),
+    { mode: 0o600, flag: 'wx' },
+  )
   stage = 'deterministic-outputs'
-  const seed = Buffer.from((await readFile(seedFile, 'utf8')).trim(), 'hex')
   const prepared = new Map<
     string,
     Awaited<ReturnType<typeof reserveAndConstructDurableSeedDerivedOutputs>>
   >()
   const counterSource = createEphemeralCounterSource()
-  for (const [collection, id] of Object.entries(metadata.target.keysets)) {
+  for (const [collection, id] of Object.entries(metadata.target.split_keysets)) {
     const keyset = (await mint.getKeys(id)).keysets.find((row) => row.id === id)
     assert.equal(keyset !== undefined, true, 'authentic target keys must exist')
     const planned = await reserveAndConstructDurableSeedDerivedOutputs({
@@ -215,7 +281,7 @@ async function issue(metadata: Metadata): Promise<void> {
     new CashuMintCtfSplitTransport(mintUrl),
     metadata.target.condition_id,
     collateral,
-    metadata.target.keysets,
+    metadata.target.split_keysets,
     amountMsat,
     {
       baseAsset: 'sat',
@@ -228,9 +294,27 @@ async function issue(metadata: Metadata): Promise<void> {
       },
     },
   )
-  assert.equal(Object.keys(proofs).length, 2, 'actual split must issue both target outcomes')
+  assert.deepEqual(
+    Object.keys(proofs).sort(),
+    Object.keys(metadata.target.split_keysets).sort(),
+    'actual split must issue the observed later-page collection and its exact complement',
+  )
+  const issuedProofs = Object.values(proofs).flat()
+  assert.equal(issuedProofs.length, 4, 'the two funded groups must issue four real proofs')
+  type ConditionalMintKey = Awaited<ReturnType<typeof mint.getKeys>>['keysets'][number]
+  const conditionalKeysets: Record<string, ConditionalMintKey> = {}
+  for (const id of new Set(issuedProofs.map((proof) => proof.id))) {
+    const keyset = (await mint.getKeys(id)).keysets.find((row) => row.id === id)
+    assert.equal(
+      keyset?.unit === 'msat' && keyset.input_fee_ppk === 1,
+      true,
+      'each issued proof must resolve to its authentic conditional keyset authority',
+    )
+    conditionalKeysets[id] = keyset!
+  }
+  requireValidCashuProofs(issuedProofs, (id) => conditionalKeysets[id]!)
   stage = 'issued-spentness'
-  await assertUnspent(wallet, Object.values(proofs).flat())
+  await assertUnspent(wallet, issuedProofs)
   stage = 'issued-artifact'
   await writeFile(
     join(inputDirectory, 'expected-proofs.json'),
@@ -244,7 +328,9 @@ async function issue(metadata: Metadata): Promise<void> {
     ),
     { mode: 0o600, flag: 'wx' },
   )
-  process.stdout.write('{"issued":true,"targetProofCount":4}\n')
+  process.stdout.write(
+    `${JSON.stringify({ issued: true, targetProofCount: Object.values(proofs).flat().length })}\n`,
+  )
 }
 
 async function assertUnspent(wallet: Wallet, proofs: Proof[]): Promise<void> {
@@ -254,6 +340,17 @@ async function assertUnspent(wallet: Wallet, proofs: Proof[]): Promise<void> {
     true,
     'exact original proofs must remain unspent',
   )
+}
+
+async function waitForMintQuote(wallet: Wallet, quoteId: string): Promise<void> {
+  // The owned FakeWallet pays local quotes asynchronously and exposes no completion signal.
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    const state = await wallet.checkMintQuote(quoteId)
+    if (state.state === 'PAID') return
+    await new Promise((resolvePayment) => setTimeout(resolvePayment, 100))
+  }
+  assert.fail('fixture mint quote payment deadline exceeded')
 }
 
 function sameProof(left: Proof, right: Proof): boolean {
@@ -273,10 +370,12 @@ async function recoveredProofs(
   expected: Record<string, Proof[]>,
 ): Promise<Record<string, Proof[]>> {
   const result: Record<string, Proof[]> = {}
-  for (const [outcomeSetId, keysetId] of Object.entries(metadata.target.keysets)) {
+  for (const [outcomeSetId, expectedProofs] of Object.entries(expected)) {
+    const targetKeysetId = metadata.target.keysets[outcomeSetId]
+    assert.equal(typeof targetKeysetId, 'string', 'funded collection must be registered')
     const page = await readAvailableWalletProofPage({
       mintUrl,
-      keysetId,
+      keysetId: targetKeysetId,
       asset: {
         kind: 'Outcome',
         baseAsset: 'sat',
@@ -306,13 +405,9 @@ async function recoveredProofs(
       })
     })
     assert.equal(
-      proofs.length === expected[outcomeSetId].length &&
-        proofs.every((proof) =>
-          expected[outcomeSetId].some((original) => sameProof(proof, original)),
-        ) &&
-        expected[outcomeSetId].every((original) =>
-          proofs.some((proof) => sameProof(proof, original)),
-        ),
+      proofs.length === expectedProofs.length &&
+        proofs.every((proof) => expectedProofs.some((original) => sameProof(proof, original))) &&
+        expectedProofs.every((original) => proofs.some((proof) => sameProof(proof, original))),
       true,
       'native recovered proof identity and material must equal authentic issuance',
     )
@@ -321,14 +416,14 @@ async function recoveredProofs(
   const balance = await readDaemonWalletBalance(home)
   assert.equal(
     balance.outcomePositions.length,
-    2,
-    'native balance must contain only target outcomes',
+    Object.keys(expected).length,
+    'native balance must contain only the two funded target collections',
   )
   for (const position of balance.outcomePositions) {
     assert.equal(
       position.conditionId === metadata.target.condition_id &&
         position.mintUrl === mintUrl &&
-        Object.hasOwn(metadata.target.keysets, position.outcomeSetId),
+        Object.hasOwn(expected, position.outcomeSetId),
       true,
       'balance must retain exact outcome authority',
     )
@@ -353,6 +448,29 @@ async function authoritySnapshot(): Promise<string> {
     return JSON.stringify(
       tables.map((table) => database.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()),
     )
+  } finally {
+    database.close()
+  }
+}
+
+async function assertProofNotImported(proof: Proof): Promise<void> {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    const scopeRows = database
+      .prepare("SELECT scope_id AS scopeId FROM custody_scopes WHERE scope_kind = 'wallet'")
+      .all() as Array<{ scopeId: string }>
+    assert.equal(scopeRows.length, 1, 'control proof check requires one wallet custody scope')
+    const proofId = deriveDurableCustodyProofId({
+      scopeId: scopeRows[0]!.scopeId,
+      normalizedMint: mintUrl,
+      unit: 'msat',
+      keysetId: proof.id,
+      secret: proof.secret,
+    })
+    const row = database
+      .prepare('SELECT count(*) AS count FROM custody_proofs WHERE proof_id = ?')
+      .get(proofId) as { count: number }
+    assert.equal(row.count, 0, 'condition-scoped recovery must not import regular proof control')
   } finally {
     database.close()
   }
@@ -441,23 +559,65 @@ async function recover(metadata: Metadata): Promise<void> {
       rows.map(deserializeDurableCustodyProofArtifact),
     ]),
   )
+  assert.deepEqual(
+    Object.keys(expected).sort(),
+    Object.keys(metadata.target.split_keysets).sort(),
+    'only the two actual split output collections may have expected proofs',
+  )
+  const regularControl = deserializeDurableCustodyProofArtifact(
+    JSON.parse(await readFile(join(inputDirectory, 'regular-control-proof.json'), 'utf8')),
+  )
+  assert.equal(Object.keys(metadata.target.keysets).length, 102)
+  assert.equal(Object.keys(metadata.target.split_keysets).length, 2)
+  const registeredOutcomes = metadata.target.fixture_oracle_registration.outcomes
+  const fundedCollections = Object.keys(metadata.target.split_keysets)
+  const fundedOutcomeSets = fundedCollections.map((collection) => collection.split('|'))
+  assert.equal(
+    fundedOutcomeSets[0]!.every((outcome) => !fundedOutcomeSets[1]!.includes(outcome)) &&
+      [...fundedOutcomeSets[0]!, ...fundedOutcomeSets[1]!].sort().join('\0') ===
+        [...registeredOutcomes].sort().join('\0'),
+    true,
+    'funded collections must form an exact complementary partition of the registered outcomes',
+  )
+  assert.equal(
+    fundedCollections.includes(metadata.target.funded_collection),
+    true,
+    'winning collection must be one of the funded complementary groups',
+  )
+  assert.equal(
+    fundedOutcomeSets.find((outcomes) => outcomes.includes(metadata.target.winning_outcome)) !==
+      undefined,
+    true,
+    'chosen winning outcome must belong to a funded collection',
+  )
+  assert.equal(
+    Object.values(metadata.target.keysets).includes(regularControl.id),
+    false,
+    'regular negative-control keyset must be distinct from target conditional keysets',
+  )
   const mint = new Mint(mintUrl)
   const wallet = new Wallet(mint, { unit: 'msat' })
   await wallet.loadMint()
   await assertUnspent(wallet, Object.values(expected).flat())
+  await assertUnspent(wallet, [regularControl])
   stage = 'listing'
-  const first = await jsonFetch('/v1/conditional_keysets?limit=100')
+  const conditionQuery = `condition_id=${metadata.target.condition_id}`
+  const first = await jsonFetch(`/v1/conditional_keysets?limit=100&${conditionQuery}`)
   assert.equal(first.keysets.length, 100)
   assert.equal(
     first.keysets.every(
-      (row: any) => row.unit === 'sat' && Object.values(metadata.foreign.keysets).includes(row.id),
+      (row: any) =>
+        row.unit === 'msat' &&
+        row.active === false &&
+        row.condition_id === metadata.target.condition_id &&
+        Object.values(metadata.target.keysets).includes(row.id),
     ),
     true,
-    'first page must contain only real foreign-unit rows',
+    'first scoped page must contain only real target-condition rows',
   )
   assert.equal(typeof first.next_cursor, 'string')
   const second = await jsonFetch(
-    `/v1/conditional_keysets?limit=100&cursor=${encodeURIComponent(first.next_cursor)}`,
+    `/v1/conditional_keysets?limit=100&${conditionQuery}&cursor=${encodeURIComponent(first.next_cursor)}`,
   )
   assert.equal(second.keysets.length, 2)
   assert.equal(second.next_cursor, null)
@@ -466,10 +626,18 @@ async function recover(metadata: Metadata): Promise<void> {
       (row: any) =>
         row.unit === 'msat' &&
         row.active === false &&
+        row.condition_id === metadata.target.condition_id &&
         Object.values(metadata.target.keysets).includes(row.id),
     ),
     true,
-    'later real page must contain exactly both inactive target rows',
+    'later scoped page must contain exactly two inactive target rows',
+  )
+  assert.equal(
+    second.keysets.some((row: any) =>
+      Object.values(metadata.target.split_keysets).includes(row.id),
+    ),
+    true,
+    'at least one actually funded keyset must be observed on the later page',
   )
   stage = 'fresh-profile'
   await cli(['config', 'set', '--engine-url', 'http://127.0.0.1:1', '--mint-url', mintUrl])
@@ -490,12 +658,21 @@ async function recover(metadata: Metadata): Promise<void> {
   assert.equal(reset.status, 204)
   let summary: any
   let invocations = 0
+  const recoveryStartedAt = Date.now()
   const deadline = Date.now() + 150_000
+  // The daemon processes at most four keyset batches per invocation. This
+  // fixture has 102 selected keys; the two funded keys may each need one
+  // additional batch after their signature-bearing range.
+  const maximumInvocations = Math.ceil(
+    (Object.keys(metadata.target.keysets).length +
+      Object.keys(metadata.target.split_keysets).length) /
+      4,
+  )
   const args = [
     'wallet',
     'recover-seed',
-    '--wallet-seed-hex-file',
-    seedFile,
+    '--recovery-phrase-file',
+    phraseFile,
     '--recovery-id',
     recoveryId,
     '--mint',
@@ -503,60 +680,105 @@ async function recover(metadata: Metadata): Promise<void> {
     '--unit',
     'msat',
     '--acknowledge-seed-disclosure',
+    '--condition-id',
+    metadata.target.condition_id,
+    '--gap-limit',
+    '4',
   ]
   stage = 'recovery'
   do {
+    stage = 'recovery-active-limit'
     assert.equal(
-      ++invocations <= 3 && Date.now() < deadline,
+      ++invocations <= maximumInvocations && Date.now() < deadline,
       true,
       'offline recovery must finish within invocation and time bounds',
     )
+    stage = 'recovery-cli'
     summary = await cli(args, Math.min(60_000, deadline - Date.now()))
+    stage = 'recovery-summary'
   } while (summary.state === 'active')
+  const recoveryElapsedMs = Date.now() - recoveryStartedAt
   assert.equal(summary.state, 'completed')
   assert.equal(
     summary.selectedKeysetCount,
-    3,
-    'one regular and two target msat keysets must be selected',
+    102,
+    'only the selected condition’s 102 keysets must be selected',
   )
   stage = 'observations'
   const observations = (await jsonFetch('/fixture/observations')) as Observation[]
   const pages = observations.filter((row) => row.route === 'conditional-list')
-  assert.equal(pages.length >= 2, true, 'recovery itself must fetch both pages')
-  assert.equal(pages[0].cursor_present, false)
-  assert.equal(pages[0].count, 100)
-  assert.equal(pages[0].has_next, true)
-  assert.equal(pages[1].cursor_present, true)
-  assert.equal(pages[1].count, 2)
-  assert.equal(pages[1].has_next, false)
   assert.equal(
-    pages.every((row) => row.limit_100 && row.unfiltered),
+    pages.length,
+    invocations * 2,
+    'each bounded recovery invocation must validate both scoped pages',
+  )
+  for (let offset = 0; offset < pages.length; offset += 2) {
+    const firstPage = pages[offset]!
+    const secondPage = pages[offset + 1]!
+    assert.equal(firstPage.cursor_present, false)
+    assert.equal(firstPage.count, 100)
+    assert.equal(firstPage.has_next, true)
+    assert.equal(secondPage.cursor_present, true)
+    assert.equal(secondPage.count, 2)
+    assert.equal(secondPage.has_next, false)
+  }
+  assert.equal(
+    pages.every(
+      (row) =>
+        row.limit_100 &&
+        row.no_active_or_unit_filter &&
+        row.condition_id === metadata.target.condition_id,
+    ),
     true,
-    'actual recovery must list unfiltered limit-100 pages',
+    'actual recovery must use the exact same condition on both limit-100 pages',
+  )
+  const listedIds = new Set(pages.flatMap((row) => row.ids ?? []))
+  const target = new Set(Object.values(metadata.target.keysets))
+  assert.equal(
+    listedIds.size === 102 && [...target].every((id) => listedIds.has(id)),
+    true,
+    'scoped pages must contain every target keyset and no foreign keyset',
+  )
+  assert.equal(
+    observations.some((row) => row.route === 'regular-list'),
+    false,
+    'condition-scoped recovery must not list regular keysets',
   )
   const restores = observations.filter((row) => row.route === 'restore')
   const foreign = new Set(Object.values(metadata.foreign.keysets))
   assert.equal(
-    restores.every((row) => Object.keys(row.keyset_counts!).every((id) => !foreign.has(id))),
+    restores.every((row) =>
+      Object.keys(row.keyset_counts!).every((id) => !foreign.has(id) && target.has(id)),
+    ),
     true,
-    'foreign-unit keys must receive no seed probes',
+    'only selected-condition keys may receive recovery seed probes',
   )
-  const discovery = restores.find((row) => row.count === 600)
+  const fundedKeysets = new Set(Object.values(metadata.target.split_keysets))
+  const expectedProbeCounts = Object.values(metadata.target.keysets).map((id) =>
+    fundedKeysets.has(id) ? 2 + 4 : 4,
+  )
   assert.equal(
-    discovery !== undefined && Object.keys(discovery.keyset_counts!).length === 2,
+    restores.reduce((total, row) => total + row.count, 0) ===
+      expectedProbeCounts.reduce((total, count) => total + count, 0),
     true,
-    'recovery must use exactly 600 target discovery candidates',
+    'recovery must probe two real signed counters plus four gaps for funded keys and four gaps for empty keys',
   )
   for (const id of Object.values(metadata.target.keysets)) {
-    assert.equal(discovery!.keyset_counts![id], 300)
     assert.equal(
-      restores.reduce((count, row) => count + (row.keyset_counts![id] ?? 0), 0) >= 300,
-      true,
-      'each inactive keyset must receive its production discovery prefix',
+      restores.reduce((count, row) => count + (row.keyset_counts![id] ?? 0), 0),
+      fundedKeysets.has(id) ? 6 : 4,
+      'funded inactive keysets receive two signed-counter probes and four gaps; empty keys receive four gaps',
     )
   }
+  assert.equal(
+    restores.reduce((count, row) => count + (row.keyset_counts![regularControl.id] ?? 0), 0),
+    0,
+    'the real regular proof negative-control keyset must receive no restore probes',
+  )
+  await assertProofNotImported(regularControl)
   stage = 'exact-authority'
   await recoveredProofs(metadata, expected)
+  await assertProofNotImported(regularControl)
   const before = await authoritySnapshot()
   stage = 'repeat'
   const repeated = await cli(args, 60_000)
@@ -566,6 +788,7 @@ async function recover(metadata: Metadata): Promise<void> {
     true,
     'repeat recovery must not change proof, counter, condition, or roster authority',
   )
+  await assertProofNotImported(regularControl)
   let daemon: ChildProcess | undefined
   try {
     stage = 'restart'
@@ -580,8 +803,9 @@ async function recover(metadata: Metadata): Promise<void> {
       true,
       'daemon restart must preserve exact recovered authority',
     )
+    await assertProofNotImported(regularControl)
     stage = 'payout'
-    const winner = afterRestart.Yes
+    const winner = afterRestart[metadata.target.funded_collection]
     const regular = wallet.keyChain.getKeyset().toMintKeys()!
     assert.equal(
       regular.unit === 'msat' && regular.active !== false,
@@ -618,7 +842,7 @@ async function recover(metadata: Metadata): Promise<void> {
       fetchRegisteredAuthority: async () => registeredAuthority,
       fetchInitialAttestation: async () => ({
         conditionId: metadata.target.condition_id,
-        attestedOutcome: 'Yes',
+        attestedOutcome: metadata.target.winning_outcome,
         registeredAuthority,
         oracleWitness: metadata.witness,
       }),
@@ -636,11 +860,11 @@ async function recover(metadata: Metadata): Promise<void> {
     if (resolution.evidence.status !== 'verified') throw new Error('fixture witness unverified')
     assert.equal(
       resolution.resolvedOutcome,
-      'Yes',
+      metadata.target.winning_outcome,
       'verified witness must resolve the winning outcome',
     )
-    const seed = Buffer.from((await readFile(seedFile, 'utf8')).trim(), 'hex')
-    const id = metadata.target.keysets.Yes
+    const seed = seedRecoveryMnemonicBytes(await readFile(phraseFile, 'utf8'))
+    const id = metadata.target.keysets[metadata.target.funded_collection]
     const conditional = (await mint.getKeys(id)).keysets.find((row) => row.id === id)
     assert.equal(
       conditional?.unit === 'msat' && conditional.input_fee_ppk === 1,
@@ -655,6 +879,8 @@ async function recover(metadata: Metadata): Promise<void> {
       true,
       'exact winning input must carry the authentic positive redemption fee',
     )
+    const payoutCounterSource = createEphemeralCounterSource()
+    await payoutCounterSource.advanceToAtLeast(regular.id, 4)
     const prepared = await prepareDurableCtfRedeemOperation({
       operationId: buildKeysetRedeemOperationId({
         mintUrl,
@@ -665,14 +891,14 @@ async function recover(metadata: Metadata): Promise<void> {
       }),
       mintUrl,
       conditionId: metadata.target.condition_id,
-      outcomeCollection: 'Yes',
+      outcomeCollection: metadata.target.funded_collection,
       inputKeyset: conditional!,
       regularKeyset: regular,
       inputs: winner,
       oracleWitness: resolution.evidence.canonicalOracleWitness,
       oracleResolutionContext: resolution.evidence.context,
       seed,
-      counterSource: createEphemeralCounterSource(),
+      counterSource: payoutCounterSource,
     })
     const redeemed = await executePreparedDurableCtfRedeem({
       operation: prepared.operation,
@@ -689,14 +915,13 @@ async function recover(metadata: Metadata): Promise<void> {
     const payoutMsat = sumProofs(redeemed.proofs)
     assert.equal(
       redeemed.proofs.every((proof) => proof.id === regular.id) &&
+        redeemed.proofs.every((proof) => proof.secret !== regularControl.secret) &&
         payoutMsat === amountMsat - payoutFee &&
         payoutMsat + payoutFee === sumProofs(winner),
       true,
       'real payout and authentic fee must conserve exact recovered value',
     )
-    verifyProofsForReceive(redeemed.proofs, (id) => wallet.keyChain.getKeyset(id), {
-      requireDleq: true,
-    })
+    requireValidCashuProofs(redeemed.proofs, (id) => wallet.keyChain.getKeyset(id))
     await assertUnspent(wallet, redeemed.proofs)
     const inputStates = await wallet.checkProofsStates(winner)
     assert.equal(
@@ -704,12 +929,87 @@ async function recover(metadata: Metadata): Promise<void> {
       true,
       'exact recovered redemption inputs must become spent',
     )
-    await assertUnspent(wallet, afterRestart.No)
+    const losingCollection = Object.keys(metadata.target.split_keysets).find(
+      (collection) => collection !== metadata.target.funded_collection,
+    )
+    assert.equal(typeof losingCollection, 'string')
+    await assertUnspent(wallet, afterRestart[losingCollection!])
+    await assertUnspent(wallet, [regularControl])
+    await assertProofNotImported(regularControl)
+    stage = 'payout-recovery'
+    // The conditional scan above excluded regular funds. This explicit separate
+    // base-unit scan must discover the signed redemption outputs from the phrase.
+    const regularArgs = [
+      'wallet',
+      'recover-seed',
+      '--recovery-phrase-file',
+      phraseFile,
+      '--recovery-id',
+      'd6-regular-payout-recovery',
+      '--mint',
+      mintUrl,
+      '--gap-limit',
+      '20',
+      '--acknowledge-seed-disclosure',
+    ]
+    let regularSummary: any
+    for (let invocation = 0; invocation < 4; invocation++) {
+      regularSummary = await cli(regularArgs, 60_000)
+      if (regularSummary.state !== 'active') break
+    }
+    assert.equal(regularSummary.state, 'completed')
+    assert.equal(regularSummary.selectedKeysetCount, 1)
+    const regularPage = await readAvailableWalletProofPage({
+      mintUrl,
+      keysetId: regular.id,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      limit: 64,
+    })
+    assert.equal(regularPage.nextCursor, null)
+    const expectedRegular = [...redeemed.proofs, regularControl]
+    assert.equal(regularPage.proofs.length, expectedRegular.length)
+    for (const expectedProof of expectedRegular) {
+      const restored = regularPage.proofs.find(({ proof }) => proof.secret === expectedProof.secret)
+      assert.ok(restored, 'each exact payout and control proof must be recovered')
+      const proof = restored.proof
+      const recoveredProof = deserializeDurableCustodyProofArtifact({
+        schemaVersion: 1,
+        id: proof.id,
+        C: proof.C,
+        secret: proof.secret,
+        amount: String(proof.amount),
+        dleq: proof.dleq ?? null,
+        p2pkE: proof.p2pk_e ?? null,
+        witness: proof.witness ?? null,
+      })
+      assert.equal(
+        sameProof(recoveredProof, expectedProof),
+        true,
+        'recovered regular proof must retain all authentic issuance material',
+      )
+    }
+    const beforeRegularRepeat = await authoritySnapshot()
+    const regularRepeated = await cli(regularArgs, 60_000)
+    assert.equal(regularRepeated.batchesProcessed, 0)
+    assert.equal(await authoritySnapshot(), beforeRegularRepeat)
   } finally {
     if (daemon) await stopDaemon(daemon)
   }
   process.stdout.write(
-    '{"recovered":true,"laterPageObserved":true,"foreignSeedProbes":0,"exactAuthority":true,"repeatAndRestart":true,"realPayout":true}\n',
+    `${JSON.stringify({
+      recovered: true,
+      laterPageObserved: true,
+      foreignSeedProbes: 0,
+      exactAuthority: true,
+      repeatAndRestart: true,
+      realPayout: true,
+      regularPayoutRecovered: true,
+      regularControlExcludedFromConditionScan: true,
+      recoveryInvocationCount: invocations,
+      selectedKeysetCount: summary.selectedKeysetCount,
+      restoreProbeCount: restores.reduce((total, row) => total + row.count, 0),
+      recoveryElapsedMs,
+    })}\n`,
   )
 }
 

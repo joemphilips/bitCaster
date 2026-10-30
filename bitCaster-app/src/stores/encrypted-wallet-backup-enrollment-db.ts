@@ -47,7 +47,12 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
     result: EncryptedWalletBackupAccountOperationResultRecord,
     commit: (stored: EncryptedWalletBackupAccountOperationResultRecord) => T,
   ): Promise<T> {
-    const record = requireRecord(result, this.#realm, this.#walletId, this.#requestAuthPublicKey);
+    const record = decodeEncryptedWalletBackupEnrollmentResultRecord(
+      result,
+      this.#realm,
+      this.#walletId,
+      this.#requestAuthPublicKey,
+    );
     if (typeof commit !== "function") throw new Error("backup enrollment callback is invalid");
     return this.#database.transaction(
       "rw",
@@ -58,7 +63,7 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
           this.#walletId,
         ]);
         if (current !== undefined)
-          requireReplacement(
+          assertEncryptedWalletBackupEnrollmentResultReplacement(
             decodeRow(current, this.#realm, this.#walletId, this.#requestAuthPublicKey),
             record,
           );
@@ -76,7 +81,7 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
   }
 }
 
-function requireReplacement(
+export function assertEncryptedWalletBackupEnrollmentResultReplacement(
   current: EncryptedWalletBackupAccountOperationResultRecord,
   next: EncryptedWalletBackupAccountOperationResultRecord,
 ): void {
@@ -139,10 +144,15 @@ function decodeRow(
   ) {
     throw new Error("encrypted wallet backup enrollment row is invalid");
   }
-  return requireRecord(row.record, realm, walletId, requestAuthPublicKey);
+  return decodeEncryptedWalletBackupEnrollmentResultRecord(
+    row.record,
+    realm,
+    walletId,
+    requestAuthPublicKey,
+  );
 }
 
-function requireRecord(
+export function decodeEncryptedWalletBackupEnrollmentResultRecord(
   value: unknown,
   realm: string,
   walletId: string,

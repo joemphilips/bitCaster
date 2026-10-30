@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import Dexie, { type Transaction } from "dexie";
+import type { Transaction } from "dexie";
 import {
   AssetMonitoringReporter,
   buildAssetMonitoringHoldings,
@@ -14,7 +14,11 @@ import {
 import { createAuthenticatedBrowserEngineClient } from "@/lib/markets";
 import { getNdk, getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { hasSubmittedCtfRangeOrder } from "@/stores/ctf-range-order-db";
-import { listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
+import { listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
+import {
+  activeBrowserEncryptedWalletBackupV2RuntimeDriver,
+  subscribeToBrowserEncryptedBackupMonitoring,
+} from "@/lib/encryptedWalletBackupDriver";
 import { decodeBrowserCustodyProofRow } from "@/stores/durable-custody-types";
 import {
   db,
@@ -64,25 +68,11 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
     const reporter = new AssetMonitoringReporter({
       walletId,
       remote: createAuthenticatedBrowserEngineClient(signer),
-      buildHoldings: async () => {
-        const snapshot = await readAssetMonitoringSnapshot(database, scopeId);
-        if (snapshot.custody === undefined) return null;
-        const proofs = snapshot.custody.proofs
-          .map((rawProof) => decodeCurrentCustodyProof(rawProof, scopeId))
-          .filter((proof): proof is StoredProof => proof !== null);
-        const conditionIds = conditionalProofConditionIds(proofs);
-        if (conditionIds === null) return null;
-        const catalogue = await fetchAssetMonitoringCatalogue(conditionIds, {
+      buildHoldings: () =>
+        buildBrowserAssetMonitoringHoldings(database, scopeId, {
           engineBaseUrl: window.location.origin,
           fetchImpl: fetch,
-        });
-        return buildAssetMonitoringHoldings({
-          proofs,
-          catalogue,
-          ...(snapshot.custody === undefined ? {} : { custody: snapshot.custody }),
-          ...(snapshot.evictedAssets.length === 0 ? {} : { evictedAssets: snapshot.evictedAssets }),
-        });
-      },
+        }),
       hasPendingSubmittedOrder: () => hasSubmittedCtfRangeOrder(scopeId, database),
       isCurrent,
       onAccepted: () => {
@@ -90,23 +80,62 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
       },
     });
     const unsubscribe = subscribeToCommittedProofChanges(database, () => reporter.request());
+    const unsubscribeOwner = subscribeToBrowserEncryptedBackupMonitoring(scopeId, () =>
+      reporter.request(),
+    );
     reporter.request();
 
     return () => {
       reporter.stop();
       unsubscribe();
+      unsubscribeOwner();
     };
   }, [mnemonic, nostrSignerReady, signerRevision]);
 }
 
+/** Build a report from one current custody/owner snapshot. */
+export async function buildBrowserAssetMonitoringHoldings(
+  database: BitcasterDB,
+  scopeId: string,
+  remote: { engineBaseUrl: string; fetchImpl: typeof fetch },
+) {
+  const snapshot = await readAssetMonitoringSnapshot(database, scopeId);
+  if (snapshot.custody === undefined) return null;
+  const proofs = snapshot.custody.proofs
+    .map((rawProof) => decodeCurrentCustodyProof(rawProof, scopeId))
+    .filter((proof): proof is StoredProof => proof !== null);
+  const conditionIds = conditionalProofConditionIds(proofs);
+  if (conditionIds === null) return null;
+  const monitoringConditionIds = [
+    ...new Set([
+      ...conditionIds,
+      ...snapshot.evictedAssets.flatMap((asset) =>
+        asset.kind === "conditional" ? [asset.conditionId] : [],
+      ),
+    ]),
+  ];
+  const catalogue = await fetchAssetMonitoringCatalogue(monitoringConditionIds, {
+    engineBaseUrl: remote.engineBaseUrl,
+    fetchImpl: remote.fetchImpl,
+  });
+  if (snapshot.isCurrent !== undefined && !snapshot.isCurrent()) return null;
+  return buildAssetMonitoringHoldings({
+    proofs,
+    catalogue,
+    ...(snapshot.custody === undefined ? {} : { custody: snapshot.custody }),
+    ...(snapshot.evictedAssets.length === 0 ? {} : { evictedAssets: snapshot.evictedAssets }),
+  });
+}
+
 interface AssetMonitoringDatabaseSnapshot {
+  readonly isCurrent?: () => boolean;
   readonly custody?: {
     readonly scopeId: string;
     readonly proofs: readonly unknown[];
     readonly proofBackupAuthorities: readonly unknown[];
   };
   readonly evictedAssets: Awaited<
-    ReturnType<typeof listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts>
+    ReturnType<typeof listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts>
   >;
 }
 
@@ -116,13 +145,21 @@ function decodeCurrentCustodyProof(rawProof: unknown, scopeId: string): StoredPr
   return storedProofFromCustodyRow(proof);
 }
 
-async function readAssetMonitoringSnapshot(
+export async function readAssetMonitoringSnapshot(
   database: BitcasterDB,
   scopeId: string,
 ): Promise<AssetMonitoringDatabaseSnapshot> {
   if (!hasCustodyAuthorityTables(database)) {
     return { evictedAssets: [] };
   }
+  const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId);
+  const owner = (await driver?.captureSelectedOwnerMonitoringAuthority?.()) ?? null;
+  const isCurrent = () =>
+    database.name === browserWalletDatabaseName(scopeId) &&
+    activeBrowserWalletScopeId() === scopeId &&
+    (owner === null ||
+      (activeBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId) === driver && owner.isCurrent()));
+  if (!isCurrent()) throw new Error("asset monitoring snapshot is stale");
   return database.transaction(
     "r",
     [
@@ -130,9 +167,10 @@ async function readAssetMonitoringSnapshot(
       database.custodyProofBackupAuthorities,
       database.custodyConditionalKeysets,
       database.encryptedWalletBackupV2DesiredAssets,
-      database.encryptedWalletBackupV2AssetReceipts,
-      database.encryptedWalletBackupV2AcceptedHeads,
-      database.encryptedWalletBackupV2ActiveDescriptors,
+      database.encryptedWalletBackupOwnerDesiredAssets,
+      database.encryptedWalletBackupOwnerAssetReceipts,
+      database.encryptedWalletBackupOwnerAcceptedHeads,
+      database.encryptedWalletBackupOwnerActiveDescriptors,
     ],
     async () => {
       const [selectableProofs, lockedProofs, proofBackupAuthorities, evictedAssets] =
@@ -147,17 +185,20 @@ async function readAssetMonitoringSnapshot(
             .toArray(),
           database.custodyProofBackupAuthorities
             .where("[scopeId+proofState+proofId]")
-            .between([scopeId, Dexie.minKey, Dexie.minKey], [scopeId, Dexie.maxKey, Dexie.maxKey])
+            .between([scopeId, "", ""], [scopeId, "\uffff", "\uffff"], true, true)
             .toArray(),
-          listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
-            database,
-            scopeId,
-            isCurrentProfile: () =>
-              database.name === browserWalletDatabaseName(scopeId) &&
-              activeBrowserWalletScopeId() === scopeId,
-          }),
+          owner === null
+            ? Promise.resolve([])
+            : listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts({
+                database,
+                scopeId,
+                isCurrentProfile: isCurrent,
+                ownerAuthority: owner,
+              }),
         ]);
+      if (!isCurrent()) throw new Error("asset monitoring snapshot is stale");
       return {
+        isCurrent,
         custody: {
           scopeId,
           proofs: [...selectableProofs, ...lockedProofs],
@@ -225,10 +266,14 @@ export function subscribeToCommittedProofChanges(
   if (observesBackupMetadata) {
     metadataUnsubscribers.push(
       subscribeTableChanges(database.encryptedWalletBackupV2DesiredAssets, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupV2AssetReceipts, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupV2AcceptedHeads, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupV2ActiveDescriptors, requestAfterCommit),
       subscribeTableChanges(database.custodyConditionalKeysets, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupOwnerDesiredAssets, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupOwnerAssetReceipts, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupOwnerAcceptedHeads, requestAfterCommit),
+      subscribeTableChanges(
+        database.encryptedWalletBackupOwnerActiveDescriptors,
+        requestAfterCommit,
+      ),
     );
   }
   return () => {
@@ -249,9 +294,10 @@ function hasBackupMetadataTables(database: BitcasterDB): boolean {
   return (
     database.custodyConditionalKeysets !== undefined &&
     database.encryptedWalletBackupV2DesiredAssets !== undefined &&
-    database.encryptedWalletBackupV2AssetReceipts !== undefined &&
-    database.encryptedWalletBackupV2AcceptedHeads !== undefined &&
-    database.encryptedWalletBackupV2ActiveDescriptors !== undefined
+    database.encryptedWalletBackupOwnerDesiredAssets !== undefined &&
+    database.encryptedWalletBackupOwnerAssetReceipts !== undefined &&
+    database.encryptedWalletBackupOwnerAcceptedHeads !== undefined &&
+    database.encryptedWalletBackupOwnerActiveDescriptors !== undefined
   );
 }
 

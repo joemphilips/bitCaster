@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import {
   Amount,
   OutputData,
@@ -13,6 +14,7 @@ import {
   getEncodedToken,
   hashToCurve,
   pointFromHex,
+  type CounterSource,
   type Proof,
   type OperationCounters,
 } from '@cashu/cashu-ts'
@@ -56,13 +58,14 @@ import {
   writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
-import {
-  createDaemonCounterSource,
-  splitAvailableMsatProofsForCtfCollateral,
-} from '../src/walletOps.ts'
+import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 
 const TEST_KEYSET_ID = canonicalTestKeysetId('dispatch')
 const CTF_KEYSET_ID = canonicalTestKeysetId('dispatch:ctf')
@@ -70,7 +73,6 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
-import { reserveDaemonKeysetCounter } from '../src/state.ts'
 import type { OrderDraftParams, ScorePurchaseConsent, SubmitOrderParams } from '../src/protocol.ts'
 import { retainNativeOrderLink } from './support/nativeOrderOwnership.ts'
 
@@ -803,12 +805,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         incarnationId: 'wallet-receive-bind-test',
         observedAtMs: Date.now(),
       })
-      await reserveDaemonKeysetCounter(
-        keysetId,
-        1,
-        { fence, observedAtMs: Date.now() },
-        { normalizedMint: 'https://mint-a.example', unit: 'msat' },
-      )
+      let reserved: OperationCounters | undefined
       let completeCalled = false
       await assert.rejects(
         () =>
@@ -822,8 +819,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 regularKeysets: [{ keysetId, unit: 'msat', active: true }],
                 conditionalKeysets: [],
               }),
-              createCashuWallet(mintUrl) {
+              createCashuWallet(mintUrl, _unit, counterSource) {
                 assert.equal(mintUrl, 'https://mint-a.example')
+                assert.ok(counterSource, 'receive must supply its speculative counter source')
                 const output = OutputData.createSingleData(
                   Amount.from(7),
                   keysetId,
@@ -838,7 +836,15 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   async prepareSwapToReceive(receivedToken, config) {
                     assert.equal(receivedToken, token)
                     assert.deepEqual(config?.proofsWeHave, [])
-                    config?.onCountersReserved?.({ keysetId, start: 0, count: 1 })
+                    // A real wallet reserves its output counters from the supplied source.
+                    const range = await counterSource.reserve(keysetId, 1)
+                    reserved = {
+                      keysetId,
+                      start: range.start,
+                      count: range.count,
+                      next: range.start + range.count,
+                    }
+                    config?.onCountersReserved?.(reserved)
                     return {
                       amount: Amount.from(7),
                       fees: Amount.zero(),
@@ -849,12 +855,23 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   },
                   async completeSwap() {
                     completeCalled = true
-                    const custodyRows = await withDaemonStateSqliteTransaction(
+                    const { custodyRows, counters } = await withDaemonStateSqliteTransaction(
                       profileDir(),
-                      (database) =>
-                        database.prepare('SELECT operation_id FROM custody_operations').all(),
+                      (database) => ({
+                        custodyRows: database
+                          .prepare('SELECT operation_id FROM custody_operations')
+                          .all(),
+                        counters: database
+                          .prepare(
+                            'SELECT next_counter FROM target_keyset_counters WHERE keyset_id = ?',
+                          )
+                          .all(keysetId)
+                          .map((row) => Number(row.next_counter)),
+                      }),
                     )
                     assert.equal(custodyRows.length, 1)
+                    assert.ok(reserved)
+                    assert.deepEqual(counters, [reserved.next])
                     return { keep: [{ ...cashuProof(7, 'fresh-secret'), id: keysetId }], send: [] }
                   },
                   async checkProofsStates() {
@@ -1446,10 +1463,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
     await t.test('wallet.send uses a leased strict-custody path for a V2 DLEQ proof', async () => {
       const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
-      const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-      const keys = { '1': publicKey, '2': publicKey, '4': publicKey, '8': publicKey }
+      const keys = mintDenominationKeys(privateKey, ['1', '2', '4', '8'])
       const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
-      const input = signedDleqProof(
+      const input = signedDenominationProof(
         OutputData.createSingleData(8, keysetId, 'strict-send-input', 1n),
         privateKey,
         keys,
@@ -1512,7 +1528,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         },
         {
           getCustodyFence: () => fence,
-          createCashuWallet: () => ({
+          createCashuWallet: (_mintUrl, _unit, counterSource) => ({
             loadMint: async () => {},
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
@@ -1521,14 +1537,14 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               assert.equal(proofs[0]?.secret, input.secret)
               const { sendOutputs, keepOutputs } = await deterministicDispatchOutputs({
                 walletSeedHex: secrets.walletSeedHex,
-                fence,
+                counterSource,
                 keysetId,
                 sendAmounts: [4, 1],
                 keepAmounts: [2, 1],
                 config,
               })
-              sent = sendOutputs.map((output) => signedDleqProof(output, privateKey, keys))
-              kept = keepOutputs.map((output) => signedDleqProof(output, privateKey, keys))
+              sent = sendOutputs.map((output) => signedDenominationProof(output, privateKey, keys))
+              kept = keepOutputs.map((output) => signedDenominationProof(output, privateKey, keys))
               return {
                 amount: Amount.from(5),
                 fees: Amount.zero(),
@@ -1562,17 +1578,16 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       'order.submit bounds delayed Score credit, preserves one delivery identity, and retires it after the purchase epoch advances',
       async () => {
         const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
-        const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-        const keys = {
-          '1': publicKey,
-          '2': publicKey,
-          '4': publicKey,
-          '8': publicKey,
-          '1000': publicKey,
-          '2000': publicKey,
-          '4000': publicKey,
-          '8000': publicKey,
-        }
+        const keys = mintDenominationKeys(privateKey, [
+          '1',
+          '2',
+          '4',
+          '8',
+          '1000',
+          '2000',
+          '4000',
+          '8000',
+        ])
         const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
         const scopeId = deriveDurableCustodyScopeId({
           scopeKind: 'wallet',
@@ -1583,7 +1598,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           incarnationId: 'wallet-receive-bind-test',
           observedAtMs: Date.now(),
         })
-        const input = signedDleqProof(
+        const input = signedDenominationProof(
           OutputData.createSingleData(8_000, keysetId, 'score-input', 19n),
           privateKey,
           keys,
@@ -1653,7 +1668,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         }
         const dispatchDeps = {
           getCustodyFence: () => fence,
-          createCashuWallet: () => ({
+          createCashuWallet: (_mintUrl, _unit, counterSource) => ({
             loadMint: async () => {},
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
@@ -1664,15 +1679,17 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               const { sendOutputs: scoreOutputs, keepOutputs: scoreKeepOutputs } =
                 await deterministicDispatchOutputs({
                   walletSeedHex: secrets.walletSeedHex,
-                  fence,
+                  counterSource,
                   keysetId,
                   sendAmounts: [1_000, 1_000],
                   keepAmounts: [2_000, 4_000],
                   config,
                 })
-              scoreProofs = scoreOutputs.map((output) => signedDleqProof(output, privateKey, keys))
+              scoreProofs = scoreOutputs.map((output) =>
+                signedDenominationProof(output, privateKey, keys),
+              )
               scoreKeepProofs = scoreKeepOutputs.map((output) =>
-                signedDleqProof(output, privateKey, keys),
+                signedDenominationProof(output, privateKey, keys),
               )
               return {
                 amount: Amount.from(2_000),
@@ -1877,10 +1894,14 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         await writeState(backedDaemonState('cond', 1_000_000))
         let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null = null
         let capturedRequest: unknown = null
+        let capturedSubmissionOptions:
+          | import('@bitcaster-market/client-sdk/engineClient').SubmitOrderOptions
+          | undefined
         let capturedPreparation: PrepareSettlementCapabilityInput | null = null
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
-          async submitOrder(_marketId, request) {
+          async submitOrder(_marketId, request, options) {
+            capturedSubmissionOptions = options
             capturedRequest = request
             return {
               orderId: 'order-1',
@@ -1935,6 +1956,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           },
         )
 
+        assert.equal(
+          capturedSubmissionOptions?.quoteRefreshRetry?.authorizationExpiresAtUnixSeconds,
+          1785542400,
+        )
         assert.equal(response.ok, true)
         assert.deepEqual(
           timeline.map(({ phase, outcome }) => [phase, outcome]),
@@ -2346,72 +2371,154 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       if (priorState) await writeState(priorState)
     })
 
-    await t.test(
-      'order.submit retains a prepared capability after a retryable 409 conflict',
-      async () => {
-        const priorState = await readState()
-        await writeState(backedDaemonState())
-        let markedRejected = false
-        let recoveryTriggers = 0
-        const engine: EngineClientLike = {
-          ...scoreDisabledEngineMethods,
-          async submitOrder() {
-            throw new EngineClientError(
-              409,
-              'Order book changed while submitting order; retry the request.',
-              undefined,
-              'Order book changed while submitting order; retry the request.',
-            )
-          },
-          async getOrderStatus() {
-            return null
-          },
-          async cancelOrder() {
-            throw new Error('cancelOrder unused')
-          },
-          async getOrderBook() {
-            throw new Error('getOrderBook unused')
-          },
-          async queryMarkets() {
-            return { markets: [], nextCursor: null }
-          },
-        }
-
-        const response = await dispatch(
-          {
-            method: 'order.submit',
-            params: withFeeConsent({
-              marketId: 'cond-Bob',
-              outcomeId: 'Bob',
-              side: 'Buy',
-              price: 420,
-              amountSubunits: 1_000,
-              timeInForce: 'FOK',
-            }),
-          },
-          {
-            createEngineClient: () => engine,
-            prepareSettlementCapability: prepareSettlementCapability(
-              'order-retryable',
-              undefined,
-              () => {
-                markedRejected = true
-              },
-            ),
-            triggerSettlementRecovery: () => {
-              recoveryTriggers += 1
-            },
-          },
-        )
-
-        assert.equal(response.ok, false)
-        assert.equal(response.code, undefined)
-        assert.equal(markedRejected, false)
-        assert.equal(recoveryTriggers, 1)
-        assert.deepEqual((await readState())?.orders, {})
-        if (priorState) await writeState(priorState)
+    for (const failure of [
+      {
+        status: 409,
+        code: undefined,
+        detail: 'Order book changed while submitting order; retry the request.',
       },
-    )
+      {
+        status: 503,
+        code: 'order-processing-unavailable',
+        detail: 'Order processing is temporarily unavailable.',
+      },
+    ])
+      await t.test(
+        `order.submit retains a prepared capability after ${failure.status} ${failure.code ?? 'retryable conflict'}`,
+        async () => {
+          const priorState = await readState()
+          await writeState(backedDaemonState())
+          let markedRejected = false
+          let recoveryTriggers = 0
+          const engine: EngineClientLike = {
+            ...scoreDisabledEngineMethods,
+            async submitOrder() {
+              throw new EngineClientError(
+                failure.status,
+                failure.detail,
+                failure.code,
+                failure.detail,
+              )
+            },
+            async getOrderStatus() {
+              return null
+            },
+            async cancelOrder() {
+              throw new Error('cancelOrder unused')
+            },
+            async getOrderBook() {
+              throw new Error('getOrderBook unused')
+            },
+            async queryMarkets() {
+              return { markets: [], nextCursor: null }
+            },
+          }
+
+          const response = await dispatch(
+            {
+              method: 'order.submit',
+              params: withFeeConsent({
+                marketId: 'cond-Bob',
+                outcomeId: 'Bob',
+                side: 'Buy',
+                price: 420,
+                amountSubunits: 1_000,
+                timeInForce: 'FOK',
+              }),
+            },
+            {
+              createEngineClient: () => engine,
+              prepareSettlementCapability: prepareSettlementCapability(
+                'order-retryable',
+                undefined,
+                () => {
+                  markedRejected = true
+                },
+              ),
+              triggerSettlementRecovery: () => {
+                recoveryTriggers += 1
+              },
+            },
+          )
+
+          assert.equal(response.ok, false)
+          assert.equal(response.code, undefined)
+          assert.match(response.error ?? '', /submission is uncertain/)
+          assert.ok(response.clientOrderId)
+          assert.equal(response.operationId, `range:${response.clientOrderId}`)
+          assert.equal(response.orderId, 'order-retryable')
+          assert.equal(markedRejected, false)
+          assert.equal(recoveryTriggers, 1)
+          assert.deepEqual((await readState())?.orders, {})
+          if (priorState) await writeState(priorState)
+        },
+      )
+
+    for (const enabled of [false, true]) {
+      await t.test(
+        `order.submit skips unused Score backing scan when enabled=${enabled}`,
+        async (t) => {
+          const priorState = await readState()
+          await writeState(backedDaemonState())
+          let scans = 0
+          let payments = 0
+          const originalPrepare = DatabaseSync.prototype.prepare
+          t.mock.method(
+            DatabaseSync.prototype,
+            'prepare',
+            function (this: DatabaseSync, sql: string) {
+              if (
+                sql.includes('COALESCE(SUM(amount), 0) AS totalAmount') &&
+                sql.includes('target_wallet_proofs_selection_idx')
+              )
+                scans++
+              return originalPrepare.call(this, sql)
+            },
+          )
+          try {
+            const engine = {
+              ...testOrderEngine(),
+              getParticipationScore: async () => scoreResponse({ enabled, balance: 100 }),
+              submitOrder: async () => ({
+                orderId: 'score-no-top-up',
+                status: 'resting' as const,
+                remainingAmountSubunits: 1_000,
+                fills: [],
+                baseAsset: 'sat',
+                divisibility: 1_000,
+                activeSettlementGroup: null,
+              }),
+            }
+            const response = await dispatch(
+              {
+                method: 'order.submit',
+                params: withFeeConsent({
+                  marketId: 'cond-YES',
+                  outcomeId: 'YES',
+                  side: 'Buy',
+                  price: 420,
+                  amountSubunits: 1_000,
+                  timeInForce: 'FOK',
+                }),
+              },
+              {
+                createEngineClient: () => engine,
+                prepareSettlementCapability: prepareSettlementCapability('score-no-top-up'),
+                createWallet: () => {
+                  payments++
+                  throw new Error('unexpected Score wallet')
+                },
+              },
+            )
+            assert.equal(response.ok, true)
+            assert.equal(scans, 0)
+            assert.equal(payments, 0)
+          } finally {
+            if (priorState) await writeState(priorState)
+          }
+        },
+      )
+    }
 
     await t.test(
       'order.submit checks regular msat Score backing before Score payment or capability admission',
@@ -3943,6 +4050,7 @@ function prepareSettlementCapability(
     await beforeCreateCapability?.(1)
     return {
       operationId: `range:${input.clientOrderId}`,
+      authorizationExpiresAtUnixSeconds: 1785542400,
       markSubmitted: async () => undefined,
       markRejected: async () => onRejected?.(),
       consolidation: { operationIds: [], feeSubunits: 0 },
@@ -4206,7 +4314,7 @@ function cashuProof(amount: number, secret: string): Proof {
 
 async function deterministicDispatchOutputs(input: {
   walletSeedHex: string
-  fence: Parameters<typeof withDurableCustodyUnitOfWork>[1]
+  counterSource: CounterSource | undefined
   keysetId: string
   sendAmounts: number[]
   keepAmounts: number[]
@@ -4217,11 +4325,9 @@ async function deterministicDispatchOutputs(input: {
     'function',
     'deterministic dispatch fixture needs a counter callback',
   )
-  const counterSource = createDaemonCounterSource(
-    () => ({ fence: input.fence, observedAtMs: Date.now() }),
-    { normalizedMint: 'https://mint-a.example', unit: 'msat' },
-  )
-  const range = await counterSource.reserve(
+  // A real wallet reserves its output counters from the source that the daemon supplies.
+  assert.ok(input.counterSource, 'deterministic dispatch fixture needs the wallet counter source')
+  const range = await input.counterSource.reserve(
     input.keysetId,
     input.sendAmounts.length + input.keepAmounts.length,
   )
@@ -4275,6 +4381,19 @@ function signedDleqProof(
     p2pkE: null,
     witness: null,
   } as Proof
+}
+
+/** Sign with the denomination key that a mint keyset uses for this output amount. */
+function signedDenominationProof(
+  output: OutputData,
+  rootPrivateKey: Uint8Array,
+  keys: Record<string, string>,
+): Proof {
+  return signedDleqProof(
+    output,
+    mintDenominationPrivateKey(rootPrivateKey, output.blindedMessage.amount.toString()),
+    keys,
+  )
 }
 
 function signedOutcomeProof(amount: number, secret: string): Proof {

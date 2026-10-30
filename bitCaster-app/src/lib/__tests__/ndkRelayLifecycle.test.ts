@@ -204,3 +204,29 @@ it("starts and stops actual NIP-17 when the caller omits its optional signal", a
   expect(Socket.instances).toHaveLength(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("starts actual NIP-17 on a reachable relay while another relay never finishes connecting", async () => {
+  const controller = new AbortController();
+  const subscribe = vi.spyOn(NDK.prototype, "subscribe");
+  let unsubscribe: (() => void) | undefined;
+  const pending = subscribeNip17DMs(
+    "11".repeat(32),
+    "22".repeat(32),
+    vi.fn(),
+    ["wss://reachable.example", "wss://stalled.example"],
+    controller.signal,
+  ).then((stop) => {
+    unsubscribe = stop;
+  });
+  try {
+    Socket.instances.find(({ url }) => url.startsWith("wss://reachable.example"))!.open();
+    // The browser relay operation limit. The listener must start inside it.
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(unsubscribe).toBeDefined();
+    expect(subscribe).toHaveBeenCalledOnce();
+  } finally {
+    controller.abort();
+    await pending;
+    unsubscribe?.();
+  }
+});

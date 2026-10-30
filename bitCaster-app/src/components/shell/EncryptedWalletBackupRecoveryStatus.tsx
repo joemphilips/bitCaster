@@ -22,16 +22,21 @@ export function EncryptedWalletBackupRecoveryStatus({
         <p className="font-medium">{t(copy.title)}</p>
         <p>{t(copy.description)}</p>
         {copy.detail !== null && <p className="mt-1">{t(copy.detail)}</p>}
+        {recoveryStatus.kind === "blocked" && recoveryStatus.reason === "wrong-account" && (
+          <a className="mt-1 inline-block underline" href="/settings?category=nostr">
+            {t("walletBackupRecovery.changeAccount")}
+          </a>
+        )}
+        {copy.retry !== null && (
+          <button
+            type="button"
+            className="mt-2 block rounded px-2 py-1 font-medium underline hover:bg-amber-100 dark:hover:bg-amber-900/50"
+            onClick={retryRecovery}
+          >
+            {t(copy.retry)}
+          </button>
+        )}
       </div>
-      {copy.retry !== null && (
-        <button
-          type="button"
-          className="shrink-0 rounded px-2 py-1 font-medium underline hover:bg-amber-100 dark:hover:bg-amber-900/50"
-          onClick={retryRecovery}
-        >
-          {t(copy.retry)}
-        </button>
-      )}
     </section>
   );
 }
@@ -46,6 +51,13 @@ function statusCopy(status: EncryptedWalletBackupDriverState["recoveryStatus"]) 
         description: "walletBackupRecovery.preparingDescription",
         detail: `walletBackupRecovery.preparingReasons.${status.reason}`,
         retry: null,
+      };
+    case "blocked":
+      return {
+        title: `walletBackupRecovery.blocked.${status.reason}.title`,
+        description: `walletBackupRecovery.blocked.${status.reason}.description`,
+        detail: "walletBackupRecovery.localWalletKept",
+        retry: "walletBackupRecovery.retryStartup",
       };
     case "failed":
       return {

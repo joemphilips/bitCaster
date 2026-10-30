@@ -1,14 +1,16 @@
+import { encodeGroupObjects, decodeGroupObjects } from './encryptedWalletBackupUploadObjects.ts'
+import {
+  decodeCurrentInventoryEntries,
+  type EncryptedWalletBackupV2CurrentInventoryEntry,
+} from './encryptedWalletBackupInventoryEntries.ts'
+export type { EncryptedWalletBackupV2CurrentInventoryEntry } from './encryptedWalletBackupInventoryEntries.ts'
 import { decode } from 'cborg'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
   preflightEncryptedWalletBackupV2CborTuple,
   type EncryptedWalletBackupV2CborTuplePreflight,
 } from './encryptedWalletBackupV2Cbor.ts'
-import {
-  decodeEncryptedWalletBackupV2BundleObjectWire,
-  encodeEncryptedWalletBackupV2BundleObjectWire,
-  type EncryptedWalletBackupV2BundleObjectWire,
-} from './encryptedWalletBackupV2Bundle.ts'
+import { type EncryptedWalletBackupV2BundleObjectWire } from './encryptedWalletBackupV2Bundle.ts'
 import {
   decodeEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
@@ -16,7 +18,6 @@ import {
   type EncryptedWalletBackupV2BundleDescriptor,
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
   ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX,
-  ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX,
 } from './encryptedWalletBackupV2Descriptor.ts'
 import {
   decodeEncryptedWalletBackupV2CurrentHead,
@@ -48,7 +49,6 @@ export const ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES =
   ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES
 const PAGE_MAX_BYTES = 65_536
 const RECEIPT_MAX_BYTES = 65_536
-const OBJECT_WIRE_MAX_BYTES = 300_000
 export const ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES = 60_000 as const
 
 const UPLOAD_GROUP_PREFLIGHT = tuplePreflight(
@@ -127,14 +127,6 @@ const RECEIPT_PREFLIGHT = tuplePreflight(RECEIPT_MAX_BYTES, 3, 340, 256, PAGE_MA
 export interface DecodedEncryptedWalletBackupV2UploadGroup {
   readonly mutationEvidence: EncryptedWalletBackupV2VerifiedBundleSupersessionMutation
   readonly objects: readonly EncryptedWalletBackupV2BundleObjectWire[]
-}
-
-export interface EncryptedWalletBackupV2CurrentInventoryEntry {
-  readonly assetLocator: string
-  readonly declaredAmount: bigint
-  readonly custodyRevision: bigint
-  readonly bundleId: string
-  readonly descriptorDigest: string
 }
 
 export interface EncryptedWalletBackupV2CurrentInventory {
@@ -332,74 +324,6 @@ export function decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(
   })
 }
 
-function encodeGroupObjects(
-  value: unknown,
-  envelope: EncryptedWalletBackupV2SignedBundleSupersessionMutation,
-): readonly Uint8Array[] {
-  if (!Array.isArray(value)) throw new Error('encrypted backup v2 upload objects are invalid')
-  const added = envelope.mutation.addedBundle
-  if (added === null) {
-    if (value.length !== 0) throw new Error('encrypted backup v2 removal group has objects')
-    return Object.freeze([])
-  }
-  if (value.length !== added.objects.length)
-    throw new Error('encrypted backup v2 upload objects are invalid')
-  return Object.freeze(value.map((item, index) => encodeOrderedObject(item, added, index)))
-}
-
-function decodeGroupObjects(
-  value: unknown,
-  envelope: EncryptedWalletBackupV2SignedBundleSupersessionMutation,
-): EncryptedWalletBackupV2BundleObjectWire[] {
-  if (!Array.isArray(value)) throw new Error('encrypted backup v2 upload objects are invalid')
-  const added = envelope.mutation.addedBundle
-  if (added === null) {
-    if (value.length !== 0) throw new Error('encrypted backup v2 removal group has objects')
-    return []
-  }
-  if (
-    value.length !== added.objects.length ||
-    value.length > ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX
-  )
-    throw new Error('encrypted backup v2 upload objects are invalid')
-  return value.map((item, index) => {
-    const object = decodeEncryptedWalletBackupV2BundleObjectWire(
-      requireBytes(item, 1, OBJECT_WIRE_MAX_BYTES, 'bundle object wire'),
-      added,
-    )
-    assertObjectOrder(object, added, index)
-    return object
-  })
-}
-
-function encodeOrderedObject(
-  value: unknown,
-  descriptor: EncryptedWalletBackupV2BundleDescriptor,
-  index: number,
-): Uint8Array {
-  const wire = encodeEncryptedWalletBackupV2BundleObjectWire(value, descriptor)
-  assertObjectOrder(
-    decodeEncryptedWalletBackupV2BundleObjectWire(wire, descriptor),
-    descriptor,
-    index,
-  )
-  return wire
-}
-
-function assertObjectOrder(
-  object: EncryptedWalletBackupV2BundleObjectWire,
-  descriptor: EncryptedWalletBackupV2BundleDescriptor,
-  index: number,
-): void {
-  const expected = descriptor.objects[index]
-  if (
-    expected === undefined ||
-    object.objectId !== expected.objectId ||
-    object.digest !== expected.digest
-  )
-    throw new Error('encrypted backup v2 upload object order is invalid')
-}
-
 function encodeSignedMutation(
   value: EncryptedWalletBackupV2SignedBundleSupersessionMutation,
 ): Uint8Array {
@@ -507,65 +431,10 @@ function decodeCurrentInventory(value: unknown): EncryptedWalletBackupV2CurrentI
   })
 }
 
-function decodeCurrentInventoryEntries(
-  value: unknown,
-): EncryptedWalletBackupV2CurrentInventoryEntry[] {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX)
-    throw new Error('encrypted backup v2 current inventory is invalid')
-  const entries = value.map((item) => {
-    if (Array.isArray(item)) {
-      if (item.length !== 5)
-        throw new Error('encrypted backup v2 current inventory entry is invalid')
-      return currentInventoryEntry({
-        assetLocator: toHex(requireBytes(item[0], 32, 32, 'asset locator')),
-        declaredAmount: item[1],
-        custodyRevision: item[2],
-        bundleId: toHex(requireBytes(item[3], 16, 16, 'bundle id')),
-        descriptorDigest: toHex(requireBytes(item[4], 32, 32, 'descriptor digest')),
-      })
-    }
-    return currentInventoryEntry(item)
-  })
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]!
-    if (index > 0 && entry.bundleId <= entries[index - 1]!.bundleId)
-      throw new Error('encrypted backup v2 current inventory entries are unordered or duplicated')
-    if (
-      entries.some(
-        (other, otherIndex) => otherIndex < index && other.assetLocator === entry.assetLocator,
-      )
-    )
-      throw new Error('encrypted backup v2 current inventory asset locator is duplicated')
-  }
-  return entries
-}
-
-function currentInventoryEntry(value: unknown): EncryptedWalletBackupV2CurrentInventoryEntry {
-  const record = exactRecord(
-    value,
-    ['assetLocator', 'declaredAmount', 'custodyRevision', 'bundleId', 'descriptorDigest'],
-    'current inventory entry',
-  )
-  return Object.freeze({
-    assetLocator: requireLowerHex(record.assetLocator, 32, 'asset locator'),
-    declaredAmount: requireUint64(record.declaredAmount, 'declared amount'),
-    custodyRevision: requireUint64(record.custodyRevision, 'custody revision'),
-    bundleId: requireLowerHex(record.bundleId, 16, 'bundle id'),
-    descriptorDigest: requireLowerHex(record.descriptorDigest, 32, 'descriptor digest'),
-  })
-}
-
 function requireSafeUint(value: unknown, name: string): number {
   if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0)
     throw new Error(`encrypted backup v2 ${name} is invalid`)
   return value
-}
-
-function requireUint64(value: unknown, name: string): bigint {
-  if (typeof value === 'bigint' && value >= 0n && value <= ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX)
-    return value
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value)
-  throw new Error(`encrypted backup v2 ${name} is invalid`)
 }
 
 function validatePageOrder(
@@ -797,3 +666,7 @@ function textLength(minimum: number, maximum: number) {
 function array(minimum: number, maximum: number) {
   return { major: 4 as const, minimum, maximum }
 }
+
+export * from './encryptedWalletBackupOwnerServiceCodec.ts'
+
+export * from './encryptedWalletBackupOwnerUpload.ts'

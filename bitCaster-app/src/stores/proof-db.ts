@@ -1,4 +1,4 @@
-import Dexie, { type Table } from "dexie";
+import Dexie, { type PromiseExtended, type Table } from "dexie";
 import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import {
   decodeDurableOutgoingCashuTransfer,
@@ -66,6 +66,71 @@ export interface EncryptedWalletBackupDexieRetrySchedulerRow {
   attemptId: string;
   retryStreak: number;
   retryNotBeforeUnixMilliseconds: number;
+}
+
+export type EncryptedWalletBackupOwnerEnrollmentResultRow =
+  EncryptedWalletBackupDexieEnrollmentResultRow & { scopeId: string; ownerScopeId: string };
+export type EncryptedWalletBackupOwnerRetrySchedulerRow =
+  EncryptedWalletBackupDexieRetrySchedulerRow & { ownerScopeId: string };
+export type EncryptedWalletBackupOwnerPreparedMutationRow =
+  EncryptedWalletBackupV2PreparedMutationRow & {
+    removalBinding?: { readonly intentId: string; readonly proofSetCommitment: string };
+    ownerScopeId: string;
+    realm: string;
+    walletId: string;
+    enrollmentEpoch: number;
+  };
+export type EncryptedWalletBackupOwnerAcceptedHeadRow = EncryptedWalletBackupV2AcceptedHeadRow & {
+  ownerScopeId: string;
+  realm: string;
+  walletId: string;
+  enrollmentEpoch: number;
+};
+export type EncryptedWalletBackupOwnerAssetReceiptRow = EncryptedWalletBackupV2AssetReceiptRow & {
+  ownerScopeId: string;
+  realm: string;
+  walletId: string;
+  enrollmentEpoch: number;
+};
+export type EncryptedWalletBackupOwnerActiveDescriptorRow =
+  EncryptedWalletBackupV2ActiveDescriptorRow & {
+    ownerScopeId: string;
+    realm: string;
+    walletId: string;
+    enrollmentEpoch: number;
+  };
+
+export interface EncryptedWalletBackupOwnerDesiredAssetRow {
+  scopeId: string;
+  ownerScopeId: string;
+  realm: string;
+  walletId: string;
+  enrollmentEpoch: number;
+  localAssetKey: string;
+  assetLocator: string;
+  custodyRevision: string;
+  desiredAction: "replace" | "remove";
+  activeProofCount: number;
+  syncState: "pending" | "acknowledged" | "conflict" | "recovery-required";
+  lastObservedHeadVersion: number | null;
+  receiptDigest: string | null;
+}
+
+export interface EncryptedWalletBackupOwnerProofCoverageRow {
+  scopeId: string;
+  ownerScopeId: string;
+  realm: string;
+  walletId: string;
+  enrollmentEpoch: number;
+  proofId: string;
+  localAssetKey: string;
+  assetLocator: string;
+  custodyRevision: string;
+  bundleId: string;
+  bundleDescriptorDigest: string;
+  headVersion: number;
+  sourceKind: "head-restore" | "mutation-receipt";
+  receiptDigest: string | null;
 }
 
 /** One authoritative NUT-13 allocation cursor for one wallet scope and keyset. */
@@ -572,6 +637,7 @@ export interface BrowserParticipationScoreDeliveryPointerRow {
 export const DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY = "durableBolt11MintQuoteRecordId";
 
 export class BitcasterDB extends Dexie {
+  #superseded = false;
   marketCreations!: Table<import("@bitcaster/client-sdk").MarketCreationRecord, [string, string]>;
   proofs!: Table<StoredProofRow>;
   proofOperations!: Table<ProofOperationRecord>;
@@ -641,9 +707,45 @@ export class BitcasterDB extends Dexie {
     BrowserParticipationScoreDeliveryPointerRow,
     [string, string, string]
   >;
+  encryptedWalletBackupOwnerEnrollmentResults!: Table<
+    EncryptedWalletBackupOwnerEnrollmentResultRow,
+    [string, string, string, string]
+  >;
+  encryptedWalletBackupOwnerRetrySchedulers!: Table<
+    EncryptedWalletBackupOwnerRetrySchedulerRow,
+    [string, string, string, string]
+  >;
+  encryptedWalletBackupOwnerPreparedMutations!: Table<
+    EncryptedWalletBackupOwnerPreparedMutationRow,
+    [string, string, string, string, number]
+  >;
+  encryptedWalletBackupOwnerAcceptedHeads!: Table<
+    EncryptedWalletBackupOwnerAcceptedHeadRow,
+    [string, string, string, string, number]
+  >;
+  encryptedWalletBackupOwnerAssetReceipts!: Table<
+    EncryptedWalletBackupOwnerAssetReceiptRow,
+    [string, string, string, string, number, string]
+  >;
+  encryptedWalletBackupOwnerActiveDescriptors!: Table<
+    EncryptedWalletBackupOwnerActiveDescriptorRow,
+    [string, string, string, string, number, string]
+  >;
+  encryptedWalletBackupOwnerDesiredAssets!: Table<
+    EncryptedWalletBackupOwnerDesiredAssetRow,
+    [string, string, string]
+  >;
+  encryptedWalletBackupOwnerProofCoverage!: Table<
+    EncryptedWalletBackupOwnerProofCoverageRow,
+    [string, string, string]
+  >;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
+    this.on("versionchange", () => {
+      this.#superseded = true;
+      this.close();
+    });
     this.version(1).stores({
       proofs: "secret, id, C, amount, mintUrl",
     });
@@ -824,6 +926,22 @@ export class BitcasterDB extends Dexie {
     this.version(20).stores({
       marketCreations: "&[walletScopeId+creationId], [walletScopeId+creatorId]",
     });
+    this.version(21).stores({
+      encryptedWalletBackupOwnerEnrollmentResults: "&[scopeId+ownerScopeId+realm+walletId]",
+      encryptedWalletBackupOwnerRetrySchedulers: "&[scopeId+ownerScopeId+realm+walletId]",
+      encryptedWalletBackupOwnerPreparedMutations:
+        "&[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupOwnerAcceptedHeads:
+        "&[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupOwnerAssetReceipts:
+        "&[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch+localAssetKey], [scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupOwnerActiveDescriptors:
+        "&[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupOwnerDesiredAssets:
+        "&[scopeId+ownerScopeId+localAssetKey], [scopeId+ownerScopeId+syncState+localAssetKey]",
+      encryptedWalletBackupOwnerProofCoverage:
+        "&[scopeId+ownerScopeId+proofId], [scopeId+ownerScopeId+localAssetKey], [scopeId+ownerScopeId+headVersion]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -848,6 +966,38 @@ export class BitcasterDB extends Dexie {
     this.marketFundingHeads = this.table("marketFundingHeads");
     this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
     this.participationScoreDeliveryPointers = this.table("participationScoreDeliveryPointers");
+    this.encryptedWalletBackupOwnerEnrollmentResults = this.table(
+      "encryptedWalletBackupOwnerEnrollmentResults",
+    );
+    this.encryptedWalletBackupOwnerRetrySchedulers = this.table(
+      "encryptedWalletBackupOwnerRetrySchedulers",
+    );
+    this.encryptedWalletBackupOwnerPreparedMutations = this.table(
+      "encryptedWalletBackupOwnerPreparedMutations",
+    );
+    this.encryptedWalletBackupOwnerAcceptedHeads = this.table(
+      "encryptedWalletBackupOwnerAcceptedHeads",
+    );
+    this.encryptedWalletBackupOwnerAssetReceipts = this.table(
+      "encryptedWalletBackupOwnerAssetReceipts",
+    );
+    this.encryptedWalletBackupOwnerActiveDescriptors = this.table(
+      "encryptedWalletBackupOwnerActiveDescriptors",
+    );
+    this.encryptedWalletBackupOwnerDesiredAssets = this.table(
+      "encryptedWalletBackupOwnerDesiredAssets",
+    );
+    this.encryptedWalletBackupOwnerProofCoverage = this.table(
+      "encryptedWalletBackupOwnerProofCoverage",
+    );
+  }
+
+  override open(): PromiseExtended<this> {
+    if (this.#superseded)
+      return Dexie.Promise.reject(
+        new Error("This wallet database was superseded by a schema upgrade."),
+      );
+    return super.open().then(() => this);
   }
 }
 

@@ -41,22 +41,30 @@ function computeCurrentDisplay(
     // Numeric HI/LO probability ticks are not a native numeric trade
     // representation. Keep the public current value unavailable until the
     // contract carries one, regardless of any legacy currentPrice field.
-    return t("market.priceUnavailable");
+    return t("trade.priceUnavailable");
   }
 
   if (isResolved && market.resolution.finalOutcome) {
     return `Resolved: ${market.resolution.finalOutcome}`;
   }
 
+  const historyPending =
+    market.priceHistoryStatus === "loading" || market.priceHistoryStatus === "refreshing";
+  const confirmedEmpty =
+    market.latestConfirmedTradesValid === true && market.latestConfirmedTrades?.length === 0;
+  const unpricedDisplay = priceAuthorityUnavailable
+    ? t("trade.priceUnavailable")
+    : confirmedEmpty && !historyPending
+      ? t("trade.noTrades")
+      : "";
+
   if (market.type === "yesno") {
     return market.currentOdds.yes == null
-      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
+      ? unpricedDisplay
       : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
-  return market.outcomes.some((outcome) => outcome.odds != null)
-    ? ""
-    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades");
+  return market.outcomes.some((outcome) => outcome.odds != null) ? "" : unpricedDisplay;
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {
@@ -74,12 +82,18 @@ export function MarketDetail({
   chartTimeframe,
   tradeSelection,
   tradeAmount,
+  tradeComment,
+  onTradeCommentChange,
   tradePreview,
   tradeFeeFacts,
+  attemptedTradeFeeFacts,
   feeConsentCurrent,
   tradeSide,
   tradeCapacityPreview,
   isFullyEmptyBook,
+  orderBookSnapshotAvailableByOutcome,
+  tradeRecovery,
+  suppressFundingHint,
   onTimeframeChange,
   onTradeSelect,
   onTradeClear,
@@ -90,8 +104,9 @@ export function MarketDetail({
   tradeFeasibility,
   onTradeFeasibilityRetry,
   isTradeSubmitting,
+  quoteRefreshWait,
+  onCancelQuoteRefresh,
   onShare,
-  onCommentPost,
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
@@ -102,6 +117,7 @@ export function MarketDetail({
   onWalletRequired,
   onTopUpRequired,
   onFundingCredited,
+  onTradeMarketRefresh,
 }: MarketDetailProps) {
   const { t } = useTranslation();
   const [localTradeTab, setLocalTradeTab] = useState<TradeTab>(tradeSide);
@@ -152,6 +168,10 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
+  const showMobileTradeBar =
+    !isTradingDisabled &&
+    (!isFullyEmptyBook || tradeSelection !== null) &&
+    activeTradeTab !== "Liquidity";
   const previewNeedsAttention =
     !!tradeSelection &&
     tradeAmount > 0 &&
@@ -170,12 +190,17 @@ export function MarketDetail({
       market={market}
       tradeSelection={tradeSelection}
       tradeAmount={tradeAmount}
+      tradeComment={tradeComment}
+      onTradeCommentChange={onTradeCommentChange}
       tradePreview={tradePreview}
       tradeFeeFacts={tradeFeeFacts}
+      attemptedTradeFeeFacts={attemptedTradeFeeFacts}
       feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
       tradeCapacityPreview={tradeCapacityPreview}
       isFullyEmptyBook={isFullyEmptyBook}
+      tradeRecovery={tradeRecovery}
+      suppressFundingHint={suppressFundingHint}
       onTradeSelect={onTradeSelect}
       onTradeClear={onTradeClear}
       onAmountChange={onAmountChange}
@@ -185,7 +210,8 @@ export function MarketDetail({
       tradeFeasibility={tradeFeasibility}
       onTradeFeasibilityRetry={onTradeFeasibilityRetry}
       isTradeSubmitting={isTradeSubmitting}
-      onCommentPost={onCommentPost}
+      quoteRefreshWait={quoteRefreshWait}
+      onCancelQuoteRefresh={onCancelQuoteRefresh}
       onTradeSideChange={onTradeSideChange}
       tradeTab={activeTradeTab}
       onTradeTabChange={handleTradeTabChange}
@@ -194,6 +220,7 @@ export function MarketDetail({
       onWalletRequired={onWalletRequired}
       onTopUpRequired={onTopUpRequired}
       onFundingCredited={onFundingCredited}
+      onTradeMarketRefresh={onTradeMarketRefresh}
       disabled={isTradingDisabled}
     />
   );
@@ -234,7 +261,14 @@ export function MarketDetail({
             className="order-2 lg:absolute lg:top-6 lg:right-6 lg:bottom-6 lg:w-[380px]"
             data-testid="trading-panel-responsive"
           >
-            <div className="lg:sticky lg:top-6">{tradingPanel}</div>
+            <div
+              role="region"
+              aria-label={t("trade.title")}
+              tabIndex={0}
+              className="lg:sticky lg:top-[calc(var(--shell-header-height,4rem)+1.5rem)] lg:max-h-[calc(100dvh-var(--shell-header-height,4rem)-3rem)] lg:overflow-y-auto lg:overscroll-y-contain focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+            >
+              {tradingPanel}
+            </div>
           </div>
 
           <div className="order-3 mt-6 space-y-6 lg:mr-[404px]">
@@ -250,6 +284,15 @@ export function MarketDetail({
                 market.latestConfirmedTradesValid === true &&
                 market.latestConfirmedTrades?.length === 0
                   ? t("trade.noTrades")
+                  : undefined
+              }
+              divisibility={market.divisibility}
+              historyStatus={market.priceHistoryStatus}
+              priceRefreshUnavailable={market.priceRefreshUnavailable}
+              priceAuthorityUnavailable={market.latestConfirmedTradesValid === false}
+              hasConfirmedTrades={
+                market.latestConfirmedTradesValid === true
+                  ? (market.latestConfirmedTrades?.length ?? 0) > 0
                   : undefined
               }
               comments={market.comments}
@@ -279,6 +322,7 @@ export function MarketDetail({
                   return (
                     <OrderBookSection
                       outcomeId={primaryOutcomeId}
+                      snapshotAvailable={orderBookSnapshotAvailableByOutcome?.[primaryOutcomeId]}
                       orderBook={deriveExecutableOrderBook({
                         book: directBook,
                         complementBook,
@@ -301,6 +345,9 @@ export function MarketDetail({
                     title={outcome.label}
                     outcome={outcome}
                     outcomeId={outcomeBookKey(outcome.label)}
+                    snapshotAvailable={
+                      orderBookSnapshotAvailableByOutcome?.[outcomeBookKey(outcome.label)]
+                    }
                     orderBook={deriveExecutableOrderBook({
                       book: market.outcomeOrderBooks?.[outcomeBookKey(outcome.label)] ?? {
                         bids: [],
@@ -327,18 +374,52 @@ export function MarketDetail({
               />
             )}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
-            <CommentSection comments={market.comments} onLoadMoreComments={onLoadMoreComments} />
+            <CommentSection
+              comments={market.comments}
+              unavailable={market.commentsUnavailable}
+              onLoadMoreComments={onLoadMoreComments}
+            />
           </div>
         </div>
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {!isTradingDisabled && !isFullyEmptyBook && activeTradeTab !== "Liquidity" && (
+      {showMobileTradeBar && (
         <div
           data-testid="mobile-trade-bar"
           className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden"
         >
-          {tradeSelection ? (
+          {tradeSelection && quoteRefreshWait ? (
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-xs text-slate-500 dark:text-slate-400">
+                  {tradeSelection.side.toUpperCase()}
+                  {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
+                </p>
+                <div
+                  role="status"
+                  className="mt-1 flex items-start gap-2 text-sm text-slate-900 dark:text-white"
+                >
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                  <p>
+                    {t(
+                      quoteRefreshWait === "waiting"
+                        ? "trade.waitingForQuotes"
+                        : "trade.stoppingQuoteWait",
+                    )}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelQuoteRefresh}
+                disabled={quoteRefreshWait === "stopping"}
+                className="shrink-0 whitespace-nowrap px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 dark:text-slate-400 dark:hover:text-white"
+              >
+                {t("trade.stopWaiting")}
+              </button>
+            </div>
+          ) : tradeSelection ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -363,6 +444,7 @@ export function MarketDetail({
               </div>
               <button
                 onClick={onTradeClear}
+                disabled={isTradeSubmitting}
                 className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
                 {t("common.cancel")}

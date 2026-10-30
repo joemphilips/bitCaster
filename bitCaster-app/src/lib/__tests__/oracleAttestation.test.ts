@@ -53,18 +53,22 @@ vi.mock("../browserOracleBackupDelivery", () => ({
 
 vi.mock("../nostr", async () => {
   const { default: NDK } = await import("@nostr-dev-kit/ndk");
+  const relayNdk = () =>
+    Object.assign(new NDK({ explicitRelayUrls: [] }), {
+      fetchEvent: fetchAnnouncement,
+      fetchEvents: fetchCompanions,
+    });
   return {
     withTemporaryRelayNdk: async (
       _options: unknown,
       _signer: unknown,
       action: (ndk: InstanceType<typeof NDK>) => Promise<unknown>,
-    ) =>
-      action(
-        Object.assign(new NDK({ explicitRelayUrls: [] }), {
-          fetchEvent: fetchAnnouncement,
-          fetchEvents: fetchCompanions,
-        }),
-      ),
+    ) => action(relayNdk()),
+    // Every selected relay connected, so the read result is authoritative.
+    fetchTemporaryRelayRecord: async (
+      _options: unknown,
+      read: (ndk: InstanceType<typeof NDK>) => Promise<unknown>,
+    ) => read(relayNdk()),
   };
 });
 

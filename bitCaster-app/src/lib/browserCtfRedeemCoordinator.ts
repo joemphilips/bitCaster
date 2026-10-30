@@ -1,4 +1,10 @@
-import { MintOperationError, type CounterSource, type MintKeys, type Proof } from "@cashu/cashu-ts";
+import Dexie from "dexie";
+import { createSpeculativeCounterTranscript } from "@bitcaster/client-sdk/speculativeCounterTranscript";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSnapshotConflictError,
+} from "../stores/browser-wallet-counter-db";
+import { MintOperationError, type MintKeys, type Proof } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyOperationId,
   type DurableCustodyExactArtifact,
@@ -355,7 +361,7 @@ export interface BrowserCanonicalCtfRedeemBindingInput {
   readonly oracleResolutionContext?: ConditionOracleResolutionContext;
   readonly leg: BrowserCtfRedeemLeg;
   readonly regularKeyset: MintKeys;
-  readonly counterSource: CounterSource;
+  readonly counterStore: BrowserWalletCounterDexieStore;
   readonly database: BitcasterDB;
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: DurableCustodyOwnerAuthorization;
@@ -388,104 +394,133 @@ export async function bindBrowserCanonicalCtfRedeemLeg(
   return withWalletProfileLock(
     scope.scopeId,
     async () => {
-      if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
-        throw new BrowserCtfClaimBoundaryError("persisted-recovery", custodyOperationId);
-      }
-      await requireBrowserWalletNewWritePermission({
-        database: input.database,
-        scopeId: scope.scopeId,
-      });
-      for (const row of input.leg.rows) {
-        let persisted: Awaited<ReturnType<BrowserDurableCustodyAdapter["readProof"]>>;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
+          throw new BrowserCtfClaimBoundaryError("persisted-recovery", custodyOperationId);
+        }
+        await requireBrowserWalletNewWritePermission({
+          database: input.database,
+          scopeId: scope.scopeId,
+        });
+        for (const row of input.leg.rows) {
+          let persisted: Awaited<ReturnType<BrowserDurableCustodyAdapter["readProof"]>>;
+          try {
+            persisted = await input.adapter.readProof(scope.scopeId, row.proofId);
+          } catch {
+            throw new BrowserCtfClaimBoundaryError("profile-ownership");
+          }
+          if (
+            persisted === null ||
+            persisted.revision !== row.revision ||
+            persisted.proofFingerprint !== row.proofFingerprint ||
+            persisted.selectability !== "selectable" ||
+            persisted.reservationOperationId !== null
+          ) {
+            throw new BrowserCtfClaimBoundaryError("profile-ownership");
+          }
+        }
+        const counterContext = { mintUrl: normalizedMint, unit: "msat" as const };
+        let transcript: ReturnType<typeof createSpeculativeCounterTranscript>;
         try {
-          persisted = await input.adapter.readProof(scope.scopeId, row.proofId);
+          transcript = createSpeculativeCounterTranscript([
+            await input.counterStore.readSnapshotInContext(counterContext, input.regularKeyset.id),
+          ]);
         } catch {
-          throw new BrowserCtfClaimBoundaryError("profile-ownership");
+          throw new BrowserCtfClaimBoundaryError("counter-readiness");
         }
-        if (
-          persisted === null ||
-          persisted.revision !== row.revision ||
-          persisted.proofFingerprint !== row.proofFingerprint ||
-          persisted.selectability !== "selectable" ||
-          persisted.reservationOperationId !== null
-        ) {
-          throw new BrowserCtfClaimBoundaryError("profile-ownership");
+        let prepared: Awaited<ReturnType<typeof prepareDurableCtfRedeemOperation>>;
+        try {
+          prepared = await prepareDurableCtfRedeemOperation({
+            operationId,
+            mintUrl: normalizedMint,
+            conditionId: input.conditionId,
+            outcomeCollection: input.outcomeCollection,
+            inputKeyset: {
+              id: keyset.keysetId,
+              unit: keyset.unit,
+              input_fee_ppk: keyset.inputFeePpk,
+            },
+            regularKeyset: input.regularKeyset,
+            inputs: proofs,
+            oracleWitness: input.oracleWitness,
+            oracleResolutionContext: input.oracleResolutionContext,
+            oracleInputKeysets: [conditionalKeysetAuthority(normalizedMint, keyset)],
+            seed: input.seed,
+            counterSource: transcript.counterSource,
+          });
+        } catch (error) {
+          throw browserCtfClaimBoundaryError(error, "keyset-authority");
         }
-      }
-      let prepared: Awaited<ReturnType<typeof prepareDurableCtfRedeemOperation>>;
-      try {
-        prepared = await prepareDurableCtfRedeemOperation({
-          operationId,
-          mintUrl: normalizedMint,
-          conditionId: input.conditionId,
-          outcomeCollection: input.outcomeCollection,
-          inputKeyset: {
-            id: keyset.keysetId,
-            unit: keyset.unit,
-            input_fee_ppk: keyset.inputFeePpk,
-          },
-          regularKeyset: input.regularKeyset,
-          inputs: proofs,
-          oracleWitness: input.oracleWitness,
-          oracleResolutionContext: input.oracleResolutionContext,
-          oracleInputKeysets: [conditionalKeysetAuthority(normalizedMint, keyset)],
-          seed: input.seed,
-          counterSource: input.counterSource,
-        });
-      } catch (error) {
-        throw browserCtfClaimBoundaryError(error, "keyset-authority");
-      }
-      let authority: ReturnType<typeof prepareDurableCustodyMintOperationAuthority>;
-      try {
-        authority = prepareDurableCustodyMintOperationAuthority({
+        let authority: ReturnType<typeof prepareDurableCustodyMintOperationAuthority>;
+        try {
+          authority = prepareDurableCustodyMintOperationAuthority({
+            operation: prepared.operation,
+            keysets: [
+              conditionalKeysetAuthority(normalizedMint, keyset),
+              regularKeysetAuthority(normalizedMint, input.regularKeyset),
+            ],
+          });
+        } catch {
+          throw new BrowserCtfClaimBoundaryError("keyset-authority");
+        }
+        const record = createDurableCustodyProofOperation({
+          scope,
           operation: prepared.operation,
-          keysets: [
-            conditionalKeysetAuthority(normalizedMint, keyset),
-            regularKeysetAuthority(normalizedMint, input.regularKeyset),
-          ],
+          facts: authority.facts,
+          inventoryAccountId: null,
+          exactBoundary: {
+            method: "POST",
+            path: "/v1/redeem_outcome",
+            idempotencyKey: operationId,
+            requestBody: authority.exactRequest,
+            output: authority.exactOutput,
+            privateMaterial: authority.exactAuthority,
+          },
         });
-      } catch {
-        throw new BrowserCtfClaimBoundaryError("keyset-authority");
+        if (record.operation.operationId !== custodyOperationId) {
+          throw new BrowserCtfClaimBoundaryError("keyset-authority");
+        }
+        try {
+          await input.adapter.transactAtomic(
+            {
+              scope,
+              owner: input.owner,
+              operationRows: [{ operationId: custodyOperationId, expectedRevision: null }],
+            },
+            (transaction) =>
+              bindDurableCustodyProofOperation(transaction, record, {
+                requestBody: authority.exactRequest,
+                output: authority.exactOutput,
+                privateMaterial: authority.exactAuthority,
+              }),
+            {
+              walletCounterAuthority: {
+                beforePersist: async () => {
+                  for (const change of transcript.changes()) {
+                    await input.counterStore.compareAndAdvanceInCurrentTransaction(
+                      Dexie.currentTransaction!,
+                      counterContext,
+                      change,
+                    );
+                  }
+                },
+                afterPersist: () => undefined,
+              },
+              predecessorProofs: { [custodyOperationId]: input.leg.rows },
+              requirePersistedPredecessors: true,
+            },
+          );
+        } catch (error) {
+          // A committed saved operation owns recovery before any counter rebuild.
+          if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
+            throw new BrowserCtfClaimBoundaryError("persisted-recovery", custodyOperationId);
+          }
+          if (error instanceof BrowserWalletCounterSnapshotConflictError && attempt < 2) continue;
+          throw new BrowserCtfClaimBoundaryError("persisted-recovery");
+        }
+        return record;
       }
-      const record = createDurableCustodyProofOperation({
-        scope,
-        operation: prepared.operation,
-        facts: authority.facts,
-        inventoryAccountId: null,
-        exactBoundary: {
-          method: "POST",
-          path: "/v1/redeem_outcome",
-          idempotencyKey: operationId,
-          requestBody: authority.exactRequest,
-          output: authority.exactOutput,
-          privateMaterial: authority.exactAuthority,
-        },
-      });
-      if (record.operation.operationId !== custodyOperationId) {
-        throw new BrowserCtfClaimBoundaryError("keyset-authority");
-      }
-      try {
-        await input.adapter.transact(
-          {
-            scope,
-            owner: input.owner,
-            operationRows: [{ operationId: custodyOperationId, expectedRevision: null }],
-          },
-          (transaction) =>
-            bindDurableCustodyProofOperation(transaction, record, {
-              requestBody: authority.exactRequest,
-              output: authority.exactOutput,
-              privateMaterial: authority.exactAuthority,
-            }),
-          {
-            predecessorProofs: { [custodyOperationId]: input.leg.rows },
-            requirePersistedPredecessors: true,
-          },
-        );
-      } catch {
-        throw new BrowserCtfClaimBoundaryError("persisted-recovery");
-      }
-      return record;
+      throw new BrowserCtfClaimBoundaryError("persisted-recovery");
     },
     input.lockManager,
   );

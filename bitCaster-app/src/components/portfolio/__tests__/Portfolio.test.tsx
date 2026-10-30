@@ -2,6 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Portfolio } from "../Portfolio";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 import { PositionRow } from "../PositionRow";
 import type {
   PortfolioProps,
@@ -15,10 +17,9 @@ import type {
 } from "@/types/portfolio";
 
 const mockProfile: UserProfile = {
-  userId: "usr-a1b2",
   displayName: "SatoshiTrader",
   avatarUrl: null,
-  registeredDate: "2025-08-15T09:30:00Z",
+  bio: "Independent Bitcoin market researcher.",
 };
 
 const mockPLData: PLChartData = {
@@ -339,6 +340,9 @@ describe("Portfolio", () => {
     it("renders profile card with display name", () => {
       renderPortfolio();
       expect(screen.getByText("SatoshiTrader")).toBeInTheDocument();
+      expect(screen.getByText("Independent Bitcoin market researcher.")).toBeVisible();
+      expect(screen.queryByRole("button", { name: /upload avatar/i })).toBeNull();
+      expect(screen.queryByText(/joined/i)).toBeNull();
     });
 
     it("renders stats row", () => {
@@ -352,11 +356,6 @@ describe("Portfolio", () => {
       renderPortfolio();
       expect(screen.getByRole("button", { name: /deposit/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /withdraw/i })).toBeInTheDocument();
-    });
-
-    it("renders settings button", () => {
-      renderPortfolio();
-      expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
     });
   });
 
@@ -725,6 +724,26 @@ describe("Portfolio", () => {
       expect(screen.getByText("No active positions")).toBeInTheDocument();
     });
 
+    it("shows Japanese result text with decorative emoji and matching claim language", () => {
+      render(
+        <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+          <PositionRow position={mockPositions[1]} onClaim={vi.fn()} />
+          <PositionRow position={mockPositions[2]} onDiscard={vi.fn()} />
+        </I18nextProvider>,
+      );
+      for (const [text, emoji] of [
+        ["当たり", "😋"],
+        ["ハズレ", "😭"],
+      ]) {
+        const badge = screen.getByText(text);
+        expect(badge).toHaveTextContent(text + emoji);
+        expect(badge.querySelector('[aria-hidden="true"]')).toHaveTextContent(emoji);
+      }
+      expect(
+        screen.getByRole("button", { name: "Will Ethereum merge complete? の報酬を受け取る" }),
+      ).toBeInTheDocument();
+    });
+
     it("uses explicit Won and Lost text with neutral closed-position colors", () => {
       renderPortfolio({ positionsTab: "closed", onViewPosition: vi.fn() });
       for (const label of [/Won/, /Lost/]) {
@@ -902,11 +921,9 @@ describe("Portfolio", () => {
       expect(onWithdraw).toHaveBeenCalledOnce();
     });
 
-    it("calls onOpenSettings when settings icon is clicked", async () => {
-      const onOpenSettings = vi.fn();
-      renderPortfolio({ onOpenSettings });
-      await userEvent.click(screen.getByRole("button", { name: /settings/i }));
-      expect(onOpenSettings).toHaveBeenCalledOnce();
+    it("does not show the removed Settings gear", () => {
+      renderPortfolio();
+      expect(screen.queryByRole("button", { name: /settings/i })).not.toBeInTheDocument();
     });
   });
 });

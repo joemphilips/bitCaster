@@ -28,7 +28,7 @@ import {
 import type { UnsignedEvent, EventTemplate } from "nostr-tools/core";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
 import { NDKPrivateKeySigner, NDKEvent, NDKRelayStatus, type NDKFilter } from "@nostr-dev-kit/ndk";
-import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
+import { createExplicitRelayNdk, DEFAULT_RELAYS, RELAY_CONNECT_TIMEOUT_MS } from "./nostr";
 
 // ---------------------------------------------------------------------------
 // Key derivation
@@ -197,9 +197,10 @@ export async function subscribeNip17DMs(
   }
 
   try {
-    // NDK connect is best-effort — it will keep retrying failed relays internally
+    // NDK connect is best-effort — it will keep retrying failed relays internally.
+    // Its limit stops one relay that never connects from delaying the listener.
     await awaitAbortable(
-      ndk.connect().catch((e) => {
+      ndk.connect(RELAY_CONNECT_TIMEOUT_MS).catch((e) => {
         console.warn("[nip17] NDK connect error (will retry):", e);
       }),
       signal,
@@ -289,9 +290,9 @@ export async function subscribeNip17DMs(
         }
 
         onMessage(rumor.content, rumor.pubkey);
-      } catch (e) {
-        // Ignore events we can't decrypt (not for us, or malformed)
-        console.warn("[nip17] Failed to decrypt DM:", (e as Error).message);
+      } catch {
+        // Parser errors can contain decrypted message text.
+        console.warn("[nip17] DM_UNWRAP_FAILED");
       }
     });
 

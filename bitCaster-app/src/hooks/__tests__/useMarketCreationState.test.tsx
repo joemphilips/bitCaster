@@ -1,5 +1,8 @@
 import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
+import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
+import { currentBrowserMarketCreationBinding } from "@/lib/browserMarketCreation";
+import { marketDraftImages } from "@/stores/marketDraftImage";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
 import Dexie from "dexie";
 import { Blob as NativeBlob, File as NativeFile } from "node:buffer";
@@ -27,11 +30,12 @@ const {
   mockGetAvailableRegularBalanceSubunits,
   mockCreateMarket,
   mockFetchMarketRegistrationForRecovery,
-  mockCreateEnumAnnouncement,
-  mockEnsureKormirNsec,
+  mockPrepareEnumAnnouncement,
+  mockWithBrowserOracleMutation,
   mockGetOracleAnnouncementEventId,
   mockRefreshMintInfoWithoutActivating,
   mockWalletState,
+  walletHydration,
   runtime,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
@@ -39,15 +43,17 @@ const {
   mockGetAvailableRegularBalanceSubunits: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockFetchMarketRegistrationForRecovery: vi.fn(),
-  mockCreateEnumAnnouncement: vi.fn(),
-  mockEnsureKormirNsec: vi.fn(),
+  mockPrepareEnumAnnouncement: vi.fn(),
+  mockWithBrowserOracleMutation: vi.fn(),
   mockGetOracleAnnouncementEventId: vi.fn(),
   mockRefreshMintInfoWithoutActivating: vi.fn(),
+  walletHydration: { hydrated: true, listeners: new Set<() => void>() },
   runtime: {
     database: null as any,
     conditionId: "",
     lookupMint: vi.fn(),
     published: [] as string[],
+    relayAccepts: true,
     seed: new Uint8Array(64).fill(0x11),
     scopeId: "",
     feeOperations: [] as string[],
@@ -120,7 +126,11 @@ vi.mock("@/lib/markets", async () => ({
         name: (thumbnail as File).name,
         bytes: new Uint8Array(await thumbnail.arrayBuffer()),
       });
-    return mockCreateMarket(conditionId, JSON.parse(String(form.get("metadata"))));
+    return mockCreateMarket(
+      conditionId,
+      JSON.parse(String(form.get("metadata"))),
+      form.get("thumbnail"),
+    );
   },
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
@@ -177,17 +187,16 @@ vi.mock("@/lib/marketRegistrationFee", async () => ({
 }));
 
 vi.mock("@/lib/kormir", async () => ({
-  createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
-  ensureKormirNsec: (...args: unknown[]) => mockEnsureKormirNsec(...args),
+  withBrowserOracleMutation: (...args: unknown[]) => mockWithBrowserOracleMutation(...args),
   getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
-  prepareEnumAnnouncement: async (...args: any[]) => {
+  prepareEnumAnnouncement: async (_core: unknown, ...args: any[]) => {
     const sdk = await import("@bitcaster/client-sdk");
     const { finalizeEvent, getPublicKey } = await import("nostr-tools/pure");
     const key = new Uint8Array(32).fill(0x11);
-    const artifactHex = await mockCreateEnumAnnouncement(...args);
+    const artifactHex = await mockPrepareEnumAnnouncement(...args);
     runtime.conditionId = sdk.deriveDlcConditionId({
-      eventId: args[1],
-      outcomeCount: args[2].length,
+      eventId: args[0],
+      outcomeCount: args[1].length,
       oraclePublicKeys: [getPublicKey(key)],
     });
     return {
@@ -236,14 +245,20 @@ vi.mock("@/lib/browserOracleBackupDelivery", () => ({
 }));
 vi.mock("@/lib/browserOracleBackup", () => ({
   preflightBrowserOracleCreation: vi.fn(async () => {}),
+  preflightLockedBrowserOracleCreation: vi.fn(async () => {}),
 }));
 vi.mock("@nostr-dev-kit/ndk", async () => ({
   ...(await vi.importActual("@nostr-dev-kit/ndk")),
   NDKEvent: class {
-    constructor(_ndk: unknown, event: unknown) {
+    readonly id: string;
+    constructor(_ndk: unknown, event: { id: string }) {
+      this.id = event.id;
       runtime.published.push(JSON.stringify(event));
     }
     async publish() {
+      // The installed NDK rejects when no relay acknowledges the event.
+      if (!runtime.relayAccepts)
+        throw new Error("Not enough relays received the event (0 published, 1 required)");
       return new Set(["relay"]);
     }
   },
@@ -260,6 +275,13 @@ vi.mock("@/lib/walletOps", () => ({
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
     getState: () => mockWalletState,
+    persist: {
+      hasHydrated: () => walletHydration.hydrated,
+      onFinishHydration: (listener: () => void) => {
+        walletHydration.listeners.add(listener);
+        return () => walletHydration.listeners.delete(listener);
+      },
+    },
   },
 }));
 
@@ -305,6 +327,8 @@ const announcementEvent = finalizeEvent(
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  walletHydration.hydrated = true;
+  walletHydration.listeners.clear();
   installCreatorDocumentLocks();
   // Each independent creation fixture owns a fresh public creator record.
   await useCreatorMarketsStore.getState().clear();
@@ -320,6 +344,7 @@ beforeEach(async () => {
   runtime.seed = new Uint8Array(64).fill(0x11);
   runtime.engineThumbnails = [];
   runtime.published = [];
+  runtime.relayAccepts = true;
   runtime.feeOperations = [];
   runtime.conditionId = conditionId;
   runtime.lookupMint.mockImplementation(async () =>
@@ -334,19 +359,21 @@ beforeEach(async () => {
     keysets: { Yes: "ks1", No: "ks2" },
   }));
   mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000);
-  mockCreateMarket.mockImplementation(async (_id, metadata) => ({
+  mockCreateMarket.mockImplementation(async (_id, metadata, thumbnail) => ({
     conditionId: runtime.conditionId,
     baseAsset: "sat",
     marketsCreated: metadata.outcomes.map(
       (outcome: { name: string }) => `${runtime.conditionId}-${outcome.name}`,
     ),
     outcomeDetails: metadata.outcomes,
-    thumbnailUrl: null,
+    thumbnailUrl: thumbnail ? "/original-thumbnail" : null,
     divisibility: 1_000,
   }));
   mockFetchMarketRegistrationForRecovery.mockResolvedValue(null);
-  mockCreateEnumAnnouncement.mockResolvedValue("aabb");
-  mockEnsureKormirNsec.mockResolvedValue(undefined);
+  mockPrepareEnumAnnouncement.mockResolvedValue("aabb");
+  mockWithBrowserOracleMutation.mockImplementation(
+    async (_pubkey: string, action: (core: unknown) => Promise<unknown>) => action({}),
+  );
   mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
   mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined);
   mockWalletState.activeMintUrl = "https://mint.example.test";
@@ -382,6 +409,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  vi.restoreAllMocks();
+  const imageId = useMarketDraftStore.getState().draft.thumbnailId;
+  if (imageId) await marketDraftImages.remove(imageId);
   runtime.database?.close();
   await Dexie.delete(databaseName);
   vi.unstubAllGlobals();
@@ -469,7 +499,7 @@ function registrationMarket(
     ],
     baseAsset: "sat",
     divisibility: 1_000,
-    thumbnailUrl: "/api/v1/test-cond-id/thumbnail",
+    thumbnailUrl: null,
     ...overrides,
   };
 }
@@ -495,7 +525,348 @@ async function beginPaidCreation() {
   return result;
 }
 
+describe("retained creation loading", () => {
+  function retainPointer(creationId = "pending-creation") {
+    const creation = { creationId, binding: currentBrowserMarketCreationBinding() };
+    useMarketDraftStore.getState().setDraft((draft) => ({ ...draft, creation }));
+    return useMarketDraftStore.getState().draft.creation!;
+  }
+
+  it("reports loading on the first render and throughout wallet hydration", async () => {
+    retainPointer();
+    walletHydration.hydrated = false;
+    const read = vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockResolvedValue(null);
+    const renders: boolean[] = [];
+    const { result } = renderHook(
+      () => {
+        const state = useMarketCreationState();
+        renders.push(state.isLoadingCreation);
+        return state;
+      },
+      { wrapper },
+    );
+    expect(renders[0]).toBe(true);
+    expect(result.current.isLoadingCreation).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    await act(async () => {
+      walletHydration.hydrated = true;
+      walletHydration.listeners.forEach((listener) => listener());
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.isLoadingCreation).toBe(false);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("stops loading immediately when the pointer is cleared and ignores the cancelled failure", async () => {
+    retainPointer();
+    let rejectRead!: (error: Error) => void;
+    vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    expect(result.current.isLoadingCreation).toBe(true);
+    act(() => useMarketDraftStore.setState({ draft: defaultDraft() }));
+    expect(result.current.isLoadingCreation).toBe(false);
+    await act(async () => rejectRead(new Error("cancelled read")));
+    expect(result.current.submitError).toBeNull();
+    expect(result.current.retainedCreation).toBeNull();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replacement pointer pending when the old read completes", async () => {
+    retainPointer("first");
+    const complete = new Map<string, () => void>();
+    vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockImplementation(
+      (id) => new Promise((resolve) => complete.set(id, () => resolve(null))),
+    );
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    act(() => {
+      retainPointer("second");
+    });
+    await act(async () => complete.get("first")!());
+    expect(result.current.isLoadingCreation).toBe(true);
+    await act(async () => complete.get("second")!());
+    expect(result.current.isLoadingCreation).toBe(false);
+    expect(result.current.retainedCreation).toBeNull();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
+
+  it("cancels hydration waiting when the pointer is cleared", async () => {
+    retainPointer();
+    walletHydration.hydrated = false;
+    const read = vi.spyOn(BrowserMarketCreationStore.prototype, "read").mockResolvedValue(null);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    act(() => useMarketDraftStore.setState({ draft: defaultDraft() }));
+    expect(result.current.isLoadingCreation).toBe(false);
+    await act(async () => {
+      walletHydration.hydrated = true;
+      walletHydration.listeners.forEach((listener) => listener());
+    });
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("preparation-independent draft image", () => {
+  it("survives remount before wallet setup and supplies exact retained bytes after setup", async () => {
+    const result = await setupDraftForSubmission();
+    const walletDatabase = runtime.database;
+    runtime.database = null;
+    const bytes = new Uint8Array([255, 216, 255, 217]);
+    await act(async () =>
+      result.current.onThumbnailUpload(new File([bytes], "draft.jpg", { type: "image/jpeg" })),
+    );
+    await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+    const selectionId = useMarketDraftStore.getState().draft.thumbnailId!;
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    cleanup();
+    await useMarketDraftStore.persist.rehydrate();
+    const reloaded = renderHook(() => useMarketCreationState(), { wrapper }).result;
+    await waitFor(() => expect(reloaded.current.thumbnailFile?.name).toBe("draft.jpg"));
+    expect(reloaded.current.thumbnailFile?.type).toBe("image/jpeg");
+    expect(Array.from(new Uint8Array(await reloaded.current.thumbnailFile!.arrayBuffer()))).toEqual(
+      Array.from(bytes),
+    );
+    expect(reloaded.current.draft.stepBasicInfo?.imageFile).toBe("blob:retained-thumbnail");
+    // Wallet setup is later. The draft image was never placed in that database.
+    runtime.database = walletDatabase;
+    await act(async () => {
+      await reloaded.current.onCreateMarket();
+    });
+    expect(runtime.engineThumbnails[0].name).toBe("draft.jpg");
+    expect(Array.from(runtime.engineThumbnails[0].bytes)).toEqual(Array.from(bytes));
+    await waitFor(async () => {
+      await expect(marketDraftImages.read(selectionId)).rejects.toThrow("not retained");
+    });
+  });
+
+  it("blocks preparation after retention fails until explicit removal", async () => {
+    const result = await setupDraftForSubmission();
+    const retain = vi
+      .spyOn(marketDraftImages, "retain")
+      .mockRejectedValueOnce(new DOMException("Full", "QuotaExceededError"));
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "failed.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+    expect([
+      i18n.t("marketCreation.imageRetentionFailed"),
+      i18n.t("marketCreation.imageRetentionMissing"),
+    ]).toContain(result.current.thumbnailError);
+    expect(result.current.thumbnailError).not.toContain("Full");
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+    cleanup();
+    await useMarketDraftStore.persist.rehydrate();
+    const reloaded = renderHook(() => useMarketCreationState(), { wrapper }).result;
+    await waitFor(() =>
+      expect(reloaded.current.thumbnailError).toBe(i18n.t("marketCreation.imageRetentionMissing")),
+    );
+    await act(async () => {
+      await reloaded.current.onCreateMarket();
+    });
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+    await act(async () => {
+      await reloaded.current.onThumbnailRemove();
+    });
+    await waitFor(() => expect(reloaded.current.thumbnailError).toBeNull());
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+    retain.mockRestore();
+  });
+
+  it("does not let delayed cleanup failure block a newer retained image", async () => {
+    const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "first.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailFile?.name).toBe("first.jpg"));
+    let rejectCleanup!: (error: Error) => void;
+    const cleanupFailure = new Promise<void>((_, reject) => {
+      rejectCleanup = reject;
+    });
+    const remove = vi
+      .spyOn(marketDraftImages, "remove")
+      .mockImplementationOnce(() => cleanupFailure);
+    let removal!: Promise<void>;
+    act(() => {
+      removal = result.current.onThumbnailRemove();
+    });
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+    const bytes = new Uint8Array([255, 216, 255, 217]);
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([bytes], "replacement.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailFile?.name).toBe("replacement.jpg"));
+    const replacementId = useMarketDraftStore.getState().draft.thumbnailId;
+    const preview = result.current.draft.stepBasicInfo?.imageFile;
+    await act(async () => {
+      rejectCleanup(new Error("Old attachment cleanup failed"));
+      await removal;
+    });
+    expect(result.current.thumbnailError).toBeNull();
+    expect(result.current.thumbnailPending).toBe(false);
+    expect(result.current.thumbnailFile?.name).toBe("replacement.jpg");
+    expect(result.current.draft.stepBasicInfo?.imageFile).toBe(preview);
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(replacementId);
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(runtime.engineThumbnails[0].name).toBe("replacement.jpg");
+    expect(Array.from(runtime.engineThumbnails[0].bytes)).toEqual(Array.from(bytes));
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledOnce();
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    remove.mockRestore();
+  });
+
+  it("start over removes the unprepared attachment but retains an unfinished creation's attachment", async () => {
+    const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1])], "draft.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    const id = useMarketDraftStore.getState().draft.thumbnailId!;
+    await act(async () => result.current.clearDraft());
+    await waitFor(async () => {
+      await expect(marketDraftImages.read(id)).rejects.toThrow("not retained");
+    });
+    cleanup();
+    // The existing paid-retry case below still verifies the exact immutable attempt.
+    const pending = await beginPaidCreation();
+    await act(async () =>
+      pending.current.onThumbnailUpload(
+        new File([new Uint8Array([2])], "paid.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await pending.current.onConfirmRegistrationFee();
+    });
+    const before = useMarketDraftStore.getState().draft;
+    await act(async () => pending.current.clearDraft());
+    expect(useMarketDraftStore.getState().draft.creation).toEqual(before.creation);
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(before.thumbnailId);
+    expect((await marketDraftImages.read(before.thumbnailId!)).filename).toBe("paid.jpg");
+  });
+});
+
 describe("durable browser market creation", () => {
+  it("retains a paid image mismatch and restores specific translated guidance after reload", async () => {
+    const result = await beginPaidCreation();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([1, 2, 3])], "original.png", { type: "image/png" }),
+      ),
+    );
+    mockCreateMarket.mockResolvedValueOnce({
+      conditionId,
+      baseAsset: "sat",
+      divisibility: 1000,
+      marketsCreated: [`${conditionId}-Yes`, `${conditionId}-No`],
+      thumbnailUrl: null,
+    });
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+    expect(useMarketDraftStore.getState().draft.creation?.failure?.code).toBe(
+      "thumbnail-presence-mismatch",
+    );
+    const creationId = useMarketDraftStore.getState().draft.creation!.creationId;
+    const retained = await runtime.database.marketCreations.get([walletScopeId, creationId]);
+    expect(retained.mintConfirmed).toBe(true);
+    expect(retained.thumbnail?.filename).toBe("original.png");
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+    mockFetchMarketRegistrationForRecovery.mockResolvedValue(registrationMarket());
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBeNull();
+    expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(
+      (await runtime.database.marketCreations.get([walletScopeId, creationId])).thumbnail,
+    ).toEqual(retained.thumbnail);
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(reloaded.current.submitError).toBe(i18n.t("marketCreation.creationImageMismatch"));
+      expect(reloaded.current.submitError).toContain("画像の自動修復はできません");
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+  });
+
+  it("stops on an unaccepted announcement with translated relay guidance, then resumes the same creation", async () => {
+    const relayGuidance = () => i18n.t("marketCreation.creationAnnouncementRelayUnavailable");
+    const result = await beginPaidCreation();
+    runtime.relayAccepts = false;
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.isSubmitting).toBe(false);
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(result.current.submitError).toBe(relayGuidance());
+    expect(result.current.submitError).toContain("relay");
+    expect(useMarketDraftStore.getState().draft.creation?.failure).toEqual({
+      code: "announcement-relay-unavailable",
+      progress: "prepared",
+      dismissed: false,
+    });
+    expect(result.current.retainedCreation?.mintConfirmed).toBe(false);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    // A retry against relays that still refuse settles with the same guidance.
+    await act(async () => {
+      await result.current.onResumeCreation();
+    });
+    expect(result.current.isSubmitting).toBe(false);
+    expect(result.current.submitError).toBe(relayGuidance());
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.submitError).toBe(relayGuidance());
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      expect(reloaded.current.submitError).toBe(relayGuidance());
+      expect(reloaded.current.submitError).toContain("リレー");
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+    runtime.relayAccepts = true;
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
+    // Every attempt reconciles the one fee operation and publishes the one announcement.
+    expect(runtime.feeOperations).toHaveLength(3);
+    expect(new Set(runtime.feeOperations).size).toBe(1);
+    expect(runtime.published).toHaveLength(3);
+    expect(new Set(runtime.published).size).toBe(1);
+  });
+
   it("resumes a paid engine 401 after a cold read with the original thumbnail and one announcement", async () => {
     const result = await beginPaidCreation();
     const bytes = new Uint8Array(2 * 1024 * 1024).fill(0x7a);
@@ -522,7 +893,7 @@ describe("durable browser market creation", () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(runtime.feeOperations).toHaveLength(1);
     expect(runtime.feeOperations[0]).toBe(retained.registration.feeOperationRef);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(runtime.published).toEqual([retained.announcement.announcementNostrEventJson]);
     expect(runtime.engineThumbnails).toHaveLength(2);
     expect(
@@ -566,7 +937,7 @@ describe("durable browser market creation", () => {
     expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(runtime.feeOperations).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(runtime.published).toHaveLength(1);
   });
 
@@ -665,7 +1036,7 @@ describe("durable browser market creation", () => {
       description: "Test description",
     });
     expect(runtime.feeOperations).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the completed pointer when the creator row fails, then cold-resumes only its save", async () => {
@@ -705,7 +1076,7 @@ describe("durable browser market creation", () => {
     );
     expect(runtime.feeOperations).toHaveLength(1);
     expect(runtime.published).toHaveLength(1);
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledTimes(1);
     expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
     expect(mockCreateMarket).toHaveBeenCalledTimes(1);
     expect([
@@ -753,7 +1124,7 @@ describe("durable browser market creation", () => {
         await result.current.onCreateMarket();
       });
       expect(await runtime.database.marketCreations.count()).toBe(0);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);
     } finally {
@@ -790,7 +1161,7 @@ describe("durable browser market creation", () => {
         await result.current.onConfirmRegistrationFee();
       });
       expect(runtime.feeOperations).toHaveLength(0);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.published).toHaveLength(0);
       expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
       expect(mockCreateMarket).not.toHaveBeenCalled();
@@ -851,8 +1222,11 @@ describe("durable browser market creation", () => {
       await act(async () => {
         await result.current.onCreateMarket();
       });
-      expect(result.current.submitError).toMatch(/Market (thumbnail|metadata|creation)/);
-      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      if (limit === "thumbnail") {
+        expect(result.current.thumbnailError).not.toBeNull();
+        expect(result.current.submitError).toBe(result.current.thumbnailError);
+      } else expect(result.current.submitError).toMatch(/Market (metadata|creation)/);
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);
       expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
@@ -1288,8 +1662,8 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
     expect(result.current.submitError).toBe("You must register a nostr key to become an oracle");
     expect(mockGetAvailableRegularBalanceSubunits).not.toHaveBeenCalled();
-    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
-    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockWithBrowserOracleMutation).not.toHaveBeenCalled();
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
@@ -1308,22 +1682,22 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(result.current.submitError).toBe(
       "Outcome labels must be 1 to 191 ASCII letters or digits.",
     );
-    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
-    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockWithBrowserOracleMutation).not.toHaveBeenCalled();
+    expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
 
   it("checks the final serialized metadata limit before paying the mint registration fee", async () => {
     const result = await setupDraftForSubmission();
-    mockCreateEnumAnnouncement.mockResolvedValueOnce("a".repeat(65_537));
+    mockPrepareEnumAnnouncement.mockResolvedValueOnce("a".repeat(65_537));
 
     await act(async () => {
       await result.current.onCreateMarket();
     });
 
     expect(result.current.submitError).toBe("Market metadata exceeds the 64 KB engine limit.");
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledOnce();
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledOnce();
     expect(mockGetOracleAnnouncementEventId).not.toHaveBeenCalled();
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
@@ -1372,6 +1746,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
   it("adopts a matching committed market after a lost create response", async () => {
     await useCreatorMarketsStore.getState().clear();
     const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([4, 5])], "persisted.png", { type: "image/png" }),
+      ),
+    );
     const originalError = new CreateMarketError("connection was lost", null, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
     mockFetchMarketRegistrationForRecovery.mockResolvedValueOnce(null).mockResolvedValueOnce(
@@ -1632,9 +2011,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(mockEnsureKormirNsec).toHaveBeenCalledWith(["ws://localhost:7777"], "11".repeat(32));
-    expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
-      ["ws://localhost:7777"],
+    expect(mockWithBrowserOracleMutation).toHaveBeenCalledWith(
+      getPublicKey(new Uint8Array(32).fill(0x11)),
+      expect.any(Function),
+    );
+    expect(mockPrepareEnumAnnouncement).toHaveBeenCalledWith(
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
       ["Yes", "No"],
       expect.any(Number),

@@ -29,6 +29,10 @@ export interface BrowserCustodyProofImportAtomicAuthority {
     readonly spentSecrets: readonly string[];
     readonly freshProofs: readonly StoredProof[];
   };
+  readonly ownerRestoreAuthority?: {
+    readonly validate: () => void | Promise<void>;
+    readonly afterPersist: () => void | Promise<void>;
+  };
 }
 
 /** Commit several already-verified import pages in one physical custody transaction. */
@@ -93,6 +97,9 @@ export async function commitBrowserCustodyProofImportsAtomic(
             ...(authority.legacyProofCache === undefined
               ? {}
               : { legacyProofCache: authority.legacyProofCache }),
+            ...(authority.ownerRestoreAuthority === undefined
+              ? {}
+              : { ownerRestoreAuthority: authority.ownerRestoreAuthority }),
           }),
     },
   );

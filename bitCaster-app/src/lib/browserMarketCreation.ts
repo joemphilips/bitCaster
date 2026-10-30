@@ -1,4 +1,3 @@
-import { NDKEvent, type NostrEvent } from "@nostr-dev-kit/ndk";
 import {
   assertMarketCreationBinding,
   completeDurableMarketCreation,
@@ -14,16 +13,18 @@ import {
   type MarketCreationInput,
   type MarketThumbnailBytes,
   normalizeMarketCreationInput,
-  MAX_MARKET_CREATION_THUMBNAIL_BYTES,
 } from "@bitcaster/client-sdk";
 import { captureBrowserMintPersistenceContext } from "./cashu";
 import { resolveNsecIdentity } from "./identityOps";
 import { useSettingsStore } from "@/stores/settings";
 import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
-import { ensureKormirNsec, prepareEnumAnnouncement } from "./kormir";
-import { preflightBrowserOracleCreation } from "./browserOracleBackup";
+import { withBrowserOracleMutation, prepareEnumAnnouncement } from "./kormir";
+import {
+  preflightBrowserOracleCreation,
+  preflightLockedBrowserOracleCreation,
+} from "./browserOracleBackup";
 import { buildEventId } from "./slug";
-import { withTemporaryRelayNdk } from "./nostr";
+import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 import { createPreparedMarket, fetchMarketRegistrationForRecovery } from "./markets";
 import {
   confirmConditionRegistrationFee,
@@ -38,23 +39,22 @@ export interface BrowserMarketCreationPointer {
   readonly creationId: string;
   readonly binding: MarketCreationBinding;
   readonly failure?: {
-    readonly code: "incomplete" | "payment-pending";
+    readonly code:
+      | "incomplete"
+      | "payment-pending"
+      | "thumbnail-presence-mismatch"
+      | "announcement-relay-unavailable";
     readonly progress: "prepared" | "mint-confirmed" | "engine-confirmed";
     readonly dismissed: boolean;
   };
 }
 
-export async function browserMarketThumbnail(
-  file: File | null,
-): Promise<MarketThumbnailBytes | undefined> {
-  if (file === null) return undefined;
-  if (file.size === 0 || file.size > MAX_MARKET_CREATION_THUMBNAIL_BYTES)
-    throw new Error("Market thumbnail must contain at most 5 MiB.");
-  return {
-    data: new Uint8Array(await file.arrayBuffer()),
-    filename: file.name,
-    contentType: file.type,
-  };
+/** No saved relay accepted the announcement. The same saved creation can resume. */
+export class MarketAnnouncementRelayError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("No Nostr relay accepted the oracle announcement.", options);
+    this.name = "MarketAnnouncementRelayError";
+  }
 }
 
 export function currentBrowserMarketCreationBinding(): MarketCreationBinding {
@@ -109,60 +109,59 @@ export async function prepareBrowserMarketCreation(
     );
   session.requireBinding();
   const eventId = buildEventId(normalized.metadata.title || "market");
-  const nsec = useSettingsStore.getState().nsecSecret!;
-  await ensureKormirNsec(input.relayUrls, nsec);
-  session.requireBinding();
-  const artifact = await prepareEnumAnnouncement(
-    input.relayUrls,
-    eventId,
-    normalized.outcomeLabels,
-    normalized.maturityEpoch,
-    normalized.metadata.title,
-    normalized.metadata.description,
-  );
-  session.requireBinding();
-  const signed = JSON.parse(artifact.eventJson) as { pubkey: string };
-  if (signed.pubkey !== session.binding.creatorId)
-    throw new Error("Creation announcement belongs to a different creator.");
-  const request: ConditionRegistrationRequest = {
-    tags: normalized.mintTags,
-    announcementHex: artifact.artifactHex,
-    collateral: normalized.collateralUnit,
-    outcomeCollections: input.outcomeCollections,
-  };
-  const preparation = snapshotMarketCreationPreparation({
-    ...session.binding,
-    creationId: input.creationId,
-    eventId,
-    relayUrls: input.relayUrls,
-    metadata: {
-      ...normalized.metadata,
-      oracleAnnouncementHex: artifact.artifactHex,
-    },
-    announcement: {
-      conditionId: deriveDlcConditionId({
-        eventId,
-        outcomeCount: normalized.outcomeLabels.length,
-        oraclePublicKeys: [signed.pubkey],
-      }),
-      announcementTlvHex: artifact.artifactHex,
-      announcementNostrEventJson: artifact.eventJson,
-    },
-    registration: {
-      feeAmount: input.feeAmount,
-      feeUnit: normalized.collateralUnit,
-      feeOperationRef:
-        input.feeAmount === 0
-          ? null
-          : await deriveConditionRegistrationFeeOperationRef(request, input.feeAmount),
-      ...(input.outcomeCollections === undefined
-        ? {}
-        : { outcomeCollections: input.outcomeCollections }),
-    },
-    thumbnail,
+  const preparation = await withBrowserOracleMutation(session.binding.creatorId, async (core) => {
+    const artifact = await prepareEnumAnnouncement(
+      core,
+      eventId,
+      normalized.outcomeLabels,
+      normalized.maturityEpoch,
+      normalized.metadata.title,
+      normalized.metadata.description,
+    );
+    const signed = JSON.parse(artifact.eventJson) as { pubkey: string };
+    if (signed.pubkey !== session.binding.creatorId)
+      throw new Error("Creation announcement belongs to a different creator.");
+    const request: ConditionRegistrationRequest = {
+      tags: normalized.mintTags,
+      announcementHex: artifact.artifactHex,
+      collateral: normalized.collateralUnit,
+      outcomeCollections: input.outcomeCollections,
+    };
+    const preparation = snapshotMarketCreationPreparation({
+      ...session.binding,
+      creationId: input.creationId,
+      eventId,
+      relayUrls: input.relayUrls,
+      metadata: {
+        ...normalized.metadata,
+        oracleAnnouncementHex: artifact.artifactHex,
+      },
+      announcement: {
+        conditionId: deriveDlcConditionId({
+          eventId,
+          outcomeCount: normalized.outcomeLabels.length,
+          oraclePublicKeys: [signed.pubkey],
+        }),
+        announcementTlvHex: artifact.artifactHex,
+        announcementNostrEventJson: artifact.eventJson,
+      },
+      registration: {
+        feeAmount: input.feeAmount,
+        feeUnit: normalized.collateralUnit,
+        feeOperationRef:
+          input.feeAmount === 0
+            ? null
+            : await deriveConditionRegistrationFeeOperationRef(request, input.feeAmount),
+        ...(input.outcomeCollections === undefined
+          ? {}
+          : { outcomeCollections: input.outcomeCollections }),
+      },
+      thumbnail,
+    });
+    await prepareMarketCreationRequest(preparation.metadata, preparation.thumbnail ?? undefined);
+    await preflightLockedBrowserOracleCreation(preparation, core);
+    return preparation;
   });
-  await prepareMarketCreationRequest(preparation.metadata, preparation.thumbnail ?? undefined);
-  await preflightBrowserOracleCreation(preparation);
   session.requireBinding();
   return session.store.reserve(preparation);
 }
@@ -206,23 +205,18 @@ export async function completeBrowserMarketCreation(
       },
       async publishAnnouncement(record) {
         session.requireBinding();
-        const published = await withTemporaryRelayNdk(
-          { relays: record.relayUrls },
-          undefined,
-          async (ndk) => {
-            session.requireBinding();
-            const event = new NDKEvent(
-              ndk,
-              JSON.parse(record.announcement.announcementNostrEventJson) as NostrEvent,
-            );
-            const accepted = await event.publish();
-            if (accepted.size === 0)
-              throw new Error("Oracle announcement publication is unavailable.");
-            return true;
-          },
-        );
+        try {
+          // The transport bounds connection and acknowledgement. It requires one accepting relay.
+          await publishRetainedOracleEvent(
+            record.relayUrls,
+            record.announcement.announcementNostrEventJson,
+          );
+        } catch (error) {
+          // A binding change outranks the relay outcome.
+          session.requireBinding();
+          throw new MarketAnnouncementRelayError({ cause: error });
+        }
         session.requireBinding();
-        if (published !== true) throw new Error("Oracle announcement publication is unavailable.");
       },
       async lookupMint(record) {
         session.requireBinding();

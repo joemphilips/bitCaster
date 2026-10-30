@@ -19,12 +19,32 @@ import { useWalletStore } from "@/stores/wallet";
 
 const nostrNetwork = vi.hoisted(() => ({
   fetchAndStoreNostrProfile: vi.fn(async () => {}),
-  loginWithExtension: vi.fn(async () => ({})),
-  loginWithNsec: vi.fn(async () => ({})),
-  loginWithNsecOrNcryptsec: vi.fn(async (nsec: string) => ({ nsec })),
+  loginWithExtension: vi.fn(async (options?: import("@/lib/nostr").NostrLoginOptions) => {
+    options?.attempt?.requireCurrent();
+    options?.onCommit?.(null, "11".repeat(32));
+    return {};
+  }),
+  loginWithNsec: vi.fn(async (nsec: string, options?: import("@/lib/nostr").NostrLoginOptions) => {
+    options?.attempt?.requireCurrent();
+    options?.onCommit?.(nsec, "11".repeat(32));
+    return {};
+  }),
+  loginWithNsecOrNcryptsec: vi.fn(
+    async (
+      nsec: string,
+      _passphrase?: string,
+      options?: import("@/lib/nostr").NostrLoginOptions,
+    ) => {
+      options?.attempt?.requireCurrent();
+      options?.onCommit?.(nsec, "11".repeat(32));
+      return { nsec };
+    },
+  ),
   rehydrateNostrSigner: vi.fn(async () => {}),
 }));
 const originalNavigatorLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
+const initialEnsureImplicitWallet = useWalletStore.getState().ensureImplicitWallet;
+const initialAddMint = useWalletStore.getState()._addMint;
 const initialRecoverFromMnemonic = useWalletStore.getState().recoverFromMnemonic;
 
 vi.mock("@/lib/nostr", async () => {
@@ -39,12 +59,14 @@ vi.mock("@/lib/nostr", async () => {
   };
 });
 
-function renderSettingsPage(category = "nostr") {
-  return render(
+async function renderSettingsPage(category = "nostr") {
+  const view = render(
     <MemoryRouter initialEntries={[`/settings?category=${category}`]}>
       <SettingsPage />
     </MemoryRouter>,
   );
+  await screen.findByRole("heading", { name: "Settings", level: 1 });
+  return view;
 }
 
 function makeNsec(): string {
@@ -104,6 +126,7 @@ async function clearMemoryAndRestorePersistedNsec(expectedNsec: string) {
 
   useSettingsStore.setState({
     nostrSignerMode: "none",
+    signerConnectionStatus: "disconnected",
     signerSource: "none",
     signerBackupState: "none",
     nostrProfile: null,
@@ -115,6 +138,7 @@ async function clearMemoryAndRestorePersistedNsec(expectedNsec: string) {
   await rehydrateSettingsStore();
   expect(useSettingsStore.getState().nsecSecret === expectedNsec).toBe(true);
   expect(useSettingsStore.getState().nostrSignerMode === "nsec").toBe(true);
+  useSettingsStore.getState().setSignerConnectionStatus("connected");
 }
 
 describe("SettingsPage local Nostr-key backup", () => {
@@ -124,6 +148,7 @@ describe("SettingsPage local Nostr-key backup", () => {
     useSettingsStore.setState({
       activeCategory: "general",
       nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
       signerSource: "none",
       signerBackupState: "none",
       nostrProfile: null,
@@ -150,6 +175,7 @@ describe("SettingsPage local Nostr-key backup", () => {
     act(() => {
       useSettingsStore.setState({
         nostrSignerMode: "none",
+        signerConnectionStatus: "disconnected",
         signerSource: "none",
         signerBackupState: "none",
         nostrProfile: null,
@@ -185,7 +211,7 @@ describe("SettingsPage local Nostr-key backup", () => {
     });
     setActiveBrowserWalletProfile(mnemonic);
 
-    renderSettingsPage("cashu");
+    await renderSettingsPage("cashu");
 
     fireEvent.click(await screen.findByRole("button", { name: /view seed phrase/i }));
     expect(useWalletStore.getState().walletSeedReminderAcknowledgedScopeId).toBeNull();
@@ -218,7 +244,7 @@ describe("SettingsPage local Nostr-key backup", () => {
   });
 
   it("does not record a seed reminder when no wallet seed exists", async () => {
-    renderSettingsPage("cashu");
+    await renderSettingsPage("cashu");
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /view seed phrase/i })).not.toBeInTheDocument();
@@ -235,12 +261,12 @@ describe("SettingsPage local Nostr-key backup", () => {
     const expectedNsec = useSettingsStore.getState().nsecSecret ?? "";
 
     await rehydrateSettingsStore();
-    const view = renderSettingsPage();
+    const view = await renderSettingsPage();
     await finishRevealAndDismiss(expectedNsec);
     view.unmount();
 
     await clearMemoryAndRestorePersistedNsec(expectedNsec);
-    renderSettingsPage();
+    await renderSettingsPage();
     expect(await screen.findByRole("button", { name: /view nsec/i })).toBeInTheDocument();
     expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
     expectNoSecretText();
@@ -253,13 +279,14 @@ describe("SettingsPage local Nostr-key backup", () => {
   ] as const)("hides the backup controls for $provenance keys", async ({ signerSource }) => {
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
       signerSource,
       signerBackupState: "needs_backup",
       nostrProfile: null,
       nostrProfileFetchStatus: "not-found",
       nsecSecret: makeNsec(),
     });
-    renderSettingsPage();
+    await renderSettingsPage();
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /view nsec/i })).not.toBeInTheDocument();
@@ -270,13 +297,14 @@ describe("SettingsPage local Nostr-key backup", () => {
   it("does not offer local-key backup when no local key exists", async () => {
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
       signerSource: "user-nsec",
       signerBackupState: "confirmed",
       nostrProfile: null,
       nostrProfileFetchStatus: "not-found",
       nsecSecret: null,
     });
-    renderSettingsPage();
+    await renderSettingsPage();
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /view nsec/i })).not.toBeInTheDocument();
@@ -292,8 +320,10 @@ describe("SettingsPage local Nostr-key backup", () => {
       value: { getPublicKey: vi.fn(async () => "a".repeat(64)) },
     });
 
-    renderSettingsPage();
+    await renderSettingsPage();
     fireEvent.click(await screen.findByRole("button", { name: /connect with nip-07 extension/i }));
+    expect(nostrNetwork.loginWithExtension).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
 
     await waitFor(() => {
       expect(useSettingsStore.getState().nostrSignerMode).toBe("nip07");
@@ -319,6 +349,7 @@ describe("SettingsPage wallet replacement", () => {
 
     const nostrBefore = {
       nostrSignerMode: "nsec" as const,
+      signerConnectionStatus: "connected" as const,
       signerSource: "user-nsec" as const,
       signerBackupState: "confirmed" as const,
       nsecSecret: makeNsec(),
@@ -334,10 +365,10 @@ describe("SettingsPage wallet replacement", () => {
       },
     });
 
-    renderSettingsPage("cashu");
+    await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
     const newWords = bip39.generate();
-    fireEvent.change(screen.getByLabelText(/enter your seedphrase/i), {
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
       target: { value: newWords.join(" ") },
     });
     fireEvent.click(
@@ -386,7 +417,7 @@ describe("SettingsPage wallet replacement", () => {
     const recover = vi.fn(initialRecoverFromMnemonic);
     useWalletStore.setState({ recoverFromMnemonic: recover });
 
-    renderSettingsPage("cashu");
+    await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
@@ -408,9 +439,9 @@ describe("SettingsPage wallet replacement", () => {
     );
     useWalletStore.setState({ recoverFromMnemonic: recover });
 
-    renderSettingsPage("cashu");
+    await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
-    fireEvent.change(screen.getByLabelText(/enter your seedphrase/i), {
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
       target: { value: bip39.generate().join(" ") },
     });
     const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
@@ -424,5 +455,233 @@ describe("SettingsPage wallet replacement", () => {
 
     await act(async () => finishReplacement({ valid: true }));
     expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage explicit wallet setup", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setActiveBrowserWalletProfile("");
+    useSettingsStore.setState({
+      activeCategory: "cashu",
+      nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
+      signerSource: "none",
+      signerBackupState: "none",
+      nsecSecret: null,
+      nostrProfile: null,
+      nostrProfileFetchStatus: "idle",
+    });
+    useWalletStore.setState({
+      mnemonic: "",
+      walletBackupState: "none",
+      walletSeedReminderAcknowledgedScopeId: null,
+      mints: [],
+      mintConnectionStatuses: {},
+      setupComplete: false,
+      recoverFromMnemonic: initialRecoverFromMnemonic,
+      ensureImplicitWallet: initialEnsureImplicitWallet,
+      _addMint: vi.fn(async () => {}),
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useWalletStore.setState({
+      mnemonic: "",
+      walletBackupState: "none",
+      recoverFromMnemonic: initialRecoverFromMnemonic,
+      ensureImplicitWallet: initialEnsureImplicitWallet,
+      _addMint: initialAddMint,
+    });
+    useSettingsStore.setState({
+      nostrSignerMode: "none",
+      signerConnectionStatus: "disconnected",
+      signerSource: "none",
+      signerBackupState: "none",
+      nsecSecret: null,
+    });
+    setActiveBrowserWalletProfile("");
+    localStorage.clear();
+  });
+  function readSetup<T>(read: () => T): T {
+    try {
+      return read();
+    } catch {
+      throw new Error("Settings wallet setup query failed.");
+    }
+  }
+  function setupElement(read: () => HTMLElement | null): HTMLElement {
+    const element = readSetup(read);
+    if (!element) throw new Error("Settings wallet setup element is unavailable.");
+    return element;
+  }
+  function setupButton(name: string): HTMLElement {
+    return setupElement(() => screen.queryByRole("button", { name }));
+  }
+  function setupDialog(): HTMLElement {
+    return setupElement(() => screen.queryByRole("dialog"));
+  }
+  function waitForSetup(check: () => void): Promise<void> {
+    return waitFor(check, {
+      onTimeout: () => new Error("Settings wallet setup state did not reach the expected value."),
+    });
+  }
+  function expectSetupClosed(): void {
+    expect(readSetup(() => screen.queryByRole("dialog") === null)).toBe(true);
+  }
+  function openImport(words: string[]) {
+    fireEvent.click(setupButton("Create Wallet"));
+    fireEvent.click(setupButton("Import Existing Wallet"));
+    fireEvent.change(
+      setupElement(() => screen.queryByLabelText("Seed word 1")),
+      {
+        target: { value: words.join(" ") },
+      },
+    );
+  }
+  it("creates a local wallet without creating a signer", async () => {
+    await renderSettingsPage("cashu");
+    fireEvent.click(setupButton("Create Wallet"));
+    fireEvent.click(setupButton("Create New Wallet"));
+    await waitForSetup(() => expect(Boolean(useWalletStore.getState().mnemonic)).toBe(true));
+    await waitForSetup(expectSetupClosed);
+    expect(bip39.validate(useWalletStore.getState().mnemonic.split(" "))).toBe(true);
+    expect(useSettingsStore.getState().nostrSignerMode).toBe("none");
+    expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
+    expect(readSetup(() => screen.queryByTestId("settings-create-wallet") === null)).toBe(true);
+  });
+  it("imports a valid wallet and preserves the existing signer", async () => {
+    const words = bip39.generate();
+    const secret = makeNsec();
+    useSettingsStore.setState({
+      nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
+      signerSource: "user-nsec",
+      signerBackupState: "confirmed",
+      nsecSecret: secret,
+    });
+    await renderSettingsPage("cashu");
+    openImport(words);
+    fireEvent.click(setupButton("Restore Wallet"));
+    await waitForSetup(expectSetupClosed);
+    expect(useWalletStore.getState().mnemonic === words.join(" ")).toBe(true);
+    expect(useWalletStore.getState().walletBackupState).toBe("confirmed");
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+    expect(useSettingsStore.getState().nostrSignerMode).toBe("nsec");
+  });
+  it("keeps setup available after a failed import and retries without ensuring the rejected import", async () => {
+    const words = bip39.generate();
+    const ensure = vi.fn(initialEnsureImplicitWallet);
+    useWalletStore.setState({ ensureImplicitWallet: ensure });
+    await renderSettingsPage("cashu");
+    openImport(words);
+    const originalSetItem = Storage.prototype.setItem;
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key === "bitcaster-wallet") throw new Error("storage unavailable");
+      return originalSetItem.call(this, key, value);
+    });
+    try {
+      fireEvent.click(setupButton("Restore Wallet"));
+      await waitForSetup(() =>
+        expect(
+          readSetup(
+            () => screen.queryByText("Could not set up wallet. Please try again.") !== null,
+          ),
+        ).toBe(true),
+      );
+      expect(ensure).not.toHaveBeenCalled();
+      expect(useWalletStore.getState().mnemonic === "").toBe(true);
+      expect(readSetup(() => screen.queryByTestId("settings-create-wallet") !== null)).toBe(true);
+    } finally {
+      write.mockRestore();
+    }
+    fireEvent.click(setupButton("Restore Wallet"));
+    await waitForSetup(expectSetupClosed);
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(useWalletStore.getState().mnemonic === words.join(" ")).toBe(true);
+    expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
+  });
+  it("cancels before an action and refuses invalid recovery phrases", async () => {
+    const ensure = vi.fn(async () => {});
+    const recover = vi.fn(initialRecoverFromMnemonic);
+    useWalletStore.setState({ ensureImplicitWallet: ensure, recoverFromMnemonic: recover });
+    await renderSettingsPage("cashu");
+    fireEvent.click(setupButton("Create Wallet"));
+    fireEvent.click(
+      setupElement(() => within(setupDialog()).queryByRole("button", { name: "Close" })),
+    );
+    openImport(["invalid"]);
+    expect(readSetup(() => (setupButton("Restore Wallet") as HTMLButtonElement).disabled)).toBe(
+      true,
+    );
+    expect(ensure).not.toHaveBeenCalled();
+    expect(recover).not.toHaveBeenCalled();
+    expect(useWalletStore.getState().mnemonic === "").toBe(true);
+  });
+  it("keeps an already saved seed when pending creation is dismissed", async () => {
+    let resolve!: () => void;
+    const words = bip39.generate();
+    useWalletStore.setState({
+      ensureImplicitWallet: () => {
+        useWalletStore.setState({ mnemonic: words.join(" "), walletBackupState: "needs_backup" });
+        return new Promise<void>((done) => {
+          resolve = done;
+        });
+      },
+    });
+    await renderSettingsPage("cashu");
+    fireEvent.click(setupButton("Create Wallet"));
+    fireEvent.click(setupButton("Create New Wallet"));
+    fireEvent.click(
+      setupElement(() => within(setupDialog()).queryByRole("button", { name: "Close" })),
+    );
+    await act(async () => {
+      resolve();
+    });
+    expect(useWalletStore.getState().mnemonic === words.join(" ")).toBe(true);
+    expectSetupClosed();
+    expect(readSetup(() => screen.queryByTestId("settings-create-wallet") === null)).toBe(true);
+  });
+
+  it("rechecks the mnemonic before acting and never replaces a newly available wallet", async () => {
+    const ensure = vi.fn(async () => {});
+    useWalletStore.setState({ ensureImplicitWallet: ensure });
+    await renderSettingsPage("cashu");
+    fireEvent.click(setupButton("Create Wallet"));
+    act(() => useWalletStore.setState({ mnemonic: bip39.generate().join(" ") }));
+    fireEvent.click(setupButton("Create New Wallet"));
+    expect(ensure).not.toHaveBeenCalled();
+    expectSetupClosed();
+  });
+  it.each(["dismiss", "unmount"])("ignores a late import after %s", async (boundary) => {
+    let resolve!: (value: { valid: boolean }) => void;
+    const recover = vi.fn(
+      () =>
+        new Promise<{ valid: boolean }>((done) => {
+          resolve = done;
+        }),
+    );
+    const ensure = vi.fn(async () => {});
+    useWalletStore.setState({ recoverFromMnemonic: recover, ensureImplicitWallet: ensure });
+    const view = await renderSettingsPage("cashu");
+    openImport(bip39.generate());
+    fireEvent.click(setupButton("Restore Wallet"));
+    if (boundary === "unmount") view.unmount();
+    else {
+      fireEvent.click(
+        setupElement(() => within(setupDialog()).queryByRole("button", { name: "Close" })),
+      );
+      fireEvent.click(setupButton("Create Wallet"));
+    }
+    await act(async () => {
+      resolve({ valid: true });
+    });
+    expect(ensure).not.toHaveBeenCalled();
+    if (boundary === "dismiss")
+      expect(readSetup(() => screen.queryByRole("dialog") !== null)).toBe(true);
   });
 });

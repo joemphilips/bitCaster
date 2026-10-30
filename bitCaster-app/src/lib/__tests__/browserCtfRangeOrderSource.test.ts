@@ -1,3 +1,7 @@
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from "../../../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts";
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -50,8 +54,9 @@ const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1]);
 const PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true));
 const INPUT_FEE_PPK = 100;
 const FINAL_EXPIRY = 1_000;
-const KEYS = Object.fromEntries(
-  Array.from({ length: 21 }, (_, index) => [(1 << index).toString(), PUBLIC_KEY]),
+const KEYS = mintDenominationKeys(
+  PRIVATE_KEY,
+  Array.from({ length: 21 }, (_, index) => (1 << index).toString()),
 );
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
@@ -349,6 +354,24 @@ function persistedPreparation(operationId: string): PersistedCtfRangeOrderPrepar
     },
   ];
   const mintFacts = {
+    // This mock supplies already-reviewed metadata; announcement verification
+    // is covered by the SDK registration tests, not bypassed in production.
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: "msat" as const,
+      eventId: "browser-fixture-event",
+      outcomes: [OUTCOME, COMPLEMENT],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          noncePoint: "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          announcementIdentity: "aa".repeat(32),
+        },
+      ],
+    },
     regular: [
       {
         canonicalMintUrl: MINT_URL,
@@ -444,8 +467,15 @@ function conditionalSourceWallet(): CtfRangeSourceWallet {
 }
 
 function signBlindedMessage(output: SerializedBlindedMessage): SerializedBlindedSignature {
-  const signature = createBlindSignature(pointFromHex(output.B_), PRIVATE_KEY, output.id);
-  const dleq = createDLEQProof(pointFromHex(output.B_), PRIVATE_KEY);
+  const signature = createBlindSignature(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(PRIVATE_KEY, output.amount.toString()),
+    output.id,
+  );
+  const dleq = createDLEQProof(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(PRIVATE_KEY, output.amount.toString()),
+  );
   return {
     id: signature.id,
     amount: Amount.from(output.amount),

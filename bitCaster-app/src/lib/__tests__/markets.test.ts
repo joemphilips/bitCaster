@@ -1751,9 +1751,12 @@ describe("durable Cashu delivery transport", () => {
     mocks.eventSign.mockClear();
     try {
       const pending = getDurableCashuDeliveryStatus("88888888-8888-4888-8888-888888888888");
-      const rejection = expect(pending).rejects.toThrow(
-        /durable recipient delivery request failed/,
-      );
+      let settled = false;
+      const rejection = expect(
+        pending.finally(() => {
+          settled = true;
+        }),
+      ).rejects.toThrow(/durable recipient delivery request failed/);
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -1761,7 +1764,10 @@ describe("durable Cashu delivery transport", () => {
       expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
       expect(mocks.eventSign).toHaveBeenCalledOnce();
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      // The SDK waits 30 seconds for a hosted delivery response.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       await rejection;
     } finally {
       vi.useRealTimers();
@@ -1800,7 +1806,7 @@ describe("SDK snapshot output to browser mapping", () => {
       const fetchMock = vi.fn().mockImplementation(async () => Response.json(response));
       vi.stubGlobal("fetch", fetchMock);
       const signal = new AbortController().signal;
-      const options = { minimumEventOrder: "opaque z/a", refresh: true, signal };
+      const options = { signal };
       const live = await fetchMarketPriceHistory("condition/one", timeframe, options);
       const reload = await fetchMarketPriceHistory("condition/one", timeframe, options);
       const market = mapCatalogueEntryToMarket(yesNoEntry) as unknown as MarketDetail;
@@ -1811,7 +1817,7 @@ describe("SDK snapshot output to browser mapping", () => {
       expect(mapped.snapshotEventOrder).toBe("opaque z/a");
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe(
-        `${window.location.origin}/api/v1/markets/condition%2Fone/price-history?timeframe=${timeframe}&minimumEventOrder=opaque+z%2Fa&refresh=true`,
+        `${window.location.origin}/api/v1/markets/condition%2Fone/price-history?timeframe=${timeframe}`,
       );
       expect(init.signal).toBe(signal);
     },
@@ -1861,4 +1867,20 @@ describe("SDK snapshot output to browser mapping", () => {
     );
     await expect(fetchMarketComments("condition/one")).rejects.toBeInstanceOf(EngineClientError);
   });
+});
+
+it("passes display repair cancellation to the actual market catalogue request", async () => {
+  const controller = new AbortController();
+  let signal: AbortSignal | null | undefined;
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_url, options) => {
+    signal = options?.signal;
+    return new Promise((_resolve, reject) =>
+      signal?.addEventListener("abort", () => reject(signal?.reason), { once: true }),
+    );
+  });
+  const read = fetchMarketDetail("a".repeat(64), controller.signal);
+  expect(signal).toBe(controller.signal);
+  controller.abort();
+  await expect(read).rejects.toMatchObject({ name: "AbortError" });
+  fetchMock.mockRestore();
 });

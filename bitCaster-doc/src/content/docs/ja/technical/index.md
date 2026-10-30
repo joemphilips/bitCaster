@@ -6,6 +6,42 @@ sidebar:
 
 このセクションでは、bitCaster の公開技術動作を説明します。
 
+## リクエストボディの制限
+
+ボディを持つリクエストは、同時アップロード数の上限に達すると、認証前に `429` を返される場合があります。
+有効な認証情報があっても、この制限は適用されます。
+同時リクエスト数を減らし、各エンドポイントの再試行・復旧ルールに従ってください。
+この拒否では `limitCode: "request-body-concurrency"` と `Retry-After: 1` を返します。
+1秒は再試行までの待機時間の目安であり、その後に空きがあることを保証しません。
+
+申告したボディの長さがエンドポイントの上限を超える場合、認証前に `413` を返します。
+受け付けたリクエストでは、ストリーミングされたボディや申告値より大きいボディも、エンドポイントの上限を超えると `413` を返します。
+
+Nostr 認証が必要なエンドポイントでは、認証情報がない場合や形式が不正な場合、ボディを読み取る前に `401` を返すことがあります。
+長さを申告しないチャンク転送のボディも対象です。申告した長さが上限を超える場合は、引き続き `413` を先に返します。
+イベントの形式が正しくても、署名、リクエスト先、ボディのハッシュの検証に合格する必要があります。
+
+## リクエスト URL の署名
+
+REST リクエストでは、署名する `method` タグを、大文字・小文字も含めて HTTP メソッドと完全に一致させてください。
+例えば、`GET` リクエストでは `get` ではなく `GET` に署名します。
+
+NIP-98 では、クライアントが実際に送信する URL に署名してください。
+大文字と小文字を区別しないのは、スキームとホストだけです。
+パスと除外後のクエリは、大文字・小文字、パラメーターの順序、パーセントエンコーディングを含めて完全に一致する必要があります。
+例えば、`+` と `%20`、`%2f` と `%2F` は異なります。
+明示したポート番号も変更しないでください。不正なパーセントエスケープは拒否されます。
+
+URL の比較では、デコード後のパラメーター名が `access_token`、`id`、`negotiateVersion` のものを除外します。
+この名前は大文字と小文字を区別するため、`ID` は署名の対象に残ります。
+パラメーター名の重複は拒否されます。`id` と `i%64`、または `id` と `ID` のようなエンコードや大文字・小文字の違いによる重複も対象です。
+通信に使うパラメーターを重複して追加しないでください。
+OrderHub の Bearer またはクエリトークン認証では、`/negotiate` を付けずに論理的な HTTP(S) の hub URL に署名します。
+同じ署名済み URL をネゴシエーションと WebSocket 接続で使用できます。
+これらの例外は、他の URL の変更を許可するものではありません。
+
+署名の手順は[認証](/ja/technical/protocol/authentication/)を参照してください。
+
 ## 独自クライアントと自動化
 
 独自の GUI や TUI、スクリプト、取引用 AI エージェントの操作用インターフェースとして
@@ -16,7 +52,8 @@ CLI を利用できます。コマンドは、プログラムが読み取れる 
 この読み取りにウォレットは不要です。
 
 `bitcaster-cli market history <condition-id> --timeframe 7d` で価格履歴を取得します。
-どちらのコマンドも `--minimum-event-order <event-order>` と `--refresh` を受け付けます。
+このコマンドは、反映済みの最新の履歴をすぐに返します。
+コメントのコマンドは `--minimum-event-order <event-order>` と `--refresh` を受け付けます。
 ソース位置は不透明な値です。値を変えずに渡してください。
 現在のソース位置を対象に読み取るには、`--refresh` を使ってください。
 JSON の結果は `snapshotEventOrder` を保持します。
@@ -25,7 +62,7 @@ JSON の結果は `snapshotEventOrder` を保持します。
 
 ```bash
 bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
-bitcaster-cli market history <condition-id> --timeframe 7d --refresh
+bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
 現在の対応状況は `bitcaster-cli --help` と各コマンドの `--help` で確認してください。
@@ -57,8 +94,11 @@ bitcaster-cli --datadir ./wallet-old signer show
 決定的に生成されたプルーフを復旧する場合、先に選択中のプロファイルのデーモンを停止します。
 
 ```bash
-bitcaster-cli --datadir ./wallet-new wallet recover-seed --wallet-seed-hex-file ./wallet-seed.hex --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
+bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file ./recovery-phrase.txt --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
 ```
+
+seed recovery では `--recovery-phrase-file` または `--wallet-seed-hex-file` の
+どちらか一方を指定します。どちらの file も所有者以外に読ませないでください。
 
 プロファイルに設定されたミントを指定します。後の実行でも同じ復旧 ID を使ってください。
 この確認オプションは、シードから生成したプルーフ候補をミントに開示することへの同意です。
@@ -87,11 +127,32 @@ bitcaster-cli signer profile
 これらの変更には `signer show` のリビジョンが必要です。未完了の処理がある場合は拒否されることがあります。
 ウォレットシードは置き換えません。
 
-`signer show` はオフラインで使えます。`signer profile` は、実行するたびに、
-選択中の署名鍵と設定済みリレーで公開情報を再取得します。保存済みプロフィールのキャッシュはありません。
+`signer show` はオフラインで使えます。編集用フラグを付けずに `signer profile` を実行すると、
+選択中の署名鍵と設定済みリレーで公開情報を再取得します。キャッシュしたプロフィールは返しません。
 別の `signer refresh` コマンドはありません。
 プロフィールを読む前に、切断中の署名鍵を接続し、リレーを設定してください。
 プロフィールが見つからない場合も、有効な結果です。表示名は本人確認の証明ではありません。
+
+任意のプロフィール用フラグで、公開する kind-0 メタデータを編集できます。
+
+```bash
+bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --about ""
+```
+
+指定したフィールドだけを変更します。空文字列を指定すると、そのフィールドを空にします。
+別の `display_name` を含む、他のメタデータは変更しません。
+プロフィールの編集時は、デーモンを停止する必要はありません。
+署名前に、選択したすべてのリレーからの取得を完了する必要があります。
+最新のプロフィールを解釈できない場合や取得が未完了の場合、編集を拒否します。
+出力では、リレーの受け入れ、拒否、応答なしを区別します。
+応答がないことは、そのイベントが拒否された証拠ではありません。
+受け入れ後は、次の編集のために署名済みの公開プロフィールを保持します。
+ローカルへの保存に失敗した場合は、公開の結果と区別して表示します。
+保存が正常に完了した後は、再読み込み後も、リレーの古い応答によって次の編集で
+保存済みの情報を失うことを防ぎます。他のクライアントからの同時変更は防げません。
+プロフィール編集の `--dry-run` は、通信、秘密情報のロック解除、公開を行わず、入力を検証します。
+
 `--dry-run` は、署名鍵の変更や秘密鍵の出力をせず、予定する操作を表示します。
 インポートの dry-run でも、秘密情報の入力ファイルは読み取り、検証します。
 
@@ -469,9 +530,9 @@ bitcaster-cli order wait <market-id> <order-id> --timeout-ms 30000
 タイムアウトは監視だけを停止します。注文の取消や準備の取消は行いません。
 同じ注文 ID で再確認してください。
 
-### 解決済みポジションを償還する
+### 結果判定済みポジションを償還する
 
-解決後に、設定済みのネイティブウォレットで選択したポジションを1件償還します。
+結果判定後に、設定済みのネイティブウォレットで選択したポジションを1件償還します。
 
 ```bash
 bitcaster-cli wallet claim <condition-id> Alpha
@@ -555,27 +616,55 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 `priceDenominator` を含みます。座標には、公開取引履歴と同じ primitive outcome の
 価格と時刻を使います。コメントの署名済み `createdAt` は別の値です。
 
+注文の意図が分かる場合、`trade.authorTrade` はコメント投稿者の注文の意図を示します。
+`side`（`Buy` または `Sell`）、`outcomeId`（選択したアウトカム）、
+`tokenSide`（`Outcome` または `Complement`）を含みます。取引の説明文には、
+これらの値を使います。`trade.outcomeId` と `trade.price` の primitive 価格座標を
+置き換える値ではありません。同じ fill の両参加者で、注文の意図が異なる場合があります。
+`authorTrade` がない場合、または `null` の場合、注文の意図は不明です。
+価格座標から購入や選択したトークンを推測しないでください。
+
 `trade.faceAmountSubunits` は、そのコメントに関連する確定 fill の数量です。
 注文全体の数量やユーザーの支払額ではありません。`null` は数量が不明なことを示します。
 この endpoint は最大 500 件のコメントを保持します。完全なコメント履歴ではありません。
 オラクルの結果説明は、有料の取引コメントとは別です。
 確定した約定の座標を提供しません。
-[マーケットの解決](/ja/user-guide/core-concepts/resolution/)を参照してください。
+[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
+
+### マーケットの購読
+
+公開 market hub の `JoinMarket` には、API が返す登録済みの正確なマーケット ID を指定します。
+認証は不要です。接続ごとに最大200件のマーケットを購読できます。
+この上限はポートフォリオの購読上限とは別です。
+また、接続ごとに10秒間の区間につき最大200回の `JoinMarket` 呼び出しを受け付けます。
+重複した ID、不正な ID、未登録の ID を指定した呼び出しも、この回数に含みます。
+
+重複した購読要求が成功すると、購読数を増やさずに現在のスナップショットを返します。
+拒否された購読要求は、購読の成立を意味しません。即時再試行を繰り返さないでください。
+不要になった購読は `LeaveMarket` で解除してください。
+再接続後は、引き続き必要な ID に対して `JoinMarket` を送信してください。
 
 ### コメントと価格履歴の更新
 
-コメント endpoint と `GET /api/v1/markets/{conditionId}/price-history` は、
-`minimumEventOrder` と `refresh=true` を受け付けます。取得したイベント位置を
+`GET /api/v1/markets/{conditionId}/price-history` は、反映済みの最新の履歴をすぐに返します。
+source position は受け付けず、新しい取引を待ちません。サーバーは、履歴に取引が
+反映された後に `ConfirmedTradeRecorded` を送信します。この待機には制限時間があります。
+制限時間を過ぎた場合も、サーバーは通知を送信します。通知を受け取るたびと再接続後に、
+履歴を再取得してください。
+
+コメント endpoint は `minimumEventOrder` と `refresh=true` を受け付けます。取得したイベント位置を
 変更せずに `minimumEventOrder` に渡してください。再接続後は `refresh=true` を使います。
 サーバーは現在の source position を一度だけ取得します。その位置まで反映した後に
 snapshot を返します。今後発生するすべてのイベントを待つわけではありません。
 
 どちらのレスポンスも `snapshotEventOrder` を含みます。
 これは、その snapshot に反映済みと確認した source position です。
-このフィールドは `null` を許容します。`null` の場合、次の `minimumEventOrder`
-リクエストに使える位置はありません。代わりに `refresh=true` を使ってください。
+このフィールドは `null` を許容します。コメントの snapshot が `null` の場合、次の
+`minimumEventOrder` リクエストに使える位置はありません。代わりに `refresh=true` を使ってください。
 イベント位置は不透明な値として扱ってください。クライアント側で解析や比較をしないでください。
-読み取り期限内に必要な位置までの反映を確認できない場合は `503` を返します。
+コメントの読み取りは、読み取り期限内に必要な位置までの反映を確認できない場合に `503` を返します。
+価格履歴の読み取りは、履歴を提供できない場合にだけ `503` を返します。
+これは、サーバーが履歴を作成または再開している間か、サーバーの障害の後に発生します。
 前の表示を保持し、更新できないことを示してください。
 このレスポンスを空のリストや価格ゼロとして扱わないでください。
 
@@ -592,9 +681,40 @@ snapshot を返します。今後発生するすべてのイベントを待つ�
 SignalR の `MarketCommentsChanged { conditionId, eventOrder }` は、
 公開コメントの source が変更されたことを示します。
 `ConfirmedTradeRecorded` も `latestConfirmedTrade.eventOrder` に source position を含みます。
-どちらのメッセージも snapshot の準備完了を保証しません。
-その位置を次の bounded read に渡してください。配信は best effort です。
+`MarketCommentsChanged` は、コメントの snapshot の準備完了を保証しません。
+どちらの位置も、次の上限付きのコメント読み取りに渡してください。
+`ConfirmedTradeRecorded` は通常、価格履歴に取引が反映された後に届きます。
+サーバーの待機が制限時間に達した場合は、通知が先に届くことがあります。
+その場合、後の読み取りまで履歴に取引が含まれないことがあります。
+配信は best effort です。
 再接続後は、最終取引価格が変わっていない場合も更新してください。
+
+初回と通常のイベントによる読み取りは、すぐに開始します。読み取りが失敗した場合は、
+コメントの source の下限を保持します。現在の snapshot を適用するまで、上限付きバックオフとジッターで
+再試行します。次のイベントを待たないでください。復旧中は既存の表示を保持します。
+ルートが変わった場合、または読み取りが成功した場合は再試行を停止します。
+正常な表示を定期的に取得する処理ではありません。
+
+単一注文の受付レスポンスは、表示通知の配信を待ちません。通知は HTTP レスポンスの前にも
+後にも届く場合があります。進捗は注文状態と確定した決済状態で確認してください。
+表示の更新だけでは決済の完了を証明しません。レスポンスを受け取れなかった場合は、
+別の注文を送信する前に元の注文を確認してください。
+
+両方の hub は、表示の更新を復旧するために `ResyncRequired` を送信できます。
+market hub の `{ token, conditionId }` は、購読中の該当 condition の再取得を要求します。
+`conditionId` が `null` の場合は、現在購読中のすべての condition が対象です。
+認証済み order hub の `{ token }` は、現在のユーザーの処理中の注文状態を再取得します。
+token は小文字の16進数32文字です。イベント位置ではなく、不透明な再取得識別子として扱います。
+condition ID は小文字の16進数64文字です。不正な通知は拒否してください。
+
+再取得中は既存の表示を保持します。現在の注文板、価格履歴、コメント、影響を受ける
+Portfolio の評価額を通常の API から再取得します。source position がないコメントには
+`refresh=true` を使います。価格履歴にオプションは不要です。必要な読み取りがすべて成功し、現在のルートまたはウォレットに
+適用された後にだけ復旧を完了します。後続の通知がなくても、失敗した復旧は上限付きの
+バックオフとジッターで再試行します。重複した要求をまとめます。復旧中に別の通知が来た場合は、
+次の復旧要求を1つ保持します。古いルートやウォレットの処理は中止します。
+復旧に成功した後はポーリングしません。再接続時の再取得も維持します。
+この通知は残高、支出権限、custody state を含みません。
 
 `GET /api/v1/markets/{conditionId}/registration` は、コンディション1件の公開登録情報を
 返します。マーケット作成のレスポンスを受け取れなかった場合に、登録を確認するために使います。
@@ -655,3 +775,24 @@ SignalR の `MarketCommentsChanged { conditionId, eventOrder }` は、
 価格と取引終了の更新を受け取るには、market hub の `SetPortfolioValuationSubscriptions` に購読するコンディションIDを渡します。その接続の購読対象を置き換えます。重複を含めて最大200件を受け付けます。APIが返す正確なコンディションIDを使ってください。空の配列で購読を解除できます。再接続後は購読対象を再送してください。
 
 この購読では `ConfirmedTradeRecorded` と `MarketStatusChanged` を受け取ります。注文板のスナップショットや板の厚さの更新は受け取りません。購読、再接続、または対象の通知を受信した後に、Portfolioのレスポンスを再取得してください。更新要求をまとめ、`429` の応答に従ってください。通知を受け取っても、直後のPortfolio読み取りに反映されている保証はありません。
+
+## デプロイ ID
+
+`GET /api/deployment-identity` は、実行中の API パッケージの ID を返します。
+`GET /deployment-identity` は、実行中のフロントエンドサーバーパッケージの ID を返します。
+どちらの endpoint も公開されており、認証は不要です。
+
+成功レスポンスのフィールドは3つだけです。`schemaVersion` は `1` です。
+`component` は対応する endpoint に応じて `api` または `frontend` です。
+`buildId` は64文字の小文字16進数で表す不透明な ID です。
+サーバーは起動時にこの ID を1回だけ読み取ります。
+ファイルを置き換えても、実行中のプロセスのレスポンスは変わりません。
+
+成功時と失敗時の両方で `Cache-Control: no-store` を返します。
+パッケージの ID がない場合、または無効な場合、endpoint は HTTP `503` と
+`{"error":"deployment-identity-unavailable"}` を返します。
+この ID がなくても、他のサーバー機能は起動できます。
+
+両方のレスポンスを使って、実行中のパッケージを期待するデプロイと比較します。
+この ID は操作を承認するものではなく、暗号学的な完全性を証明するものでもありません。
+1つのレスポンスから、すべてのサーバーインスタンスが同じパッケージを使用しているとは確認できません。

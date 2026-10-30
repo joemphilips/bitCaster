@@ -331,3 +331,98 @@ test('initial registration mismatch clears cached evidence before later witness 
   witness = { oracle_sigs: [] }
   assert.equal((await resolver.resolveFromMint(request)).evidence.status, 'unverified')
 })
+
+test('nonlexical losing collection keeps exact registered wire order and survives reload', async () => {
+  const { schnorr } = await import('@noble/curves/secp256k1.js')
+  const { sha256 } = await import('@noble/hashes/sha2.js')
+  const { bytesToHex, concatBytes } = await import('@noble/hashes/utils.js')
+  const { deriveConditionalKeysetId } = await import('@cashu/cashu-ts')
+  const { signedCtfRegistrationFixture } = await import('./support/ctfAnnouncementFixture.ts')
+  const { verifyCtfConditionRegistration } = await import('../src/ctfConditionRegistration.ts')
+  const { deriveRootCtfOutcomeCollectionId } = await import('../src/durableCtfRangeOperation.ts')
+  const { prepareDlcConditionResolutionEvidence } =
+    await import('../src/managedConditionInventory.ts')
+  const key = new Uint8Array(32)
+  key[31] = 7
+  const text = new TextEncoder(),
+    tag = sha256(text.encode('DLC/oracle/attestation/v0'))
+  const signature = bytesToHex(
+    schnorr.sign(sha256(concatBytes(tag, tag, text.encode('YES'))), key, new Uint8Array(32)),
+  )
+  const raw = signedCtfRegistrationFixture(
+    ['YES', 'Zulu', 'Alpha'],
+    'nonlexical-loss',
+    signature.slice(0, 64),
+  )
+  const authority = verifyCtfConditionRegistration({
+    condition: raw,
+    conditionId: raw.condition_id,
+    mintUrl: 'https://mint.example',
+    allowInsecureLoopbackHttp: false,
+  })
+  const registered = {
+    schemaVersion: 1 as const,
+    ...authority,
+    scopeId: deriveDurableCustodyScopeId({
+      scopeKind: 'condition-inventory',
+      conditionId: authority.conditionId,
+      inventoryAccountId: 'nonlexical-loss',
+      normalizedMint: authority.normalizedMint,
+      unit: 'msat',
+    }),
+  }
+  const resolution = {
+    registered,
+    evidence: prepareDlcConditionResolutionEvidence('YES', {
+      oracle_sigs: [
+        {
+          oracle_pubkey: bytesToHex(schnorr.getPublicKey(key)),
+          oracle_sig: signature,
+          outcome: 'YES',
+        },
+      ],
+    }).evidence,
+  }
+  const collection = 'Zulu|Alpha'
+  const collectionId = deriveRootCtfOutcomeCollectionId({
+    conditionId: authority.conditionId,
+    outcomeCollection: collection,
+  })
+  const keys = conditional.keys
+  const id = deriveConditionalKeysetId({
+    keys: { ...keys },
+    unit: 'msat',
+    conditionId: authority.conditionId,
+    outcomeCollectionId: collectionId,
+  })
+  const keyset = {
+    ...conditional,
+    id,
+    unit: 'msat' as const,
+    identity: {
+      kind: 'conditional' as const,
+      conditionId: authority.conditionId,
+      outcomeCollection: collection,
+      outcomeCollectionId: collectionId,
+    },
+  }
+  const request = {
+    resolution,
+    operationId: 'nonlexical-remove',
+    mintUrl: authority.normalizedMint,
+    conditionId: authority.conditionId,
+    outcomeCollection: collection,
+    inputs: [{ ...inputs[0], id }] as Proof[],
+    inputKeysets: [keyset],
+  }
+  const losing = prepareCtfVerifiedLosingAuthority(request)
+  assert.equal(
+    requireCtfVerifiedLosingAuthority(JSON.parse(JSON.stringify(losing)), request)
+      .outcomeCollection,
+    collection,
+  )
+  assert.throws(
+    () => prepareCtfVerifiedLosingAuthority({ ...request, outcomeCollection: 'Alpha|Zulu' }),
+    /wire order/,
+  )
+})

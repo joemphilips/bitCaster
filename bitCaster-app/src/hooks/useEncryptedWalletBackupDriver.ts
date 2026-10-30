@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   activeBrowserWalletScopeId,
   browserWalletDatabaseName,
   browserWalletScopeIdFromSeed,
 } from "@/lib/browserWalletProfile";
 import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
-import {
-  BrowserWalletRecoveryRequiredError,
-  requireBrowserWalletNewWritePermission,
-} from "@/lib/browserWalletNewWritePermission";
 import { assertNever } from "@/lib/enumDiscipline";
 import {
   createBrowserEncryptedWalletBackupV2RuntimeDriver,
@@ -17,6 +13,8 @@ import {
   type BrowserEncryptedWalletBackupV2RuntimeDriver,
 } from "@/lib/encryptedWalletBackupDriver";
 import { toSeed } from "@/lib/bip39";
+import { captureBrowserEncryptedWalletBackupOwnerSession } from "@/lib/browserEncryptedWalletBackupOwnerSession";
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { db } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 
@@ -33,6 +31,11 @@ export function useEncryptedWalletBackupDriver(
 ): EncryptedWalletBackupDriverState {
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const configuration = useMemo(() => resolveEncryptedWalletBackupConfiguration(), []);
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+    getNostrSignerRevision,
+  );
   const [recoveryStatus, setRecoveryStatus] =
     useState<BrowserEncryptedWalletBackupV2RecoveryStatus>(() =>
       nostrSignerReady && mnemonic && configuration !== null
@@ -51,6 +54,7 @@ export function useEncryptedWalletBackupDriver(
     const controller = new AbortController();
     let driver: BrowserEncryptedWalletBackupV2RuntimeDriver | undefined;
     let unregister: (() => void) | undefined;
+    let disposeOwnerSession: (() => void) | undefined;
     try {
       const words = mnemonic.trim().split(/\s+/).filter(Boolean);
       if (words.length === 0) return;
@@ -58,18 +62,19 @@ export function useEncryptedWalletBackupDriver(
       const scopeId = browserWalletScopeIdFromSeed(seed);
       const database = db;
       if (database.name !== browserWalletDatabaseName(scopeId)) return;
-      const isCurrentProfile = () =>
+      const isCurrentWalletProfile = () =>
         useWalletStore.getState().mnemonic === mnemonic &&
         activeBrowserWalletScopeId() === scopeId &&
         db === database &&
         database.name === browserWalletDatabaseName(scopeId);
+      const ownerSession = captureBrowserEncryptedWalletBackupOwnerSession({
+        isCurrentProfile: isCurrentWalletProfile,
+        signal: controller.signal,
+      });
+      disposeOwnerSession = ownerSession.dispose;
+      const isCurrentProfile = ownerSession.isCurrent;
       const onRecoveryStatusChange = (status: BrowserEncryptedWalletBackupV2RecoveryStatus) => {
-        if (
-          controller.signal.aborted ||
-          generationRef.current !== generation ||
-          !isCurrentProfile()
-        )
-          return;
+        if (!isCurrentProfile() || generationRef.current !== generation) return;
         setRecoveryStatus((previous) => {
           if (previous.kind !== status.kind) return status;
           switch (status.kind) {
@@ -78,24 +83,24 @@ export function useEncryptedWalletBackupDriver(
               return previous;
             case "preparing":
             case "recovering":
+            case "blocked":
               return "reason" in previous && previous.reason === status.reason ? previous : status;
             default:
               return assertNever(status);
           }
         });
       };
-      if (!nostrSignerReady) {
-        // Missing signers do not block an unenrolled wallet. Project the existing read-only guard.
-        void readNoDriverStatus(database, scopeId).then(onRecoveryStatusChange);
-        return () => controller.abort();
-      }
-      onRecoveryStatusChange({ kind: "preparing", reason: "authentication" });
+      onRecoveryStatusChange({
+        kind: "preparing",
+        reason: nostrSignerReady ? "authentication" : "driver-unavailable",
+      });
       driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
         configuration,
         database,
         scopeId,
         seed,
-        signal: controller.signal,
+        signal: ownerSession.signal,
+        ownerSession,
         isCurrentProfile,
         onRecoveryStatusChange,
         loadWallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
@@ -108,10 +113,11 @@ export function useEncryptedWalletBackupDriver(
     return () => {
       if (generationRef.current === generation) driverRef.current = null;
       unregister?.();
+      disposeOwnerSession?.();
       controller.abort();
       driver?.stop();
     };
-  }, [configuration, mnemonic, nostrSignerReady, restart]);
+  }, [configuration, mnemonic, nostrSignerReady, restart, signerRevision]);
 
   const retryRecovery = useCallback(() => {
     switch (recoveryStatus.kind) {
@@ -120,6 +126,7 @@ export function useEncryptedWalletBackupDriver(
         else setRestart((value) => value + 1);
         break;
       case "failed":
+      case "blocked":
         setRestart((value) => value + 1);
         break;
       case "ready":
@@ -131,24 +138,4 @@ export function useEncryptedWalletBackupDriver(
   }, [recoveryStatus]);
 
   return { recoveryStatus, retryRecovery };
-}
-
-async function readNoDriverStatus(
-  database: typeof db,
-  scopeId: string,
-): Promise<BrowserEncryptedWalletBackupV2RecoveryStatus> {
-  try {
-    await requireBrowserWalletNewWritePermission({ database, scopeId });
-    return READY_STATUS;
-  } catch (error) {
-    if (!(error instanceof BrowserWalletRecoveryRequiredError)) return { kind: "failed" };
-    switch (error.reason) {
-      case "startup-authentication-pending":
-        return { kind: "preparing", reason: "driver-unavailable" };
-      case "genuine-conflict":
-        return { kind: "recovering", reason: null };
-      default:
-        return assertNever(error.reason);
-    }
-  }
 }

@@ -1,3 +1,4 @@
+import { reconstructCtfRangePreparation } from './ctfRangeOrderCounterPreparation.ts'
 import {
   OutputData,
   splitAmount,
@@ -10,10 +11,7 @@ import {
   type SerializedBlindedSignature,
 } from '@cashu/cashu-ts'
 import type { CtfRangeCapabilitySourcePlan } from './ctfRangeCapabilitySourcePlan.ts'
-import {
-  prepareCtfRangeOrderAuthorization,
-  type ActiveCtfRangeMintKeyset,
-} from './ctfRangeOrderPreparation.ts'
+import { type ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
 import type { PersistedCtfRangeOrderPreparation } from './ctfRangeOrderProtocol.ts'
 import {
   decodeDurableCustodyProofOperationInput,
@@ -112,10 +110,7 @@ export async function prepareCtfRangeCollateralSourceOperation(input: {
   const offered = conditionalKeyset(preparation.offerKeyset, 'offered')
   const complement = preparation.complementKeyset
   const collateral = regularKeyset(preparation.receiveKeyset)
-  const authorization = prepareCtfRangeOrderAuthorization({
-    seed: input.seed,
-    ...withoutRequest(preparation),
-  }).authorizationOutputs
+  const authorization = reconstructCtfRangePreparation(preparation, input.seed).authorizationOutputs
   assertAmounts(authorization, input.plan.authorizationAmounts, 'authorization')
   const [complementOutputs, collateralChange] = await reserveOutputGroups({
     seed: input.seed,
@@ -169,10 +164,7 @@ export async function prepareCtfRangeMixedSourceOperation(input: {
 }): Promise<DurableCustodyProofOperationInput> {
   const preparation = input.preparation
   const { offered, collateral } = mixedKeysets(preparation)
-  const authorization = prepareCtfRangeOrderAuthorization({
-    seed: input.seed,
-    ...withoutRequest(preparation),
-  }).authorizationOutputs
+  const authorization = reconstructCtfRangePreparation(preparation, input.seed).authorizationOutputs
   assertAmounts(authorization, input.plan.authorizationAmounts, 'authorization')
   const serializedInputs = [
     ...input.plan.offeredInputs.map(serializeDurableCustodyProofInput),
@@ -923,9 +915,4 @@ function text(value: unknown, label: string): string {
     throw new Error(`collateral range source ${label} is invalid`)
   }
   return value
-}
-
-function withoutRequest(preparation: PersistedCtfRangeOrderPreparation) {
-  const { version: _, request: _request, ...input } = preparation
-  return input
 }

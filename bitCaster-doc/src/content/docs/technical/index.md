@@ -6,6 +6,44 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+## Request body limits
+
+Requests with a body can receive `429` before authentication when concurrent
+upload capacity is full. Valid credentials do not bypass this limit. Reduce
+simultaneous requests and follow the endpoint's retry and recovery rules.
+This refusal uses `limitCode: "request-body-concurrency"` and `Retry-After: 1`.
+The one-second delay is a retry hint, not a promise that capacity will be free.
+
+A declared body length above the endpoint limit receives `413` before
+authentication. For an admitted request, streamed bodies and bodies larger than
+their declared length also receive `413` when they exceed the endpoint limit.
+
+Protected Nostr endpoints can reject missing or malformed credentials with `401`
+before reading a request body. This also applies to chunked bodies with no declared
+length. A declared oversized body still receives `413` first. A correctly encoded
+event must still pass signature, request-target, and body-hash validation.
+
+## Sign the request URL
+
+For REST requests, the signed `method` tag must match the HTTP verb exactly,
+including case. For example, sign `GET`, not `get`, for a `GET` request.
+
+For NIP-98, sign the URL that the client sends. Only the scheme and host ignore
+case. The path and retained query must match exactly, including case, parameter
+order, and percent encoding. For example, `+` differs from `%20`, and `%2f`
+differs from `%2F`. Keep explicit ports unchanged. Malformed percent escapes
+are refused.
+
+URL comparison excludes the decoded parameter names `access_token`, `id`, and
+`negotiateVersion`. These names are case-sensitive; `ID` remains signed.
+Repeated parameter names are refused, including encoded or case aliases such
+as `id` with `i%64` or `ID`. Do not add duplicate transport parameters.
+For OrderHub Bearer or query-token authentication, sign the logical HTTP(S) hub
+URL without `/negotiate`. The same signed URL supports negotiation and the
+WebSocket connection. These exceptions do not permit other URL changes.
+
+See [Authentication](/technical/protocol/authentication/) for the signing flow.
+
 ## Custom clients and automation
 
 Use the CLI as an application interface for a custom GUI or TUI, scripts,
@@ -16,7 +54,8 @@ Use `bitcaster-cli market comments <condition-id>` to read public comments as JS
 This read does not need a wallet.
 
 Use `bitcaster-cli market history <condition-id> --timeframe 7d` to read price history.
-Both commands accept `--minimum-event-order <event-order>` and `--refresh`.
+It returns the latest applied history at once.
+The comments command accepts `--minimum-event-order <event-order>` and `--refresh`.
 Pass the source position unchanged. It is opaque.
 Use `--refresh` to capture the current source head for the read.
 The JSON result retains `snapshotEventOrder`.
@@ -25,7 +64,7 @@ These reads do not require a wallet, signer, or daemon.
 
 ```bash
 bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
-bitcaster-cli market history <condition-id> --timeframe 7d --refresh
+bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
 Use `bitcaster-cli --help` and each command's `--help` to check current support.
@@ -56,8 +95,11 @@ Selecting a directory does not move funds or replace another profile.
 To recover deterministic proofs, stop the selected profile's daemon first:
 
 ```bash
-bitcaster-cli --datadir ./wallet-new wallet recover-seed --wallet-seed-hex-file ./wallet-seed.hex --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
+bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file ./recovery-phrase.txt --recovery-id recovery-001 --mint https://mint.example --unit msat --acknowledge-seed-disclosure
 ```
+
+For seed recovery, supply exactly one of `--recovery-phrase-file` or
+`--wallet-seed-hex-file`. Keep either owner-only file private.
 
 Use the profile's configured mint and the same recovery ID for later invocations.
 The acknowledgment permits disclosure of deterministic proof candidates to the mint.
@@ -85,11 +127,32 @@ Stop the daemon before import, generation, connect, or disconnect.
 These changes require the revision from `signer show` and can refuse unfinished work.
 They do not replace the wallet seed.
 
-`signer show` works offline. Each `signer profile` call refreshes public metadata
-from the selected signer's configured relays. It has no stored profile cache.
+`signer show` works offline. With no edit flags, `signer profile` refreshes public
+metadata from the selected signer's configured relays. It does not return a cached profile.
 There is no separate `signer refresh` command.
 Connect a disconnected signer and configure a relay before reading a profile.
 No profile found is a valid result. A profile name is not proof of identity.
+
+Use optional profile flags to edit public kind-0 metadata:
+
+```bash
+bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --about ""
+```
+
+Only supplied fields change. An empty string clears a field. Unrelated metadata,
+including a separate `display_name`, stays unchanged. Profile edits do not require
+the daemon to stop. All selected relay reads must complete before signing.
+An unusable latest profile or an incomplete read refuses the edit.
+Output distinguishes relay acceptance, rejection, and missing acknowledgement.
+Missing acknowledgement does not prove that a relay rejected the event.
+After acceptance, the client retains the signed public profile for later edits.
+It reports local retention failure separately from publication. A successful
+durable save protects the next edit from older relay replies, including after
+reload. It cannot prevent concurrent changes from another client.
+Profile-edit `--dry-run` validates the supplied fields without network access,
+secret unlock, or publication.
+
 `--dry-run` prints the intended signer action without changing the signer or exporting a key.
 Import dry-run still reads and validates the private input files.
 
@@ -544,6 +607,14 @@ coordinate is unavailable. Otherwise, it contains `fillId`, `outcomeId`,
 primitive outcome price and time from public trade history. The comment's
 signed `createdAt` stays separate.
 
+When known, `trade.authorTrade` describes the comment author's order intent.
+It contains `side` (`Buy` or `Sell`), `outcomeId` (the selected outcome), and
+`tokenSide` (`Outcome` or `Complement`). Use these fields for the trade sentence.
+They do not replace the primitive price coordinate in `trade.outcomeId` and
+`trade.price`. The two participants in one fill can have different order intents.
+An absent or `null` `authorTrade` means that the intent is unknown. Do not infer
+a buy action or selected token from the price coordinate.
+
 `trade.faceAmountSubunits` gives the size of that linked confirmed fill.
 It is not the complete order size or the user's payment. A `null` value means
 that the size is unknown. The endpoint retains up to 500 comments.
@@ -552,21 +623,44 @@ An oracle resolution explanation is separate from paid trade comments.
 It does not supply a confirmed fill coordinate. See
 [market resolution](/user-guide/core-concepts/resolution/).
 
+### Market subscriptions
+
+Invoke `JoinMarket` on the public market hub with an exact registered market ID
+from the API. Authentication is not required. Each connection can hold up to
+200 market subscriptions. This limit is separate from the portfolio subscription
+limit. The connection also has a budget of 200 `JoinMarket` attempts per
+ten-second window. Duplicate, invalid, and unknown market IDs consume this budget.
+
+A successful duplicate join sends a current snapshot without adding another
+subscription. A refused join does not confirm a subscription. Do not use an
+immediate retry loop. Use `LeaveMarket` to release subscriptions that are no
+longer needed. After reconnecting, send `JoinMarket` for the IDs still needed.
+
 ### Refresh comments and price history
 
-The comments endpoint and
-`GET /api/v1/markets/{conditionId}/price-history` accept `minimumEventOrder`
-and `refresh=true`. Pass an event position unchanged in `minimumEventOrder`.
+`GET /api/v1/markets/{conditionId}/price-history` returns the latest applied
+history at once. It does not accept a source position and does not wait for
+newer trades. The server sends `ConfirmedTradeRecorded` after the history
+includes the trade. That wait has a time limit. When the limit passes, the
+server sends the notification anyway. Read the history again after each
+notification and after a reconnect.
+
+The comments endpoint accepts `minimumEventOrder` and `refresh=true`.
+Pass an event position unchanged in `minimumEventOrder`.
 Use `refresh=true` after a reconnect. The server captures the current source
 position once. It waits for that position before returning the snapshot.
 It does not wait for all future events.
 
 Both responses include `snapshotEventOrder`. It is the applied source position
-proven for that snapshot. The field is nullable. A `null` value supplies no
-position for a later `minimumEventOrder` request. Use `refresh=true` instead.
+proven for that snapshot. The field is nullable. A `null` comment snapshot
+supplies no position for a later `minimumEventOrder` request. Use
+`refresh=true` instead.
 Treat event positions as opaque values. Do not parse or compare them on the client.
-If the read cannot prove the required position within its deadline, it returns
-`503`. Keep the previous display and show that its refresh is unavailable.
+A comment read returns `503` if it cannot prove the required position within
+its deadline. A price-history read returns `503` only when the history is not
+available. This occurs while the server builds or restarts the history, or
+after a server fault.
+Keep the previous display and show that its refresh is unavailable.
 Do not treat this response as an empty list or zero prices.
 
 Price history also includes `asOf`, the server's evaluation time.
@@ -581,9 +675,43 @@ existing categorical price step.
 The SignalR message `MarketCommentsChanged { conditionId, eventOrder }`
 means that the public comment source changed. `ConfirmedTradeRecorded`
 also supplies a source position in `latestConfirmedTrade.eventOrder`.
-Neither message guarantees that a snapshot is ready. Use its position in the
-next bounded read. Delivery is best effort. Refresh after a reconnect even
+`MarketCommentsChanged` does not guarantee that the comment snapshot is ready.
+Use either position in the next bounded comment read.
+`ConfirmedTradeRecorded` usually arrives after the price history includes the
+trade. If the server's wait reaches its time limit, the notification can arrive
+first. The history can then omit the trade until a later read.
+Delivery is best effort. Refresh after a reconnect even
 when the last trade price did not change.
+
+Start initial and ordinary event-triggered reads immediately. If a read fails,
+keep any comment source minimum and retry with capped backoff and jitter until a
+current snapshot is applied. Do not wait for another event. Keep the displayed
+snapshot during repair. Stop retries when the route changes or the read succeeds.
+These retries do not poll a healthy display.
+
+An accepted single-order submission response does not wait for display notifications. Notifications
+can arrive before or after the HTTP response. Use the order status and confirmed
+settlement state to track progress. A display update does not prove settlement.
+If the response is lost, check the original order before submitting another order.
+
+Both hubs can send `ResyncRequired` when display updates need repair. On the
+market hub, `{ token, conditionId }` refreshes the subscribed condition.
+A `null` condition means all currently subscribed conditions. On the authenticated
+order hub, `{ token }` refreshes the current user's pending order status.
+The token is 32 lowercase hexadecimal characters. Treat it as an opaque refresh
+identifier, not an event position. A condition ID is 64 lowercase hexadecimal
+characters. Reject malformed controls.
+
+Keep the existing display while refreshing. Refresh the current order books,
+price history, comments, and affected Portfolio values from their normal APIs.
+Use `refresh=true` for comments when no source position is available.
+Price history needs no option.
+Complete repair only after the required reads succeed and apply to the current
+route or wallet. Retry failed repair with bounded backoff and jitter, even when
+no later message arrives. Coalesce duplicate requests and retain one follow-up
+when another control arrives during repair. Cancel old route or wallet work.
+Do not poll after successful repair. Keep the reconnect refresh path.
+These controls carry no balance, spending authority, or custody state.
 
 `GET /api/v1/markets/{conditionId}/registration` returns public registration
 facts for one condition. Use it to check a market-creation result when the
@@ -677,3 +805,24 @@ These subscriptions receive `ConfirmedTradeRecorded` and
 Refresh the Portfolio response after subscribing, reconnecting, or receiving
 a relevant notification. Coalesce refreshes and respect `429` responses.
 A notification does not guarantee that the next Portfolio read includes it.
+
+## Deployment identity
+
+`GET /api/deployment-identity` returns the running API package identity.
+`GET /deployment-identity` returns the running frontend server package identity.
+Both endpoints are public and require no authentication.
+
+A successful response has exactly three fields: `schemaVersion` is `1`,
+`component` is `api` or `frontend` for the corresponding endpoint, and `buildId`
+is an opaque string of 64 lowercase hexadecimal characters. The server captures
+this identity once at startup. Replacing a file does not change a running
+process's response.
+
+Both success and failure responses use `Cache-Control: no-store`. If the package
+identity is missing or invalid, the endpoint returns HTTP `503` with
+`{"error":"deployment-identity-unavailable"}`. Other server functions can still
+start without this identity.
+
+Use both responses to compare the running packages with an expected deployment.
+This identity does not authorize an operation or prove cryptographic integrity.
+A response does not prove that every server instance uses the same package.

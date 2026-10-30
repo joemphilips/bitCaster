@@ -1,4 +1,13 @@
 import {
+  assertCounterPreparationRecordBinding,
+  decodeCounterCtfRangePreparation,
+  type CounterCtfRangePreparation,
+} from './ctfRangeOrderCounterPreparation.ts'
+import {
+  encodeMintOutcomeCollection,
+  type VerifiedCtfConditionRegistration,
+} from './ctfConditionRegistration.ts'
+import {
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
@@ -146,6 +155,7 @@ export interface CtfRangeConditionalMintKeyset extends ActiveCtfRangeMintKeyset 
 }
 
 export interface CtfRangeReviewedMintFacts {
+  readonly registration: VerifiedCtfConditionRegistration
   readonly regular: readonly ActiveCtfRangeMintKeyset[]
   readonly conditional: readonly CtfRangeConditionalMintKeyset[]
   readonly maxInputs: number
@@ -153,7 +163,11 @@ export interface CtfRangeReviewedMintFacts {
   readonly observation: DurableCtfRangeExpiryObservation
 }
 
-export interface PersistedCtfRangeOrderPreparation {
+export type PersistedCtfRangeOrderPreparation =
+  | PersistedCtfRangeOrderPreparationV2
+  | CounterCtfRangePreparation
+
+export interface PersistedCtfRangeOrderPreparationV2 {
   readonly version: 2
   readonly operationId: string
   readonly sourceOperationId: string
@@ -200,13 +214,28 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
   readonly randomId: () => string
   readonly authorizationAmountSubunits?: number
   readonly authorizationLifetimeSeconds?: number
-}): PersistedCtfRangeOrderPreparation {
+}): PersistedCtfRangeOrderPreparationV2 {
   const request = decodeCtfRangeOrderRequest(input.request)
   const coordinatorPublicKey = decodeCoordinatorPublicKey(input.coordinatorPublicKey)
-  const selectedCollection = selectedOutcomeCollection(input.market, request)
-  const complementCollection = complementOutcomeSetId(
-    parseMarketOutcomes(input.market).map(({ label }) => label),
-    selectedCollection,
+  const registration = input.mintFacts.registration
+  if (
+    registration.conditionId !== request.conditionId ||
+    registration.normalizedMint !== request.mintUrl ||
+    registration.unit !== request.collateralUnit ||
+    registration.canonicalParentCollectionId !== null
+  )
+    throw new Error('range preparation registration authority is foreign')
+  const marketOutcomes = parseMarketOutcomes(input.market).map(({ label }) => label)
+  if (
+    marketOutcomes.length !== registration.outcomes.length ||
+    marketOutcomes.some((outcome) => !registration.outcomes.includes(outcome))
+  )
+    throw new Error('engine market disagrees with registered outcome authority')
+  const selectedMembers = selectedOutcomeCollection(input.market, request).split('|')
+  const selectedCollection = encodeMintOutcomeCollection(registration.outcomes, selectedMembers)
+  const complementCollection = encodeMintOutcomeCollection(
+    registration.outcomes,
+    registration.outcomes.filter((outcome) => !selectedMembers.includes(outcome)),
   )
   const { regular, conditional, complement } = selectPreparationKeysets(
     input.mintFacts,
@@ -224,7 +253,7 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
     input.authorizationLifetimeSeconds,
   )
   const operationId = requireText(input.randomId(), 'range preparation operation id')
-  return decodePersistedCtfRangeOrderPreparation({
+  return decodePersistedCtfRangeOrderPreparationV2({
     version: 2,
     operationId,
     sourceOperationId: `${operationId}:source`,
@@ -256,6 +285,14 @@ export function encodePersistedCtfRangeOrderPreparation(
 export function decodePersistedCtfRangeOrderPreparation(
   value: unknown,
 ): PersistedCtfRangeOrderPreparation {
+  if (typeof value === 'object' && value !== null && 'version' in value && value.version === 3)
+    return decodeCounterCtfRangePreparation(value)
+  return decodePersistedCtfRangeOrderPreparationV2(value)
+}
+
+export function decodePersistedCtfRangeOrderPreparationV2(
+  value: unknown,
+): PersistedCtfRangeOrderPreparationV2 {
   const input = exactRecord(value, PREPARATION_FIELDS, 'range preparation input')
   const request = decodeCtfRangeOrderRequest(input.request)
   const operationId = requireText(input.operationId, 'range preparation operation id')
@@ -267,7 +304,7 @@ export function decodePersistedCtfRangeOrderPreparation(
   if (!hasConditionalMetadata(complementKeyset)) {
     throw new Error('range preparation complement keyset is not conditional')
   }
-  const preparation: PersistedCtfRangeOrderPreparation = {
+  const preparation: PersistedCtfRangeOrderPreparationV2 = {
     version: requireExact(input.version, 2, 'range preparation version'),
     operationId,
     sourceOperationId: requireText(
@@ -310,6 +347,7 @@ export function decodeCtfRangeOrderPreparationFromRecord(
 ): PersistedCtfRangeOrderPreparation {
   const record = decodeCtfRangeOrderPreparationRecord(recordValue)
   const input = decodePersistedCtfRangeOrderPreparationBytes(record.preparationBytes)
+  if (input.version === 3) assertCounterPreparationRecordBinding(input, record)
   const expected =
     expectedRequest === undefined ? undefined : decodeCtfRangeOrderRequest(expectedRequest)
   if (!recordMatchesPreparation(record, input) || !requestMatches(input.request, expected)) {
@@ -454,7 +492,7 @@ export function createCtfRangeOrderPreparationKeysetResolver(
     mintUrl === preparation.mintUrl ? keysets.get(keysetId) : undefined
 }
 
-function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
+export function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   const request = exactRecord(value, REQUEST_FIELDS, 'range preparation request')
   const conditionId = requireText(request.conditionId, 'range preparation request condition id')
   const marketId = requireText(request.marketId, 'range preparation request market id')
@@ -1071,3 +1109,19 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false
   return left.every((value, index) => value === right[index])
 }
+
+export {
+  counterCtfRangePreparationIdentity,
+  selectCtfRangePreparationForIntent,
+  createCtfRangePreparationIntent,
+  deriveCounterCtfRangeIdentity,
+  planCounterCtfRangePreparation,
+  createCounterCtfRangePreparation,
+  encodeCounterCtfRangePreparation,
+  decodeCounterCtfRangePreparationBytes,
+  reconstructCtfRangePreparation,
+  type CtfRangePreparationIntent,
+} from './ctfRangeOrderCounterPreparation.ts'
+
+export { decodeCounterCtfRangePreparation }
+export type { CounterCtfRangePreparation }

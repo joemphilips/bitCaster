@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Proof } from '@cashu/cashu-ts'
+import type { CounterSource, Proof } from '@cashu/cashu-ts'
 import {
   deriveDurableCustodyArtifactFingerprint,
   MAX_CONDITION_REGISTRATION_FEE_SUBUNITS,
@@ -16,6 +16,7 @@ export interface NativeConditionRegistrationFeeRequest {
   readonly creationId: string
   readonly mintUrl: string
   readonly wallet?: CashuWalletLike
+  readonly createWallet?: (source: CounterSource) => CashuWalletLike
   readonly seed?: Uint8Array
   readonly requiredFeeMsat: number
   readonly maxWalletDebitMsat?: number
@@ -88,6 +89,7 @@ export async function prepareNativeConditionRegistrationFee(
     mintUrl: input.mintUrl,
     wallet,
     seed: input.seed,
+    createWallet: input.createWallet,
     maxWalletDebitMsat,
   })
   assertExactFeeTransfer(transfer, {

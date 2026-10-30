@@ -27,13 +27,14 @@ import {
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityRow,
   retireBrowserProofBackupAuthorityRowAsMintSpent,
-  restoreBrowserProofBackupAuthorityRowFromPendingRemoval,
 } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 
 const MINT = "https://mint.example";
 const DERIVATION_KEYSET = `01${"11".repeat(32)}`;
-const FOREIGN_KEYSET = `02${"22".repeat(32)}`;
+// A canonical V2 keyset that differs from the proof keyset. Custody refuses V3 IDs.
+const FOREIGN_KEYSET = `01${"22".repeat(32)}`;
+const V3_KEYSET = `02${"22".repeat(32)}`;
 const nut13 = (keysetId: string, counter: number) => ({
   schemaVersion: 1 as const,
   kind: "nut13" as const,
@@ -259,25 +260,6 @@ describe("browser proof backup authority", () => {
       terminalOperationId: "redeem",
       terminalAuthority: { kind: "local-operation", operationId: "redeem" },
     });
-    expect(
-      restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-        pending,
-        {
-          ...losing,
-          selectability: "verified-losing",
-          reservationOperationId: null,
-          revision: 3,
-        },
-        5,
-      ),
-    ).toMatchObject({
-      proofState: "verified-losing",
-      proofRevision: 3,
-      backupState: "local-only",
-      admissionOperationId: "admission",
-      terminalOperationId: "redeem",
-      terminalAuthority: { kind: "local-operation", operationId: "redeem" },
-    });
     expect(() =>
       advanceBrowserProofBackupAuthorityRowToPendingRemoval(
         authority,
@@ -311,18 +293,6 @@ describe("browser proof backup authority", () => {
     );
     expect(pending).toMatchObject({
       proofState: "pending-removal",
-      terminalAuthority: { kind: "remote-seal" },
-      backupState: "remote-backed",
-      backupRecordCommitment: "66".repeat(32),
-    });
-    const restored = restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
-      pending,
-      { ...proof, selectability: "verified-losing", reservationOperationId: null, revision: 3 },
-      4,
-    );
-    expect(restored).toMatchObject({
-      proofState: "verified-losing",
-      proofRevision: 3,
       terminalAuthority: { kind: "remote-seal" },
       backupState: "remote-backed",
       backupRecordCommitment: "66".repeat(32),
@@ -623,6 +593,7 @@ describe("browser proof backup authority", () => {
 
   it.each([
     { derivationLocator: { ...nut13(DERIVATION_KEYSET, 0), keysetId: `01${"AA".repeat(32)}` } },
+    { derivationLocator: nut13(V3_KEYSET, 0) },
     { derivationLocator: { ...nut13(DERIVATION_KEYSET, -1) } },
     { derivationLocator: { ...nut13(DERIVATION_KEYSET, 2_147_483_648) } },
     { derivationLocator: { ...nut13(DERIVATION_KEYSET, 0), extra: true } },

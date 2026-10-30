@@ -18,3 +18,5 @@ npm run preview      # preview production build
 - **i18n**: English (root locale) + Japanese (`ja/`). English content in `src/content/docs/`, Japanese in `src/content/docs/ja/`. Sidebar group labels are translated in `astro.config.mjs` via the `translations` properties. Whenever content is updated in one language, update the others to stay in sync.
 - Avoid the "AI-generated" smell — don't produce lists of bullets with bold headlines.
 - Document only public, user-visible behavior and public contracts. Do not mirror private plans, runbooks, or implementation details. Do not cite or name private ADRs.
+
+- Use the [terminology table](../../bitCaster-doc/TERMINOLOGY.md) for English and Japanese product terms. Keep resolution, settlement, and payment distinct.

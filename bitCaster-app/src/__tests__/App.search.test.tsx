@@ -16,10 +16,18 @@ vi.mock("@/pages/CreatorPage", () => ({ CreatorPage: () => <div>Creator page</di
 vi.mock("@/pages/SettingsPage", () => ({ SettingsPage: () => <div>Settings page</div> }));
 vi.mock("@/pages/MintDetailPage", () => ({ MintDetailPage: () => <div>Mint page</div> }));
 vi.mock("@/pages/UserPage", () => ({ UserPage: () => <div>User page</div> }));
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: { nostrProfile: null }) => unknown) =>
-    selector({ nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = { nostrProfile: null };
+  return {
+    useSettingsStore: Object.assign(
+      (selector: (value: typeof state) => unknown) => selector(state),
+      {
+        getState: () => state,
+        subscribe: () => () => {},
+      },
+    ),
+  };
+});
 vi.mock("@/stores/wallet", () => ({
   DEFAULT_MINT_URL: "https://mint.example",
   useBalance: () => 0,

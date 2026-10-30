@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { disposeFixtures } from "./fixtures/browserCtfRedeemFixture";
 import { browserD4OracleEvidence } from "../../test/browserD4OracleFixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -185,6 +186,7 @@ afterEach(async () => {
   for (const database of databases.splice(0)) database.close();
   for (const database of databasesToDelete) await database.delete();
   databasesToDelete.clear();
+  await disposeFixtures();
 });
 
 async function useFixture(
@@ -263,7 +265,7 @@ function runLosingClaim(
         oracleResolutionContext: oracle.context,
         oracleEvidence: verifiedOracleEvidence,
       }),
-      counterSource: entry.counters,
+      counterStore: entry.counterStore,
       database: entry.database,
       adapter: entry.adapter,
       owner,

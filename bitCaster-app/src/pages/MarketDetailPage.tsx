@@ -20,7 +20,7 @@ import {
   type CanonicalSellHoldingsIdentity,
 } from "@/lib/canonicalSellHoldings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
-import { useParams, useNavigate } from "react-router";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { normalizeUrl } from "@/lib/url";
 import { MarketDetail } from "@/components/market-detail";
@@ -38,12 +38,12 @@ import {
   MarketDetailUnavailableError,
   fetchOrderBook,
   createAuthenticatedBrowserEngineClient,
-  generateNip98Header,
   mapSnapshotToOrderBook,
   deriveCategoricalOdds,
   deriveYesNoOdds,
   signTradeComment,
   validateLatestConfirmedTrades,
+  latestConfirmedTradesAuthorityValid,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
 } from "@/lib/markets";
@@ -60,6 +60,7 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
+import { useMarketTradeRecovery } from "@/hooks/useMarketTradeRecovery";
 import { useMarketDetailSnapshots } from "@/hooks/useMarketDetailSnapshots";
 import { mergeMarketFundingObservation } from "@/lib/marketFunding";
 import {
@@ -69,6 +70,7 @@ import {
   onMarketFundingUpdated,
   onConfirmedTradeRecorded,
   onMarketRejoined,
+  onMarketResyncRequired,
   onOrderCancelled,
   onOrderBookUpdated,
   refreshMarketSnapshot,
@@ -76,6 +78,7 @@ import {
   type MarketStatusChanged,
   type MarketFundingUpdatedMessage,
 } from "@/lib/marketHub";
+import { createDisplayResyncRepair } from "@bitcaster/client-sdk/displayResync";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import type {
   PreviewFokOrderCapacityRequest,
@@ -86,6 +89,10 @@ import { refreshOrderBook } from "@/lib/orderBookRefresh";
 import { getExactUnitBalance, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import {
+  useOrderSettlementObservations,
+  type OrderSettlementObservation,
+} from "@/stores/orderSettlementObservations";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import {
@@ -143,6 +150,7 @@ export interface PendingTopUpOrderIntent {
   required: number;
   protectedTicket: TradeTicket | null;
   previewIdentityKey: string | null;
+  inputGeneration?: number;
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
@@ -246,6 +254,7 @@ export function buildPendingTopUpOrderIntent(input: {
   required: number;
   protectedTicket?: TradeTicket | null;
   previewIdentityKey?: string | null;
+  inputGeneration?: number;
 }): PendingTopUpOrderIntent | null {
   if (!input.market || !input.tradeSelection || input.tradeAmount <= 0) return null;
   if (!Number.isFinite(input.required) || input.required < 0) return null;
@@ -259,6 +268,7 @@ export function buildPendingTopUpOrderIntent(input: {
     required: Math.ceil(input.required),
     protectedTicket: input.protectedTicket ?? null,
     previewIdentityKey: input.previewIdentityKey ?? null,
+    inputGeneration: input.inputGeneration,
   };
 }
 
@@ -365,6 +375,8 @@ export async function fetchMarketDetailWithBooks(conditionId: string): Promise<M
 async function fetchMarketOrderBooks(
   conditionId: string,
   detail: MarketDetailType,
+  requireAll = false,
+  signal?: AbortSignal,
 ): Promise<MarketOrderBooksLoad> {
   const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
   if (outcomeSetIds.length === 0) {
@@ -376,19 +388,27 @@ async function fetchMarketOrderBooks(
   }
 
   const entries = (
-    await Promise.all(
+    await Promise.allSettled(
       outcomeSetIds.map(async (outcomeSetId) => {
         try {
           return [
             outcomeSetId,
-            await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
+            await (signal
+              ? fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId), signal)
+              : fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId))),
           ] as const;
-        } catch {
+        } catch (error) {
+          if (requireAll) throw error;
           return null;
         }
       }),
     )
-  ).filter((entry): entry is readonly [string, OrderBook] => entry != null);
+  )
+    .map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    })
+    .filter((entry): entry is readonly [string, OrderBook] => entry != null);
 
   if (entries.length > 0) {
     const fetchedOutcomeSetIds = entries.map(([outcomeSetId]) => outcomeSetId);
@@ -416,6 +436,10 @@ export type MarketDetailDataState = {
   activeRouteId: string | null;
   marketId: string | null;
   core: MarketDetailCore | null;
+  historyStatuses: Partial<
+    Record<ChartTimeframe, NonNullable<MarketDetailType["priceHistoryStatus"]>>
+  >;
+  commentsUnavailable: boolean;
   confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
   registeredPrimitiveOutcomeIdsByConditionId: Record<string, string[]>;
   booksByMarketId: Record<string, Record<string, OrderBook>>;
@@ -435,6 +459,17 @@ export type MarketDetailDataState = {
 };
 
 export type MarketDetailDataAction =
+  | {
+      type: "commentsUnavailableChanged";
+      marketId: string;
+      unavailable: boolean;
+    }
+  | {
+      type: "historyStatusChanged";
+      marketId: string;
+      timeframe: ChartTimeframe;
+      status: NonNullable<MarketDetailType["priceHistoryStatus"]>;
+    }
   | {
       type: "marketFundingUpdated";
       observation: MarketFundingUpdatedMessage;
@@ -503,6 +538,8 @@ const emptyMarketDetailDataState: MarketDetailDataState = {
   activeRouteId: null,
   marketId: null,
   core: null,
+  historyStatuses: {},
+  commentsUnavailable: false,
   confirmedTradesByConditionId: {},
   registeredPrimitiveOutcomeIdsByConditionId: {},
   booksByMarketId: {},
@@ -715,7 +752,7 @@ function applyConfirmedTradePrices(
     ...market,
     latestConfirmedTrades: [...confirmedTrades],
   } as MarketDetailCore;
-  if (market.latestConfirmedTradesValid === false) {
+  if (market.latestConfirmedTradesValid === false && confirmedTrades.length === 0) {
     if (market.type === "yesno") {
       return { ...withConfirmedTrades, currentOdds: { yes: null, no: null } } as MarketDetailCore;
     }
@@ -765,6 +802,8 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
     activeRouteId: detail.id,
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
+    historyStatuses: {},
+    commentsUnavailable: false,
     confirmedTradesByConditionId: {
       [detail.id]: detail.latestConfirmedTrades ?? [],
     },
@@ -808,24 +847,62 @@ function withSnapshotLoaded(
   }
 
   const currentConfirmedTrades = state.confirmedTradesByConditionId[detail.id] ?? [];
-  const incomingConfirmedTrades = validateLatestConfirmedTrades(
-    detail.latestConfirmedTrades,
-    detail.registeredPrimitiveOutcomeIds ?? [],
-    detail.divisibility,
-  );
+  const previousIds = state.core.registeredPrimitiveOutcomeIds ?? [];
+  const incomingIds = detail.registeredPrimitiveOutcomeIds ?? [];
+  const samePriceContext =
+    state.core.type === detail.type &&
+    state.core.divisibility === detail.divisibility &&
+    previousIds.length === incomingIds.length &&
+    previousIds.every((id) => incomingIds.includes(id));
+  const incomingValid =
+    detail.latestConfirmedTradesValid !== false &&
+    latestConfirmedTradesAuthorityValid(
+      detail.latestConfirmedTrades,
+      incomingIds,
+      detail.divisibility,
+    );
+  const retainedValid =
+    (state.core.latestConfirmedTradesValid !== false || currentConfirmedTrades.length > 0) &&
+    latestConfirmedTradesAuthorityValid(
+      currentConfirmedTrades,
+      previousIds,
+      state.core.divisibility,
+    );
+  // Registration and denominator are immutable. Keep them with the observation
+  // they validated; a broken refresh must not reinterpret a retained price.
+  const retainPriceContext = retainedValid && (!incomingValid || !samePriceContext);
+  const incomingCore = marketCoreFromDetail(detail);
+  const core = retainPriceContext
+    ? ({
+        ...incomingCore,
+        type: state.core.type,
+        divisibility: state.core.divisibility,
+        registeredPrimitiveOutcomeIds: previousIds,
+        outcomes: state.core.outcomes,
+        latestConfirmedTradesValid: state.core.latestConfirmedTradesValid,
+        priceRefreshUnavailable: true,
+      } as MarketDetailCore)
+    : { ...incomingCore, priceRefreshUnavailable: false };
+  const incomingConfirmedTrades = retainPriceContext
+    ? []
+    : validateLatestConfirmedTrades(
+        detail.latestConfirmedTrades,
+        detail.registeredPrimitiveOutcomeIds ?? [],
+        detail.divisibility,
+      );
   const confirmedTradesByConditionId = {
     ...state.confirmedTradesByConditionId,
     [detail.id]: mergeConfirmedTradeRecords(currentConfirmedTrades, incomingConfirmedTrades),
   };
   const registeredPrimitiveOutcomeIdsByConditionId = {
     ...state.registeredPrimitiveOutcomeIdsByConditionId,
-    [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
+    [detail.id]: core.registeredPrimitiveOutcomeIds ?? [],
   };
 
   return {
     ...state,
     core: {
-      ...marketCoreFromDetail(detail),
+      ...core,
       ...mergeMarketFundingObservation(state.core, {
         ammBotBudgetSubunits: detail.ammBotBudgetSubunits,
         fundingRevision: detail.fundingRevision ?? null,
@@ -940,6 +1017,21 @@ export function marketDetailDataReducer(
         },
       };
     }
+    case "commentsUnavailableChanged": {
+      if (state.activeRouteId !== action.marketId || state.marketId !== action.marketId)
+        return state;
+      if (state.commentsUnavailable === action.unavailable) return state;
+      return { ...state, commentsUnavailable: action.unavailable };
+    }
+    case "historyStatusChanged": {
+      if (state.activeRouteId !== action.marketId || state.marketId !== action.marketId)
+        return state;
+      if (state.historyStatuses[action.timeframe] === action.status) return state;
+      return {
+        ...state,
+        historyStatuses: { ...state.historyStatuses, [action.timeframe]: action.status },
+      };
+    }
     case "historyLoaded": {
       const expectedRouteId = action.expectedRouteId ?? action.marketId;
       if (state.activeRouteId !== expectedRouteId) return state;
@@ -947,6 +1039,7 @@ export function marketDetailDataReducer(
       const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
       return {
         ...state,
+        historyStatuses: { ...state.historyStatuses, [action.timeframe]: "ready" },
         historiesByMarketId: {
           ...state.historiesByMarketId,
           [action.marketId]: {
@@ -958,13 +1051,14 @@ export function marketDetailDataReducer(
     }
     case "historyInvalidated": {
       if (state.activeRouteId !== action.marketId) return state;
-      const current = state.historiesByMarketId[action.marketId] ?? {};
+      // Every selected range is refreshed on subscription. Keep its last
+      // snapshot available while that refresh is pending or unavailable.
+      const cached = state.historiesByMarketId[action.marketId] ?? {};
       return {
         ...state,
-        historiesByMarketId: {
-          ...state.historiesByMarketId,
-          [action.marketId]: { [action.timeframe]: current[action.timeframe] },
-        },
+        historyStatuses: Object.fromEntries(
+          Object.keys(cached).map((range) => [range, "refreshing"]),
+        ),
       };
     }
     case "marketStatusChanged": {
@@ -1029,6 +1123,14 @@ export function marketDetailDataReducer(
       if (!validated.includes(action.trade)) return state;
       return {
         ...state,
+        core: state.core
+          ? {
+              ...state.core,
+              priceRefreshUnavailable:
+                state.core.priceRefreshUnavailable ||
+                state.core.latestConfirmedTradesValid === false,
+            }
+          : null,
         confirmedTradesByConditionId: {
           ...state.confirmedTradesByConditionId,
           [action.conditionId]: validated,
@@ -1084,10 +1186,13 @@ export function composeMarketDetail(
   const orderBook = (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
   const base = {
     ...oddsAlignedCore,
+    priceHistoryStatus:
+      state.historyStatuses[timeframe] ?? (priceHistory.asOf ? "ready" : "loading"),
     priceHistory,
     orderBook,
     outcomeOrderBooks: booksByOutcomeSetId,
     comments: enrichment.comments,
+    commentsUnavailable: state.commentsUnavailable,
     recentTrades: enrichment.recentTrades,
     relatedMarkets: enrichment.relatedMarkets,
   };
@@ -1106,16 +1211,66 @@ export function composeMarketDetail(
   return base as MarketDetailType;
 }
 
+function tradeFeeConsentKey(input: {
+  market: MarketDetailType;
+  mintUrl: string;
+  ticket: TradeTicket;
+  previewIdentityKey: string;
+  selectedSellHoldingVersion: string;
+  recoveryInvalidationKey: string;
+}): string {
+  const { market, ...consent } = input;
+  return JSON.stringify({
+    ...consent,
+    market: {
+      id: market.id,
+      type: market.type,
+      baseAsset: market.baseAsset,
+      divisibility: market.divisibility,
+      // Preserve the shared parser's raw identity inputs, including its string
+      // and name fallback forms. Price, color, and other display fields do not
+      // change preparation. This key does not validate or normalize outcomes.
+      outcomes: market.outcomes?.map((outcome) =>
+        typeof outcome === "object" && outcome !== null
+          ? { id: outcome.id, label: outcome.label, name: (outcome as { name?: unknown }).name }
+          : outcome,
+      ),
+    },
+  });
+}
+
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Only the successful creation flow supplies this route-local acknowledgement.
+  // It is a presentation hint, never registration or spending authority.
+  const acknowledgement = location.state?.createdMarket as
+    | { conditionId?: string; acknowledgedAt?: number }
+    | undefined;
+  // History keeps route state after a reload or Back navigation. Only a fresh
+  // acknowledgement can own a preparation deadline. Capture this decision for
+  // this navigation so ordinary rerenders cannot remove an active deadline.
+  const acknowledgedAt = useMemo(() => {
+    const timestamp = acknowledgement?.acknowledgedAt;
+    if (acknowledgement?.conditionId !== id || typeof timestamp !== "number") return null;
+    const age = Date.now() - timestamp;
+    return Number.isFinite(timestamp) &&
+      age >= 0 &&
+      age < MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS
+      ? timestamp
+      : null;
+  }, [acknowledgement?.acknowledgedAt, acknowledgement?.conditionId, id, location.key]);
+  const [preparationExpired, setPreparationExpired] = useState(false);
+  const preparingCreation = acknowledgedAt !== null && !preparationExpired;
   const { t } = useTranslation();
   const currentRouteId = id ?? null;
   const activeRouteIdRef = useRef<string | null>(currentRouteId);
   const routeGenerationRef = useRef(0);
+  const depthReadAbortRef = useRef<AbortController | null>(null);
   const marketLoadRequestTokenRef = useRef(0);
   const marketDetailRequestRef = useRef<MarketDetailRequest | null>(null);
-  const previewMarketRevisionRef = useRef(0);
+  const [previewMarketRevision, setPreviewMarketRevision] = useState(0);
   // Update this during render so a promise that resolves between route render
   // and the route effect cannot write the previous condition into state.
   activeRouteIdRef.current = currentRouteId;
@@ -1125,7 +1280,7 @@ export function MarketDetailPage() {
     [],
   );
   const invalidatePreviewForMarket = useCallback(() => {
-    previewMarketRevisionRef.current += 1;
+    setPreviewMarketRevision((revision) => revision + 1);
   }, []);
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -1135,6 +1290,13 @@ export function MarketDetailPage() {
     getNostrSignerRevision,
     getNostrSignerRevision,
   );
+  const tradeRecovery = useMarketTradeRecovery({
+    mnemonic: walletMnemonic,
+    conditionId: currentRouteId,
+    signerRevision,
+  });
+  const recoveryInvalidationKeyRef = useRef(tradeRecovery.invalidationKey);
+  recoveryInvalidationKeyRef.current = tradeRecovery.invalidationKey;
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null);
@@ -1144,7 +1306,7 @@ export function MarketDetailPage() {
     emptyMarketDetailDataState,
   );
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<"unavailable" | "failed" | "preparation-delayed" | null>(null);
   const [detailUnavailable, setDetailUnavailable] = useState(false);
 
   // UI state
@@ -1178,15 +1340,53 @@ export function MarketDetailPage() {
       })
     );
   })();
-  const visibleError = routeTransitioning ? null : error;
+  // Error categories belong to the route. Translation belongs to this render;
+  // changing language must not restart reads or reset an unsent trade draft.
+  const visibleError =
+    routeTransitioning || error === null
+      ? null
+      : error === "preparation-delayed"
+        ? t("market.preparationDelayed")
+        : error === "unavailable"
+          ? t("market.detailsUnavailable")
+          : "Failed to load market. Please check that the mint is running.";
   const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
+  const [tradeComment, setTradeComment] = useState("");
+  const tradeInputGenerationRef = useRef(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
+    reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
+    reviewedFeeIdentityKey?: string;
+    /** A matched order that waits for its authoritative final status. */
+    settlingOrder?: SettlingOrder;
   } | null>(null);
+  const settlingOrder = tradeSubmitStatus?.settlingOrder ?? null;
+  useEffect(() => {
+    if (settlingOrder === null) return;
+    // The order status reader publishes these observations after each
+    // lifecycle or settlement notification. Replace the notice only with an
+    // observation for the same order, wallet, and route.
+    const settle = (observation: OrderSettlementObservation | undefined) => {
+      if (
+        observation?.walletId !== settlingOrder.walletId ||
+        observation.marketId !== settlingOrder.marketId
+      )
+        return;
+      const notice = settledOrderNotice(observation.status);
+      if (notice === null) return;
+      setTradeSubmitStatus((current) =>
+        current?.settlingOrder === settlingOrder ? notice : current,
+      );
+    };
+    settle(useOrderSettlementObservations.getState().byOrderId[settlingOrder.orderId]);
+    return useOrderSettlementObservations.subscribe((state) =>
+      settle(state.byOrderId[settlingOrder.orderId]),
+    );
+  }, [settlingOrder]);
   const clearCompletedTradeNotice = useCallback(() => {
     setTradeSubmitStatus((status) => {
       if (status === null) return null;
@@ -1208,6 +1408,8 @@ export function MarketDetailPage() {
     message?: string;
   } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
+  const [quoteRefreshWait, setQuoteRefreshWait] = useState<"waiting" | "stopping" | null>(null);
+  const quoteRefreshAbortRef = useRef<AbortController | null>(null);
   const [rangeFeePreview, setRangeFeePreview] = useState<{
     key: string;
     feeFacts: BrowserCtfRangeOrderFeePreview;
@@ -1332,11 +1534,17 @@ export function MarketDetailPage() {
   // Load market data
   const loadMarket = useCallback(
     (
-      options: { showLoading?: boolean; singleFlight?: boolean } = {},
+      options: {
+        showLoading?: boolean;
+        singleFlight?: boolean;
+        requireAllBooks?: boolean;
+        signal?: AbortSignal;
+      } = {},
     ): Promise<MarketDetailLoadResult> => {
       const routeId = id;
       if (!routeId) return Promise.resolve("stale");
       const generation = routeGenerationRef.current;
+      const depthSignal = options.signal ?? depthReadAbortRef.current?.signal;
       if (options.singleFlight) {
         const inFlight = marketDetailRequestRef.current;
         if (inFlight?.routeId === routeId && inFlight.generation === generation)
@@ -1344,7 +1552,9 @@ export function MarketDetailPage() {
       }
       const requestToken = ++marketLoadRequestTokenRef.current;
       const isCurrentLoad = () =>
-        isCurrentRoute(routeId, generation) && marketLoadRequestTokenRef.current === requestToken;
+        isCurrentRoute(routeId, generation) &&
+        marketLoadRequestTokenRef.current === requestToken &&
+        !options.signal?.aborted;
       const showLoading = options.showLoading ?? true;
       if (showLoading) setLoading(true);
       if (showLoading) {
@@ -1353,8 +1563,10 @@ export function MarketDetailPage() {
       }
 
       let succeeded = false;
-      const request = fetchMarketDetail(routeId)
-        .then((detail): MarketDetailLoadResult => {
+      const request = (
+        options.signal ? fetchMarketDetail(routeId, options.signal) : fetchMarketDetail(routeId)
+      )
+        .then(async (detail): Promise<MarketDetailLoadResult> => {
           if (!isCurrentLoad() || detail.id !== routeId) return "stale";
           succeeded = true;
           setError(null);
@@ -1364,7 +1576,7 @@ export function MarketDetailPage() {
             detail,
             expectedRouteId: routeId,
           });
-          void fetchMarketOrderBooks(routeId, detail).then((books) => {
+          const applyBooks = (books: MarketOrderBooksLoad) => {
             if (!isCurrentLoad()) return;
             const detailWithBooks = {
               ...detail,
@@ -1382,7 +1594,13 @@ export function MarketDetailPage() {
               ),
               replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
             });
-          });
+          };
+          if (options.requireAllBooks) {
+            applyBooks(await fetchMarketOrderBooks(routeId, detail, true, depthSignal));
+            if (!isCurrentLoad()) return "stale";
+          } else {
+            void fetchMarketOrderBooks(routeId, detail, false, depthSignal).then(applyBooks);
+          }
           return "success";
         })
         .catch((error: unknown): MarketDetailLoadResult => {
@@ -1391,11 +1609,7 @@ export function MarketDetailPage() {
           // Optional reconciliation must never replace a valid page with a
           // fatal error. Its failure is intentionally best-effort.
           if (showLoading) {
-            setError(
-              unavailable
-                ? t("market.detailsUnavailable")
-                : "Failed to load market. Please check that the mint is running.",
-            );
+            setError(unavailable ? "unavailable" : "failed");
             setDetailUnavailable(unavailable);
           }
           return unavailable ? "unavailable" : "other";
@@ -1408,11 +1622,13 @@ export function MarketDetailPage() {
       if (options.singleFlight) marketDetailRequestRef.current = { routeId, generation, request };
       return request;
     },
-    [id, invalidatePreviewForMarket, isCurrentRoute, t],
+    [id, invalidatePreviewForMarket, isCurrentRoute],
   );
 
   useEffect(() => {
     const generation = ++routeGenerationRef.current;
+    const depthReads = new AbortController();
+    depthReadAbortRef.current = depthReads;
     dispatchMarketData({ type: "routeChanged", routeId: currentRouteId });
 
     cancelActiveScoreTopUp();
@@ -1423,9 +1639,14 @@ export function MarketDetailPage() {
     // after the user has moved to B.
     setTradeSelection(null);
     setTradeAmount(0);
+    setTradeComment("");
+    tradeInputGenerationRef.current += 1;
     setTradeSubmitStatus(null);
     setTradeFeasibility(null);
     setIsTradeSubmitting(false);
+    quoteRefreshAbortRef.current?.abort();
+    quoteRefreshAbortRef.current = null;
+    setQuoteRefreshWait(null);
     setRangeFeePreview(null);
     setTopUpStage("closed");
     setTopUpReason(null);
@@ -1434,6 +1655,8 @@ export function MarketDetailPage() {
     setPendingTopUpIntent(null);
     setShowNostrAuthModal(false);
     setShowNostrChooser(false);
+    setLazySetupCreating(false);
+    setLazySetupError(null);
     tradeSubmitInFlightRef.current = false;
 
     if (!currentRouteId) {
@@ -1442,6 +1665,7 @@ export function MarketDetailPage() {
       return;
     }
 
+    setPreparationExpired(false);
     setLoading(true);
     setError(null);
     setDetailUnavailable(false);
@@ -1451,23 +1675,49 @@ export function MarketDetailPage() {
     if (routeGenerationRef.current === generation) loadMarket();
     return () => {
       if (routeGenerationRef.current === generation) routeGenerationRef.current += 1;
+      depthReads.abort();
+      quoteRefreshAbortRef.current?.abort();
     };
   }, [cancelActiveScoreTopUp, currentRouteId, invalidatePreviewForMarket, loadMarket]);
 
-  // Navigation after market creation can outrun the catalogue projection.
-  // Retry only after the error has rendered. First paint still blocks on one
-  // request.
+  // The hub has no catalogue-index readiness event. This temporary bounded
+  // reconciliation follows acknowledged creation only; it does not add a
+  // subscription or a second blocking request before first paint.
   useEffect(() => {
-    if (!id || !error || market || routeTransitioning) return;
+    if (acknowledgedAt === null || market) return;
+    const generation = routeGenerationRef.current;
+    const expire = () => {
+      if (!id || !isCurrentRoute(id, generation)) return;
+      marketLoadRequestTokenRef.current += 1;
+      marketDetailRequestRef.current = null;
+      setPreparationExpired(true);
+      setLoading(false);
+      setError("preparation-delayed");
+    };
+    const timer = window.setTimeout(
+      expire,
+      Math.min(
+        MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS,
+        Math.max(0, acknowledgedAt + MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS - Date.now()),
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [acknowledgedAt, id, isCurrentRoute, market]);
+
+  // Existing unavailable routes retain their bounded recovery. A known new
+  // market keeps the preparing state while the same catalogue read reconciles.
+  useEffect(() => {
+    if (!id || !error || market || routeTransitioning || preparationExpired) return;
     const generation = routeGenerationRef.current;
     if (!isCurrentRoute(id, generation)) return;
 
     let cancelled = false;
     let attempts = 0;
     let timeoutId: number | null = null;
-    const maxAttempts = detailUnavailable
-      ? MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS
-      : MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS;
+    const maxAttempts =
+      detailUnavailable || preparingCreation
+        ? MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS
+        : MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS;
     const deadline = Date.now() + MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS;
 
     const retry = async () => {
@@ -1482,7 +1732,7 @@ export function MarketDetailPage() {
         result === "stale"
       )
         return;
-      if (detailUnavailable && result !== "unavailable") return;
+      if (detailUnavailable && !preparingCreation && result !== "unavailable") return;
       if (attempts >= maxAttempts) return;
       if (detailUnavailable && Date.now() + MARKET_DETAIL_RECONCILIATION_INTERVAL_MS > deadline)
         return;
@@ -1494,7 +1744,17 @@ export function MarketDetailPage() {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
-  }, [detailUnavailable, error, id, isCurrentRoute, loadMarket, market, routeTransitioning]);
+  }, [
+    detailUnavailable,
+    error,
+    id,
+    isCurrentRoute,
+    loadMarket,
+    market,
+    routeTransitioning,
+    preparationExpired,
+    preparingCreation,
+  ]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted and joined to at least one per-outcome
@@ -1543,6 +1803,7 @@ export function MarketDetailPage() {
     if (outcomeSetIds.length === 0) return;
 
     let cancelled = false;
+    const depthSignal = depthReadAbortRef.current?.signal;
     const cleanups: Array<() => void> = [];
 
     cleanups.push(
@@ -1551,19 +1812,6 @@ export function MarketDetailPage() {
         dispatchMarketData({ type: "marketFundingUpdated", observation: message });
       }),
     );
-
-    const reconcileOwnOrders = debounce(() => {
-      void new BitcasterEngineClient({
-        baseUrl: window.location.origin,
-        authorization: ({ url, method }) => generateNip98Header(url, method),
-      })
-        .listMyOrders(id)
-        .catch((err) => {
-          console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
-        });
-    }, 200);
-    reconcileOwnOrders();
-    cleanups.push(reconcileOwnOrders.cancel);
 
     // SignalR is a best-effort delta channel. Reconnect repair must go
     // through the existing condition-authoritative REST read, once for the
@@ -1589,7 +1837,7 @@ export function MarketDetailPage() {
     for (const outcomeSetId of outcomeSetIds) {
       const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
       const refreshLiveOrderBook = debounce(() => {
-        void refreshOrderBook(liveMarketId)
+        void refreshOrderBook(liveMarketId, depthSignal)
           .then((orderBook) => {
             if (cancelled || !isCurrentRoute(id, generation)) return;
             invalidatePreviewForMarket();
@@ -1625,7 +1873,6 @@ export function MarketDetailPage() {
         onOrderCancelled(liveMarketId, () => {
           if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshLiveOrderBook();
-          reconcileOwnOrders();
         }),
       );
       cleanups.push(
@@ -1633,7 +1880,6 @@ export function MarketDetailPage() {
           if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshAuthoritativeMarket();
           refreshLiveOrderBook();
-          reconcileOwnOrders();
         }),
       );
       void joinMarket(liveMarketId).catch((err) => {
@@ -1650,9 +1896,38 @@ export function MarketDetailPage() {
     };
   }, [id, invalidatePreviewForMarket, isCurrentRoute, loadMarket, market?.id]);
 
+  useEffect(() => {
+    if (!id || !market || market.id !== id) return;
+    const generation = routeGenerationRef.current;
+    const repair = createDisplayResyncRepair({
+      initialJitterMs: 250,
+      repair: async (signal) => {
+        signal.throwIfAborted();
+        const result = await loadMarket({ showLoading: false, requireAllBooks: true, signal });
+        signal.throwIfAborted();
+        if (!isCurrentRoute(id, generation) || result !== "success")
+          throw new Error("Market display repair is unavailable.");
+      },
+    });
+    const unsubscribe = onMarketResyncRequired(id, (token) => repair.request(token));
+    return () => {
+      unsubscribe();
+      void repair.dispose();
+    };
+  }, [id, market?.id, isCurrentRoute, loadMarket]);
+
   useMarketDetailSnapshots({
     market: market?.id === currentRouteId ? market : null,
     timeframe: chartTimeframe,
+    onHistoryStatus: (status) => {
+      if (market)
+        dispatchMarketData({
+          type: "historyStatusChanged",
+          marketId: market.id,
+          timeframe: chartTimeframe,
+          status,
+        });
+    },
     onHistory: (response) => {
       if (!market || response.timeframe !== chartTimeframe) return;
       const { timeframe, historiesByOutcomeSetId } = historiesByOutcomeSetFromResponse(
@@ -1666,6 +1941,15 @@ export function MarketDetailPage() {
         historiesByOutcomeSetId,
         expectedRouteId: market.id,
       });
+    },
+    onCommentsStatus: (status) => {
+      // A refresh keeps the last result until it completes.
+      if (market && status !== "refreshing")
+        dispatchMarketData({
+          type: "commentsUnavailableChanged",
+          marketId: market.id,
+          unavailable: status === "unavailable",
+        });
     },
     onComments: (response) => {
       if (!market) return;
@@ -1697,7 +1981,6 @@ export function MarketDetailPage() {
     marketDivisibility,
   );
 
-  const previewMarketRevision = previewMarketRevisionRef.current;
   const previewClient = useMemo(
     () =>
       nostrSignerMode === "none"
@@ -1709,6 +1992,17 @@ export function MarketDetailPage() {
     () => currentTradePreviewIdentityKey(currentRouteId ?? ""),
     [currentRouteId, nostrProfilePubkey, nostrSignerMode, signerRevision, walletMnemonic],
   );
+  useEffect(() => {
+    setTradeSubmitStatus((status) =>
+      status?.reviewedFeeIdentityKey && status.reviewedFeeIdentityKey !== previewIdentityKey
+        ? { kind: status.kind, message: status.message }
+        : status,
+    );
+  }, [previewIdentityKey]);
+  const displayedAttemptedTradeFeeFacts =
+    tradeSubmitStatus?.reviewedFeeIdentityKey === previewIdentityKey
+      ? tradeSubmitStatus.reviewedFeeFacts
+      : null;
   const capacityRequest = useMemo<PreviewFokOrderCapacityRequest | null>(() => {
     if (!market || !tradeSelection) return null;
     const resolved = resolveOutcomeSets(market, tradeSelection);
@@ -1722,8 +2016,8 @@ export function MarketDetailPage() {
     return request;
   }, [market, tradeSelection, tradeSide, discoveryPrice]);
   const capacityInvalidationKey = useMemo(
-    () => [previewIdentityKey, previewMarketRevision].join("\u0000"),
-    [previewIdentityKey, previewMarketRevision],
+    () => [previewIdentityKey, previewMarketRevision, tradeRecovery.invalidationKey].join("\u0000"),
+    [previewIdentityKey, previewMarketRevision, tradeRecovery.invalidationKey],
   );
   const capacityPreview = useFokOrderCapacityPreview({
     client: previewClient,
@@ -1798,6 +2092,7 @@ export function MarketDetailPage() {
     return [
       previewIdentityKey,
       previewMarketRevision,
+      tradeRecovery.invalidationKey,
       selectedSellHoldingVersion,
       market?.latestConfirmedTradesValid === true ? "valid" : "invalid",
       confirmedTradeFacts,
@@ -1807,11 +2102,14 @@ export function MarketDetailPage() {
     market?.latestConfirmedTradesValid,
     previewIdentityKey,
     previewMarketRevision,
+    tradeRecovery.invalidationKey,
     selectedSellHoldingVersion,
   ]);
   const previewIdentityRef = useRef<string | null>(null);
   const previewIdentityIsCurrent = previewIdentityRef.current === previewIdentityKey;
   useEffect(() => {
+    if (previewIdentityRef.current !== null && previewIdentityRef.current !== previewIdentityKey)
+      quoteRefreshAbortRef.current?.abort();
     previewIdentityRef.current = previewIdentityKey;
   }, [previewIdentityKey]);
   const fokPreview = useFokOrderPreview({
@@ -1849,21 +2147,23 @@ export function MarketDetailPage() {
   ]);
   const rangeFeePreviewKey = useMemo(
     () =>
-      protectedTradeTicket && activeMintUrl
-        ? JSON.stringify({
-            conditionId: market?.id,
+      protectedTradeTicket && activeMintUrl && market
+        ? tradeFeeConsentKey({
+            market,
             mintUrl: activeMintUrl,
             ticket: protectedTradeTicket,
             previewIdentityKey,
             selectedSellHoldingVersion,
+            recoveryInvalidationKey: tradeRecovery.invalidationKey,
           })
         : null,
     [
       activeMintUrl,
-      market?.id,
+      market,
       protectedTradeTicket,
       previewIdentityKey,
       selectedSellHoldingVersion,
+      tradeRecovery.invalidationKey,
     ],
   );
   const displayedTradeFeeFacts =
@@ -1875,13 +2175,19 @@ export function MarketDetailPage() {
       ? tradeFeasibilityResult
       : null;
   const feeConsentCurrent = displayedTradeFeeFacts !== null;
+  const feeInputsRef = useRef({ market, protectedTradeTicket });
+  feeInputsRef.current = { market, protectedTradeTicket };
+  const hasTradeSelection = tradeSelection !== null;
 
   useEffect(() => {
+    // The semantic key owns fee invalidation. Read the latest matching inputs
+    // when it changes; unrelated display updates must not cancel custody reads.
+    const { market, protectedTradeTicket } = feeInputsRef.current;
     if (
       !walletReady ||
       !activeMintUrl ||
       !market ||
-      !tradeSelection ||
+      !hasTradeSelection ||
       tradeAmount <= 0 ||
       !protectedTradeTicket ||
       !rangeFeePreviewKey
@@ -1926,6 +2232,11 @@ export function MarketDetailPage() {
         setTradeFeasibility({ key: rangeFeePreviewKey, canBack: true });
       } catch (error) {
         if (cancelled || !isCurrentRoute(routeId, generation)) return;
+        // The panel shows a coarse reason. Log the code for diagnosis, not the proof details.
+        console.warn(
+          "[MarketDetailPage] trade cost check refused:",
+          error instanceof BrowserCtfRangeOrderError ? error.code : (error as Error)?.name,
+        );
         setTradeFeasibility({
           key: rangeFeePreviewKey,
           canBack: false,
@@ -1940,14 +2251,12 @@ export function MarketDetailPage() {
   }, [
     walletReady,
     activeMintUrl,
-    market,
-    tradeSelection,
+    hasTradeSelection,
     tradeAmount,
     tradeSide,
     marketDivisibility,
     sellHoldings.status,
     selectedSellAvailableShares,
-    protectedTradeTicket,
     feeFactsRefreshGeneration,
     isCurrentRoute,
     rangeFeePreviewKey,
@@ -1957,7 +2266,7 @@ export function MarketDetailPage() {
   // Reuse consent only for the same ticket and wallet. A new fee calculation
   // needs confirmation; it must not silently authorize a changed cost.
   const placeOrder = useCallback(
-    async (comment?: string, capturedTicket?: TradeTicket) => {
+    async (comment?: string, capturedTicket?: TradeTicket, capturedInputGeneration?: number) => {
       if (!market || !tradeSelection || !tradeAmount) return;
       const ticket = capturedTicket ?? protectedTradeTicket;
       if (ticket === null || ticket === undefined) {
@@ -1971,9 +2280,18 @@ export function MarketDetailPage() {
       const generation = routeGenerationRef.current;
       const routeStillActive = () => isCurrentRoute(routeId, generation);
       const capturedPreviewIdentityKey = previewIdentityKey;
+      const capturedRecoveryInvalidationKey = tradeRecovery.invalidationKey;
+      const inputGeneration = capturedInputGeneration ?? tradeInputGenerationRef.current;
       const abortIfAttemptStale = () => {
         if (!routeStillActive()) return true;
-        if (currentTradePreviewIdentityKey(routeId) === capturedPreviewIdentityKey) return false;
+        const previewIdentityIsCurrent =
+          currentTradePreviewIdentityKey(routeId) === capturedPreviewIdentityKey;
+        const recoveryIdentityIsCurrent =
+          recoveryInvalidationKeyRef.current === capturedRecoveryInvalidationKey;
+        if (previewIdentityIsCurrent && recoveryIdentityIsCurrent) return false;
+        if (previewIdentityIsCurrent) {
+          setTradeSubmitStatus({ kind: "info", message: t("trade.recoveryConsentChanged") });
+        }
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
         return true;
@@ -2000,7 +2318,12 @@ export function MarketDetailPage() {
       try {
         const latestDetail = await fetchMarketDetail(routeId);
         if (abortIfAttemptStale() || latestDetail.id !== routeId) return;
-        const books = await fetchMarketOrderBooks(routeId, latestDetail);
+        const books = await fetchMarketOrderBooks(
+          routeId,
+          latestDetail,
+          false,
+          depthReadAbortRef.current?.signal,
+        );
         if (abortIfAttemptStale()) return;
         latestMarket = {
           ...latestDetail,
@@ -2083,6 +2406,8 @@ export function MarketDetailPage() {
       }
 
       const clientOrderId = crypto.randomUUID();
+      let reviewedFeeFacts: BrowserCtfRangeOrderFeePreview | null = null;
+      let quoteRefreshController: AbortController | null = null;
       try {
         if (abortIfAttemptStale()) return;
         const signedComment = comment?.trim()
@@ -2093,12 +2418,13 @@ export function MarketDetailPage() {
         const submittedWalletId = browserWalletIdFromMnemonic(walletState.mnemonic);
         if (submittedWalletId === null) throw new Error("The active wallet is unavailable.");
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
-        const exactFeePreviewKey = JSON.stringify({
-          conditionId: latestMarket.id,
+        const exactFeePreviewKey = tradeFeeConsentKey({
+          market: latestMarket,
           mintUrl: activeMintUrl,
           ticket,
           previewIdentityKey: capturedPreviewIdentityKey,
           selectedSellHoldingVersion,
+          recoveryInvalidationKey: capturedRecoveryInvalidationKey,
         });
         let consentedFeeFacts =
           rangeFeePreview?.key === exactFeePreviewKey ? rangeFeePreview.feeFacts : null;
@@ -2117,6 +2443,10 @@ export function MarketDetailPage() {
           throw new Error("Wallet fee facts changed. Review the updated trade cost and retry.");
         }
         if (abortIfAttemptStale()) return;
+        reviewedFeeFacts = consentedFeeFacts;
+        quoteRefreshController = new AbortController();
+        quoteRefreshAbortRef.current = quoteRefreshController;
+        setQuoteRefreshWait(null);
         const response = await submitBrowserCtfRangeOrder({
           market: latestMarket,
           ticket,
@@ -2125,6 +2455,11 @@ export function MarketDetailPage() {
           mnemonic: walletState.mnemonic,
           comment: signedComment ?? null,
           consentedFeeFacts,
+          signal: quoteRefreshController.signal,
+          onQuotesRefreshing: () => {
+            if (routeStillActive() && !quoteRefreshController?.signal.aborted)
+              setQuoteRefreshWait("waiting");
+          },
           onScoreTopUpRequired: async (input) => {
             const {
               requiredSats,
@@ -2147,6 +2482,7 @@ export function MarketDetailPage() {
               required: requiredSats,
               protectedTicket: ticket,
               previewIdentityKey,
+              inputGeneration,
             });
             if (intent === null) {
               throw new BrowserCtfRangeScoreTopUpCancelledError();
@@ -2191,6 +2527,7 @@ export function MarketDetailPage() {
         });
         if (
           !routeStillActive() ||
+          currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey ||
           browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic) !== submittedWalletId
         ) {
           return;
@@ -2204,36 +2541,91 @@ export function MarketDetailPage() {
           fillCount: response.fills?.length ?? 0,
           status: response.status,
         });
-        setTradeSelection(null);
-        setTradeAmount(0);
-        setTradeSubmitStatus({
-          kind: "success",
-          message:
-            response.status === "resting"
-              ? "Order posted to the book."
-              : `Order ${response.status.replace("_", " ")}.`,
-        });
+        // Acceptance consumes only the draft that supplied this ticket. The
+        // selected outcome remains available for the next order.
+        if (tradeInputGenerationRef.current === inputGeneration) {
+          setTradeAmount(0);
+          setTradeComment("");
+        }
+        switch (response.status) {
+          case "cancelled":
+            setTradeSubmitStatus({
+              kind: "info",
+              message: "Order cancelled.",
+              reviewedFeeFacts,
+              reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+            });
+            break;
+          case "matched":
+            // The order is reserved, not complete. The settled status replaces
+            // this notice after the mint commit or a settlement failure.
+            setTradeSubmitStatus({
+              kind: "info",
+              message: t("trade.orderSettling"),
+              settlingOrder: {
+                orderId: response.orderId,
+                walletId: submittedWalletId,
+                marketId: ticket.marketId,
+              },
+            });
+            break;
+          case "failed":
+            setTradeSubmitStatus({ kind: "error", message: "Order failed." });
+            break;
+          case "filled":
+          case "expired":
+          case "evicted_capacity":
+          case "rejected_capacity":
+          case "resting":
+          case "partially_filled":
+            setTradeSubmitStatus({
+              kind: "success",
+              message:
+                response.status === "resting"
+                  ? "Order posted to the book."
+                  : `Order ${response.status.replace("_", " ")}.`,
+            });
+            break;
+          default:
+            assertNever(response.status);
+        }
         if (useSettingsStore.getState().signerBackupState === "needs_backup") {
           setShowBackupReminder(true);
         }
         loadMarket({ showLoading: false });
       } catch (e) {
-        if (!routeStillActive()) return;
+        if (
+          !routeStillActive() ||
+          currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey
+        )
+          return;
         if (e instanceof BrowserCtfRangeScoreTopUpCancelledError) {
           setTradeSubmitStatus({
             kind: "info",
             message: t("trade.scoreTopUpCancelled"),
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
           });
           return;
         }
         if (e instanceof BrowserCtfRangeScoreTopUpRequiredError) {
-          setTradeSubmitStatus({ kind: "error", message: e.message });
+          setTradeSubmitStatus({
+            kind: "error",
+            message: e.message,
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+          });
           return;
         }
         if (e instanceof BrowserCtfRangeOrderError && e.code === "source-preparation-failed") {
           setRangeFeePreview(null);
           setFeeFactsRefreshGeneration((current) => current + 1);
-          setTradeSubmitStatus({ kind: "error", message: e.message });
+          setTradeSubmitStatus({
+            kind: "error",
+            message: e.message,
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+          });
           return;
         }
         if (e instanceof Error && e.message.includes("No Nostr signer configured")) {
@@ -2243,9 +2635,14 @@ export function MarketDetailPage() {
         setTradeSubmitStatus({
           kind: "error",
           message: e instanceof Error ? e.message : "Failed to submit order.",
+          reviewedFeeFacts,
+          reviewedFeeIdentityKey: capturedPreviewIdentityKey,
         });
       } finally {
+        if (quoteRefreshAbortRef.current === quoteRefreshController)
+          quoteRefreshAbortRef.current = null;
         if (routeStillActive()) {
+          setQuoteRefreshWait(null);
           tradeSubmitInFlightRef.current = false;
           setIsTradeSubmitting(false);
         }
@@ -2258,6 +2655,7 @@ export function MarketDetailPage() {
       tradeSide,
       protectedTradeTicket,
       previewIdentityKey,
+      tradeRecovery.invalidationKey,
       activeMintUrl,
       loadMarket,
       addPendingTrade,
@@ -2274,7 +2672,7 @@ export function MarketDetailPage() {
   // Do not gate Buy on share payout or Sell on pooled collections. The source
   // planner rechecks the selected asset and its fees when submission starts.
   const handleTradeConfirm = useCallback(
-    async (comment?: string, capturedTicket?: TradeTicket) => {
+    async (comment?: string, capturedTicket?: TradeTicket, capturedInputGeneration?: number) => {
       if (!market || !tradeSelection || !tradeAmount) return;
       const ticket = capturedTicket ?? protectedTradeTicket;
       if (ticket === null || ticket === undefined) {
@@ -2310,13 +2708,18 @@ export function MarketDetailPage() {
       }
       if (tradeSubmitInFlightRef.current) return;
       if (abortIfAttemptStale()) return;
-      await placeOrder(comment, ticket);
+      await placeOrder(
+        capturedTicket ? comment : (comment ?? (tradeComment.trim() || undefined)),
+        ticket,
+        capturedInputGeneration,
+      );
     },
     [
       market,
       marketBaseAsset,
       tradeSelection,
       tradeAmount,
+      tradeComment,
       tradeFaceAmountSubunits,
       tradeSide,
       activeMintUrl,
@@ -2364,21 +2767,31 @@ export function MarketDetailPage() {
   }, [invalidateProtectedTradeAttempt, market, nostrSignerMode]);
 
   const handleCreateImplicitAccount = useCallback(async () => {
+    const expectedNewIdentity = useSettingsStore.getState().nostrSignerMode === "none";
+    const routeId = currentRouteId;
+    const generation = routeGenerationRef.current;
     setLazySetupCreating(true);
     setLazySetupError(null);
     const result = await createImplicitWalletAndNostrIdentity();
+    if (!routeId || !isCurrentRoute(routeId, generation)) return;
     setLazySetupCreating(false);
     if (!result.ok) {
       setLazySetupError(result.error ?? "Could not create wallet");
       return;
     }
     setShowNostrChooser(false);
+    // Setup changes quote ownership. Always invalidate consent, even when the
+    // expected none-to-new transition needs no warning.
     invalidateProtectedTradeAttempt();
-    setTradeSubmitStatus({
-      kind: "info",
-      message: "Trading identity changed. Review the new price preview and confirm again.",
-    });
-  }, [invalidateProtectedTradeAttempt]);
+    setTradeSubmitStatus(
+      expectedNewIdentity
+        ? null
+        : {
+            kind: "info",
+            message: "Trading identity changed. Review the new price preview and confirm again.",
+          },
+    );
+  }, [currentRouteId, invalidateProtectedTradeAttempt, isCurrentRoute]);
 
   // After a successful top-up, close the overlay and place the order once, but
   // only if the wallet proof store now confirms the exact unit/amount captured
@@ -2520,6 +2933,7 @@ export function MarketDetailPage() {
     await handleTradeConfirm(
       intent.comment ?? pendingTopUpComment,
       intent.protectedTicket ?? undefined,
+      intent.inputGeneration,
     );
   }, [
     activeMintUrl,
@@ -2599,23 +3013,25 @@ export function MarketDetailPage() {
   const handleTradingPanelTopUp = useCallback(
     (comment?: string) => {
       if (!market || !tradeSelection || tradeAmount <= 0) return;
+      const capturedComment = comment ?? (tradeComment.trim() || undefined);
       setBalanceAtCheck(0);
       // New proofs change input fees. Do not invent an exact shortfall from
       // the share payout; normal preparation checks the received funds.
       const required = 0;
       const baseAsset = marketBaseAsset;
-      setPendingTopUpComment(comment?.trim() || undefined);
+      setPendingTopUpComment(capturedComment);
       setPendingTopUpIntent(
         buildPendingTopUpOrderIntent({
           market,
           tradeSelection,
           tradeAmount,
           tradeSide,
-          comment,
+          comment: capturedComment,
           baseAsset,
           required,
           protectedTicket: protectedTradeTicket,
           previewIdentityKey,
+          inputGeneration: tradeInputGenerationRef.current,
         }),
       );
       setTopUpReason({
@@ -2631,6 +3047,7 @@ export function MarketDetailPage() {
       previewIdentityKey,
       protectedTradeTicket,
       tradeAmount,
+      tradeComment,
       tradeFaceAmountSubunits,
       tradeSelection,
       tradeSide,
@@ -2653,10 +3070,12 @@ export function MarketDetailPage() {
   // current title + the implicit window.location.href.
   const handleShare = useShareMarket({ title: market?.title ?? "" });
 
-  if (routeTransitioning || loading) {
+  if (routeTransitioning || loading || (preparingCreation && !market)) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="text-slate-400 animate-pulse">Loading market...</div>
+        <div role="status" className="text-slate-400 motion-safe:animate-pulse">
+          {preparingCreation ? t("market.preparing") : "Loading market..."}
+        </div>
       </div>
     );
   }
@@ -2682,24 +3101,46 @@ export function MarketDetailPage() {
         chartTimeframe={chartTimeframe}
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
+        tradeComment={tradeComment}
+        onTradeCommentChange={(comment) => {
+          tradeInputGenerationRef.current += 1;
+          clearCompletedTradeNotice();
+          setTradeComment(comment);
+        }}
         sellHoldings={sellHoldings}
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
+        attemptedTradeFeeFacts={displayedAttemptedTradeFeeFacts}
         feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}
         isFullyEmptyBook={isFullyEmptyBook}
+        orderBookSnapshotAvailableByOutcome={Object.fromEntries(
+          outcomeSetIdsForMarketBooks(market).map((outcome) => {
+            const source = marketData.bookSourcesByMarketId[market.id]?.[outcome];
+            return [outcome, source === "rest" || source === "live"];
+          }),
+        )}
+        tradeRecovery={tradeRecovery}
+        suppressFundingHint={
+          isTradeSubmitting ||
+          tradeRecovery.suppressFundingHint ||
+          (capacityRequest !== null && capacityPreview.status !== "ready")
+        }
         onTimeframeChange={handleTimeframeChange}
         onTradeSelect={(selection) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSelection(selection);
         }}
         onTradeClear={() => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSelection(null);
           setTradeAmount(0);
         }}
         onAmountChange={(amount) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeAmount(amount);
         }}
@@ -2709,8 +3150,14 @@ export function MarketDetailPage() {
         tradeFeasibility={tradeFeasibility}
         onTradeFeasibilityRetry={() => setFeeFactsRefreshGeneration((current) => current + 1)}
         isTradeSubmitting={isTradeSubmitting}
+        quoteRefreshWait={quoteRefreshWait}
+        onCancelQuoteRefresh={() => {
+          setQuoteRefreshWait("stopping");
+          quoteRefreshAbortRef.current?.abort();
+        }}
         onShare={handleShare}
         onTradeSideChange={(side) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSide(side);
         }}
@@ -2719,6 +3166,7 @@ export function MarketDetailPage() {
         onWalletRequired={handleWalletRequired}
         onTopUpRequired={handleTradingPanelTopUp}
         onFundingCredited={handleFundingCredited}
+        onTradeMarketRefresh={() => loadMarket({ showLoading: false })}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
@@ -2788,4 +3236,33 @@ export function MarketDetailPage() {
       )}
     </>
   );
+}
+
+interface SettlingOrder {
+  readonly orderId: string;
+  readonly walletId: string;
+  readonly marketId: string;
+}
+
+/** The final trade notice for a settled order, or null while it can still settle. */
+function settledOrderNotice(
+  status: OrderSettlementObservation["status"],
+): { kind: "info" | "success" | "error"; message: string } | null {
+  switch (status) {
+    case "resting":
+    case "matched":
+    case "partially_filled":
+      return null;
+    case "filled":
+      return { kind: "success", message: "Order filled." };
+    case "failed":
+      return { kind: "error", message: "Order failed." };
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
+      return { kind: "info", message: `Order ${status.replace("_", " ")}.` };
+    default:
+      return assertNever(status);
+  }
 }

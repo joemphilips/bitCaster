@@ -1,18 +1,7 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { Command } from 'commander'
-import { readNativeSignerProfile } from '@bitcaster-market/daemon/nativeSignerProfile'
-import {
-  decodePrivateNostrSignerKey,
-  generatePrivateNostrSignerKey,
-} from '@bitcaster-market/client-sdk'
-import {
-  disconnectDaemonSigner,
-  readSecrets,
-  readSelectedDaemonSigner,
-  reconnectDaemonSigner,
-  replaceDaemonSigner,
-} from '@bitcaster-market/daemon/secrets'
+import type { NostrProfilePatch } from '@bitcaster-market/client-sdk/nostrProfile'
 
 interface SignerCommandContext {
   readonly isDryRun: () => boolean
@@ -25,16 +14,47 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
   signer
     .command('profile')
     .description(
-      'Read and refresh public profile metadata from the selected relays. No stored cache.',
+      'Read public profile metadata from selected relays. No stored cache for reads. Edit supplied fields and retain acknowledged edits.',
     )
-    .action(async () => {
-      if (context.isDryRun()) return print({ action: 'profile', dryRun: true })
-      print(await readNativeSignerProfile())
+    .option('--name <text>', 'Set the canonical name; an empty string clears it')
+    .option('--about <text>', 'Set the description; an empty string clears it')
+    .option('--picture <url>', 'Set the picture URL; an empty string clears it')
+    .action(async (options: NostrProfilePatch) => {
+      const patch = Object.fromEntries(
+        Object.entries(options).filter(([, value]) => value !== undefined),
+      )
+      if (Object.keys(patch).length === 0) {
+        if (context.isDryRun()) return print({ action: 'profile', dryRun: true })
+        const { readNativeSignerProfile } =
+          await import('@bitcaster-market/daemon/nativeSignerProfile')
+        return print(await readNativeSignerProfile())
+      }
+      const { validateNostrProfilePatch } =
+        await import('@bitcaster-market/client-sdk/nostrProfile')
+      const validated = validateNostrProfilePatch(patch)
+      if (context.isDryRun())
+        return print({ action: 'profile-edit', patch: validated, dryRun: true })
+      const { editNativeSignerProfile } =
+        await import('@bitcaster-market/daemon/nativeSignerProfile')
+      const result = await editNativeSignerProfile(validated)
+      print(result)
+      switch (result.status) {
+        case 'saved':
+          break
+        case 'not-acknowledged':
+        case 'published-retention-failed':
+        case 'selection-changed':
+          process.exitCode = 1
+          break
+      }
     })
   signer
     .command('show')
     .description('Read public signer status. Never print its private key.')
-    .action(async () => print(await readSelectedDaemonSigner()))
+    .action(async () => {
+      const { readSelectedDaemonSigner } = await import('@bitcaster-market/daemon/secrets')
+      print(await readSelectedDaemonSigner())
+    })
   for (const action of ['disconnect', 'connect'] as const) {
     signer
       .command(action)
@@ -45,6 +65,8 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
       .action(async (options: { expectedRevision: string }) => {
         const revision = parseRevision(options.expectedRevision)
         if (context.isDryRun()) return print({ action, expectedRevision: revision, dryRun: true })
+        const { reconnectDaemonSigner, disconnectDaemonSigner } =
+          await import('@bitcaster-market/daemon/secrets')
         print(
           await (action === 'connect'
             ? reconnectDaemonSigner(revision)
@@ -75,6 +97,8 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
           options.keyPassphraseFile === undefined
             ? undefined
             : (await readPrivateText(options.keyPassphraseFile, 4096)).replace(/\r?\n$/, '')
+        const { decodePrivateNostrSignerKey } =
+          await import('@bitcaster-market/client-sdk/nostrSignerKey')
         const key = decodePrivateNostrSignerKey(keyText, passphrase)
         if (context.isDryRun())
           return print({
@@ -83,6 +107,7 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
             publicKeyHex: key.publicKeyHex,
             dryRun: true,
           })
+        const { replaceDaemonSigner } = await import('@bitcaster-market/daemon/secrets')
         print(await replaceDaemonSigner({ expectedRevision, nostrSecretKeyHex: key.secretKeyHex }))
       },
     )
@@ -95,6 +120,9 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
     .action(async (options: { expectedRevision: string }) => {
       const expectedRevision = parseRevision(options.expectedRevision)
       if (context.isDryRun()) return print({ action: 'generate', expectedRevision, dryRun: true })
+      const { replaceDaemonSigner } = await import('@bitcaster-market/daemon/secrets')
+      const { generatePrivateNostrSignerKey } =
+        await import('@bitcaster-market/client-sdk/nostrSignerKey')
       print(
         await replaceDaemonSigner({
           expectedRevision,
@@ -111,6 +139,9 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
     )
     .action(async (options: { outputFile: string }) => {
       if (context.isDryRun()) return print({ action: 'export', dryRun: true })
+      const { readSecrets } = await import('@bitcaster-market/daemon/secrets')
+      const { decodePrivateNostrSignerKey } =
+        await import('@bitcaster-market/client-sdk/nostrSignerKey')
       const secrets = await readSecrets()
       if (secrets === null) throw new Error('Daemon signer is not initialized.')
       const key = decodePrivateNostrSignerKey(secrets.nostrSecretKeyHex)

@@ -1,3 +1,4 @@
+import { requireValidCashuProofs } from "@bitcaster/client-sdk";
 /**
  * cashu-ts wallet helpers for bitCaster.
  *
@@ -20,7 +21,6 @@ import {
   type PartialMintQuoteResponse,
   type Token,
   type OperationCounters,
-  verifyProofsForReceive,
 } from "@cashu/cashu-ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -620,9 +620,7 @@ async function persistBrowserMintProofs(input: {
   readonly context: BrowserMintPersistenceContext;
 }): Promise<void> {
   input.context.requireCapturedProfile();
-  verifyProofsForReceive([...input.proofs], (keysetId) => input.wallet.getKeyset(keysetId), {
-    requireDleq: true,
-  });
+  requireValidCashuProofs([...input.proofs], (keysetId) => input.wallet.getKeyset(keysetId));
   input.context.requireCapturedProfile();
   const stored = input.proofs.map((proof) => ({
     ...proof,
@@ -1054,9 +1052,7 @@ function validateRecoveredProofs(
   if (keyset.id !== keysetId || keyset.unit !== unit || !keyset.verify()) {
     throw new Error("counter recovery keyset is invalid");
   }
-  verifyProofsForReceive([...proofs], (proofKeysetId) => wallet.getKeyset(proofKeysetId), {
-    requireDleq: true,
-  });
+  requireValidCashuProofs([...proofs], (proofKeysetId) => wallet.getKeyset(proofKeysetId));
 }
 
 type CounterRecoveryProofAsset =

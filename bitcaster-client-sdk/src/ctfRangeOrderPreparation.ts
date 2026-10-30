@@ -2,6 +2,8 @@ import {
   OutputData,
   createCtfAuthorizationOutputs,
   createCtfRangeManifest,
+  createCtfRangeManifestFromCounters,
+  createCtfAuthorizationOutputsFromCounters,
   deriveCtfRangeRefundKey,
   type CtfRangeManifestMaterial,
   type Proof,
@@ -41,7 +43,7 @@ export interface CtfRangeOrderPreparation {
   manifest: CtfRangeManifestMaterial
 }
 
-export function prepareCtfRangeOrderAuthorization(input: {
+export interface CtfRangeOrderAuthorizationInput {
   seed: Uint8Array
   operationId: string
   sourceOperationId: string
@@ -59,7 +61,30 @@ export function prepareCtfRangeOrderAuthorization(input: {
   expiry: number
   maxPoolEntries: number
   maxInputs?: number
-}): CtfRangeOrderPreparation {
+}
+
+export function prepareCtfRangeOrderAuthorization(
+  input: CtfRangeOrderAuthorizationInput,
+): CtfRangeOrderPreparation {
+  return constructAuthorization(input)
+}
+
+export function prepareCtfRangeOrderAuthorizationFromCounters(
+  input: CtfRangeOrderAuthorizationInput,
+  counters: { offerStart: number; receiveStart: number; receiveCount: number; changeCount: number },
+): CtfRangeOrderPreparation {
+  return constructAuthorization(input, counters)
+}
+
+function constructAuthorization(
+  input: CtfRangeOrderAuthorizationInput,
+  counters?: {
+    offerStart: number
+    receiveStart: number
+    receiveCount: number
+    changeCount: number
+  },
+): CtfRangeOrderPreparation {
   assertPreparationAuthority(input)
   const plan = planCtfRangeOrderAuthorization({
     side: input.side,
@@ -71,7 +96,24 @@ export function prepareCtfRangeOrderAuthorization(input: {
     maxPoolEntries: input.maxPoolEntries,
     ...(input.maxInputs === undefined ? {} : { maxInputs: input.maxInputs }),
   })
-  const manifest = createCtfRangeManifest({
+  if (counters !== undefined) {
+    const offerCount = 2 * plan.authorizationAmounts.length + counters.changeCount
+    for (const [start, count] of [
+      [counters.offerStart, offerCount],
+      [counters.receiveStart, counters.receiveCount],
+    ]) {
+      if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(count) ||
+        start! < 0 ||
+        count! < 1 ||
+        start! > 2147483648 - count!
+      ) {
+        throw new Error('Invalid counter CTF preparation range')
+      }
+    }
+  }
+  const manifestInput = {
     seed: input.seed,
     operationId: input.operationId,
     receiveKeyset: input.receiveKeyset,
@@ -79,9 +121,20 @@ export function prepareCtfRangeOrderAuthorization(input: {
     maxReceive: plan.manifest.maxReceive,
     maxChange: plan.manifest.maxChange,
     maxEntries: input.maxPoolEntries,
-  })
+  }
+  const manifest =
+    counters === undefined
+      ? createCtfRangeManifest(manifestInput)
+      : createCtfRangeManifestFromCounters({
+          ...manifestInput,
+          receiveCounters: { start: counters.receiveStart, count: counters.receiveCount },
+          changeCounters: {
+            start: counters.offerStart + 2 * plan.authorizationAmounts.length,
+            count: counters.changeCount,
+          },
+        })
   const refundKey = deriveCtfRangeRefundKey(input.seed, input.operationId)
-  const authorizationOutputs = createCtfAuthorizationOutputs({
+  const authorizationInput = {
     seed: input.seed,
     operationId: input.operationId,
     offerKeysetId: input.offerKeyset.id,
@@ -92,7 +145,17 @@ export function prepareCtfRangeOrderAuthorization(input: {
     refund: refundKey.publicKey,
     coordinatorPublicKey: input.coordinatorPublicKey,
     poolPolicy: plan.policy,
-  })
+  }
+  const authorizationOutputs =
+    counters === undefined
+      ? createCtfAuthorizationOutputs(authorizationInput)
+      : createCtfAuthorizationOutputsFromCounters({
+          ...authorizationInput,
+          authorizationCounters: {
+            start: counters.offerStart,
+            count: 2 * plan.authorizationAmounts.length,
+          },
+        })
   return {
     operationId: input.operationId,
     sourceOperationId: input.sourceOperationId,

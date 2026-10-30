@@ -1,4 +1,5 @@
 import { lstat, readdir, realpath } from 'node:fs/promises'
+import type { BigIntStats } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
@@ -22,6 +23,7 @@ export const DAEMON_RUN_LOCK = 'daemon-run.lock'
 export const DAEMON_RPC_SOCKET = 'daemon.sock'
 export const DAEMON_LOG_FILE = 'daemon.log'
 export const DAEMON_PID_FILE = 'daemon-autostart.pid'
+export const NOSTR_PROFILE_CACHE_DIRECTORY = 'nostr-profile-cache'
 
 const recognizedProfileArtifacts = new Set<string>([
   DAEMON_PROFILE_DATABASE,
@@ -32,6 +34,7 @@ const recognizedProfileArtifacts = new Set<string>([
   DAEMON_RPC_SOCKET,
   DAEMON_LOG_FILE,
   DAEMON_PID_FILE,
+  NOSTR_PROFILE_CACHE_DIRECTORY,
 ])
 
 export type ProfileArtifactKind = 'file' | 'directory' | 'symbolic-link' | 'socket' | 'other'
@@ -323,25 +326,152 @@ export async function inventoryDaemonProfile(directory: string): Promise<DaemonP
     }
   }
 
+  try {
+    return await inventoryPlainDaemonProfile(directory, directoryStat)
+  } catch (error) {
+    if (isNotFound(error)) throw new ProfileSchemaRefusalError('profile-identity-changed')
+    throw error
+  }
+}
+
+async function inventoryPlainDaemonProfile(
+  directory: string,
+  directoryStat: BigIntStats,
+): Promise<DaemonProfileInventory> {
   const directoryRealPath = await realpath(directory)
   const directoryIdentity = pathIdentity(directoryStat, directoryRealPath)
-  const entries = await readdir(directory, { withFileTypes: true })
-  const artifacts = (
-    await Promise.all(
-      entries.map(async (entry): Promise<ProfileArtifact> => {
-        const path = join(directory, entry.name)
-        const entryStat = await lstat(path, { bigint: true })
-        return {
-          name: entry.name,
-          kind: statKind(entryStat),
-          identity: pathIdentity(
-            entryStat,
-            entryStat.isSymbolicLink() ? undefined : await realpath(path),
-          ),
-        }
+  // Pin the durable paths before enumeration. Optional WAL/SHM files are not
+  // profile authority, but a rescan must never adopt a replacement database.
+  let originalDatabase: ProfileArtifact | undefined
+  try {
+    originalDatabase = await readProfileArtifact(directory, DAEMON_PROFILE_DATABASE)
+  } catch (error) {
+    if (!isNotFound(error)) throw error
+  }
+  const anchor = makeProfileInventory(
+    directory,
+    directoryIdentity,
+    originalDatabase === undefined ? [] : [originalDatabase],
+  )
+  for (let pass = 0; pass < 2; pass++) {
+    const entries = await readdir(directory, { withFileTypes: true })
+    const observed: ProfileArtifact[] = []
+    const results = await Promise.allSettled(
+      entries.map(async (entry) => {
+        return await readProfileArtifact(directory, entry.name, (artifact) =>
+          observed.push(artifact),
+        )
       }),
     )
-  ).sort(compareArtifacts)
+    let sidecarDisappeared = false
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index]!
+      if (result.status === 'fulfilled') continue
+      const entry = entries[index]!
+      if (!isNotFound(result.reason)) throw result.reason
+      if (!DAEMON_PROFILE_SIDECARS.some((name) => name === entry.name)) throw result.reason
+      // A known unsafe directory-entry kind cannot disappear into a retry.
+      if (
+        entry.isSymbolicLink() ||
+        entry.isDirectory() ||
+        entry.isSocket() ||
+        entry.isBlockDevice() ||
+        entry.isCharacterDevice() ||
+        entry.isFIFO()
+      ) {
+        throw new ProfileSchemaRefusalError('sqlite-sidecar-invalid')
+      }
+      if (
+        !entry.isFile() &&
+        !observed.some((artifact) => artifact.name === entry.name && artifact.kind === 'file')
+      )
+        throw new ProfileSchemaRefusalError('profile-identity-changed')
+      sidecarDisappeared = true
+    }
+    const artifacts = results
+      .flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+      .sort(compareArtifacts)
+    const inventory = makeProfileInventory(directory, directoryIdentity, artifacts)
+    if (
+      originalDatabase !== undefined &&
+      !recordsEqual(profileAuthority(anchor), profileAuthority(inventory))
+    ) {
+      throw new ProfileSchemaRefusalError('profile-identity-changed')
+    }
+    if (!sidecarDisappeared) {
+      if (pass !== 0) {
+        assertAdmissibleInventory(inventory)
+        await assertInventoryAnchor(directory, anchor)
+      }
+      return inventory
+    }
+    // Keep all first-pass safety observations. In particular, a rescan cannot
+    // hide an unknown name or an unsafe recognized artifact that was removed.
+    for (const entry of entries) {
+      if (LEGACY_DAEMON_PROFILE_ARTIFACTS.some((name) => name === entry.name))
+        throw new ProfileSchemaRefusalError('legacy-artifact')
+      if (!recognizedProfileArtifacts.has(entry.name))
+        throw new ProfileSchemaRefusalError('unknown-artifact')
+      if (entry.isSymbolicLink()) throw new ProfileSchemaRefusalError('profile-permission-invalid')
+      const kind = entry.isFile()
+        ? 'file'
+        : entry.isDirectory()
+          ? 'directory'
+          : entry.isSocket()
+            ? 'socket'
+            : entry.isBlockDevice() || entry.isCharacterDevice() || entry.isFIFO()
+              ? 'other'
+              : undefined
+      if (kind !== undefined) assertArtifactKind(entry.name, kind)
+    }
+    assertOwnerOnlyDirectory(anchor)
+    for (const artifact of [...observed, ...artifacts])
+      assertObservedArtifactSafe(artifact, directoryIdentity)
+    if (pass !== 0 || originalDatabase?.kind !== 'file')
+      throw new ProfileSchemaRefusalError('profile-identity-changed')
+    await assertInventoryAnchor(directory, anchor)
+  }
+  throw new ProfileSchemaRefusalError('profile-identity-changed')
+}
+
+async function readProfileArtifact(
+  directory: string,
+  name: string,
+  observe?: (artifact: ProfileArtifact) => void,
+): Promise<ProfileArtifact> {
+  const path = join(directory, name)
+  const stat = await lstat(path, { bigint: true })
+  const artifact: ProfileArtifact = {
+    name,
+    kind: statKind(stat),
+    identity: pathIdentity(stat, undefined),
+  }
+  observe?.(artifact)
+  return {
+    ...artifact,
+    identity: pathIdentity(stat, stat.isSymbolicLink() ? undefined : await realpath(path)),
+  }
+}
+
+async function assertInventoryAnchor(
+  directory: string,
+  anchor: DaemonProfileInventory,
+): Promise<void> {
+  const stat = await lstat(directory, { bigint: true })
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new ProfileSchemaRefusalError('profile-identity-changed')
+  const current = makeProfileInventory(directory, pathIdentity(stat, await realpath(directory)), [
+    await readProfileArtifact(directory, DAEMON_PROFILE_DATABASE),
+  ])
+  if (!recordsEqual(profileAuthority(anchor), profileAuthority(current)))
+    throw new ProfileSchemaRefusalError('profile-identity-changed')
+}
+
+function makeProfileInventory(
+  directory: string,
+  directoryIdentity: ProfilePathIdentity,
+  artifacts: readonly ProfileArtifact[],
+): DaemonProfileInventory {
   const byName = new Map(artifacts.map((artifact) => [artifact.name, artifact]))
   const legacyArtifacts = LEGACY_DAEMON_PROFILE_ARTIFACTS.map((name) => byName.get(name)).filter(
     isDefined,
@@ -864,9 +994,8 @@ function assertAdmissibleInventory(inventory: DaemonProfileInventory): void {
   if (inventory.sqliteDatabase === undefined) {
     throw new ProfileSchemaRefusalError('sqlite-database-missing')
   }
-  if (inventory.sqliteDatabase.kind !== 'file') {
-    throw new ProfileSchemaRefusalError('sqlite-database-not-plain')
-  }
+  for (const artifact of inventory.artifacts)
+    assertArtifactKind(artifact.name, artifact.kind, artifact.identity.mode)
   const wal = inventory.sqliteSidecars.find(({ name }) => name === `${DAEMON_PROFILE_DATABASE}-wal`)
   const shm = inventory.sqliteSidecars.find(({ name }) => name === `${DAEMON_PROFILE_DATABASE}-shm`)
   if (
@@ -880,12 +1009,6 @@ function assertAdmissibleInventory(inventory: DaemonProfileInventory): void {
   // therefore contain later data commits, but never a schema transition.
   // Immutable inspection intentionally validates the frozen main database;
   // the later fenced read/write open owns WAL recovery.
-  if (inventory.runLock !== undefined && inventory.runLock.kind !== 'file') {
-    throw new ProfileSchemaRefusalError('run-lock-invalid')
-  }
-  if (inventory.rpcSocket !== undefined && inventory.rpcSocket.kind !== 'socket') {
-    throw new ProfileSchemaRefusalError('rpc-socket-invalid')
-  }
   // Presence alone does not prove whether a lock/socket is live or stale.
   // Classification is non-mutating; lifecycle checks and cleanup belong to
   // the later runtime admission flow.
@@ -904,6 +1027,51 @@ function emptyInventory(directory: string): DaemonProfileInventory {
   }
 }
 
+function assertArtifactKind(name: string, kind: ProfileArtifactKind, mode?: number): void {
+  if (
+    name === NOSTR_PROFILE_CACHE_DIRECTORY &&
+    (kind !== 'directory' || (mode !== undefined && (mode & 0o777) !== 0o700))
+  )
+    throw new ProfileSchemaRefusalError('profile-permission-invalid')
+  if (name === DAEMON_PROFILE_DATABASE && kind !== 'file')
+    throw new ProfileSchemaRefusalError('sqlite-database-not-plain')
+  if (DAEMON_PROFILE_SIDECARS.some((sidecar) => sidecar === name) && kind !== 'file')
+    throw new ProfileSchemaRefusalError('sqlite-sidecar-invalid')
+  if (name === DAEMON_RUN_LOCK && kind !== 'file')
+    throw new ProfileSchemaRefusalError('run-lock-invalid')
+  if (name === DAEMON_RPC_SOCKET && kind !== 'socket')
+    throw new ProfileSchemaRefusalError('rpc-socket-invalid')
+}
+
+function assertObservedArtifactSafe(
+  artifact: ProfileArtifact,
+  directoryIdentity: ProfilePathIdentity,
+): void {
+  assertArtifactKind(artifact.name, artifact.kind, artifact.identity.mode)
+  assertArtifactPermissions(artifact, directoryIdentity, false)
+}
+
+function assertArtifactPermissions(
+  artifact: ProfileArtifact,
+  directoryIdentity: ProfilePathIdentity,
+  requireRealPath: boolean,
+): void {
+  const { identity } = artifact
+  const owner = typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
+  if (
+    artifact.kind === 'symbolic-link' ||
+    owner === undefined ||
+    (requireRealPath && identity.realPath === undefined) ||
+    identity.ownerId !== owner ||
+    (identity.mode & 0o077) !== 0 ||
+    (identity.mode & 0o600) !== 0o600 ||
+    (identity.realPath !== undefined &&
+      identity.realPath !== join(directoryIdentity.realPath!, artifact.name))
+  ) {
+    throw new ProfileSchemaRefusalError('profile-permission-invalid')
+  }
+}
+
 function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
   assertOwnerOnlyDirectory(inventory)
   const directoryIdentity = inventory.directoryIdentity
@@ -917,16 +1085,7 @@ function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
   }
 
   for (const artifact of inventory.artifacts) {
-    const { identity } = artifact
-    if (
-      identity.realPath === undefined ||
-      identity.ownerId !== currentOwnerId ||
-      (identity.mode & 0o077) !== 0 ||
-      (identity.mode & 0o600) !== 0o600 ||
-      identity.realPath !== join(directoryIdentity.realPath, artifact.name)
-    ) {
-      throw new ProfileSchemaRefusalError('profile-permission-invalid')
-    }
+    assertArtifactPermissions(artifact, directoryIdentity, true)
   }
 }
 

@@ -1,3 +1,16 @@
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { prepareNativeConditionRegistrationFee } from '../src/nativeConditionRegistrationFee.ts'
+import { OutgoingPreparationRetryError } from '../src/speculativeWalletSendPreparation.ts'
+const testSendCounterSources = new WeakMap<
+  object,
+  (source: import('@cashu/cashu-ts').CounterSource) => void
+>()
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
+import type { CustodyScopeFence } from '../src/profileFencing.ts'
+import { prepareSpeculativeWalletReceive } from '../src/speculativeWalletReceivePreparation.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -6,7 +19,6 @@ import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import test from 'node:test'
 import { bytesToHex } from '@noble/curves/utils.js'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   Amount,
   CheckStateEnum,
@@ -68,13 +80,10 @@ import { replaceDaemonSigner, DaemonSignerEditError } from '../src/secrets.ts'
 
 const MINT_URL = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
-const KEY = bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true))
-const KEYS = { '1': KEY, '2': KEY, '4': KEY, '8': KEY, '128': KEY }
-const MSAT_KEYS = Object.fromEntries(
-  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].map((amount) => [
-    String(amount),
-    KEY,
-  ]),
+const KEYS = mintDenominationKeys(PRIVATE_KEY, ['1', '2', '4', '8', '128'])
+const MSAT_KEYS = mintDenominationKeys(
+  PRIVATE_KEY,
+  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].map(String),
 )
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
 const MSAT_KEYSET_ID = deriveKeysetId(MSAT_KEYS, { unit: 'msat', versionByte: 1 })
@@ -165,8 +174,7 @@ test('pending bearer transfer does not block signer replacement or change its au
 
 function testMintAuthority(privateKeyLastByte: number) {
   const privateKey = Uint8Array.from([...new Uint8Array(31), privateKeyLastByte])
-  const key = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  const keys = Object.fromEntries([1, 2, 4, 8, 128].map((amount) => [String(amount), key]))
+  const keys = mintDenominationKeys(privateKey, ['1', '2', '4', '8', '128'])
   return {
     keysetId: deriveKeysetId(keys, { unit: 'msat', versionByte: 1 }),
     keys,
@@ -195,20 +203,91 @@ type TestCoordinator = Omit<
   ): ReturnType<DaemonDurableOutgoingCashuCoordinator['executeMarketFundingTransfer']>
 }
 
-function withTestSeed(coordinator: DaemonDurableOutgoingCashuCoordinator): TestCoordinator {
+function withTestSeed(
+  coordinator: DaemonDurableOutgoingCashuCoordinator,
+  reclaimContext: { directory: string; getFence: () => CustodyScopeFence },
+): TestCoordinator {
   return new Proxy(coordinator, {
     get(target, property) {
+      if (property === 'reclaim') {
+        return (input: Parameters<typeof target.reclaim>[0]) =>
+          target.reclaim({
+            ...input,
+            prepareReceive:
+              input.prepareReceive ??
+              ((encodedToken, operationId) =>
+                prepareSpeculativeWalletReceive({
+                  encodedToken,
+                  operationId,
+                  mintUrl: MINT_URL,
+                  unit: 'msat',
+                  directory: reclaimContext.directory,
+                  getFence: reclaimContext.getFence,
+                  createWallet: (source) => ({
+                    ...input.wallet,
+                    prepareSwapToReceive: async (token, config, output) => {
+                      // Old fixtures inject output construction. Allocate their range through
+                      // the new private source instead of pretending it was pre-reserved.
+                      const preview = await input.wallet.prepareSwapToReceive!(
+                        token,
+                        { ...config, onCountersReserved: undefined },
+                        output,
+                      )
+                      const range = await source.reserve(
+                        preview.keysetId,
+                        preview.keepOutputs!.length,
+                      )
+                      config?.onCountersReserved?.({ keysetId: preview.keysetId, ...range })
+                      return preview
+                    },
+                  }),
+                })),
+          })
+      }
       if (property === 'execute') {
         return (input: Omit<Parameters<typeof target.execute>[0], 'seed'>) =>
-          target.execute({ ...input, seed: TEST_SEED })
+          target.execute({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       if (property === 'executeParticipationScore') {
         return (input: Omit<Parameters<typeof target.executeParticipationScore>[0], 'seed'>) =>
-          target.executeParticipationScore({ ...input, seed: TEST_SEED })
+          target.executeParticipationScore({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       if (property === 'executeMarketFundingTransfer') {
         return (input: Omit<Parameters<typeof target.executeMarketFundingTransfer>[0], 'seed'>) =>
-          target.executeMarketFundingTransfer({ ...input, seed: TEST_SEED })
+          target.executeMarketFundingTransfer({
+            ...input,
+            seed: TEST_SEED,
+            createWallet:
+              input.createWallet ??
+              ((source) => {
+                const attach = testSendCounterSources.get(input.wallet)
+                if (!attach) throw new Error('test wallet counter-source adapter is missing')
+                attach(source)
+                return input.wallet
+              }),
+          })
       }
       const value: unknown = Reflect.get(target, property, target)
       return typeof value === 'function' ? value.bind(target) : value
@@ -1837,13 +1916,21 @@ test('durable send rejects a mint result that differs from its persisted determi
   }
 })
 
-test('failed deterministic preparation does not reuse its reserved counter range', async () => {
+test('failed deterministic preparation leaves its private counter range uncommitted', async () => {
   const fixture = await createFixture()
   try {
-    const wallet = fixture.wallet(async () => ({
-      keep: fixture.keepProofs,
-      send: fixture.sendProofs,
-    }))
+    let completed = 0
+    const wallet = fixture.wallet(async () => {
+      completed++
+      return { keep: fixture.keepProofs, send: fixture.sendProofs }
+    })
+    const authorities = () =>
+      withDurableCustodyUnitOfWork(fixture.directory, fixture.fence, Date.now(), (db) =>
+        ['target_keyset_counters', 'custody_keyset_counters'].map((table) =>
+          db.prepare(`SELECT * FROM ${table}`).all(),
+        ),
+      )
+    const beforeAuthorities = await authorities()
     const prepare = wallet.prepareSwapToSend
     let failFirstPreparation = true
     const ranges: OperationCounters[] = []
@@ -1881,7 +1968,8 @@ test('failed deterministic preparation does not reuse its reserved counter range
       /counter reservation conflicts with the output plan/,
     )
     assert.equal(await fixture.transfer('outgoing-failed-deterministic-prepare'), null)
-    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    assert.equal(completed, 0)
+    assert.deepEqual(await authorities(), beforeAuthorities)
 
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-after-failed-deterministic-prepare',
@@ -1890,18 +1978,19 @@ test('failed deterministic preparation does not reuse its reserved counter range
       wallet,
     })
     assert.equal(transfer.deliveryState, 'delivery-pending')
+    assert.equal(completed, 1)
     assert.deepEqual(
       ranges.map(({ start, count }) => ({ start, count })),
       [
         { start: 0, count: 4 },
-        { start: 4, count: 4 },
+        { start: 0, count: 4 },
       ],
     )
     assert.deepEqual(transfer.keepProofDerivationLocators, [
-      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 6 },
-      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 7 },
+      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 2 },
+      { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 3 },
     ])
-    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 8)
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
   } finally {
     await fixture.close()
   }
@@ -2851,7 +2940,8 @@ test('market funding stores the head with its custody operation and rejects a st
             throw new Error('stale initial attempt has no predecessor')
           },
         }),
-      /head changed|successor|predecessor/,
+      (error: unknown) =>
+        error instanceof OutgoingPreparationRetryError && error.reason === 'funding-successor',
     )
     assert.equal(mintCalls, 1)
     assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 1)
@@ -2874,7 +2964,14 @@ test('native funding exact begin retry needs no new debit consent or mint swap',
     })
     const deps = {
       getCustodyFence: () => fixture.fence,
-      createCashuWallet: () => activeWallet,
+      createCashuWallet: (
+        _mint: string,
+        _unit: string,
+        source?: import('@cashu/cashu-ts').CounterSource,
+      ) => {
+        if (source) testSendCounterSources.get(activeWallet)!(source)
+        return activeWallet
+      },
     }
     const client = {
       getDurableRecipientDeliveryStatus: async (deliveryId: string) =>
@@ -2940,6 +3037,18 @@ test('native funding exact begin retry needs no new debit consent or mint swap',
     })
     const retry = await deliverMarketFundingCashu({ ...common, attempt })
     assert.deepEqual(retry, first)
+    assert.equal(mintCalls, 1)
+    assert.equal(posts, 1)
+    const competing = await deliverMarketFundingCashu({
+      ...common,
+      attempt: {
+        ...attempt,
+        newAttemptId: '55555555-5555-4555-8555-555555555555',
+        requestedAmount: '7000',
+      },
+    })
+    assert.deepEqual(competing, first)
+    assert.equal(await fixture.transfer('55555555-5555-4555-8555-555555555555'), null)
     assert.equal(mintCalls, 1)
     assert.equal(posts, 1)
     const secondAttempt = {
@@ -3252,7 +3361,7 @@ async function createFixture(
         return { send: restore('send'), keep: restore('keep') }
       }),
   })
-  const coordinator = withTestSeed(coordinatorCore)
+  const coordinator = withTestSeed(coordinatorCore, { directory, getFence: () => fence })
   const outgoingTransferAbortRestore = new Map<'insert' | 'update', () => void>()
   const wallet = (
     complete: () => Promise<{ keep: Proof[]; send: Proof[] }>,
@@ -3281,14 +3390,14 @@ async function createFixture(
       outputProofs.set(output.blindedMessage.B_, signedProof(output, selectedKeys, proofPrivateKey))
     for (const output of outputPlan.keepOutputs)
       outputProofs.set(output.blindedMessage.B_, signedProof(output, selectedKeys, proofPrivateKey))
-    const counterSource = createDaemonCounterSource(
+    let counterSource: import('@cashu/cashu-ts').CounterSource = createDaemonCounterSource(
       () => ({ fence: counterFence, observedAtMs: Date.now() }),
       {
         normalizedMint: mintUrl,
         unit,
       },
     )
-    return {
+    const result = {
       loadMint: async () => {},
       receive: async () => [],
       send: async () => ({ keep: [], send: [] }),
@@ -3384,6 +3493,10 @@ async function createFixture(
         verify: () => true,
       }),
     }
+    testSendCounterSources.set(result, (source) => {
+      counterSource = source
+    })
+    return result
   }
   const addAvailableProof = async (mintUrl: string, proof: Proof) => {
     await addAvailableProofs(mintUrl, [proof], { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
@@ -3452,6 +3565,7 @@ async function createFixture(
             .get(scopeId) as { sequence: number } | undefined,
       ),
     coordinator,
+    coordinatorCore,
     fence,
     inputProof,
     sendProofs,
@@ -3754,6 +3868,7 @@ async function createFixture(
           },
           () => nowMs,
         ),
+        { directory, getFence: () => currentFence },
       ),
     advanceCounter: async (minimum: number) =>
       advanceDaemonKeysetCounter(
@@ -3808,12 +3923,16 @@ function signedProof(
   keys: Record<string, string> = KEYS,
   privateKey: Uint8Array = PRIVATE_KEY,
 ): Proof {
+  const denominationKey = mintDenominationPrivateKey(
+    privateKey,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    privateKey,
+    denominationKey,
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), denominationKey)
   const proof = output.toProof(
     {
       id: output.blindedMessage.id,
@@ -3934,7 +4053,7 @@ for (const partial of [false, true]) {
         unselectedProofs: proofs.filter((proof) => proof.id !== FEE_KEYSET_ID),
       })
       const keyset = (id?: string) => ({
-        id: id ?? KEYSET_ID,
+        id: id ?? FEE_KEYSET_ID,
         unit: 'msat',
         keys: KEYS,
         fee: id === FEE_KEYSET_ID ? 500 : 0,
@@ -3964,7 +4083,7 @@ for (const partial of [false, true]) {
         successorOutputs,
         proofState: () => CheckStateEnum.UNSPENT,
       })
-      reclaimWallet.getKeyset = keyset
+      reclaimWallet.getKeyset = (id?: string) => keyset(id ?? KEYSET_ID)
       reclaimWallet.prepareSwapToReceive = async (token, config) => {
         config?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 20, count: successors.length })
         return {
@@ -4072,6 +4191,75 @@ test('Cashu Activity write failure rolls back classification and reclaim admissi
     assert.equal(await fixture.targetWalletHasProof(successors[0]!), true)
   } finally {
     removeFault()
+    await fixture.close()
+  }
+})
+
+test('native registration fee forwards speculative authority and reuses the saved fee on retry', async () => {
+  const fixture = await createFixture()
+  try {
+    let mintCalls = 0
+    let factoryCalls = 0
+    const wallet = fixture.wallet(async () => {
+      mintCalls += 1
+      return { keep: fixture.keepProofs, send: fixture.sendProofs }
+    })
+    const createWallet = (source: import('@cashu/cashu-ts').CounterSource) => {
+      factoryCalls += 1
+      const attach = testSendCounterSources.get(wallet)
+      assert.ok(attach)
+      attach({
+        reserve: async (id, count) => {
+          assert.equal(await fixture.counterNext(id), undefined)
+          const range = await source.reserve(id, count)
+          assert.equal(
+            await fixture.counterNext(id),
+            undefined,
+            'preparation persisted a counter early',
+          )
+          return range
+        },
+        advanceToAtLeast: (id, next) => source.advanceToAtLeast(id, next),
+      })
+      return wallet
+    }
+    assert.equal(await fixture.counterNext(KEYSET_ID), undefined)
+    const input = {
+      creationId: 'native-fee-real-coordinator',
+      mintUrl: MINT_URL,
+      requiredFeeMsat: 5,
+      maxWalletDebitMsat: 5,
+      seed: TEST_SEED,
+      wallet,
+      createWallet,
+    }
+    // Bypass withTestSeed: that convenience proxy supplies an omitted factory.
+    const deps = { coordinator: fixture.coordinatorCore }
+    const paid = await prepareNativeConditionRegistrationFee(deps, input)
+    assert.equal(paid.kind, 'prepared')
+    assert.equal(
+      paid.feeProofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
+      5,
+    )
+    assert.equal(factoryCalls, 1)
+    assert.equal(mintCalls, 1)
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    const saved = await fixture.coordinatorCore.loadTransfer(paid.transferId!)
+    assert.ok(saved)
+    const retry = await prepareNativeConditionRegistrationFee(deps, {
+      ...input,
+      createWallet: () => {
+        throw new Error('saved fee must not prepare new outputs')
+      },
+    })
+    assert.deepEqual(retry, paid)
+    assert.equal(mintCalls, 1, 'retry must not dispatch another fee swap')
+    assert.equal((await fixture.counterNext(KEYSET_ID))?.nextCounter, 4)
+    const replayed = await fixture.coordinatorCore.loadTransfer(paid.transferId!)
+    assert.ok(replayed)
+    // Proof classification may update recovery scheduling, but never the saved payment.
+    assert.deepEqual({ ...replayed, revision: saved.revision, recovery: saved.recovery }, saved)
+  } finally {
     await fixture.close()
   }
 })

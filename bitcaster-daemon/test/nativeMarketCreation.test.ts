@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { finalizeEvent } from 'nostr-tools/pure'
 import { bytesToHex } from '@noble/curves/utils.js'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,12 +21,14 @@ import {
   deriveKeysetId,
   hashToCurve,
   pointFromHex,
+  type CounterSource,
   type OperationCounters,
   type Proof,
 } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  MarketCreationThumbnailMismatchError,
   defaultMarketDivisibility,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
@@ -48,11 +54,7 @@ import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts
 import type { NativeMarketCreationInput } from '../src/nativeMarketOracle.ts'
 import type { NativeOracleHelper } from '../src/nativeOracleHelper.ts'
 import type { NativeMarketCreationDependencies } from '../src/nativeMarketCreation.ts'
-import {
-  createDaemonCounterSource,
-  type CashuWalletLike,
-  type WalletOpsDependencies,
-} from '../src/walletOps.ts'
+import type { CashuWalletLike, WalletOpsDependencies } from '../src/walletOps.ts'
 
 const CREATOR_PUBKEY = deriveNostrPublicKey('22'.repeat(32))
 const ORACLE_PUBKEY = CREATOR_PUBKEY
@@ -70,10 +72,7 @@ const ANNOUNCEMENT_EVENT_JSON = JSON.stringify(
   ),
 )
 const FEE_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
-const FEE_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(FEE_PRIVATE_KEY, true))
-const FEE_KEYS = Object.fromEntries(
-  [1, 2, 4, 8, 16].map((amount) => [String(amount), FEE_PUBLIC_KEY]),
-)
+const FEE_KEYS = mintDenominationKeys(FEE_PRIVATE_KEY, ['1', '2', '4', '8', '16'])
 const FEE_KEYSET_ID = deriveKeysetId(FEE_KEYS, { unit: 'msat', versionByte: 1 })
 
 for (const [name, market] of [
@@ -368,6 +367,77 @@ test('paid engine failure survives a cold SQLite read and resumes the original t
   })
 })
 
+test('historical image mismatch survives cold SQLite read but native resume refuses without new effects', async () => {
+  const data = new Uint8Array([1, 2, 3])
+  const expectedHash = createHash('sha256').update(data).digest('hex')
+  const input: NativeMarketCreationInput = {
+    ...creationInput('historical-image-mismatch', binaryMarket()),
+    registration: { requiredFeeMsat: 7 },
+    destination: {
+      ...creationInput('unused', binaryMarket()).destination,
+      thumbnailSha256: expectedHash,
+      thumbnailFilename: 'original.png',
+      thumbnailContentType: 'image/png',
+    },
+  }
+  await withFixture(input, async (fixture) => {
+    fixture.failEngineCreateBeforeCommit()
+    await assert.rejects(
+      completeNativeMarketCreation(fixture.dependencies, input, {
+        maxWalletDebitMsat: 7,
+        thumbnail: { data, filename: 'original.png', contentType: 'image/png' },
+      }),
+      /Failed to create market/,
+    )
+    // Write the historical result through the real store's existing compatibility validator.
+    const saved = (await fixture.store.readCreation(input.creationId))!
+    await fixture.store.confirmMarketCreationEngine(input.creationId, {
+      conditionId: saved.announcement!.conditionId,
+      baseAsset: 'sat',
+      divisibility: 1000,
+      marketsCreated: input.market.outcomeDetails.map(
+        ({ name }) => `${saved.announcement!.conditionId}-${name}`,
+      ),
+      thumbnailUrl: null,
+    })
+    const reopened = createNativeOracleCreationStore(fixture.directory)
+    const before = (await reopened.readCreation(input.creationId))!
+    assert.equal(before.marketCreation?.engineResult?.thumbnailUrl, null)
+    assert.equal(before.marketCreation?.mintConfirmed, true)
+    assert.equal(
+      createHash('sha256').update(before.marketCreation!.thumbnail!.data).digest('hex'),
+      expectedHash,
+    )
+    const counts = {
+      engine: fixture.engineStats(),
+      wallet: fixture.paymentWalletStats(),
+      mint: fixture.mintRequests().length,
+      published: fixture.publishedEvents().length,
+      helper: fixture.helperCreateCount(),
+      uploads: fixture.engineThumbnails().length,
+    }
+    await assert.rejects(
+      completeNativeMarketCreation(fixture.dependenciesAfterRestart(), input),
+      MarketCreationThumbnailMismatchError,
+    )
+    assert.deepEqual(
+      {
+        engine: fixture.engineStats(),
+        wallet: fixture.paymentWalletStats(),
+        mint: fixture.mintRequests().length,
+        published: fixture.publishedEvents().length,
+        helper: fixture.helperCreateCount(),
+        uploads: fixture.engineThumbnails().length,
+      },
+      counts,
+    )
+    const after = await createNativeOracleCreationStore(fixture.directory).readCreation(
+      input.creationId,
+    )
+    assert.ok(isDeepStrictEqual(after, before), 'Retained native creation changed during refusal.')
+  })
+})
+
 test('lost paid engine response and lookup survive cold SQLite resume without another delivery', async () => {
   const input: NativeMarketCreationInput = {
     ...creationInput('paid-engine-lost-response', categoricalMarket()),
@@ -612,7 +682,10 @@ function createFixture(
         return new Response('fresh authentication required', { status: 401 })
       }
       const conditionId = decodeURIComponent(url.pathname.slice('/api/v1/markets/'.length))
-      const createdMarket = marketRecord(conditionId, input.market)
+      const createdMarket = {
+        ...marketRecord(conditionId, input.market),
+        thumbnailUrl: thumbnail instanceof Blob ? '/original-thumbnail' : null,
+      }
       storedEngineMarket = createdMarket
       if (engineCreateUncertain) {
         engineCreateUncertain = false
@@ -627,6 +700,7 @@ function createFixture(
         marketsCreated: outcomes.map((outcome) => `${conditionId}-${outcome}`),
         baseAsset: input.market.baseAsset,
         divisibility: defaultMarketDivisibility(input.market.baseAsset),
+        thumbnailUrl: createdMarket.thumbnailUrl,
       })
     }
     throw new Error(`Unexpected mocked engine request: ${url.pathname}`)
@@ -712,6 +786,7 @@ function createFixture(
         ...shared,
         coordinator,
         wallet,
+        createWallet: (source) => feeFixture!.createWallet(source),
       }
       return dependencies
     }
@@ -787,7 +862,7 @@ function createFixture(
 interface RegistrationFeeFixture {
   readonly coordinator: DaemonDurableOutgoingCashuCoordinator
   createCoordinator(): DaemonDurableOutgoingCashuCoordinator
-  createWallet(): CashuWalletLike
+  createWallet(source?: CounterSource): CashuWalletLike
   markMintSpent(): void
   stats(): { prepareCalls: number; completedSwaps: number }
 }
@@ -862,10 +937,6 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
       keep: restore('keep', outputGroups.keep ?? []),
     }),
   }
-  const counterSource = createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
-    normalizedMint: MINT_URL,
-    unit: 'msat',
-  })
   const createCoordinator = () =>
     new DaemonDurableOutgoingCashuCoordinator(directory, () => fence, walletDependencies)
 
@@ -883,7 +954,7 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
   return {
     coordinator: createCoordinator(),
     createCoordinator,
-    createWallet() {
+    createWallet(source) {
       const wallet: CashuWalletLike = {
         loadMint: async () => {},
         receive: async () => [],
@@ -913,7 +984,11 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
           ).onCountersReserved
           assert.equal(typeof onCountersReserved, 'function')
           const count = sendOutputs.length + keepOutputs.length
-          const range = await counterSource.reserve(FEE_KEYSET_ID, count)
+          assert.ok(
+            source,
+            'deterministic fee preparation requires the supplied speculative source',
+          )
+          const range = await source.reserve(FEE_KEYSET_ID, count)
           onCountersReserved?.({
             keysetId: FEE_KEYSET_ID,
             start: range.start,
@@ -985,12 +1060,16 @@ async function createRegistrationFeeFixture(directory: string): Promise<Registra
 }
 
 function signProof(output: OutputData): Proof {
+  const privateKey = mintDenominationPrivateKey(
+    FEE_PRIVATE_KEY,
+    output.blindedMessage.amount.toString(),
+  )
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    FEE_PRIVATE_KEY,
+    privateKey,
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), FEE_PRIVATE_KEY)
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
   const proof = output.toProof(
     {
       id: output.blindedMessage.id,

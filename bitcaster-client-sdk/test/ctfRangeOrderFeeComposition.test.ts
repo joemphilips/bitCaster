@@ -6,6 +6,8 @@ import {
   type CtfRangeOrderAuthorizationPlan,
 } from '../src/ctfRangeOrderAuthorization.ts'
 import {
+  summarizeCtfRangeOrderFees,
+  regularCtfRangeOrderFeeTotal,
   assertCtfRangeOrderFeeConsent,
   composeCtfRangeOrderFeeFacts,
   type CtfRangeOrderFeeFacts,
@@ -307,3 +309,48 @@ function mixedSourcePlan(inputFee: number): CtfRangeCapabilitySourcePlan {
     collateralChangeAmounts: [],
   }
 }
+
+test('fee summary combines only identical assets and retains exact fractional cash', () => {
+  const facts: CtfRangeOrderFeeFacts = {
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '2',
+    consolidationFeeSubunits: '3',
+    settlementAsset: REGULAR_ASSET,
+    sourcePreparationAsset: REGULAR_ASSET,
+    consolidationAsset: REGULAR_ASSET,
+    sourceMode: 'wallet-send',
+  }
+  assert.deepEqual(summarizeCtfRangeOrderFees(facts), [
+    { asset: REGULAR_ASSET, amountSubunits: 6n },
+  ])
+  assert.equal(regularCtfRangeOrderFeeTotal(facts), 6n)
+  const mixed = {
+    ...facts,
+    sourcePreparationAsset: CONDITIONAL_ASSET,
+    consolidationAsset: CONDITIONAL_ASSET,
+    sourceMode: 'conditional-keyset-swap' as const,
+  }
+  assert.deepEqual(summarizeCtfRangeOrderFees(mixed), [
+    { asset: REGULAR_ASSET, amountSubunits: 1n },
+    { asset: CONDITIONAL_ASSET, amountSubunits: 5n },
+  ])
+  assert.equal(regularCtfRangeOrderFeeTotal(mixed), 1n)
+  for (const asset of [
+    { ...CONDITIONAL_ASSET, outcomeCollection: 'NO' },
+    { ...CONDITIONAL_ASSET, conditionId: 'condition-2' },
+  ]) {
+    const totals = summarizeCtfRangeOrderFees({ ...mixed, consolidationAsset: asset })
+    assert.equal(totals.length, 3)
+    assert.equal(totals[1].amountSubunits, 2n)
+    assert.equal(totals[2].amountSubunits, 3n)
+  }
+  assert.equal(
+    summarizeCtfRangeOrderFees({
+      ...facts,
+      settlementInputFeeSubunits: '0',
+      sourcePreparationFeeSubunits: '0',
+      consolidationFeeSubunits: '0',
+    })[0].amountSubunits,
+    0n,
+  )
+})

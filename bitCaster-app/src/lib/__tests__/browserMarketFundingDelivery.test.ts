@@ -32,6 +32,7 @@ const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
 const recoverBrowserFundedAsset = vi.fn();
 const readBrowserMarketFundingHead = vi.fn();
+const outgoingDraftWallet = vi.hoisted(() => ({ value: null as unknown }));
 
 vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
   acknowledgeBrowserDurableOutgoingCashuRecipient: (...args: unknown[]) =>
@@ -52,6 +53,7 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
+  db: {},
   getBoundedCanonicalRegularProofs: (...args: unknown[]) =>
     getBoundedCanonicalRegularProofs(...args),
   findBrowserOutgoingCashuTransferByPredecessor: (...args: unknown[]) =>
@@ -59,6 +61,18 @@ vi.mock("@/stores/proof-db", () => ({
   decodeBrowserOutgoingCashuTransferRow: (...args: unknown[]) =>
     decodeBrowserOutgoingCashuTransferRow(...args),
   readBrowserMarketFundingHead: (...args: unknown[]) => readBrowserMarketFundingHead(...args),
+}));
+
+vi.mock("@/stores/browser-wallet-counter-db", () => ({
+  BrowserWalletCounterDexieStore: class {
+    async readSnapshotInContext(_context: unknown, keysetId: string) {
+      return { keysetId, nextCounter: 0 };
+    }
+  },
+}));
+
+vi.mock("@/stores/wallet", () => ({
+  createUncachedWalletForSeedUnit: async () => outgoingDraftWallet.value,
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -596,7 +610,7 @@ describe("browser market funding delivery", () => {
   it("preserves a final preparation error without relabeling it", async () => {
     const preparationError = new Error("counter reservation failed");
     const wallet = {
-      getKeyset: () => ({ id: `01${"11".repeat(32)}` }),
+      getKeyset: () => ({ id: `01${"11".repeat(32)}`, verify: () => true }),
       prepareSwapToSend: vi.fn().mockRejectedValue(preparationError),
     };
     captureBrowserMintPersistenceContext.mockReturnValue({
@@ -605,6 +619,7 @@ describe("browser market funding delivery", () => {
       requireCapturedProfile: vi.fn(),
     });
     getWalletForUnit.mockResolvedValue(wallet);
+    outgoingDraftWallet.value = wallet;
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
     getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);

@@ -110,3 +110,5 @@ function sameHead(left: object, right: object): boolean {
     Object.keys(b).length === Object.keys(a).length
   )
 }
+
+export * from './encryptedWalletBackupOwnerSync.ts'

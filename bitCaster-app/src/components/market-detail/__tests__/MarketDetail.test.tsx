@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
 import type {
@@ -23,18 +23,27 @@ vi.mock("../PriceChart", () => ({
     currentDisplay,
     emptyDisplay,
     outcomes,
+    historyStatus,
+    priceRefreshUnavailable,
+    divisibility,
   }: {
     currentDisplay?: string;
     emptyDisplay?: string;
+    historyStatus?: string;
+    priceRefreshUnavailable?: boolean;
+    divisibility?: number;
     outcomes?: Array<{ label: string; color?: string }>;
   }) => (
     <div
       data-testid="price-chart-mock"
+      data-history-status={historyStatus}
+      data-refresh-unavailable={priceRefreshUnavailable}
+      data-divisibility={divisibility}
       data-outcome-colors={outcomes
         ?.map(({ label, color }) => `${label}:${color ?? "automatic"}`)
         .join("|")}
     >
-      <div>{currentDisplay}</div>
+      <div data-testid="chart-current-display">{currentDisplay}</div>
       <div data-testid="chart-empty-display">{emptyDisplay}</div>
     </div>
   ),
@@ -170,6 +179,70 @@ function feeFacts(): TradeFeeFacts {
 }
 
 describe("MarketDetail", () => {
+  it("keeps mobile wait and Stop through an empty snapshot", () => {
+    const stop = vi.fn();
+    const props = {
+      chartTimeframe: "7d" as const,
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 5,
+      tradePreview: null,
+      tradeSide: "Buy" as const,
+      isTradeSubmitting: true,
+      quoteRefreshWait: "waiting" as const,
+      onCancelQuoteRefresh: stop,
+    };
+    const { rerender } = render(<MarketDetail {...props} market={makeMarket()} />);
+    const bar = screen.getByTestId("mobile-trade-bar");
+    rerender(
+      <MarketDetail
+        {...props}
+        market={makeMarket({
+          orderBook: { bids: [], asks: [], spread: 0 },
+          outcomeOrderBooks: {
+            Yes: { bids: [], asks: [], spread: 0 },
+            No: { bids: [], asks: [], spread: 0 },
+          },
+        })}
+        isFullyEmptyBook
+      />,
+    );
+    expect(screen.getByTestId("mobile-trade-bar")).toBe(bar);
+    expect(bar).toHaveTextContent("Waiting for fresh quotes");
+    fireEvent.click(within(bar).getByRole("button", { name: "Stop waiting" }));
+    expect(stop).toHaveBeenCalledTimes(1);
+    rerender(
+      <MarketDetail
+        {...props}
+        market={makeMarket()}
+        isFullyEmptyBook
+        quoteRefreshWait="stopping"
+      />,
+    );
+    expect(within(bar).getByRole("button", { name: "Stop waiting" })).toBeDisabled();
+  });
+
+  it("preserves mobile selected controls but requires a current preview after empty updates", () => {
+    const props = {
+      market: makeMarket(),
+      chartTimeframe: "7d" as const,
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 5,
+      tradeSide: "Buy" as const,
+      tradeFeeFacts: feeFacts(),
+      feeConsentCurrent: true,
+    };
+    const { rerender } = render(<MarketDetail {...props} tradePreview={readyPreview()} />);
+    const bar = screen.getByTestId("mobile-trade-bar");
+    expect(within(bar).getByRole("button", { name: "Confirm" })).toBeEnabled();
+    rerender(<MarketDetail {...props} isFullyEmptyBook tradePreview={null} />);
+    expect(screen.getByTestId("mobile-trade-bar")).toBe(bar);
+    expect(within(bar).getByRole("button", { name: "Confirm" })).toBeDisabled();
+    rerender(
+      <MarketDetail {...props} isFullyEmptyBook tradeSelection={null} tradePreview={null} />,
+    );
+    expect(screen.queryByTestId("mobile-trade-bar")).not.toBeInTheDocument();
+  });
+
   it("mounts exactly one responsive trading panel", () => {
     tradingPanelMock.mockClear();
     render(
@@ -272,21 +345,95 @@ describe("MarketDetail", () => {
     expect(tradingPanelMock.mock.calls.at(-1)?.[0].tradeTab).toBe("Buy");
   });
 
-  it("renders the localized no-trade state without a zero or midpoint fallback", () => {
-    render(
-      <MarketDetail
-        market={makeMarket({ currentOdds: { yes: null, no: null }, latestConfirmedTrades: [] })}
-        chartTimeframe="7d"
-        tradeSelection={null}
-        tradeAmount={0}
-        tradePreview={null}
-        tradeSide="Buy"
-      />,
-    );
+  it.each(["yesno", "categorical"] as const)(
+    "renders the confirmed empty %s state without a zero or midpoint fallback",
+    (type) => {
+      render(
+        <MarketDetail
+          market={makeMarket({
+            type,
+            outcomes: [{ id: "Yes", label: "Yes", odds: null }],
+            currentOdds: { yes: null, no: null },
+            latestConfirmedTrades: [],
+            latestConfirmedTradesValid: true,
+            priceHistoryStatus: "ready",
+          })}
+          chartTimeframe="7d"
+          tradeSelection={null}
+          tradeAmount={0}
+          tradePreview={null}
+          tradeSide="Buy"
+        />,
+      );
 
-    expect(screen.getByText("No trades yet")).toBeInTheDocument();
-    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
-  });
+      expect(screen.getByTestId("chart-current-display")).toHaveTextContent("No trades yet");
+      expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["yesno", "categorical"] as const)(
+    "keeps the %s heading neutral until an empty trade state is confirmed",
+    (type) => {
+      const states: Array<Partial<MarketDetailType>> = [
+        { priceHistoryStatus: "loading" },
+        { priceHistoryStatus: "refreshing" },
+        { priceHistoryStatus: "ready" },
+        { priceHistoryStatus: "loading", latestConfirmedTradesValid: true },
+        { priceHistoryStatus: "refreshing", latestConfirmedTradesValid: true },
+        {
+          priceHistoryStatus: "ready",
+          latestConfirmedTradesValid: true,
+          latestConfirmedTrades: undefined,
+        },
+      ];
+      const { rerender } = render(<div />);
+      for (const state of states) {
+        rerender(
+          <MarketDetail
+            market={makeMarket({
+              type,
+              currentOdds: { yes: null, no: null },
+              outcomes: [
+                { id: "Yes", label: "Yes", odds: null },
+                { id: "No", label: "No", odds: null },
+              ],
+              latestConfirmedTrades: [],
+              ...state,
+            })}
+            chartTimeframe="7d"
+            tradeSelection={null}
+            tradeAmount={0}
+            tradePreview={null}
+            tradeSide="Buy"
+          />,
+        );
+        expect(screen.getByTestId("chart-current-display")).toBeEmptyDOMElement();
+      }
+    },
+  );
+
+  it.each(["yesno", "categorical"] as const)(
+    "keeps unavailable %s price authority explicit while history loads",
+    (type) => {
+      render(
+        <MarketDetail
+          market={makeMarket({
+            type,
+            currentOdds: { yes: null, no: null },
+            outcomes: [{ id: "Yes", label: "Yes", odds: null }],
+            latestConfirmedTradesValid: false,
+            priceHistoryStatus: "loading",
+          })}
+          chartTimeframe="7d"
+          tradeSelection={null}
+          tradeAmount={0}
+          tradePreview={null}
+          tradeSide="Buy"
+        />,
+      );
+      expect(screen.getByTestId("chart-current-display")).toHaveTextContent("Price unavailable");
+    },
+  );
 
   it("keeps the latest confirmed trade as the chart price when the book midpoint differs", () => {
     const yesBook = {
@@ -438,7 +585,7 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.getByText("Price unavailable")).toBeInTheDocument();
     expect(screen.queryByText("$75.00")).not.toBeInTheDocument();
   });
 
@@ -774,3 +921,29 @@ describe("MarketDetail", () => {
     expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
   });
 });
+
+it.each(["loading", "refreshing", "unavailable"] as const)(
+  "retains a confirmed headline during %s",
+  (historyStatus) => {
+    render(
+      <MarketDetail
+        market={makeMarket({
+          currentOdds: { yes: 420, no: null },
+          latestConfirmedTradesValid: true,
+          priceHistoryStatus: historyStatus,
+          priceRefreshUnavailable: true,
+        })}
+        chartTimeframe="1h"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+      />,
+    );
+    const chart = screen.getByTestId("price-chart-mock");
+    expect(chart).toHaveTextContent("42.0%");
+    expect(chart).toHaveAttribute("data-history-status", historyStatus);
+    expect(chart).toHaveAttribute("data-refresh-unavailable", "true");
+    expect(chart).toHaveAttribute("data-divisibility", "1000");
+  },
+);

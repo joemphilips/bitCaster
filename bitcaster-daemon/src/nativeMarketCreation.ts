@@ -1,3 +1,4 @@
+import type { CounterSource } from '@cashu/cashu-ts'
 import { createHash } from 'node:crypto'
 import {
   assertMarketCreationBinding,
@@ -34,6 +35,7 @@ export interface NativeMarketCreationDependencies {
   readonly oracle: NativeMarketOracleDependencies
   readonly coordinator: DaemonDurableOutgoingCashuCoordinator
   readonly wallet?: CashuWalletLike
+  readonly createWallet?: (source: CounterSource) => CashuWalletLike
   readonly seed: Uint8Array
   readonly engine: BitcasterEngineClient
   readonly creatorPubkey: string
@@ -117,6 +119,7 @@ function nativeCreationAdapters(
       creationId: record.creationId,
       mintUrl: record.mintUrl,
       seed: deps.seed,
+      createWallet: deps.createWallet,
       requiredFeeMsat: record.registration.feeAmount,
       ...(record.registration.feeAmount === 0 ? {} : { wallet: deps.wallet }),
       maxWalletDebitMsat: options.maxWalletDebitMsat,

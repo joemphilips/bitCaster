@@ -17,8 +17,11 @@ import {
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test, { type TestContext } from 'node:test'
+import test, { mock, type TestContext } from 'node:test'
+import files from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises'
 import {
   DAEMON_PROFILE_DATABASE,
   DAEMON_PROFILE_SIDECARS,
@@ -239,6 +242,90 @@ const fixtureManifest: ProfileSchemaManifest = {
     },
   ],
 }
+
+for (const name of ['daemon-state.sqlite-wal', 'daemon-state.sqlite-shm', 'unknown.private']) {
+  for (const boundary of ['enumeration', 'stat'] as const) {
+    test(`classifies ${name} disappearance after ${boundary} without replacing authority`, async (t) => {
+      const directory = await temporaryProfile(t)
+      await createFixtureDatabase(directory)
+      const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
+      const before = await lstat(databasePath, { bigint: true })
+      const path = join(directory, name)
+      await writeFile(path, 'controlled entry', { mode: 0o600 })
+      const operation = boundary === 'enumeration' ? 'readdir' : 'lstat'
+      const original = files[operation]
+      let removed = false
+      const observation = mock.method(files, operation, async (...args: unknown[]) => {
+        const value = await Reflect.apply(original, files, args)
+        if (!removed && args[0] === (boundary === 'enumeration' ? directory : path)) {
+          removed = true
+          await unlink(path)
+        }
+        return value
+      })
+      syncBuiltinESMExports()
+      t.after(() => {
+        observation.mock.restore()
+        syncBuiltinESMExports()
+      })
+      if (name === 'unknown.private') {
+        await assert.rejects(
+          inventoryDaemonProfile(directory),
+          (error) =>
+            error instanceof ProfileSchemaRefusalError &&
+            error.reason === 'profile-identity-changed',
+        )
+      } else {
+        const inventory = await inventoryDaemonProfile(directory)
+        assert.equal(inventory.sqliteSidecars.length, 0)
+        assert.equal(inventory.sqliteDatabase?.identity.inode, before.ino)
+      }
+      assert.equal(removed, true)
+      const after = await lstat(databasePath, { bigint: true })
+      assert.equal(before.dev === after.dev && before.ino === after.ino, true)
+    })
+  }
+}
+
+for (const operation of ['realpath', 'readdir'] as const) {
+  test(`refuses directory disappearance during ${operation}`, async (t) => {
+    const directory = await temporaryProfile(t)
+    const original = files[operation]
+    let removed = false
+    const observation = mock.method(files, operation, async (...args: unknown[]) => {
+      if (!removed && args[0] === directory) {
+        removed = true
+        await rm(directory, { recursive: true })
+      }
+      return Reflect.apply(original, files, args)
+    })
+    syncBuiltinESMExports()
+    t.after(() => {
+      observation.mock.restore()
+      syncBuiltinESMExports()
+    })
+    await assert.rejects(
+      inventoryDaemonProfile(directory),
+      (error) =>
+        error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+    )
+    assert.equal(removed, true)
+  })
+}
+
+test('inventory propagates a non-ENOENT error with its original identity', async (t) => {
+  const directory = await temporaryProfile(t)
+  const error = Object.assign(new Error('controlled filesystem failure'), { code: 'EIO' })
+  const observation = mock.method(files, 'realpath', async () => {
+    throw error
+  })
+  syncBuiltinESMExports()
+  t.after(() => {
+    observation.mock.restore()
+    syncBuiltinESMExports()
+  })
+  await assert.rejects(inventoryDaemonProfile(directory), (observed) => observed === error)
+})
 
 test('inventory identifies every legacy artifact and SQLite candidate without mutation', async (t) => {
   const directory = await temporaryProfile(t)
@@ -1204,3 +1291,242 @@ async function temporaryProfile(t: TestContext): Promise<string> {
   })
   return directory
 }
+
+for (const scenario of [
+  'exhausted',
+  'main-replaced',
+  'directory-replaced',
+  'unknown',
+  'legacy',
+  'unsafe-config',
+  'unsafe-sidecar',
+  'replacement-sidecar',
+] as const) {
+  test(`sidecar recheck refuses ${scenario} with bounded enumeration`, async (t) => {
+    const directory = await temporaryProfile(t)
+    await createFixtureDatabase(directory)
+    const wal = join(directory, `${DAEMON_PROFILE_DATABASE}-wal`)
+    await writeFile(wal, '', { mode: 0o600 })
+    if (scenario === 'unknown')
+      await writeFile(join(directory, 'unknown.private'), '', { mode: 0o600 })
+    if (scenario === 'legacy')
+      await writeFile(join(directory, LEGACY_DAEMON_PROFILE_ARTIFACTS[0]), '', { mode: 0o600 })
+    if (scenario === 'unsafe-config')
+      await writeFile(join(directory, 'config.json'), '{}', { mode: 0o644 })
+    if (scenario === 'unsafe-sidecar') await chmod(wal, 0o644)
+    const originalRead = files.readdir
+    const originalStat = files.lstat
+    let enumerations = 0
+    const readObservation = mock.method(files, 'readdir', async (...args: unknown[]) => {
+      if (args[0] === directory && scenario === 'replacement-sidecar' && enumerations === 1)
+        await mkdir(wal)
+      if (args[0] === directory && scenario === 'exhausted')
+        await writeFile(wal, '', { mode: 0o600 })
+      const entries = await Reflect.apply(originalRead, files, args)
+      if (args[0] === directory) {
+        enumerations++
+        if (
+          scenario !== 'unsafe-sidecar' &&
+          !(scenario === 'replacement-sidecar' && enumerations === 2)
+        )
+          await unlink(wal).catch(() => undefined)
+        if (enumerations === 1 && scenario === 'main-replaced') {
+          const path = join(directory, DAEMON_PROFILE_DATABASE)
+          await cp(path, path + '.replacement')
+          await files.rename(path + '.replacement', path)
+        }
+        if (enumerations === 1 && scenario === 'directory-replaced') {
+          await files.rename(directory, directory + '.original')
+          t.after(() => rm(directory + '.original', { recursive: true, force: true }))
+          await mkdir(directory, { mode: 0o700 })
+          await cp(
+            join(directory + '.original', DAEMON_PROFILE_DATABASE),
+            join(directory, DAEMON_PROFILE_DATABASE),
+          )
+        }
+      }
+      return entries
+    })
+    const statObservation = mock.method(files, 'lstat', async (...args: unknown[]) => {
+      const stat = await Reflect.apply(originalStat, files, args)
+      if (scenario === 'unsafe-sidecar' && args[0] === wal) await unlink(wal)
+      if (scenario === 'unsafe-config' && args[0] === join(directory, 'config.json'))
+        await chmod(join(directory, 'config.json'), 0o600)
+      return stat
+    })
+    syncBuiltinESMExports()
+    t.after(() => {
+      readObservation.mock.restore()
+      statObservation.mock.restore()
+      syncBuiltinESMExports()
+    })
+    const reason =
+      scenario === 'unknown'
+        ? 'unknown-artifact'
+        : scenario === 'legacy'
+          ? 'legacy-artifact'
+          : scenario.startsWith('unsafe-')
+            ? 'profile-permission-invalid'
+            : scenario === 'replacement-sidecar'
+              ? 'sqlite-sidecar-invalid'
+              : 'profile-identity-changed'
+    await assert.rejects(
+      inventoryDaemonProfile(directory),
+      (error) => error instanceof ProfileSchemaRefusalError && error.reason === reason,
+    )
+    assert.ok(enumerations <= 2)
+    if (scenario === 'exhausted') assert.equal(enumerations, 2)
+  })
+}
+
+test('first completed inventory cannot replace the pre-enumeration main authority', async (t) => {
+  const directory = await temporaryProfile(t)
+  await createFixtureDatabase(directory)
+  const path = join(directory, DAEMON_PROFILE_DATABASE)
+  const original = files.readdir
+  const observation = mock.method(files, 'readdir', async (...args: unknown[]) => {
+    if (args[0] === directory) {
+      await cp(path, path + '.replacement')
+      await files.rename(path + '.replacement', path)
+    }
+    return await Reflect.apply(original, files, args)
+  })
+  syncBuiltinESMExports()
+  t.after(() => {
+    observation.mock.restore()
+    syncBuiltinESMExports()
+  })
+  await assert.rejects(
+    inventoryDaemonProfile(directory),
+    (error) =>
+      error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+  )
+})
+
+test('unknown directory-entry type does not prove a vanished sidecar was safe', async (t) => {
+  const directory = await temporaryProfile(t)
+  await createFixtureDatabase(directory)
+  const path = join(directory, `${DAEMON_PROFILE_DATABASE}-wal`)
+  await writeFile(path, '', { mode: 0o600 })
+  const original = files.readdir
+  let enumerations = 0
+  const observation = mock.method(files, 'readdir', async (...args: unknown[]) => {
+    const entries = await Reflect.apply(original, files, args)
+    if (args[0] !== directory) return entries
+    enumerations++
+    await unlink(path)
+    return entries.map((entry: { name: string }) =>
+      entry.name.endsWith('-wal')
+        ? {
+            name: entry.name,
+            isFile: () => false,
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+            isSocket: () => false,
+            isBlockDevice: () => false,
+            isCharacterDevice: () => false,
+            isFIFO: () => false,
+          }
+        : entry,
+    )
+  })
+  syncBuiltinESMExports()
+  t.after(() => {
+    observation.mock.restore()
+    syncBuiltinESMExports()
+  })
+  await assert.rejects(
+    inventoryDaemonProfile(directory),
+    (error) =>
+      error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+  )
+  assert.equal(enumerations, 1)
+})
+
+test(
+  'sidecar recheck drains every started artifact read before another enumeration',
+  { timeout: 5000 },
+  async (t) => {
+    const directory = await temporaryProfile(t)
+    await createFixtureDatabase(directory)
+    const wal = join(directory, `${DAEMON_PROFILE_DATABASE}-wal`)
+    const config = join(directory, 'config.json')
+    await writeFile(wal, '', { mode: 0o600 })
+    await writeFile(config, '{}', { mode: 0o600 })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const missing = Promise.withResolvers<void>()
+    const originalRead = files.readdir
+    const originalStat = files.lstat
+    let enumerations = 0
+    const readObservation = mock.method(files, 'readdir', async (...args: unknown[]) => {
+      const invocation = args[0] === directory ? ++enumerations : 0
+      const entries = await Reflect.apply(originalRead, files, args)
+      if (invocation === 1) await unlink(wal)
+      return entries
+    })
+    const statObservation = mock.method(files, 'lstat', async (...args: unknown[]) => {
+      if (args[0] === config) {
+        entered.resolve()
+        await release.promise
+      }
+      try {
+        return await Reflect.apply(originalStat, files, args)
+      } catch (error) {
+        if (args[0] === wal) missing.resolve()
+        throw error
+      }
+    })
+    syncBuiltinESMExports()
+    const operation = inventoryDaemonProfile(directory)
+    try {
+      await Promise.all([entered.promise, missing.promise])
+      // Let the missing read rejection propagate while the other read stays held.
+      await nextEventLoopTurn()
+      assert.equal(enumerations, 1)
+      release.resolve()
+      assert.equal((await operation).sqliteSidecars.length, 0)
+      assert.equal(enumerations, 2)
+    } finally {
+      release.resolve()
+      await operation.catch(() => undefined)
+      readObservation.mock.restore()
+      statObservation.mock.restore()
+      syncBuiltinESMExports()
+    }
+  },
+)
+
+test('sidecar recheck retains a completed unsafe resolved artifact path', async (t) => {
+  const directory = await temporaryProfile(t)
+  await createFixtureDatabase(directory)
+  const wal = join(directory, `${DAEMON_PROFILE_DATABASE}-wal`)
+  const config = join(directory, 'config.json')
+  await writeFile(wal, '', { mode: 0o600 })
+  await writeFile(config, '{}', { mode: 0o600 })
+  const originalRead = files.readdir
+  const originalRealpath = files.realpath
+  let enumerations = 0
+  const readObservation = mock.method(files, 'readdir', async (...args: unknown[]) => {
+    const entries = await Reflect.apply(originalRead, files, args)
+    if (args[0] === directory && ++enumerations === 1) await unlink(wal)
+    return entries
+  })
+  const pathObservation = mock.method(files, 'realpath', async (...args: unknown[]) =>
+    args[0] === config
+      ? join(directory, 'foreign-config.json')
+      : await Reflect.apply(originalRealpath, files, args),
+  )
+  syncBuiltinESMExports()
+  t.after(() => {
+    readObservation.mock.restore()
+    pathObservation.mock.restore()
+    syncBuiltinESMExports()
+  })
+  await assert.rejects(
+    inventoryDaemonProfile(directory),
+    (error) =>
+      error instanceof ProfileSchemaRefusalError && error.reason === 'profile-permission-invalid',
+  )
+  assert.equal(enumerations, 1)
+})

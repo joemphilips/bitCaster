@@ -1,3 +1,4 @@
+import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
 import { useRef, useState, useEffect } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -6,28 +7,51 @@ import { formatTimeAgo } from "@/lib/format";
 
 interface CommentSectionProps {
   comments: Comment[];
+  /** The last comment read failed. An empty list is then not "no comments". */
+  unavailable?: boolean;
   onLoadMoreComments?: () => void;
 }
 
 function CommentRow({ comment }: { comment: Comment }) {
+  const row = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!row.current) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+    observer.observe(row.current);
+    return () => observer.disconnect();
+  }, []);
+  const profile = usePublicCommentProfiles(visible ? [comment.userId] : []).get(comment.userId);
+  const name = profile?.displayName.trim() || comment.userDisplayName;
+  const avatar = profile?.avatar || comment.userAvatarUrl;
+  const safeAvatar = avatar?.startsWith("https://") ? avatar : undefined;
+  const [failedAvatar, setFailedAvatar] = useState<string>();
   return (
-    <div className="py-4 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
+    <div
+      ref={row}
+      className="py-4 border-b border-slate-100 dark:border-slate-700/50 last:border-0"
+    >
       {/* Header */}
       <div className="flex items-center gap-3 mb-2">
-        {comment.userAvatarUrl ? (
+        {safeAvatar && failedAvatar !== safeAvatar ? (
           <img
-            src={comment.userAvatarUrl}
-            alt={comment.userDisplayName}
-            className="w-8 h-8 rounded-full"
+            src={safeAvatar}
+            referrerPolicy="no-referrer"
+            onError={() => setFailedAvatar(safeAvatar)}
+            alt={name}
+            className="w-8 h-8 shrink-0 rounded-full"
           />
         ) : (
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">
-            {comment.userDisplayName.charAt(0).toUpperCase()}
+          <div className="w-8 h-8 shrink-0 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">
+            {name.charAt(0).toUpperCase()}
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium text-slate-900 dark:text-white">
-            {comment.userDisplayName}
+          <span
+            className="block truncate text-sm font-medium text-slate-900 dark:text-white"
+            title={name}
+          >
+            {name}
           </span>
           <span className="text-xs text-slate-400 dark:text-slate-500 ml-2">
             {formatTimeAgo(comment.timestamp)}
@@ -43,8 +67,13 @@ function CommentRow({ comment }: { comment: Comment }) {
   );
 }
 
-export function CommentSection({ comments, onLoadMoreComments }: CommentSectionProps) {
+export function CommentSection({
+  comments,
+  unavailable = false,
+  onLoadMoreComments,
+}: CommentSectionProps) {
   const { t } = useTranslation();
+  const showUnavailable = unavailable && comments.length === 0;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
@@ -81,9 +110,11 @@ export function CommentSection({ comments, onLoadMoreComments }: CommentSectionP
       <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
           {t("comment.title")}
-          <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
-            ({comments.length})
-          </span>
+          {!showUnavailable && (
+            <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
+              ({comments.length})
+            </span>
+          )}
         </h3>
       </div>
 
@@ -106,7 +137,7 @@ export function CommentSection({ comments, onLoadMoreComments }: CommentSectionP
         >
           {comments.length === 0 ? (
             <p className="text-center text-sm text-slate-400 dark:text-slate-500 py-8">
-              {t("comment.noComments")}
+              {showUnavailable ? t("comment.unavailable") : t("comment.noComments")}
             </p>
           ) : (
             <>

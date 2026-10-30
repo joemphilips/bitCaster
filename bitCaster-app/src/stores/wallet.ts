@@ -1,3 +1,4 @@
+import { browserWalletScope } from "@/lib/browserCtfRangeOrderSource";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
@@ -15,6 +16,7 @@ import {
   browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
+  browserWalletDatabaseName,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
@@ -29,6 +31,7 @@ import {
   db,
   getCanonicalSelectableProofs,
   isCtfProof,
+  type BitcasterDB,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
@@ -107,15 +110,34 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
   return bip39.toSeed(mnemonic.split(" "));
 }
 
-async function createWallet(url: string, unit: string, mnemonic: string): Promise<CashuWallet> {
+async function createWallet(
+  url: string,
+  unit: string,
+  mnemonic: string,
+  counterSource?: CounterSource,
+): Promise<CashuWallet> {
   const seedBytes = getSeedBytes(mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
   if (!seedBytes || scopeId === null) throw new Error("The wallet profile is unavailable.");
+  return createSeedWallet(
+    url,
+    unit,
+    seedBytes,
+    counterSource ?? createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl: url, unit }),
+  );
+}
+
+async function createSeedWallet(
+  url: string,
+  unit: string,
+  seed: Uint8Array,
+  counterSource: CounterSource,
+): Promise<CashuWallet> {
   const mint = new CashuMint(url);
   const wallet = new CashuWallet(mint, {
     unit,
-    bip39seed: seedBytes,
-    counterSource: createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl: url, unit }),
+    bip39seed: seed.slice(),
+    counterSource,
   });
   await wallet.loadMint();
   return wallet;
@@ -285,8 +307,8 @@ export const useWalletStore = create<WalletState>()(
       },
 
       recoverFromMnemonic: async (words: string[]) => {
-        if (words.length !== 12) {
-          return { valid: false, error: "Seed phrase must be 12 words" };
+        if (words.length !== 12 && words.length !== 24) {
+          return { valid: false, error: i18n.t("wallet.seedphraseWordCountError") };
         }
         if (!bip39.validate(words)) {
           return { valid: false, error: "Invalid seed phrase" };
@@ -314,10 +336,19 @@ export const useWalletStore = create<WalletState>()(
           const backupDriver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId);
           let replacementCommitted = false;
           try {
+            const ownerHandoff = await backupDriver?.prepareSeedHandoffOwnerAuthority();
             await backupDriver?.quiesceForSeedHandoff();
             await handoffBrowserEncryptedWalletBackupV2Seed({
               database: oldDatabase,
               scopeId: oldScopeId,
+              ownerScopeId: ownerHandoff?.ownerScopeId ?? null,
+              ...(ownerHandoff === null || ownerHandoff === undefined
+                ? {}
+                : {
+                    ownerAuthorityStore: ownerHandoff.ownerAuthorityStore,
+                    loadCurrentOwnerReachabilityEvidence:
+                      ownerHandoff.loadCurrentOwnerReachabilityEvidence,
+                  }),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
                 const pendingTrades = usePendingTradesStore.getState();
@@ -368,14 +399,27 @@ export const useWalletStore = create<WalletState>()(
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };
-        } else {
-          activateWalletProfile(mnemonic);
         }
-        set({
-          mnemonic,
-          walletBackupState: "confirmed",
-          walletSeedReminderAcknowledgedScopeId: null,
-        });
+        const previousSeedState = {
+          mnemonic: get().mnemonic,
+          walletBackupState: get().walletBackupState,
+          walletSeedReminderAcknowledgedScopeId: get().walletSeedReminderAcknowledgedScopeId,
+        };
+        try {
+          set({
+            mnemonic,
+            walletBackupState: "confirmed",
+            walletSeedReminderAcknowledgedScopeId: null,
+          });
+        } catch (error) {
+          try {
+            set(previousSeedState);
+          } catch {
+            // Zustand resets memory before the synchronous rollback storage write.
+          }
+          throw error;
+        }
+        activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };
       },
@@ -503,6 +547,61 @@ export const useWalletStore = create<WalletState>()(
     },
   ),
 );
+
+/** Build private outputs without reading or changing the active wallet cache. */
+export async function createUncachedWalletForMnemonicUnit(input: {
+  readonly mintUrl: string;
+  readonly unit: string;
+  readonly mnemonic: string;
+  readonly scopeId: string;
+  readonly database: BitcasterDB;
+  readonly requireCapturedProfile: () => void;
+  readonly counterSource: CounterSource;
+}): Promise<CashuWallet> {
+  input.requireCapturedProfile();
+  if (
+    browserWalletScopeIdFromMnemonic(input.mnemonic) !== input.scopeId ||
+    input.database.name !== browserWalletDatabaseName(input.scopeId) ||
+    typeof input.counterSource?.reserve !== "function"
+  )
+    throw new Error("The private wallet profile is unavailable.");
+  const wallet = await createWallet(
+    normalizeUrl(input.mintUrl),
+    input.unit,
+    input.mnemonic,
+    input.counterSource,
+  );
+  input.requireCapturedProfile();
+  return wallet;
+}
+
+/** Build a seed-bound private draft without mutating a cached wallet. */
+export async function createUncachedWalletForSeedUnit(input: {
+  readonly mintUrl: string;
+  readonly unit: string;
+  readonly seed: Uint8Array;
+  readonly scopeId: string;
+  readonly database: BitcasterDB;
+  readonly requireCapturedProfile: () => void;
+  readonly counterSource: CounterSource;
+}): Promise<CashuWallet> {
+  const seed = input.seed.slice();
+  input.requireCapturedProfile();
+  if (
+    browserWalletScope(seed).scopeId !== input.scopeId ||
+    input.database.name !== browserWalletDatabaseName(input.scopeId) ||
+    typeof input.counterSource?.reserve !== "function"
+  )
+    throw new Error("The private wallet profile is unavailable.");
+  const wallet = await createSeedWallet(
+    normalizeUrl(input.mintUrl),
+    input.unit,
+    seed,
+    input.counterSource,
+  );
+  input.requireCapturedProfile();
+  return wallet;
+}
 
 export async function getWalletForMnemonicUnit(
   mintUrl: string,

@@ -1,19 +1,24 @@
+x-mint-common: &mint-common
+  image: bitcaster-mintd:local
+  build: ./cdk
+  volumes:
+    - mint-work:/var/lib/cdk-mintd
+  environment:
+    CDK_MINTD_DATABASE: sqlite
+    CDK_MINTD_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
 services:
+  # Explicit first-use operation. Ordinary up/restart never imports configuration.
+  mintd-setup:
+    <<: *mint-common
+    profiles: [setup]
+    command: ["cdk-mintd", "--work-dir", "/var/lib/cdk-mintd", "config", "init", "--new-mint", "--file", "/etc/cdk-mintd/bitcaster.toml"]
+
   mintd:
-    build: ./cdk
-    command: ["cdk-mintd", "--config", "/etc/cdk-mintd/bitcaster.toml"]
+    <<: *mint-common
+    command: ["cdk-mintd", "--work-dir", "/var/lib/cdk-mintd"]
     ports:
       - "8085:8085"
-    environment:
-      CDK_MINTD_URL: "http://localhost:8085"
-      CDK_MINTD_LN_BACKEND: fakewallet
-      CDK_MINTD_LISTEN_HOST: "0.0.0.0"
-      CDK_MINTD_LISTEN_PORT: "8085"
-      CDK_MINTD_DATABASE: sqlite
-      CDK_MINTD_CACHE_BACKEND: memory
-      CDK_MINTD_INPUT_FEE_PPK: "1000"
-      CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION: "one-vs-rest"
-      CDK_MINTD_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8085/v1/info"]
       interval: 5s
@@ -77,3 +82,6 @@ services:
       - "7777:8080"
     environment:
       RUST_LOG: info
+
+volumes:
+  mint-work:

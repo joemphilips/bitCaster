@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
+import { finalizeEvent, type Event as NostrEvent } from "nostr-tools/pure";
 import { encrypt } from "nostr-tools/nip49";
 
 // Hoisted state lets `vi.mock` factories close over live references.
@@ -18,6 +19,8 @@ const mocks = vi.hoisted(() => {
     relays: { url: string }[];
     setProfile: (profile: unknown, status: string) => void;
     setSignerMode: (mode: "none" | "nsec" | "nip07") => void;
+    setSignerConnectionStatus: (status: string) => void;
+    confirmNostrIdentity: (publicKey: string) => void;
   } = {
     nostrSignerMode: "none",
     nsecSecret: null,
@@ -27,12 +30,17 @@ const mocks = vi.hoisted(() => {
       settingsState.nostrProfile = profile as typeof settingsState.nostrProfile;
     }),
     setSignerMode: vi.fn(),
+    setSignerConnectionStatus: vi.fn(),
+    confirmNostrIdentity: vi.fn(),
   };
   const relaySettingSubscribers: Array<
     (state: typeof settingsState, previous: typeof settingsState) => void
   > = [];
   return {
     settingsState,
+    nwcModuleLoads: vi.fn(),
+    nwcCtor: vi.fn(),
+    nwcReady: undefined as (() => void) | undefined,
     ndkCtor: vi.fn(),
     privateKeySignerCtor: vi.fn(),
     nip07SignerCtor: vi.fn(),
@@ -95,14 +103,22 @@ vi.mock("@nostr-dev-kit/ndk", () => {
       mocks.privateKeySignerCtor(nsec);
     }
     user = () =>
-      Promise.resolve({ pubkey: "pk", profile: null, fetchProfile: () => Promise.resolve() });
+      Promise.resolve({
+        pubkey: "11".repeat(32),
+        profile: null,
+        fetchProfile: () => Promise.resolve(),
+      });
   }
   class FakeNDKNip07Signer {
     constructor() {
       mocks.nip07SignerCtor();
     }
     user = () =>
-      Promise.resolve({ pubkey: "pk", profile: null, fetchProfile: () => Promise.resolve() });
+      Promise.resolve({
+        pubkey: "11".repeat(32),
+        profile: null,
+        fetchProfile: () => Promise.resolve(),
+      });
   }
   return {
     default: FakeNDK,
@@ -111,13 +127,30 @@ vi.mock("@nostr-dev-kit/ndk", () => {
   };
 });
 
-vi.mock("@nostr-dev-kit/ndk-wallet", () => ({
-  NDKNWCWallet: class {},
-}));
+vi.mock("@nostr-dev-kit/ndk-wallet", () => {
+  mocks.nwcModuleLoads();
+  return {
+    NDKNWCWallet: class {
+      constructor(ndk: unknown, options: unknown) {
+        mocks.nwcCtor(ndk, options);
+      }
+      once(event: string, ready: () => void) {
+        expect(event).toBe("ready");
+        mocks.nwcReady = ready;
+      }
+    },
+  };
+});
 
 vi.mock("../kormir", () => ({
   setPendingKormirNsec: mocks.setPendingKormirNsecSpy,
 }));
+
+afterEach(async () => {
+  // End the identity before deferred profile imports can reach the next fixture.
+  (await import("../nostr")).disconnectNostrSigner();
+  await vi.dynamicImportSettled();
+});
 
 describe("loginWithNsecOrNcryptsec shared private-key adapter", () => {
   const secret = new Uint8Array(32).fill(0x11);
@@ -273,84 +306,177 @@ describe("Nostr signer revision", () => {
 
 describe("fetchAndStoreNostrProfile", () => {
   let nostrModule: typeof import("../nostr");
+  const key = new Uint8Array(32).fill(1);
+  const signed = finalizeEvent(
+    {
+      kind: 0,
+      created_at: 10,
+      tags: [],
+      content: '{"name":"Signed user","nip05":"claim@example.test"}',
+    },
+    key,
+  );
+  let received: NostrEvent | undefined;
+  let beforeReply: (() => void) | undefined;
+  let failRead = false;
+  const cached = {
+    pubkey: signed.pubkey,
+    displayName: "Cached User",
+    avatar: "https://example.com/a.png",
+    nip05: "",
+    nip05verified: false,
+    bio: "",
+  };
 
   beforeEach(async () => {
     vi.resetModules();
-    mocks.settingsState.relays = [{ url: "wss://relay.damus.io" }];
+    received = undefined;
+    beforeReply = undefined;
+    failRead = false;
+    mocks.settingsState.nostrSignerMode = "nip07";
+    mocks.settingsState.nsecSecret = null;
+    mocks.settingsState.relays = [{ url: "wss://relay.example" }];
     mocks.settingsState.nostrProfile = null;
     mocks.ndkCtor.mockClear();
     vi.mocked(mocks.settingsState.setProfile).mockClear();
+    class ProfileSocket {
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((message: MessageEvent) => void) | null = null;
+      constructor() {
+        queueMicrotask(() => {
+          if (failRead) {
+            this.onerror?.();
+            return;
+          }
+          this.readyState = 1;
+          this.onopen?.();
+        });
+      }
+      send(raw: string) {
+        const frame = JSON.parse(raw);
+        if (frame[0] !== "REQ") return;
+        queueMicrotask(() => {
+          beforeReply?.();
+          if (received)
+            this.onmessage?.(
+              new MessageEvent("message", { data: JSON.stringify(["EVENT", frame[1], received]) }),
+            );
+          this.onmessage?.(
+            new MessageEvent("message", { data: JSON.stringify(["EOSE", frame[1]]) }),
+          );
+        });
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", ProfileSocket);
     nostrModule = await import("../nostr");
+    (nostrModule.getNdk() as unknown as { signer: unknown }).signer = {
+      user: async () => ({ pubkey: signed.pubkey }),
+    };
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("keeps a cached matching profile when relays return no fresh kind:0", async () => {
-    const cached = {
-      pubkey: "pk",
-      displayName: "Cached User",
-      avatar: "https://example.com/a.png",
-      nip05: "",
-      nip05verified: false,
-      bio: "",
-    };
     mocks.settingsState.nostrProfile = cached;
-    (
-      nostrModule.getNdk() as unknown as {
-        signer: unknown;
-      }
-    ).signer = {
-      user: () =>
-        Promise.resolve({
-          pubkey: "pk",
-          profile: null,
-          fetchProfile: () => Promise.resolve(),
-        }),
-    };
-
     await nostrModule.fetchAndStoreNostrProfile();
-
     expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(cached, "found");
+  });
+  it.each([true, false])(
+    "distinguishes a failed relay read from absence (cached=%s)",
+    async (hasCache) => {
+      failRead = true;
+      mocks.settingsState.nostrProfile = hasCache ? cached : null;
+      await nostrModule.fetchAndStoreNostrProfile();
+      expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(
+        hasCache ? cached : null,
+        "unavailable",
+      );
+    },
+  );
+
+  it("does not claim an absent profile when no relay is selected", async () => {
+    mocks.settingsState.relays = [];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(null, "unavailable");
+  });
+
+  it("projects only verified signed metadata and never asserts the nip05 claim is verified", async () => {
+    received = signed;
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile).toMatchObject({
+      pubkey: signed.pubkey,
+      displayName: "Signed user",
+      nip05: "claim@example.test",
+      nip05verified: false,
+    });
+    received = { ...signed, content: '{"name":"Forged"}' };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile?.displayName).toBe("Signed user");
+  });
+  it("does not fall back to another identity's cached profile", async () => {
+    mocks.settingsState.nostrProfile = { ...cached, pubkey: "02".repeat(32) };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(null, "not-found");
+  });
+  it("ignores stale completion after selected relays change", async () => {
+    const next = { ...cached, pubkey: "02".repeat(32), displayName: "Next identity" };
+    received = signed;
+    beforeReply = () => {
+      mocks.settingsState.nostrProfile = next;
+      mocks.setRelays([{ url: "wss://next.example" }]);
+    };
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.nostrProfile).toEqual(next);
+    expect(mocks.settingsState.setProfile).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("fetchPublicNostrProfile", () => {
   let nostrModule: typeof import("../nostr");
-  const pubkey = "0123456789abcdef".repeat(4);
-
+  const key = new Uint8Array(32).fill(1);
+  const pubkey = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: "{}" }, key).pubkey;
+  let metadata: Record<string, unknown>;
+  let query: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
-    vi.useFakeTimers();
     vi.resetModules();
-    mocks.getUser.mockReset();
+    metadata = {};
+    mocks.settingsState.relays = [{ url: "wss://profile.example" }];
+    const transport = await import("../browserProfileRelay");
+    query = vi
+      .spyOn(transport, "queryBrowserProfileRelay")
+      .mockImplementation(async (_url, _filter, receive) => {
+        receive(
+          finalizeEvent(
+            { kind: 0, created_at: 1, tags: [], content: JSON.stringify(metadata) },
+            key,
+          ),
+        );
+      });
     nostrModule = await import("../nostr");
   });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
+  afterEach(() => query.mockRestore());
   it.each([123, {}, [], null, undefined, true, "", "  "])(
-    "uses a valid name and empty avatar for malformed public fields %j",
+    "uses a valid name for malformed fields %j",
     async (malformed) => {
-      mocks.getUser.mockReturnValue({
-        fetchProfile: vi.fn().mockResolvedValue(undefined),
-        profile: { displayName: malformed, name: "  Public author  ", image: malformed },
-      });
+      metadata = { displayName: malformed, name: "  Public author  ", image: malformed };
       expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
         pubkey,
         displayName: "Public author",
         avatar: "",
       });
-      expect(mocks.getUser).toHaveBeenCalledExactlyOnceWith({ pubkey });
+      await nostrModule.fetchPublicNostrProfile(pubkey);
+      expect(query).toHaveBeenCalledTimes(1);
     },
   );
-
   it.each([123, {}, [], null, undefined, true, "  "])(
-    "uses the public-key fallback when both public names are malformed or empty %j",
+    "uses public-key fallback for malformed names %j",
     async (malformed) => {
-      mocks.getUser.mockReturnValue({
-        fetchProfile: vi.fn().mockResolvedValue(undefined),
-        profile: { displayName: malformed, name: malformed },
-      });
+      metadata = { displayName: malformed, name: malformed };
       expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
         pubkey,
         displayName: pubkey.slice(0, 8),
@@ -358,16 +484,12 @@ describe("fetchPublicNostrProfile", () => {
       });
     },
   );
-
-  it("preserves the valid preferred name and string avatar", async () => {
-    mocks.getUser.mockReturnValue({
-      fetchProfile: vi.fn().mockResolvedValue(undefined),
-      profile: {
-        displayName: "  <Public author>  ",
-        name: "Secondary name",
-        image: "  https://example.com/avatar.png  ",
-      },
-    });
+  it("preserves the preferred name and avatar", async () => {
+    metadata = {
+      display_name: "  <Public author>  ",
+      name: "Secondary",
+      picture: "  https://example.com/avatar.png  ",
+    };
     expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
       pubkey,
       displayName: "<Public author>",
@@ -459,5 +581,56 @@ describe("getNdk relay reconciliation", () => {
         outboxRelayUrls: [],
       }),
     );
+  });
+});
+
+function releaseNwcReady() {
+  mocks.nwcReady?.();
+}
+
+describe("optional NWC module boundary", () => {
+  it("loads no wallet on Nostr startup and preserves explicit connection readiness", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    mocks.nwcModuleLoads.mockClear();
+    mocks.nwcCtor.mockClear();
+    mocks.ndkCtor.mockClear();
+    mocks.nwcReady = undefined;
+    let pending: ReturnType<(typeof import("../nostr"))["connectNwcWallet"]> | undefined;
+    try {
+      const nostr = await import("../nostr");
+      expect(mocks.nwcModuleLoads).not.toHaveBeenCalled();
+      expect(mocks.ndkCtor).not.toHaveBeenCalled();
+      let settled = false;
+      pending = nostr.connectNwcWallet("nostr+walletconnect://fixture");
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.dynamicImportSettled();
+      expect(mocks.nwcModuleLoads).toHaveBeenCalledOnce();
+      expect(mocks.nwcCtor).toHaveBeenCalledExactlyOnceWith(nostr.getNdk(), {
+        pairingCode: "nostr+walletconnect://fixture",
+        timeout: 30_000,
+      });
+      expect(mocks.nwcModuleLoads.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.ndkCtor.mock.invocationCallOrder[0]!,
+      );
+      expect(settled).toBe(false);
+      expect(mocks.nwcReady).toBeTypeOf("function");
+      releaseNwcReady();
+      const wallet = await pending;
+      expect(nostr.getNdk().wallet).toBe(wallet);
+      expect(settled).toBe(true);
+    } finally {
+      releaseNwcReady();
+      if (pending) await pending.catch(() => undefined);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });

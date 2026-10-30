@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/deployment-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the running API package identity
+         * @description Returns a startup-captured opaque build identity. This response does not authorize any operation and is not cryptographic attestation.
+         */
+        get: operations["getDeploymentIdentity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/markets/{conditionId}": {
         parameters: {
             query?: never;
@@ -73,7 +93,7 @@ export interface paths {
         };
         /**
          * Fetch primitive outcome price history for a market
-         * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
+         * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids. The response is the latest applied history. The read does not wait for newer trades. The server sends `ConfirmedTradeRecorded` after this history includes the trade, or after a bounded wait. Read the history again after that notification.
          */
         get: operations["getMarketPriceHistory"];
         put?: never;
@@ -358,7 +378,7 @@ export interface paths {
         put?: never;
         /**
          * Submit one authenticated durable Cashu delivery
-         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity. An admitted delivery completes even if the client disconnects before the response; read its status later.
          */
         post: operations["submitDurableCashuDelivery"];
         delete?: never;
@@ -627,6 +647,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DeploymentIdentityResponse: {
+            /** @constant */
+            schemaVersion: 1;
+            /**
+             * @description Identifies the API package.
+             * @constant
+             */
+            component: "api";
+            /** @description Opaque identity of the running package. */
+            buildId: string;
+        };
         /** @description Canonical lowercase SHA-256 digest. */
         Sha256Digest: string;
         /** @enum {string} */
@@ -1130,7 +1161,7 @@ export interface components {
             subsidyMayHelp: boolean;
         };
         /**
-         * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
+         * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order that reserves its complete amount is `matched`, and the submission response reports `matched`. Its order status becomes `filled` after its settlement group is `Confirmed`, or `failed` when the group ends in another terminal status. A public FOK order that cannot reserve its complete amount is `cancelled`. The engine also reports `failed` when it cannot process an accepted order. An internal GTC quote can rest or partially fill.
          * @enum {string}
          */
         OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
@@ -1526,7 +1557,7 @@ export interface components {
             finalOutcome?: string | null;
         };
         CreateMarketOutcome: {
-            /** @description Outcome label (e.g. "Yes", "Alice"). */
+            /** @description Outcome label (e.g. "Yes", "Alice"): 1 to 191 ASCII letters or digits, with no spaces or symbols. */
             name: string;
             /** @description Optional categorical outcome display color. The server accepts either hex letter case and resolves it to uppercase #RRGGBB. Omit this field to request a server-assigned color. */
             color?: string;
@@ -1543,7 +1574,7 @@ export interface components {
             title: string;
             /** @description Detailed market description. */
             description: string;
-            /** @description The outcomes for the market (2 through 8). */
+            /** @description The outcomes for the market (2 through 8). Outcome names must be unique when letter case is ignored: "Red" and "red" are the same outcome. A duplicate returns 400. */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
              * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
@@ -1594,7 +1625,7 @@ export interface components {
             outcomeDetails: components["schemas"]["MarketOutcomeDetails"][];
         };
         MarketPriceHistoryPoint: {
-            /** @description Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
+            /** @description Opaque source position for this confirmed trade. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
             eventOrder: string;
             /** Format: date-time */
             timestamp: string;
@@ -1647,6 +1678,8 @@ export interface components {
             trade: components["schemas"]["MarketCommentTrade"] | null;
         };
         MarketCommentTrade: {
+            /** @description The comment author's order intent for this linked fill. Null means historical intent is unknown. */
+            authorTrade?: components["schemas"]["MarketCommentAuthorTrade"] | null;
             /**
              * Format: int64
              * @description Linked confirmed fill size in market face-amount subunits. Null means unknown size.
@@ -1674,6 +1707,12 @@ export interface components {
              * @description Market divisibility used as the price denominator.
              */
             priceDenominator: number;
+        };
+        MarketCommentAuthorTrade: {
+            side: components["schemas"]["OrderSide"];
+            /** @description Primitive outcome selected by the author. This can differ from the chart's price-history route. */
+            outcomeId: string;
+            tokenSide: components["schemas"]["TokenSide"];
         };
         MarketCommentsResponse: {
             /** @description Applied source position proven for this snapshot. Treat this value as opaque. */
@@ -1892,6 +1931,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getDeploymentIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The running package has a valid identity */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentIdentityResponse"];
+                };
+            };
+            /** @description The running package identity is unavailable */
+            503: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        error: "deployment-identity-unavailable";
+                    };
+                };
+            };
+        };
+    };
     createMarket: {
         parameters: {
             query?: never;
@@ -1925,7 +1998,7 @@ export interface operations {
                     "application/json": components["schemas"]["CreateMarketResponse"];
                 };
             };
-            /** @description Validation error */
+            /** @description Validation error, for example an outcome name that is not ASCII letters or digits, or that repeats another name in any letter case. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2058,10 +2131,6 @@ export interface operations {
     getMarketPriceHistory: {
         parameters: {
             query?: {
-                /** @description Opaque source position from a server response. Do not compare positions on the client. */
-                minimumEventOrder?: string;
-                /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
-                refresh?: boolean;
                 timeframe?: "1h" | "24h" | "7d" | "30d" | "all";
             };
             header?: never;
@@ -2082,14 +2151,14 @@ export interface operations {
                     "application/json": components["schemas"]["MarketPriceHistoryResponse"];
                 };
             };
-            /** @description Invalid condition id, timeframe, or event order */
+            /** @description Invalid condition id or timeframe */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The snapshot could not prove the requested position within the read deadline. */
+            /** @description The price history is not serving. This occurs while the server builds or restarts the history, or after a server fault. It does not mean an empty history. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2428,7 +2497,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-admission-unavailable or order-processing-unavailable. Retain the original operation for retry and recovery. */
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds and ends no later than the wait and expiry limits; preserve shorter caller limits. Start an attempt only while time remains before both limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2719,6 +2788,15 @@ export interface operations {
             };
             /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means current depth is temporarily unavailable. Retry this read with a bounded policy. Keep a previously received snapshot as last-known display data. A client without a snapshot keeps its loading state. This response does not mean the book is empty or that more funding is required. Market subscriptions and order, fill and settlement notifications remain available. Current order preview and admission are still required before a trade. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

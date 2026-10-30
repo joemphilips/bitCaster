@@ -1,3 +1,8 @@
+import {
+  withCreatorDocumentLock,
+  type CreatorDocumentLocks,
+} from "@/lib/browserCreatorDocumentLock";
+export type { CreatorDocumentLocks } from "@/lib/browserCreatorDocumentLock";
 import { create } from "zustand";
 import type { StateStorage } from "zustand/middleware";
 import {
@@ -148,9 +153,6 @@ export interface CreatorDocument {
   markets: StoredCreatorMarket[];
   importedOracles: StoredImportedOracleMetadata[];
 }
-export interface CreatorDocumentLocks {
-  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
-}
 interface CreatorMarketsState extends CreatorDocument {
   addCreatedMarket(market: StoredCreatorMarket): Promise<void>;
   saveCreatedMarket(market: StoredCreatorMarket): Promise<void>;
@@ -299,7 +301,6 @@ export function creatorMarketsEqual(
 }
 
 const STORAGE_KEY = "bitcaster-creator-markets";
-const DOCUMENT_LOCK = "bitcaster-creator-markets";
 
 function ownerIn(document: CreatorDocument, conditionId: string): BrowserOracleOwner | null {
   const market = document.markets.find((item) => item.conditionId === conditionId);
@@ -523,9 +524,7 @@ export function createCreatorMarketsStore(
     }
     async function lock<T>(action: () => Promise<T>): Promise<T> {
       if (!storage) throw new Error("Durable creator storage is unavailable.");
-      const locks = getLockManager();
-      if (!locks) throw new Error("Cross-tab creator locking is unavailable.");
-      return locks.request(DOCUMENT_LOCK, action);
+      return withCreatorDocumentLock(action, getLockManager);
     }
     async function withOracleMutation<T>(action: (port: BrowserOracleLockedPort) => Promise<T>) {
       return lock(async () => {

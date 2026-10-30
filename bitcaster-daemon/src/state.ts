@@ -1,13 +1,34 @@
+import {
+  createCounterCtfRangePreparation,
+  planCounterCtfRangePreparation,
+  selectCtfRangePreparationForIntent,
+  counterCtfRangePreparationIdentity,
+  type CtfRangePreparationIntent,
+  type PersistedCtfRangeOrderPreparationV2,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import {
+  deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyWalletId,
+  deriveDurableCustodyScopeId,
+} from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  insertRangePreparation,
+  readRangePreparationHistoryByClientOrderId,
+  type RangePreparationRecord,
+} from './ctfRangeOrderJournalSqlite.ts'
 import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
 import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
-import { deriveDurableCustodyArtifactFingerprint } from '@bitcaster-market/client-sdk/durableCustody'
 import { requireCtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { createHash } from 'node:crypto'
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import type { Proof } from '@cashu/cashu-ts'
+import {
+  type SpeculativeCounterTranscript,
+  type SpeculativeCounterSnapshot,
+} from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import {
   completedProofAuthorityDigest,
   type CtfProofOperationCompletion,
@@ -42,6 +63,7 @@ import {
   createDaemonStateSqliteSession,
   openDaemonStateSqlite,
   withDaemonStateSqliteTransaction,
+  type DaemonStateSqliteSession,
   type StateSqliteFaultPhase,
 } from './stateSqlite.ts'
 import {
@@ -442,6 +464,86 @@ export interface CounterBinding {
   readonly unit: 'sat' | 'msat'
 }
 
+export class DaemonCounterSnapshotConflictError extends Error {
+  constructor() {
+    super('daemon CTF preparation counter snapshot changed')
+    this.name = 'DaemonCounterSnapshotConflictError'
+  }
+}
+
+export async function readDaemonCounterSnapshots(input: {
+  readonly storage: DaemonStateSqliteSession
+  readonly mutation: FencedStateMutation
+  readonly keysetIds: readonly string[]
+  readonly binding: CounterBinding
+}): Promise<readonly SpeculativeCounterSnapshot[]> {
+  const keysetIds = [...new Set(input.keysetIds)]
+  if (keysetIds.length === 0 || keysetIds.length > 256) {
+    throw new Error('daemon CTF preparation counter keyset set is invalid')
+  }
+  return withDurableCustodyFencedRead(
+    input.storage,
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) =>
+      keysetIds.map((keysetId) => ({
+        keysetId,
+        nextCounter: readExactBoundCounterSnapshot(
+          database,
+          input.mutation.fence.scopeId,
+          keysetId,
+          input.binding,
+        ),
+      })),
+  )
+}
+
+/** Compare and advance paired counter authorities inside the source transaction. */
+export function commitDaemonCounterTranscript(
+  database: DatabaseSync,
+  scopeId: string,
+  binding: CounterBinding,
+  transcript: SpeculativeCounterTranscript,
+  updatedAtMs: number,
+): void {
+  const snapshots = transcript.snapshots()
+  const changes = transcript.changes()
+  const snapshotsByKeyset = new Map(snapshots.map((snapshot) => [snapshot.keysetId, snapshot]))
+  if (snapshotsByKeyset.size !== snapshots.length) {
+    throw new Error('daemon CTF preparation counter transcript is invalid')
+  }
+  const changesByKeyset = new Map(changes.map((change) => [change.keysetId, change]))
+  if (changesByKeyset.size !== changes.length) {
+    throw new Error('daemon CTF preparation counter transcript is invalid')
+  }
+  for (const snapshot of snapshots) {
+    const current = readExactBoundCounterSnapshot(database, scopeId, snapshot.keysetId, binding)
+    if (current !== snapshot.nextCounter) throw new DaemonCounterSnapshotConflictError()
+  }
+  for (const change of changes) {
+    const snapshot = snapshotsByKeyset.get(change.keysetId)
+    if (snapshot === undefined || change.expectedNextCounter !== snapshot.nextCounter) {
+      throw new Error('daemon CTF preparation counter transcript is invalid')
+    }
+    if (change.nextCounter <= (change.expectedNextCounter ?? 0)) {
+      throw new Error('daemon CTF preparation counter transcript is invalid')
+    }
+    if (change.nextCounter > DAEMON_COUNTER_MAX_NEXT) {
+      throw new Error('daemon CTF preparation counter exceeds its range')
+    }
+  }
+  for (const change of changes) {
+    writeExactBoundCounter(
+      database,
+      scopeId,
+      change.keysetId,
+      binding,
+      change.nextCounter,
+      updatedAtMs,
+    )
+  }
+}
+
 export async function reserveDaemonKeysetCounter(
   keysetId: string,
   count: number,
@@ -478,6 +580,75 @@ export async function reserveDaemonKeysetCounter(
         mutation.observedAtMs,
         binding,
       ),
+  )
+}
+
+/** Commits both counter authorities and the actual preparation receipt under one fence. */
+export async function reserveDaemonCtfPreparation(input: {
+  storage: DaemonStateSqliteSession
+  mutation: FencedStateMutation
+  intent: CtfRangePreparationIntent
+  candidate: PersistedCtfRangeOrderPreparationV2
+  seed: Uint8Array
+}): Promise<RangePreparationRecord> {
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(input.seed),
+  })
+  if (scopeId !== input.mutation.fence.scopeId || scopeId !== input.intent.scopeId)
+    throw new Error('CTF preparation scope is foreign')
+  return withDurableCustodyUnitOfWork(
+    input.storage,
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => {
+      const replay = selectCtfRangePreparationForIntent(
+        readRangePreparationHistoryByClientOrderId(
+          database,
+          scopeId,
+          input.intent.request.clientOrderId,
+        ),
+        input.intent,
+      )
+      if (replay !== null) return replay
+      const candidate = input.candidate
+      const counts = planCounterCtfRangePreparation(candidate)
+      const binding = { normalizedMint: candidate.mintUrl, unit: 'msat' as const }
+      const offerStart = readExactBoundCounter(database, scopeId, candidate.offerKeyset.id, binding)
+      const receiveStart = readExactBoundCounter(
+        database,
+        scopeId,
+        candidate.receiveKeyset.id,
+        binding,
+      )
+      const preparation = createCounterCtfRangePreparation({
+        preparation: candidate,
+        intent: input.intent,
+        seed: input.seed,
+        offerCounterStart: offerStart,
+        receiveCounterStart: receiveStart,
+      })
+      writeExactBoundCounter(
+        database,
+        scopeId,
+        candidate.offerKeyset.id,
+        binding,
+        offerStart + counts.offerCount,
+        input.mutation.observedAtMs,
+      )
+      writeExactBoundCounter(
+        database,
+        scopeId,
+        candidate.receiveKeyset.id,
+        binding,
+        receiveStart + counts.receiveCount,
+        input.mutation.observedAtMs,
+      )
+      return insertRangePreparation(database, {
+        ...counterCtfRangePreparationIdentity(preparation, input.mutation.observedAtMs),
+        consolidateProofs: preparation.preparationIntent.consolidateProofs,
+      })
+    },
   )
 }
 
@@ -543,6 +714,15 @@ export function readExactBoundCounter(
   keysetId: string,
   binding: CounterBinding,
 ): number {
+  return readExactBoundCounterSnapshot(database, scopeId, keysetId, binding) ?? 0
+}
+
+function readExactBoundCounterSnapshot(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  binding: CounterBinding,
+): number | null {
   assertCounterMintBinding(database, scopeId, keysetId, binding.normalizedMint)
   const target = database
     .prepare(
@@ -560,7 +740,7 @@ export function readExactBoundCounter(
     .get(scopeId, binding.normalizedMint, binding.unit, keysetId) as
     | { nextCounter: number }
     | undefined
-  if (target === undefined && custody === undefined) return 0
+  if (target === undefined && custody === undefined) return null
   if (target === undefined || custody === undefined || target.nextCounter !== custody.nextCounter) {
     throw new Error('daemon keyset counter authority is one-sided or mismatched')
   }
@@ -731,7 +911,7 @@ export async function prepareProofOperationWithExactReservation(
     mutation.observedAtMs,
     (database) => {
       beforePrepare?.(database)
-      const operation = prepareExactProofOperation(database, input)
+      const operation = prepareProofOperationWithExactReservationFromDatabase(database, input)
       afterPrepare?.(database, operation)
       return operation
     },
@@ -748,12 +928,14 @@ export async function prepareCtfConsolidationProofOperationWithExactReservation(
   mutation: FencedStateMutation,
   afterPrepare?: (database: DatabaseSync, operation: ProofOperationRecord) => void,
   injectFault?: (phase: StateSqliteFaultPhase) => void,
+  beforePrepare?: (database: DatabaseSync) => void,
 ): Promise<ProofOperationRecord> {
   return withDurableCustodyUnitOfWork(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
     (database) => {
+      beforePrepare?.(database)
       const operation = prepareCtfExactProofOperation(database, input)
       afterPrepare?.(database, operation)
       return operation
@@ -1099,12 +1281,19 @@ export async function prepareCompleteSetRegularProofOperationFenced(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
-    (database) => {
-      const operation = prepareExactProofOperation(database, input)
-      upsertCompleteSetRecoveryRoot(database, input.root, 'regular-prepared', mutation.observedAtMs)
-      return operation
-    },
+    (database) =>
+      prepareCompleteSetRegularProofOperationFromDatabase(database, input, mutation.observedAtMs),
   )
+}
+
+export function prepareCompleteSetRegularProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareCompleteSetRegularProofOperationFenced>[0],
+  observedAtMs: number,
+): ProofOperationRecord {
+  const operation = prepareExactProofOperation(database, input)
+  upsertCompleteSetRecoveryRoot(database, input.root, 'regular-prepared', observedAtMs)
+  return operation
 }
 
 export async function prepareCompleteSetCtfProofOperationFenced(
@@ -1119,26 +1308,33 @@ export async function prepareCompleteSetCtfProofOperationFenced(
     profileDir(),
     mutation.fence,
     mutation.observedAtMs,
-    (database) => {
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
-      if (root !== null && root.state === 'regular-prepared') {
-        throw new Error('complete-set CTF preparation requires a durable handoff')
-      }
-      const operation =
-        root?.state === 'ctf-handoff'
-          ? prepareAdoptedExactProofOperation(database, input)
-          : prepareExactProofOperation(database, input)
-      upsertCompleteSetRecoveryRoot(
-        database,
-        root === null
-          ? { ...input.root, regularOperationId: null, ctfOperationId: input.operationId }
-          : { ...root, ctfOperationId: input.operationId },
-        'ctf-prepared',
-        mutation.observedAtMs,
-      )
-      return operation
-    },
+    (database) =>
+      prepareCompleteSetCtfProofOperationFromDatabase(database, input, mutation.observedAtMs),
   )
+}
+
+export function prepareCompleteSetCtfProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareCompleteSetCtfProofOperationFenced>[0],
+  observedAtMs: number,
+): ProofOperationRecord {
+  const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
+  if (root !== null && root.state === 'regular-prepared') {
+    throw new Error('complete-set CTF preparation requires a durable handoff')
+  }
+  const operation =
+    root?.state === 'ctf-handoff'
+      ? prepareAdoptedExactProofOperation(database, input)
+      : prepareExactProofOperation(database, input)
+  upsertCompleteSetRecoveryRoot(
+    database,
+    root === null
+      ? { ...input.root, regularOperationId: null, ctfOperationId: input.operationId }
+      : { ...root, ctfOperationId: input.operationId },
+    'ctf-prepared',
+    observedAtMs,
+  )
+  return operation
 }
 
 export async function completeRegularSplitWithCompleteSetHandoffFenced(
@@ -1166,7 +1362,7 @@ export async function completeRegularSplitWithCompleteSetHandoffFenced(
         input.regularAuthority.successorAssets,
         input.operationId,
       )
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
       if (root === null) {
         throw new Error('complete-set regular handoff authority is absent')
       }
@@ -1224,7 +1420,7 @@ export async function completeCompleteSetCtfProofOperationFenced(
         input.authority.successorAssets,
         input.operationId,
       )
-      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      const root = readCompleteSetRecoveryRootFromDatabase(database, input.root.rootOperationId)
       if (before.state === 'prepared' && (root === null || root.state !== 'ctf-prepared')) {
         throw new Error('complete-set CTF completion authority is absent')
       }
@@ -1901,6 +2097,17 @@ function admitExactSuccessorGroups(
       nowMs,
     })
   }
+}
+
+/** Synchronous exact writer for a provider owner that already holds the fenced transaction. */
+export function prepareProofOperationWithExactReservationFromDatabase(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): ProofOperationRecord {
+  return prepareExactProofOperation(database, input)
 }
 
 function prepareExactProofOperation(
@@ -3672,7 +3879,7 @@ function decodeRecoverableCompleteSetRecoveryRoot(
 
 type CompleteSetRecoveryRootState = 'regular-prepared' | 'ctf-handoff' | 'ctf-prepared'
 
-function readCompleteSetRecoveryRoot(
+export function readCompleteSetRecoveryRootFromDatabase(
   database: DatabaseSync,
   rootOperationId: string,
 ): (CompleteSetRecoveryRoot & { readonly state: CompleteSetRecoveryRootState }) | null {
@@ -3718,7 +3925,7 @@ function upsertCompleteSetRecoveryRoot(
   assertCompleteSetRecoveryRoot(root)
   assertCompleteSetRecoveryRootState(root, state)
   const scopeId = readScopeId(database)
-  const existing = readCompleteSetRecoveryRoot(database, root.rootOperationId)
+  const existing = readCompleteSetRecoveryRootFromDatabase(database, root.rootOperationId)
   if (existing !== null && !sameCompleteSetRecoveryRoot(existing, root)) {
     throw new Error('complete-set recovery root conflicts with durable authority')
   }
@@ -4999,6 +5206,25 @@ function assertValidExactInputs(
   ) {
     throw new Error(`Proof operation ${input.operationId} has invalid exact inputs`)
   }
+}
+
+/** Validate a prepared exact reservation inside the caller's fenced read or transaction. */
+export function assertExactProofReservationFromDatabase(
+  database: DatabaseSync,
+  input: Parameters<typeof prepareProofOperationWithExactReservationFromDatabase>[1],
+): void {
+  const authority = database
+    .prepare(
+      `SELECT operation_id FROM target_proof_operations
+     WHERE scope_id = ? AND operation_id = ? AND normalized_mint = ?
+       AND state = 'prepared' AND reservation_id = ?`,
+    )
+    .get(readScopeId(database), input.operationId, input.mintUrl, input.reservationId)
+  if (!authority) throw new Error('prepared proof operation reservation authority conflicts')
+  assertExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, input.mintUrl, input.reservationId),
+    input,
+  )
 }
 
 function assertExactReservedProofRows(

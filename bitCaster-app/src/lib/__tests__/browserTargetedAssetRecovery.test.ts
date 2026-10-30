@@ -1,3 +1,4 @@
+import { digestEncryptedWalletBackupOwnerActiveSetPairs } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
 // @vitest-environment node
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -42,7 +43,7 @@ vi.mock("../browserEncryptedWalletBackupV2Restore", () => ({
     }
   },
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount: mocks.localAmount,
-  restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset: mocks.restoreBackup,
+  restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset: mocks.restoreBackup,
 }));
 vi.mock("../browserCustodyProofReceive", () => ({
   admitBrowserReceivedProofsWithHeldProfileLock: mocks.admit,
@@ -61,9 +62,9 @@ vi.mock("../../stores/browser-targeted-asset-recovery-attempt-store", () => ({
     }
   },
 }));
-vi.mock("@cashu/cashu-ts", async () => {
-  const actual = await vi.importActual<object>("@cashu/cashu-ts");
-  return { ...actual, verifyProofsForReceive: mocks.verify };
+vi.mock("@bitcaster/client-sdk", async () => {
+  const actual = await vi.importActual<object>("@bitcaster/client-sdk");
+  return { ...actual, requireValidCashuProofs: mocks.verify };
 });
 
 const SEED = new Uint8Array(64).fill(7);
@@ -567,22 +568,37 @@ async function fixture(
       conditional,
     })),
   } as any;
+  const ownerContext = {
+    ownerScopeId: "ab".repeat(32),
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+  };
   const remote = {
     readCurrentInventory: vi.fn(async () => {
       if (options.inventoryError) throw options.inventoryError;
+      const entries = options.exactInventoryEntry
+        ? [
+            {
+              assetLocator: await deriveEncryptedWalletBackupV2AssetLocator({
+                keyHandle,
+                ...asset,
+              }),
+              custodyRevision: 1n,
+              bundleId: "22".repeat(16),
+              descriptorDigest: "33".repeat(32),
+              declaredAmount: options.backupAmount ?? 1n,
+            },
+          ]
+        : [];
       return {
+        ...ownerContext,
         headVersion: 3,
-        entries: options.exactInventoryEntry
-          ? [
-              {
-                assetLocator: await deriveEncryptedWalletBackupV2AssetLocator({
-                  keyHandle,
-                  ...asset,
-                }),
-                declaredAmount: options.backupAmount ?? 1n,
-              },
-            ]
-          : [],
+        entries,
+        activeSetDigest: digestEncryptedWalletBackupOwnerActiveSetPairs({
+          ...ownerContext,
+          pairs: entries.map(({ bundleId, descriptorDigest }) => ({ bundleId, descriptorDigest })),
+        }),
       };
     }),
   } as any;
@@ -610,10 +626,10 @@ async function fixture(
     wallet,
     monitoringFact: fact,
     remote,
-    requestUrl: (kind: "head" | "object", value: string | null) =>
-      `https://backup.example/${kind}/${value ?? ""}`,
-    currentInventoryUrl: `https://backup.example/v1/encrypted-wallet-backup/realms/${keyHandle.realm}/wallets/${keyHandle.walletId}/current-inventory`,
-    nowUnixSeconds: () => 1,
+    owner: { ...ownerContext, authorizationScheme: "test", ownerSubject: "owner" },
+    ownerContext,
+    ownerClient: remote,
+    ownerStore: {} as any,
     completedAtUnixMilliseconds: () => 1,
     runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
     signal: new AbortController().signal,
@@ -689,3 +705,18 @@ function serialLockManager(): Pick<LockManager, "request"> {
     },
   } as Pick<LockManager, "request">;
 }
+
+it("never sends an owner session's targeted read through the legacy remote", async () => {
+  const input = await fixture();
+  mocks.localAmount.mockResolvedValue(null);
+  const readCurrentInventory = vi.fn(async () => {
+    throw new Error("owned unavailable");
+  });
+  await expect(
+    recoverBrowserTargetedAsset({ ...input, ownerClient: { readCurrentInventory } } as any),
+  ).resolves.toEqual({ kind: "persistent-error" });
+  expect(readCurrentInventory).toHaveBeenCalledOnce();
+  expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+  expect(input.readExactMonitoringRecovery).not.toHaveBeenCalled();
+  expect(input.wallet.restore).not.toHaveBeenCalled();
+});

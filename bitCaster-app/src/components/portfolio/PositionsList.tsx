@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
-import type { Position } from "@/types/portfolio";
+import type { Position, PortfolioProps } from "@/types/portfolio";
 import { PositionRow } from "./PositionRow";
+import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
 
 interface PositionsListProps {
   positions: Position[];
@@ -10,6 +11,11 @@ interface PositionsListProps {
   onClaimPayout?: (positionId: string) => void;
   onDiscardLostPosition?: (positionId: string) => void;
   onViewPosition?: (positionId: string) => void;
+  positionAction?: PortfolioProps["positionAction"];
+  claimCelebrations?: PortfolioProps["claimCelebrations"];
+  removalConfirmationPositionId?: string;
+  onConfirmDiscardLostPosition?: (positionId: string) => void;
+  onCancelDiscardLostPosition?: () => void;
 }
 
 export function PositionsList({
@@ -20,6 +26,11 @@ export function PositionsList({
   onClaimPayout,
   onDiscardLostPosition,
   onViewPosition,
+  positionAction,
+  claimCelebrations = [],
+  removalConfirmationPositionId,
+  onConfirmDiscardLostPosition,
+  onCancelDiscardLostPosition,
 }: PositionsListProps) {
   const { t } = useTranslation();
   const filtered = positions.filter((p) => p.status === positionsTab);
@@ -49,7 +60,10 @@ export function PositionsList({
       </div>
 
       {/* Position List */}
-      {filtered.length === 0 ? (
+      {claimCelebrations.map((celebration) => (
+        <ClaimCelebrationRow key={celebration.id} celebration={celebration} />
+      ))}
+      {filtered.length === 0 && claimCelebrations.length === 0 ? (
         <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
           {positionsTab === "active"
             ? t("portfolio.noActivePositions")
@@ -65,6 +79,11 @@ export function PositionsList({
               onClaim={onClaimPayout}
               onDiscard={onDiscardLostPosition}
               onView={onViewPosition}
+              action={positionAction?.positionId === position.id ? positionAction.kind : undefined}
+              actionsDisabled={positionAction !== undefined}
+              confirmingRemoval={removalConfirmationPositionId === position.id}
+              onConfirmDiscard={onConfirmDiscardLostPosition}
+              onCancelDiscard={onCancelDiscardLostPosition}
             />
           ))}
         </div>

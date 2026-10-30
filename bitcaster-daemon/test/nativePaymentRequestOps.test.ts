@@ -432,7 +432,7 @@ async function fixture() {
     getCustodyFence: () => fence,
     injectCustodyFault,
     resolveMintKeysetIds: async () => [REGULAR_ID],
-    createCashuWallet: (mintUrl, unit) => {
+    createCashuWallet: (mintUrl, unit, counterSource) => {
       assert.equal(mintUrl, MINT)
       assert.equal(unit, 'msat')
       counts.wallets++
@@ -475,10 +475,12 @@ async function fixture() {
       const wallet = new Wallet(new Mint(MINT, { customRequest }), {
         unit: 'msat',
         bip39seed: Buffer.from(SEED, 'hex'),
-        counterSource: createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
-          normalizedMint: MINT,
-          unit: 'msat',
-        }),
+        counterSource:
+          counterSource ??
+          createDaemonCounterSource(() => ({ fence, observedAtMs: Date.now() }), {
+            normalizedMint: MINT,
+            unit: 'msat',
+          }),
       })
       const prepare = wallet.prepareSwapToReceive.bind(wallet)
       wallet.prepareSwapToReceive = async (...args) => {

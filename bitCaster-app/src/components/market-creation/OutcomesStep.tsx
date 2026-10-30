@@ -1,6 +1,8 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { validateMarketOutcomeLabels, type MarketOutcomeLabelProblem } from "@bitcaster/client-sdk";
+import { assertNever } from "@/lib/enumDiscipline";
 import type { WizardOutcome, OutcomeType } from "@/types/market-creation";
 import { MAX_MARKET_OUTCOMES } from "@/hooks/useMarketCreationState";
 import { categoricalOutcomeColors } from "@/components/shared/OutcomeLabel";
@@ -62,10 +64,9 @@ export function OutcomesStep({
 
     return (
       <div className="w-full max-w-xl">
-        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
           {t("marketCreation.numericRange")}
         </h2>
-        <p className="text-sm text-slate-400 mb-8">{t("marketCreation.numericRangeDesc")}</p>
 
         <div className="space-y-5 mb-8">
           <div className="grid grid-cols-2 gap-4">
@@ -121,7 +122,6 @@ export function OutcomesStep({
               placeholder="0"
               className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
             />
-            <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.precisionHint")}</p>
           </div>
         </div>
 
@@ -146,10 +146,9 @@ export function OutcomesStep({
 
     return (
       <div className="w-full max-w-xl">
-        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
           {t("marketCreation.marketOutcomes")}
         </h2>
-        <p className="text-sm text-slate-400 mb-8">{t("marketCreation.marketOutcomesDesc")}</p>
 
         <div className="space-y-3 mb-4">
           {outcomes.map((outcome) => (
@@ -189,25 +188,26 @@ export function OutcomesStep({
     );
   }
 
-  // Categorical outcomes
-  const labelsAvoidOutcomeSetSeparator = outcomes
-    ? outcomes.every((o) => !o.label.includes("|"))
-    : false;
+  // Categorical outcomes. The SDK owns the label rule that the engine also applies.
+  const labelProblems = new Map(
+    validateMarketOutcomeLabels((outcomes ?? []).map((o) => o.label)).map((issue) => [
+      issue.index,
+      issue.problem,
+    ]),
+  );
   const canAddOutcome = (outcomes?.length ?? 0) < MAX_MARKET_OUTCOMES;
   const canProceed =
     outcomes &&
     outcomes.length >= 2 &&
     outcomes.length <= MAX_MARKET_OUTCOMES &&
-    outcomes.every((o) => o.label.trim().length > 0) &&
-    labelsAvoidOutcomeSetSeparator;
+    labelProblems.size === 0;
   const colors = categoricalOutcomeColors(outcomes ?? []);
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
         {t("marketCreation.defineOutcomes")}
       </h2>
-      <p className="text-sm text-slate-400 mb-8">{t("marketCreation.defineOutcomesDesc")}</p>
 
       <div className="space-y-3 mb-4">
         {outcomes?.map((outcome, index) => {
@@ -224,6 +224,11 @@ export function OutcomesStep({
                     placeholder={t("marketCreation.outcomeLabelPlaceholder")}
                     className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
                   />
+                  {outcomeLabelErrorKey(labelProblems.get(index)) !== null && (
+                    <p role="alert" className="text-xs text-red-400 mt-1.5">
+                      {t(outcomeLabelErrorKey(labelProblems.get(index))!)}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex flex-col items-center gap-1">
@@ -252,6 +257,10 @@ export function OutcomesStep({
                 </div>
 
                 <button
+                  type="button"
+                  aria-label={t("marketCreation.removeOutcomeFor", {
+                    outcome: outcome.label || t("common.unnamed"),
+                  })}
                   onClick={() => onRemoveOutcome?.(outcome.id)}
                   className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
                 >
@@ -276,14 +285,6 @@ export function OutcomesStep({
         {t("marketCreation.addOutcome")}
       </button>
 
-      {outcomes && outcomes.length > 0 && !labelsAvoidOutcomeSetSeparator && (
-        <div className="mb-8">
-          <p className="text-xs text-red-400 mt-2">
-            {t("marketCreation.outcomeLabelSeparatorError")}
-          </p>
-        </div>
-      )}
-
       <button
         onClick={() => onNext?.()}
         disabled={!canProceed}
@@ -297,4 +298,19 @@ export function OutcomesStep({
       </button>
     </div>
   );
+}
+
+/** A blank label only keeps Next disabled; a new empty field shows no error. */
+function outcomeLabelErrorKey(problem: MarketOutcomeLabelProblem | undefined): string | null {
+  switch (problem) {
+    case undefined:
+    case "empty":
+      return null;
+    case "invalid":
+      return "marketCreation.outcomeLabelInvalidError";
+    case "duplicate":
+      return "marketCreation.outcomeLabelDuplicateError";
+    default:
+      return assertNever(problem);
+  }
 }

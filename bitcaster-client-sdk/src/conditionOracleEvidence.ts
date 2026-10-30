@@ -16,7 +16,8 @@ import {
   proofOperationAuthorityDigest,
   requireProofArray,
 } from './ctfProofOperationAuthority.ts'
-import { canonicalizeOutcomeSet, parseOutcomeSetId } from './outcomeSets.ts'
+import { parseOutcomeSetId } from './outcomeSets.ts'
+import { decodeMintOutcomeCollection } from './ctfConditionRegistration.ts'
 
 export const UNVERIFIED_CONDITION_OUTCOME_WARNING =
   'The mint reports this outcome, but we have not verified evidence from the intended oracle.'
@@ -270,7 +271,9 @@ export function prepareCtfVerifiedLosingAuthority(input: {
     verified.context.registered.normalizedMint !== mint ||
     verified.context.registered.conditionId !== input.conditionId ||
     members.length === 0 ||
-    canonicalizeOutcomeSet(members) !== input.outcomeCollection ||
+    decodeMintOutcomeCollection(verified.context.registered.outcomes, input.outcomeCollection).join(
+      '|',
+    ) !== input.outcomeCollection ||
     members.some((member) => !verified.context.registered.outcomes.includes(member)) ||
     members.includes(verified.context.evidence.resolvedOutcome) ||
     verified.context.registered.canonicalParentCollectionId !== null

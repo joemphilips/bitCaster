@@ -19,6 +19,36 @@ servers:
     description: Local development OrderHub SignalR hub
 
 channels:
+  marketResyncRequired:
+    address: ResyncRequired
+    servers:
+      - $ref: '#/servers/development'
+    messages:
+      marketResyncRequiredMessage:
+        $ref: '#/components/messages/MarketResyncRequiredMessage'
+    description: >
+      Reload display snapshots for the stated condition. A null conditionId
+      applies to all subscribed conditions. A concrete condition is sent only
+      to its subscribers. The token is opaque and has no ordering. Coalesce
+      duplicate tokens. Keep a failed repair pending until the required reads
+      succeed and their results apply to the current scope. A newer token
+      during a repair requires one later repair. Retry with bounded backoff
+      and jitter while repair is pending. Do not poll healthy connections.
+
+  orderResyncRequired:
+    address: ResyncRequired
+    servers:
+      - $ref: '#/servers/developmentOrder'
+    messages:
+      orderResyncRequiredMessage:
+        $ref: '#/components/messages/OrderResyncRequiredMessage'
+    description: >
+      Reload order and settlement display snapshots for the authenticated
+      current user. The message contains no user or group identifier. Apply
+      the same token coalescing and pending repair rules as market repair.
+      Stop old repairs when the authenticated identity changes. These hints
+      and refreshed display values do not authorize spending or recovery of funds.
+
   joinMarket:
     address: JoinMarket
     messages:
@@ -80,6 +110,8 @@ channels:
       groups for the condition and to clients with a Portfolio valuation
       subscription for that condition. The REST market catalogue remains
       authoritative when a client reconnects or misses a live delta.
+      The server sends the delta after the REST price history includes the
+      trade, or after a bounded wait. Delivery is best effort.
 
   marketCommentsChanged:
     address: MarketCommentsChanged
@@ -137,6 +169,22 @@ channels:
       included.
 
 operations:
+  marketResyncRequired:
+    action: receive
+    channel:
+      $ref: '#/channels/marketResyncRequired'
+    summary: Repair a market display gap
+    messages:
+      - $ref: '#/channels/marketResyncRequired/messages/marketResyncRequiredMessage'
+
+  orderResyncRequired:
+    action: receive
+    channel:
+      $ref: '#/channels/orderResyncRequired'
+    summary: Repair the current user's order display gap
+    messages:
+      - $ref: '#/channels/orderResyncRequired/messages/orderResyncRequiredMessage'
+
   joinMarket:
     action: send
     channel:
@@ -216,6 +264,8 @@ operations:
     summary: Receive committed confirmed-trade price delta
     description: >
       Server pushes a confirmed trade only after its settlement is committed.
+      It waits, with a bound, until the REST price history includes the trade.
+      Read the price history again after this message.
       The message contains one bounded latest-trade value. Clients subscribed
       to Portfolio valuation updates for the condition also receive it.
       Clients must reload the REST market catalogue after reconnect or an
@@ -291,6 +341,12 @@ operations:
 
 components:
   messages:
+    MarketResyncRequiredMessage:
+      payload:
+        $ref: '#/components/schemas/MarketResyncRequiredMessage'
+    OrderResyncRequiredMessage:
+      payload:
+        $ref: '#/components/schemas/OrderResyncRequiredMessage'
     JoinMarketRequest:
       payload:
         type: object
@@ -406,6 +462,34 @@ components:
         $ref: '#/components/schemas/SettlementGroupStateChangedDelta'
 
   schemas:
+    DisplayResyncToken:
+      type: string
+      minLength: 32
+      maxLength: 32
+      pattern: '^[0-9a-f]{32}$'
+      description: Opaque repair token. Compare only for equality.
+    MarketResyncRequiredMessage:
+      type: object
+      additionalProperties: false
+      required: [token, conditionId]
+      properties:
+        token:
+          $ref: '#/components/schemas/DisplayResyncToken'
+        conditionId:
+          oneOf:
+            - type: string
+              minLength: 64
+              maxLength: 64
+              pattern: '^[0-9a-f]{64}$'
+            - type: 'null'
+          description: A concrete subscribed condition, or null for all subscribed conditions.
+    OrderResyncRequiredMessage:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          $ref: '#/components/schemas/DisplayResyncToken'
     Sats:
       type: integer
       format: int64

@@ -10,6 +10,7 @@ import type {
   ProductMarketDivisibility,
   LatestConfirmedTrade,
 } from "./market";
+import type { MarketTradeRecoveryDisplay } from "@/hooks/useMarketTradeRecovery";
 import type { MarketState } from "@/hooks/useMarketState";
 import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
 import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
@@ -167,6 +168,11 @@ interface BaseMarketDetail {
   latestConfirmedTrades?: LatestConfirmedTrade[];
   /** False means the source price authority was malformed and is unavailable. */
   latestConfirmedTradesValid?: boolean;
+  /** The displayed validated price survived an unavailable same-market refresh. */
+  priceRefreshUnavailable?: boolean;
+  priceHistoryStatus?: "loading" | "refreshing" | "ready" | "unavailable";
+  /** The last comment read failed. Shown only when no comment is loaded. */
+  commentsUnavailable?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];
@@ -312,11 +318,18 @@ export interface MarketDetailProps {
   /** Trade amount entered by user, in display shares (1 share = market divisibility face units) */
   tradeAmount: number;
 
+  /** Draft comment included with the next confirmed order. */
+  tradeComment?: string;
+  onTradeCommentChange?: (comment: string) => void;
+
   /** Preview of trade outcome (null if no valid selection) */
   tradePreview: FokOrderPreviewState | null;
 
   /** Exact wallet preparation and settlement facts for the current ticket. */
   tradeFeeFacts?: TradeFeeFacts | null;
+
+  /** Display-only reviewed fees for the last cancelled or failed attempt. These do not supply current consent. */
+  attemptedTradeFeeFacts?: TradeFeeFacts | null;
 
   /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
   feeConsentCurrent?: boolean;
@@ -356,12 +369,11 @@ export interface MarketDetailProps {
 
   /** True while an order submit is in flight. Disables duplicate confirms. */
   isTradeSubmitting?: boolean;
+  quoteRefreshWait?: "waiting" | "stopping" | null;
+  onCancelQuoteRefresh?: () => void;
 
   /** Called when user shares the market */
   onShare?: () => void;
-
-  /** Called when user posts a comment */
-  onCommentPost?: (content: string) => void;
 
   /** Called when user scrolls to load more trades */
   onLoadMoreTrades?: () => void;
@@ -387,6 +399,10 @@ export interface MarketDetailProps {
   /** Read-only capacity across the full legal discovery range. */
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   isFullyEmptyBook?: boolean;
+  /** Routes with a received REST or live depth snapshot, including valid zero depth. */
+  orderBookSnapshotAvailableByOutcome?: Readonly<Record<string, boolean>>;
+  tradeRecovery?: MarketTradeRecoveryDisplay;
+  suppressFundingHint?: boolean;
 
   /** Canonical selectable and reserved conditional holdings for each outcome set. */
   sellHoldings?: SellHoldingsState;
@@ -402,4 +418,7 @@ export interface MarketDetailProps {
 
   /** Refresh live market snapshots after a funding credit completes in this session. */
   onFundingCredited?: () => void;
+
+  /** Explicitly refresh the existing market snapshot owner. */
+  onTradeMarketRefresh?: () => void;
 }

@@ -1,3 +1,12 @@
+import { serveOrderSubmission } from './orderSubmissionTransport.ts'
+import { DAEMON_ORDER_SUBMISSION_MEDIA_TYPE } from './protocol.ts'
+import type {
+  SubmitOrderOptions,
+  OrderQuotesRefreshingProgress,
+} from '@bitcaster-market/client-sdk/engineClient'
+import { verifyCtfConditionRegistration } from '@bitcaster-market/client-sdk/ctfConditionRegistration'
+import { readAllocationBoundedJsonResponse } from '@bitcaster-market/client-sdk/boundedJsonResponse'
+import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -27,7 +36,7 @@ import {
   type NativeOraclePublicationPorts,
 } from './nativeOraclePublicationCoordinator.ts'
 import { publishNativeOracleEvent } from './nativeOraclePublication.ts'
-import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
+import { type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
@@ -95,7 +104,7 @@ import type {
 } from '@bitcaster-market/client-sdk/fokOrderPreview'
 import {
   COLLATERAL_COLLECTION,
-  planCtfConsolidation,
+  planCtfConsolidationAmounts,
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
@@ -201,7 +210,11 @@ export interface DaemonServerOptions {
 }
 
 export interface EngineClientLike {
-  submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>
+  submitOrder(
+    marketId: string,
+    request: SubmitOrderRequest,
+    options?: SubmitOrderOptions,
+  ): Promise<SubmitOrderResponse>
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
@@ -259,6 +272,8 @@ export interface PrepareSettlementCapabilityInput {
 }
 
 export interface PreparedSettlementCapability {
+  /** Original locally prepared authorization expiry. Never renew on submission. */
+  authorizationExpiresAtUnixSeconds: number
   operationId: string
   capability: SettlementCapabilityResponse
   markSubmitted(): Promise<void>
@@ -301,6 +316,10 @@ class InsufficientParticipationScoreBackingError extends Error {
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
+  orderSubmissionSignal?: AbortSignal
+  onOrderQuotesRefreshing?: (progress: OrderQuotesRefreshingProgress) => void
+  /** Transport seam for public mint registration during consolidation. */
+  fetchConsolidationCondition?: typeof globalThis.fetch
   nativeActivitySyncOptions?: NativeActivitySyncOptions
   nativeOracleAccessPorts?: NativeOracleAccessRpcPorts
   nativeOraclePublicationPorts?: NativeOraclePublicationPorts
@@ -414,13 +433,16 @@ export async function handleRequest(
   if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
+  const wantsSubmission = req.headers.accept === DAEMON_ORDER_SUBMISSION_MEDIA_TYPE
   const wantsWatch = req.headers.accept === DAEMON_WATCH_MEDIA_TYPE
   let command: DaemonCommand
   try {
     command = JSON.parse(
       await readBody(
         req,
-        wantsWatch || !expectedToken ? DAEMON_WATCH_REQUEST_BYTES_MAX : undefined,
+        wantsWatch || wantsSubmission || !expectedToken
+          ? DAEMON_WATCH_REQUEST_BYTES_MAX
+          : undefined,
       ),
     ) as DaemonCommand
   } catch {
@@ -432,6 +454,17 @@ export async function handleRequest(
 
   if (!expectedToken && command.method !== 'health') {
     return writeJson(res, 401, { ok: false, error: 'daemon RPC token is not initialized' })
+  }
+  if (wantsSubmission && command.method !== 'order.submit')
+    return writeJson(res, 400, { ok: false, error: 'Submission streaming requires order.submit' })
+  if (command.method === 'order.submit' && !wantsWatch) {
+    return serveOrderSubmission(req, res, wantsSubmission, (signal, onWaiting) =>
+      dispatch(command, {
+        ...deps,
+        orderSubmissionSignal: signal,
+        onOrderQuotesRefreshing: onWaiting,
+      }),
+    )
   }
   if (isDaemonWatchCommand(command)) {
     if (!wantsWatch)
@@ -1898,11 +1931,13 @@ async function dispatchProtectedOrderSubmit(
       async (requiredScore) => {
         const score = await client.getParticipationScore()
         const plan = planParticipationScoreTopUp(score, requiredScore)
-        const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
-          mintUrl: profile.mintUrl,
-        })
-        const backingError = participationScoreBackingError({ availableScoreMsat, plan })
-        if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+        if (plan.kind === 'needs-top-up') {
+          const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
+            mintUrl: profile.mintUrl,
+          })
+          const backingError = participationScoreBackingError({ availableScoreMsat, plan })
+          if (backingError) throw new InsufficientParticipationScoreBackingError(backingError)
+        }
         participationScore = await ensureDaemonParticipationScoreForNextMatch({
           client,
           profile,
@@ -1956,10 +1991,20 @@ async function dispatchProtectedOrderSubmit(
         orderId,
       },
       () =>
-        client.submitOrder(request.marketId, {
-          settlementCapability: prepared.capability.reference,
-          comment: signedComment,
-        }),
+        client.submitOrder(
+          request.marketId,
+          {
+            settlementCapability: prepared.capability.reference,
+            comment: signedComment,
+          },
+          {
+            signal: deps.orderSubmissionSignal,
+            quoteRefreshRetry: {
+              authorizationExpiresAtUnixSeconds: prepared.authorizationExpiresAtUnixSeconds,
+              onWaiting: deps.onOrderQuotesRefreshing,
+            },
+          },
+        ),
     )
   } catch (error) {
     if (error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error)) {
@@ -3129,6 +3174,18 @@ async function consolidateMarket(input: {
     }
   }
 
+  const conditionResponse = await (input.deps.fetchConsolidationCondition ?? globalThis.fetch)(
+    `${input.mintUrl.replace(/\/$/, '')}/v1/conditions/${encodeURIComponent(conditionId)}`,
+    { signal: AbortSignal.timeout(15_000) },
+  )
+  if (!conditionResponse.ok) throw new Error('mint condition registration is unavailable')
+  const registration = verifyCtfConditionRegistration({
+    condition: await readAllocationBoundedJsonResponse(conditionResponse, 2 * 1024 * 1024),
+    mintUrl: input.mintUrl,
+    conditionId,
+    allowInsecureLoopbackHttp: isLoopbackHttpUrl(input.mintUrl),
+  })
+
   const proofsByCollection = await availableMarketProofs({
     mintUrl: input.mintUrl,
     conditionId,
@@ -3148,9 +3205,9 @@ async function consolidateMarket(input: {
     Object.values(outputKeysetByCollection),
     input.deps,
   )
-  const outputsByCollection: Record<string, OutputData[]> = {}
-  const plan = planCtfConsolidation({
+  const plan = planCtfConsolidationAmounts({
     conditionId,
+    registration,
     parentCollectionId: extractParentCollectionId(market),
     outcomes,
     marketStatus,
@@ -3158,13 +3215,6 @@ async function consolidateMarket(input: {
     proofsByCollection,
     inputFeePpkByKeyset,
     outputKeysetByCollection,
-    makeOutputs: ({ collection, amountSubunits, keysetId }) => {
-      const keyset = outputKeysets[keysetId]
-      if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
-      const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
-      outputsByCollection[collection] = [...(outputsByCollection[collection] ?? []), ...outputs]
-      return outputs.map((output) => output.blindedMessage)
-    },
   })
 
   if (plan.kind === 'noop') {
@@ -3200,7 +3250,7 @@ async function consolidateMarket(input: {
         type: input.type,
         mintUrl: input.mintUrl,
         plan,
-        outputsByCollection,
+        outputKeysets,
         secrets: input.secrets,
       },
       input.deps,

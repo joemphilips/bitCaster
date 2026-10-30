@@ -69,9 +69,9 @@ git submodule update --init --recursive
 ### 2. Frontend (PWA)
 
 ```bash
+npm install                   # run from the public repository root
 cd bitCaster-app
 cp .env.example .env          # set VITE_MINT_URL to your mint
-npm install
 npm run dev                   # -> http://localhost:5273
 ```
 
@@ -80,6 +80,17 @@ Build for production:
 ```bash
 npm run build                 # output in dist/
 ```
+
+For an environment switch in the user menu, set these values before the build:
+
+- `VITE_BITCASTER_ENVIRONMENT`: `mainnet` or `testnet` for this deployment.
+- `VITE_ALTERNATE_ORIGIN`: the approved HTTPS origin of the other deployment.
+
+Use only an origin, with no credentials, path, query, or fragment. The target
+must differ from the current origin. Missing or invalid settings hide the link.
+Keep both values empty for local development. The frontend server does not
+inject these settings at runtime. Rebuild after changing them.
+The link opens the other deployment without transferring wallet or login state.
 
 ### 3. Matching Engine Server
 
@@ -101,14 +112,31 @@ Run all three services in separate terminals:
 
 ```bash
 # Terminal 1: Start mint
+docker compose --profile setup run --rm --build mintd-setup
 docker compose up mintd
 
 # Terminal 2: Start server
 cd BitCaster.Server && dotnet run
 
 # Terminal 3: Start frontend
-cd bitCaster-app && npm install && npm run dev
+npm install                   # run from the public repository root
+cd bitCaster-app && npm run dev
 ```
+
+Run `mintd-setup` only for a new, owned local mint store. It refuses an
+initialized store. The named `mint-work` volume retains the mint state.
+Ordinary `up` and `restart` read the stored configuration without importing it.
+Do not delete a volume or retry with a different signer to fix a startup error.
+The example uses a public test mnemonic and fakewallet. Never use real funds.
+For an old store, stop its writer and review an explicit `config init
+--existing-mint` import with the same signer and a complete configuration.
+Do not import old container-local SQLite files automatically.
+
+For CI, use both Compose files, set `MINT_IMAGE` to a reviewed immutable image,
+and use one unique project name for setup, startup, and cleanup. The CI override
+removes the local mint build. Obtain the reviewed image before running setup.
+Remove only that project's owned volume
+after the check. Do not run `down --volumes` against a developer's project.
 
 ### 5. CDK mint (standalone)
 

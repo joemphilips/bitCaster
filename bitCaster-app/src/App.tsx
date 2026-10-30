@@ -6,6 +6,7 @@ import {
   EncryptedWalletBackupRecoveryStatus,
 } from "@/components/shell";
 import { SettlementProgress } from "@/components/shell/SettlementProgress";
+import { BetaNotice } from "@/components/shell/BetaNotice";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
@@ -41,6 +42,7 @@ import {
   type EncryptedWalletBackupDriverState,
 } from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
+import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
@@ -155,10 +157,13 @@ function AppRoutes() {
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
+  useBrowserOracleRecovery(nostrSignerReady);
   useOrderSettlementLifecycle(nostrSignerReady && nostrSignerMode !== "none", {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
+  // Keep the legacy ownerless driver gated until owner-aware routes and local
+  // authority stores are connected. Signer revisions still cancel stale work.
   const walletBackupRecovery = useEncryptedWalletBackupDriver(
     nostrSignerReady && nostrSignerMode !== "none",
   );
@@ -366,6 +371,8 @@ function AppRoutes() {
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
     <WalletBackupPresentationProvider value={walletBackupRecovery}>
+      {/* Every page, including the wizard, states the beta (ADR-048). */}
+      <BetaNotice />
       {isWizard ? (
         <WizardRoutes />
       ) : (

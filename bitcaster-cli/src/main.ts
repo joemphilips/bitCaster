@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
+import { seedRecoveryMnemonicBytes } from '@bitcaster-market/client-sdk/seedRecoveryMnemonic'
+import { readOwnerPrivateRecoveryPhraseFile } from '@bitcaster-market/client-sdk/seedRecoveryPhraseFile'
+import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -10,30 +14,35 @@ import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { BitcasterEngineClient, EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import { ASSET_MONITORING_ASSETS_MAX } from '@bitcaster-market/client-sdk/assetMonitoring'
+import { decodeCtfRangeOrderFeeFacts } from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
+import { isKind89NostrEvent } from '@bitcaster-market/client-sdk/marketLifecycle'
 import {
-  BitcasterEngineClient,
-  ASSET_MONITORING_ASSETS_MAX,
-  decodeCtfRangeOrderFeeFacts,
-  EngineClientError,
-  isKind89NostrEvent,
   isLoopbackHttpUrl,
-  parseSatsToMsat,
-  normalizeMarketCreationInput,
   normalizeEndpointUrl,
+  validateMarketCreateEngineUrl,
+} from '@bitcaster-market/client-sdk/engineUrlSecurity'
+import { parseSatsToMsat } from '@bitcaster-market/client-sdk/marketUnits'
+import {
+  normalizeMarketCreationInput,
+  MAX_MARKET_CREATION_MATURITY_EPOCH,
+} from '@bitcaster-market/client-sdk/marketCreationInput'
+import {
   assertOracleExplanationText,
   ORACLE_EXPLANATION_UTF8_BYTES_MAX,
-  readPublicMintMetadata,
-  validateMarketCreateEngineUrl,
-  MAX_MARKET_CREATION_MATURITY_EPOCH,
-  type MarketCreationInput,
-  type SupportedMarketCreationOutcomeType,
-  type PriceHistoryTimeframe,
-  type MarketSnapshotReadOptions,
-  type PreviewFokOrderCapacityRequest,
-  type PreviewFokOrderRequest,
-  type OrderStatusResponse,
-  type CtfRangeOrderFeeFacts,
-  type AssetMonitoringTimeframe,
+} from '@bitcaster-market/client-sdk/oracleResolutionExplanation'
+import { readPublicMintMetadata } from '@bitcaster-market/client-sdk/mintMetadata'
+import type {
+  MarketCreationInput,
+  SupportedMarketCreationOutcomeType,
+  PriceHistoryTimeframe,
+  MarketSnapshotReadOptions,
+  PreviewFokOrderCapacityRequest,
+  PreviewFokOrderRequest,
+  OrderStatusResponse,
+  CtfRangeOrderFeeFacts,
+  AssetMonitoringTimeframe,
 } from '@bitcaster-market/client-sdk'
 import {
   isWalletPaymentQuote,
@@ -54,7 +63,6 @@ import {
 import { configFilePath, readConfig, updateConfig } from './config.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
-import { readLocalNativeBookmarks } from '@bitcaster-market/daemon/nativeBookmarks'
 import {
   DAEMON_ACTIVITY_PAGE_SIZE_MAX,
   DAEMON_MARKET_WATCH_CONDITIONS_MAX,
@@ -138,11 +146,17 @@ async function main(): Promise<void> {
       json?: boolean
     }>()
     configureDataDir(opts.datadir)
+    globalDryRun = opts.dryRun === true
+    globalJson = opts.json === true
+    if (
+      globalDryRun &&
+      actionCommand.name() === 'profile' &&
+      actionCommand.parent?.name() === 'signer'
+    )
+      return
     const config = readConfig(commandAllowsMissingConfig(actionCommand))
     globalEngineUrl = config.engineUrl
     globalMintUrl = config.mintUrl
-    globalDryRun = opts.dryRun === true
-    globalJson = opts.json === true
     void globalEngineUrl
     void globalMintUrl
     void globalDryRun
@@ -302,6 +316,8 @@ function registerMarketCommand(program: Command): Command {
         return
       }
       if (options.liked) {
+        const { readLocalNativeBookmarks } =
+          await import('@bitcaster-market/daemon/nativeBookmarks')
         const saved = await readLocalNativeBookmarks()
         if (saved.length > DAEMON_MARKET_WATCH_CONDITIONS_MAX)
           throw new Error(
@@ -383,12 +399,7 @@ function registerMarketCommand(program: Command): Command {
 
   market
     .command('history <conditionId>')
-    .description('Read public price history for one market.')
-    .option(
-      '--minimum-event-order <eventOrder>',
-      'Opaque source position required for the snapshot',
-    )
-    .option('--refresh', 'Capture the current source head before reading the snapshot')
+    .description('Read the latest applied public price history for one market.')
     .option(
       '--timeframe <timeframe>',
       'History window: 1h, 24h, 7d, 30d, or all',
@@ -398,20 +409,11 @@ function registerMarketCommand(program: Command): Command {
       'after',
       '\nExample:\n  bitcaster-cli market history <condition-id> --timeframe 30d',
     )
-    .action(
-      async (
-        conditionId: string,
-        options: MarketSnapshotReadOptions & { timeframe?: PriceHistoryTimeframe },
-      ) => {
-        await printPublicEngineResult(() =>
-          directEngineClient().getMarketPriceHistory(
-            conditionId,
-            options.timeframe ?? '7d',
-            options,
-          ),
-        )
-      },
-    )
+    .action(async (conditionId: string, options: { timeframe?: PriceHistoryTimeframe }) => {
+      await printPublicEngineResult(() =>
+        directEngineClient().getMarketPriceHistory(conditionId, options.timeframe ?? '7d'),
+      )
+    })
 
   market
     .command('attestation <conditionId>')
@@ -1610,17 +1612,22 @@ function registerWalletCommand(program: Command): void {
 
   wallet
     .command('recover-seed')
-    .description('Recover deterministic regular and selected CTF proofs from the wallet seed.')
-    .requiredOption(
+    .description(
+      'Recover regular msat proofs with an explicit gap limit. Supply exactly one owner-only seed or phrase file.',
+    )
+    .option(
       '--wallet-seed-hex-file <path>',
       'Owner-only file containing the 64-byte wallet seed as lowercase hex',
     )
+    .option('--recovery-phrase-file <path>', 'Owner-only file containing an English BIP-39 phrase')
     .requiredOption(
       '--recovery-id <id>',
       'Stable recovery job id. Reuse it for later invocations until recovery completes',
     )
     .requiredOption('--mint <url>', 'Canonical mint origin')
-    .requiredOption('--unit <unit>', 'Product mint unit: msat')
+    .option('--unit <unit>', 'Product mint unit: msat', 'msat')
+    .option('--condition-id <id>', 'Selected condition (requires approved mint discovery support)')
+    .option('--gap-limit <count>', 'Consecutive unsigned positions before stopping', '300')
     .option(
       '--acknowledge-seed-disclosure',
       'Acknowledge that recovery discloses deterministic proof candidates to the mint',
@@ -1629,33 +1636,59 @@ function registerWalletCommand(program: Command): void {
     .allowExcessArguments(false)
     .action(
       async (options: {
-        walletSeedHexFile: string
+        walletSeedHexFile?: string
+        recoveryPhraseFile?: string
         recoveryId: string
         mint: string
         unit: string
+        conditionId?: string
+        gapLimit: string
         acknowledgeSeedDisclosure?: boolean
         dryRun?: boolean
       }) => {
+        if (
+          (options.walletSeedHexFile === undefined) ===
+          (options.recoveryPhraseFile === undefined)
+        ) {
+          throwUsage(
+            'wallet recover-seed requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+          )
+        }
         if (options.acknowledgeSeedDisclosure !== true) {
           throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
         }
         if (options.unit !== 'msat') {
           throwUsage('wallet recover-seed unit must be msat')
         }
+        if (!/^[1-9][0-9]*$/.test(options.gapLimit))
+          throwUsage('recover-seed gap limit must be a positive integer')
+        const scanPolicy = createSeedRecoveryScanPolicy({
+          conditionId: options.conditionId,
+          gapLimit: Number(options.gapLimit),
+        })
         if (isDryRun(options)) {
           printDryRun({
             recoveryId: options.recoveryId,
             mintUrl: options.mint,
             unit: options.unit,
-            walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
+            walletSeedHex:
+              options.walletSeedHexFile !== undefined
+                ? await readPrivateWalletSeedFile(options.walletSeedHexFile)
+                : Buffer.from(
+                    seedRecoveryMnemonicBytes(
+                      await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
+                    ),
+                  ).toString('hex'),
             disclosureAcknowledged: true,
+            scanPolicy,
           })
           return
         }
         await runDaemonCommand([
           'recover-seed',
-          '--wallet-seed-hex-file',
-          options.walletSeedHexFile,
+          ...(options.walletSeedHexFile !== undefined
+            ? ['--wallet-seed-hex-file', options.walletSeedHexFile]
+            : ['--recovery-phrase-file', options.recoveryPhraseFile!]),
           '--recovery-id',
           options.recoveryId,
           '--mint',
@@ -1663,6 +1696,9 @@ function registerWalletCommand(program: Command): void {
           '--unit',
           options.unit,
           '--acknowledge-seed-disclosure',
+          '--gap-limit',
+          String(scanPolicy.gapLimit),
+          ...(scanPolicy.scope === 'condition' ? ['--condition-id', scanPolicy.conditionId] : []),
         ])
       },
     )
@@ -2518,7 +2554,34 @@ function registerOrderCommand(program: Command): void {
         feeConsent,
         ...(comment === undefined ? {} : { comment }),
       }
-      await printDaemonResult(callDaemon({ method: 'order.submit', params }))
+      const controller = new AbortController()
+      const cancel = () => controller.abort()
+      process.once('SIGINT', cancel)
+      process.once('SIGTERM', cancel)
+      try {
+        await printDaemonResult(
+          submitOrderWithProgress(
+            { method: 'order.submit', params },
+            {
+              signal: controller.signal,
+              onWaiting: () => {
+                process.stderr.write(
+                  'Updating quotes; waiting with the original order. Press Ctrl-C to stop waiting.\n',
+                )
+              },
+            },
+          ),
+        )
+      } catch (error) {
+        if (!controller.signal.aborted) throw error
+        process.stderr.write(
+          'Stopped waiting. The original order and reserved funds may still need recovery. Check order status.\n',
+        )
+        process.exitCode = 130
+      } finally {
+        process.removeListener('SIGINT', cancel)
+        process.removeListener('SIGTERM', cancel)
+      }
     })
 
   order

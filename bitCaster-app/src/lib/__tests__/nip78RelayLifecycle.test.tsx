@@ -8,12 +8,15 @@ import { FakeRelayWebSocket as Socket } from "@/test/fakeRelayWebSocket";
 import { useSettingsStore } from "@/stores/settings";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useActivityLogStore } from "@/stores/activity-log";
+import type { StoredCreatorMarket } from "@/stores/creatorMarkets";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { BOOKMARK_KIND, BOOKMARK_D_TAG, fetchBookmarks, publishBookmarks } from "../nip78Bookmarks";
 import { fetchNip78CreatorMarkets, publishNip78CreatorMarkets } from "../nip78CreatorMarkets";
 import { fetchNip78ActivityLog, publishNip78ActivityLog } from "../nip78ActivityLog";
+import { RELAY_CONNECT_TIMEOUT_MS } from "../nostr";
+import { RELAY_SYNC_RETRY_DELAYS_MS } from "../relaySyncRetry";
 
 const privateKey = new Uint8Array(32).fill(17);
 const privateKeyHex = "11".repeat(32);
@@ -39,6 +42,29 @@ const adapters = [
     publish: (signal?: AbortSignal) => publishNip78ActivityLog(privateKeyHex, [], { signal }),
     hook: useActivityLogSync,
   },
+];
+const creatorFixture: StoredCreatorMarket = {
+  conditionId: "condition",
+  title: "fixture",
+  thumbnailUrl: null,
+  createdAt: "2026-10-02T00:00:00Z",
+  baseAsset: "sat",
+  divisibility: 1000,
+  creatorFeePercent: 0,
+};
+// Local state that a sync would seed. The activity log seeds even an empty list.
+const partialReadAdapters = [
+  {
+    name: "bookmarks",
+    hook: useBookmarkSync,
+    seedLocal: async () => useBookmarkStore.setState({ markets: ["local-Alpha"] }),
+  },
+  {
+    name: "creator markets",
+    hook: useCreatorSync,
+    seedLocal: () => seedCreatorMarkets({ markets: [creatorFixture] }),
+  },
+  { name: "private activity", hook: useActivityLogSync, seedLocal: async () => {} },
 ];
 async function flush() {
   for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -366,5 +392,93 @@ describe.each(adapters)("actual $name relay owner", ({ fetch, publish, hook }) =
     });
     expect(Socket.instances).toHaveLength(2);
     expect(publishEvent).toHaveBeenCalledOnce();
+  });
+});
+
+describe.each(partialReadAdapters)("partial $name relay read", ({ hook, seedLocal }) => {
+  const fast = "wss://fast.example";
+  const slow = "wss://slow.example";
+  beforeEach(() => {
+    useSettingsStore.setState({
+      relays: [
+        { url: fast, connectionStatus: "disconnected" },
+        { url: slow, connectionStatus: "disconnected" },
+      ],
+    });
+  });
+
+  it("does not seed or publish when an unconnected relay can hold the newer record", async () => {
+    await seedLocal();
+    // The fast relay is empty. The slow relay holds the newer record, but NDK
+    // sends the read only to the relays that connected.
+    const fetchEvent = vi.spyOn(NDK.prototype, "fetchEvent").mockResolvedValue(null);
+    const publish = vi.spyOn(NDKEvent.prototype, "publishReplaceable").mockResolvedValue(new Set());
+    renderHook(hook);
+    expect(Socket.instances.map(({ url }) => url)).toEqual([fast, slow]);
+    Socket.instances[0]!.open();
+    // Pass the bounded connection wait, then any seed, publication debounce,
+    // and publication connection wait. Each step lets React apply its effects.
+    // The total stays before a later read retry.
+    for (const ms of [4_000, 800, 4_000]) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    }
+    expect(fetchEvent).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it("retries the unknown read and seeds only after every relay connects", async () => {
+    await seedLocal();
+    const fetchEvent = vi.spyOn(NDK.prototype, "fetchEvent").mockResolvedValue(null);
+    const publish = vi.spyOn(NDKEvent.prototype, "publishReplaceable").mockResolvedValue(new Set());
+    const openPending = () => {
+      for (const socket of Socket.instances)
+        if (socket.readyState === Socket.CONNECTING) socket.open();
+    };
+    renderHook(hook);
+    Socket.instances[0]!.open();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELAY_CONNECT_TIMEOUT_MS);
+    });
+    expect(fetchEvent).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELAY_SYNC_RETRY_DELAYS_MS[0]);
+    });
+    expect(Socket.instances.map(({ url }) => url)).toEqual([fast, slow, fast, slow]);
+    // Both relays now answer, and neither holds a record.
+    openPending();
+    for (let step = 0; step < 3; step++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800);
+      });
+      openPending();
+    }
+    await act(flush);
+    expect(fetchEvent).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it("stops reading after its bounded retries", async () => {
+    await seedLocal();
+    const fetchEvent = vi.spyOn(NDK.prototype, "fetchEvent").mockResolvedValue(null);
+    const publish = vi.spyOn(NDKEvent.prototype, "publishReplaceable");
+    renderHook(hook);
+    for (const delayMs of [0, ...RELAY_SYNC_RETRY_DELAYS_MS]) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delayMs);
+      });
+      Socket.instances.at(-2)!.open();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELAY_CONNECT_TIMEOUT_MS);
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+    });
+    expect(fetchEvent).toHaveBeenCalledTimes(1 + RELAY_SYNC_RETRY_DELAYS_MS.length);
+    expect(publish).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -1,4 +1,11 @@
 import {
+  requireEncryptedWalletBackupOwnerCurrentInventoryScope,
+  type EncryptedWalletBackupOwnerCurrentInventory,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerServiceCodec";
+import type { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
+import { admitBrowserEncryptedWalletBackupOwnerAsset } from "./browserEncryptedWalletBackupOwnerAdmission";
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
+import {
   collectAllEncryptedWalletBackupV2DescriptorPages,
   deserializeDurableCustodyProofArtifact,
   discoverEncryptedWalletBackupV2ProofSetBundle,
@@ -22,13 +29,7 @@ import {
   type EncryptedWalletBackupV2VerifiedProofSet,
   type EncryptedWalletBackupV2VerifiedProofSetSource,
 } from "@bitcaster/client-sdk";
-import {
-  hashToCurve,
-  isBlsKeyset,
-  verifyProofsForReceive,
-  type ProofState,
-  type Wallet as CashuWallet,
-} from "@cashu/cashu-ts";
+import { hashToCurve, type ProofState, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import type { BitcasterDB } from "../stores/proof-db";
 import {
   addProofs,
@@ -55,6 +56,22 @@ import {
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "./browserEncryptedWalletBackupV2QuotaCleanup";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
+import type {
+  EncryptedWalletBackupOwnerCollectedHeadEvidence,
+  EncryptedWalletBackupOwnerContext,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
+import type { EncryptedWalletBackupOwnerCandidate } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
+import type { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
+import {
+  decodeEncryptedWalletBackupOwnerContext,
+  requireEncryptedWalletBackupOwnerCollectedHeadEvidence,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
+import {
+  bindEncryptedWalletBackupOwnerDecryptedProofSet,
+  bindEncryptedWalletBackupOwnerVerifiedProofSet,
+  requireEncryptedWalletBackupOwnerVerifiedProofSet,
+  type EncryptedWalletBackupOwnerVerifiedProofSet,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 
 export type BrowserEncryptedWalletBackupV2TargetedRestoreResult =
   | { readonly kind: "local-custody" }
@@ -187,6 +204,25 @@ export interface BrowserEncryptedWalletBackupV2DiscoveredDescriptorRestoreResult
   readonly verified: EncryptedWalletBackupV2VerifiedProofSet;
 }
 
+export interface BrowserEncryptedWalletBackupOwnerDescriptorRestoreInput extends Pick<
+  BrowserEncryptedWalletBackupV2RemoteInput,
+  "seed" | "runtime" | "signal" | "isCurrentProfile"
+> {
+  readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+  readonly ownerClient: Pick<EncryptedWalletBackupOwnerClient, "readObject">;
+  readonly owner: EncryptedWalletBackupOwnerCandidate;
+  readonly ownerContext: EncryptedWalletBackupOwnerContext;
+  readonly collectedOwnerHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence;
+  readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
+  readonly loadWallet: (mintUrl: string) => Promise<CashuWallet>;
+}
+
+export interface BrowserEncryptedWalletBackupOwnerDescriptorRestoreResult {
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly collectedOwnerHeadEvidence: EncryptedWalletBackupOwnerCollectedHeadEvidence;
+  readonly verified: EncryptedWalletBackupOwnerVerifiedProofSet;
+}
+
 export type BrowserEncryptedWalletBackupV2RestoreAndAdmitResult =
   | { readonly kind: "local-custody" }
   | { readonly kind: "restored"; readonly bundleId: string; readonly headVersion: number };
@@ -280,6 +316,87 @@ export async function discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor(
     asset: discovered.asset,
     collectedHeadEvidence: head,
     descriptorIdentity,
+    verified,
+  };
+}
+
+/** Verify a descriptor from the selected owner head without creating V2 head authority. */
+export async function discoverAndVerifyBrowserEncryptedWalletBackupOwnerDescriptor(
+  input: BrowserEncryptedWalletBackupOwnerDescriptorRestoreInput,
+): Promise<BrowserEncryptedWalletBackupOwnerDescriptorRestoreResult> {
+  requireCurrent(input);
+  const context = decodeEncryptedWalletBackupOwnerContext(input.ownerContext);
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    input.collectedOwnerHeadEvidence,
+    context,
+  );
+  if (
+    input.owner.ownerScopeId !== context.ownerScopeId ||
+    input.owner.enrollmentEpoch !== context.enrollmentEpoch ||
+    input.keyHandle.walletId !== context.walletId ||
+    input.keyHandle.realm !== context.realm
+  ) {
+    throw new Error("encrypted backup owner restore context is foreign");
+  }
+  const descriptorMatches = head.bundles.filter(
+    (candidate) =>
+      candidate.bundleId === input.descriptor.bundleId &&
+      digestEncryptedWalletBackupV2BundleDescriptor(candidate) ===
+        digestEncryptedWalletBackupV2BundleDescriptor(input.descriptor),
+  );
+  if (descriptorMatches.length !== 1) {
+    throw new Error("encrypted backup owner restore descriptor is not reachable");
+  }
+  const descriptor = descriptorMatches[0]!;
+  const objects = await Promise.all(
+    descriptor.objects.map(({ objectId }) =>
+      input.ownerClient.readObject({
+        owner: input.owner,
+        enrollmentEpoch: context.enrollmentEpoch,
+        descriptor,
+        objectId,
+        signal: input.signal,
+      }),
+    ),
+  );
+  requireCurrent(input);
+  const discovered = await discoverEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle: input.keyHandle,
+    seed: input.seed,
+    custodyRevision: descriptor.custodyRevision,
+    descriptor,
+    objects,
+    runtime: input.runtime,
+  });
+  requireCurrent(input);
+  requireProductMsatUnit(discovered.asset.unit);
+  const decryptedEvidence = bindEncryptedWalletBackupOwnerDecryptedProofSet({
+    proofSet: discovered.unverified,
+    collectedHeadEvidence: head,
+    expectedContext: context,
+  });
+  const loadWallet = lazyWallet({
+    ...input,
+    loadWallet: () => input.loadWallet(discovered.asset.mintUrl),
+  });
+  const verifiedProofSet = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: input.seed,
+    preserveRefusalHistory: true,
+    expectedAsset: discovered.asset,
+    unverified: discovered.unverified,
+    port: restoreVerificationPort(input, discovered.asset, loadWallet),
+  });
+  requireCurrent(input);
+  const verified = bindEncryptedWalletBackupOwnerVerifiedProofSet({
+    proofSet: verifiedProofSet,
+    decryptedEvidence,
+    collectedHeadEvidence: head,
+    expectedContext: context,
+  });
+  requireEncryptedWalletBackupOwnerVerifiedProofSet(verified, context);
+  return {
+    asset: discovered.asset,
+    collectedOwnerHeadEvidence: head,
     verified,
   };
 }
@@ -511,6 +628,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
       await retryBrowserEncryptedWalletBackupV2QuotaWrite({
         database: input.database,
         scopeId: input.scopeId,
+        ownerScopeId: null,
         isCurrentProfile: input.isCurrentProfile,
         protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
         lockManager: input.lockManager,
@@ -542,6 +660,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     await retryBrowserEncryptedWalletBackupV2QuotaWrite({
       database: input.database,
       scopeId: input.scopeId,
+      ownerScopeId: null,
       isCurrentProfile: input.isCurrentProfile,
       protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
       lockManager: input.lockManager,
@@ -642,15 +761,20 @@ function classifyFailure(error: unknown): BrowserEncryptedWalletBackupV2FailureC
   }
 }
 
+type RestoreProfileContext = Pick<
+  BrowserEncryptedWalletBackupV2RemoteInput,
+  "signal" | "isCurrentProfile"
+>;
+
 function restoreVerificationPort(
-  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  input: RestoreProfileContext,
   asset: EncryptedWalletBackupV2AssetIdentity,
   loadWallet: () => Promise<CashuWallet>,
 ): EncryptedWalletBackupV2RestoreVerificationPort {
   return {
     async resolveKeyset({ mintUrl, unit, keysetId }) {
       requireCurrent(input);
-      if (isBlsKeyset(keysetId)) throw new Error("browser V2 restore BLS keyset is unsupported");
+      requireSupportedCashuKeysetId(keysetId);
       const wallet = await loadWallet();
       if (asset.assetIdentity.startsWith("ctf:")) {
         await wallet.keyChain.loadConditionalKeyset(keysetId);
@@ -668,9 +792,7 @@ function restoreVerificationPort(
     },
     verifyProofs({ proofs, keysets }) {
       requireCurrent(input);
-      verifyProofsForReceive([...proofs], (keysetId) => requiredRestoreKeyset(keysets, keysetId), {
-        requireDleq: true,
-      });
+      requireValidCashuProofs([...proofs], (keysetId) => requiredRestoreKeyset(keysets, keysetId));
       requireCurrent(input);
     },
     async checkProofStates({ proofs }) {
@@ -703,7 +825,7 @@ function expectedProofIdsByY(
 ): ReadonlyMap<string, string> {
   const expected = new Map<string, string>();
   for (const proof of proofs) {
-    if (isBlsKeyset(proof.id)) throw new Error("browser V2 restore BLS keyset is unsupported");
+    requireSupportedCashuKeysetId(proof.id);
     const secret = new TextEncoder().encode(proof.secret);
     const Y = hashToCurve(secret).toHex(true);
     if (expected.has(Y)) throw new Error("browser V2 restore proof-state authority is duplicated");
@@ -813,7 +935,10 @@ function isDefinitelyNonSpendableLegacyProof(proof: StoredProof): boolean {
 
 /** Returns one complete local asset's exact currently available amount. */
 export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  input: Pick<
+    BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+    "database" | "scopeId" | "asset" | "signal" | "isCurrentProfile"
+  > & { readonly ownerStore?: EncryptedWalletBackupOwnerDexieAuthorityStore },
 ): Promise<bigint | null> {
   let local: Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2LocalAssetRead>>;
   requireCurrentForLocalCustody(input);
@@ -844,8 +969,24 @@ export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
     }
     return 0n;
   }
-  if (local.activeProofs.length === 0 && row.syncState === "acknowledged") {
-    return null;
+  if (local.activeProofs.length === 0 && local.backupEligibleProofCount === 0) {
+    if (input.ownerStore !== undefined) {
+      const receipt = await input.ownerStore.captureBackupReceiptForLocalAsset(row.localAssetKey);
+      requireCurrentForLocalCustody(input);
+      if (
+        receipt !== null &&
+        receipt.desired.localAssetKey === row.localAssetKey &&
+        receipt.desired.custodyRevision === row.custodyRevision &&
+        receipt.desired.desiredAction === row.desiredAction &&
+        receipt.desired.activeProofCount === row.activeProofCount
+      )
+        return null;
+      throw localCustodyError(
+        "missing-authority",
+        "browser owner local custody receipt is missing",
+      );
+    }
+    if (row.syncState === "acknowledged") return null;
   }
   if (local.backupEligibleProofCount !== row.activeProofCount)
     throw localCustodyError("partial", "browser V2 local custody asset is partial");
@@ -864,9 +1005,7 @@ function localCustodyError(
   return new BrowserEncryptedWalletBackupV2LocalCustodyError(code, message);
 }
 
-function requireCurrentForLocalCustody(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
-): void {
+function requireCurrentForLocalCustody(input: RestoreProfileContext): void {
   try {
     requireCurrent(input);
   } catch {
@@ -895,13 +1034,13 @@ async function requestProof(
   });
 }
 
-function requireCurrent(input: BrowserEncryptedWalletBackupV2RemoteInput): void {
+function requireCurrent(input: RestoreProfileContext): void {
   if (!input.isCurrentProfile() || input.signal.aborted)
     throw new Error("browser V2 targeted restore profile is stale");
 }
 
 function lazyWallet(
-  input: BrowserEncryptedWalletBackupV2RemoteInput & {
+  input: RestoreProfileContext & {
     readonly loadWallet: () => Promise<CashuWallet>;
   },
 ) {
@@ -915,4 +1054,126 @@ function lazyWallet(
     requireCurrent(input);
     return wallet;
   };
+}
+
+export interface BrowserEncryptedWalletBackupOwnerTargetedAuthority {
+  readonly owner: EncryptedWalletBackupOwnerCandidate;
+  readonly ownerContext: EncryptedWalletBackupOwnerContext;
+  readonly ownerClient: Pick<
+    EncryptedWalletBackupOwnerClient,
+    "readCurrentInventory" | "readCurrentHead" | "readObject"
+  >;
+  readonly ownerStore: EncryptedWalletBackupOwnerDexieAuthorityStore;
+}
+
+/** Restore only the selected owner's exact inventory/head pair. Never adopt a competing head. */
+export async function restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset(
+  input: BrowserEncryptedWalletBackupOwnerTargetedAuthority & {
+    readonly database: BitcasterDB;
+    readonly scopeId: string;
+    readonly seed: Uint8Array;
+    readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly inventory: EncryptedWalletBackupOwnerCurrentInventory;
+    readonly minimumAvailableAmount: bigint;
+    readonly loadWallet: () => Promise<CashuWallet>;
+    readonly runtime: EncryptedWalletBackupV2BundleRuntime;
+    readonly signal: AbortSignal;
+    readonly isCurrentProfile: () => boolean;
+    readonly lockManager?: Pick<LockManager, "request">;
+    readonly reportTargetedRecoveryStage?: (
+      stage: BrowserEncryptedWalletBackupV2RestoreStage,
+    ) => void;
+    readonly reportTargetedRecoveryFailureClass?: (
+      failureClass: BrowserEncryptedWalletBackupV2FailureClass,
+    ) => void;
+  },
+): Promise<void> {
+  requireCurrent(input);
+  requireProductMsatUnit(input.asset.unit);
+  if (input.minimumAvailableAmount <= 0n) throw new Error("owner targeted amount is invalid");
+  const inventory = requireEncryptedWalletBackupOwnerCurrentInventoryScope({
+    inventory: input.inventory,
+    expectedContext: input.ownerContext,
+  });
+  const head = requireEncryptedWalletBackupOwnerCollectedHeadEvidence(
+    await input.ownerClient.readCurrentHead({
+      owner: input.owner,
+      enrollmentEpoch: input.ownerContext.enrollmentEpoch,
+      signal: input.signal,
+    }),
+    input.ownerContext,
+  );
+  requireCurrent(input);
+  if (
+    inventory.headVersion !== head.head.headVersion ||
+    inventory.activeSetDigest !== head.head.activeSetDigest
+  )
+    throw new Error("owner targeted inventory head changed");
+  const accepted = await input.ownerStore.readCurrentHead();
+  requireCurrent(input);
+  if (
+    accepted === null ||
+    accepted.head.headVersion !== head.head.headVersion ||
+    accepted.head.activeSetDigest !== head.head.activeSetDigest ||
+    (await input.ownerStore.readPreparedMutation()) !== null
+  )
+    throw new Error("owner targeted local head requires recovery");
+  requireCurrent(input);
+  const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
+    keyHandle: input.keyHandle,
+    ...input.asset,
+  });
+  requireCurrent(input);
+  const descriptors = head.bundles.filter((entry) => entry.assetLocator === assetLocator);
+  const inventoryEntry = inventory.entries.find((entry) => entry.assetLocator === assetLocator);
+  if (
+    descriptors.length !== 1 ||
+    inventoryEntry === undefined ||
+    inventoryEntry.bundleId !== descriptors[0]!.bundleId ||
+    inventoryEntry.descriptorDigest !==
+      digestEncryptedWalletBackupV2BundleDescriptor(descriptors[0]!) ||
+    inventoryEntry.declaredAmount < input.minimumAvailableAmount
+  )
+    throw new Error("owner targeted descriptor is absent");
+  const restored = await discoverAndVerifyBrowserEncryptedWalletBackupOwnerDescriptor({
+    ...input,
+    collectedOwnerHeadEvidence: head,
+    descriptor: descriptors[0]!,
+    loadWallet: async (mintUrl) => {
+      if (mintUrl !== input.asset.mintUrl) throw new Error("owner targeted mint is foreign");
+      return input.loadWallet();
+    },
+  });
+  requireCurrent(input);
+  if (
+    restored.asset.assetIdentity !== input.asset.assetIdentity ||
+    restored.asset.mintUrl !== input.asset.mintUrl ||
+    restored.asset.unit !== input.asset.unit
+  )
+    throw new Error("owner targeted asset is foreign");
+  const live = restored.verified.proofSet.proofs.some(
+    ({ selectionAuthority }) => selectionAuthority === "live-verified",
+  );
+  const wallet = live ? await input.loadWallet() : undefined;
+  requireCurrent(input);
+  await retryBrowserEncryptedWalletBackupV2QuotaWrite({
+    database: input.database,
+    scopeId: input.scopeId,
+    ownerScopeId: input.ownerContext.ownerScopeId,
+    isCurrentProfile: () => !input.signal.aborted && input.isCurrentProfile(),
+    protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
+    lockManager: input.lockManager,
+    write: () =>
+      admitBrowserEncryptedWalletBackupOwnerAsset({
+        ...input,
+        verified: restored.verified,
+        collectedHeadEvidence: head,
+        ownerAuthorityStore: input.ownerStore,
+        ...(wallet === undefined ? {} : { wallet }),
+        sourceOperationId: `owner-targeted:${input.ownerContext.ownerScopeId}:${input.ownerContext.enrollmentEpoch}:${head.head.headVersion}:${descriptors[0]!.bundleId}`,
+        isCurrentProfile: () => !input.signal.aborted && input.isCurrentProfile(),
+      }),
+  });
+  requireCurrent(input);
 }

@@ -527,3 +527,38 @@ export interface DaemonHealth {
   sdk: '@bitcaster-market/client-sdk'
   state: 'ready' | 'custody-recovery-pending' | 'missing-profile'
 }
+
+/** Mutating submission stream. Never reconnect or replay this RPC automatically. */
+export const DAEMON_ORDER_SUBMISSION_MEDIA_TYPE =
+  'application/vnd.bitcaster.order-submission+ndjson'
+export const DAEMON_ORDER_SUBMISSION_FRAME_BYTES_MAX = 1024 * 1024 + 4096
+export type OrderSubmissionFrame =
+  | { type: 'quotes-refreshing'; attempt: number; remainingMs: number }
+  | { type: 'result'; response: DaemonResponse }
+
+export function decodeOrderSubmissionFrame(value: unknown): OrderSubmissionFrame {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('Invalid submission frame')
+  const frame = value as Record<string, unknown>
+  if (
+    frame.type === 'quotes-refreshing' &&
+    Object.keys(frame).length === 3 &&
+    Number.isSafeInteger(frame.attempt) &&
+    (frame.attempt as number) >= 1 &&
+    (frame.attempt as number) <= 29 &&
+    Number.isSafeInteger(frame.remainingMs) &&
+    (frame.remainingMs as number) >= 0 &&
+    (frame.remainingMs as number) <= 60000
+  )
+    return frame as unknown as OrderSubmissionFrame
+  if (
+    frame.type === 'result' &&
+    Object.keys(frame).length === 2 &&
+    typeof frame.response === 'object' &&
+    frame.response !== null &&
+    !Array.isArray(frame.response) &&
+    typeof (frame.response as Record<string, unknown>).ok === 'boolean'
+  )
+    return frame as unknown as OrderSubmissionFrame
+  throw new Error('Invalid submission frame')
+}

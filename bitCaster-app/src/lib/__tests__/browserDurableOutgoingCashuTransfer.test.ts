@@ -30,6 +30,7 @@ import {
   type DurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { createSpeculativeCounterTranscript } from "@bitcaster/client-sdk/speculativeCounterTranscript";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { BrowserWalletRecoveryRequiredError } from "../browserWalletNewWritePermission";
 import {
@@ -59,6 +60,7 @@ import {
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
+import { bindBrowserOutgoingCounterPreparation } from "../browserOutgoingCounterPreparation";
 
 const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -1649,6 +1651,7 @@ async function executionFixture(
   const seed = new Uint8Array(64).fill(3);
   const scope = browserWalletScope(seed);
   const operation = executionOperation(keepCount, seed);
+  bindTestOutgoingOperation(operation, 1);
   const inputProof = operation.preview.inputs[0]!;
   const inputProofId = await addInputProof(database, scope.scopeId, inputProof);
   const preview = hydrateDurableWalletSendPreview(operation);
@@ -1780,6 +1783,7 @@ async function marketFundingInput(
   } = {},
 ) {
   const operation = marketFundingOperation(transferId, fixture.seed, amount);
+  bindTestOutgoingOperation(operation, marketOutputCounter(transferId));
   await addInputProof(
     fixture.database,
     fixture.scope.scopeId,
@@ -1906,6 +1910,7 @@ async function feeAwarePassthroughFixture() {
       unselectedProofs: [passthroughProof],
     },
   });
+  bindTestOutgoingOperation(operation, 40);
   await Promise.all(selectedInputs.map((proof) => addInputProof(database, scope.scopeId, proof)));
   const passthroughProofId = await addInputProof(database, scope.scopeId, passthroughProof);
   const originalPassthrough = await database.custodyProofs.get([scope.scopeId, passthroughProofId]);
@@ -2021,6 +2026,20 @@ function executionOperation(keepCount: number, seed: Uint8Array) {
       ),
       unselectedProofs: [],
     },
+  });
+}
+
+function bindTestOutgoingOperation(
+  operation: DurableWalletSendOperation,
+  nextCounter: number,
+): void {
+  const transcript = createSpeculativeCounterTranscript([
+    { keysetId: operation.preview.keysetId, nextCounter },
+  ]);
+  bindBrowserOutgoingCounterPreparation(operation, {
+    transcript,
+    counterStore: {} as never,
+    counterContext: { mintUrl: operation.mintUrl, unit: operation.unit },
   });
 }
 

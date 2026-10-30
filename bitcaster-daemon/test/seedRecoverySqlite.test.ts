@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -52,6 +53,7 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
     })
     const cursor = await runRecovery(fixture, {
       recoveryId: 'recovery-1',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [
         {
@@ -75,7 +77,7 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
       assert.deepEqual(readRecoveryJob(database, 'recovery-1'), {
         importedProofs: 1,
         ignoredSpentProofs: 1,
-        revision: 1,
+        revision: 2,
         state: 'active',
       })
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
@@ -123,6 +125,7 @@ test('empty recovery batches advance the scan cursor without reserving native co
     await setRecoveryCounter(fixture, 4)
     const cursor = await runRecovery(fixture, {
       recoveryId: 'recovery-empty-counter-range',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [
         {
@@ -164,6 +167,7 @@ test('recovery keeps a higher retained counter after spent-only signatures', asy
     await setRecoveryCounter(fixture, 10)
     const cursor = await runRecovery(fixture, {
       recoveryId: 'recovery-spent-counter-range',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [
         {
@@ -189,7 +193,7 @@ test('recovery keeps a higher retained counter after spent-only signatures', asy
       assert.deepEqual(readRecoveryJob(database, 'recovery-spent-counter-range'), {
         importedProofs: 0,
         ignoredSpentProofs: 1,
-        revision: 1,
+        revision: 2,
         state: 'active',
       })
       assert.equal(readRowCount(database, 'custody_proofs'), 0)
@@ -212,6 +216,7 @@ test('recovery advances paired counters past the retained mark through the last 
     await setRecoveryCounter(fixture, 4)
     const cursor = await runRecovery(fixture, {
       recoveryId: 'recovery-new-counter-range',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [
         {
@@ -239,7 +244,7 @@ test('recovery advances paired counters past the retained mark through the last 
       assert.deepEqual(readRecoveryJob(database, 'recovery-new-counter-range'), {
         importedProofs: 1,
         ignoredSpentProofs: 1,
-        revision: 1,
+        revision: 2,
         state: 'active',
       })
     })
@@ -268,12 +273,13 @@ test('recovery commit rolls its counter back with a failed proof insert', async 
     await assert.rejects(() =>
       runRecovery(fixture, {
         recoveryId: 'recovery-counter-atomic',
+        scanPolicy: createSeedRecoveryScanPolicy(),
         disclosureAcknowledged: true,
         batches: [{ observation: oneProofObservation(), proofs: [duplicate] }],
       }),
     )
     await withRecoveryDatabase(directory, async (database) => {
-      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 0)
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 1)
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
     })
@@ -294,6 +300,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
     })
     const first = await runRecovery(fixture, {
       recoveryId: 'recovery-continuation',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [0, 1, 2, 3].map((index) => signedBatch(index)),
     })
@@ -301,6 +308,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
 
     const second = await runExplicitEmergencySeedRecovery({
       recoveryId: 'recovery-continuation',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat',
@@ -333,6 +341,7 @@ test('recovery rejects a resumed job with a changed mint or sat unit', async () 
     })
     await runRecovery(fixture, {
       recoveryId: 'recovery-binding',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [signedBatch(0)],
     })
@@ -359,8 +368,10 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
       incarnationId: 'recovery-multikeyset',
       invocationId: 'recovery-multikeyset',
     })
+    await pinRoster(fixture, 'recovery-multikeyset', [KEYSET_ID, SECOND_KEYSET_ID])
     await runRecovery(fixture, {
       recoveryId: 'recovery-multikeyset',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [
         {
@@ -371,6 +382,7 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
     })
     const second = await runExplicitEmergencySeedRecovery({
       recoveryId: 'recovery-multikeyset',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat',
@@ -401,7 +413,7 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
       assert.deepEqual(readRecoveryJob(database, 'recovery-multikeyset'), {
         importedProofs: 2,
         ignoredSpentProofs: 0,
-        revision: 2,
+        revision: 3,
         state: 'active',
       })
       const cursors = database
@@ -435,12 +447,15 @@ test('completed children remain extensible until the orchestrator finalizes disc
     })
     const binding = {
       recoveryId: 'recovery-discovery-finalize',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat' as const,
     }
+    await pinRoster(fixture, 'recovery-discovery-finalize', [KEYSET_ID, SECOND_KEYSET_ID])
     await runRecovery(fixture, {
       recoveryId: binding.recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [emptyBatch(0)],
     })
@@ -462,7 +477,7 @@ test('completed children remain extensible until the orchestrator finalizes disc
       assert.deepEqual(readRecoveryJob(database, binding.recoveryId), {
         importedProofs: 0,
         ignoredSpentProofs: 0,
-        revision: 3,
+        revision: 4,
         state: 'completed',
       })
       assert.equal(readRowCount(database, 'seed_recovery_keysets'), 2)
@@ -484,6 +499,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
     })
     const input = {
       recoveryId: 'recovery-child-binding',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat' as const,
@@ -496,6 +512,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
     )
     await runRecovery(fixture, {
       recoveryId: input.recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [emptyBatch(0)],
     })
@@ -531,12 +548,14 @@ test('fenced finalization requires completed children and explicit empty discove
     })
     const binding = {
       recoveryId: 'recovery-finalization',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat' as const,
     }
     await runRecovery(fixture, {
       recoveryId: binding.recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [signedBatch(0)],
     })
@@ -546,6 +565,7 @@ test('fenced finalization requires completed children and explicit empty discove
     )
     await runRecovery(fixture, {
       recoveryId: binding.recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [emptyBatch(1)],
     })
@@ -574,7 +594,7 @@ test('fenced finalization requires completed children and explicit empty discove
       assert.deepEqual(readRecoveryJob(database, binding.recoveryId), {
         importedProofs: 0,
         ignoredSpentProofs: 0,
-        revision: 3,
+        revision: 4,
         state: 'completed',
       })
     })
@@ -627,8 +647,8 @@ test('recovery schema rejects an orphan child keyset while foreign keys are enab
             .prepare(
               `INSERT INTO seed_recovery_keysets (
                  recovery_id, keyset_id, next_counter,
-                 trailing_empty_counters, revision, state
-               ) VALUES ('orphan', '${KEYSET_ID}', 0, 0, 0, 'active')`,
+                 trailing_empty_counters, revision, state, scan_policy_version, scan_scope, condition_selector, gap_limit
+               ) VALUES ('orphan', '${KEYSET_ID}', 0, 0, 0, 'active', 1, 'regular-msat', '', 300)`,
             )
             .run(),
         /FOREIGN KEY constraint failed/,
@@ -653,6 +673,7 @@ test('direct recovery rejects a nonselectable proof without advancing cursor or 
       () =>
         runRecovery(fixture, {
           recoveryId: 'recovery-pending-reject',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           disclosureAcknowledged: true,
           batches: [
             {
@@ -664,8 +685,8 @@ test('direct recovery rejects a nonselectable proof without advancing cursor or 
       /nonselectable/,
     )
     await withRecoveryDatabase(directory, (database) => {
-      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 0)
-      assert.equal(readRowCount(database, 'seed_recovery_keysets'), 0)
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 1)
+      assert.equal(readRowCount(database, 'seed_recovery_keysets'), 1)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
       assert.equal(readRowCount(database, 'custody_proofs'), 0)
     })
@@ -685,8 +706,10 @@ test('direct staged recovery rejects a target reservation added after its initia
       invocationId: 'recovery-target-reservation',
     })
     const recoveryId = 'recovery-target-reservation'
+    await pinRoster(fixture, recoveryId, [KEYSET_ID])
     const start = await fixture.store.readRecoveryStart({
       recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat',
@@ -711,8 +734,8 @@ test('direct staged recovery rejects a target reservation added after its initia
       /target-wallet-proof-reserved/,
     )
     await withRecoveryDatabase(directory, (database) => {
-      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 0)
-      assert.equal(readRowCount(database, 'seed_recovery_keysets'), 0)
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 1)
+      assert.equal(readRowCount(database, 'seed_recovery_keysets'), 1)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
       assert.equal(readRowCount(database, 'custody_proofs'), 0)
     })
@@ -721,7 +744,7 @@ test('direct staged recovery rejects a target reservation added after its initia
   }
 })
 
-test('missing recovery cursor restarts at zero and re-admits an identical proof idempotently', async () => {
+test('missing cursor in a pinned roster refuses without changing retained proofs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-missing-cursor-'))
   try {
     const fixture = await createRecoveryFixture({
@@ -737,12 +760,15 @@ test('missing recovery cursor restarts at zero and re-admits an identical proof 
     }
     await runRecovery(fixture, {
       recoveryId: 'recovery-missing-cursor',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       disclosureAcknowledged: true,
       batches: [batch],
     })
     await deleteRecoveryCursor(directory, 'recovery-missing-cursor')
-    const replay = await replayRecoveryFromZero(fixture, 'recovery-missing-cursor', batch)
-    assert.equal(replay.nextCounter, 1)
+    await assert.rejects(
+      () => replayRecoveryFromZero(fixture, 'recovery-missing-cursor', batch),
+      /pinned roster/,
+    )
     await withRecoveryDatabase(directory, (database) => {
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
     })
@@ -804,6 +830,7 @@ test('recovery replay preserves stronger proof state and rejects a foreign bindi
       })
       await runExplicitEmergencySeedRecovery({
         recoveryId: `recovery-proof-${stronger.label}`,
+        scanPolicy: createSeedRecoveryScanPolicy(),
         walletScopeId: fixture.profile.walletScopeId,
         mintUrl: 'https://mint.example',
         unit: 'msat',
@@ -847,6 +874,7 @@ test('recovery replay preserves stronger proof state and rejects a foreign bindi
       () =>
         runRecovery(fixture, {
           recoveryId: 'recovery-proof-foreign',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           disclosureAcknowledged: true,
           batches: [{ observation: oneProofObservation(), proofs: [foreign] }],
         }),
@@ -871,6 +899,8 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       observation: oneProofObservation(),
       proofs: [observed(fixture.profile.walletScopeId, 'fault', 'UNSPENT', 'selectable')],
     }
+    await pinRoster(fixture, 'recovery-before-commit', [KEYSET_ID])
+    await pinRoster(fixture, 'recovery-after-commit', [KEYSET_ID])
     const beforeCommit = new SeedRecoverySqliteStore({
       directory,
       fence: fixture.fence,
@@ -884,6 +914,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       () =>
         runExplicitEmergencySeedRecovery({
           recoveryId: 'recovery-before-commit',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'msat',
@@ -898,7 +929,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
     await withRecoveryDatabase(directory, (database) => {
       assert.equal(readRowCount(database, 'custody_proofs'), 0)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
-      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 0)
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 2)
     })
 
     const afterCommit = new SeedRecoverySqliteStore({
@@ -914,6 +945,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       () =>
         runExplicitEmergencySeedRecovery({
           recoveryId: 'recovery-after-commit',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'msat',
@@ -928,7 +960,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
     await withRecoveryDatabase(directory, (database) => {
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 1)
-      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 1)
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 2)
     })
     const failedUpdate = new SeedRecoverySqliteStore({
       directory,
@@ -943,6 +975,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       () =>
         runExplicitEmergencySeedRecovery({
           recoveryId: 'recovery-after-commit',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'msat',
@@ -971,7 +1004,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       assert.deepEqual(readRecoveryJob(database, 'recovery-after-commit'), {
         importedProofs: 1,
         ignoredSpentProofs: 0,
-        revision: 1,
+        revision: 2,
         state: 'active',
       })
       const cursor = database
@@ -993,6 +1026,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
     })
     await runExplicitEmergencySeedRecovery({
       recoveryId: 'recovery-after-commit',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat',
@@ -1050,6 +1084,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
     })
     const common = {
       recoveryId: 'recovery-refusal',
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'msat' as const,
@@ -1101,6 +1136,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
         runExplicitEmergencySeedRecovery({
           ...common,
           recoveryId: 'recovery-foreign',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           disclosureAcknowledged: true,
           store: new SeedRecoverySqliteStore({
             directory,
@@ -1122,6 +1158,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
         runExplicitEmergencySeedRecovery({
           ...common,
           recoveryId: 'recovery-selectable-pending',
+          scanPolicy: createSeedRecoveryScanPolicy(),
           disclosureAcknowledged: true,
           store: new SeedRecoverySqliteStore({
             directory,
@@ -1146,8 +1183,10 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
             count: number
           }
         ).count,
-        0,
+        3,
       )
+      assert.equal(readRowCount(database, 'custody_proofs'), 0)
+      assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
     } finally {
       database.close()
     }
@@ -1197,6 +1236,7 @@ function replayRecoveryFromZero(
 ) {
   return runExplicitEmergencySeedRecovery({
     recoveryId,
+    scanPolicy: createSeedRecoveryScanPolicy(),
     walletScopeId: fixture.profile.walletScopeId,
     mintUrl: 'https://mint.example',
     unit: 'msat',
@@ -1289,6 +1329,7 @@ function runRecoveryWithContext(
   return () =>
     runExplicitEmergencySeedRecovery({
       recoveryId,
+      scanPolicy: createSeedRecoveryScanPolicy(),
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl,
       unit,
@@ -1326,6 +1367,7 @@ async function assertRecoveryFenceChange(
     await recoverAllDaemonWalletFromSeed(
       {
         recoveryId: `recovery-${label}`,
+        scanPolicy: createSeedRecoveryScanPolicy(),
         mintUrl: 'https://mint.example',
         unit: 'msat',
         walletSeedHex,
@@ -1564,6 +1606,7 @@ function finalization(
 ) {
   return {
     recoveryId: binding.recoveryId,
+    scanPolicy: createSeedRecoveryScanPolicy(),
     walletScopeId: binding.walletScopeId,
     mintUrl: binding.mintUrl,
     unit: binding.unit,
@@ -1579,3 +1622,84 @@ function foreignWalletScopeId(): string {
     walletId: '99'.repeat(32),
   })
 }
+
+async function pinRoster(
+  fixture: Awaited<ReturnType<typeof createRecoveryFixture>>,
+  recoveryId: string,
+  keysetIds: readonly string[],
+) {
+  const store = new SeedRecoverySqliteStore({
+    directory: fixture.directory,
+    fence: fixture.fence,
+    invocationId: `${recoveryId}:roster`,
+    observedAtMs: 3,
+  })
+  await store.initializeRecoveryRoster({
+    recoveryId,
+    scanPolicy: createSeedRecoveryScanPolicy(),
+    walletScopeId: fixture.profile.walletScopeId,
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    disclosureAcknowledged: true,
+    keysetIds,
+    authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
+  })
+}
+
+test('a retained counter increase between scan read and commit refuses the staged observation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-counter-barrier-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'ca'.repeat(64),
+      nostrSecretKeyHex: 'db'.repeat(32),
+      incarnationId: 'recovery-counter-barrier',
+      invocationId: 'counter-barrier',
+    })
+    await pinRoster(fixture, 'counter-barrier', [KEYSET_ID])
+    const binding = {
+      recoveryId: 'counter-barrier',
+      walletScopeId: fixture.profile.walletScopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'msat' as const,
+      keysetId: KEYSET_ID,
+      scanPolicy: createSeedRecoveryScanPolicy(),
+    }
+    const start = await fixture.store.readRecoveryStart(binding)
+    const recovered = observed(
+      fixture.profile.walletScopeId,
+      'barrier-proof',
+      'UNSPENT',
+      'selectable',
+    )
+    fixture.store.stageBatch(binding.recoveryId, KEYSET_ID, [recovered])
+    await setRecoveryCounter(fixture, 9)
+    await assert.rejects(
+      () =>
+        fixture.store.commitRecoveryBatch(
+          createEmergencySeedRecoveryCoCommit({
+            cursor: start.cursor,
+            observation: { ...oneProofObservation(), scanThroughCounter: 0 },
+            recoveredProofIds: [recovered.proof.proofId],
+            recoveryJobId: binding.recoveryId,
+            authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
+          }),
+        ),
+      /retained.*bound|high.water|scan-through/,
+    )
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRowCount(database, 'custody_proofs'), 0)
+      assert.equal(
+        (
+          database
+            .prepare('SELECT next_counter AS next FROM seed_recovery_keysets WHERE recovery_id=?')
+            .get(binding.recoveryId) as { next: number }
+        ).next,
+        0,
+      )
+      assert.equal(readRecoveryCounters(database, fixture.profile.walletScopeId).target, 9)
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

@@ -1,5 +1,10 @@
+import { mintDenominationKeys, mintDenominationPrivateKey } from './support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
-import { deriveDurableCustodyArtifactFingerprint } from '../src/durableCustody.ts'
+import {
+  deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyWalletId,
+  deriveDurableCustodyScopeId,
+} from '../src/durableCustody.ts'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
@@ -37,6 +42,7 @@ import {
 } from '../src/ctfRangeOrderProtocol.ts'
 import {
   encodeCtfRangeOrderPreparationArtifact,
+  encodeCtfRangeOrderFeeConsentArtifact,
   type CtfRangeOrderPreparationRecord,
 } from '../src/ctfRangeOrderJournal.ts'
 import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
@@ -68,8 +74,9 @@ const COMPLEMENT_COLLECTION = 'NO'
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
-const KEYS = Object.fromEntries(
-  Array.from({ length: 20 }, (_, index) => [(1 << index).toString(), MINT_PUBLIC_KEY]),
+const KEYS = mintDenominationKeys(
+  MINT_PRIVATE_KEY,
+  Array.from({ length: 20 }, (_, index) => (1 << index).toString()),
 )
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 200
@@ -347,7 +354,7 @@ test('builds, canonically persists, and verifies one exact range preparation rec
         nowUnixSeconds: 20,
         randomId: sequentialId('ambiguous-operation', 'ambiguous-authorization'),
       }),
-    /exact engine order route/,
+    /registered outcome authority/,
   )
 })
 
@@ -1252,6 +1259,16 @@ function reviewedMintFacts() {
     ],
   }
   return {
+    registration: {
+      normalizedMint: MINT_URL,
+      conditionId: CONDITION_ID,
+      canonicalParentCollectionId: null,
+      unit: 'msat' as const,
+      eventId: 'test-event',
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [],
+    },
     regular: [
       {
         ...regularKeyset(),
@@ -1411,10 +1428,13 @@ function completedOperation(persisted?: ReturnType<typeof buildPersistedCtfRange
 function signOutput(output: OutputData): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    MINT_PRIVATE_KEY,
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), MINT_PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.blindedMessage.amount.toString()),
+  )
   return output.toProof(
     {
       id: signature.id,
@@ -1427,8 +1447,15 @@ function signOutput(output: OutputData): Proof {
 }
 
 function signBlindedMessage(output: SerializedBlindedMessage): SerializedBlindedSignature {
-  const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
-  const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+  const signature = createBlindSignature(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+    output.id,
+  )
+  const dleq = createDLEQProof(
+    pointFromHex(output.B_),
+    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
+  )
   return {
     id: signature.id,
     amount: Amount.from(output.amount),
@@ -1440,3 +1467,273 @@ function signBlindedMessage(output: SerializedBlindedMessage): SerializedBlinded
 function sumProofAmount(sum: number, proof: Proof): number {
   return sum + Number(proof.amount)
 }
+
+for (const tokenSide of ['Outcome', 'Complement'] as const) {
+  for (const side of ['Buy', 'Sell'] as const) {
+    test(`nonlexical six-outcome ${tokenSide} ${side} selects exact mint wire keysets`, () => {
+      const outcomes = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta']
+      const facts = reviewedMintFacts()
+      facts.registration.outcomes = outcomes
+      const collections = ['Alpha', 'Beta|Gamma|Delta|Epsilon|Zeta']
+      facts.conditional = facts.conditional.map((keyset, index) => ({
+        ...keyset,
+        outcomeCollection: collections[index],
+        outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+          conditionId: CONDITION_ID,
+          outcomeCollection: collections[index],
+        }),
+      }))
+      facts.observation.conditionalKeysets = facts.observation.conditionalKeysets.map(
+        (keyset, index) => ({
+          ...keyset,
+          outcomeCollection: collections[index],
+          outcomeCollectionId: facts.conditional[index].outcomeCollectionId,
+        }),
+      )
+      const prepared = buildPersistedCtfRangeOrderPreparation({
+        request: {
+          ...rangeOrderRequest(),
+          marketId: `${CONDITION_ID}-Alpha`,
+          outcomeId: 'Alpha',
+          tokenSide,
+          side,
+          maxQuotePaymentSubunits: side === 'Buy' ? 2 : null,
+          minQuotePaymentSubunits: side === 'Sell' ? 2 : null,
+        },
+        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+        mintFacts: facts,
+        // The display is deliberately sorted differently. It supplies labels, not wire order.
+        market: { outcomes: [...outcomes].sort().map((label) => ({ id: label, label })) },
+        nowUnixSeconds: 20,
+        randomId: sequentialId('nonlexical-operation', 'nonlexical-authorization'),
+      })
+      const selected = tokenSide === 'Outcome' ? facts.conditional[0] : facts.conditional[1]
+      const complement = tokenSide === 'Outcome' ? facts.conditional[1] : facts.conditional[0]
+      assert.equal((side === 'Buy' ? prepared.receiveKeyset : prepared.offerKeyset).id, selected.id)
+      assert.equal(prepared.complementKeyset.id, complement.id)
+      assert.equal(prepared.complementKeyset.outcomeCollection, complement.outcomeCollection)
+      const bytes = encodePersistedCtfRangeOrderPreparation(prepared)
+      assert.deepEqual(
+        encodePersistedCtfRangeOrderPreparation(
+          decodePersistedCtfRangeOrderPreparationBytes(bytes),
+        ),
+        bytes,
+      )
+    })
+  }
+}
+
+// The provider migration is separate. These tests exercise the complete SDK receipt boundary.
+import {
+  createCtfRangePreparationIntent,
+  createCounterCtfRangePreparation,
+  decodeCounterCtfRangePreparation,
+  encodeCounterCtfRangePreparation,
+  decodeCounterCtfRangePreparationBytes,
+  reconstructCtfRangePreparation,
+  planCounterCtfRangePreparation,
+} from '../src/ctfRangeOrderProtocol.ts'
+
+function counterReceipt(side: 'Buy' | 'Sell' = 'Buy') {
+  const preparation = persistedPreparation('old-id', side)
+  const { intent } = createCtfRangePreparationIntent({
+    scopeId: testCounterScope(new Uint8Array(64).fill(7)),
+    request: preparation.request,
+    feeConsentBytes: null,
+    consolidateProofs: false,
+  })
+  return createCounterCtfRangePreparation({
+    preparation,
+    intent,
+    seed: new Uint8Array(64).fill(7),
+    offerCounterStart: 100,
+    receiveCounterStart: 200,
+  })
+}
+
+test('v3 receipt roundtrip reconstructs exact outputs and per-keyset counter allocation for Buy and Sell', () => {
+  for (const side of ['Buy', 'Sell'] as const) {
+    const receipt = counterReceipt(side)
+    const restored = decodeCounterCtfRangePreparationBytes(
+      encodeCounterCtfRangePreparation(receipt),
+    )
+    const seed = new Uint8Array(64).fill(7)
+    const first = reconstructCtfRangePreparation(receipt, seed)
+    const retried = reconstructCtfRangePreparation(restored, seed)
+    assert.deepEqual(first, retried)
+    assert.deepEqual(restored, receipt)
+    assert.notEqual(receipt.operationId, 'old-id')
+    let receive = 0
+    let change = 0
+    for (const { entry, outputData } of first.manifest.entries) {
+      const counter =
+        entry.role === 'receive'
+          ? receipt.receiveCounterStart + receive++
+          : receipt.offerCounterStart + first.authorizationOutputs.length * 2 + change++
+      const expected = OutputData.createSingleDeterministicData(
+        entry.amount,
+        seed,
+        counter,
+        entry.id,
+      )
+      assert.deepEqual(outputData, expected)
+    }
+    for (const [index, output] of first.authorizationOutputs.entries()) {
+      const nonceOutput = OutputData.createSingleDeterministicData(
+        output.blindedMessage.amount,
+        seed,
+        receipt.offerCounterStart + 2 * index,
+        receipt.offerKeyset.id,
+      )
+      const scalarOutput = OutputData.createSingleDeterministicData(
+        output.blindedMessage.amount,
+        seed,
+        receipt.offerCounterStart + 2 * index + 1,
+        receipt.offerKeyset.id,
+      )
+      const secret = JSON.parse(new TextDecoder().decode(output.secret))
+      assert.equal(secret[1].nonce, new TextDecoder().decode(nonceOutput.secret))
+      assert.equal(output.blindingFactor, scalarOutput.blindingFactor)
+    }
+    assert.equal(receive, receipt.receiveCounterCount)
+    assert.equal(change + first.authorizationOutputs.length * 2, receipt.offerCounterCount)
+  }
+})
+
+test('v3 rejects modified intent, ranges, IDs, unknown fields and wrong reconstruction seed', () => {
+  const receipt = counterReceipt()
+  for (const changed of [
+    { preparationIntentDigest: '00'.repeat(32) },
+    { offerCounterCount: receipt.offerCounterCount + 1 },
+    { receiveCounterCount: receipt.receiveCounterCount + 1 },
+    { offerCounterStart: 2147483647 },
+    { receiveCounterStart: -1 },
+    { extra: true },
+    {
+      preparationIntent: {
+        ...receipt.preparationIntent,
+        request: { ...receipt.request, clientOrderId: 'other' },
+      },
+    },
+  ])
+    assert.throws(() => decodeCounterCtfRangePreparation({ ...receipt, ...changed }))
+  assert.throws(() =>
+    reconstructCtfRangePreparation(
+      { ...receipt, authorizationId: 'foreign-id' },
+      new Uint8Array(64).fill(7),
+    ),
+  )
+  assert.throws(() => reconstructCtfRangePreparation(receipt, new Uint8Array(64).fill(8)))
+})
+
+test('v3 product counter bound permits exactly the last range and rejects overflow', () => {
+  const preparation = persistedPreparation('old-id')
+  const counts = planCounterCtfRangePreparation(preparation)
+  const { intent } = createCtfRangePreparationIntent({
+    scopeId: testCounterScope(new Uint8Array(64)),
+    request: preparation.request,
+    feeConsentBytes: null,
+    consolidateProofs: false,
+  })
+  const input = {
+    preparation,
+    intent,
+    seed: new Uint8Array(64),
+    offerCounterStart: 2147483648 - counts.offerCount,
+    receiveCounterStart: 2147483648 - counts.receiveCount,
+  }
+  const receipt = createCounterCtfRangePreparation(input)
+  assert.doesNotThrow(() => reconstructCtfRangePreparation(receipt, input.seed))
+  assert.throws(() =>
+    createCounterCtfRangePreparation({ ...input, offerCounterStart: input.offerCounterStart + 1 }),
+  )
+  assert.throws(() =>
+    createCounterCtfRangePreparation({
+      ...input,
+      receiveCounterStart: input.receiveCounterStart + 1,
+    }),
+  )
+})
+
+test('v2 reconstruction preserves historical operation-scoped outputs', () => {
+  const old = persistedPreparation('legacy-id')
+  const seed = new Uint8Array(64).fill(7)
+  assert.deepEqual(
+    reconstructCtfRangePreparation(old, seed),
+    prepareCtfRangeOrderAuthorization({ ...old, seed }),
+  )
+  assert.throws(() => reconstructCtfRangePreparation({ ...old, version: 4 }, seed))
+})
+
+test('intent digest is canonical, binds caller policy and excludes selected authority', () => {
+  const request = rangeOrderRequest()
+  const input = {
+    scopeId: testCounterScope(new Uint8Array(64)),
+    request,
+    feeConsentBytes: null,
+    consolidateProofs: false,
+  }
+  const baseline = createCtfRangePreparationIntent(input)
+  const reordered = Object.fromEntries(
+    Object.entries(request).reverse(),
+  ) as unknown as CtfRangeOrderRequest
+  assert.deepEqual(createCtfRangePreparationIntent({ ...input, request: reordered }), baseline)
+  for (const change of [
+    { scopeId: testCounterScope(new Uint8Array(64).fill(9)) },
+    { consolidateProofs: true },
+    { request: { ...request, clientOrderId: 'other-order' } },
+  ]) {
+    assert.notEqual(
+      createCtfRangePreparationIntent({ ...input, ...change }).digest,
+      baseline.digest,
+    )
+  }
+  assert.throws(() =>
+    createCtfRangePreparationIntent({ ...input, feeConsentBytes: new TextEncoder().encode('{}') }),
+  )
+  const asset = { kind: 'regular' as const, unit: 'msat' as const }
+  const fees = {
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '0',
+    consolidationFeeSubunits: '0',
+    settlementAsset: asset,
+    sourcePreparationAsset: asset,
+    consolidationAsset: asset,
+    sourceMode: 'wallet-send' as const,
+  }
+  const consent = encodeCtfRangeOrderFeeConsentArtifact(fees)
+  assert.notEqual(
+    createCtfRangePreparationIntent({ ...input, feeConsentBytes: consent }).digest,
+    baseline.digest,
+  )
+  assert.notEqual(
+    createCtfRangePreparationIntent({
+      ...input,
+      feeConsentBytes: encodeCtfRangeOrderFeeConsentArtifact({
+        ...fees,
+        settlementInputFeeSubunits: '2',
+      }),
+    }).digest,
+    createCtfRangePreparationIntent({ ...input, feeConsentBytes: consent }).digest,
+  )
+  assert.throws(() => createCtfRangePreparationIntent({ ...input, scopeId: '' }))
+})
+
+function testCounterScope(seed: Uint8Array): string {
+  return deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(seed),
+  })
+}
+
+test('preparation intent matches independent Python canonical JSON and SHA256 vector', () => {
+  assert.equal(
+    createCtfRangePreparationIntent({
+      scopeId: 'custody:wallet:' + 'ab'.repeat(32),
+      request: rangeOrderRequest(),
+      feeConsentBytes: null,
+      consolidateProofs: false,
+    }).digest,
+    '5e33c8436d525018de354f9c9c01a02effa9f76b5eff30efa5a187f45df81d9d',
+  )
+})

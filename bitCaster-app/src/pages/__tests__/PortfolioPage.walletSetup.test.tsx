@@ -6,6 +6,7 @@ const ensureImplicitWallet = vi.fn();
 const recoverFromMnemonic = vi.fn();
 const navigate = vi.fn();
 let mockWalletState: "none" | "ready" = "none";
+let mockConnectionStatus: "connected" | "connecting" | "disconnected" = "disconnected";
 let mockWalletBackupState: "none" | "needs_backup" | "confirmed" = "none";
 
 vi.mock("react-router", () => ({
@@ -16,10 +17,24 @@ vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: ({ mode }: { mode: string }) => <div>{mode} overlay</div>,
 }));
 
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (s: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = {
+    nostrSignerMode: "nip07",
+    nostrProfile: null,
+    get signerConnectionStatus() {
+      return mockConnectionStatus;
+    },
+  };
+  return {
+    useSettingsStore: Object.assign(
+      (selector: (value: typeof state) => unknown) => selector(state),
+      {
+        getState: () => state,
+        subscribe: () => () => {},
+      },
+    ),
+  };
+});
 
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) => selector({ addActivity: vi.fn() }),
@@ -40,6 +55,7 @@ vi.mock("@/lib/browserPortfolioRemove", () => ({
 
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
+    subscribe: () => () => {},
     getState: () => ({
       ensureImplicitWallet,
       recoverFromMnemonic,
@@ -76,11 +92,25 @@ import { PortfolioPage } from "../PortfolioPage";
 describe("PortfolioPage wallet setup", () => {
   beforeEach(() => {
     mockWalletState = "none";
+    mockConnectionStatus = "disconnected";
     mockWalletBackupState = "none";
     navigate.mockReset();
     ensureImplicitWallet.mockReset();
     recoverFromMnemonic.mockReset();
   });
+
+  it.each(["connected", "connecting", "disconnected"] as const)(
+    "uses runtime %s state for the Nostr connect action",
+    (status) => {
+      mockWalletState = "ready";
+      mockConnectionStatus = status;
+      render(<PortfolioPage />);
+      expect(screen.queryByRole("button", { name: /connect nostr/i }) !== null).toBe(
+        status === "disconnected",
+      );
+      expect(screen.queryByText(/Connecting to Nostr/) !== null).toBe(status === "connecting");
+    },
+  );
 
   it("opens the wallet setup modal from the no-wallet portfolio CTA", async () => {
     render(<PortfolioPage />);
@@ -116,7 +146,7 @@ describe("PortfolioPage wallet setup", () => {
     await userEvent.click(screen.getByRole("button", { name: /get started/i }));
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
 
-    expect(screen.getByLabelText(/enter your seedphrase/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Seed word 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /restore wallet/i })).toBeInTheDocument();
   });
 
@@ -138,7 +168,9 @@ describe("PortfolioPage wallet setup", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /get started/i }));
     await userEvent.click(screen.getByRole("button", { name: /import existing wallet/i }));
-    await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), words);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Seed word 1"));
+    await user.paste(words);
     await userEvent.click(screen.getByRole("button", { name: /restore wallet/i }));
 
     await waitFor(() => expect(recoverFromMnemonic).toHaveBeenCalledWith(words.split(" ")));

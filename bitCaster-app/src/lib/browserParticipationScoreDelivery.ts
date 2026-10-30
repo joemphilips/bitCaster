@@ -146,6 +146,8 @@ export async function executeBrowserParticipationScoreDelivery(
       return prepareBrowserDeterministicOutgoingCashuSend({
         operationId: `participation-score:${metadata.deliveryId}`,
         wallet,
+        database: context.database,
+        requireCapturedProfile: context.requireCapturedProfile,
         proofs,
         amount: Number(metadata.requestedAmount),
         mintUrl: metadata.mintUrl,

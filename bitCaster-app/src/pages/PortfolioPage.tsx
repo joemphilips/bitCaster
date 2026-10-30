@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
@@ -20,7 +20,7 @@ import {
   isActiveBrowserWalletId,
 } from "@/lib/browserWalletProfile";
 import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
-import type { PLTimeSelector } from "@/types/portfolio";
+import type { ClaimCelebration, PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 
 export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string | null): string {
@@ -47,40 +47,145 @@ function isCurrentWallet(walletId: string): boolean {
   return isActiveBrowserWalletId(walletId, mnemonic);
 }
 
-type PositionActionDialog = { scopeId: string | null } & (
-  | { kind: "message"; message: string }
-  | {
-      kind: "confirm-remove";
-      positionId: string;
-      walletId: string;
-      mintUrl: string;
-      conditionId: string;
-      outcomeCollection: string;
-    }
-);
+type PositionActionDialog = { scopeId: string | null; epoch: number; message: string };
+type RemovalConfirmation = {
+  epoch: number;
+  scopeId: string | null;
+  positionId: string;
+  walletId: string;
+  mintUrl: string;
+  conditionId: string;
+  outcomeCollection: string;
+};
+type PositionOperation = {
+  token: symbol;
+  epoch: number;
+  scopeId: string | null;
+  walletId: string;
+  positionId: string;
+  kind: "claim" | "remove";
+};
+
+type ScopedClaimCelebration = ClaimCelebration & {
+  epoch: number;
+  scopeId: string | null;
+  walletId: string;
+};
 
 export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const state = usePortfolioState();
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null);
-  const [claimingPositionId, setClaimingPositionId] = useState<string | null>(null);
-  const [removingPositionId, setRemovingPositionId] = useState<string | null>(null);
-  const [operationScopeId, setOperationScopeId] = useState<string | null>(null);
+  const [positionAction, setPositionAction] = useState<PositionOperation | null>(null);
+  const operation = useRef<PositionOperation | null>(null);
+  const epoch = useRef(0);
+  const claimSequence = useRef(0);
+  const [claimCelebrations, setClaimCelebrations] = useState<ScopedClaimCelebration[]>([]);
+  const mounted = useRef(true);
+  const confirmation = useRef<RemovalConfirmation | null>(null);
+  const [removalConfirmation, setRemovalConfirmation] = useState<RemovalConfirmation | null>(null);
   const [showWalletSetup, setShowWalletSetup] = useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<PositionActionDialog | null>(null);
   const activeScopeId = activeBrowserWalletScopeId();
-  const visibleDialog = actionDialog?.scopeId === activeScopeId ? actionDialog : null;
+  const visibleDialog =
+    actionDialog?.scopeId === activeScopeId && actionDialog.epoch === epoch.current
+      ? actionDialog
+      : null;
+  const visibleAction =
+    positionAction?.scopeId === activeScopeId && positionAction.epoch === epoch.current
+      ? positionAction
+      : undefined;
+  const visibleConfirmation =
+    removalConfirmation?.scopeId === activeScopeId && removalConfirmation.epoch === epoch.current
+      ? removalConfirmation
+      : null;
   const addActivity = useActivityLogStore((s) => s.addActivity);
 
   useEffect(() => {
-    setActionDialog((dialog) => (dialog?.scopeId === activeScopeId ? dialog : null));
-  }, [activeScopeId]);
+    mounted.current = true;
+    const invalidate = () => {
+      epoch.current++;
+      operation.current = null;
+      confirmation.current = null;
+      setPositionAction(null);
+      setRemovalConfirmation(null);
+      setActionDialog(null);
+      setClaimCelebrations([]);
+    };
+    // A store subscription sees each transition, including batched A → B → A.
+    const unsubscribe = useWalletStore.subscribe((current, previous) => {
+      if (current.mnemonic !== previous.mnemonic) invalidate();
+    });
+    return () => {
+      mounted.current = false;
+      epoch.current++;
+      operation.current = null;
+      confirmation.current = null;
+      unsubscribe();
+    };
+  }, []);
 
+  useEffect(() => {
+    const timers = claimCelebrations.map((snapshot) =>
+      window.setTimeout(
+        () => {
+          if (
+            !mounted.current ||
+            snapshot.epoch !== epoch.current ||
+            snapshot.scopeId !== activeBrowserWalletScopeId() ||
+            !isCurrentWallet(snapshot.walletId)
+          )
+            return;
+          // Expiry removes only presentation. A residual/new holding keeps its own authority.
+          setClaimCelebrations((current) => current.filter((item) => item.id !== snapshot.id));
+        },
+        Math.max(0, snapshot.expiresAtMs - Date.now()),
+      ),
+    );
+    return () => timers.forEach(window.clearTimeout);
+  }, [claimCelebrations]);
+
+  const isCurrentOperation = useCallback(
+    (captured: PositionOperation) =>
+      mounted.current &&
+      operation.current?.token === captured.token &&
+      captured.epoch === epoch.current &&
+      captured.scopeId === activeBrowserWalletScopeId() &&
+      isCurrentWallet(captured.walletId),
+    [],
+  );
+  const beginOperation = useCallback(
+    (kind: PositionOperation["kind"], positionId: string, walletId: string) => {
+      const captured: PositionOperation = {
+        token: Symbol(kind),
+        epoch: epoch.current,
+        scopeId: activeBrowserWalletScopeId(),
+        walletId,
+        positionId,
+        kind,
+      };
+      operation.current = captured;
+      confirmation.current = null;
+      setRemovalConfirmation(null);
+      setActionDialog(null);
+      setPositionAction(captured);
+      return captured;
+    },
+    [],
+  );
+  const finishOperation = useCallback(
+    (captured: PositionOperation) => {
+      if (!isCurrentOperation(captured)) return;
+      operation.current = null;
+      setPositionAction(null);
+    },
+    [isCurrentOperation],
+  );
   const showActionMessage = useCallback((message: string) => {
-    setActionDialog({ kind: "message", message, scopeId: activeBrowserWalletScopeId() });
+    setActionDialog({ message, scopeId: activeBrowserWalletScopeId(), epoch: epoch.current });
   }, []);
 
   const removeFailureMessage = useCallback(
@@ -146,14 +251,6 @@ export function PortfolioPage() {
     [t],
   );
 
-  const handleAvatarUpload = useCallback(
-    (file: File) => {
-      const url = URL.createObjectURL(file);
-      state.saveProfile({ ...state.profile, avatarUrl: url });
-    },
-    [state],
-  );
-
   const handleTimeRangeChange = useCallback(
     (range: PLTimeSelector) => {
       state.setSelectedTimeRange(range);
@@ -198,7 +295,7 @@ export function PortfolioPage() {
 
   const handleClaimPayout = useCallback(
     async (positionId: string) => {
-      if (claimingPositionId || removingPositionId) return;
+      if (operation.current) return;
       const position = state.positions.find((p) => p.id === positionId);
       if (
         !position ||
@@ -211,8 +308,7 @@ export function PortfolioPage() {
       const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
       if (walletId === null || !isCurrentWallet(walletId)) return;
 
-      setOperationScopeId(activeBrowserWalletScopeId());
-      setClaimingPositionId(positionId);
+      const captured = beginOperation("claim", positionId, walletId);
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
@@ -233,7 +329,23 @@ export function PortfolioPage() {
             });
           },
         });
-        if (!isCurrentWallet(walletId)) return;
+        if (!isCurrentOperation(captured)) return;
+        if (
+          result.kind === "completed" &&
+          Number.isSafeInteger(result.committedPayoutAmount) &&
+          result.committedPayoutAmount > 0
+        ) {
+          const snapshot: ScopedClaimCelebration = {
+            id: `claim-${captured.epoch}-${++claimSequence.current}`,
+            position: { ...position },
+            creditedAmountSubunits: result.committedPayoutAmount,
+            expiresAtMs: Date.now() + 3_000,
+            epoch: captured.epoch,
+            scopeId: captured.scopeId,
+            walletId: captured.walletId,
+          };
+          setClaimCelebrations((current) => [...current, snapshot]);
+        }
         const warning =
           result.oracleEvidence?.status === "unverified"
             ? t("portfolio.unverifiedOracleOutcome")
@@ -258,20 +370,25 @@ export function PortfolioPage() {
           showActionMessage(warning);
         }
       } catch {
-        if (isCurrentWallet(walletId)) showActionMessage(t("portfolio.claimFailed"));
+        if (isCurrentOperation(captured)) showActionMessage(t("portfolio.claimFailed"));
       } finally {
-        setClaimingPositionId(null);
+        finishOperation(captured);
       }
     },
-    [addActivity, claimingPositionId, removingPositionId, state.positions, t, showActionMessage],
+    [
+      addActivity,
+      beginOperation,
+      finishOperation,
+      isCurrentOperation,
+      state.positions,
+      t,
+      showActionMessage,
+    ],
   );
 
   const handleDiscardLostPosition = useCallback(
-    async (
-      positionId: string,
-      confirmation?: Extract<PositionActionDialog, { kind: "confirm-remove" }>,
-    ) => {
-      if (removingPositionId || claimingPositionId) return;
+    async (positionId: string, confirmed?: RemovalConfirmation) => {
+      if (operation.current) return;
       const position = state.positions.find((p) => p.id === positionId);
       if (!position || !position.isLoser || position.isWinner || position.isPending) return;
       const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
@@ -279,32 +396,35 @@ export function PortfolioPage() {
       const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
       const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
       if (!outcomeCollection) return;
-      if (confirmation === undefined) {
-        setActionDialog({
-          kind: "confirm-remove",
+      if (confirmed === undefined) {
+        const request: RemovalConfirmation = {
+          epoch: epoch.current,
           scopeId: activeBrowserWalletScopeId(),
           positionId,
           walletId,
           mintUrl: position.mintUrl,
           conditionId,
           outcomeCollection,
-        });
+        };
+        confirmation.current = request;
+        setRemovalConfirmation(request);
         return;
       }
       if (
-        confirmation.walletId !== walletId ||
-        confirmation.scopeId !== activeBrowserWalletScopeId() ||
-        confirmation.positionId !== position.id ||
-        confirmation.mintUrl !== position.mintUrl ||
-        confirmation.conditionId !== conditionId ||
-        confirmation.outcomeCollection !== outcomeCollection
+        confirmation.current !== confirmed ||
+        confirmed.epoch !== epoch.current ||
+        confirmed.walletId !== walletId ||
+        confirmed.scopeId !== activeBrowserWalletScopeId() ||
+        confirmed.positionId !== position.id ||
+        confirmed.mintUrl !== position.mintUrl ||
+        confirmed.conditionId !== conditionId ||
+        confirmed.outcomeCollection !== outcomeCollection
       ) {
-        setActionDialog(null);
+        confirmation.current = null;
+        setRemovalConfirmation(null);
         return;
       }
-      setActionDialog(null);
-      setOperationScopeId(activeBrowserWalletScopeId());
-      setRemovingPositionId(positionId);
+      const captured = beginOperation("remove", positionId, walletId);
       try {
         // The catalogue label cannot authorize deletion. The coordinator verifies mint evidence.
         const result = await removePortfolioPosition({
@@ -323,7 +443,7 @@ export function PortfolioPage() {
             });
           },
         });
-        if (!isCurrentWallet(walletId)) return;
+        if (!isCurrentOperation(captured)) return;
         const warning =
           result.oracleEvidence?.status === "unverified"
             ? t("portfolio.unverifiedOracleOutcome")
@@ -350,15 +470,16 @@ export function PortfolioPage() {
             break;
         }
       } catch {
-        if (isCurrentWallet(walletId)) showActionMessage(t("portfolio.removeFailed"));
+        if (isCurrentOperation(captured)) showActionMessage(t("portfolio.removeFailed"));
       } finally {
-        setRemovingPositionId(null);
+        finishOperation(captured);
       }
     },
     [
       addActivity,
-      claimingPositionId,
-      removingPositionId,
+      beginOperation,
+      finishOperation,
+      isCurrentOperation,
       state.positions,
       t,
       removeFailureMessage,
@@ -373,19 +494,13 @@ export function PortfolioPage() {
     [state],
   );
 
-  const handleOpenSettings = useCallback(() => {
-    navigate("/settings");
-  }, [navigate]);
-
   const handleConnectNostr = useCallback(() => {
     navigate("/settings?category=nostr");
   }, [navigate]);
 
-  // Anon state: no signer configured and no cached profile. Matches the
-  // empty app-bar "Anon" + empty avatar the user sees in this state.
-  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
-  const nostrProfile = useSettingsStore((s) => s.nostrProfile);
-  const showConnectNostrCta = nostrSignerMode === "none" && nostrProfile == null;
+  const nostrConnectionStatus = useSettingsStore((s) => s.signerConnectionStatus);
+  const nostrProfileFetchStatus = useSettingsStore((s) => s.nostrProfileFetchStatus);
+  const showConnectNostrCta = nostrConnectionStatus === "disconnected";
 
   return (
     <>
@@ -394,6 +509,9 @@ export function PortfolioPage() {
         baseCurrency={state.baseCurrency}
         selectedTimeRange={state.selectedTimeRange}
         profile={state.profile}
+        profileFetchStatus={
+          nostrConnectionStatus === "connected" ? nostrProfileFetchStatus : undefined
+        }
         plChartData={state.plChartData}
         stats={state.stats}
         positions={state.positions}
@@ -403,7 +521,6 @@ export function PortfolioPage() {
         positionsTab={state.positionsTab}
         monitoring={state.monitoring}
         onGetStarted={handleGetStarted}
-        onAvatarUpload={handleAvatarUpload}
         onTimeRangeChange={handleTimeRangeChange}
         onDeposit={handleDeposit}
         onWithdraw={handleWithdraw}
@@ -413,17 +530,33 @@ export function PortfolioPage() {
         onClaimPayout={handleClaimPayout}
         onDiscardLostPosition={handleDiscardLostPosition}
         onPositionsTabChange={handlePositionsTabChange}
-        onOpenSettings={handleOpenSettings}
+        claimCelebrations={claimCelebrations.filter(
+          (snapshot) =>
+            snapshot.epoch === epoch.current &&
+            snapshot.scopeId === activeScopeId &&
+            isCurrentWallet(snapshot.walletId),
+        )}
+        positionAction={visibleAction}
+        removalConfirmationPositionId={visibleConfirmation?.positionId}
+        onConfirmDiscardLostPosition={(id) => {
+          const selected = confirmation.current;
+          if (selected?.positionId === id) void handleDiscardLostPosition(id, selected);
+        }}
+        onCancelDiscardLostPosition={() => {
+          confirmation.current = null;
+          setRemovalConfirmation(null);
+        }}
         onDismissMonitoringError={state.dismissMonitoringError}
         onLoadMoreAssets={state.loadMoreAssets}
         onRetryLoadMoreAssets={state.loadMoreAssets}
         onDismissAssetPageError={state.dismissAssetPageError}
         showConnectNostrCta={showConnectNostrCta}
+        nostrConnectionPending={nostrConnectionStatus === "connecting"}
         onConnectNostr={handleConnectNostr}
       />
-      {operationScopeId === activeScopeId && (claimingPositionId || removingPositionId) && (
-        <p role="status" className="mx-auto max-w-6xl px-4 py-2 text-sm text-neutral-400">
-          {t(claimingPositionId ? "portfolio.claimInProgress" : "portfolio.removalInProgress")}
+      {visibleAction?.kind === "claim" && (
+        <p role="status" className="mx-auto max-w-6xl px-4 py-2 text-sm text-slate-400">
+          {t("portfolio.claimInProgress")}
         </p>
       )}
       {visibleDialog && (
@@ -435,9 +568,7 @@ export function PortfolioPage() {
             <section className="mx-auto mt-24 max-w-lg rounded-xl border border-neutral-700 bg-neutral-900 p-6 text-neutral-100 shadow-xl">
               <h2 className="mb-4 text-lg font-semibold">{t("portfolio.positionActionTitle")}</h2>
               <p className="select-text whitespace-pre-wrap break-words text-sm">
-                {visibleDialog.kind === "message"
-                  ? visibleDialog.message
-                  : t("portfolio.discardLostPositionConfirm")}
+                {visibleDialog.message}
               </p>
               <div className="mt-6 flex justify-end gap-3">
                 <button
@@ -445,19 +576,8 @@ export function PortfolioPage() {
                   className="rounded-lg border border-neutral-600 px-4 py-2 text-sm"
                   onClick={dismiss}
                 >
-                  {t(visibleDialog.kind === "message" ? "common.close" : "common.cancel")}
+                  {t("common.close")}
                 </button>
-                {visibleDialog.kind === "confirm-remove" && (
-                  <button
-                    type="button"
-                    className="rounded-lg bg-red-700 px-4 py-2 text-sm"
-                    onClick={() =>
-                      void handleDiscardLostPosition(visibleDialog.positionId, visibleDialog)
-                    }
-                  >
-                    {t("common.remove")}
-                  </button>
-                )}
               </div>
             </section>
           )}

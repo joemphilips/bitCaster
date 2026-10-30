@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   advanceEmergencySeedRecoveryCursor,
+  planEmergencySeedRecoveryBatchCount,
+  validateLegacyEmergencySeedRecoveryCursor,
   classifyEmergencySeedRecoveryProof,
   commitEmergencySeedRecoveryBatch,
   createEmergencySeedRecoveryCoCommit,
@@ -321,4 +323,61 @@ test('recovery co-commit binds live fencing, exact cursor CAS, and proof batch',
       }),
     /cursor is inconsistent/,
   )
+})
+
+test('policy-bound recovery plans a partial gap and stops at its exact boundary', () => {
+  let current = createEmergencySeedRecoveryCursor({
+    recoveryId: 'partial',
+    walletScopeId: cursor().walletScopeId,
+    mintUrl: cursor().mintUrl,
+    unit: 'msat',
+    keysetId: cursor().keysetId,
+    scanPolicy: { version: 1, scope: 'regular-msat', gapLimit: 7 },
+  })
+  assert.equal(planEmergencySeedRecoveryBatchCount(current, 3), 3)
+  current = advanceEmergencySeedRecoveryCursor(current, {
+    expectedRevision: 0,
+    startCounter: 0,
+    requestedCount: 3,
+    lastCounterWithSignature: 1,
+    scanThroughCounter: 3,
+  })
+  assert.equal(planEmergencySeedRecoveryBatchCount(current, 3), 6)
+  current = advanceEmergencySeedRecoveryCursor(current, {
+    expectedRevision: 1,
+    startCounter: 3,
+    requestedCount: 6,
+    lastCounterWithSignature: null,
+    scanThroughCounter: 3,
+  })
+  assert.equal(current.stopReason, 'gap-limit')
+  assert.equal(current.nextCounter, 9)
+  assert.equal(planEmergencySeedRecoveryBatchCount(current, 3), 0)
+})
+
+test('counter exhaustion is a separate bounded stop', () => {
+  const current = validateEmergencySeedRecoveryCursor({
+    ...cursor(),
+    nextCounter: 2147483646,
+    revision: 1,
+    trailingEmptyCounters: 0,
+  })
+  assert.equal(planEmergencySeedRecoveryBatchCount(current, 2147483648), 2)
+  const exhausted = advanceEmergencySeedRecoveryCursor(current, {
+    expectedRevision: 1,
+    startCounter: 2147483646,
+    requestedCount: 2,
+    lastCounterWithSignature: 2147483647,
+    scanThroughCounter: 2147483648,
+  })
+  assert.equal(exhausted.stopReason, 'counter-exhausted')
+  assert.equal(planEmergencySeedRecoveryBatchCount(exhausted, 2147483648), 0)
+})
+
+test('legacy evidence never supplies a missing new cursor policy', () => {
+  const { scanPolicy, stopReason, ...fields } = cursor()
+  const legacy = { ...fields, schemaVersion: 1 }
+  assert.equal(validateLegacyEmergencySeedRecoveryCursor(legacy).schemaVersion, 1)
+  assert.throws(() => validateEmergencySeedRecoveryCursor(legacy))
+  assert.throws(() => validateEmergencySeedRecoveryCursor({ ...cursor(), scanPolicy: undefined }))
 })

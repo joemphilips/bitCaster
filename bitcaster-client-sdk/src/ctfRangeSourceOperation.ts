@@ -1,3 +1,4 @@
+import { reconstructCtfRangePreparation } from './ctfRangeOrderCounterPreparation.ts'
 import {
   Amount,
   OutputData,
@@ -14,7 +15,6 @@ import {
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
-import { prepareCtfRangeOrderAuthorization } from './ctfRangeOrderPreparation.ts'
 import { planCtfRangeOrderAuthorization } from './ctfRangeOrderAuthorization.ts'
 import {
   planBoundedProofConsolidation,
@@ -119,10 +119,7 @@ export async function prepareCtfRangeSourceOperation(input: {
   readonly wallet: CtfRangeSourceWallet
   readonly candidates: readonly Proof[]
 }): Promise<DurableCustodyProofOperationInput | null> {
-  const prepared = prepareCtfRangeOrderAuthorization({
-    seed: input.seed,
-    ...withoutRequest(input.preparation),
-  })
+  const prepared = reconstructCtfRangePreparation(input.preparation, input.seed)
   const target = amountToNumber(OutputData.sumOutputAmounts(prepared.authorizationOutputs))
   const selected = takeProofsForLock([...input.candidates], target, {
     [input.preparation.offerKeyset.id]: input.preparation.offerKeyset.inputFeePpk,
@@ -584,9 +581,4 @@ function assertExactOutputs(actual: OutputData[], expected: OutputData[]): void 
 
 function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item))
-}
-
-function withoutRequest(preparation: PersistedCtfRangeOrderPreparation) {
-  const { version: _, request: _request, ...input } = preparation
-  return input
 }

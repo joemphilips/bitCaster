@@ -194,3 +194,6 @@ function requireActiveSignal(value: unknown): asserts value is AbortSignal {
     throw new Error('encrypted backup v2 request signal is invalid')
   if ((value as AbortSignal).aborted) throw new Error('encrypted backup v2 request aborted')
 }
+
+export * from './encryptedWalletBackupOwnerRequestProof.ts'
+export * from './encryptedWalletBackupOwnerDiscovery.ts'

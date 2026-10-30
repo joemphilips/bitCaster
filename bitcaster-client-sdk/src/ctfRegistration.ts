@@ -1,5 +1,6 @@
 import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from '@cashu/cashu-ts'
-import { complementOutcomeSetId, parseOutcomeSetId } from './outcomeSets.ts'
+import { parseOutcomeSetId } from './outcomeSets.ts'
+import { encodeMintOutcomeCollection } from './ctfConditionRegistration.ts'
 import { amountToNumber } from './proofSelection.ts'
 
 export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000
@@ -168,7 +169,10 @@ export function requiredMarketCreationOutcomeCollections(outcomes: readonly stri
 
   for (const outcome of universe) {
     const singleton = normalizePartitionMember(outcome)
-    const complement = complementOutcomeSetId(universe, singleton)
+    const complement = encodeMintOutcomeCollection(
+      universe,
+      universe.filter((member) => member !== singleton),
+    )
     if (singleton) collections.set(normalizePartitionMember(singleton), singleton)
     if (complement) collections.set(normalizePartitionMember(complement), complement)
   }

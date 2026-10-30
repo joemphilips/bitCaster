@@ -40,10 +40,9 @@ export function GetStarted({ outcomeType, onOutcomeTypeSelect, onNext }: GetStar
   const { t } = useTranslation();
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
         {t("marketCreation.getStarted")}
       </h2>
-      <p className="text-sm text-slate-400 mb-8">{t("marketCreation.getStartedDesc")}</p>
 
       <div className="space-y-4 mb-8">
         {options.map(({ type, icon: Icon, labelKey, descriptionKey }) => (

@@ -120,6 +120,10 @@ vi.mock("dexie", () => {
     async transaction(_mode: string, _table: unknown, cb: () => Promise<void>): Promise<void> {
       await cb();
     }
+    // BitcasterDB registers a real Dexie `versionchange` handler in its
+    // constructor. This single-connection fake never receives that event.
+    on(_event: string, _listener: () => void): void {}
+    close(): void {}
   }
 
   return { default: FakeDexie };

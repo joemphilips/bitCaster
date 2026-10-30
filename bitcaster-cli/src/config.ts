@@ -4,7 +4,7 @@ import {
   updateNativeConfig,
   type NativeConfig,
 } from '@bitcaster-market/daemon/nativeConfig'
-import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk'
+import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk/engineUrlSecurity'
 
 export interface CliConfig {
   engineUrl?: string

@@ -14,10 +14,8 @@ vi.mock("../usePortfolioState", () => ({
       baseCurrency: "BTC",
       selectedTimeRange: "ALL",
       profile: {
-        userId: "activity-wallet",
         displayName: "Activity wallet",
         avatarUrl: null,
-        registeredDate: "2026-09-27T12:00:00.000Z",
       },
       plChartData: { "1D": [], "1W": [], "1M": [], ALL: [] },
       stats: { positionsValueSats: 0, totalValueSats: 0, predictionsCount: 0 },
@@ -31,22 +29,38 @@ vi.mock("../usePortfolioState", () => ({
 vi.mock("@/hooks/useLikedMarkets", () => ({
   useLikedMarkets: () => ({ markets: [], loading: false, error: null }),
 }));
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = {
+    nostrSignerMode: "none",
+    nsecSecret: null,
+    nostrProfile: null,
+    signerConnectionStatus: "disconnected",
+    nostrProfileFetchStatus: "idle",
+    relays: [],
+  };
+  return {
+    useSettingsStore: Object.assign((selector: (state: unknown) => unknown) => selector(state), {
+      getState: () => state,
+      subscribe: () => () => {},
+    }),
+  };
+});
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: unknown) => unknown) =>
     selector({ addActivity: vi.fn() }),
 }));
 vi.mock("@/stores/wallet", () => ({
-  useWalletStore: { getState: () => ({ mnemonic: null }) },
+  useWalletStore: {
+    subscribe: () => () => {},
+    getState: () => ({ mnemonic: null }),
+  },
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
   activeBrowserWalletScopeId: () => "activity-wallet",
   browserWalletIdFromMnemonic: vi.fn(),
   isActiveBrowserWalletId: vi.fn(),
 }));
+vi.mock("@/lib/identityOps", () => ({ createImplicitWalletAndNostrIdentity: vi.fn() }));
 vi.mock("@/lib/browserPortfolioClaim", () => ({ claimPortfolioPosition: vi.fn() }));
 vi.mock("@/lib/browserPortfolioRemove", () => ({ removePortfolioPosition: vi.fn() }));
 vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
@@ -67,7 +81,7 @@ function fill(fillId: string, amountSubunits: number, faceAmountSubunits: number
     status: "completed",
     txId: null,
     lightningInvoice: null,
-    marketId: "condition-YES",
+    marketId: `${"c".repeat(64)}-YES`,
     marketTitle: "Recorded market",
     tradeDetails: {
       orderId: "submitted-order",
@@ -83,7 +97,7 @@ function fill(fillId: string, amountSubunits: number, faceAmountSubunits: number
 describe("Portfolio route Activity records", () => {
   it.each([
     ["en", "Activity", "2 recorded fills", "Trade value before fees", "Outcome YES", "shares"],
-    ["ja", "アクティビティ", "記録された約定 2 件", "手数料適用前の取引額", "YES のトークン", "口"],
+    ["ja", "アクティビティ", "記録された約定 2 件", "手数料適用前の取引額", "YES のトークン", "枚"],
   ] as const)(
     "expands the real route's exact fill facts in %s",
     async (language, tab, header, qualifier, token, shareUnit) => {
@@ -93,6 +107,7 @@ describe("Portfolio route Activity records", () => {
         <MemoryRouter initialEntries={["/portfolio"]}>
           <Routes>
             <Route path="/portfolio" element={<PortfolioPage />} />
+            <Route path="/markets/:id" element={<h1>Activity market destination</h1>} />
           </Routes>
         </MemoryRouter>,
       );
@@ -114,11 +129,35 @@ describe("Portfolio route Activity records", () => {
         expect(record.getByText(`${token} · ${shares} ${shareUnit}`)).toBeVisible();
         expect(record.getByRole("group", { name: amount })).toBeVisible();
         expect(record.getByText(qualifier)).toBeVisible();
+        expect(record.getByTestId("activity-execution-price")).toHaveAttribute(
+          "data-price-numerator",
+          index === 0 ? "1003" : "5",
+        );
+        expect(record.getByTestId("activity-execution-price")).toHaveAttribute(
+          "data-price-denominator",
+          index === 0 ? "2500" : "12",
+        );
         expect(records[index].textContent).toContain("+");
         expect(records[index]).not.toHaveAttribute("tabindex");
       }
       expect(within(panel).queryByRole("button")).not.toBeInTheDocument();
-      expect(within(panel).queryByRole("link")).not.toBeInTheDocument();
+      expect(within(panel).getAllByRole("link", { name: "Recorded market" })).toHaveLength(3);
+      expect(within(panel).getByTestId("activity-average-price")).toHaveAttribute(
+        "data-price-numerator",
+        "2253",
+      );
+      expect(within(panel).getByTestId("activity-average-price")).toHaveAttribute(
+        "data-price-denominator",
+        "5500",
+      );
+      expect(within(panel).getByTestId("activity-average-price")).toHaveTextContent(
+        language === "ja"
+          ? "加重平均約定単価：0.409636 sats/枚 (概算)"
+          : "Weighted execution price: 0.409636 sats/share (approximate)",
+      );
+      expect(groups[0].querySelector("summary a")).toBeNull();
+      await userEvent.click(within(panel).getAllByRole("link", { name: "Recorded market" })[0]);
+      expect(screen.getByRole("heading", { name: "Activity market destination" })).toBeVisible();
     },
   );
 });

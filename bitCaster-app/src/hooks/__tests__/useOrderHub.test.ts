@@ -131,3 +131,27 @@ describe("useOrderHub", () => {
     expect(mockGenerateNip98Header).toHaveBeenCalledWith("https://example.com/hubs/order", "GET");
   });
 });
+
+it("decodes display loss strictly and replaces the authenticated connection on scope change", async () => {
+  const first = makeConnection(),
+    second = makeConnection();
+  connections.push(first, second);
+  const onResyncRequired = vi.fn(),
+    onError = vi.fn();
+  const view = renderHook(({ scope }) => useOrderHub(true, { onResyncRequired, onError }, scope), {
+    initialProps: { scope: "wallet-a" },
+  });
+  await waitFor(() => expect(first.state).toBe(connectedState));
+  const receive = first.on.mock.calls.find(([name]) => name === "ResyncRequired")![1];
+  receive({ token: "a".repeat(32) });
+  expect(onResyncRequired).toHaveBeenCalledWith("a".repeat(32));
+  receive({ token: "bad" });
+  expect(onResyncRequired).toHaveBeenCalledTimes(1);
+  expect(onError).toHaveBeenCalled();
+  view.rerender({ scope: "wallet-b" });
+  await waitFor(() => expect(second.state).toBe(connectedState));
+  expect(first.stop).toHaveBeenCalledTimes(1);
+  receive({ token: "b".repeat(32) });
+  expect(onResyncRequired).toHaveBeenCalledTimes(1);
+  view.unmount();
+});

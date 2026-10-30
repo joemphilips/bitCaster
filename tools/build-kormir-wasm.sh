@@ -24,6 +24,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 DDK_DIR="$REPO_ROOT/dlcdevkit"
 OUT_DIR="$REPO_ROOT/bitCaster-app/src/lib/kormir-wasm-pkg"
+source "$HERE/kormir-source-fingerprint.sh"
 
 MODE="${1:---release}"
 
@@ -60,16 +61,9 @@ if [ -z "${CFLAGS_wasm32_unknown_unknown:-}" ] && command -v clang >/dev/null 2>
     fi
 fi
 
-# Fail loudly if dlcdevkit kormir sources are dirty (index OR worktree):
-# wasm-pack builds the working tree, so a dirty-tree build would record a
-# clean fingerprint and the provenance check would falsely report "OK" against
-# stale or unreviewed code.  update-index --refresh first so stat-only
-# differences (mtime/ctime) don't produce false positives.
-git -C "$DDK_DIR" update-index -q --refresh
-if ! git -C "$DDK_DIR" diff-index --quiet HEAD -- kormir kormir-wasm; then
-    echo "ERROR: dlcdevkit kormir{,-wasm} working tree is dirty — commit before building/verifying so the provenance fingerprint matches the built sources" >&2
-    exit 1
-fi
+FINGERPRINT="$(kormir_source_fingerprint "$DDK_DIR")"
+# A failed build must not leave an old success marker on partial output.
+rm -f "$OUT_DIR/.source-fingerprint"
 
 echo "Building kormir-wasm ($MODE) -> $OUT_DIR"
 cd "$DDK_DIR"
@@ -77,7 +71,8 @@ wasm-pack build ./kormir-wasm \
     "$MODE" \
     --target web \
     --out-dir "$OUT_DIR" \
-    --out-name kormir_wasm
+    --out-name kormir_wasm \
+    -- --locked
 
 # Drop wasm-pack's generated package.json; we consume the files via a
 # relative path from bitCaster-app/src/lib/kormir.ts, not as an npm package.
@@ -88,5 +83,9 @@ ls -la "$OUT_DIR"
 
 # Record source fingerprint so tools/check-kormir-wasm-provenance.sh can verify
 # that the bundle matches the current dlcdevkit sources.
-git -C "$DDK_DIR" rev-parse HEAD:kormir HEAD:kormir-wasm > "$OUT_DIR/.source-fingerprint"
+if [ "$FINGERPRINT" != "$(kormir_source_fingerprint "$DDK_DIR")" ]; then
+    echo "error: oracle build inputs changed during compilation" >&2
+    exit 1
+fi
+printf '%s\n' "$FINGERPRINT" > "$OUT_DIR/.source-fingerprint"
 echo "Source fingerprint written to $OUT_DIR/.source-fingerprint"

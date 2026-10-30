@@ -1,4 +1,4 @@
-import { ORACLE_EXPLANATION_UTF8_BYTES_MAX } from '@bitcaster-market/client-sdk'
+import { ORACLE_EXPLANATION_UTF8_BYTES_MAX } from '@bitcaster-market/client-sdk/oracleResolutionExplanation'
 
 export const NATIVE_ORACLE_NONCE_INDEX_LIMIT = 2 ** 31
 export const NATIVE_ORACLE_INPUT_BYTES_MAX = 1024 * 1024

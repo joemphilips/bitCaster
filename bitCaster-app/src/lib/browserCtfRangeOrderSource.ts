@@ -55,6 +55,7 @@ import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   ctfRangeOrderPreparationKeysetLookup,
   encodePersistedCtfRangeOrderPreparation,
+  reconstructCtfRangePreparation,
   type CtfRangeConditionalMintKeyset,
   exactCtfRangeOrderPreparationMintKeysets,
   type PersistedCtfRangeOrderPreparation,
@@ -402,9 +403,15 @@ export function completeBrowserRangeOperation(input: {
   proofs: readonly Proof[];
   allowInsecureLoopbackHttp: boolean;
 }): DurableCtfRangeOperation {
-  const { version: _, request: _request, ...authority } = input.preparation;
+  const authorization =
+    input.preparation.version === 3
+      ? reconstructCtfRangePreparation(input.preparation, input.seed)
+      : (() => {
+          const { version: _, request: _request, ...authority } = input.preparation;
+          return prepareCtfRangeOrderAuthorization({ seed: input.seed, ...authority });
+        })();
   return completeCtfRangeOrderAuthorization({
-    preparation: prepareCtfRangeOrderAuthorization({ seed: input.seed, ...authority }),
+    preparation: authorization,
     inputs: input.proofs,
     keysetLookup: ctfRangeOrderPreparationKeysetLookup(input.preparation),
     expiryObservation: input.preparation.expiryObservation,
@@ -629,29 +636,34 @@ export function browserRangeSuccessorProofRows(
   operation: DurableCtfRangeOperation,
   result: DurableCtfRangeRecoveredResult,
   receivedAtMs: number,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
 ): StagedBrowserCustodyProof[] {
-  return mapDurableCtfRangeSuccessorProofs({ record, operation, result }, (authority) => ({
-    proof: createBrowserCustodyProofRow({
-      scopeId: record.scope.scopeId,
-      normalizedMint: operation.mintUrl,
-      unit: "msat",
-      proof: deserializeDurableCustodyProofArtifact({
-        schemaVersion: 1,
-        id: authority.proof.id,
-        amount: Amount.from(authority.proof.amount).toString(),
-        secret: authority.proof.secret,
-        C: authority.proof.C,
-        dleq: authority.proof.dleq,
-        p2pkE: authority.proof.p2pkE,
-        witness: authority.proof.witness,
+  return mapDurableCtfRangeSuccessorProofs(
+    { record, operation, result, preparation, seed },
+    (authority) => ({
+      proof: createBrowserCustodyProofRow({
+        scopeId: record.scope.scopeId,
+        normalizedMint: operation.mintUrl,
+        unit: "msat",
+        proof: deserializeDurableCustodyProofArtifact({
+          schemaVersion: 1,
+          id: authority.proof.id,
+          amount: Amount.from(authority.proof.amount).toString(),
+          secret: authority.proof.secret,
+          C: authority.proof.C,
+          dleq: authority.proof.dleq,
+          p2pkE: authority.proof.p2pkE,
+          witness: authority.proof.witness,
+        }),
+        asset: browserProofAsset(authority.classification),
+        receivedAtMs,
       }),
-      asset: browserProofAsset(authority.classification),
-      receivedAtMs,
+      expectedRevision: null,
+      derivationLocator: authority.derivationLocator,
+      conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
     }),
-    expectedRevision: null,
-    derivationLocator: authority.derivationLocator,
-    conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
-  }));
+  );
 }
 
 export function browserRangeStoredProofs(
@@ -683,7 +695,10 @@ export function browserRangeRefundProofRows(
   record: DurableCustodyRecord,
   operation: DurableCtfRangeOperation,
   proofs: readonly Proof[],
-  locators: readonly Extract<DurableWalletProofDerivationLocator, { kind: "ctf-range-refund" }>[],
+  locators: readonly Extract<
+    DurableWalletProofDerivationLocator,
+    { kind: "ctf-range-refund" | "nut13" }
+  >[],
   receivedAtMs: number,
 ): StagedBrowserCustodyProof[] {
   if (proofs.length !== locators.length)

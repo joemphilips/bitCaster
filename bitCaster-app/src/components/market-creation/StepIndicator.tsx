@@ -57,7 +57,7 @@ export function StepIndicator({ currentStep, outcomeType }: StepIndicatorProps) 
 
             {index < visibleSteps.length - 1 && (
               <div
-                className={`w-8 sm:w-12 h-0.5 mx-1.5 sm:mx-2 mb-5 rounded-full transition-colors duration-300 ${
+                className={`w-4 sm:w-12 h-0.5 mx-1 sm:mx-2 mb-5 rounded-full transition-colors duration-300 ${
                   isCompleted ? "bg-green-600" : "bg-slate-200 dark:bg-slate-700"
                 }`}
               />

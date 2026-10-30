@@ -32,10 +32,9 @@ export function ReviewAndCreate({
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
         {t("marketCreation.reviewAndCreate")}
       </h2>
-      <p className="text-sm text-slate-400 mb-8">{t("marketCreation.reviewAndCreateDesc")}</p>
 
       {/* Description */}
       <div className="mb-8">
@@ -49,7 +48,6 @@ export function ReviewAndCreate({
           rows={6}
           className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
         />
-        <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.descriptionHint")}</p>
       </div>
 
       {/* Market summary card */}

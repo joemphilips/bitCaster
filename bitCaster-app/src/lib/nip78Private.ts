@@ -12,7 +12,11 @@ import {
   createPrivateNip78Content,
   decryptSelfNip44,
 } from "@bitcaster/client-sdk/privateNip78";
-import { withTemporaryRelayNdk, type RelayOperationOptions } from "./nostr";
+import {
+  fetchTemporaryRelayRecord,
+  withTemporaryRelayNdk,
+  type RelayOperationOptions,
+} from "./nostr";
 
 export {
   BITCASTER_PRIVATE_STATE_KIND,
@@ -37,28 +41,31 @@ export async function publishPrivateNip78(
   });
 }
 
+/**
+ * Fetch and decrypt one private NIP-78 record. Rejects with
+ * `IncompleteRelayReadError` instead of `null` when a selected relay did not
+ * connect, because that read cannot prove the record is absent.
+ */
 export async function fetchPrivateNip78Content(
   pubkey: string,
   dTag: string,
   privateKeyHex: string,
   options: RelayOperationOptions = {},
 ): Promise<string | null> {
-  return (
-    (await withTemporaryRelayNdk(options, undefined, async (ndk) => {
-      const event = await ndk.fetchEvent({
-        kinds: [BITCASTER_PRIVATE_STATE_KIND as number],
-        authors: [pubkey],
-        "#d": [dTag],
-      });
-      if (!event) return null;
+  return fetchTemporaryRelayRecord(options, async (ndk) => {
+    const event = await ndk.fetchEvent({
+      kinds: [BITCASTER_PRIVATE_STATE_KIND as number],
+      authors: [pubkey],
+      "#d": [dTag],
+    });
+    if (!event) return null;
 
-      try {
-        return decryptSelfNip44(privateKeyHex, pubkey, event.content);
-      } catch {
-        // Backward compatibility for pre-P11 plaintext NIP-78 events. Once the
-        // next publish succeeds, the relay copy is rewritten encrypted.
-        return event.content;
-      }
-    })) ?? null
-  );
+    try {
+      return decryptSelfNip44(privateKeyHex, pubkey, event.content);
+    } catch {
+      // Backward compatibility for pre-P11 plaintext NIP-78 events. Once the
+      // next publish succeeds, the relay copy is rewritten encrypted.
+      return event.content;
+    }
+  });
 }

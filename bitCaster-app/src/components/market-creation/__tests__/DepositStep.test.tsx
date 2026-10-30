@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import i18n from "@/i18n";
 import { DepositStep } from "../DepositStep";
@@ -34,6 +34,11 @@ type DepositStepOptions = {
   onCredited?: () => void;
 };
 
+function MarketDestination() {
+  const location = useLocation();
+  return <div data-testid="market-detail-page">{JSON.stringify(location.state)}</div>;
+}
+
 function stepTree(options: DepositStepOptions = {}) {
   return (
     <MemoryRouter initialEntries={["/creator/new"]}>
@@ -51,7 +56,7 @@ function stepTree(options: DepositStepOptions = {}) {
             />
           }
         />
-        <Route path="/markets/:id" element={<div data-testid="market-detail-page" />} />
+        <Route path="/markets/:id" element={<MarketDestination />} />
       </Routes>
     </MemoryRouter>
   );
@@ -96,9 +101,10 @@ describe("DepositStep", () => {
     const view = renderStep();
 
     expect(screen.getByText("Market created!")).toBeInTheDocument();
+    // The wizard shows no helper subtitle under the heading.
     expect(
-      screen.getByText("You can optionally fund the market maker after creation."),
-    ).toBeInTheDocument();
+      screen.queryByText("You can optionally fund the market maker after creation."),
+    ).toBeNull();
     const transition = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(transition).toBeDefined();
 
@@ -261,9 +267,6 @@ describe("DepositStep", () => {
     renderStep({ presentation: "detail" });
 
     expect(screen.getByText("Fund the market maker")).toBeInTheDocument();
-    expect(
-      screen.getByText("Enter the exact amount of sats to give the market maker, or skip for now."),
-    ).toBeInTheDocument();
     expect(screen.queryByTestId("skip-amm-funding")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Use up to three decimal places. The exact amount you enter is funded."),
@@ -319,19 +322,76 @@ describe("DepositStep", () => {
     expect(screen.getByText("Payment received — waiting for market credit…")).toBeInTheDocument();
   });
 
-  it("does not poll after recipient receipt and exposes a user retry action", async () => {
-    const timeoutSpy = vi.spyOn(window, "setTimeout");
-    renderStep();
-    const user = await openFunding();
-    await enterFundingAmount(user);
-    timeoutSpy.mockClear();
+  it("resumes a pending payment automatically until the engine reports credit", async () => {
+    // The engine can finish a payment after the wallet request timed out. The
+    // wallet must observe that result without a manual retry.
+    const transfer = { transferId: "payment-1", requestedAmount: "100000" };
+    executeBrowserMarketFundingDelivery
+      .mockResolvedValueOnce({ progress: "pending", transfer })
+      .mockResolvedValueOnce({ progress: "pending", transfer })
+      .mockResolvedValueOnce({ progress: "credited", transfer });
+    const onCredited = vi.fn();
+    vi.useFakeTimers();
+    renderStep({ presentation: "detail", onCredited });
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), { target: { value: "100" } });
+    await act(async () => fireEvent.click(screen.getByTestId("confirm-amm-funding")));
+    expect(screen.getByText("Awaiting payment…")).toBeInTheDocument();
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByTestId("confirm-amm-funding"));
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(2);
+    expect(executeBrowserMarketFundingDelivery.mock.calls[1]![0].attempt).toEqual({
+      kind: "resume",
+      transferId: "payment-1",
+    });
+    expect(screen.getByText("Awaiting payment…")).toBeInTheDocument();
 
-    await screen.findByText("Payment received — waiting for market credit…");
-    expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 2_000)).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Payment credited — market funding complete.")).toBeInTheDocument();
+    expect(onCredited).toHaveBeenCalledOnce();
+
+    for (let step = 0; step < 10; step++) {
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    }
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
+  });
+
+  it("bounds automatic resume of a restored pending payment and keeps the retry action", async () => {
+    readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
+    executeBrowserMarketFundingDelivery.mockResolvedValue({
+      progress: "pending",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    vi.useFakeTimers();
+    renderStep({ presentation: "detail" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
+
+    // React schedules each next resume after the previous result renders.
+    const advanceOneMinuteSteps = async (steps: number) => {
+      for (let step = 0; step < steps; step++) {
+        await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      }
+    };
+    await advanceOneMinuteSteps(10);
+    const automaticCalls = executeBrowserMarketFundingDelivery.mock.calls.length - 1;
+    // The release tradeoff allows six automatic resumes in about 2.5 minutes.
+    expect(automaticCalls).toBe(6);
+    for (const [input] of executeBrowserMarketFundingDelivery.mock.calls) {
+      expect(input.attempt).toEqual({ kind: "resume", transferId: "payment-1" });
+    }
+    await advanceOneMinuteSteps(10);
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(automaticCalls + 1);
+    expect(vi.getTimerCount()).toBe(0);
     expect(screen.getByRole("button", { name: "Retry wallet payment" })).toBeEnabled();
-    timeoutSpy.mockRestore();
   });
 
   it("navigates only after credited status", async () => {
@@ -350,7 +410,9 @@ describe("DepositStep", () => {
     const call = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(call).toBeDefined();
     act(() => (call?.[0] as () => void)());
-    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("market-detail-page").textContent!)).toEqual({
+      createdMarket: { conditionId: CONDITION_ID, acknowledgedAt: expect.any(Number) },
+    });
     timeoutSpy.mockRestore();
   });
 

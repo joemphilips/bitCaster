@@ -11,6 +11,10 @@ interface BasicInfoProps {
   onCategoryTagsChange?: (tags: string[]) => void;
   onClosingDateChange?: (date: string) => void;
   onThumbnailUpload?: (file: File) => void;
+  onThumbnailRemove?: () => void;
+  thumbnailPending?: boolean;
+  thumbnailError?: string | null;
+  thumbnailLocked?: boolean;
   onNext?: () => void;
 }
 
@@ -21,11 +25,17 @@ export function BasicInfo({
   onCategoryTagsChange,
   onClosingDateChange,
   onThumbnailUpload,
+  onThumbnailRemove,
+  thumbnailPending = false,
+  thumbnailError = null,
+  thumbnailLocked = false,
   onNext,
 }: BasicInfoProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canProceed =
+    !thumbnailPending &&
+    !thumbnailError &&
     data.title.trim().length > 0 &&
     data.closingDate.length > 0 &&
     new Date(data.closingDate) > new Date();
@@ -33,14 +43,15 @@ export function BasicInfo({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) onThumbnailUpload?.(file);
+    // Permit retrying the same file after a failed retention attempt.
+    e.target.value = "";
   };
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-8">
         {t("marketCreation.basicInfo")}
       </h2>
-      <p className="text-sm text-slate-400 mb-8">{t("marketCreation.basicInfoDesc")}</p>
 
       <div className="space-y-6">
         {/* Thumbnail */}
@@ -48,7 +59,17 @@ export function BasicInfo({
           <label className="block text-sm font-medium text-slate-300 mb-2">
             {t("marketCreation.thumbnail")}
           </label>
-          <div className="flex items-center gap-4">
+          <div
+            className="flex items-center gap-4"
+            data-testid="market-thumbnail-drop"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (!thumbnailLocked && !thumbnailPending && event.dataTransfer.files.length === 1) {
+                onThumbnailUpload?.(event.dataTransfer.files[0]!);
+              }
+            }}
+          >
             <div className="w-28 h-28 rounded-lg border-2 border-dashed border-slate-700 bg-slate-900 flex flex-col items-center justify-center text-slate-500 overflow-hidden">
               {data.imageFile ? (
                 <img
@@ -68,17 +89,38 @@ export function BasicInfo({
                 ref={fileInputRef}
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                disabled={thumbnailLocked}
                 onChange={handleFileChange}
                 className="hidden"
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
+                disabled={thumbnailLocked}
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
               >
                 <Upload className="w-4 h-4 inline-block mr-1.5" strokeWidth={1.5} />
                 {t("marketCreation.uploadImage")}
               </button>
-              <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.imageHint")}</p>
+              {(data.imageFile || thumbnailPending || thumbnailError) && (
+                <button
+                  type="button"
+                  onClick={onThumbnailRemove}
+                  disabled={thumbnailLocked}
+                  className="ml-2 rounded-lg px-3 py-2 text-sm text-slate-300 disabled:opacity-50"
+                >
+                  {t("common.remove")}
+                </button>
+              )}
+              {thumbnailPending && (
+                <p role="status" className="mt-2 text-sm text-slate-400">
+                  {t("common.loading")}
+                </p>
+              )}
+              {thumbnailError && (
+                <p role="alert" className="mt-2 text-sm text-red-400">
+                  {thumbnailError}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -95,7 +137,6 @@ export function BasicInfo({
             placeholder={t("marketCreation.titlePlaceholder")}
             className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           />
-          <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.titleHint")}</p>
         </div>
 
         {/* Categories */}
@@ -140,7 +181,6 @@ export function BasicInfo({
                 </option>
               ))}
           </select>
-          <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.categoriesHint")}</p>
         </div>
 
         {/* Closing Date */}
@@ -155,7 +195,6 @@ export function BasicInfo({
             placeholder={t("marketCreation.endTimePlaceholder")}
             aria-label={t("marketCreation.endTime")}
           />
-          <p className="text-xs text-slate-500 mt-1.5">{t("marketCreation.endTimeHint")}</p>
         </div>
       </div>
 

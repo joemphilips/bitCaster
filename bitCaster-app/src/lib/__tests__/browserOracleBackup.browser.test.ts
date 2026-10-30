@@ -10,13 +10,18 @@ import { createCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 import {
   browserOracleBackupValidator,
-  getKormir,
-  ensureKormirNsec,
-  prepareEnumAnnouncement,
-  prepareEnumAttestation,
   resetKormir,
-} from "../kormir";
+  prepareBrowserOracleMutation,
+  decodeOracleAttestation,
+} from "@/lib/kormir";
 import {
+  fixtureOracleCore as getKormir,
+  installFixtureOracleKey as ensureKormirNsec,
+  prepareFixtureAnnouncement as prepareEnumAnnouncement,
+  prepareFixtureAttestation as prepareEnumAttestation,
+} from "@/test/localOracleProvider";
+import {
+  browserOracleAuthorityReadiness,
   exportBrowserOracleBackup,
   importBrowserOracleBackup,
   importBrowserOracleBackupEnvelope,
@@ -30,15 +35,24 @@ import {
   createBrowserOracleBackupDeliveryAdapters,
   deliverBrowserOracleBackup,
   retryBrowserOracleBackupDelivery,
+  requestBrowserOracleBackup,
 } from "../browserOracleBackupDelivery";
+import { runBrowserOracleRecoveryPass } from "../browserOracleRecovery";
+import { listBrowserOracleBackups, restoreBrowserOracleBackup } from "../browserOracleBackupAccess";
 import { publicCreatorMarket } from "../nip78CreatorMarkets";
 
+const oracleNetwork = vi.hoisted(() => ({ publish: vi.fn() }));
+vi.mock("../oracleRelayTransport", async (original) => ({
+  ...(await original<typeof import("../oracleRelayTransport")>()),
+  publishRetainedOracleEvent: (relays: string[], json: string) =>
+    oracleNetwork.publish(relays, json),
+}));
 vi.mock("../kormir", async (original) => {
   const actual = await original<typeof import("../kormir")>();
   return {
     ...actual,
-    getKormir: vi.fn(actual.getKormir),
-    ensureKormirNsec: vi.fn(actual.ensureKormirNsec),
+    prepareBrowserOracleMutation: vi.fn(actual.prepareBrowserOracleMutation),
+    decodeOracleAttestation: vi.fn(actual.decodeOracleAttestation),
   };
 });
 vi.mock("../browserOracleBackupDelivery", async (original) => ({
@@ -49,6 +63,7 @@ beforeEach(() => {
   localStorage.clear();
   resetKormir();
   vi.clearAllMocks();
+  oracleNetwork.publish.mockImplementation(async (_relays, json: string) => JSON.parse(json).id);
   useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
 });
 afterEach(() => {
@@ -264,8 +279,7 @@ it.each(["stage-write", "backup-ack", "deletion-ack", "terminal-commit"] as cons
     const savedDeletion = before!.deletion?.eventJson;
     fault = false;
     useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
-    vi.mocked(getKormir).mockClear();
-    vi.mocked(ensureKormirNsec).mockClear();
+    vi.mocked(prepareBrowserOracleMutation).mockClear();
     const resumedSends: string[] = [];
     const resumed = await retryBrowserOracleBackupDelivery(f.record.conditionId, {
       store: createCreatorMarketsStore(),
@@ -279,8 +293,7 @@ it.each(["stage-write", "backup-ack", "deletion-ack", "terminal-commit"] as cons
       true,
     );
     expect(resumedSends.length).toBe(boundary === "terminal-commit" ? 0 : 1);
-    expect(vi.mocked(getKormir).mock.calls.length).toBe(0);
-    expect(vi.mocked(ensureKormirNsec).mock.calls.length).toBe(0);
+    expect(vi.mocked(prepareBrowserOracleMutation).mock.calls.length).toBe(0);
     if (boundary !== "backup-ack") expect(resumed.state?.terminalCommitPending).toBe(false);
   },
 );
@@ -323,8 +336,7 @@ it.each(["created", "imported"] as const)(
       expect(mirror.includes(JSON.parse(initialJson).content)).toBe(false);
     }
     useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
-    vi.mocked(getKormir).mockClear();
-    vi.mocked(ensureKormirNsec).mockClear();
+    vi.mocked(prepareBrowserOracleMutation).mockClear();
     const reopened = createCreatorMarketsStore();
     const retrySends: string[] = [];
     const retried = await retryBrowserOracleBackupDelivery(f.record.conditionId, {
@@ -337,8 +349,7 @@ it.each(["created", "imported"] as const)(
     expect(retried.failures.length).toBe(0);
     expect(retrySends.length).toBe(1);
     expect(retrySends[0] === initialJson).toBe(true);
-    expect(vi.mocked(getKormir).mock.calls.length).toBe(0);
-    expect(vi.mocked(ensureKormirNsec).mock.calls.length).toBe(0);
+    expect(vi.mocked(prepareBrowserOracleMutation).mock.calls.length).toBe(0);
 
     useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
     const signed = await saveRelayConfirmedResult(f, reopened);
@@ -361,8 +372,7 @@ it.each(["created", "imported"] as const)(
     expect(JSON.parse(deletionJson).tags.some((tag: string[]) => tag[0] === "a")).toBe(false);
 
     useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
-    vi.mocked(getKormir).mockClear();
-    vi.mocked(ensureKormirNsec).mockClear();
+    vi.mocked(prepareBrowserOracleMutation).mockClear();
     const secondOwner = createCreatorMarketsStore();
     const partialSends: { relay: string; kind: number; json: string }[] = [];
     const partial = await retryBrowserOracleBackupDelivery(f.record.conditionId, {
@@ -396,11 +406,11 @@ it.each(["created", "imported"] as const)(
     expect(finalSends.every((json) => json === terminalJson || json === deletionJson)).toBe(true);
     expect(finished.state?.deletion).toBeNull();
     expect(finished.state?.knownEventIds.length).toBe(0);
+    expect(useSettingsStore.getState().nostrSignerMode).toBe("none");
     const portable = await exportBrowserOracleBackup(f.record.conditionId, finalOwner);
     expect(portable.authority.nonceScalarHex).toBeNull();
     expect(portable.authority.attestationEventJson === signed.eventJson).toBe(true);
-    expect(vi.mocked(getKormir).mock.calls.length).toBe(0);
-    expect(vi.mocked(ensureKormirNsec).mock.calls.length).toBe(0);
+    expect(vi.mocked(prepareBrowserOracleMutation).mock.calls.length).toBe(0);
   },
 );
 
@@ -650,8 +660,7 @@ it.each([true, false])(
       announcementTlvHex: f.prepared.artifactHex,
     });
     useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
-    vi.mocked(getKormir).mockClear();
-    vi.mocked(ensureKormirNsec).mockClear();
+    vi.mocked(prepareBrowserOracleMutation).mockClear();
     const network = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({}),
     );
@@ -681,8 +690,7 @@ it.each([true, false])(
     expect(String(network.mock.calls[0][0]).startsWith("https://engine.original.example/")).toBe(
       true,
     );
-    expect(getKormir).not.toHaveBeenCalled();
-    expect(ensureKormirNsec).not.toHaveBeenCalled();
+    expect(prepareBrowserOracleMutation).not.toHaveBeenCalled();
     expect(
       (await owner.getState().readOraclePublication(f.record.conditionId))?.engineEvidence?.outcome,
     ).toBe("YES");
@@ -776,3 +784,458 @@ it.each(["publication-write", "acknowledgment", "completion-write"] as const)(
     ).rejects.toBeDefined();
   },
 );
+
+function oracleGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it("cancels an A-B-A identity change before real oracle import admission", async () => {
+  const f = await fixture();
+  await emptyPrivateTestStore();
+  const waiting = oracleGate();
+  const release = oracleGate();
+  const owner = createCreatorMarketsStore(
+    () => localStorage,
+    () => ({
+      async request(_name, action) {
+        waiting.resolve();
+        await release.promise;
+        return action();
+      },
+    }),
+  );
+  const pending = importBrowserOracleBackup(f.record, owner);
+  await waiting.promise;
+  useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+  useSettingsStore.setState({ nsecSecret: "11".repeat(32) });
+  release.resolve();
+  await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
+  expect((await owner.getState().readOracleOwner(f.record.conditionId)) === null).toBe(true);
+  const records = await privateOracleSnapshot();
+  expect(records === "[]").toBe(true);
+});
+
+it("completes an admitted real private import and document handoff for its captured owner", async () => {
+  const f = await fixture();
+  await emptyPrivateTestStore();
+  const admitted = oracleGate();
+  const release = oracleGate();
+  let firstWrite = true;
+  const owner = createCreatorMarketsStore(() => ({
+    getItem: (key) => localStorage.getItem(key),
+    removeItem: (key) => localStorage.removeItem(key),
+    async setItem(key, value) {
+      if (firstWrite) {
+        firstWrite = false;
+        admitted.resolve();
+        await release.promise;
+      }
+      localStorage.setItem(key, value);
+    },
+  }));
+  const pending = importBrowserOracleBackup(f.record, owner);
+  await admitted.promise;
+  useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+  release.resolve();
+  await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
+  const retained = await owner.getState().readOracleOwner(f.record.conditionId);
+  expect(retained?.kind === "imported" && retained.oracle.importComplete).toBe(true);
+  useSettingsStore.setState({ nsecSecret: "11".repeat(32) });
+  const exported = await exportBrowserOracleBackup(f.record.conditionId, owner);
+  expect(JSON.stringify(exported) === JSON.stringify(f.record)).toBe(true);
+});
+
+async function privateOracleSnapshot(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("kormir");
+    open.onerror = () => reject(new Error("Test oracle database unavailable."));
+    open.onsuccess = () => {
+      const database = open.result;
+      const tx = database.transaction("oracle", "readonly");
+      const records = tx.objectStore("oracle").getAll();
+      tx.oncomplete = () => {
+        database.close();
+        resolve(JSON.stringify(records.result));
+      };
+      tx.onerror = () => {
+        database.close();
+        reject(new Error("Test oracle read failed."));
+      };
+    };
+  });
+}
+
+it("refuses a foreign retained key before changing private records or creator metadata", async () => {
+  const f = await fixture();
+  await emptyPrivateTestStore();
+  await ensureKormirNsec([], "22".repeat(32));
+  await prepareEnumAnnouncement([], `foreign-${crypto.randomUUID()}`, ["Yes", "No"], 1800000000);
+  const before = await privateOracleSnapshot();
+  const owner = createCreatorMarketsStore();
+  await expect(importBrowserOracleBackup(f.record, owner)).rejects.toMatchObject({
+    reason: "key-conflict",
+  });
+  expect((await privateOracleSnapshot()) === before).toBe(true);
+  expect((await owner.getState().readOracleOwner(f.record.conditionId)) === null).toBe(true);
+  await emptyPrivateTestStore();
+});
+
+it.each(["relay", "decode", "post-success", "post-failure"] as const)(
+  "blocks subsequent network stages after identity changes during %s",
+  async (stage) => {
+    const f = await fixture();
+    const owner = await deliveryOwner("imported", f);
+    const reached = oracleGate();
+    const release = oracleGate();
+    const decode = vi.mocked(decodeOracleAttestation);
+    const originalDecode = decode.getMockImplementation()!;
+    let paused = false;
+    if (stage === "relay") {
+      oracleNetwork.publish.mockImplementation(async (_relays, json: string) => {
+        reached.resolve();
+        await release.promise;
+        return JSON.parse(json).id;
+      });
+    }
+    if (stage === "decode") {
+      decode.mockImplementation(async (hex) => {
+        const result = await originalDecode(hex);
+        if (!paused && oracleNetwork.publish.mock.calls.length > 0) {
+          paused = true;
+          reached.resolve();
+          await release.promise;
+        }
+        return result;
+      });
+    }
+    const network = vi.fn(async () => {
+      if (stage === "post-success" || stage === "post-failure") {
+        reached.resolve();
+        await release.promise;
+      }
+      if (stage === "post-failure") throw new Error("Controlled lost POST response.");
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch", network);
+    const read = vi.fn(async () => null);
+    try {
+      const pending = publishBrowserOracleOutcome(
+        f.record.conditionId,
+        "YES",
+        undefined,
+        [],
+        owner,
+        read,
+      );
+      await reached.promise;
+      useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+      release.resolve();
+      await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
+      expect(network.mock.calls.length).toBe(stage.startsWith("post-") ? 1 : 0);
+      expect(read.mock.calls.length).toBe(0);
+      const saved = await owner.getState().readOraclePublication(f.record.conditionId);
+      expect(saved?.relayPublished).toBe(true);
+      expect(saved?.binding.oraclePubkey === f.record.oraclePubkey).toBe(true);
+      expect(vi.mocked(requestBrowserOracleBackup).mock.calls.length).toBe(0);
+    } finally {
+      decode.mockImplementation(originalDecode);
+    }
+  },
+);
+
+it.each(["created", "imported"] as const)(
+  "checks actual %s authority and detects lost private state despite complete metadata",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+    await emptyPrivateTestStore();
+    expect(
+      await browserOracleAuthorityReadiness(f.record.conditionId, createCreatorMarketsStore()),
+    ).toBe("needs-restore");
+    await importBrowserOracleBackup(f.record, owner);
+    expect(
+      await browserOracleAuthorityReadiness(f.record.conditionId, createCreatorMarketsStore()),
+    ).toBe("ready");
+  },
+);
+
+it("requires authenticated retry for incomplete import even with valid private authority", async () => {
+  const f = await fixture();
+  await deliveryOwner("imported", f);
+  const saved = JSON.parse(localStorage.getItem("bitcaster-creator-markets")!);
+  saved.state.importedOracles[0].importComplete = false;
+  localStorage.setItem("bitcaster-creator-markets", JSON.stringify(saved));
+  expect(
+    await browserOracleAuthorityReadiness(f.record.conditionId, createCreatorMarketsStore()),
+  ).toBe("needs-restore");
+});
+
+it.each(["event-read", "export-missing-nonce", "invalid-export"] as const)(
+  "does not classify %s corruption as missing authority",
+  async (boundary) => {
+    const f = await fixture();
+    const owner = await deliveryOwner("imported", f);
+    const prototype = Object.getPrototypeOf(f.core);
+    const fault =
+      boundary === "event-read"
+        ? vi.spyOn(prototype, "staged_enum_publication").mockRejectedValue(3)
+        : boundary === "export-missing-nonce"
+          ? vi.spyOn(prototype, "export_enum_authority").mockRejectedValue(2)
+          : vi.spyOn(prototype, "export_enum_authority").mockResolvedValue("{}");
+    try {
+      const before = await privateOracleSnapshot();
+      expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe(
+        "unavailable",
+      );
+      expect((await privateOracleSnapshot()) === before).toBe(true);
+    } finally {
+      fault.mockRestore();
+    }
+  },
+);
+
+async function publicOnlyCreatedOwner(f: Awaited<ReturnType<typeof fixture>>) {
+  const owner = await deliveryOwner("created", f);
+  const publicMarket = publicCreatorMarket(owner.getState().markets[0]);
+  await owner.getState().clear();
+  await owner.getState().mergeRemoteMarkets([publicMarket]);
+  return { owner, publicMarket };
+}
+
+it.each(["imported", "public-created"] as const)(
+  "automatically restores lost %s authority through real SDK cursor pages without outcome publication",
+  async (kind) => {
+    const f = await fixture();
+    const publicOwner = kind === "public-created" ? await publicOnlyCreatedOwner(f) : null;
+    const owner = publicOwner?.owner ?? (await deliveryOwner("imported", f));
+    const event = await createOracleBackupEvent({
+      record: f.record,
+      privateKey: new Uint8Array(32).fill(0x11),
+      createdAt: 1_800_000_041,
+      validator: browserOracleBackupValidator,
+    });
+    await emptyPrivateTestStore();
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe(
+      "needs-restore",
+    );
+    const queryRelay = vi.fn(async ({ filter }: { filter: { until?: number } }) => ({
+      events: filter.until === undefined || filter.until >= event.created_at ? [event] : [],
+      complete: true,
+    }));
+    const deliver = vi.fn(async () => ({ failures: [], state: null }));
+    let pages = 0;
+    const checkpoint = { ownerOffset: 0, cursor: null };
+    await runBrowserOracleRecoveryPass(
+      {
+        publicKey: f.binding.oraclePubkey,
+        relayUrls: ["wss://source.example"],
+        signal: new AbortController().signal,
+        requireCurrent() {},
+      },
+      checkpoint,
+      {
+        owners: () => owner.getState().readOracleOwners(),
+        readiness: (id) => browserOracleAuthorityReadiness(id, owner),
+        deliver,
+        list: (cursor, options) => {
+          pages++;
+          return listBrowserOracleBackups(cursor, { ...options, queryRelay });
+        },
+        restore: (id, relay, options) =>
+          restoreBrowserOracleBackup(id, relay, { ...options, store: owner, queryRelay }),
+      },
+    );
+    expect(pages).toBe(2);
+    expect(checkpoint.cursor).toBeNull();
+    expect(deliver).not.toHaveBeenCalled();
+    expect(oracleNetwork.publish).not.toHaveBeenCalled();
+    expect(
+      await browserOracleAuthorityReadiness(f.record.conditionId, createCreatorMarketsStore()),
+    ).toBe("ready");
+    const exported = await exportBrowserOracleBackup(f.record.conditionId, owner);
+    expect(exported.authority.nonceScalarHex === f.record.authority.nonceScalarHex).toBe(true);
+    expect(exported.authority.signedOutcome).toBeNull();
+    expect(exported.destinations).toEqual(f.record.destinations);
+    if (publicOwner) {
+      expect(owner.getState().markets).toHaveLength(1);
+      expect(owner.getState().importedOracles).toHaveLength(0);
+      expect(publicCreatorMarket(owner.getState().markets[0])).toEqual(publicOwner.publicMarket);
+    } else expect(owner.getState().markets.length).toBe(0);
+  },
+);
+
+it.each([
+  "present-event",
+  "event-read",
+  "signature",
+  "condition",
+  "event-id",
+  "outcomes",
+  "announcement-id",
+  "public-key",
+  "selected-key",
+  "announcement-bytes",
+] as const)(
+  "refuses public creator restoration for %s instead of treating it as absent authority",
+  async (boundary) => {
+    const f = await fixture();
+    const { owner, publicMarket } = await publicOnlyCreatedOwner(f);
+    if (boundary !== "present-event" && boundary !== "event-read") await emptyPrivateTestStore();
+    const oracle = publicMarket.oracle!;
+    switch (boundary) {
+      case "signature": {
+        const event = JSON.parse(oracle.announcementEventJson!);
+        event.sig = "00".repeat(64);
+        oracle.announcementEventJson = JSON.stringify(event);
+        break;
+      }
+      case "condition":
+        publicMarket.conditionId = "ff".repeat(32);
+        break;
+      case "event-id":
+        oracle.eventId = "foreign-event";
+        break;
+      case "outcomes":
+        oracle.outcomes = ["FOREIGN", "NO"];
+        break;
+      case "announcement-id":
+        oracle.announcementEventId = "ff".repeat(32);
+        break;
+      case "public-key":
+        oracle.oraclePubkey = "ff".repeat(32);
+        break;
+      case "selected-key":
+        useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+        break;
+      case "announcement-bytes":
+        oracle.announcementHex = "00";
+        break;
+    }
+    await owner.getState().clear();
+    await owner.getState().mergeRemoteMarkets([publicMarket]);
+    const fault =
+      boundary === "event-read"
+        ? vi.spyOn(Object.getPrototypeOf(f.core), "staged_enum_publication").mockRejectedValue(3)
+        : null;
+    try {
+      // Admission may install the selected key in an empty provider. Compare
+      // retained events and authority after this normal setup step.
+      const admission = await prepareBrowserOracleMutation();
+      await admission.withCoreLocked(async () => {});
+      const before = await privateOracleSnapshot();
+      expect(await browserOracleAuthorityReadiness(publicMarket.conditionId, owner)).toBe(
+        "unavailable",
+      );
+      expect(await privateOracleSnapshot()).toBe(before);
+      expect(owner.getState().importedOracles).toHaveLength(0);
+      expect(oracleNetwork.publish).not.toHaveBeenCalled();
+    } finally {
+      fault?.mockRestore();
+    }
+  },
+);
+
+it("cancels signerless exact retry after its issued relay acknowledgment without subsequent engine work", async () => {
+  const f = await fixture();
+  const owner = await deliveryOwner("imported", f);
+  const signed = await saveRelayConfirmedResult(f, owner);
+  useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
+  const reached = oracleGate();
+  const release = oracleGate();
+  let current = true;
+  oracleNetwork.publish.mockImplementation(async (_relays, json: string) => {
+    reached.resolve();
+    await release.promise;
+    return JSON.parse(json).id;
+  });
+  const network = vi.fn();
+  const read = vi.fn(async () => null);
+  vi.stubGlobal("fetch", network);
+  const pending = publishBrowserOracleOutcome(
+    f.record.conditionId,
+    "YES",
+    undefined,
+    [],
+    owner,
+    read,
+    {
+      engineDelivery: "synchronize",
+      republishAttestation: true,
+      requireCurrent() {
+        if (!current) throw new Error("Oracle action cancelled.");
+      },
+    },
+  );
+  await reached.promise;
+  current = false;
+  release.resolve();
+  await expect(pending).rejects.toThrow("Oracle action cancelled.");
+  expect(network.mock.calls.length).toBe(0);
+  expect(read.mock.calls.length).toBe(0);
+  const saved = await createCreatorMarketsStore()
+    .getState()
+    .readOraclePublication(f.record.conditionId);
+  expect(saved?.relayPublished).toBe(true);
+  expect(saved?.attestation?.eventJson === signed.eventJson).toBe(true);
+  expect(vi.mocked(requestBrowserOracleBackup).mock.calls.length).toBe(0);
+});
+
+it("cancels an exact authenticated-source query before private admission when identity changes", async () => {
+  const f = await fixture();
+  const event = await createOracleBackupEvent({
+    record: f.record,
+    privateKey: new Uint8Array(32).fill(0x11),
+    createdAt: 1_800_000_042,
+    validator: browserOracleBackupValidator,
+  });
+  await emptyPrivateTestStore();
+  await ensureKormirNsec([], "11".repeat(32));
+  const before = await privateOracleSnapshot();
+  const owner = createCreatorMarketsStore();
+  await expect(
+    restoreBrowserOracleBackup(event.id, "wss://source.example", {
+      store: owner,
+      queryRelay: async () => {
+        useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+        return { events: [event], complete: true };
+      },
+    }),
+  ).rejects.toMatchObject({ reason: "identity-changed" });
+  expect(owner.getState().importedOracles.length).toBe(0);
+  expect((await privateOracleSnapshot()) === before).toBe(true);
+});
+
+it("cancels a readiness export before admission when its caller expires in the lock queue", async () => {
+  const f = await fixture();
+  const owner = await deliveryOwner("imported", f);
+  const held = oracleGate();
+  const release = oracleGate();
+  const holding = navigator.locks.request("bitcaster-creator-markets", async () => {
+    held.resolve();
+    await release.promise;
+  });
+  await held.promise;
+  const before = await privateOracleSnapshot();
+  let current = true;
+  const exported = vi.spyOn(Object.getPrototypeOf(f.core), "export_enum_authority");
+  try {
+    const pending = browserOracleAuthorityReadiness(f.record.conditionId, owner, () => {
+      if (!current) throw new Error("Oracle caller expired.");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    release.resolve();
+    await holding;
+    expect(await pending).toBe("unavailable");
+    expect(exported.mock.calls.length).toBe(0);
+    expect((await privateOracleSnapshot()) === before).toBe(true);
+  } finally {
+    release.resolve();
+    exported.mockRestore();
+  }
+});

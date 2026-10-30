@@ -1,5 +1,13 @@
-// @vitest-environment node
 import "fake-indexeddb/auto";
+import * as ownerWorker from "../browserEncryptedWalletBackupOwnerWorker";
+import { createOwnerRemovalRemote } from "./fixtures/ownerRemovalFixture";
+import { ownerCtfRemovalFixture, removalSeed } from "./fixtures/ownerCtfRemovalProofs";
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { getNdk } from "../nostr";
+import { EncryptedWalletBackupFirstAccountError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerDiscovery";
+// @vitest-environment node
+import { Amount, deriveKeysetId } from "@cashu/cashu-ts";
+import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
 import * as removeCoordinator from "../browserCtfRemoveCoordinator";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -7,6 +15,7 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
+  deriveEncryptedWalletBackupV2AssetLocator,
   EncryptedWalletBackupV2HttpAdapter,
   EncryptedWalletBackupV2HttpTransportError,
   encodeEncryptedWalletBackupV2CurrentHead,
@@ -21,14 +30,24 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
+import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
-import {
-  createEncryptedWalletBackupV2DesiredAssetRow,
-  createEncryptedWalletBackupV2RemovalIntent,
-} from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
+import { deriveEncryptedWalletBackupOwnerScope } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerScope";
+import { EncryptedWalletBackupOwnerHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHttpAdapter";
+import { EncryptedWalletBackupOwnerClient } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerClient";
+import { digestEncryptedWalletBackupOwnerBundleSupersessionReceipt } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerReceipt";
+import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import { digestEncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
+import { ownerReachabilitySnapshot } from "./ownerReachabilityFixture";
+import {
+  collectEncryptedWalletBackupOwnerDescriptorPages,
+  createEncryptedWalletBackupOwnerCurrentHead,
+  enumerateEncryptedWalletBackupOwnerDescriptorPages,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
 import {
   createBrowserEncryptedWalletBackupV2RuntimeDriver,
   encryptedWalletBackupDriverFailureSite,
@@ -50,6 +69,8 @@ import {
   handoffBrowserEncryptedWalletBackupV2Seed,
 } from "../browserEncryptedWalletBackupV2SeedHandoff";
 import { withWalletProfileLock } from "../walletProfileLock";
+import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../../stores/encrypted-wallet-backup-owner-db";
+import type { BrowserEncryptedWalletBackupOwnerSession } from "../browserEncryptedWalletBackupOwnerSession";
 
 const configuration = {
   realm: "backup.example",
@@ -276,6 +297,382 @@ it("quiesces an active backup leader before seed handoff requests its wallet loc
   }
 });
 
+it("keeps selected-owner authority current through prepare, quiesce, and seed handoff", async () => {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-seed-handoff",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const context = {
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: owner.enrollmentEpoch,
+  };
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    asset: { kind: "ordinary" },
+  });
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: fixture.scopeId,
+    asset,
+    custodyRevision: 1n,
+    activeProofCount: 1,
+  });
+  const desiredAssetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
+    keyHandle: fixture.keyHandle,
+    mintUrl: asset.mintUrl,
+    unit: asset.unit,
+    assetIdentity: asset.assetIdentity,
+  });
+  const keysetId = deriveKeysetId(
+    { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" },
+    { unit: "msat", versionByte: 1 },
+  );
+  const proofLocator = { schemaVersion: 1 as const, kind: "nut13" as const, keysetId, counter: 0 };
+  const proofSecret = deriveDurableWalletProofSecret({
+    seed: fixture.seed,
+    locator: proofLocator,
+    proofKeysetId: keysetId,
+    proofAmount: 1,
+  });
+  const proofC = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  const proof = createBrowserCustodyProofRow({
+    scopeId: fixture.scopeId,
+    normalizedMint: asset.mintUrl,
+    unit: "msat",
+    proof: {
+      id: keysetId,
+      amount: Amount.from(1),
+      secret: proofSecret,
+      C: proofC,
+    },
+    asset: { kind: "regular" },
+    receivedAtMs: 1,
+  });
+  await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+  await fixture.database.custodyProofs.put(proof);
+  await fixture.database.proofs.put({
+    id: keysetId,
+    amount: 1,
+    secret: proofSecret,
+    C: proofC,
+    mintUrl: asset.mintUrl,
+  });
+  await fixture.database.custodyProofBackupAuthorities.put({
+    schemaVersion: 4,
+    scopeId: fixture.scopeId,
+    proofId: proof.proofId,
+    proofFingerprint: proof.proofFingerprint,
+    proofRevision: 0,
+    proofState: "selectable",
+    terminalOperationId: null,
+    terminalAuthority: null,
+    recordCreatedAtUnixSeconds: 1,
+    recordUpdatedAtUnixSeconds: 1,
+    derivationLocator: proofLocator,
+    updatedAtMs: 1,
+    admissionOperationId: null,
+    backupState: "remote-backed",
+    backupRecordId: proof.proofId,
+    backupRecordCommitment: "aa".repeat(32),
+  });
+  await fixture.database.walletCounterAssociations.put({
+    scopeId: fixture.scopeId,
+    normalizedMint: asset.mintUrl,
+    unit: "msat",
+    keysetId,
+    recoveryComplete: true,
+  });
+  await fixture.database.walletCounterCursors.put({
+    scopeId: fixture.scopeId,
+    keysetId,
+    next: 1,
+  });
+  const descriptor = {
+    formatVersion: 2 as const,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    bundleId: "77".repeat(16),
+    assetLocator: desiredAssetLocator,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    payloadCommitment: "99".repeat(32),
+    objects: [{ objectId: "aa".repeat(16), digest: "bb".repeat(32) }],
+  };
+  const ownerReceipt = await ownerReachabilitySnapshot({
+    ownerScopeId: owner.ownerScopeId,
+    descriptor,
+    enrollmentEpoch: owner.enrollmentEpoch,
+    keyHandle: fixture.keyHandle,
+  });
+  const ownerStore = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    requestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+    enrollmentEpoch: owner.enrollmentEpoch,
+    isCurrent: () => true,
+  });
+  const emptyHead = createEncryptedWalletBackupOwnerCurrentHead({
+    ...context,
+    headVersion: 0,
+    bundles: [],
+  });
+  const emptyEvidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head: emptyHead, bundles: [] }),
+    context,
+  );
+  await ownerStore.acceptCurrentHead({ expectedHeadVersion: null, evidence: emptyEvidence });
+  await ownerStore.acceptCurrentHead({
+    expectedHeadVersion: 0,
+    evidence: ownerReceipt.collectedHeadEvidence,
+  });
+  await fixture.database.encryptedWalletBackupOwnerAssetReceipts.put({
+    scopeId: fixture.scopeId,
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: owner.enrollmentEpoch,
+    localAssetKey: desired.localAssetKey,
+    assetLocator: descriptor.assetLocator,
+    custodyRevision: descriptor.custodyRevision.toString(),
+    bundleId: descriptor.bundleId,
+    bundleDescriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(descriptor),
+    canonicalSignedMutation: ownerReceipt.canonicalSignedMutation,
+    canonicalSignedReceipt: ownerReceipt.canonicalSignedReceipt,
+  });
+  await fixture.database.encryptedWalletBackupOwnerDesiredAssets.put({
+    scopeId: fixture.scopeId,
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: owner.enrollmentEpoch,
+    localAssetKey: desired.localAssetKey,
+    assetLocator: descriptor.assetLocator,
+    custodyRevision: descriptor.custodyRevision.toString(),
+    desiredAction: "replace",
+    activeProofCount: 1,
+    syncState: "acknowledged",
+    lastObservedHeadVersion: ownerReceipt.collectedHeadEvidence.head.headVersion,
+    receiptDigest: digestEncryptedWalletBackupOwnerBundleSupersessionReceipt(ownerReceipt.receipt),
+  });
+  const ownerClient = new EncryptedWalletBackupOwnerClient({
+    origin: configuration.signedOrigin,
+    keyHandle: fixture.keyHandle,
+    pinnedReceiptKeys: [ownerReceipt.pinnedSigningKey],
+    fetch: async () => {
+      throw new Error("unexpected owner network request");
+    },
+  });
+  const readHead = vi
+    .spyOn(ownerClient, "readCurrentHead")
+    .mockResolvedValue(ownerReceipt.collectedHeadEvidence);
+  vi.spyOn(ownerClient, "discover").mockResolvedValue([{ entries: [owner] }] as never);
+  vi.spyOn(ownerClient, "resolveFirstAccount").mockReturnValue({ kind: "active", owner });
+  vi.spyOn(ownerClient, "readEnrollmentEpoch").mockResolvedValue({
+    status: "active",
+    enrollmentEpoch: owner.enrollmentEpoch,
+  });
+  const verifyStoredBackupReachability = vi.spyOn(ownerClient, "verifyStoredBackupReachability");
+  const reportError = vi.fn();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(owner),
+    ownerClient,
+    reportError,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+  });
+  const activated = vi.fn();
+  const handoffLockManager = new SharedTestLockManager();
+
+  try {
+    await vi.waitFor(() => {
+      if (reportError.mock.calls.length > 0) throw reportError.mock.calls[0]![0];
+      expect(readHead).toHaveBeenCalled();
+    });
+    const authority = await driver.prepareSeedHandoffOwnerAuthority();
+    if (authority === null) throw new Error("selected owner authority was not captured");
+    const backupReceipt = await driver.readSelectedOwnerBackupReceipt(desired.localAssetKey);
+    expect(backupReceipt).toMatchObject({
+      desired: { localAssetKey: desired.localAssetKey, desiredAction: "replace" },
+      ownerDesired: { syncState: "acknowledged" },
+      receipt: { ownerScopeId: owner.ownerScopeId },
+      collectedHeadEvidence: { head: { ownerScopeId: owner.ownerScopeId, headVersion: 1 } },
+    });
+    await expect(driver.hasSelectedOwnerPreparedMutation()).resolves.toBe(false);
+    await expect(driver.readSelectedOwnerLocalRecoveryStatus()).resolves.toMatchObject({
+      localRecoveryStatus: "ready",
+      localRecoveryReason: "none",
+    });
+    await driver.quiesceForSeedHandoff();
+    const readsBeforeHandoff = readHead.mock.calls.length;
+    await expect(authority.ownerAuthorityStore.readCurrentHead()).resolves.toMatchObject({
+      head: { headVersion: 1 },
+    });
+    expect(readHead).toHaveBeenCalledTimes(readsBeforeHandoff);
+    await handoffBrowserEncryptedWalletBackupV2Seed({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
+      ownerScopeId: authority.ownerScopeId,
+      ownerAuthorityStore: authority.ownerAuthorityStore,
+      loadCurrentOwnerReachabilityEvidence: authority.loadCurrentOwnerReachabilityEvidence,
+      lockManager: handoffLockManager,
+      invalidateOldProfile: () => undefined,
+      activateNewProfile: async () => activated(),
+      restoreOldProfile: async () => undefined,
+    });
+    expect(activated).toHaveBeenCalledOnce();
+    expect(readHead).toHaveBeenCalledTimes(readsBeforeHandoff + 1);
+    expect(verifyStoredBackupReachability).toHaveBeenCalledOnce();
+    expect(fixture.database.isOpen()).toBe(false);
+  } finally {
+    driver.stop();
+  }
+});
+
+it("does not discover or enroll when selected-owner receipt inspection has no captured candidate", async () => {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-read-receipt-without-candidate",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const ownerClient = {
+    discover: vi.fn(),
+    resolveFirstAccount: vi.fn(),
+    readEnrollmentEpoch: vi.fn(),
+    readCurrentHead: vi.fn(),
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+    verifyStoredBackupReachability: vi.fn(),
+  };
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(owner),
+    ownerClient: ownerClient as never,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: {
+      hold: async (_name, signal) => {
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    },
+  });
+
+  try {
+    await expect(driver.readSelectedOwnerBackupReceipt("local-asset-key")).resolves.toBeNull();
+    await expect(driver.hasSelectedOwnerPreparedMutation()).resolves.toBeNull();
+    await expect(driver.readSelectedOwnerLocalRecoveryStatus()).resolves.toBeNull();
+    expect(ownerClient.discover).not.toHaveBeenCalled();
+    expect(ownerClient.operateAccount).not.toHaveBeenCalled();
+  } finally {
+    driver.stop();
+  }
+});
+
+it("refuses selected-owner seed handoff evidence after the captured profile changes", async () => {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-seed-handoff-stale",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const context = {
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: owner.enrollmentEpoch,
+  };
+  const head = createEncryptedWalletBackupOwnerCurrentHead({
+    ...context,
+    headVersion: 0,
+    bundles: [],
+  });
+  const ownerEvidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+    context,
+  );
+  const ownerClient = {
+    discover: vi.fn().mockResolvedValue([{ entries: [owner] }]),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner }),
+    readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+    readCurrentHead: vi.fn().mockResolvedValue(ownerEvidence),
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+    verifyStoredBackupReachability: vi.fn(),
+  };
+  let currentProfile = true;
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(owner),
+    ownerClient: ownerClient as never,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => currentProfile,
+    leadership: immediateLeadership,
+  });
+
+  try {
+    await vi.waitFor(() => expect(ownerClient.readCurrentHead).toHaveBeenCalled());
+    const authority = await driver.prepareSeedHandoffOwnerAuthority();
+    if (authority === null) throw new Error("selected owner authority was not captured");
+    await driver.quiesceForSeedHandoff();
+    currentProfile = false;
+    await expect(authority.ownerAuthorityStore.readCurrentHead()).rejects.toThrow(
+      /session changed/,
+    );
+    await expect(
+      handoffBrowserEncryptedWalletBackupV2Seed({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        isCurrentProfile: () => currentProfile,
+        assertNoPendingOrders: () => undefined,
+        ownerScopeId: authority.ownerScopeId,
+        ownerAuthorityStore: authority.ownerAuthorityStore,
+        loadCurrentOwnerReachabilityEvidence: authority.loadCurrentOwnerReachabilityEvidence,
+        lockManager: new SharedTestLockManager(),
+        invalidateOldProfile: vi.fn(),
+        activateNewProfile: vi.fn(),
+        restoreOldProfile: vi.fn(),
+      }),
+    ).rejects.toThrow(/profile is stale/);
+    expect(fixture.database.isOpen()).toBe(true);
+  } finally {
+    driver.stop();
+  }
+});
+
 it("cancels recovery waiting for the profile lock before releasing leadership", async () => {
   const fixture = await enrollmentFixture();
   await persistHead(fixture, "recovery-required", "genuine-conflict", 0);
@@ -329,7 +726,7 @@ it("cancels recovery waiting for the profile lock before releasing leadership", 
 });
 
 it("drains a queued removeManagedProofs call before releasing leadership", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const lockManager = new SharedTestLockManager();
   const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
   const walletLockName = encryptedWalletBackupV2WalletLockName({
@@ -350,7 +747,7 @@ it("drains a queued removeManagedProofs call before releasing leadership", async
       await withWalletProfileLock(input.scopeId, async () => undefined, lockManager, input.signal);
       return { kind: "started", intentId: "test-remove" };
     });
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     vi.fn().mockResolvedValue({ kind: "idle" }),
     runtimeRemote(),
@@ -408,42 +805,11 @@ it("drains a queued removeManagedProofs call before releasing leadership", async
 });
 
 it("cancels queued CTF removal finalization before releasing leadership", async () => {
-  const fixture = await readyEnrolledFixture();
-  const desiredAsset = await putRemovalDesired(fixture, "acknowledged");
-  const rawDesired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-    fixture.scopeId,
-    desiredAsset.localAssetKey,
-  ]);
-  if (rawDesired === undefined) throw new Error("test desired asset is absent");
-  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-    ...rawDesired,
-    removalIntent: createEncryptedWalletBackupV2RemovalIntent({
-      intentId: "queued-finalization",
-      createdAtMs: 1,
-      realm: configuration.realm,
-      walletId: fixture.keyHandle.walletId,
-      enrollmentEpoch: 1,
-      expectedHeadVersion: 0,
-      expectedActiveSetDigest: "aa".repeat(32),
-      targetCustodyRevision: rawDesired.custodyRevision,
-      proofs: [
-        {
-          proofId: "55".repeat(32),
-          proofFingerprint: "66".repeat(32),
-          proofRevision: 1,
-          proofCommitment: "77".repeat(32),
-        },
-      ],
-      acknowledgedExclusionEvidence: {
-        kind: "current-head",
-        headVersion: 0,
-        activeSetDigest: "aa".repeat(32),
-        bundleId: null,
-        bundleDescriptorDigest: null,
-        acknowledgedAtMs: 1,
-      },
-    }),
-  });
+  const managed = await ownerCtfRemovalFixture();
+  databases.push(managed.database);
+  await removeCoordinator.startBrowserCtfRemove(managed.input());
+  await managed.cycle();
+  const fixture = { ...managed, seed: removalSeed, ownerRemote: managed.remote };
   const lockManager = new SharedTestLockManager();
   const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
   const walletLockName = encryptedWalletBackupV2WalletLockName({
@@ -457,7 +823,7 @@ it("cancels queued CTF removal finalization before releasing leadership", async 
     () => releaseProfileLock.promise,
   );
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -559,6 +925,26 @@ it.each([
     "the backup authority store",
     "Error: private headline\n    at http://localhost:5273/src/stores/encrypted-wallet-backup-v2-db.ts:21:8",
     "authority-store@21:8",
+  ],
+  [
+    "the Owner recovery source",
+    "Error: private headline\n    at http://localhost:5273/src/lib/browserEncryptedWalletBackupOwnerConflictRecovery.ts:238:7",
+    "owner-recovery@238:7",
+  ],
+  [
+    "the Owner authority store with a Vite query",
+    "Error: private headline\n    at http://localhost:5273/src/stores/encrypted-wallet-backup-owner-db.ts?t=123:1057:8",
+    "owner-authority-store@1057:8",
+  ],
+  [
+    "a lookalike Owner recovery source",
+    "Error: private headline\n    at http://localhost:5273/src/lib/browserEncryptedWalletBackupOwnerConflictRecovery.ts.evil:238:7",
+    "unknown",
+  ],
+  [
+    "an unknown path with an Owner authority query tail",
+    "Error: private headline\n    at http://localhost:5273/module.ts?next=/src/stores/encrypted-wallet-backup-owner-db.ts:1057:8",
+    "unknown",
   ],
   [
     "an allowlisted SDK source under Vite's filesystem route",
@@ -846,6 +1232,191 @@ it("does not enable writes when an authenticated session lacks its exact accepte
   session.stop();
 });
 
+it("rejects a delayed legacy-head permission read after the session switches to an owner", async () => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  await persistReadyHead(fixture);
+  const session = beginBrowserWalletBackupAuthenticationSession({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    realm: configuration.realm,
+  });
+  expect(session.markAuthenticated(1, fixture.keyHandle.requestAuthPublicKey)).toBe(true);
+
+  const originalRead = EncryptedWalletBackupV2DexieAuthorityStore.prototype.readAcceptedHead;
+  let enteredRead!: () => void;
+  const readEntered = new Promise<void>((resolve) => (enteredRead = resolve));
+  let releaseRead!: () => void;
+  const readRelease = new Promise<void>((resolve) => (releaseRead = resolve));
+  const readSpy = vi
+    .spyOn(EncryptedWalletBackupV2DexieAuthorityStore.prototype, "readAcceptedHead")
+    .mockImplementation(async function (this: EncryptedWalletBackupV2DexieAuthorityStore) {
+      const accepted = await originalRead.call(this);
+      enteredRead();
+      await readRelease;
+      return accepted;
+    });
+  const owner = deriveEncryptedWalletBackupOwnerScope({
+    authorizationScheme: "test",
+    ownerSubject: "owner-write-legacy-switch",
+  });
+  try {
+    const permission = newWritePermission(fixture);
+    await readEntered;
+    expect(
+      session.markOwnerAuthenticated(owner.ownerScopeId, 1, fixture.keyHandle.requestAuthPublicKey),
+    ).toBe(true);
+    releaseRead();
+    await expect(permission).rejects.toMatchObject({
+      reason: "startup-authentication-pending",
+    });
+  } finally {
+    releaseRead();
+    readSpy.mockRestore();
+    session.stop();
+  }
+});
+
+it("requires an accepted selected-owner head for authenticated new writes", async () => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  const owner = deriveEncryptedWalletBackupOwnerScope({
+    authorizationScheme: "test",
+    ownerSubject: "owner-write-boundary",
+  });
+  const head = createEncryptedWalletBackupOwnerCurrentHead({
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 0,
+    bundles: [],
+  });
+  const evidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+    {
+      ownerScopeId: owner.ownerScopeId,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: 1,
+    },
+  );
+  const authority = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    ownerScopeId: owner.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    requestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+    enrollmentEpoch: 1,
+    isCurrent: () => true,
+  });
+  await authority.acceptCurrentHead({ expectedHeadVersion: null, evidence });
+  const session = beginBrowserWalletBackupAuthenticationSession({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    realm: configuration.realm,
+  });
+  expect(
+    session.markOwnerAuthenticated(owner.ownerScopeId, 1, fixture.keyHandle.requestAuthPublicKey),
+  ).toBe(true);
+  await expect(newWritePermission(fixture)).resolves.toBeUndefined();
+
+  await fixture.database.encryptedWalletBackupOwnerAcceptedHeads.delete([
+    fixture.scopeId,
+    owner.ownerScopeId,
+    configuration.realm,
+    fixture.keyHandle.walletId,
+    1,
+  ]);
+  await expect(newWritePermission(fixture)).rejects.toMatchObject({
+    reason: "startup-authentication-pending",
+  });
+  session.stop();
+});
+
+it.each(["enrollment epoch", "request authentication key"] as const)(
+  "rejects an owner permission read if the same session token changes the %s",
+  async (changedIdentityPart) => {
+    enableBackupGate();
+    const fixture = await enrollmentFixture();
+    const owner = deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-write-identity-race",
+    });
+    const head = createEncryptedWalletBackupOwnerCurrentHead({
+      ownerScopeId: owner.ownerScopeId,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: 1,
+      headVersion: 0,
+      bundles: [],
+    });
+    const evidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+      enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+      {
+        ownerScopeId: owner.ownerScopeId,
+        realm: configuration.realm,
+        walletId: fixture.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    );
+    const authority = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      ownerScopeId: owner.ownerScopeId,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      requestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+      enrollmentEpoch: 1,
+      isCurrent: () => true,
+    });
+    await authority.acceptCurrentHead({ expectedHeadVersion: null, evidence });
+    const session = beginBrowserWalletBackupAuthenticationSession({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      realm: configuration.realm,
+    });
+    expect(
+      session.markOwnerAuthenticated(owner.ownerScopeId, 1, fixture.keyHandle.requestAuthPublicKey),
+    ).toBe(true);
+    const originalRead =
+      EncryptedWalletBackupOwnerDexieAuthorityStore.prototype.readLocalRecoveryStatus;
+    let enteredRead!: () => void;
+    const readEntered = new Promise<void>((resolve) => (enteredRead = resolve));
+    let releaseRead!: () => void;
+    const readRelease = new Promise<void>((resolve) => (releaseRead = resolve));
+    const readSpy = vi
+      .spyOn(EncryptedWalletBackupOwnerDexieAuthorityStore.prototype, "readLocalRecoveryStatus")
+      .mockImplementation(async function (this: EncryptedWalletBackupOwnerDexieAuthorityStore) {
+        const status = await originalRead.call(this);
+        enteredRead();
+        await readRelease;
+        return status;
+      });
+    try {
+      const permission = newWritePermission(fixture);
+      await readEntered;
+      const changedEpoch = changedIdentityPart === "enrollment epoch" ? 2 : 1;
+      const changedKey =
+        changedIdentityPart === "request authentication key"
+          ? "ab".repeat(32)
+          : fixture.keyHandle.requestAuthPublicKey;
+      expect(session.markOwnerAuthenticated(owner.ownerScopeId, changedEpoch, changedKey)).toBe(
+        true,
+      );
+      releaseRead();
+      await expect(permission).rejects.toMatchObject({
+        reason: "startup-authentication-pending",
+      });
+    } finally {
+      releaseRead();
+      readSpy.mockRestore();
+      session.stop();
+    }
+  },
+);
+
 it("keeps fresh-browser writes blocked while the real worker requests baseline recovery", async () => {
   enableBackupGate();
   const fixture = await enrollmentFixture();
@@ -1046,6 +1617,55 @@ it.each(["leadership", "startup"] as const)(
     }
   },
 );
+
+it("reports ready when a selected-owner startup finds nothing to back up", async () => {
+  const fixture = await readyManagedFixture();
+  const statuses = vi.fn();
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const client = fixture.ownerRemote.client;
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", configuration.realm);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", configuration.signedOrigin);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", configuration.pinnedReceiptKeys[0].keyId);
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    configuration.pinnedReceiptKeys[0].publicKey,
+  );
+  vi.spyOn(client, "discover").mockResolvedValue([{ entries: [fixture.owner] }] as never);
+  vi.spyOn(client, "resolveFirstAccount").mockReturnValue({ kind: "active", owner: fixture.owner });
+  vi.spyOn(client, "readEnrollmentEpoch").mockResolvedValue({
+    status: "active",
+    enrollmentEpoch: 1,
+  });
+  vi.spyOn(client, "readCurrentHead").mockImplementation(
+    fixture.ownerRemote.remote.readCurrentHead,
+  );
+  vi.spyOn(ownerWorker, "runBrowserEncryptedWalletBackupOwnerWorkerCycle").mockImplementation(
+    worker,
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(fixture.owner),
+    ownerClient: client,
+    remote: runtimeRemote(),
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+  });
+  try {
+    await vi.waitFor(() =>
+      requireBrowserWalletNewWritePermission({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+      }),
+    );
+    await vi.waitFor(() => expect(statuses).toHaveBeenLastCalledWith({ kind: "ready" }));
+  } finally {
+    driver.stop();
+  }
+});
 
 it("a replacement driver reauthenticates after terminal failure without discarding pending work", async () => {
   enableBackupGate();
@@ -1262,7 +1882,12 @@ it("reports key-handle failure before leadership wait", async () => {
 });
 
 it.each([
-  { code: "unknown", createFailure: () => new Error("private terminal error marker") },
+  { code: "javascript-error", createFailure: () => new Error("private terminal error marker") },
+  {
+    code: "unknown",
+    createFailure: () =>
+      Object.assign(new Error("private terminal error marker"), { name: "PrivateFailure" }),
+  },
   {
     code: "unauthorized",
     createFailure: () => new EncryptedWalletBackupV2HttpTransportError("unauthorized"),
@@ -1304,7 +1929,7 @@ it("adds a bounded source label to the default error report", async () => {
     await vi.waitFor(() =>
       expect(warnings).toContain("encrypted-backup-driver-failure-site=worker@24:6"),
     );
-    expect(warnings).toContain("encrypted-backup-driver-error=unknown");
+    expect(warnings).toContain("encrypted-backup-driver-error=javascript-error");
     expect(warnings.join(" ")).not.toContain("private terminal");
   } finally {
     driver.stop();
@@ -1369,21 +1994,404 @@ it("does not authenticate startup from a quota outcome", async () => {
   driver.stop();
 });
 
-it("preserves permission when backup is disabled, unenrolled, or has no accepted head", async () => {
+it("uses no V2 row as authority when backup is configured without a selected owner", async () => {
   enableBackupGate();
   const fixture = await enrollmentFixture();
-  await expect(newWritePermission(fixture)).resolves.toBeUndefined();
+  await expect(newWritePermission(fixture)).rejects.toMatchObject({
+    reason: "startup-authentication-pending",
+  });
 
   await fixture.database.encryptedWalletBackupEnrollmentResults.put({
     realm: configuration.realm,
     walletId: fixture.keyHandle.walletId,
     record: enrollmentRecord(fixture.keyHandle, 1),
   });
-  await expect(newWritePermission(fixture)).resolves.toBeUndefined();
+  await expect(newWritePermission(fixture)).rejects.toMatchObject({
+    reason: "startup-authentication-pending",
+  });
 
   await persistRecoveryRequiredHead(fixture);
   disableBackupGate();
   await expect(newWritePermission(fixture)).resolves.toBeUndefined();
+});
+
+it("allows seed-only recovery for one discovered owner without an account signer", async () => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  const ownerScope = deriveEncryptedWalletBackupOwnerScope({
+    authorizationScheme: "test",
+    ownerSubject: "seed-recovery-owner",
+  });
+  const candidate = { ...ownerScope, enrollmentEpoch: 1 };
+  const head = createEncryptedWalletBackupOwnerCurrentHead({
+    ownerScopeId: candidate.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: candidate.enrollmentEpoch,
+    headVersion: 0,
+    bundles: [],
+  });
+  const evidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+    {
+      ownerScopeId: candidate.ownerScopeId,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: candidate.enrollmentEpoch,
+    },
+  );
+  const competingHead = createEncryptedWalletBackupOwnerCurrentHead({
+    ownerScopeId: candidate.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: candidate.enrollmentEpoch,
+    headVersion: 1,
+    bundles: [],
+  });
+  const competingEvidence = collectEncryptedWalletBackupOwnerDescriptorPages(
+    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head: competingHead, bundles: [] }),
+    {
+      ownerScopeId: candidate.ownerScopeId,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: candidate.enrollmentEpoch,
+    },
+  );
+  const session = authenticatedOwnerSession(candidate);
+  const readCurrentHead = vi
+    .fn()
+    .mockResolvedValueOnce(evidence)
+    .mockResolvedValue(competingEvidence);
+  const client = {
+    discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
+    readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+    readCurrentHead,
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+  };
+  const legacyRecovery = vi.fn();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: session,
+    ownerClient: client as never,
+    recovery: legacyRecovery,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    reportError: vi.fn(),
+  });
+  try {
+    await vi.waitFor(() => expect(readCurrentHead).toHaveBeenCalledTimes(2));
+    await expect(newWritePermission(fixture)).rejects.toMatchObject({
+      reason: "genuine-conflict",
+    });
+    expect(client.operateAccount).not.toHaveBeenCalled();
+    expect(client.mutateHead).not.toHaveBeenCalled();
+    expect(legacyRecovery).not.toHaveBeenCalled();
+  } finally {
+    driver.stop();
+  }
+});
+
+it("retries selected-owner conflict recovery after remote unavailability without legacy V2 fallback", async () => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  const candidate = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "owner-conflict-retry",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const context = {
+    ownerScopeId: candidate.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: candidate.enrollmentEpoch,
+  };
+  const createEvidence = (headVersion: number) => {
+    const head = createEncryptedWalletBackupOwnerCurrentHead({
+      ...context,
+      headVersion,
+      bundles: [],
+    });
+    return collectEncryptedWalletBackupOwnerDescriptorPages(
+      enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
+      context,
+    );
+  };
+  const oldEvidence = createEvidence(0);
+  const competingEvidence = createEvidence(1);
+  const ownerStore = new EncryptedWalletBackupOwnerDexieAuthorityStore({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    ownerScopeId: candidate.ownerScopeId,
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+    enrollmentEpoch: candidate.enrollmentEpoch,
+    requestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+    isCurrent: () => true,
+  });
+  await ownerStore.acceptCurrentHead({ expectedHeadVersion: null, evidence: oldEvidence });
+  await ownerStore.markCompetingHeadRecoveryRequired({ evidence: competingEvidence });
+
+  const readCurrentHead = vi
+    .fn()
+    .mockRejectedValueOnce(new EncryptedWalletBackupOwnerHttpTransportError("unavailable"))
+    .mockResolvedValue(competingEvidence);
+  const ownerClient = {
+    discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
+    readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+    readCurrentHead,
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+  };
+  const legacyRecovery = vi.fn();
+  const reportError = vi.fn();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(candidate),
+    ownerClient: ownerClient as never,
+    recovery: legacyRecovery,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    lockManager: immediateLockManager,
+    loadWallet: vi.fn(),
+    reportError,
+  });
+  try {
+    await vi.waitFor(() => expect(readCurrentHead).toHaveBeenCalledOnce());
+    await expect(ownerStore.readNewWritePermission()).resolves.toMatchObject({
+      canWrite: false,
+      localRecoveryStatus: "recovery-required",
+    });
+    expect(legacyRecovery).not.toHaveBeenCalled();
+
+    driver.resumeAfterRecovery();
+    await vi.waitFor(async () => {
+      const permission = await ownerStore.readNewWritePermission();
+      if (!permission.canWrite && reportError.mock.calls.length > 0)
+        throw reportError.mock.calls[0]![0];
+      expect(permission.canWrite).toBe(true);
+    });
+    expect(readCurrentHead.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(legacyRecovery).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+  } finally {
+    driver.stop();
+  }
+});
+
+it.each([
+  {
+    name: "rate limit with Retry-After",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("rate-limited", 120),
+    minimumDelayMilliseconds: 120_000,
+    maximumDelayMilliseconds: 144_000,
+  },
+  {
+    name: "owner transport failure",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("transport-failure"),
+    minimumDelayMilliseconds: 5_000,
+    maximumDelayMilliseconds: 6_000,
+  },
+])(
+  "retries an owner HTTP $name with its bounded delay",
+  async ({ error, minimumDelayMilliseconds, maximumDelayMilliseconds }) => {
+    enableBackupGate();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const persistedAt = Date.parse("2026-10-23T00:00:00.000Z");
+    vi.setSystemTime(persistedAt);
+    const fixture = await enrollmentFixture();
+    const candidate = {
+      ...deriveEncryptedWalletBackupOwnerScope({
+        authorizationScheme: "test",
+        ownerSubject: "owner-rate-limit-retry",
+      }),
+      enrollmentEpoch: 1,
+    };
+    const client = {
+      discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
+      resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
+      readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+      readCurrentHead: vi.fn().mockRejectedValue(error),
+      mutateHead: vi.fn(),
+      readObject: vi.fn(),
+      operateAccount: vi.fn(),
+    };
+    const retryScheduled = deferred<number>();
+    const scheduleRetry = vi.fn((_task: () => void, delay: number) => {
+      retryScheduled.resolve(delay);
+      return () => undefined;
+    });
+    const reportError = vi.fn();
+    const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+      configuration,
+      ...fixture,
+      ownerSession: authenticatedOwnerSession(candidate),
+      ownerClient: client as never,
+      runtime: crypto,
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+      leadership: immediateLeadership,
+      scheduleRetry,
+      reportError,
+    });
+    try {
+      const delayMilliseconds = await retryScheduled.promise;
+      expect(delayMilliseconds).toBeGreaterThanOrEqual(minimumDelayMilliseconds);
+      expect(delayMilliseconds).toBeLessThanOrEqual(maximumDelayMilliseconds);
+      expect(scheduleRetry).toHaveBeenCalledOnce();
+      expect(reportError).not.toHaveBeenCalled();
+      expect(client.readCurrentHead).toHaveBeenCalledOnce();
+      const retry = await fixture.database.encryptedWalletBackupOwnerRetrySchedulers.get([
+        fixture.scopeId,
+        candidate.ownerScopeId,
+        configuration.realm,
+        fixture.keyHandle.walletId,
+      ]);
+      expect(retry?.retryNotBeforeUnixMilliseconds).toBe(persistedAt + delayMilliseconds);
+    } finally {
+      driver.stop();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each([
+  {
+    code: "conflict",
+    diagnostic: "conflict",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("conflict"),
+  },
+  {
+    code: "private-server-detail",
+    diagnostic: "unknown",
+    error: new EncryptedWalletBackupOwnerHttpTransportError("private-server-detail"),
+  },
+  ...Object.entries({
+    AbortError: "storage-abort",
+    ConstraintError: "storage-constraint",
+    DataError: "storage-data",
+    DatabaseClosedError: "storage-closed",
+    NotFoundError: "storage-not-found",
+    PrematureCommitError: "storage-premature-commit",
+    ReadOnlyError: "storage-read-only",
+    TransactionInactiveError: "storage-transaction-inactive",
+    Error: "javascript-error",
+    TypeError: "javascript-type",
+    RangeError: "javascript-range",
+    SyntaxError: "javascript-syntax",
+    PrivateFailure: "unknown",
+  }).map(([code, diagnostic]) => ({
+    code,
+    diagnostic,
+    error: Object.assign(new Error("private error payload"), { name: code }),
+  })),
+  {
+    code: "throwing-name",
+    diagnostic: "unknown",
+    error: {
+      get name() {
+        throw new Error("private getter payload");
+      },
+    },
+  },
+])("keeps owner failure diagnostic code bounded for $code", async ({ code, diagnostic, error }) => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  const candidate = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: `owner-diagnostic-${code}`,
+    }),
+    enrollmentEpoch: 1,
+  };
+  const ownerClient = {
+    discover: vi.fn().mockResolvedValue([{ entries: [candidate] }]),
+    resolveFirstAccount: vi.fn().mockReturnValue({ kind: "active", owner: candidate }),
+    readEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 1 }),
+    readCurrentHead: vi.fn().mockRejectedValue(error),
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+  };
+  const warning = deferred<string>();
+  const warn = vi.spyOn(console, "warn").mockImplementation((message: unknown) => {
+    if (typeof message === "string" && message.startsWith("encrypted-backup-driver-error="))
+      warning.resolve(message);
+  });
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(candidate),
+    ownerClient: ownerClient as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    scheduleRetry: () => () => undefined,
+  });
+  try {
+    await expect(warning.promise).resolves.toBe(`encrypted-backup-driver-error=${diagnostic}`);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenNthCalledWith(1, `encrypted-backup-driver-error=${diagnostic}`);
+    expect(warn).toHaveBeenNthCalledWith(2, "encrypted-backup-driver-failure-site=unknown");
+  } finally {
+    driver.stop();
+  }
+});
+
+it("blocks configured backup when owner discovery is empty and no signer can enroll", async () => {
+  enableBackupGate();
+  const fixture = await enrollmentFixture();
+  const session = noSignerOwnerSession();
+  const client = {
+    discover: vi.fn().mockResolvedValue([]),
+    resolveFirstAccount: vi.fn(),
+    readEnrollmentEpoch: vi.fn(),
+    readCurrentHead: vi.fn(),
+    mutateHead: vi.fn(),
+    readObject: vi.fn(),
+    operateAccount: vi.fn(),
+  };
+  const reportError = vi.fn();
+  const paused = deferred<void>();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: session,
+    ownerClient: client as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    reportError,
+    onRecoveryStatusChange: (status) => {
+      if (status.kind === "preparing" && status.reason === "authentication") paused.resolve();
+    },
+  });
+  try {
+    await paused.promise;
+    expect(reportError).not.toHaveBeenCalled();
+    expect(client.discover).not.toHaveBeenCalled();
+    await expect(newWritePermission(fixture)).rejects.toMatchObject({
+      reason: "startup-authentication-pending",
+    });
+    expect(client.readCurrentHead).not.toHaveBeenCalled();
+    expect(client.operateAccount).not.toHaveBeenCalled();
+  } finally {
+    driver.stop();
+  }
 });
 
 it("uses the production worker at startup and durably blocks a changed head", async () => {
@@ -1435,7 +2443,7 @@ it("uses the production worker at startup and durably blocks a changed head", as
   databases.push(reopened);
   await expect(
     requireBrowserWalletNewWritePermission({ database: reopened, scopeId: fixture.scopeId }),
-  ).rejects.toThrow(/Another browser changed/);
+  ).rejects.toMatchObject({ reason: "startup-authentication-pending" });
 });
 
 it("refuses startup and later cycles after a persisted conflict, including reopen", async () => {
@@ -1557,6 +2565,48 @@ it.each([true, false])("retries incomplete recovery with a queued wake: %s", asy
   driver.stop();
 });
 
+it("retries incomplete recovery after a targeted recovery pass", async () => {
+  const fixture = await enrollmentFixture();
+  await persistRecoveryRequiredHead(fixture);
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const reportError = vi.fn();
+  const remote = remoteWithEmptyHead(fixture, 1) as unknown as EncryptedWalletBackupV2RemotePort & {
+    readDescriptorPage: ReturnType<typeof vi.fn>;
+  };
+  remote.readDescriptorPage.mockRejectedValueOnce(
+    new EncryptedWalletBackupV2HttpTransportError("unavailable"),
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: remote as never,
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    lockManager: immediateLockManager,
+    loadWallet: vi.fn(),
+    reportError,
+  });
+
+  await vi.waitFor(() => expect(driver.recoveryReason).toBe("remote-unavailable"));
+  expect(worker).not.toHaveBeenCalled();
+  await driver.recoverTargetedAsset({
+    asset: { mintUrl: "https://mint.one.example", unit: "msat", assetIdentity: "ordinary" },
+    requiredAmount: 1n,
+    loadWallet: vi.fn(),
+    readExactMonitoringRecovery: vi.fn(async () => null),
+  });
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+  await expect(readRecoveryStatus(fixture)).resolves.toMatchObject({
+    localRecoveryStatus: "ready",
+  });
+  expect(reportError).not.toHaveBeenCalled();
+  expect(driver.recoveryReason).toBeNull();
+  driver.stop();
+});
+
 it.each([
   { kind: "retry", delay: 5_000 },
   { kind: "quota", delay: 3_600_000 },
@@ -1660,7 +2710,9 @@ it("reinitializes after conflict recovery without requiring another owner to wak
   await changeDesiredToRemoval(fixture.database, fixture.scopeId);
   finishFirstCycle();
   await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(3));
+  // Recovery leaves the driver uninitialized, so only reinitialization starts a third cycle.
+  // The recovery writes can then wake one more idle cycle, depending on timing.
+  await vi.waitFor(() => expect(worker.mock.calls.length).toBeGreaterThanOrEqual(3));
   expect(messages).toContain("encrypted-backup-driver-state=recovery-paused");
   driver.stop();
 });
@@ -2049,14 +3101,271 @@ async function readyEnrolledFixture() {
   return fixture;
 }
 
-it("starts managed removal with the driver's existing enrollment and rejects a stale profile", async () => {
-  const fixture = await readyEnrolledFixture();
-  let current = true;
-  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(fixture, worker, runtimeRemote(), () => current);
+it.each(["started", "resumed"] as const)(
+  "waits for exact managed completion after %s",
+  async (kind) => {
+    const fixture = await readyManagedFixture();
+    const { asset, localAssetKey } = await putRemovalDesired(fixture, "acknowledged");
+    const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+    const cancel = vi.fn();
+    let expire: (() => void) | undefined;
+    const driver = await createManagedRuntime(
+      fixture,
+      worker,
+      runtimeRemote(),
+      () => true,
+      undefined,
+      undefined,
+      (task, delay) => {
+        expect(delay).toBe(10_000);
+        expire = task;
+        return cancel;
+      },
+    );
+    const targets = [
+      { proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 },
+    ];
+    const start = vi
+      .spyOn(removeCoordinator, "startBrowserCtfRemove")
+      .mockResolvedValue({ kind, intentId: "exact-intent" });
+    let settled = false;
+    const removal = driver.removeManagedProofs({ asset, targets }).finally(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      await vi.waitFor(() => expect(expire).toBeTypeOf("function"));
+      // A foreign marker wakes the exact-key query but cannot complete this call.
+      const marker = createBrowserCompletedProofRemovalMarkerRow({
+        scopeId: fixture.scopeId,
+        ownerScopeId: fixture.owner.ownerScopeId,
+        ...targets[0]!,
+        proofRevision: 8,
+        proofCommitment: "51".repeat(32),
+        localAssetKey,
+        removalIntentId: "foreign-intent",
+        proofSetCommitment: "61".repeat(32),
+        completionCustodyRevision: "4",
+        realm: fixture.keyHandle.realm,
+        walletId: fixture.keyHandle.walletId,
+        enrollmentEpoch: 1,
+        acknowledgedHeadVersion: 2,
+        acknowledgedActiveSetDigest: "71".repeat(32),
+        acknowledgementKind: "current-head",
+        receiptDigest: null,
+        acknowledgedAtMs: 2,
+        completedAtMs: 3,
+      });
+      await fixture.database.custodyProofBackupAuthorities.put(marker);
+      expect(settled).toBe(false);
+      await fixture.database.custodyProofBackupAuthorities.put({
+        ...marker,
+        removalIntentId: "exact-intent",
+      });
+      await expect(removal).resolves.toEqual({ kind: "completed", intentId: "exact-intent" });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      driver.stop();
+      await removal;
+    }
+  },
+);
+
+it("keeps one deadline across readiness and completion and returns genuine pending", async () => {
+  const fixture = await readyManagedFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  let expire: (() => void) | undefined;
+  const cancel = vi.fn();
+  const schedule = vi.fn((task: () => void, _delay: number) => {
+    expire = task;
+    return cancel;
+  });
+  const driver = await createManagedRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    schedule,
+  );
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
-    .mockResolvedValue({ kind: "started", intentId: "removal" });
+    .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
+    .mockResolvedValueOnce({ kind: "started", intentId: "exact-intent" });
+  const removal = driver.removeManagedProofs({
+    asset,
+    targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+  });
+  try {
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule.mock.calls[0]?.[1]).toBe(10_000);
+    expire!();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "exact-intent" });
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally {
+    driver.stop();
+    await removal;
+  }
+});
+
+it.each(["stop", "storage-error"] as const)(
+  "cleans an active completion observer after %s",
+  async (ending) => {
+    const fixture = await readyManagedFixture();
+    const { asset } = await putRemovalDesired(fixture, "acknowledged");
+    const cancel = vi.fn();
+    const driver = await createManagedRuntime(
+      fixture,
+      vi.fn().mockResolvedValue({ kind: "idle" }),
+      runtimeRemote(),
+      () => true,
+      undefined,
+      undefined,
+      () => cancel,
+    );
+    let detach: ReturnType<typeof vi.spyOn> | undefined;
+    vi.spyOn(removeCoordinator, "startBrowserCtfRemove").mockImplementation(async (input) => {
+      detach = vi.spyOn(input.signal!, "removeEventListener");
+      return { kind: "started", intentId: "observed-intent" };
+    });
+    const observe = vi.spyOn(removeCoordinator, "readBrowserCtfRemoveCompletion");
+    const target = {
+      proofId: "31".repeat(32),
+      proofFingerprint: "41".repeat(32),
+      proofRevision: 7,
+    };
+    const removal = driver.removeManagedProofs({ asset, targets: [target] });
+    const outcome = removal.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await vi.waitFor(() => expect(observe).toHaveBeenCalled());
+      if (ending === "stop") driver.stop();
+      else
+        await fixture.database.custodyProofBackupAuthorities.put({
+          scopeId: fixture.scopeId,
+          proofId: target.proofId,
+        } as never);
+      const result = await outcome;
+      if (ending === "stop")
+        expect(result).toEqual({ value: { kind: "started", intentId: "observed-intent" } });
+      else expect(result).toMatchObject({ error: expect.any(Error) });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(detach).toHaveBeenCalledWith("abort", expect.any(Function));
+    } finally {
+      driver.stop();
+      await outcome;
+    }
+  },
+);
+
+it("keeps coordinator reentry owned until it drains after the deadline", async () => {
+  const fixture = await readyManagedFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let expire: (() => void) | undefined;
+  const cancel = vi.fn();
+  const driver = await createManagedRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    (task) => {
+      expire = task;
+      return cancel;
+    },
+  );
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
+    .mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { kind: "started", intentId: "drained-intent" };
+    });
+  let settled = false;
+  const removal = driver
+    .removeManagedProofs({
+      asset,
+      targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+    })
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await entered.promise;
+    expire!();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release.resolve();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "drained-intent" });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally {
+    release.resolve();
+    driver.stop();
+    await removal;
+  }
+});
+
+it("does not revive an aborted removal when the same profile resumes", async () => {
+  const fixture = await readyManagedFixture();
+  const { asset } = await putRemovalDesired(fixture, "acknowledged");
+  const schedule = vi.fn(() => vi.fn());
+  const driver = await createManagedRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    undefined,
+    schedule,
+  );
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return { kind: "started", intentId: "old-intent" };
+    });
+  const removal = driver.removeManagedProofs({
+    asset,
+    targets: [{ proofId: "31".repeat(32), proofFingerprint: "41".repeat(32), proofRevision: 7 }],
+  });
+  try {
+    await entered.promise;
+    const handoff = driver.quiesceForSeedHandoff();
+    release.resolve();
+    await expect(removal).resolves.toEqual({ kind: "started", intentId: "old-intent" });
+    await handoff;
+    driver.resumeAfterSeedHandoff();
+    expect(schedule).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledOnce();
+  } finally {
+    driver.stop();
+    release.resolve();
+    await removal;
+  }
+});
+
+it("starts managed removal with the driver's existing enrollment and rejects a stale profile", async () => {
+  const fixture = await readyManagedFixture();
+  let current = true;
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const driver = await createManagedRuntime(fixture, worker, runtimeRemote(), () => current);
+  const start = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockResolvedValue({ kind: "completed", intentId: "removal" });
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://mint.example",
     unit: "msat",
@@ -2076,7 +3385,7 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     const before = worker.mock.calls.length;
     await expect(driver.removeManagedProofs({ asset, targets })).resolves.toEqual({
-      kind: "started",
+      kind: "completed",
       intentId: "removal",
     });
     const input = start.mock.calls[0]![0];
@@ -2089,7 +3398,7 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
 
     current = false;
     await expect(driver.removeManagedProofs({ asset, targets })).rejects.toThrow(
-      "profile is unavailable",
+      "Owner is unavailable",
     );
     expect(start).toHaveBeenCalledOnce();
   } finally {
@@ -2098,12 +3407,12 @@ it("starts managed removal with the driver's existing enrollment and rejects a s
 });
 
 it("reenters managed removal when the desired revision is already acknowledged", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "acknowledged");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let timeoutMilliseconds = 0;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2121,11 +3430,11 @@ it("reenters managed removal when the desired revision is already acknowledged",
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
     .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
-    .mockResolvedValueOnce({ kind: "started", intentId: "after-ack" });
+    .mockResolvedValueOnce({ kind: "completed", intentId: "after-ack" });
   try {
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     await expect(driver.removeManagedProofs({ asset, targets })).resolves.toEqual({
-      kind: "started",
+      kind: "completed",
       intentId: "after-ack",
     });
     expect(start).toHaveBeenCalledTimes(2);
@@ -2139,11 +3448,11 @@ it("reenters managed removal when the desired revision is already acknowledged",
 });
 
 it("waits for a pending desired revision to be acknowledged", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2158,7 +3467,7 @@ it("waits for a pending desired revision to be acknowledged", async () => {
   const start = vi
     .spyOn(removeCoordinator, "startBrowserCtfRemove")
     .mockResolvedValueOnce({ kind: "pending", reason: "backup-not-ready" })
-    .mockResolvedValueOnce({ kind: "started", intentId: "after-ack" });
+    .mockResolvedValueOnce({ kind: "completed", intentId: "after-ack" });
   try {
     await vi.waitFor(() => expect(worker).toHaveBeenCalled());
     const removal = driver.removeManagedProofs({ asset: desired.asset, targets });
@@ -2168,11 +3477,8 @@ it("waits for a pending desired revision to be acknowledged", async () => {
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
-    await expect(removal).resolves.toEqual({ kind: "started", intentId: "after-ack" });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
+    await expect(removal).resolves.toEqual({ kind: "completed", intentId: "after-ack" });
     expect(start).toHaveBeenCalledTimes(2);
     expect(start.mock.calls[0]?.[0].targets).toEqual(targets);
     expect(start.mock.calls[1]?.[0].targets).toEqual(targets);
@@ -2183,12 +3489,12 @@ it("waits for a pending desired revision to be acknowledged", async () => {
 });
 
 it("returns typed pending when backup readiness times out", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const { asset } = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let expire: (() => void) | undefined;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2224,11 +3530,11 @@ it("returns typed pending when backup readiness times out", async () => {
 });
 
 it("returns typed pending when the readiness stream is unavailable", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2267,12 +3573,12 @@ it("returns typed pending when the readiness stream is unavailable", async () =>
 });
 
 it("cleans the readiness subscription and deadline when the driver stops", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
   let waitScheduled = false;
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2307,10 +3613,7 @@ it("cleans the readiness subscription and deadline when the driver stops", async
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(start).toHaveBeenCalledOnce();
   } finally {
@@ -2319,12 +3622,12 @@ it("cleans the readiness subscription and deadline when the driver stops", async
 });
 
 it("stops the readiness wait after a profile change", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   let currentProfile = true;
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
   const cancelTimeout = vi.fn();
-  const driver = createRuntime(
+  const driver = await createManagedRuntime(
     fixture,
     worker,
     runtimeRemote(),
@@ -2349,10 +3652,7 @@ it("stops the readiness wait after a profile change", async () => {
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await expect(removal).resolves.toEqual({
       kind: "pending",
       reason: "backup-not-ready",
@@ -2365,10 +3665,10 @@ it("stops the readiness wait after a profile change", async () => {
 });
 
 it("keeps the pending result when readiness races with coordinator reentry", async () => {
-  const fixture = await readyEnrolledFixture();
+  const fixture = await readyManagedFixture();
   const desired = await putRemovalDesired(fixture, "pending");
   const worker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const driver = createRuntime(fixture, worker);
+  const driver = await createManagedRuntime(fixture, worker);
   const targets = [
     { proofId: "ff".repeat(32), proofFingerprint: "00".repeat(32), proofRevision: 18 },
   ];
@@ -2381,10 +3681,7 @@ it("keeps the pending result when readiness races with coordinator reentry", asy
         desired.localAssetKey,
       ]);
       if (current === undefined) throw new Error("test desired asset is absent");
-      await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-        ...current,
-        syncState: "pending",
-      });
+      await setManagedReadiness(fixture, desired.localAssetKey, "pending");
       return { kind: "pending", reason: "backup-not-ready" };
     });
   try {
@@ -2396,10 +3693,7 @@ it("keeps the pending result when readiness races with coordinator reentry", asy
       desired.localAssetKey,
     ]);
     if (current === undefined) throw new Error("test desired asset is absent");
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...current,
-      syncState: "acknowledged",
-    });
+    await setManagedReadiness(fixture, desired.localAssetKey, "acknowledged");
     await expect(removal).resolves.toEqual({
       kind: "pending",
       reason: "backup-not-ready",
@@ -2539,6 +3833,139 @@ function resolveEpoch(
   });
 }
 
+const actualOwnerWorkerCycle = ownerWorker.runBrowserEncryptedWalletBackupOwnerWorkerCycle;
+
+async function readyManagedFixture() {
+  const fixture = await enrollmentFixture();
+  const owner = {
+    ...deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "test",
+      ownerSubject: "managed-driver-owner",
+    }),
+    enrollmentEpoch: 1,
+  };
+  const ownerRemote = await createOwnerRemovalRemote({ ...fixture, owner, enrollmentEpoch: 1 });
+  return { ...fixture, owner, ownerRemote };
+}
+
+async function setManagedReadiness(
+  fixture: Awaited<ReturnType<typeof readyManagedFixture>>,
+  localAssetKey: string,
+  state: "pending" | "acknowledged",
+) {
+  if (state === "pending") {
+    await fixture.database.encryptedWalletBackupOwnerDesiredAssets.delete([
+      fixture.scopeId,
+      fixture.owner.ownerScopeId,
+      localAssetKey,
+    ]);
+    return;
+  }
+  const desired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+    fixture.scopeId,
+    localAssetKey,
+  ]);
+  if (desired === undefined) throw new Error("test desired asset is absent");
+  const asset = {
+    mintUrl: desired.mintUrl,
+    unit: desired.unit,
+    assetIdentity: desired.assetIdentity,
+  };
+  // Real Owner worker/SDK receipt transition; this lifecycle unit fixture controls
+  // encrypted payload content. Proof-set and deletion authority have separate composition tests.
+  await actualOwnerWorkerCycle({
+    ...fixture,
+    enrollmentEpoch: 1,
+    remote: fixture.ownerRemote.remote,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    assetSource: {
+      read: async () => ({
+        desired,
+        asset,
+        proofs: [],
+        losingProofs: [],
+        refusalHistories: [],
+        counterHighWaterMarks: [],
+      }),
+      prepare: async () =>
+        prepareEncryptedWalletBackupV2TransportBundle({
+          keyHandle: fixture.keyHandle,
+          asset,
+          declaredAmount: BigInt(desired.activeProofCount),
+          custodyRevision: BigInt(desired.custodyRevision),
+          canonicalPayload: new TextEncoder().encode("driver lifecycle fixture"),
+          runtime: crypto,
+        }),
+    },
+  });
+}
+
+async function createManagedRuntime(...args: Parameters<typeof createRuntime>) {
+  const [
+    base,
+    worker,
+    remote = runtimeRemote(),
+    isCurrentProfile = () => true,
+    scheduleRetry,
+    leadership = immediateLeadership,
+    scheduleManagedRemoveTimeout,
+    recovery,
+    lockManager,
+  ] = args;
+  const fixture = base as Awaited<ReturnType<typeof readyManagedFixture>>;
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", configuration.realm);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", configuration.signedOrigin);
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", configuration.pinnedReceiptKeys[0].keyId);
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    configuration.pinnedReceiptKeys[0].publicKey,
+  );
+  const client = fixture.ownerRemote.client;
+  vi.spyOn(client, "discover").mockResolvedValue([{ entries: [fixture.owner] }] as never);
+  vi.spyOn(client, "resolveFirstAccount").mockReturnValue({ kind: "active", owner: fixture.owner });
+  vi.spyOn(client, "readEnrollmentEpoch").mockResolvedValue({
+    status: "active",
+    enrollmentEpoch: 1,
+  });
+  vi.spyOn(client, "readCurrentHead").mockImplementation(
+    fixture.ownerRemote.remote.readCurrentHead,
+  );
+  vi.spyOn(ownerWorker, "runBrowserEncryptedWalletBackupOwnerWorkerCycle").mockImplementation(
+    (input) => {
+      if (input.database !== fixture.database) throw new Error("unexpected driver test wallet");
+      return (
+        worker as ReturnType<
+          typeof vi.fn<typeof ownerWorker.runBrowserEncryptedWalletBackupOwnerWorkerCycle>
+        >
+      )(input);
+    },
+  );
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    ownerSession: authenticatedOwnerSession(fixture.owner),
+    ownerClient: client,
+    remote,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile,
+    scheduleRetry,
+    scheduleManagedRemoveTimeout,
+    leadership,
+    recovery,
+    lockManager,
+  });
+  await vi.waitFor(() =>
+    requireBrowserWalletNewWritePermission({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+    }),
+  );
+  return driver;
+}
+
 function createRuntime(
   fixture: Awaited<ReturnType<typeof runtimeFixture>>,
   worker: ReturnType<typeof vi.fn>,
@@ -2590,7 +4017,16 @@ async function putRemovalDesired(
     custodyRevision: 3n,
     activeProofCount: 1,
   });
-  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({ ...desired, syncState });
+  if ("owner" in fixture) {
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+    await setManagedReadiness(
+      fixture as Awaited<ReturnType<typeof readyManagedFixture>>,
+      desired.localAssetKey,
+      syncState,
+    );
+  } else {
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({ ...desired, syncState });
+  }
   return { asset, localAssetKey: desired.localAssetKey };
 }
 
@@ -2748,6 +4184,32 @@ const immediateLeadership = {
   },
 };
 
+function authenticatedOwnerSession(
+  owner: ReturnType<typeof deriveEncryptedWalletBackupOwnerScope>,
+): BrowserEncryptedWalletBackupOwnerSession {
+  return Object.freeze({
+    ...noSignerOwnerSession(),
+    authenticatedOwnerScope: owner,
+    requireLifecycleOwner(candidate: typeof owner) {
+      if (candidate.ownerScopeId !== owner.ownerScopeId) throw new Error("owner changed");
+      return owner;
+    },
+  });
+}
+
+function noSignerOwnerSession(): BrowserEncryptedWalletBackupOwnerSession {
+  return Object.freeze({
+    authenticatedOwnerScope: null,
+    signal: new AbortController().signal,
+    isCurrent: () => true,
+    requireCurrent() {},
+    requireLifecycleOwner() {
+      throw new Error("lifecycle owner unavailable without an account signer");
+    },
+    dispose() {},
+  });
+}
+
 const immediateLockManager = {
   request: async <T>(_name: string, _options: LockOptions, action: LockGrantedCallback<T>) =>
     action(null),
@@ -2796,3 +4258,103 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it.each(["account-result", "account-error"] as const)(
+  "rediscovery classifies %s conflict only from the new verified result",
+  async (kind) => {
+    const fixture = await enrollmentFixture();
+    const ndk = getNdk();
+    const oldSigner = ndk.signer;
+    const signer = new NDKPrivateKeySigner("11".repeat(32));
+    ndk.signer = signer;
+    const user = await signer.user();
+    const owner = deriveEncryptedWalletBackupOwnerScope({
+      authorizationScheme: "nip98-backup-intent-v1",
+      ownerSubject: user.pubkey,
+    });
+    const firstPages = [{ entries: [] }];
+    const secondPages = [{ entries: [] }];
+    const resolved = vi
+      .fn()
+      .mockReturnValueOnce({ kind: "absent" })
+      .mockImplementationOnce(() => {
+        throw new EncryptedWalletBackupFirstAccountError("wrong-account");
+      });
+    const client = {
+      discover: vi.fn().mockResolvedValueOnce(firstPages).mockResolvedValueOnce(secondPages),
+      resolveFirstAccount: resolved,
+      operateAccount: vi
+        .fn()
+        .mockResolvedValue(
+          kind === "account-result" ? { kind, result: "conflict" } : { kind, code: "conflict" },
+        ),
+      readEnrollmentEpoch: vi.fn(),
+      readCurrentHead: vi.fn(),
+      mutateHead: vi.fn(),
+      readObject: vi.fn(),
+    };
+    const stopped = deferred<void>();
+    const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+      configuration,
+      ...fixture,
+      ownerSession: authenticatedOwnerSession(owner),
+      ownerClient: client as never,
+      runtime: crypto,
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+      leadership: immediateLeadership,
+      reportError: vi.fn(),
+      onRecoveryStatusChange: (status) => {
+        if (status.kind === "blocked" && status.reason === "wrong-account") stopped.resolve();
+      },
+    });
+    try {
+      await stopped.promise;
+      expect(client.discover).toHaveBeenCalledTimes(2);
+      expect(resolved).toHaveBeenNthCalledWith(1, { pages: firstPages, authenticatedOwner: owner });
+      expect(resolved).toHaveBeenNthCalledWith(2, {
+        pages: secondPages,
+        authenticatedOwner: owner,
+      });
+      expect(client.operateAccount).toHaveBeenCalledOnce();
+      expect(client.readCurrentHead).not.toHaveBeenCalled();
+      expect(await fixture.database.encryptedWalletBackupOwnerEnrollmentResults.count()).toBe(0);
+    } finally {
+      driver.stop();
+      ndk.signer = oldSigner;
+    }
+  },
+);
+
+it.each([
+  ["/src/lib/browserEncryptedWalletBackupOwnerAdmission.ts", "owner-admission"],
+  ["/src/lib/browserEncryptedWalletBackupV2Admission.ts", "asset-admission"],
+  ["/src/lib/browserEncryptedWalletBackupV2Restore.ts", "asset-restore"],
+  ["/src/stores/browser-proof-backup-authority.ts", "proof-authority"],
+  ["/src/stores/browser-encrypted-wallet-backup-v2-desired-asset.ts", "desired-asset"],
+  ["/src/stores/durable-custody-db.ts", "durable-custody"],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerHead.ts",
+    "sdk-owner-head",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerServiceCodec.ts",
+    "sdk-owner-codec",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/encryptedWalletBackupOwnerSync.ts",
+    "sdk-owner-sync",
+  ],
+  [
+    "/@fs/home/dev/bitCaster/bitcaster-client-sdk/src/durableCustodyProofMaterial.ts",
+    "sdk-proof-material",
+  ],
+])("bounds recovery diagnostic source %s", (path, owner) => {
+  const stack = `Error: private token and proof material\n    at http://localhost:5273${path}?private=do-not-emit#secret:31:7`;
+  expect(encryptedWalletBackupDriverFailureSite({ stack })).toBe(`${owner}@31:7`);
+  expect(
+    encryptedWalletBackupDriverFailureSite({
+      stack: `Error: private\n    at http://localhost:5273${path}.evil:31:7`,
+    }),
+  ).toBe("unknown");
+});

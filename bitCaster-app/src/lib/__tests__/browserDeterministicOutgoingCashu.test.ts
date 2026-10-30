@@ -5,8 +5,32 @@ import {
   type Proof,
   type SwapPreview,
 } from "@cashu/cashu-ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { prepareBrowserDeterministicOutgoingCashuSend } from "../browserDeterministicOutgoingCashu";
+import { browserOutgoingCounterPreparationFor } from "../browserOutgoingCounterPreparation";
+
+const draftWalletMock = vi.hoisted(() => ({
+  create: null as
+    | ((input: { counterSource: import("@cashu/cashu-ts").CounterSource }) => unknown)
+    | null,
+}));
+
+vi.mock("../../stores/browser-wallet-counter-db", () => ({
+  BrowserWalletCounterDexieStore: class {
+    async readSnapshotInContext(_context: unknown, keysetId: string) {
+      return { keysetId, nextCounter: 17 };
+    }
+  },
+}));
+
+vi.mock("../../stores/wallet", () => ({
+  createUncachedWalletForSeedUnit: (input: {
+    counterSource: import("@cashu/cashu-ts").CounterSource;
+  }) => {
+    if (draftWalletMock.create === null) throw new Error("draft wallet mock is not configured");
+    return draftWalletMock.create(input);
+  },
+}));
 
 const KEYSET_ID = `01${"a".repeat(64)}`;
 const SEED = new Uint8Array(64).fill(7);
@@ -19,21 +43,32 @@ const INPUT_PROOF = {
 
 describe("browser deterministic outgoing Cashu preparation", () => {
   it("keeps the serialized operation contract and exact change locators", async () => {
-    const counters: OperationCounters = {
-      keysetId: KEYSET_ID,
-      start: 17,
-      count: 2,
-      next: 19,
-    };
-    const preview = createPreview(counters.start);
+    let prepareCalls = 0;
+    draftWalletMock.create = async ({ counterSource }) => ({
+      getKeyset: () => ({ id: KEYSET_ID, verify: () => true }),
+      prepareSwapToSend: async (
+        _amount: number,
+        _proofs: Proof[],
+        config: { onCountersReserved: (counters: OperationCounters) => void },
+      ): Promise<SwapPreview> => {
+        prepareCalls += 1;
+        const range = await counterSource.reserve(KEYSET_ID, 2);
+        const counters: OperationCounters = {
+          keysetId: KEYSET_ID,
+          start: range.start,
+          count: range.count,
+          next: range.start + range.count,
+        };
+        config.onCountersReserved(counters);
+        return createPreview(range.start);
+      },
+    });
     const keepProofDerivationLocators: Array<{
       schemaVersion: 1;
       kind: "nut13";
       keysetId: string;
       counter: number;
     } | null> = [null];
-    let prepareCalls = 0;
-
     const operation = await prepareBrowserDeterministicOutgoingCashuSend({
       operationId: "browser-send-1",
       amount: 2,
@@ -43,12 +78,11 @@ describe("browser deterministic outgoing Cashu preparation", () => {
       seed: SEED,
       wallet: {
         getKeyset: () => ({ id: KEYSET_ID }),
-        prepareSwapToSend: async (_amount, _proofs, config) => {
-          prepareCalls += 1;
-          config.onCountersReserved(counters);
-          return preview;
+        prepareSwapToSend: async () => {
+          throw new Error("active wallet must not prepare outgoing outputs");
         },
       },
+      requireCapturedProfile: () => undefined,
       keepProofDerivationLocators,
       diagnosticLabel: "browser send",
     });
@@ -61,6 +95,9 @@ describe("browser deterministic outgoing Cashu preparation", () => {
     expect(operation.preview.keepOutputs).toHaveLength(1);
     expect(keepProofDerivationLocators).toEqual([
       { schemaVersion: 1, kind: "nut13", keysetId: KEYSET_ID, counter: 18 },
+    ]);
+    expect(browserOutgoingCounterPreparationFor(operation).transcript.changes()).toEqual([
+      { keysetId: KEYSET_ID, expectedNextCounter: 17, nextCounter: 19 },
     ]);
   });
 });

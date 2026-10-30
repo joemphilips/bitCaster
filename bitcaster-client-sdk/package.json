@@ -7,6 +7,42 @@
     "node": ">=22"
   },
   "exports": {
+    "./assetMonitoring": {
+      "types": "./dist/assetMonitoring.d.ts",
+      "import": "./dist/assetMonitoring.js"
+    },
+    "./marketLifecycle": {
+      "types": "./dist/marketLifecycle.d.ts",
+      "import": "./dist/marketLifecycle.js"
+    },
+    "./engineUrlSecurity": {
+      "types": "./dist/engineUrlSecurity.d.ts",
+      "import": "./dist/engineUrlSecurity.js"
+    },
+    "./marketCreationInput": {
+      "types": "./dist/marketCreationInput.d.ts",
+      "import": "./dist/marketCreationInput.js"
+    },
+    "./mintMetadata": {
+      "types": "./dist/mintMetadata.d.ts",
+      "import": "./dist/mintMetadata.js"
+    },
+    "./nostrProfile": {
+      "types": "./dist/nostrProfile.d.ts",
+      "import": "./dist/nostrProfile.js"
+    },
+    "./nostrSignerKey": {
+      "types": "./dist/nostrSignerKey.d.ts",
+      "import": "./dist/nostrSignerKey.js"
+    },
+    "./displayResync": {
+      "types": "./dist/displayResync.d.ts",
+      "import": "./dist/displayResync.js"
+    },
+    "./publicNostrProfileCache": {
+      "types": "./dist/publicNostrProfileCache.d.ts",
+      "import": "./dist/publicNostrProfileCache.js"
+    },
     "./outgoingCashuActivity": {
       "types": "./dist/outgoingCashuActivity.d.ts",
       "import": "./dist/outgoingCashuActivity.js"
@@ -79,6 +115,10 @@
       "types": "./dist/durableSeedDerivedOutputs.d.ts",
       "import": "./dist/durableSeedDerivedOutputs.js"
     },
+    "./speculativeCounterTranscript": {
+      "types": "./dist/speculativeCounterTranscript.d.ts",
+      "import": "./dist/speculativeCounterTranscript.js"
+    },
     "./durableSeedDerivedProofLineage": {
       "types": "./dist/durableSeedDerivedProofLineage.d.ts",
       "import": "./dist/durableSeedDerivedProofLineage.js"
@@ -134,6 +174,30 @@
     "./encryptedWalletBackupV2HttpAdapter": {
       "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
       "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
+    },
+    "./encryptedWalletBackupOwnerHttpAdapter": {
+      "types": "./dist/encryptedWalletBackupOwnerHttpAdapter.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerHttpAdapter.js"
+    },
+    "./encryptedWalletBackupOwnerClient": {
+      "types": "./dist/encryptedWalletBackupOwnerClient.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerClient.js"
+    },
+    "./encryptedWalletBackupOwnerDiscovery": {
+      "types": "./dist/encryptedWalletBackupOwnerDiscovery.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerDiscovery.js"
+    },
+    "./encryptedWalletBackupOwnerHead": {
+      "types": "./dist/encryptedWalletBackupOwnerHead.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerHead.js"
+    },
+    "./encryptedWalletBackupOwnerServiceCodec": {
+      "types": "./dist/encryptedWalletBackupOwnerServiceCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerServiceCodec.js"
+    },
+    "./encryptedWalletBackupOwnerDeletionAuthority": {
+      "types": "./dist/encryptedWalletBackupOwnerDeletionAuthority.d.ts",
+      "import": "./dist/encryptedWalletBackupOwnerDeletionAuthority.js"
     },
     "./encryptedWalletBackupV2RequestProof": {
       "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
@@ -283,6 +347,18 @@
       "types": "./dist/durableWalletProofTransition.d.ts",
       "import": "./dist/durableWalletProofTransition.js"
     },
+    "./seedRecoveryScanPolicy": {
+      "types": "./dist/seedRecoveryScanPolicy.d.ts",
+      "import": "./dist/seedRecoveryScanPolicy.js"
+    },
+    "./seedRecoveryMnemonic": {
+      "types": "./dist/seedRecoveryMnemonic.d.ts",
+      "import": "./dist/seedRecoveryMnemonic.js"
+    },
+    "./seedRecoveryPhraseFile": {
+      "types": "./dist/seedRecoveryPhraseFile.d.ts",
+      "import": "./dist/seedRecoveryPhraseFile.js"
+    },
     "./emergencySeedRecovery": {
       "types": "./dist/emergencySeedRecovery.d.ts",
       "import": "./dist/emergencySeedRecovery.js"
@@ -431,6 +507,22 @@
     "./oracleBackupAccess": {
       "types": "./dist/oracleBackupAccess.d.ts",
       "import": "./dist/oracleBackupAccess.js"
+    },
+    "./nostrMediaUpload": {
+      "types": "./dist/nostrMediaUpload.d.ts",
+      "import": "./dist/nostrMediaUpload.js"
+    },
+    "./nostrProfileImageHeader": {
+      "types": "./dist/nostrProfileImageHeader.d.ts",
+      "import": "./dist/nostrProfileImageHeader.js"
+    },
+    "./ctfConditionRegistration": {
+      "types": "./dist/ctfConditionRegistration.d.ts",
+      "import": "./dist/ctfConditionRegistration.js"
+    },
+    "./cashuProofAdmission": {
+      "types": "./dist/cashuProofAdmission.d.ts",
+      "import": "./dist/cashuProofAdmission.js"
     }
   },
   "scripts": {
@@ -450,6 +542,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@scure/bip39": "2.0.1",
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",

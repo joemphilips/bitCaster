@@ -1,3 +1,9 @@
+import {
+  requireEncryptedWalletBackupOwnerCurrentInventoryScope,
+  type EncryptedWalletBackupOwnerCurrentInventory,
+} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerServiceCodec";
+import { EncryptedWalletBackupOwnerHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHttpAdapter";
+import { requireValidCashuProofs, requireSupportedCashuKeysetId } from "@bitcaster/client-sdk";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -8,25 +14,18 @@ import {
   deriveEncryptedWalletBackupV2AssetLocator,
   EncryptedWalletBackupV2HttpTransportError,
   locateSeedDerivedProofLineage,
-  prepareEncryptedWalletBackupV2RequestProof,
   recoverTargetedAsset,
   type AssetMonitoringAssetResponse,
   type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2KeyHandle,
-  type EncryptedWalletBackupV2RemotePort,
   type TargetedAssetRecoveryInput,
   type TargetedAssetRecoveryAttemptKey,
   type TargetedAssetRecoveryCompletedOutcome,
   type TargetedAssetRecoveryMintRequest,
   type TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
-import {
-  isBlsKeyset,
-  verifyProofsForReceive,
-  type Proof,
-  type Wallet as CashuWallet,
-} from "@cashu/cashu-ts";
+import { type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   admitBrowserReceivedProofsWithHeldProfileLock,
   type AdmitBrowserReceivedProofsInput,
@@ -35,8 +34,8 @@ import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
   BrowserEncryptedWalletBackupV2LocalCustodyError,
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
-  restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
-  type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset,
+  type BrowserEncryptedWalletBackupOwnerTargetedAuthority,
   type BrowserEncryptedWalletBackupV2FailureClass,
   type BrowserEncryptedWalletBackupV2RestoreStage,
 } from "./browserEncryptedWalletBackupV2Restore";
@@ -50,7 +49,7 @@ import {
   type StoredProof,
 } from "../stores/proof-db";
 
-export interface BrowserTargetedAssetRecoveryInput {
+export interface BrowserTargetedAssetRecoveryInput extends BrowserEncryptedWalletBackupOwnerTargetedAuthority {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly seed: Uint8Array;
@@ -62,10 +61,6 @@ export interface BrowserTargetedAssetRecoveryInput {
   readonly loadWallet: () => Promise<CashuWallet>;
   /** Loads the exact engine fact only after authenticated backup absence. */
   readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
-  readonly remote: EncryptedWalletBackupV2RemotePort;
-  readonly requestUrl: BrowserEncryptedWalletBackupV2TargetedRestoreInput["requestUrl"];
-  readonly currentInventoryUrl: string;
-  readonly nowUnixSeconds: () => number;
   readonly completedAtUnixMilliseconds: () => number;
   readonly runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly signal: AbortSignal;
@@ -128,6 +123,14 @@ export async function recoverBrowserTargetedAsset(
     if (scope.scopeId !== input.scopeId || scope.walletId !== input.keyHandle.walletId) {
       throw new Error("targeted asset recovery scope is foreign");
     }
+    if (
+      input.ownerContext.walletId !== scope.walletId ||
+      input.ownerContext.realm !== input.keyHandle.realm ||
+      input.ownerContext.ownerScopeId !== input.owner.ownerScopeId ||
+      input.ownerContext.enrollmentEpoch !== input.owner.enrollmentEpoch ||
+      input.enrollmentEpoch !== input.ownerContext.enrollmentEpoch
+    )
+      throw new Error("targeted asset recovery owner is foreign");
     const recovery = await recoveryInput(input);
     let actionStarted = false;
     try {
@@ -212,8 +215,12 @@ function recoveryPorts(
     },
     readAuthenticatedCurrentBackupInventory: (recovery: TargetedAssetRecoveryInput) =>
       readCurrentInventory(input, recovery, report, reportDiagnostic),
-    restoreAndAdmitBackup: async () => {
-      await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+    restoreAndAdmitBackup: async (
+      _recovery: TargetedAssetRecoveryInput,
+      inventory: EncryptedWalletBackupOwnerCurrentInventory,
+    ) => {
+      await restoreAndAdmitBrowserEncryptedWalletBackupOwnerTargetedAsset({
+        inventory,
         ...input,
         loadWallet: wallet,
         minimumAvailableAmount: input.requiredAmount,
@@ -270,28 +277,18 @@ async function readCurrentInventory(
   report: (stage: BrowserTargetedAssetRecoveryStage) => void,
   reportDiagnostic: (code: BrowserTargetedAssetRecoveryDiagnostic) => void,
 ) {
-  let phase: "setup" | "auth" | "remote" | "response" = "setup";
+  let phase: "setup" | "remote" | "response" = "setup";
   try {
     requireCurrent(input);
-    const issuedAtUnixSeconds = input.nowUnixSeconds();
-    phase = "auth";
-    const requestProof = await prepareEncryptedWalletBackupV2RequestProof({
-      keyHandle: input.keyHandle,
-      enrollmentEpoch: input.enrollmentEpoch,
-      method: "GET",
-      url: input.currentInventoryUrl,
-      issuedAtUnixSeconds,
-      expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
-      payload: new Uint8Array(),
-      signal: input.signal,
-      runtime: input.runtime,
-    });
-    phase = "setup";
-    requireCurrent(input);
     phase = "remote";
-    const inventory = await input.remote.readCurrentInventory({
-      requestProof,
+    const response = await input.ownerClient.readCurrentInventory({
+      owner: input.owner,
+      enrollmentEpoch: input.ownerContext.enrollmentEpoch,
       signal: input.signal,
+    });
+    const inventory = requireEncryptedWalletBackupOwnerCurrentInventoryScope({
+      inventory: response,
+      expectedContext: input.ownerContext,
     });
     phase = "setup";
     requireCurrent(input);
@@ -302,18 +299,17 @@ async function readCurrentInventory(
     return {
       kind: "available" as const,
       headVersion: inventory.headVersion,
-      exactEntry: exact !== undefined && exact.declaredAmount >= input.requiredAmount ? true : null,
+      exactEntry:
+        exact !== undefined && exact.declaredAmount >= input.requiredAmount ? inventory : null,
     };
   } catch (cause) {
     report("current-inventory");
     const diagnostic =
       phase === "remote"
         ? currentInventoryDiagnostic(cause)
-        : phase === "auth"
-          ? "current-inventory-auth"
-          : phase === "response"
-            ? "current-inventory-decode-or-digest"
-            : "setup";
+        : phase === "response"
+          ? "current-inventory-decode-or-digest"
+          : "setup";
     reportDiagnostic(diagnostic);
     throw new Error("targeted asset recovery inventory failed");
   }
@@ -328,7 +324,10 @@ function currentInventoryDiagnostic(
   | "current-inventory-decode-or-digest"
   | "current-inventory-remote"
 > {
-  if (!(cause instanceof EncryptedWalletBackupV2HttpTransportError)) {
+  if (
+    !(cause instanceof EncryptedWalletBackupV2HttpTransportError) &&
+    !(cause instanceof EncryptedWalletBackupOwnerHttpTransportError)
+  ) {
     return "current-inventory-remote";
   }
   switch (cause.code) {
@@ -350,7 +349,7 @@ function currentInventoryDiagnostic(
     case "unavailable":
       return "current-inventory-remote";
     default:
-      return assertNever(cause.code);
+      return "current-inventory-remote";
   }
 }
 
@@ -527,9 +526,7 @@ function verifyExactMintProofs(
   proofs: readonly Proof[],
 ): void {
   for (const proof of proofs) requireProofAsset(input.asset, wallet, proof);
-  verifyProofsForReceive([...proofs], (keysetId) => wallet.getKeyset(keysetId), {
-    requireDleq: true,
-  });
+  requireValidCashuProofs([...proofs], (keysetId) => wallet.getKeyset(keysetId));
 }
 
 async function admitExactMintProofs(
@@ -687,9 +684,7 @@ function requireProofAsset(
   wallet: CashuWallet,
   proof: Proof,
 ): void {
-  if (isBlsKeyset(proof.id)) {
-    throw new Error("targeted asset recovery BLS keyset is unsupported");
-  }
+  requireSupportedCashuKeysetId(proof.id);
   const keyset = wallet.getKeyset(proof.id);
   if (keyset.unit !== asset.unit || !keyset.verify()) {
     throw new Error("targeted asset recovery mint keyset is invalid");
@@ -717,9 +712,7 @@ function requireMintAuthority(
     throw new Error("targeted asset recovery mint is foreign");
   }
   for (const keysetId of new Set(requests.map(({ keysetId }) => keysetId))) {
-    if (isBlsKeyset(keysetId)) {
-      throw new Error("targeted asset recovery BLS keyset is unsupported");
-    }
+    requireSupportedCashuKeysetId(keysetId);
     const keyset = wallet.getKeyset(keysetId);
     if (!keyset.hasKeys || keyset.unit !== input.asset.unit || !keyset.verify()) {
       throw new Error("targeted asset recovery mint keyset is invalid");

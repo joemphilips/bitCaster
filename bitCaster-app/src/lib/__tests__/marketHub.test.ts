@@ -52,6 +52,7 @@ import {
   onMarketCommentsChanged,
   onMarketFundingUpdated,
   onMarketRejoined,
+  onMarketResyncRequired,
   observePortfolioValuations,
   parseConfirmedTradeRecorded,
   parseMarketFundingUpdated,
@@ -121,6 +122,124 @@ beforeEach(async () => {
 });
 
 describe("joinMarket reconnect recovery", () => {
+  it("shares an in-flight refusal with every owner instead of treating a refcount as success", async () => {
+    let rejectJoin!: (reason: Error) => void;
+    let entered!: () => void;
+    const invoked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    signalrMock.connection.invoke.mockImplementationOnce(() => {
+      entered();
+      return new Promise<undefined>((_resolve, reject) => {
+        rejectJoin = reject;
+      });
+    });
+    const first = joinMarket("cond-YES");
+    await invoked;
+    const second = joinMarket("cond-YES");
+    const settled = Promise.allSettled([first, second]);
+    rejectJoin(new Error("Too many market subscriptions"));
+    expect((await settled).map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(1);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(1);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenLastCalledWith("LeaveMarket", "cond-YES");
+  });
+
+  it("retries an unacknowledged join for a new owner and preserves each owner's cleanup", async () => {
+    signalrMock.connection.invoke.mockRejectedValueOnce(new Error("Join budget exhausted"));
+    await expect(joinMarket("cond-YES")).rejects.toThrow("Join budget exhausted");
+    await joinMarket("cond-YES");
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+    ]);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(2);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenLastCalledWith("LeaveMarket", "cond-YES");
+  });
+
+  it("uses explicit snapshot retry after refusal without adding an owner", async () => {
+    signalrMock.connection.invoke.mockRejectedValueOnce(new Error("Join budget exhausted"));
+    await expect(joinMarket("cond-YES")).rejects.toThrow("Join budget exhausted");
+    await refreshMarketSnapshot("cond-YES");
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+      ["LeaveMarket", "cond-YES"],
+    ]);
+  });
+
+  it("does not let an old connection acknowledgment hide a refused reconnect join", async () => {
+    let completeOld!: () => void;
+    let entered!: () => void;
+    const invoked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    signalrMock.connection.invoke.mockImplementationOnce(() => {
+      entered();
+      return new Promise<undefined>((resolve) => {
+        completeOld = () => resolve(undefined);
+      });
+    });
+    const oldJoin = joinMarket("cond-YES");
+    await invoked;
+    let warned!: () => void;
+    const refusalObserved = new Promise<void>((resolve) => {
+      warned = resolve;
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => warned());
+    signalrMock.connection.invoke.mockRejectedValueOnce(new Error("Join budget exhausted"));
+    signalrMock.connection.reconnectedHandler?.();
+    await refusalObserved;
+    completeOld();
+    await oldJoin;
+    await joinMarket("cond-YES");
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+    ]);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(3);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenLastCalledWith("LeaveMarket", "cond-YES");
+    warning.mockRestore();
+  });
+
+  it("does not let an old snapshot refresh acknowledge a refused replacement owner", async () => {
+    await joinMarket("cond-YES");
+    let completeRefresh!: () => void;
+    let entered!: () => void;
+    const invoked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    signalrMock.connection.invoke.mockImplementationOnce(() => {
+      entered();
+      return new Promise<undefined>((resolve) => {
+        completeRefresh = () => resolve(undefined);
+      });
+    });
+    const oldRefresh = refreshMarketSnapshot("cond-YES");
+    await invoked;
+    const trailing = refreshMarketSnapshot("cond-YES");
+    await leaveMarket("cond-YES");
+    signalrMock.connection.invoke.mockRejectedValueOnce(new Error("Join budget exhausted"));
+    await expect(joinMarket("cond-YES")).rejects.toThrow("Join budget exhausted");
+    completeRefresh();
+    await Promise.all([oldRefresh, trailing]);
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(4);
+    await joinMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(5);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(5);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenLastCalledWith("LeaveMarket", "cond-YES");
+  });
+
   it("does not treat reservation-time Matched as a confirmed trade", async () => {
     await joinMarket("cond-YES");
 
@@ -720,4 +839,44 @@ describe("MarketFundingUpdated snapshots", () => {
   it("parses a valid event as one total-and-revision observation", () => {
     expect(parseMarketFundingUpdated(fundingMessage())).toEqual(fundingMessage());
   });
+});
+
+it("routes scoped loss only to that condition and portfolio membership without rejoining", async () => {
+  const conditionA = "a".repeat(64),
+    conditionB = "b".repeat(64);
+  const a = vi.fn(),
+    b = vi.fn(),
+    portfolioRepair = vi.fn();
+  const removeA = onMarketResyncRequired(conditionA, a);
+  const removeB = onMarketResyncRequired(conditionB, b);
+  const observer = observePortfolioValuations(vi.fn(), portfolioRepair);
+  await observer.replaceConditionIds([conditionA]);
+  const invokes = signalrMock.connection.invoke.mock.calls.length;
+  const receive = signalrMock.registeredHandlers.get("ResyncRequired")!;
+  receive({ token: "1".repeat(32), conditionId: conditionA });
+  expect(a).toHaveBeenCalledWith("1".repeat(32));
+  expect(b).not.toHaveBeenCalled();
+  expect(portfolioRepair).toHaveBeenCalledWith("1".repeat(32));
+  receive({ token: "invalid", conditionId: null });
+  expect(a).toHaveBeenCalledTimes(1);
+  receive({ token: "2".repeat(32), conditionId: null });
+  expect(a).toHaveBeenCalledTimes(2);
+  expect(b).toHaveBeenCalledTimes(1);
+  expect(portfolioRepair).toHaveBeenCalledTimes(2);
+  expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(invokes);
+  removeA();
+  removeB();
+  observer.dispose();
+});
+
+it("repairs a subscribed portfolio with no conditional assets on global loss", async () => {
+  const repair = vi.fn();
+  const observer = observePortfolioValuations(vi.fn(), repair);
+  await observer.replaceConditionIds([]);
+  const receive = signalrMock.registeredHandlers.get("ResyncRequired")!;
+  receive({ token: "3".repeat(32), conditionId: "a".repeat(64) });
+  expect(repair).not.toHaveBeenCalled();
+  receive({ token: "4".repeat(32), conditionId: null });
+  expect(repair).toHaveBeenCalledWith("4".repeat(32));
+  observer.dispose();
 });

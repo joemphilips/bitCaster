@@ -1,4 +1,12 @@
 import Dexie from "dexie";
+import {
+  createSpeculativeCounterTranscript,
+  type SpeculativeCounterTranscript,
+} from "@bitcaster/client-sdk/speculativeCounterTranscript";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSnapshotConflictError,
+} from "@/stores/browser-wallet-counter-db";
 import type { MintQuoteResponse, OperationCounters, Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   bindDurableBolt11MintQuoteOperation,
@@ -22,7 +30,7 @@ import {
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
-import { getWalletForMnemonicUnit } from "@/stores/wallet";
+import { getWalletForMnemonicUnit, createUncachedWalletForMnemonicUnit } from "@/stores/wallet";
 import {
   getProofOperation,
   prepareProofOperation,
@@ -66,6 +74,12 @@ export interface ActiveBrowserDurableBolt11MintQuoteSubscription {
 interface CoordinatorContext extends BrowserMintPersistenceContext {
   readonly mnemonic: string;
   readonly lockManager?: Pick<LockManager, "request">;
+  readonly observePrepared?: (
+    operation: ReturnType<typeof serializeDurableWalletMintOperation>,
+  ) => Promise<void>;
+  readonly injectPreparationFault?: (
+    phase: "counter-written" | "journal-bound" | "after-commit",
+  ) => void;
 }
 
 /** Create the invoice authority before any caller can expose its invoice. */
@@ -88,11 +102,93 @@ export async function createBrowserDurableBolt11MintQuote(
       const mintQuote = await wallet.createMintQuote(amount);
       context.requireCapturedProfile();
       const quote = quoteFromMintResponse(mintUrl, unit, amount, mintQuote);
-      const prepared = await prepareExactMintOperation({ context, wallet, quote, mintQuote, unit });
-      context.requireCapturedProfile();
-      const persisted = await persistQuoteAndOperation({ context, quote, ...prepared, unit });
-      context.requireCapturedProfile();
-      return { quote: persisted, invoiceRequest: persisted.invoiceRequest };
+      const selected = wallet.getKeyset();
+      if (
+        !selected ||
+        !/^01[0-9a-f]{64}$/.test(selected.id) ||
+        selected.unit !== unit ||
+        selected.conditional !== undefined ||
+        selected.verify() !== true
+      )
+        throw new Error("BOLT11 mint output keyset is invalid");
+      const pinned = {
+        id: selected.id,
+        unit: selected.unit,
+        fee: selected.fee,
+        expiry: selected.expiry,
+        keys: { ...selected.keys },
+      };
+      const counters = new BrowserWalletCounterDexieStore({
+        database: context.database,
+        scopeId: context.scopeId,
+        isCurrentProfile: () => {
+          context.requireCapturedProfile();
+          return true;
+        },
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const transcript = createSpeculativeCounterTranscript([
+          await counters.readSnapshotInContext({ mintUrl, unit }, pinned.id),
+        ]);
+        const draftWallet = await createUncachedWalletForMnemonicUnit({
+          mintUrl,
+          unit,
+          mnemonic: context.mnemonic,
+          scopeId: context.scopeId,
+          database: context.database,
+          requireCapturedProfile: context.requireCapturedProfile,
+          counterSource: transcript.counterSource,
+        });
+        const keyset = draftWallet.getKeyset(pinned.id);
+        if (
+          keyset.id !== pinned.id ||
+          keyset.unit !== pinned.unit ||
+          keyset.fee !== pinned.fee ||
+          keyset.expiry !== pinned.expiry ||
+          keyset.conditional !== undefined ||
+          keyset.verify() !== true ||
+          JSON.stringify(Object.entries(keyset.keys).sort()) !==
+            JSON.stringify(Object.entries(pinned.keys).sort())
+        )
+          throw new Error("BOLT11 mint pinned keyset changed");
+        const prepared = await prepareExactMintOperation({
+          context,
+          wallet: draftWallet,
+          quote,
+          mintQuote,
+          unit,
+          keysetId: pinned.id,
+          transcript,
+        });
+        context.requireCapturedProfile();
+        await context.observePrepared?.(structuredClone(prepared.operation));
+        context.requireCapturedProfile();
+        try {
+          const persisted = await persistQuoteAndOperation({
+            context,
+            quote,
+            ...prepared,
+            unit,
+            transcript,
+            counterStore: counters,
+          });
+          context.injectPreparationFault?.("after-commit");
+          context.requireCapturedProfile();
+          return { quote: persisted, invoiceRequest: persisted.invoiceRequest };
+        } catch (error) {
+          context.requireCapturedProfile();
+          const saved = await context.database.transaction(
+            "r",
+            [context.database.mintQuotes, context.database.proofOperations],
+            () => selectSavedQuote(context, quote),
+          );
+          context.requireCapturedProfile();
+          if (saved !== null) return { quote: saved, invoiceRequest: saved.invoiceRequest };
+          if (!(error instanceof BrowserWalletCounterSnapshotConflictError) || attempt === 2)
+            throw error;
+        }
+      }
+      throw new Error("BOLT11 mint preparation exhausted");
     },
     context.lockManager,
   );
@@ -191,23 +287,43 @@ async function prepareExactMintOperation(input: {
   quote: DurableBolt11MintQuote;
   mintQuote: MintQuoteResponse;
   unit: CashuProofUnit;
+  keysetId: string;
+  transcript: SpeculativeCounterTranscript;
 }): Promise<{
   operation: ReturnType<typeof serializeDurableWalletMintOperation>;
   counters: { keysetId: string; start: number; count: number };
 }> {
+  let callbacks = 0;
   let counters: OperationCounters | undefined;
   const preview = await input.wallet.prepareMint(
     "bolt11",
     Number(input.quote.requestedAmount),
     input.mintQuote,
     {
+      keysetId: input.keysetId,
       onCountersReserved: (reserved) => {
+        callbacks += 1;
         counters = reserved;
       },
     },
   );
   input.context.requireCapturedProfile();
-  if (!counters || counters.count <= 0)
+  const allocations = input.transcript.allocations();
+  const allocation = allocations[0];
+  if (
+    callbacks !== 1 ||
+    !counters ||
+    counters.count <= 0 ||
+    allocations.length !== 1 ||
+    !allocation ||
+    allocation.keysetId !== input.keysetId ||
+    counters.keysetId !== input.keysetId ||
+    counters.start !== allocation.start ||
+    counters.count !== allocation.count ||
+    counters.next !== allocation.start + allocation.count ||
+    preview.outputData.length !== allocation.count ||
+    preview.outputData.some((output) => output.blindedMessage.id !== input.keysetId)
+  )
     throw new Error("Cashu mint did not reserve a recovery range");
   return {
     operation: serializeDurableWalletMintOperation({
@@ -226,25 +342,49 @@ async function persistQuoteAndOperation(input: {
   operation: ReturnType<typeof serializeDurableWalletMintOperation>;
   counters: { keysetId: string; start: number; count: number };
   unit: CashuProofUnit;
+  transcript: SpeculativeCounterTranscript;
+  counterStore: BrowserWalletCounterDexieStore;
 }): Promise<DurableBolt11MintQuote> {
   const bound = bindDurableBolt11MintQuoteOperation(input.quote, input.operation);
   const custody = toDurableCustodyProofOperationInput(input.operation);
   input.context.requireCapturedProfile();
   return input.context.database.transaction(
     "rw",
-    input.context.database.mintQuotes,
-    input.context.database.proofOperations,
+    [
+      input.context.database.mintQuotes,
+      input.context.database.proofOperations,
+      input.context.database.walletCounterAssociations,
+      input.context.database.walletCounterCursors,
+      input.context.database.custodyProofs,
+      input.context.database.custodyProofBackupAuthorities,
+      input.context.database.custodyConditionalKeysets,
+      input.context.database.encryptedWalletBackupV2DesiredAssets,
+      input.context.database.encryptedWalletBackupOwnerAcceptedHeads,
+      input.context.database.encryptedWalletBackupV2AcceptedHeads,
+    ],
     async () => {
-      const existing = await input.context.database.mintQuotes.get([
-        input.context.scopeId,
-        "bolt11",
-        bound.quoteRecordId,
-      ]);
       input.context.requireCapturedProfile();
-      const persisted = existing
-        ? verifyExistingQuote(input.context.scopeId, existing, bound, input.operation)
-        : bound;
+      await requireBrowserWalletNewWritePermission({
+        database: input.context.database,
+        scopeId: input.context.scopeId,
+      });
       input.context.requireCapturedProfile();
+      const existing = await selectSavedQuote(input.context, input.quote);
+      if (existing !== null) return existing;
+      const changes = input.transcript.changes();
+      if (
+        changes.length !== 1 ||
+        changes[0]!.keysetId !== input.counters.keysetId ||
+        changes[0]!.nextCounter !== input.counters.start + input.counters.count ||
+        (changes[0]!.expectedNextCounter ?? 0) !== input.counters.start
+      )
+        throw new Error("BOLT11 mint counter transcript is invalid");
+      await input.counterStore.compareAndAdvanceInCurrentTransaction(
+        Dexie.currentTransaction!,
+        { mintUrl: input.quote.mintUrl, unit: input.unit },
+        changes[0]!,
+      );
+      input.context.injectPreparationFault?.("counter-written");
       await prepareProofOperation(
         proofOperationInput(
           input.operation,
@@ -256,11 +396,14 @@ async function persistQuoteAndOperation(input: {
         input.context.database,
       );
       input.context.requireCapturedProfile();
-      if (!existing) {
-        input.context.requireCapturedProfile();
-        await input.context.database.mintQuotes.add(toQuoteRow(input.context.scopeId, bound));
-      }
-      return persisted;
+      input.context.injectPreparationFault?.("journal-bound");
+      await input.context.database.mintQuotes.add(toQuoteRow(input.context.scopeId, bound));
+      await requireBrowserWalletNewWritePermission({
+        database: input.context.database,
+        scopeId: input.context.scopeId,
+      });
+      input.context.requireCapturedProfile();
+      return bound;
     },
   );
 }
@@ -289,15 +432,26 @@ function proofOperationInput(
   };
 }
 
-function verifyExistingQuote(
-  scopeId: string,
-  row: BrowserMintQuoteRow,
-  quote: DurableBolt11MintQuote,
-  operation: ReturnType<typeof serializeDurableWalletMintOperation>,
-): DurableBolt11MintQuote {
-  const existing = readQuoteRow(scopeId, row);
-  assertSameQuoteRequest(existing, quote);
-  return verifyDurableBolt11MintQuoteRetry(existing, operation);
+async function selectSavedQuote(
+  context: CoordinatorContext,
+  candidate: DurableBolt11MintQuote,
+): Promise<DurableBolt11MintQuote | null> {
+  context.requireCapturedProfile();
+  const row = await context.database.mintQuotes.get([
+    context.scopeId,
+    "bolt11",
+    candidate.quoteRecordId,
+  ]);
+  if (row === undefined) {
+    if (await getProofOperation(candidate.walletMintOperationId, context.database))
+      throw new Error("BOLT11 mint quote binding is incomplete");
+    return null;
+  }
+  const saved = readQuoteRow(context.scopeId, row);
+  assertSameQuoteRequest(saved, candidate);
+  await exactBoundOperation(context.database, saved);
+  context.requireCapturedProfile();
+  return saved;
 }
 
 function assertSameQuoteRequest(

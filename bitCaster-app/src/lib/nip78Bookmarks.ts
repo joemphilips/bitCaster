@@ -15,7 +15,11 @@ import {
   bookmarkEventTemplate,
   parseBookmarkPayload,
 } from "@bitcaster/client-sdk/bookmarks";
-import { withTemporaryRelayNdk, type RelayOperationOptions } from "./nostr";
+import {
+  fetchTemporaryRelayRecord,
+  withTemporaryRelayNdk,
+  type RelayOperationOptions,
+} from "./nostr";
 
 export { BOOKMARK_KIND, BOOKMARK_D_TAG } from "@bitcaster/client-sdk/bookmarks";
 
@@ -43,20 +47,20 @@ export async function publishBookmarks(
  * Fetch the most recent bookmark event for a pubkey.
  *
  * Returns `null` if no event exists or the content cannot be parsed.
+ * Rejects with `IncompleteRelayReadError` instead of `null` when a selected
+ * relay did not connect.
  */
 export async function fetchBookmarks(
   pubkey: string,
   options: RelayOperationOptions = {},
 ): Promise<string[] | null> {
-  return (
-    (await withTemporaryRelayNdk(options, undefined, async (ndk) => {
-      const event = await ndk.fetchEvent({
-        kinds: [BOOKMARK_KIND as number],
-        authors: [pubkey],
-        "#d": [BOOKMARK_D_TAG],
-      });
-      if (!event) return null;
-      return parseBookmarkPayload(event.content);
-    })) ?? null
-  );
+  return fetchTemporaryRelayRecord(options, async (ndk) => {
+    const event = await ndk.fetchEvent({
+      kinds: [BOOKMARK_KIND as number],
+      authors: [pubkey],
+      "#d": [BOOKMARK_D_TAG],
+    });
+    if (!event) return null;
+    return parseBookmarkPayload(event.content);
+  });
 }

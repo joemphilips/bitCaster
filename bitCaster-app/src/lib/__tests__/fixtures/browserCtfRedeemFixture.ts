@@ -1,4 +1,3 @@
-import "fake-indexeddb/auto";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/curves/utils.js";
 import {
@@ -22,7 +21,10 @@ import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
 } from "../../../stores/durable-custody-db";
-import { BrowserWalletCounterSource } from "../../../stores/browser-wallet-counter-db";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSource,
+} from "../../../stores/browser-wallet-counter-db";
 import { BitcasterDB } from "../../../stores/proof-db";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "../../browserWalletProfile";
 import { browserWalletScope } from "../../browserCtfRangeOrderSource";
@@ -85,12 +87,15 @@ export interface BrowserCtfRedeemFixture {
   readonly proofs: readonly Awaited<ReturnType<typeof createBrowserCustodyProofRow>>[];
   readonly legs: readonly BrowserCtfRedeemLeg[];
   readonly counters: CounterSource;
+  readonly counterStore: BrowserWalletCounterDexieStore;
   readonly owner: Awaited<ReturnType<BrowserDurableCustodyAdapter["claimScope"]>>;
   readonly bind: () => ReturnType<typeof bindBrowserCanonicalCtfRedeemLeg>;
   readonly bindLeg: (
     leg: BrowserCtfRedeemLeg,
   ) => ReturnType<typeof bindBrowserCanonicalCtfRedeemLeg>;
 }
+
+const fixtureDatabases: BitcasterDB[] = [];
 
 export async function fixture(
   input: {
@@ -103,12 +108,8 @@ export async function fixture(
   const amounts = input.amounts ?? [1];
   const seed = input.seed ?? SEED;
   const scope = browserWalletScope(seed);
-  const database = new BitcasterDB(
-    input.databaseName ??
-      (input.counterSource === "browser"
-        ? browserWalletDatabaseName(scope.scopeId)
-        : `ctf-redeem-bind-${crypto.randomUUID()}`),
-  );
+  const database = new BitcasterDB(input.databaseName ?? browserWalletDatabaseName(scope.scopeId));
+  fixtureDatabases.push(database);
   const proofs = amounts.map((amount, index) =>
     createBrowserCustodyProofRow({
       scopeId: scope.scopeId,
@@ -164,27 +165,24 @@ export async function fixture(
     legs.push(leg);
   }
   if (legs.length === 0) throw new Error("CTF redeem test leg is missing");
-  let nextCounter = 0;
-  const counters: CounterSource =
-    input.counterSource === "browser"
-      ? new BrowserWalletCounterSource(
-          {
-            database,
-            scopeId: scope.scopeId,
-            isCurrentProfile: () => activeBrowserWalletScopeId() === scope.scopeId,
-          },
-          { mintUrl: MINT, unit: "msat" },
-        )
-      : {
-          reserve: async (_keysetId, count) => {
-            const start = nextCounter;
-            nextCounter += count;
-            return { start, count };
-          },
-          advanceToAtLeast: async (_keysetId, minimum) => {
-            nextCounter = Math.max(nextCounter, minimum);
-          },
-        };
+  const profile = {
+    database,
+    scopeId: scope.scopeId,
+    ...(input.counterSource === "browser"
+      ? { isCurrentProfile: () => activeBrowserWalletScopeId() === scope.scopeId }
+      : {}),
+  };
+  const counterStore = new BrowserWalletCounterDexieStore(profile);
+  const counters = new BrowserWalletCounterSource(profile, { mintUrl: MINT, unit: "msat" });
+  if (input.counterSource !== "browser") {
+    await counterStore.restoreInContext(
+      { mintUrl: MINT, unit: "msat" },
+      REGULAR_KEYSET.id,
+      0,
+      false,
+      () => undefined,
+    );
+  }
   const bindInput = (leg: BrowserCtfRedeemLeg): BrowserCanonicalCtfRedeemBindingInput => ({
     seed,
     mintUrl: MINT,
@@ -193,7 +191,7 @@ export async function fixture(
     oracleWitness: '{"oracle_sig":"test"}',
     leg,
     regularKeyset: REGULAR_KEYSET,
-    counterSource: counters,
+    counterStore,
     database,
     adapter,
     owner,
@@ -208,6 +206,7 @@ export async function fixture(
     proofs,
     legs,
     counters,
+    counterStore,
     owner,
     bind: () => bindBrowserCanonicalCtfRedeemLeg(bindInput(legs[0]!)),
     bindLeg: (leg) => bindBrowserCanonicalCtfRedeemLeg(bindInput(leg)),
@@ -258,5 +257,5 @@ function signOutput(output: OutputData): Proof {
 }
 
 export async function disposeFixtures(): Promise<void> {
-  // Fixture databases use unique names and remain isolated for the test run.
+  for (const database of fixtureDatabases.splice(0)) await database.delete();
 }

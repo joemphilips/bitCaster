@@ -1,5 +1,6 @@
 import {
   CreateMarketError,
+  assertMarketCreationThumbnailPresence,
   parseCreateMarketResponse,
   recoverCreatedMarketResponse,
   type CreateMarketResponse,
@@ -65,9 +66,8 @@ export async function completeDurableMarketCreation(
     if (!record.mintConfirmed) throw new Error('Mint confirmation was not stored.')
   }
   await adapters.confirmFee(record)
-  const expected = expectedEngineRegistration(record)
   const observed = await adapters.lookupEngine(record)
-  let result = recoverCreatedMarketResponse(observed, expected)
+  let result = recoverCreationResult(observed, record)
   if (observed !== null && result === null)
     throw new Error('Existing market does not match this creation.')
   if (result === null) result = await createOrRecoverEngine(adapters, record, request)
@@ -121,19 +121,18 @@ async function createOrRecoverEngine(
 ) {
   try {
     const result = parseCreateMarketResponse(await adapters.createEngine(record, request))
-    assertCreatedResultMatches(result, record)
+    assertCreatedResultComplete(result, record)
     return result
   } catch (error) {
     if (!(error instanceof CreateMarketError) || !error.mayHaveCommitted) throw error
-    const recovered = recoverCreatedMarketResponse(
-      await adapters.lookupEngine(record),
-      expectedEngineRegistration(record),
-    )
+    const recovered = recoverCreationResult(await adapters.lookupEngine(record), record)
     if (recovered === null) throw error
     return recovered
   }
 }
 
+// Browser and native store readers use this identity validator for historical rows.
+// Thumbnail completeness belongs to completion, so old paid work remains readable.
 export function assertCreatedResultMatches(
   result: CreateMarketResponse,
   preparation: MarketCreationPreparation,
@@ -164,8 +163,23 @@ function expectedEngineRegistration(record: MarketCreationPreparation) {
   }
 }
 
+function recoverCreationResult(value: unknown, record: MarketCreationPreparation) {
+  return recoverCreatedMarketResponse(value, {
+    ...expectedEngineRegistration(record),
+    hasThumbnail: record.thumbnail !== null,
+  })
+}
+
+function assertCreatedResultComplete(
+  result: CreateMarketResponse,
+  record: MarketCreationPreparation,
+) {
+  assertCreatedResultMatches(result, record)
+  assertMarketCreationThumbnailPresence(result, record.thumbnail !== null)
+}
+
 function created(record: MarketCreationRecord, market: CreateMarketResponse) {
-  assertCreatedResultMatches(market, record)
+  assertCreatedResultComplete(market, record)
   return {
     creationId: record.creationId,
     conditionId: record.announcement.conditionId,

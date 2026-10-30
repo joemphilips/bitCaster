@@ -11,6 +11,7 @@ import {
   type OrderLifecycleChangedDelta,
   type SettlementGroupStateChangedDelta,
 } from "@bitcaster/client-sdk/engineClient";
+import { decodeOrderResyncRequired } from "@bitcaster/client-sdk/displayResync";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
 import { orderHubUrl } from "@/lib/nip98";
 import { generateNip98Header } from "@/lib/markets";
@@ -19,6 +20,7 @@ export interface OrderHubCallbacks {
   onOrderLifecycleChanged?: (delta: OrderLifecycleChangedDelta) => void;
   onSettlementGroupStateChanged?: (delta: SettlementGroupStateChangedDelta) => void;
   onReconnected?: () => void;
+  onResyncRequired?: (token: string) => void;
   onError?: (error: Error) => void;
 }
 
@@ -68,7 +70,11 @@ export async function generateOrderHubAccessToken(hubUrl: string): Promise<strin
   return (await generateNip98Header(hubUrl, "GET")).replace(/^Nostr\s+/, "");
 }
 
-export function useOrderHub(enabled: boolean, callbacks: OrderHubCallbacks): OrderHubActions {
+export function useOrderHub(
+  enabled: boolean,
+  callbacks: OrderHubCallbacks,
+  scopeKey?: string | null,
+): OrderHubActions {
   const connectionRef = useRef<HubConnection | null>(null);
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
@@ -102,6 +108,14 @@ export function useOrderHub(enabled: boolean, callbacks: OrderHubCallbacks): Ord
         callbacksRef.current.onError?.(new Error("Order lifecycle update is invalid."));
       }
     });
+    connection.on("ResyncRequired", (payload: unknown) => {
+      if (stopped) return;
+      try {
+        callbacksRef.current.onResyncRequired?.(decodeOrderResyncRequired(payload).token);
+      } catch {
+        callbacksRef.current.onError?.(new Error("Display resync control is invalid."));
+      }
+    });
     connection.onreconnected(() => callbacksRef.current.onReconnected?.());
     connection.onclose((error) => {
       if (error)
@@ -131,7 +145,7 @@ export function useOrderHub(enabled: boolean, callbacks: OrderHubCallbacks): Ord
       connection.stop().catch(() => {});
       connectionRef.current = null;
     };
-  }, [enabled]);
+  }, [enabled, scopeKey]);
 
   const waitForConnected = useCallback(async (): Promise<HubConnection> => {
     const deadline = Date.now() + 60_000;

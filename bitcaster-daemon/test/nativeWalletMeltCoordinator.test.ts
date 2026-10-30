@@ -12,6 +12,7 @@ import {
   createDLEQProof,
   deriveKeysetId,
   pointFromHex,
+  type CounterSource,
   type MeltQuoteResponse,
   type Proof,
 } from '@cashu/cashu-ts'
@@ -50,15 +51,22 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import {
   admitExactAvailableWalletProofsFromDatabase,
-  reserveDaemonKeysetCounter,
   readAvailableWalletProofsFenced,
 } from '../src/state.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 
 const MINT_URL = 'https://mint.example'
-const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
+const PRIVATE_KEYS = Object.fromEntries(
+  ['1024', '2048'].map((amount, index) => [
+    amount,
+    Uint8Array.from([...new Uint8Array(31), index + 7]),
+  ]),
+)
 const KEYS = Object.fromEntries(
-  ['1024', '2048'].map((amount) => [amount, bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true))]),
+  Object.entries(PRIVATE_KEYS).map(([amount, key]) => [
+    amount,
+    bytesToHex(secp256k1.getPublicKey(key, true)),
+  ]),
 )
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1, input_fee_ppk: 1 })
 const QUOTE_AMOUNT = 1_000
@@ -318,13 +326,10 @@ test('paid native mint invoice outputs can fund a retained-input melt', async ()
             readonly next: number
           }) => void
         },
+        source?: CounterSource,
       ) {
-        const range = await reserveDaemonKeysetCounter(
-          KEYSET_ID,
-          1,
-          { fence: fixture.fence, observedAtMs: Date.now() },
-          { normalizedMint: MINT_URL, unit: 'msat' },
-        )
+        assert.ok(source)
+        const range = await source.reserve(KEYSET_ID, 1)
         config.onCountersReserved({
           keysetId: KEYSET_ID,
           ...range,
@@ -354,14 +359,18 @@ test('paid native mint invoice outputs can fund a retained-input melt', async ()
         return [signedProof(output)]
       },
       getKeyset(id?: string) {
-        if (id !== KEYSET_ID) return undefined
-        return { id, unit: 'msat', keys: KEYS, fee: 1, verify: () => true }
+        if (id !== undefined && id !== KEYSET_ID) return undefined
+        return { id: KEYSET_ID, unit: 'msat', keys: KEYS, fee: 1, verify: () => true }
       },
     }
     const mintQuotes = new NativeBolt11MintQuoteCoordinator({
       directory: fixture.directory,
       getFence: () => fixture.fence,
-      walletFor: async () => mintWallet,
+      walletFor: async (_mintUrl, _unit, source) => ({
+        ...mintWallet,
+        prepareMint: (method, amount, quote, config) =>
+          mintWallet.prepareMint(method, amount, quote, config, source),
+      }),
       restoreExactOutputs: async ({ outputs }) =>
         outputs.map((saved) => {
           const output = [...quoteOutputs.values()].find(
@@ -1024,10 +1033,13 @@ function signedProof(output: OutputData, amount = Number(output.blindedMessage.a
 function blindSignature(output: OutputData, amount: number) {
   const blinded = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    PRIVATE_KEY,
+    PRIVATE_KEYS[String(amount)]!,
     KEYSET_ID,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY)
+  const dleq = createDLEQProof(
+    pointFromHex(output.blindedMessage.B_),
+    PRIVATE_KEYS[String(amount)]!,
+  )
   return {
     id: KEYSET_ID,
     amount: Amount.from(amount),

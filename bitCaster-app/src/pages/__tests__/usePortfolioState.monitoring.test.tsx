@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   getAssetMonitoringAssets: vi.fn(),
   portfolioObservers: [] as Array<{
     onRefresh: () => void;
+    onResync?: (token: string) => void;
     conditionSets: string[][];
     disposeCalls: number;
   }>,
@@ -32,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   localFundsState: "available" as "available" | "null" | "undefined",
   walletMnemonic: "test mnemonic",
   signerRevision: 0,
+  connectionStatus: "disconnected" as "connected" | "connecting" | "disconnected",
+  profile: null as import("@/types/settings").NostrProfile | null,
 }));
 
 const monitoredConditionId = "b".repeat(64);
@@ -90,7 +93,8 @@ vi.mock("@/stores/wallet", () => ({
     selector({ setupComplete: true, mnemonic: mocks.walletMnemonic, mints: [] }),
 }));
 vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: object) => unknown) => selector({ nostrProfile: null }),
+  useSettingsStore: (selector: (state: object) => unknown) =>
+    selector({ nostrProfile: mocks.profile, signerConnectionStatus: mocks.connectionStatus }),
 }));
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: object) => unknown) =>
@@ -114,9 +118,10 @@ vi.mock("@/lib/markets", () => ({
   }),
 }));
 vi.mock("@/lib/marketHub", () => ({
-  observePortfolioValuations: (onRefresh: () => void) => {
+  observePortfolioValuations: (onRefresh: () => void, onResync?: (token: string) => void) => {
     const observer = {
       onRefresh,
+      onResync,
       conditionSets: [] as string[][],
       disposeCalls: 0,
     };
@@ -423,7 +428,36 @@ function conditionalMonitoringAsset(
 }
 
 describe("usePortfolioState monitoring facade", () => {
+  it("shows profile metadata only for a runtime-authorized signer and keeps the description", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    mocks.profile = {
+      pubkey: "a".repeat(64),
+      displayName: "Researcher",
+      avatar: "https://example.test/avatar.png",
+      bio: "Independent research",
+      nip05: "",
+      nip05verified: false,
+    };
+    const view = renderHook(() => usePortfolioState());
+    expect(view.result.current.profile.displayName).toBe("");
+    mocks.connectionStatus = "connecting";
+    view.rerender();
+    expect(view.result.current.profile.displayName).toBe("");
+    mocks.connectionStatus = "connected";
+    view.rerender();
+    expect(view.result.current.profile).toEqual({
+      displayName: "Researcher",
+      avatarUrl: "https://example.test/avatar.png",
+      bio: "Independent research",
+    });
+    mocks.connectionStatus = "disconnected";
+    view.rerender();
+    expect(view.result.current.profile.displayName).toBe("");
+  });
+
   afterEach(() => {
+    mocks.connectionStatus = "disconnected";
+    mocks.profile = null;
     vi.useRealTimers();
     vi.unstubAllGlobals();
     mocks.getPortfolio.mockReset();
@@ -439,6 +473,34 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.localFundsState = "available";
     mocks.walletMnemonic = "test mnemonic";
     mocks.signerRevision = 0;
+  });
+
+  it("repairs explicit portfolio loss after a failed read without another notification", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const view = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0),
+    );
+    mocks.getPortfolio
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+    act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
+    expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
+    view.unmount();
+  });
+
+  it("does not clear explicit repair after a building response", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const view = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    mocks.getPortfolio
+      .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+      .mockResolvedValueOnce(completePortfolioResponse());
+    act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
+    view.unmount();
   });
 
   it("retains the last complete display through a building response and a failed refresh", async () => {

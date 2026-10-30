@@ -114,6 +114,22 @@ test('rejects malformed and foreign plans', async () => {
           secret: `${output.secret}00`,
         })),
       }),
+    /invalid/,
+  )
+  const foreignPlan = await reserveDurableSeedDerivedOutputs({
+    seed: SEED,
+    counterSource: new MemoryCounterSource(1),
+    keyset: KEYSET,
+    amounts: [2],
+  })
+  assert.throws(
+    () =>
+      reconstructDurableSeedDerivedOutputs({
+        seed: SEED,
+        keyset: KEYSET,
+        amounts: [2],
+        plan: { ...plan, outputs: foreignPlan.outputs },
+      }),
     /does not match/,
   )
   assert.throws(
@@ -188,7 +204,7 @@ test('rejects malformed and foreign plans', async () => {
           blindingFactor: '1',
         })),
       }),
-    /does not match/,
+    /invalid/,
   )
   assert.throws(
     () =>
@@ -201,7 +217,7 @@ test('rejects malformed and foreign plans', async () => {
           blindedMessage: { ...output.blindedMessage, B_: 'foreign' },
         })),
       }),
-    /does not match/,
+    /invalid/,
   )
 })
 

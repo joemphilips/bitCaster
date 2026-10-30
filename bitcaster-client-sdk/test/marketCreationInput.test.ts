@@ -6,6 +6,7 @@ import {
   MAX_MARKET_CREATION_MATURITY_EPOCH,
   assertMarketCreationMetadataSize,
   normalizeMarketCreationInput,
+  validateMarketOutcomeLabels,
   type MarketCreationInput,
 } from '../src/marketCreationInput.ts'
 
@@ -89,6 +90,38 @@ test('refuses binary labels that differ from the exact canonical Yes/No identity
   )
 })
 
+test('outcome labels are trimmed once and keep their typed case', () => {
+  const normalized = normalizeMarketCreationInput(
+    validInput({
+      outcomeType: 'categorical',
+      outcomeDetails: [{ name: ' Red ' }, { name: 'Blue' }],
+    }),
+  )
+  assert.deepEqual(normalized.outcomeLabels, ['Red', 'Blue'])
+  assert.deepEqual(
+    normalized.metadata.outcomes.map((outcome) => outcome.name),
+    ['Red', 'Blue'],
+  )
+  // Yes/No stays exact after trimming.
+  assert.throws(
+    () =>
+      normalizeMarketCreationInput(
+        validInput({ outcomeDetails: [{ name: 'yes' }, { name: 'No' }] }),
+      ),
+    /exactly Yes followed by No/,
+  )
+})
+
+test('the outcome label validator reports each problem at its index', () => {
+  assert.deepEqual(validateMarketOutcomeLabels(['Red', '', 'Blue', 'red', 'New York', 'BLUE ']), [
+    { index: 1, problem: 'empty' },
+    { index: 3, problem: 'duplicate' },
+    { index: 4, problem: 'invalid' },
+    { index: 5, problem: 'duplicate' },
+  ])
+  assert.deepEqual(validateMarketOutcomeLabels(['Yes', 'No']), [])
+})
+
 test('rejects unsupported, malformed, or out-of-range creation inputs', () => {
   const invalidInputs: Array<[string, Partial<MarketCreationInput>]> = [
     ['blank title', { title: '   ' }],
@@ -98,6 +131,9 @@ test('rejects unsupported, malformed, or out-of-range creation inputs', () => {
     ['one outcome', { outcomeDetails: [{ name: 'Yes' }] }],
     ['nine outcomes', { outcomeDetails: Array.from({ length: 9 }, (_, i) => ({ name: `O${i}` })) }],
     ['duplicate labels', { outcomeDetails: [{ name: 'Alpha' }, { name: 'Alpha' }] }],
+    ['labels that differ only in case', { outcomeDetails: [{ name: 'Red' }, { name: 'red' }] }],
+    ['labels that differ only in spaces', { outcomeDetails: [{ name: ' Red' }, { name: 'Red ' }] }],
+    ['blank label', { outcomeDetails: [{ name: 'Red' }, { name: '   ' }] }],
     ['non-ASCII label', { outcomeDetails: [{ name: 'Å' }, { name: 'No' }] }],
     ['punctuation in label', { outcomeDetails: [{ name: 'New-York' }, { name: 'No' }] }],
     ['overlong label', { outcomeDetails: [{ name: 'A'.repeat(192) }, { name: 'No' }] }],

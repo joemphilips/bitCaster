@@ -1,3 +1,4 @@
+import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -597,16 +598,18 @@ test('spent-input recovery validates exact restore before replacing predecessors
     const accepted: Proof[] = []
     const mint = fakeDependencies({ acceptedProofs: accepted })
     const staleFence = { ...fence, incarnationId: 'stale-spent-restore' }
-    let mutationCall = 0
+    let postMintMutation = 0
     const interrupted = await consolidateWalletProofs({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({
-        fence: ++mutationCall <= 2 ? fence : staleFence,
+        fence: mint.calls.complete === 0 || ++postMintMutation < 1 ? fence : staleFence,
         observedAtMs,
       }),
       dependencies: mint.dependencies,
     })
     assert.match(interrupted.failure?.error ?? '', /stale or expired authority/)
+    assert.equal(mint.calls.complete, 1)
+    assert.equal(postMintMutation, 1)
     assert.ok(accepted.length > 0)
     assert.equal(
       (await readState())?.wallet.proofs.every(({ state }) => state === 'reserved'),
@@ -653,15 +656,18 @@ test('recovery finalizes a completed journal without another mint effect', async
     const mint = fakeDependencies()
     const staleFence = { ...fence, incarnationId: 'stale-completed-finalize' }
     let mutationCall = 0
+    let postMintMutation = 0
     const interrupted = await consolidateWalletProofs({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({
-        fence: ++mutationCall < 4 ? fence : staleFence,
-        observedAtMs: observedAtMs + mutationCall,
+        fence: mint.calls.complete === 0 || ++postMintMutation === 1 ? fence : staleFence,
+        observedAtMs: observedAtMs + ++mutationCall,
       }),
       dependencies: mint.dependencies,
     })
     assert.match(interrupted.failure?.error ?? '', /stale or expired authority/)
+    assert.equal(mint.calls.complete, 1)
+    assert.equal(postMintMutation, 2)
     assert.equal(Object.values((await readState())!.proofOperations)[0]?.state, 'completed')
 
     const recovery = fakeDependencies()
@@ -852,3 +858,66 @@ async function withProfile(run: (directory: string) => Promise<void>): Promise<v
     await rm(directory, { recursive: true, force: true })
   }
 }
+
+for (const [label, keysetId, asset] of [
+  ['regular-sat', REGULAR_OLD_KEYSET_ID, { kind: 'sats', baseAsset: 'sat', unit: 'sat' }],
+  ['regular-msat', OUTCOME_ACTIVE_KEYSET_ID, { kind: 'sats', baseAsset: 'sat', unit: 'msat' }],
+  [
+    'conditional-msat',
+    OUTCOME_ACTIVE_KEYSET_ID,
+    {
+      kind: 'Outcome',
+      baseAsset: 'sat',
+      unit: 'msat',
+      conditionId: 'condition-1',
+      outcomeSetId: 'YES',
+    },
+  ],
+] as const)
+  for (const phase of ['counter-written', 'journal-bound'] as const)
+    test(`${label} consolidation ${phase} rollback preserves exact fund rows`, async () => {
+      await withProfile(async (directory) => {
+        const state = emptyDaemonState()
+        addProofs(state, keysetId, asset, `atomic-${label}`)
+        await writeState(state)
+        const { fence, observedAtMs } = await testFence(directory, `atomic-${label}`)
+        const fixture = fakeDependencies()
+        const snapshot = () =>
+          withDaemonStateSqliteTransaction(directory, (database) =>
+            Object.fromEntries(
+              [
+                'target_wallet_proofs',
+                'target_keyset_counters',
+                'custody_keyset_counters',
+                'target_proof_operations',
+                'custody_proofs',
+                'custody_operations',
+                'custody_proof_reservations',
+                'custody_artifacts',
+              ].map((table) => [
+                table,
+                database
+                  .prepare(`SELECT * FROM ${table}`)
+                  .all()
+                  .map((row) => JSON.stringify(row))
+                  .sort(),
+              ]),
+            ),
+          )
+        const before = await snapshot()
+        const result = await consolidateWalletProofs({
+          secrets: { walletSeedHex: SEED },
+          mutation: () => ({ fence, observedAtMs }),
+          dependencies: {
+            ...fixture.dependencies,
+            injectConsolidationFault: (observed) => {
+              if (observed === phase) throw new Error('controlled atomic consolidation fault')
+            },
+          },
+        })
+        assert.equal(result.status, 'partial')
+        assert.match(result.failure!.error, /controlled atomic consolidation fault/)
+        assert.deepEqual(await snapshot(), before)
+        assert.equal(fixture.calls.complete, 0)
+      })
+    })

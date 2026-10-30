@@ -67,7 +67,7 @@ test('bitcaster-cli bin entrypoint is directly executable', async () => {
 
   assert.match(result.stdout, /bitcaster-cli/)
   assert.match(result.stdout, /Commands:/)
-  assert.match(result.stdout, /wallet\s+Manage wallet balance/)
+  assert.match(result.stdout, /wallet\s+Read wallet balances and positions/)
   assert.doesNotMatch(result.stdout, /^\s+trade\s/m)
   await assert.rejects(
     () =>
@@ -222,7 +222,19 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     authorizationHeaders.push(req.headers.authorization)
     const command = JSON.parse(await readBody(req)) as { method: string }
     received.push(command)
-    writeJson(res, 200, { ok: true, result: { method: command.method } })
+    if (command.method === 'order.submit') {
+      assert.equal(req.headers.accept, 'application/vnd.bitcaster.order-submission+ndjson')
+      res.writeHead(200, { 'content-type': 'application/vnd.bitcaster.order-submission+ndjson' })
+      res.write(
+        JSON.stringify({ type: 'quotes-refreshing', attempt: 1, remainingMs: 58000 }) + '\n',
+      )
+      res.end(
+        JSON.stringify({
+          type: 'result',
+          response: { ok: true, result: { method: command.method } },
+        }) + '\n',
+      )
+    } else writeJson(res, 200, { ok: true, result: { method: command.method } })
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -407,6 +419,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         method: 'wallet.retireCondition',
         params: { conditionId: 'cd'.repeat(32), acknowledge: true },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {
@@ -423,6 +436,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           feeConsent: feeConsent.result,
         },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {
@@ -438,6 +452,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           feeConsent: feeConsent.result,
         },
       },
+      { method: 'health' },
       {
         method: 'order.submit',
         params: {
@@ -1996,7 +2011,7 @@ test('market history exposes every public timeframe and preserves all outcome-se
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-history-'))
   const point = {
     eventOrder: '00000000000000000042',
-    timestamp: '2026-09-01T12:00:00Z',
+    timestamp: '2026-10-02T23:30:00Z',
     price: 420,
     volumeSubunits: 12_500,
     source: 'fill',
@@ -2040,69 +2055,69 @@ test('market history exposes every public timeframe and preserves all outcome-se
   }
 })
 
-for (const command of ['comments', 'history'] as const) {
-  test(`market ${command} flags preserve opaque source and structured snapshot metadata`, async () => {
-    const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-snapshot-'))
-    const response =
-      command === 'comments'
-        ? { conditionId: 'condition-1', snapshotEventOrder: 'opaque /+?&=Ω', comments: [] }
-        : {
-            conditionId: 'condition-1',
-            snapshotEventOrder: 'opaque /+?&=Ω',
-            asOf: '2026-10-03T00:00:00Z',
-            timeframe: '30d',
-            outcomes: [],
-          }
-    try {
-      for (const [flags, query] of [
-        [
-          ['--minimum-event-order', 'opaque /+?&=Ω'],
-          'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9',
-        ],
-        [['--refresh'], 'refresh=true'],
-        [
-          ['--minimum-event-order', 'opaque /+?&=Ω', '--refresh'],
-          'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9&refresh=true',
-        ],
-      ] as const) {
-        const suffix =
-          command === 'comments' ? `comments?${query}` : `price-history?timeframe=30d&${query}`
-        const result = await runDefaultPublicEngineReadCli(
-          home,
-          [
-            '--dry-run',
-            '--json',
-            'market',
-            command,
-            'condition-1',
-            ...(command === 'history' ? ['--timeframe', '30d'] : []),
-            ...flags,
-          ],
-          [{ url: `http://localhost:5000/api/v1/markets/condition-1/${suffix}`, response }],
-        )
-        assert.deepEqual(JSON.parse(result.stdout), response)
-        assert.equal(result.stderr, '')
-      }
-      const help = await runDefaultPublicEngineReadCli(home, ['market', command, '--help'], [])
-      assert.match(help.stdout, /--minimum-event-order <eventOrder>/)
-      assert.match(help.stdout, /--refresh/)
-      await assert.rejects(
-        runDefaultPublicEngineReadCli(
-          home,
-          ['market', command, 'condition-1', '--minimum-event-order'],
-          [],
+test('market comments flags preserve opaque source and structured snapshot metadata', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-snapshot-'))
+  const response = { conditionId: 'condition-1', snapshotEventOrder: 'opaque /+?&=Ω', comments: [] }
+  try {
+    for (const [flags, query] of [
+      [
+        ['--minimum-event-order', 'opaque /+?&=Ω'],
+        'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9',
+      ],
+      [['--refresh'], 'refresh=true'],
+      [
+        ['--minimum-event-order', 'opaque /+?&=Ω', '--refresh'],
+        'minimumEventOrder=opaque+%2F%2B%3F%26%3D%CE%A9&refresh=true',
+      ],
+    ] as const) {
+      const result = await runDefaultPublicEngineReadCli(
+        home,
+        ['--dry-run', '--json', 'market', 'comments', 'condition-1', ...flags],
+        [{ url: `http://localhost:5000/api/v1/markets/condition-1/comments?${query}`, response }],
+      )
+      assert.deepEqual(JSON.parse(result.stdout), response)
+      assert.equal(result.stderr, '')
+    }
+    const help = await runDefaultPublicEngineReadCli(home, ['market', 'comments', '--help'], [])
+    assert.match(help.stdout, /--minimum-event-order <eventOrder>/)
+    assert.match(help.stdout, /--refresh/)
+    await assert.rejects(
+      runDefaultPublicEngineReadCli(
+        home,
+        ['market', 'comments', 'condition-1', '--minimum-event-order'],
+        [],
+      ),
+      (error: unknown) =>
+        /argument missing/.test(
+          `${(error as { stderr?: string }).stderr ?? ''}\n${(error as { stdout?: string }).stdout ?? ''}`,
         ),
+    )
+    assert.equal(await fileExists(join(home, 'config.json')), false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('market history reads the latest applied history and refuses snapshot flags', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-history-'))
+  try {
+    const help = await runDefaultPublicEngineReadCli(home, ['market', 'history', '--help'], [])
+    assert.doesNotMatch(help.stdout, /--minimum-event-order/)
+    assert.doesNotMatch(help.stdout, /--refresh/)
+    for (const flags of [['--minimum-event-order', 'opaque'], ['--refresh']] as const) {
+      await assert.rejects(
+        runDefaultPublicEngineReadCli(home, ['market', 'history', 'condition-1', ...flags], []),
         (error: unknown) =>
-          /argument missing/.test(
+          new RegExp(`unknown option '${flags[0]}'`).test(
             `${(error as { stderr?: string }).stderr ?? ''}\n${(error as { stdout?: string }).stdout ?? ''}`,
           ),
       )
-      assert.equal(await fileExists(join(home, 'config.json')), false)
-    } finally {
-      await rm(home, { recursive: true, force: true })
     }
-  })
-}
+    assert.equal(await fileExists(join(home, 'config.json')), false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
 
 test('market attestation reads public oracle details and preserves the 404 null result', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-public-attestation-'))
@@ -3524,6 +3539,7 @@ test('order submit forwards exact fee-preview consent for explicit and Auto requ
         ...process.env,
         BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
         BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([
+          { command: { method: 'health' }, response: { ok: true, result: { status: 'ok' } } },
           {
             command: {
               method: 'order.submit',
@@ -3909,9 +3925,16 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
   await writeFile(feeConsentPath, JSON.stringify(feeConsent), { mode: 0o600 })
   const received: unknown[] = []
   const server = createServer(async (req, res) => {
-    const command = JSON.parse(await readBody(req))
+    const command = JSON.parse(await readBody(req)) as { method: string }
     received.push(command)
-    writeJson(res, 200, { ok: true, result: { orderId: 'ord-1' } })
+    // An order submission is a health check, then a streamed result frame.
+    if (command.method === 'order.submit') {
+      res.writeHead(200, { 'content-type': 'application/vnd.bitcaster.order-submission+ndjson' })
+      res.end(
+        JSON.stringify({ type: 'result', response: { ok: true, result: { orderId: 'ord-1' } } }) +
+          '\n',
+      )
+    } else writeJson(res, 200, { ok: true, result: { status: 'ok' } })
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -3969,53 +3992,56 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '--fee-consent-file',
       feeConsentPath,
     ])
-    assert.deepEqual(received, [
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-YES',
-          outcomeId: 'YES',
-          tokenSide: 'Outcome',
-          side: 'Buy',
-          price: 42,
-          amountSubunits: 100,
-          consolidateProofs: false,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+    assert.deepEqual(
+      received.filter((command) => (command as { method: string }).method !== 'health'),
+      [
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            tokenSide: 'Outcome',
+            side: 'Buy',
+            price: 42,
+            amountSubunits: 100,
+            consolidateProofs: false,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-NO',
-          outcomeId: 'NO',
-          tokenSide: 'Outcome',
-          side: 'Buy',
-          price: 55,
-          amountSubunits: 200,
-          consolidateProofs: true,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-NO',
+            outcomeId: 'NO',
+            tokenSide: 'Outcome',
+            side: 'Buy',
+            price: 55,
+            amountSubunits: 200,
+            consolidateProofs: true,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-      {
-        method: 'order.submit',
-        params: {
-          marketId: 'cond-GTD',
-          outcomeId: 'GTD',
-          tokenSide: 'Outcome',
-          side: 'Sell',
-          price: 40,
-          amountSubunits: 100,
-          consolidateProofs: false,
-          timeInForce: 'FOK',
-          expiresAt: null,
-          feeConsent: feeConsent.result,
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-GTD',
+            outcomeId: 'GTD',
+            tokenSide: 'Outcome',
+            side: 'Sell',
+            price: 40,
+            amountSubunits: 100,
+            consolidateProofs: false,
+            timeInForce: 'FOK',
+            expiresAt: null,
+            feeConsent: feeConsent.result,
+          },
         },
-      },
-    ])
+      ],
+    )
   } finally {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -6069,6 +6095,14 @@ function daemonRpcFetchModule(
                 state: step.responseFromAttempt,
               },
             }
+      // An order submission streams NDJSON frames. Its final frame is the result.
+      const orderSubmission = 'application/vnd.bitcaster.order-submission+ndjson'
+      if (new Headers(init?.headers).get('accept') === orderSubmission) {
+        return new Response(JSON.stringify({ type: 'result', response }) + '\\n', {
+          status: 200,
+          headers: { 'content-type': orderSubmission },
+        })
+      }
       return new Response(JSON.stringify(response), {
         status: 200,
         headers: { 'content-type': 'application/json' },

@@ -1,3 +1,6 @@
+import type { BrowserProfileEditView, BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
+import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+
 // =============================================================================
 // Settings Category
 // =============================================================================
@@ -51,7 +54,7 @@ export interface CashuSettings {
 export type NostrSignerMode = "none" | "nip07" | "nsec";
 export type NostrSignerSource = "none" | "implicit-generated" | "user-nsec" | "nip07";
 export type SecretBackupState = "none" | "needs_backup" | "confirmed";
-export type NostrProfileFetchStatus = "idle" | "fetching" | "found" | "not-found";
+export type NostrProfileFetchStatus = "idle" | "fetching" | "found" | "not-found" | "unavailable";
 export type RelayConnectionStatus = "connected" | "disconnected";
 
 export interface NostrProfile {
@@ -70,12 +73,14 @@ export interface RelayConfig {
 
 export interface NostrSettings {
   signerMode: NostrSignerMode;
+  connectionStatus?: "disconnected" | "connecting" | "connected";
   signerSource: NostrSignerSource;
   signerBackupState: SecretBackupState;
   canRevealLocalNsec: boolean;
   profile: NostrProfile | null;
   profileFetchStatus: NostrProfileFetchStatus;
   relays: RelayConfig[];
+  profileEditorKey?: string;
 }
 
 // =============================================================================
@@ -93,7 +98,6 @@ export interface SettingsState {
 // =============================================================================
 
 export interface SettingsProps {
-  oracleBackupPanel?: React.ReactNode;
   /** Which category group is currently expanded */
   activeCategory: SettingsCategory;
 
@@ -123,6 +127,7 @@ export interface SettingsProps {
   onAddMint?: (url: string) => Promise<void>;
   onRemoveMint?: (url: string) => void;
   onViewSeedPhrase?: () => void;
+  onCreateWallet?: () => void;
   onReplaceWallet?: () => void;
   onMintClick?: (url: string) => void;
 
@@ -134,6 +139,11 @@ export interface SettingsProps {
   onConfirmWalletBackup?: () => void;
   onDisconnectNostr?: () => void;
   onRetryNostrProfile?: () => Promise<void>;
+  onLoadNostrProfileEdit?: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
+  onSaveNostrProfileEdit?: (
+    patch: NostrProfilePatch,
+    signal: AbortSignal,
+  ) => Promise<BrowserProfileSaveResult>;
   onAddRelay?: (url: string) => void;
   onRemoveRelay?: (url: string) => void;
 }

@@ -1,12 +1,12 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CheckStateEnum,
   MintOperationError,
   deriveKeysetId,
   hashToCurve,
-  type CounterSource,
   type MintKeys,
   type OutputData,
 } from "@cashu/cashu-ts";
@@ -72,7 +72,7 @@ function winningWallet(): RedeemWallet {
 
 type ClaimFixtureState = Pick<
   Awaited<ReturnType<typeof fixture>>,
-  "database" | "adapter" | "owner" | "counters"
+  "database" | "adapter" | "owner" | "counterStore"
 >;
 
 type NewLegAuthority = BrowserCanonicalCtfPositionClaimPreparation;
@@ -91,7 +91,7 @@ function context(
     prepareNewLegAuthority:
       options.prepareNewLegAuthority ??
       (async () => ({ regularKeyset: REGULAR_KEYSET, oracleWitness: '{"oracle_sig":"test"}' })),
-    counterSource: entry.counters,
+    counterStore: entry.counterStore,
     database: entry.database,
     adapter: entry.adapter,
     owner: entry.owner,
@@ -399,24 +399,17 @@ describe("browser canonical CTF position claim", () => {
         observedAtMs: 7,
         leaseExpiresAtMs: 100_000,
       });
-      let nextCounter = 0;
-      const reloadedCounters: CounterSource = {
-        reserve: async (_keysetId, count) => {
-          const start = nextCounter;
-          nextCounter += count;
-          return { start, count };
-        },
-        advanceToAtLeast: async (_keysetId, minimum) => {
-          nextCounter = Math.max(nextCounter, minimum);
-        },
-      };
+      const counterStore = new BrowserWalletCounterDexieStore({
+        database: reloadedDatabase,
+        scopeId: entry.scope.scopeId,
+      });
       const resumed = await claimBrowserCanonicalCtfPosition({
         position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
         context: context({
           database: reloadedDatabase,
           adapter: reloadedAdapter,
           owner: reloadedOwner,
-          counters: reloadedCounters,
+          counterStore,
         }),
       });
       expect(resumed).toMatchObject({ kind: "completed", committedLegs: 1, pendingLegs: 0 });
@@ -507,9 +500,10 @@ describe("browser canonical CTF position claim", () => {
 
   it("reports a local commit failure without exposing the storage exception", async () => {
     const entry = await fixture();
-    vi.spyOn(entry.adapter, "transactAtomic").mockRejectedValue(
-      new Error("private local persistence details"),
-    );
+    const transact = entry.adapter.transactAtomic.bind(entry.adapter);
+    vi.spyOn(entry.adapter, "transactAtomic")
+      .mockImplementationOnce(transact)
+      .mockRejectedValue(new Error("private local persistence details"));
 
     const result = await claimBrowserCanonicalCtfPosition({
       position: { conditionId: CONDITION, outcomeCollection: OUTCOME },

@@ -12,6 +12,11 @@ import {
   type CtfRangeOrderPreparationPageCursor,
   type CtfRangeOrderPreparationRecord,
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import {
+  decodeCtfRangeOrderPreparationFromRecord,
+  selectCtfRangePreparationForIntent,
+  type CtfRangePreparationIntent,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import Dexie, { type Table, type Transaction } from "dexie";
 import { db, type BitcasterDB, type CtfRangePreparationConsolidationLinkRow } from "./proof-db";
 
@@ -27,6 +32,23 @@ const ACTIVE_PREPARATION_STATES = [
   "order-submitted",
   "submission-rejected",
 ] as const satisfies readonly CtfRangeOrderPreparationLifecycle[];
+
+/** An existence check cannot attribute pre-admission work to a displayed market. */
+export async function hasActiveCtfRangePreparation(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<boolean> {
+  const keys = await Promise.all(
+    ACTIVE_PREPARATION_STATES.map((state) =>
+      database.ctfRangePreparations
+        .where("[scopeId+lifecycleState+createdAtMs+rangeOperationId]")
+        .between([scopeId, state], [scopeId, state, []], true, true)
+        .limit(1)
+        .primaryKeys(),
+    ),
+  );
+  return keys.some((matches) => matches.length > 0);
+}
 
 export async function insertCtfRangePreparation(
   input: CtfRangeOrderPreparationIdentity,
@@ -89,6 +111,56 @@ export async function readActiveCtfRangePreparationByClientOrderId(
     throw new Error("browser CTF range client order has overlapping active preparations");
   }
   return rows[0] ? decodeCtfRangeOrderPreparationRecord(rows[0]) : null;
+}
+
+/** Read all retained history for an exact new-order retry before loading mint authority. */
+export async function readCtfRangePreparationForIntent(
+  intent: CtfRangePreparationIntent,
+  database: BitcasterDB = db,
+): Promise<CtfRangeOrderPreparationRecord | null> {
+  const rows = await database.ctfRangePreparations
+    .where("[scopeId+clientOrderId]")
+    .equals([intent.scopeId, intent.request.clientOrderId])
+    .limit(33)
+    .toArray();
+  return selectBrowserCtfRangePreparationForIntent(rows, intent);
+}
+
+/** Repeat retry selection inside the allocation transaction to serialize competing submits. */
+export async function readCtfRangePreparationForIntentInTransaction(
+  transaction: Transaction,
+  intent: CtfRangePreparationIntent,
+  database: BitcasterDB = db,
+): Promise<CtfRangeOrderPreparationRecord | null> {
+  assertCurrentTransactionIdentity(transaction, database);
+  assertActiveWriteTransaction(transaction, [database.ctfRangePreparations]);
+  const rows = await database.ctfRangePreparations
+    .where("[scopeId+clientOrderId]")
+    .equals([intent.scopeId, intent.request.clientOrderId])
+    .limit(33)
+    .toArray();
+  return selectBrowserCtfRangePreparationForIntent(rows, intent);
+}
+
+function selectBrowserCtfRangePreparationForIntent(
+  rows: readonly CtfRangeOrderPreparationRecord[],
+  intent: CtfRangePreparationIntent,
+): CtfRangeOrderPreparationRecord | null {
+  // The browser has always enabled source consolidation. Version 2 did not persist
+  // that policy, so expose its historical fixed policy only in this compatibility
+  // adapter. Version 3 carries the policy in its authenticated intent payload.
+  const withPolicy = rows.map((row) => {
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(row);
+    return {
+      ...row,
+      consolidateProofs:
+        preparation.version === 3 ? preparation.preparationIntent.consolidateProofs : true,
+    };
+  });
+  const selected = selectCtfRangePreparationForIntent(withPolicy, intent);
+  if (selected === null) return null;
+  const { consolidateProofs: _policy, ...record } = selected;
+  return record;
 }
 
 /** Returns whether this wallet scope has any durably submitted range order. */

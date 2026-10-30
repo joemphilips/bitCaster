@@ -41,11 +41,15 @@ The backup service can be unavailable, refuse an upload, or lose its data.
 A failed upload leaves the affected ecash records, called proofs, in local
 storage. The web app must not discard them as backed up.
 
-Recovery from your phrase can reconstruct deterministic regular proofs and
-selected conditional-token proofs. It does not reconstruct every pending
-operation or refund record. In particular, it does not restore transient
-operation records, range locators, or refund locators. Keep the local wallet
-database until every active operation has a confirmed final result.
+CLI recovery from your phrase scans deterministic regular `msat` proofs by
+default. This includes new ordinary refund outputs after the mint signs them,
+within the selected scan range. It does not reconstruct the refund's operation
+history. Older refunds can still require their saved local records.
+Condition-specific recovery requires the supported discovery route described
+below. The web app uses encrypted backup recovery.
+Keep the local wallet database until every active operation has a confirmed
+final result. Seed recovery does not replace saved retry records for unfinished
+operations.
 Do not clear browser storage to resolve an uncertain payment or trade.
 
 ## What the web app stores
@@ -136,6 +140,17 @@ keysets before a full recovery. It is not full recovery by itself.
 
 ## Multiple wallets
 
+Use the ID that first enabled backup for a recovery phrase. This release does
+not transfer that binding to another ID and has no backup-owner selector.
+The recovery phrase and backup realm derive the encryption keys. Your Nostr
+secret key is not the encryption key.
+
+If the app reports a different ID, sign in with the original ID. The app keeps
+your local funds and unfinished work. It does not create an empty replacement
+backup. A revoked or deleted backup does not release the original ID binding.
+CLI seed recovery remains available for supported regular-msat funds within
+the scanned range. It does not restore the complete wallet operation history.
+
 One authenticated account can retain several independent wallet ids. Each
 wallet id belongs to one wallet seed. Funds never move between wallet ids. The
 web app displays only the wallet for the recovery phrase currently open:
@@ -176,7 +191,7 @@ Retry keeps your amount, local funds, and unfinished work.
 It does not create or submit an invoice.
 After backup is ready, select the action button to continue.
 If the message asks you to sign in, sign in or reload the page if you are already signed in.
-This check does not require sign-in when backup is disabled or the wallet has no backup enrollment.
+This check does not require sign-in when backup is disabled. When backup is enabled, sign in before the app checks or creates its backup.
 Retry does not guarantee that backup or recovery can finish.
 
 A fresh browser restores and checks the wallet's current encrypted backup
@@ -204,12 +219,40 @@ browser can resume wallet actions.
 
 ## CLI privacy and emergency recovery
 
+CLI profile inspection can stop before a command is sent. If you see
+`daemon profile identity changed during inspection`, let current wallet work
+finish. Then run the command again. The CLI does not repair the profile or
+replay the refused command.
+
+Each inventory check can repeat once if normal SQLite WAL or SHM cleanup
+removes a listed file. This happens before dispatch and keeps the original
+profile identity. A replaced profile,
+invalid permissions, or an invalid schema still causes refusal. This does not
+retry a command or repair the profile.
+
 The command-line wallet can use complete-local privacy mode. This mode can
 omit both encrypted backup and asset monitoring. It keeps complete wallet
 state in its local durable store.
 
-The CLI also keeps broad emergency NUT-09/NUT-13 recovery. Use it when the
-backup service is unavailable or when you need seed recovery. It scans regular
-keysets. It uses counter-zero discovery to select non-expired CTF keysets, and
-then scans the selected keysets fully. Each keyset uses the standard
-300-counter gap limit.
+Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when the backup
+service is unavailable. The command scans regular `msat` keysets only. It does
+not list conditional keysets. The default `--gap-limit` is 300. Set a larger
+gap to scan farther after the last verified signature. Each request has at most
+300 counters, and each invocation processes at most four batches.
+
+Supply either `--wallet-seed-hex-file` or `--recovery-phrase-file`. The phrase
+file must contain a valid English BIP-39 phrase and must be readable only by
+the owner. Recovery derives the standard seed with an empty BIP-39 passphrase.
+Keep the file private and remove it when recovery is complete.
+
+A recovery job binds its scope and gap limit. Retry with the same values. Use a
+new recovery ID for a deeper scan. The result reports scanned ranges and local
+counter bindings not covered by this scan. A completed scan does not prove
+that the wallet has no other funds. A gap can hide later outputs.
+
+Use `--condition-id <64-lowercase-hex-id>` to recover one condition. The mint
+must advertise `nuts.CTF.condition_keyset_filter: true`. Recovery includes
+inactive historical keysets for that condition. If the capability is absent
+or false, recovery refuses. It never falls back to listing all conditions.
+Without this option, recovery scans regular `msat` keysets only. Stop the old
+client before seed recovery. Seed recovery does not restore live authorizations.

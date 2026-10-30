@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { Amount } from "@cashu/cashu-ts";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { afterEach, expect, it, vi } from "vitest";
@@ -22,9 +23,11 @@ import {
   verifyEncryptedWalletBackupV2BundleSupersessionReceipt,
 } from "@bitcaster/client-sdk";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
+import { digestEncryptedWalletBackupV2BundleDescriptor } from "@bitcaster/client-sdk/encryptedWalletBackupV2Descriptor";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { encodeCtfRangeOrderPreparationArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { BitcasterDB } from "../../stores/proof-db";
+import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../../stores/encrypted-wallet-backup-owner-db";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
@@ -33,8 +36,11 @@ import {
   BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
   handoffBrowserEncryptedWalletBackupV2Seed,
   listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets,
+  listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets,
   listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts,
 } from "../browserEncryptedWalletBackupV2SeedHandoff";
+import type { BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset } from "../browserEncryptedWalletBackupV2SeedHandoff";
+import { ownerReachabilitySnapshot } from "./ownerReachabilityFixture";
 
 const databases: BitcasterDB[] = [];
 let sequence = 0;
@@ -509,7 +515,7 @@ it("blocks a seed handoff when active custody has an untracked proof", async () 
       activateNewProfile: vi.fn(),
       restoreOldProfile: vi.fn(),
     }),
-  ).rejects.toThrow(/untracked active custody rows/);
+  ).rejects.toThrow(/uncovered desired assets/);
 });
 
 it("keeps an eligible asset selectable when another asset is pending", async () => {
@@ -776,6 +782,25 @@ it("blocks seed handoff for each active local work category", async () => {
     activeProofCount: 1,
   });
   await expect(handoff(mutation)).rejects.toThrow(/prepared backup mutation/);
+
+  const ownerMutation = fixture();
+  await ownerMutation.database.encryptedWalletBackupOwnerPreparedMutations.put({
+    scopeId: ownerMutation.scopeId,
+    ownerScopeId: "owner-scope",
+    realm: REALM,
+    walletId: "11".repeat(32),
+    enrollmentEpoch: 1,
+    mutationId: "22".repeat(16),
+    requestDigest: "33".repeat(32),
+    canonicalUploadGroup: new Uint8Array([1]),
+    createdAtUnixMilliseconds: 1,
+    localAssetKey: "asset",
+    assetLocator: "44".repeat(32),
+    custodyRevision: "1",
+    desiredAction: "replace",
+    activeProofCount: 1,
+  });
+  await expect(handoff(ownerMutation)).rejects.toThrow(/prepared backup owner mutation/);
 });
 
 it("blocks seed handoff for nonterminal outgoing Cashu authority without deleting the old database", async () => {
@@ -903,7 +928,29 @@ it("refuses seed handoff when an accepted wallet lock is unavailable", async () 
   expect(covered.database.isOpen()).toBe(true);
 });
 
-it("uses the scoped active-proof index without reading spent history", async () => {
+it("reads selected-owner wallet locks through the v21 compound primary key", async () => {
+  const current = fixture();
+  await current.database.encryptedWalletBackupOwnerAcceptedHeads.put({
+    scopeId: current.scopeId,
+    ownerScopeId: "owner-scope",
+    realm: REALM,
+    walletId: "ab".repeat(32),
+    enrollmentEpoch: 1,
+    headVersion: 0,
+    activeBundleCount: 0,
+    activeObjectCount: 0,
+    activeSetDigest: "cd".repeat(32),
+    canonicalCurrentHead: new Uint8Array([1]),
+    localRecoveryStatus: "ready",
+    localRecoveryReason: "none",
+    localRecoveryVersion: 0,
+  });
+
+  await expect(handoff(current)).resolves.toBeUndefined();
+  expect(current.database.isOpen()).toBe(false);
+});
+
+it("checks the scoped active-proof index but refuses legacy ownerless receipt deletion", async () => {
   const covered = await coveredFixture();
   await covered.database.custodyProofs.bulkPut(
     Array.from({ length: 1_024 }, (_, index) => ({
@@ -913,7 +960,101 @@ it("uses the scoped active-proof index without reading spent history", async () 
     })),
   );
   expect(covered.database.custodyProofs.schema.idxByName["[scopeId+selectability]"]).toBeDefined();
-  await expect(handoff(covered)).resolves.toBeUndefined();
+  await expect(handoff(covered)).rejects.toThrow(/selected-owner backup evidence is unavailable/);
+  expect(covered.database.isOpen()).toBe(true);
+});
+
+it("hands off only after the selected owner proves the exact current collected head", async () => {
+  const covered = await coveredFixture();
+  const legacyCandidates = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+  });
+  const ownerScopeId = "ac".repeat(32);
+  const authority = await ownerAuthorityFixture(covered, ownerScopeId, legacyCandidates[0]!);
+  const [candidate] = await listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+    ownerAuthorityStore: authority.store,
+  });
+  expect(candidate).toBeDefined();
+  const invalidateOldProfile = vi.fn();
+  const activateNewProfile = vi.fn(async () => undefined);
+
+  await expect(
+    handoffBrowserEncryptedWalletBackupV2Seed({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      ownerScopeId,
+      ownerAuthorityStore: authority.store,
+      loadCurrentOwnerReachabilityEvidence: async () => {
+        const reachability = await ownerReachabilitySnapshot({
+          ownerScopeId,
+          descriptor: candidate!.descriptor,
+          enrollmentEpoch: candidate!.receipt.enrollmentEpoch,
+          keyHandle: covered.keyHandle,
+        });
+        return { ...reachability, backupReceiptSnapshot: authority.snapshot };
+      },
+      isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
+      lockManager: immediateLockManager(),
+      invalidateOldProfile,
+      activateNewProfile,
+      restoreOldProfile: vi.fn(async () => undefined),
+    }),
+  ).resolves.toBeUndefined();
+  expect(invalidateOldProfile).toHaveBeenCalledOnce();
+  expect(activateNewProfile).toHaveBeenCalledOnce();
+});
+
+it("does not hand off when the captured profile becomes stale during head collection", async () => {
+  const covered = await coveredFixture();
+  const legacyCandidates = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+  });
+  const ownerScopeId = "ad".repeat(32);
+  const authority = await ownerAuthorityFixture(covered, ownerScopeId, legacyCandidates[0]!);
+  const [candidate] = await listBrowserEncryptedWalletBackupOwnerCacheRemovalEligibleAssets({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+    ownerAuthorityStore: authority.store,
+  });
+  expect(candidate).toBeDefined();
+  let current = true;
+  const invalidateOldProfile = vi.fn();
+
+  await expect(
+    handoffBrowserEncryptedWalletBackupV2Seed({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      ownerScopeId,
+      ownerAuthorityStore: authority.store,
+      loadCurrentOwnerReachabilityEvidence: async () => {
+        const snapshot = await ownerReachabilitySnapshot({
+          ownerScopeId,
+          descriptor: candidate!.descriptor,
+          enrollmentEpoch: candidate!.receipt.enrollmentEpoch,
+          keyHandle: covered.keyHandle,
+        });
+        current = false;
+        return { ...snapshot, backupReceiptSnapshot: authority.snapshot };
+      },
+      isCurrentProfile: () => current,
+      assertNoPendingOrders: () => undefined,
+      lockManager: immediateLockManager(),
+      invalidateOldProfile,
+      activateNewProfile: vi.fn(async () => undefined),
+      restoreOldProfile: vi.fn(async () => undefined),
+    }),
+  ).rejects.toThrow(/profile is stale/);
+  expect(invalidateOldProfile).not.toHaveBeenCalled();
+  expect(covered.database.isOpen()).toBe(true);
 });
 
 it("keeps the committed new activation when old-cache deletion fails", async () => {
@@ -1166,6 +1307,66 @@ async function coveredFixture(kind: "ordinary" | "conditional" = "ordinary") {
     preparedMutation: prepared,
   });
   return { database, scopeId, desired, keyHandle };
+}
+
+async function ownerAuthorityFixture(
+  covered: Awaited<ReturnType<typeof coveredFixture>>,
+  ownerScopeId: string,
+  legacyCandidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
+) {
+  const { database, scopeId, desired, keyHandle } = covered;
+  const ownerEvidence = await ownerReachabilitySnapshot({
+    ownerScopeId,
+    descriptor: legacyCandidate.descriptor,
+    enrollmentEpoch: legacyCandidate.receipt.enrollmentEpoch,
+    keyHandle,
+  });
+  const ownerDesired = {
+    scopeId,
+    ownerScopeId,
+    realm: legacyCandidate.descriptor.realm,
+    walletId: legacyCandidate.descriptor.walletId,
+    enrollmentEpoch: legacyCandidate.receipt.enrollmentEpoch,
+    localAssetKey: desired.localAssetKey,
+    assetLocator: legacyCandidate.descriptor.assetLocator,
+    custodyRevision: legacyCandidate.descriptor.custodyRevision.toString(),
+    desiredAction: "replace" as const,
+    activeProofCount: 1,
+    syncState: "acknowledged" as const,
+    lastObservedHeadVersion: ownerEvidence.collectedHeadEvidence.head.headVersion,
+    receiptDigest: "cd".repeat(32),
+  };
+  const receipt = {
+    ...legacyCandidate.receipt,
+    ownerScopeId,
+    bundleDescriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(
+      legacyCandidate.descriptor,
+    ),
+    canonicalSignedMutation: Uint8Array.of(1),
+    canonicalSignedReceipt: Uint8Array.of(2),
+  };
+  const snapshot = {
+    desired,
+    ownerDesired,
+    receipt,
+    collectedHeadEvidence: ownerEvidence.collectedHeadEvidence,
+  };
+  const store = {
+    captureBackupReceiptForLocalAsset: async () => snapshot,
+    assertCurrentBackupReceiptInTransaction: async (input: {
+      readonly desired: { readonly localAssetKey: string; readonly custodyRevision: string };
+    }) => {
+      if (Dexie.currentTransaction?.mode !== "readwrite")
+        throw new Error("owner handoff receipt must be checked in a write transaction");
+      const current = await database.encryptedWalletBackupV2DesiredAssets.get([
+        scopeId,
+        input.desired.localAssetKey,
+      ]);
+      if (current?.custodyRevision !== input.desired.custodyRevision)
+        throw new Error("owner handoff desired asset changed");
+    },
+  } as unknown as EncryptedWalletBackupOwnerDexieAuthorityStore;
+  return { store, snapshot, ownerEvidence };
 }
 
 function proofRow(scopeId: string, amount: number, normalizedMint = "https://mint.example") {

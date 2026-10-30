@@ -1,3 +1,4 @@
+import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import { readActivityForWallet, readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -26,7 +27,6 @@ import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client
 import { DaemonDurableWalletReceiveCoordinator } from '../src/durableWalletReceiveCoordinator.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import { reserveDaemonKeysetCounter } from '../src/state.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 
 const MINT_URL = 'https://mint.example'
@@ -263,16 +263,14 @@ test('substituted private authority blocks recovery before any mint I/O', async 
 test('recovery processes one receive-only page and advances its durable cursor', async () => {
   const fixture = await createFixture()
   try {
-    const fence = fixture.fence
-    await reserveDaemonKeysetCounter(
-      KEYSET_ID,
-      256,
-      { fence, observedAtMs: Date.now() },
-      { normalizedMint: MINT_URL, unit: 'sat' },
-    )
     const prepared = [fixture.prepared]
     for (let index = 1; index <= 256; index += 1) {
+      const transcript = createSpeculativeCounterTranscript([
+        { keysetId: KEYSET_ID, nextCounter: index },
+      ])
+      await transcript.counterSource.reserve(KEYSET_ID, 1)
       prepared.push({
+        transcript,
         operation: serializeDurableWalletReceiveOperation({
           operationId: `wallet-receive:page-${index}`,
           mintUrl: MINT_URL,
@@ -353,12 +351,10 @@ async function createFixture(inputCount = 1, operationId = 'wallet-receive:fixtu
     incarnationId: 'durable-receive-test',
     observedAtMs: Date.now(),
   })
-  await reserveDaemonKeysetCounter(
-    KEYSET_ID,
-    1,
-    { fence, observedAtMs: Date.now() },
-    { normalizedMint: MINT_URL, unit: 'sat' },
-  )
+  const transcript = createSpeculativeCounterTranscript([
+    { keysetId: KEYSET_ID, nextCounter: null },
+  ])
+  await transcript.counterSource.reserve(KEYSET_ID, 1)
   const output = OutputData.createSingleData(1, KEYSET_ID, 'receive-secret', 0x12345n)
   const preview: SwapPreview = {
     amount: Amount.from(1),
@@ -389,7 +385,7 @@ async function createFixture(inputCount = 1, operationId = 'wallet-receive:fixtu
     output,
     preview,
     proof,
-    prepared: { operation },
+    prepared: { operation, transcript },
     coordinator: withRestore(async () => ({ receive: [] })),
     withRestore,
     close: async () => {

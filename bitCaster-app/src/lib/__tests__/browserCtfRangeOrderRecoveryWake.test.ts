@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   beginBrowserCtfRangeOrderAttempt,
   endBrowserCtfRangeOrderAttempt,
-  hasActiveBrowserCtfRangeOrderAttempt,
+  deferBrowserCtfRangeOrderRecovery,
   listenForBrowserCtfRangeRecoveryWake,
 } from "../browserCtfRangeOrderRecoveryWake";
 
@@ -18,7 +18,7 @@ describe("browser CTF range recovery wake", () => {
       operationId: "attempt-a",
       retainedRecoveryWork: true,
     });
-    expect(hasActiveBrowserCtfRangeOrderAttempt("wallet-a")).toBe(true);
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-a")).toBe(true);
     expect(recover).not.toHaveBeenCalled();
 
     endBrowserCtfRangeOrderAttempt({
@@ -26,8 +26,32 @@ describe("browser CTF range recovery wake", () => {
       operationId: "attempt-b",
       retainedRecoveryWork: false,
     });
-    expect(hasActiveBrowserCtfRangeOrderAttempt("wallet-a")).toBe(false);
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-a")).toBe(false);
     expect(recover).toHaveBeenCalledOnce();
+    stopWake();
+  });
+
+  it("wakes deferred work only when the last successful attempt releases", () => {
+    const recover = vi.fn();
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("wallet-deferred", recover);
+    beginBrowserCtfRangeOrderAttempt({ scopeId: "wallet-deferred", operationId: "first" });
+    beginBrowserCtfRangeOrderAttempt({ scopeId: "wallet-deferred", operationId: "last" });
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-absent")).toBe(false);
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-deferred")).toBe(true);
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-deferred")).toBe(true);
+    endBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-deferred",
+      operationId: "first",
+      retainedRecoveryWork: false,
+    });
+    expect(recover).not.toHaveBeenCalled();
+    endBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-deferred",
+      operationId: "last",
+      retainedRecoveryWork: false,
+    });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(deferBrowserCtfRangeOrderRecovery("wallet-deferred")).toBe(false);
     stopWake();
   });
 

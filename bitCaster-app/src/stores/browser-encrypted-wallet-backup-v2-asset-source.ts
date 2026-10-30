@@ -14,6 +14,7 @@ import {
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2CommittedTerminalSealStore,
   type EncryptedWalletBackupV2RemoteTerminalSealReuseResult,
+  type EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult,
 } from "@bitcaster/client-sdk";
 import { deriveDurableCustodyProofId } from "@bitcaster/client-sdk/durableCustody";
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
@@ -412,12 +413,18 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>;
   readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
   readonly remoteTerminalSealReuse?: EncryptedWalletBackupV2RemoteTerminalSealReuseResult;
+  readonly ownerRemoteTerminalSealReuse?: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult;
   readonly remoteRefusalHistory?: Awaited<
     ReturnType<typeof authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation>
   >;
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   if (input.snapshot.desired.desiredAction !== "replace")
     throw new Error("browser V2 removal has no proof bundle");
+  if (
+    input.ownerRemoteTerminalSealReuse !== undefined &&
+    (input.remoteTerminalSealReuse !== undefined || input.remoteRefusalHistory !== undefined)
+  )
+    throw new Error("browser backup Owner and legacy terminal reuse cannot be mixed");
   const baseProofs = await issueLocalTerminalSeals(input);
   const historyByProof = new Map(
     input.snapshot.refusalHistories.map((history) => [history.proof, history]),
@@ -432,13 +439,20 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
       throw new Error("browser V2 history preservation authority is missing");
     return Object.freeze({ ...proof, terminalSeal: history.origin.terminalSeal });
   });
+  const remoteLosingProofIds = new Set(
+    input.snapshot.losingProofs
+      .filter((losing) => losing.origin.kind === "remote-seal")
+      .map((losing) => losing.proofId),
+  );
   const remoteAuthorities = input.remoteTerminalSealReuse?.authorities.filter((authority) =>
-    input.snapshot.losingProofs.some(
-      (losing) => losing.origin.kind === "remote-seal" && losing.proofId === authority.proofId,
-    ),
+    remoteLosingProofIds.has(authority.proofId),
+  );
+  const ownerAuthorities = input.ownerRemoteTerminalSealReuse?.authorities.filter((authority) =>
+    remoteLosingProofIds.has(authority.proofId),
   );
   const counterHighWaterMarks = mergeCounterHighWaterMarks(input.snapshot.counterHighWaterMarks, [
     ...(input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? []),
+    ...(input.ownerRemoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? []),
     ...(input.remoteRefusalHistory?.decrypted.counterHighWaterMarks ?? []),
   ]);
   return prepareEncryptedWalletBackupV2ProofSetBundle({
@@ -450,6 +464,14 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
     counterHighWaterMarks,
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
+    ownerRemoteTerminalSealReuse:
+      input.ownerRemoteTerminalSealReuse === undefined
+        ? undefined
+        : {
+            authorities: ownerAuthorities!,
+            currentHeadEvidence: input.ownerRemoteTerminalSealReuse.currentHeadEvidence,
+            expectedContext: input.ownerRemoteTerminalSealReuse.expectedContext,
+          },
     remoteTerminalSealReuses: remoteAuthorities,
     remoteRefusalHistoryPreservations: input.remoteRefusalHistory?.authorities.filter(
       ({ proofId }) =>
@@ -466,6 +488,7 @@ async function issueLocalTerminalSeals(input: {
   readonly seed: Uint8Array;
   readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
   readonly remoteTerminalSealReuse?: EncryptedWalletBackupV2RemoteTerminalSealReuseResult;
+  readonly ownerRemoteTerminalSealReuse?: EncryptedWalletBackupOwnerRemoteTerminalSealReuseResult;
 }): Promise<readonly EncryptedWalletBackupV2ProofSetProof[]> {
   const losingByProof = new Map(
     input.snapshot.losingProofs.map((losing) => [losing.proof, losing] as const),
@@ -488,7 +511,7 @@ async function issueLocalTerminalSeals(input: {
     throw new Error("browser V2 losing proof binding is invalid");
   if (input.snapshot.proofs.some(({ terminalSeal }) => terminalSeal !== undefined))
     throw new Error("browser V2 terminal seal must be issued from local custody");
-  const remoteReuse = input.remoteTerminalSealReuse;
+  const remoteReuse = input.ownerRemoteTerminalSealReuse ?? input.remoteTerminalSealReuse;
   const remoteByProofId = new Map(
     remoteReuse?.decrypted.proofs
       .filter(({ terminalSeal }) => terminalSeal !== undefined)

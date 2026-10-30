@@ -1,3 +1,8 @@
+import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparation.ts'
+import { isDeepStrictEqual } from 'node:util'
+import { withDurableCustodyFencedRead } from './durableCustodyUnitOfWork.ts'
+import { profileDir } from './profile.ts'
+import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import {
   bindRegisteredDlcConditionAuthority,
   type ConditionOracleResolutionContext,
@@ -15,7 +20,6 @@ import {
 } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import {
   canonicalProofOperationMintIdentity,
-  redeemOutcomeLegWithOperation,
   UneconomicCtfRedeemError,
   getActiveRegularKeyset,
   type AuthenticatedCtfRedeemTerminalEvidence,
@@ -38,7 +42,8 @@ import {
   completeManagedConditionRedeemFenced,
   ensureState,
   failManagedConditionRedeemFenced,
-  getProofOperation,
+  readDaemonProofOperationFromDatabase,
+  assertExactProofReservationFromDatabase,
   prepareProofOperationWithExactReservation,
   retainUneconomicConditionProofsFenced,
   type ProofOperationRecord,
@@ -48,6 +53,7 @@ import {
   completeManagedConditionRetirement,
   listRetiringManagedConditionBindings,
   loadManagedConditionInventory,
+  assertManagedConditionMutationFromDatabase,
   startManagedConditionRetirement,
 } from './managedConditionInventorySqlite.ts'
 import {
@@ -259,21 +265,32 @@ async function redeemRetirementPage(input: {
     baseAsset: 'sat' as const,
     unit: 'msat' as const,
   }
-  const wallet = createWallet(
+  const originalWallet = createWallet(
     input.profile.mintUrl,
     input.secrets,
     input.walletDependencies ?? {},
     'sat',
     'msat',
   ) as unknown as RedeemWallet
+  const preparation = createSpeculativeRedeemPreparation({
+    operationId,
+    mintUrl: input.profile.mintUrl,
+    seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+    fence: input.fence,
+    wallet: originalWallet,
+  })
+  const wallet = preparation.wallet
   const store = retirementOperationStore({
     fence: input.fence,
     reservationId,
     asset,
     persisted: input.persisted,
     wallet,
+    preparation,
+    injectFault: input.walletDependencies?.injectCustodyFault,
+    observe: input.walletDependencies?.observeRedeemPrepared,
   })
-  const existing = await getProofOperation(operationId)
+  const existing = await store.getProofOperation(operationId)
   let context = existing?.metadata.oracleResolutionContext as
     | ConditionOracleResolutionContext
     | undefined
@@ -309,7 +326,7 @@ async function redeemRetirementPage(input: {
     }
   }
   try {
-    const result = await redeemOutcomeLegWithOperation({
+    const result = await preparation.run({
       mintUrl: input.profile.mintUrl,
       operationId,
       wallet,
@@ -345,6 +362,9 @@ async function redeemRetirementPage(input: {
 
 function retirementOperationStore(input: {
   readonly wallet: RedeemWallet
+  readonly preparation: ReturnType<typeof createSpeculativeRedeemPreparation>
+  readonly injectFault?: WalletOpsDependencies['injectCustodyFault']
+  readonly observe?: WalletOpsDependencies['observeRedeemPrepared']
   readonly fence: CustodyScopeFence
   readonly reservationId: string
   readonly asset: Extract<StoredProofRecord['asset'], { kind: 'Outcome' }>
@@ -362,7 +382,49 @@ function retirementOperationStore(input: {
   }
   return {
     getProofOperation: async (operationId) =>
-      (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
+      withDurableCustodyFencedRead(
+        createDaemonStateSqliteSession(profileDir()),
+        input.fence,
+        Date.now(),
+        (database) => {
+          if (operationId !== input.reservationId)
+            throw new Error('retirement operation identity is foreign')
+          const operation = readDaemonProofOperationFromDatabase(database, operationId)
+          if (operation === null) return null
+          if (
+            operation.mintUrl !== state.normalizedMint ||
+            operation.metadata.conditionId !== input.asset.conditionId ||
+            operation.metadata.outcomeSetId !== input.asset.outcomeSetId ||
+            operation.kind !== 'ctf-redeem' ||
+            operation.metadata.purpose !== 'managed-condition-retirement' ||
+            operation.metadata.reservationId !== input.reservationId ||
+            !isDeepStrictEqual(
+              operation.metadata.managedConditionOperationAuthority,
+              managedConditionOperationAuthority,
+            )
+          )
+            throw new Error('retirement saved owner authority is foreign')
+          assertManagedConditionMutationFromDatabase(
+            database,
+            {
+              scopeId: input.fence.scopeId,
+              normalizedMint: operation.mintUrl,
+              unit: 'msat',
+              conditionId: input.asset.conditionId,
+              canonicalParentCollectionId: null,
+            },
+            { kind: 'retirement-redemption', authority: managedConditionOperationAuthority },
+          )
+          if (operation.state === 'prepared')
+            assertExactProofReservationFromDatabase(database, {
+              ...operation,
+              reservationId: input.reservationId,
+              asset: input.asset,
+            })
+          return operation as CtfProofOperationRecord
+        },
+        { snapshot: true },
+      ),
     prepareProofOperation: async (operation) => {
       const keyset = await getActiveRegularKeyset(input.wallet, 'msat')
       if (keyset.id !== operation.metadata?.regularKeysetId)
@@ -376,7 +438,8 @@ function retirementOperationStore(input: {
         finalExpiry: keyset.final_expiry ?? null,
         identity: { kind: 'regular' },
       }
-      return (await prepareProofOperationWithExactReservation(
+      await input.observe?.('retirement', structuredClone(operation))
+      const prepared = (await prepareProofOperationWithExactReservation(
         {
           ...operation,
           reservationId: input.reservationId,
@@ -390,7 +453,12 @@ function retirementOperationStore(input: {
           },
         },
         { fence: input.fence, observedAtMs: Date.now() },
+        undefined,
+        input.preparation.beforePrepare,
+        input.injectFault,
       )) as CtfProofOperationRecord
+      input.preparation.prepared()
+      return prepared
     },
     markProofOperationCompleted: async (operationId, completion) =>
       (await completeManagedConditionRedeemFenced(operationId, completion, {

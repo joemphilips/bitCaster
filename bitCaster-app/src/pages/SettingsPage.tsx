@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
-import { Settings } from "@/components/settings/Settings";
-import { OracleBackups } from "@/components/settings/OracleBackups";
+import { DeferredSettings } from "@/components/settings/DeferredSettings";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
@@ -14,7 +13,11 @@ import {
   refreshNostrProfile,
   userConnectNostrSignerMode,
   userConnectNsecIdentity,
+  resolveCreatorPubkey,
 } from "@/lib/identityOps";
+import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import {
   userAddAndSelectMint,
   userAddRelay,
@@ -29,6 +32,15 @@ import type {
   ThemeOption,
 } from "@/types/settings";
 
+async function loadBrowserNostrProfileEdit(signal: AbortSignal) {
+  const adapter = await import("@/lib/browserNostrProfile");
+  return adapter.loadBrowserNostrProfileEdit(signal);
+}
+async function saveBrowserNostrProfileEdit(patch: NostrProfilePatch, signal: AbortSignal) {
+  const adapter = await import("@/lib/browserNostrProfile");
+  return adapter.saveBrowserNostrProfileEdit(patch, signal);
+}
+
 const VALID_CATEGORIES: readonly SettingsCategory[] = ["general", "cashu", "nostr"];
 
 function isValidCategory(value: string | null): value is SettingsCategory {
@@ -41,15 +53,30 @@ export function SettingsPage() {
   const { t } = useTranslation();
   const walletStore = useWalletStore();
   const settingsStore = useSettingsStore();
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+  );
   const navigate = useNavigate();
   // Subscribe to the setter via a selector so we get the stable reference
   // zustand guarantees for actions — avoids re-running the deep-link effect
   // on every unrelated settings-store update.
   const openCategory = useSettingsStore((s) => s.openCategory);
   const [searchParams] = useSearchParams();
-  const [isReplacementOpen, setIsReplacementOpen] = useState(false);
-  const [isReplacingWallet, setIsReplacingWallet] = useState(false);
-  const [walletReplacementError, setWalletReplacementError] = useState<string | null>(null);
+  const [walletDialog, setWalletDialog] = useState<{
+    mode: "setup" | "replace";
+    generation: number;
+  } | null>(null);
+  const [isWalletActionPending, setIsWalletActionPending] = useState(false);
+  const [walletDialogError, setWalletDialogError] = useState<string | null>(null);
+  const walletDialogGeneration = useRef(0);
+  const walletActionGeneration = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      walletDialogGeneration.current += 1;
+    },
+    [],
+  );
 
   // Allow other parts of the app (e.g. the market creation wizard) to
   // deep-link to a specific category via /settings?category=nostr. Use
@@ -114,6 +141,7 @@ export function SettingsPage() {
     },
     nostr: {
       signerMode: settingsStore.nostrSignerMode,
+      connectionStatus: settingsStore.signerConnectionStatus,
       signerSource: settingsStore.signerSource,
       signerBackupState: settingsStore.signerBackupState,
       canRevealLocalNsec:
@@ -123,6 +151,7 @@ export function SettingsPage() {
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
+      profileEditorKey: `${settingsStore.nostrSignerMode}:${signerRevision}:${resolveCreatorPubkey({ nostrSignerMode: settingsStore.nostrSignerMode, nsecSecret: settingsStore.nsecSecret }) ?? ""}`,
     },
   };
 
@@ -152,29 +181,66 @@ export function SettingsPage() {
     userRemoveMint(url);
   }, []);
 
-  const handleOpenWalletReplacement = useCallback(() => {
-    setWalletReplacementError(null);
-    setIsReplacementOpen(true);
+  const closeWalletDialog = useCallback((generation: number) => {
+    if (walletDialogGeneration.current !== generation) return;
+    walletDialogGeneration.current += 1;
+    setWalletDialog(null);
+    setIsWalletActionPending(false);
+    setWalletDialogError(null);
   }, []);
 
-  const handleWalletReplacement = useCallback(
-    async (words: string[]) => {
-      setIsReplacingWallet(true);
-      setWalletReplacementError(null);
+  const openWalletDialog = useCallback((mode: "setup" | "replace") => {
+    const hasWallet = Boolean(useWalletStore.getState().mnemonic.trim());
+    if (hasWallet !== (mode === "replace")) return;
+    const generation = ++walletDialogGeneration.current;
+    setWalletDialogError(null);
+    setIsWalletActionPending(false);
+    setWalletDialog({ mode, generation });
+  }, []);
+
+  const handleWalletAction = useCallback(
+    async (words?: string[]) => {
+      if (
+        !walletDialog ||
+        walletDialogGeneration.current !== walletDialog.generation ||
+        walletActionGeneration.current !== null
+      )
+        return;
+      const { mode, generation } = walletDialog;
+      if (Boolean(useWalletStore.getState().mnemonic.trim()) !== (mode === "replace")) {
+        closeWalletDialog(generation);
+        return;
+      }
+      if (mode === "replace" && !words) return;
+      walletActionGeneration.current = generation;
+      setIsWalletActionPending(true);
+      setWalletDialogError(null);
+      const isCurrent = () => walletDialogGeneration.current === generation;
       try {
-        const result = await useWalletStore.getState().recoverFromMnemonic(words);
-        if (result.valid) {
-          setIsReplacementOpen(false);
-        } else {
-          setWalletReplacementError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+        if (words) {
+          const result = await useWalletStore.getState().recoverFromMnemonic(words);
+          if (!isCurrent()) return;
+          if (!result.valid) {
+            setWalletDialogError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+            return;
+          }
         }
+        if (mode === "setup") {
+          await useWalletStore.getState().ensureImplicitWallet();
+          if (!isCurrent()) return;
+        }
+        closeWalletDialog(generation);
       } catch {
-        setWalletReplacementError(t("wallet.replaceBlockedSafetyChecks"));
+        if (isCurrent())
+          setWalletDialogError(
+            t(mode === "setup" ? "wallet.setupFailed" : "wallet.replaceBlockedSafetyChecks"),
+          );
       } finally {
-        setIsReplacingWallet(false);
+        if (walletActionGeneration.current === generation) walletActionGeneration.current = null;
+        if (isCurrent()) setIsWalletActionPending(false);
       }
     },
-    [t],
+    [walletDialog, closeWalletDialog, t],
   );
 
   const handleThemeChange = useCallback(
@@ -209,20 +275,25 @@ export function SettingsPage() {
     [settingsStore],
   );
 
-  const handleSignerModeChange = useCallback(async (mode: NostrSignerMode): Promise<boolean> => {
-    const result = await userConnectNostrSignerMode(mode);
-    if (!result.ok) {
-      useToastStore.getState().addToast({
-        type: "error",
-        message: result.error ?? "Failed to connect Nostr signer",
-      });
-    }
-    return result.ok;
-  }, []);
+  const handleSignerModeChange = useCallback(
+    async (mode: NostrSignerMode): Promise<boolean> => {
+      const result = await userConnectNostrSignerMode(mode);
+      if (result.superseded) return false;
+      if (!result.ok) {
+        useToastStore.getState().addToast({
+          type: "error",
+          message: t("settings.nip07ConnectionFailed"),
+        });
+      }
+      return result.ok;
+    },
+    [t],
+  );
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {
       const result = await userConnectNsecIdentity(nsec, passphrase);
+      if (result.superseded) return false;
       if (result.ok) {
         useToastStore.getState().addToast({
           type: "success",
@@ -241,8 +312,7 @@ export function SettingsPage() {
 
   return (
     <>
-      <Settings
-        oracleBackupPanel={<OracleBackups />}
+      <DeferredSettings
         activeCategory={settingsStore.activeCategory}
         settings={settingsState}
         seedPhrase={walletStore.mnemonic}
@@ -262,22 +332,26 @@ export function SettingsPage() {
         onSignerModeChange={handleSignerModeChange}
         onNsecSubmit={handleNsecSubmit}
         onViewSeedPhrase={walletStore.acknowledgeWalletSeedReminder}
-        onReplaceWallet={handleOpenWalletReplacement}
+        onCreateWallet={() => openWalletDialog("setup")}
+        onReplaceWallet={() => openWalletDialog("replace")}
         onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
         onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
         onDisconnectNostr={handleDisconnectNostr}
         onRetryNostrProfile={refreshNostrProfile}
+        onLoadNostrProfileEdit={loadBrowserNostrProfileEdit}
+        onSaveNostrProfileEdit={saveBrowserNostrProfileEdit}
         onAddRelay={userAddRelay}
         onRemoveRelay={userRemoveRelay}
       />
-      {isReplacementOpen && (
+      {walletDialog && (
         <WalletSetupModal
-          mode="replace"
-          isCreating={isReplacingWallet}
-          error={walletReplacementError}
-          onClose={() => setIsReplacementOpen(false)}
-          onCreateNew={() => undefined}
-          onImportSeed={handleWalletReplacement}
+          key={walletDialog.generation}
+          mode={walletDialog.mode}
+          isCreating={isWalletActionPending}
+          error={walletDialogError}
+          onClose={() => closeWalletDialog(walletDialog.generation)}
+          onCreateNew={() => void handleWalletAction()}
+          onImportSeed={(words) => handleWalletAction(words)}
         />
       )}
     </>

@@ -1,13 +1,7 @@
+import { requireValidCashuProofs } from '@bitcaster-market/client-sdk/cashuProofAdmission'
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import { isDeepStrictEqual } from 'node:util'
-import {
-  CheckStateEnum,
-  hashToCurve,
-  Keyset,
-  verifyProofsForReceive,
-  type Proof,
-  type ProofState,
-} from '@cashu/cashu-ts'
+import { CheckStateEnum, hashToCurve, Keyset, type Proof, type ProofState } from '@cashu/cashu-ts'
 import {
   assertDurableCustodyImmutableAuthorityMatches,
   applyDurableCustodyTransaction,
@@ -887,21 +881,17 @@ function verifyProofSignatures(
 ): void {
   const byId = new Map(keysets.map((keyset) => [keyset.keysetId, keyset]))
   try {
-    verifyProofsForReceive(
-      [...proofs],
-      (keysetId) => {
-        const keyset = byId.get(keysetId)
-        if (keyset === undefined) throw new Error('proof keyset is missing')
-        return {
-          id: keyset.keysetId,
-          unit: keyset.unit,
-          keys: keyset.publicKeys,
-          input_fee_ppk: keyset.inputFeePpk,
-          ...(keyset.finalExpiry === null ? {} : { final_expiry: keyset.finalExpiry }),
-        }
-      },
-      { requireDleq: true },
-    )
+    requireValidCashuProofs([...proofs], (keysetId) => {
+      const keyset = byId.get(keysetId)
+      if (keyset === undefined) throw new Error('proof keyset is missing')
+      return {
+        id: keyset.keysetId,
+        unit: keyset.unit,
+        keys: keyset.publicKeys,
+        input_fee_ppk: keyset.inputFeePpk,
+        ...(keyset.finalExpiry === null ? {} : { final_expiry: keyset.finalExpiry }),
+      }
+    })
   } catch (error) {
     throw new Error('cashu outcome proof cryptographic verification failed', { cause: error })
   }
