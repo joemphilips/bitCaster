@@ -64,10 +64,11 @@ capability API のアプリケーションエラーは、RFC 9457 の
 | 409 | `market-unavailable` | 市場はこの capability を受け付けません。 |
 | 413 | `request-too-large` | リクエストがサイズまたは件数の上限を超えています。 |
 | 429 | `admission-limited` | 処理中の受付が上限に達しています。 |
-| 429 | `capacity-exhausted` | 受付処理の容量が不足しています。 |
+| 429 | `capacity-exhausted` | このユーザー、この市場、またはサービス全体の capability の上限に達しています。 |
 | 503 | `admission-unavailable` | 決済受付を一時的に利用できません。 |
 
 容量不足の応答には、従来どおり `limitCode` と診断用の `traceId` が含まれます。
+`limitCode` は上限の範囲と種類を示します（例：`owner-active-count`）。
 存在しない結果と他のユーザーの結果は、同じ 404 応答になります。
 認証、フレームワークの入力検証、リクエストサイズ制限、レート制限による応答は、
 本文の形式が異なる場合があります。

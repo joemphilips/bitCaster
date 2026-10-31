@@ -72,10 +72,11 @@ The `type` is `/errors/` followed by the complete code.
 | 409 | `market-unavailable` | Market does not accept this capability. |
 | 413 | `request-too-large` | Request exceeds a size or count limit. |
 | 429 | `admission-limited` | Outstanding admission work reached a limit. |
-| 429 | `capacity-exhausted` | Admission processing capacity is exhausted. |
+| 429 | `capacity-exhausted` | A capability limit for this user, this market, or the service is reached. |
 | 503 | `admission-unavailable` | Settlement admission is temporarily unavailable. |
 
 Capacity responses also retain `limitCode` and the diagnostic `traceId`.
+The `limitCode` names the scope and the limit, for example `owner-active-count`.
 Missing results and results owned by another user have the same 404 response.
 Authentication, framework input validation, request-size limits, and rate limits
 can return a different body shape.
