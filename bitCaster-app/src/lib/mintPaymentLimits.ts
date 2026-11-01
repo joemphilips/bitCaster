@@ -6,17 +6,20 @@ import {
 } from "@bitcaster/client-sdk/mintPaymentLimits";
 import { normalizeUrl } from "@/lib/url";
 
+/** A mint can change its limits, so an open tab reads them again after this age. */
+const MINT_INFO_MAX_AGE_MS = 5 * 60 * 1000;
+
 /** One public mint info read per mint URL serves the deposit and withdrawal limits. */
-const mintInfoByUrl = new Map<string, Promise<unknown>>();
+const mintInfoByUrl = new Map<string, { read: Promise<unknown>; readAt: number }>();
 
 function readCachedMintInfo(mintUrl: string): Promise<unknown> {
   const cached = mintInfoByUrl.get(mintUrl);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined && Date.now() - cached.readAt < MINT_INFO_MAX_AGE_MS) return cached.read;
   const read = readPublicMintInfo(mintUrl);
-  mintInfoByUrl.set(mintUrl, read);
+  mintInfoByUrl.set(mintUrl, { read, readAt: Date.now() });
   // A failed read is not cached, so the next payment screen asks the mint again.
   read.catch(() => {
-    if (mintInfoByUrl.get(mintUrl) === read) mintInfoByUrl.delete(mintUrl);
+    if (mintInfoByUrl.get(mintUrl)?.read === read) mintInfoByUrl.delete(mintUrl);
   });
   return read;
 }

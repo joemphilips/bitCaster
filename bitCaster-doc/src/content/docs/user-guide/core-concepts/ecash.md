@@ -37,8 +37,8 @@ through the mint. Check the amount and estimated fees before confirmation.
 A mint can limit the amount of each Lightning deposit and each Lightning
 withdrawal. If an amount is outside the limit, the app shows the limit next to
 the amount or the invoice and does not continue. Deposit or withdraw a larger
-amount in parts. When the app suggests a top-up amount above the limit, it
-suggests the limit instead. After that deposit, continue and deposit the
+amount in parts. When the required top-up is above the limit, the app
+suggests the limit. After that deposit, continue and deposit the
 remaining amount. The CLI refuses the same amounts with the error code
 `amount-outside-mint-limits`.
 

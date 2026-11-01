@@ -19,6 +19,7 @@ import {
 import {
   assertNativeMintPaymentAmount,
   explainNativeMintAmountRefusal,
+  NativeMintPaymentAmountError,
   type NativeMintPaymentLimitCheck,
   type ReadMintInfo,
 } from './nativeMintPaymentLimits.ts'
@@ -121,7 +122,17 @@ export function createNativeLightningOpsWithCoordinator(
 
       try {
         await coordinator.hide(quoteRecordId)
-        return { invoice: await createQuote(amountMsat) }
+        try {
+          return { invoice: await createQuote(amountMsat) }
+        } catch (error) {
+          if (!(error instanceof NativeMintPaymentAmountError)) throw error
+          throw new NativeMintPaymentAmountError(
+            error.direction,
+            error.amountMsat,
+            error.rejection,
+            true,
+          )
+        }
       } finally {
         recovery.restart()
       }

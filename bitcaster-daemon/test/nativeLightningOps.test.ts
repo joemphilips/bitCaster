@@ -528,3 +528,32 @@ function invoice(
     revision: 0,
   }
 }
+
+test('a replacement refused after the old invoice is hidden says that the old invoice is hidden', async () => {
+  const calls: string[] = []
+  const infos: unknown[] = [undefined, mintInfo(100_000_000)]
+  const ops = createNativeLightningOpsWithCoordinator(
+    recordingCoordinator(calls, async () => {
+      throw new MintOperationError(11006, 'Amount out of limit range')
+    }),
+    'https://mint.example',
+    {
+      readMintInfo: async () => {
+        const info = infos.shift()
+        if (info === undefined) throw new Error('mint info is unavailable')
+        return info
+      },
+    },
+  )
+
+  await assert.rejects(
+    ops.replaceInvoice(firstInvoice.quoteRecordId, 150_000_000),
+    (error: unknown) =>
+      error instanceof NativeMintPaymentAmountError && error.previousInvoiceHidden,
+  )
+  assert.deepEqual(calls, [
+    `get:${firstInvoice.quoteRecordId}`,
+    `hide:${firstInvoice.quoteRecordId}`,
+    'create:150000000',
+  ])
+})

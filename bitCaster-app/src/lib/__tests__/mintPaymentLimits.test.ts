@@ -49,6 +49,34 @@ describe("browser mint payment limits", () => {
     expect(readPublicMintInfo).toHaveBeenCalledWith("https://mint.example");
   });
 
+  it("reads the mint again after the cached info is five minutes old", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-02T00:00:00Z"));
+      const limits = await freshModule();
+      readPublicMintInfo
+        .mockResolvedValueOnce(info(200_000_000))
+        .mockResolvedValueOnce(info(500_000_000));
+
+      await expect(
+        limits.readBrowserMintPaymentLimits("https://mint.example", DEPOSIT),
+      ).resolves.toMatchObject({ maxSat: 200_000 });
+      vi.setSystemTime(new Date("2026-11-02T00:04:59Z"));
+      await expect(
+        limits.readBrowserMintPaymentLimits("https://mint.example", DEPOSIT),
+      ).resolves.toMatchObject({ maxSat: 200_000 });
+      expect(readPublicMintInfo).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-11-02T00:05:00Z"));
+      await expect(
+        limits.readBrowserMintPaymentLimits("https://mint.example", DEPOSIT),
+      ).resolves.toMatchObject({ maxSat: 500_000 });
+      expect(readPublicMintInfo).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reads the mint again after the cached limits are forgotten", async () => {
     const limits = await freshModule();
     readPublicMintInfo
