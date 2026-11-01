@@ -128,6 +128,11 @@ export function Portfolio(props: PortfolioProps) {
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");
   }, [positionsRequestKey]);
+  // The positions list unmounts on another main tab. The handled key lives
+  // here, so a return to the positions tab does not scroll and focus again.
+  const [handledPositionsRequestKey, setHandledPositionsRequestKey] = useState<string | null>(null);
+  const pendingPositionsRequest =
+    props.positionsRequest?.key === handledPositionsRequestKey ? undefined : props.positionsRequest;
 
   // No-wallet CTA state
   if (props.walletState === "none") {
@@ -253,7 +258,8 @@ export function Portfolio(props: PortfolioProps) {
                 onConfirmDiscardLostPosition={props.onConfirmDiscardLostPosition}
                 onCancelDiscardLostPosition={props.onCancelDiscardLostPosition}
                 onViewPosition={props.onViewPosition}
-                positionsRequest={props.positionsRequest}
+                positionsRequest={pendingPositionsRequest}
+                onPositionsRequestHandled={setHandledPositionsRequestKey}
               />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
               {props.monitoring?.liveUpdateCoverageLimited && (

@@ -18,7 +18,8 @@ const MAX_NOTIFICATIONS = 100;
  * `market_closed` is not an order status. It is a market-lifecycle event the
  * client detects for the user's bookmarked ("liked") markets (P22 Link G).
  * `position_won` and `position_lost` report the verified result of a market in
- * which the wallet holds outcome tokens. These kinds carry no order fields.
+ * which a wallet holds outcome tokens, once for each wallet and condition.
+ * These kinds carry no order fields.
  */
 export type NotificationKind =
   | "accepted"
@@ -43,7 +44,8 @@ export interface Notification {
    *   filled / cancelled / failed → `{orderId}-{status}` (terminal, one per order)
    *   matched / partially_filled → `{orderId}-{status}-{remainingAmountSubunits}`
    *   market_closed      → `{conditionId}-market_closed` (one per liked market)
-   *   position_won / position_lost → `{conditionId}-{outcomeCollection}-{kind}`
+   *   position_won / position_lost → `{conditionId}-position_result-{walletScopeId}`
+   *     (one per wallet and condition)
    */
   id: string;
   kind: NotificationKind;

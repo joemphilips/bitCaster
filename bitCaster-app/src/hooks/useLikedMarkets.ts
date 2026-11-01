@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { getMarkets } from "@/lib/markets";
-import { marketCatalogueIdBatches } from "@/lib/marketCatalogueBatches";
+import { marketCatalogueIdBatches } from "@bitcaster/client-sdk/marketCatalogueBatches";
 import type { Market } from "@/types/market";
 
 interface UseLikedMarketsResult {

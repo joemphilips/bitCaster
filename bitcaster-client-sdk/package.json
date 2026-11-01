@@ -99,6 +99,10 @@
       "types": "./dist/heldPositionStatus.d.ts",
       "import": "./dist/heldPositionStatus.js"
     },
+    "./marketCatalogueBatches": {
+      "types": "./dist/marketCatalogueBatches.d.ts",
+      "import": "./dist/marketCatalogueBatches.js"
+    },
     "./bookmarks": {
       "types": "./dist/bookmarks.d.ts",
       "import": "./dist/bookmarks.js"

@@ -9,7 +9,6 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { readCanonicalPortfolioCustody } from "@/stores/portfolio-custody";
-import { summarizePortfolioCustodyPositions } from "@/lib/heldPositions";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
@@ -44,7 +43,10 @@ import type {
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
-import { classifyHeldPosition } from "@bitcaster/client-sdk/heldPositionStatus";
+import {
+  classifyHeldPosition,
+  summarizeHeldPositions,
+} from "@bitcaster/client-sdk/heldPositionStatus";
 import type {
   AssetMonitoringAssetReference,
   AssetMonitoringAssetResponse,
@@ -1034,7 +1036,7 @@ export function usePortfolioState(): PortfolioState & {
       if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
       const proofs = await readCanonicalPortfolioCustody(scopeId);
       if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
-      const entries = summarizePortfolioCustodyPositions(proofs);
+      const entries = summarizeHeldPositions(proofs);
       const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
         ? visibleMonitoringConditionIdsKey.split(",")
         : [];
@@ -1051,16 +1053,7 @@ export function usePortfolioState(): PortfolioState & {
         const divisibility = parseMarketDivisibility(market?.divisibility);
         // Closure alone does not prove a loss. Only mint classification or an
         // attested outcome can classify this display row.
-        const classification = classifyHeldPosition(
-          {
-            outcomeCollection: entry.outcomeCollection,
-            amount: entry.amount,
-            retainedUnverifiedAmount: entry.retainedUnverifiedAmountSubunits,
-            allVerifiedLosing: entry.allVerifiedLosing,
-            claimRecoveryPending: entry.claimRecoveryPending,
-          },
-          market,
-        );
+        const classification = classifyHeldPosition(entry, market);
         const historyOnly = classification.result === "history";
         const isClosed = classification.closed;
         const isWinner = classification.result === "winner";
@@ -1083,7 +1076,7 @@ export function usePortfolioState(): PortfolioState & {
           outcomeLabel: entry.outcomeCollection,
           canClaimPayout: !historyOnly && (isWinner || entry.claimRecoveryPending),
           canSell: !historyOnly,
-          retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmountSubunits,
+          retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmount,
           claimRecoveryPending: entry.claimRecoveryPending,
           removalPending: entry.removalPending,
           canDiscard: !historyOnly && isLoser,

@@ -231,9 +231,10 @@ these conditional tokens and shows their retained amount. You cannot claim,
 sell, or remove tokens in this retained, unverified state.
 
 When a market in which you hold tokens closes with a verified result, the
-Notifications bell shows one entry for each position: "You won the bet for
-*market*! Please cash it." or "You lost your bet for *market* 😢". Select the
-entry to open that position on the Closed tab of Portfolio. A closed market
+Notifications bell shows one entry for that market: "You won the bet for
+*market*! Please cash it." or "You lost your bet for *market* 😢". The entry
+reports a win when one of the outcomes that you hold won. Select the entry to
+open that position on the Closed tab of Portfolio. A closed market
 without a verified result shows no entry until the result is verified. The
 entry appears only in the app. Clear all does not bring the same entries back.
 

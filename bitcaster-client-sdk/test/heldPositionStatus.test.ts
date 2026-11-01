@@ -5,6 +5,8 @@ import {
   deriveWinner,
   isWinningCollection,
   parseOutcomeCollection,
+  summarizeHeldPositions,
+  type HeldCustodyProof,
   type HeldPositionCustodyFacts,
 } from '../src/heldPositionStatus.ts'
 
@@ -211,5 +213,133 @@ describe('classifyHeldPosition', () => {
       }),
       { closed: true, result: 'winner', claimableAmount: 4_000 },
     )
+  })
+})
+
+function proof(overrides: Partial<HeldCustodyProof> = {}): HeldCustodyProof {
+  return {
+    normalizedMint: 'https://mint.example',
+    unit: 'msat',
+    assetKind: 'conditional',
+    conditionId: 'c'.repeat(64),
+    outcomeCollection: 'YES',
+    baseAsset: 'sat',
+    amount: 1_000,
+    selectability: 'selectable',
+    receivedAtMs: 1_700_000_000_000,
+    claimRecoveryPending: false,
+    ...overrides,
+  }
+}
+
+describe('summarizeHeldPositions', () => {
+  test('groups proofs by mint, unit, condition and collection in first-seen order', () => {
+    const positions = summarizeHeldPositions([
+      proof({ amount: 1_000, receivedAtMs: 30 }),
+      proof({ outcomeCollection: 'NO', amount: 7, receivedAtMs: 40 }),
+      proof({ amount: 500, receivedAtMs: 10 }),
+      proof({ normalizedMint: 'https://second.example', amount: 3, receivedAtMs: 50 }),
+      proof({ unit: 'sat', amount: 2, receivedAtMs: 60 }),
+    ])
+
+    assert.deepEqual(
+      positions.map(({ mintUrl, unit, outcomeCollection, amount, firstReceivedAt }) => ({
+        mintUrl,
+        unit,
+        outcomeCollection,
+        amount,
+        firstReceivedAt,
+      })),
+      [
+        {
+          mintUrl: 'https://mint.example',
+          unit: 'msat',
+          outcomeCollection: 'YES',
+          amount: 1_500,
+          firstReceivedAt: 10,
+        },
+        {
+          mintUrl: 'https://mint.example',
+          unit: 'msat',
+          outcomeCollection: 'NO',
+          amount: 7,
+          firstReceivedAt: 40,
+        },
+        {
+          mintUrl: 'https://second.example',
+          unit: 'msat',
+          outcomeCollection: 'YES',
+          amount: 3,
+          firstReceivedAt: 50,
+        },
+        {
+          mintUrl: 'https://mint.example',
+          unit: 'sat',
+          outcomeCollection: 'YES',
+          amount: 2,
+          firstReceivedAt: 60,
+        },
+      ],
+    )
+    assert.ok(positions.every(({ baseAsset }) => baseAsset === 'sat'))
+  })
+
+  test('ignores regular proofs and conditional proofs without a condition or collection', () => {
+    assert.deepEqual(
+      summarizeHeldPositions([
+        proof({ assetKind: 'regular', conditionId: null, outcomeCollection: null }),
+        proof({ conditionId: null }),
+        proof({ outcomeCollection: '' }),
+      ]),
+      [],
+    )
+  })
+
+  test('keeps retained unverified proofs out of the usable amount', () => {
+    const [position] = summarizeHeldPositions([
+      proof({ amount: 400 }),
+      proof({ amount: 600, selectability: 'retained-unverified' }),
+    ])
+
+    assert.equal(position!.amount, 400)
+    assert.equal(position!.retainedUnverifiedAmount, 600)
+  })
+
+  test('a position is all verified losing only when no proof can still win', () => {
+    const allVerifiedLosing = (...selectability: HeldCustodyProof['selectability'][]) =>
+      summarizeHeldPositions(selectability.map((value) => proof({ selectability: value })))[0]!
+        .allVerifiedLosing
+
+    assert.equal(allVerifiedLosing('verified-losing'), true)
+    assert.equal(
+      allVerifiedLosing('verified-losing', 'retained-unverified', 'pending-removal'),
+      true,
+    )
+    assert.equal(allVerifiedLosing('verified-losing', 'selectable'), false)
+    assert.equal(allVerifiedLosing('locked', 'verified-losing'), false)
+  })
+
+  test('one pending claim or one pending removal marks the position', () => {
+    const [position] = summarizeHeldPositions([
+      proof(),
+      proof({ claimRecoveryPending: true }),
+      proof({ selectability: 'pending-removal' }),
+    ])
+
+    assert.equal(position!.claimRecoveryPending, true)
+    assert.equal(position!.removalPending, true)
+    const [plain] = summarizeHeldPositions([proof(), proof({ selectability: 'locked' })])
+    assert.equal(plain!.claimRecoveryPending, false)
+    assert.equal(plain!.removalPending, false)
+  })
+
+  test('a held position is the custody input of the classification', () => {
+    const [position] = summarizeHeldPositions([proof({ outcomeCollection: 'A|B', amount: 900 })])
+
+    assert.deepEqual(classifyHeldPosition(position!, { state: 'closed', finalOutcome: 'B' }), {
+      closed: true,
+      result: 'winner',
+      claimableAmount: 900,
+    })
   })
 })

@@ -1,7 +1,6 @@
 import type { Command } from 'commander'
 import { BitcasterEngineClient } from '@bitcaster-market/client-sdk/engineClient'
-
-const CATALOGUE_PAGE_IDS_MAX = 50
+import { marketCatalogueIdBatches } from '@bitcaster-market/client-sdk/marketCatalogueBatches'
 
 interface LikedMarketCommandContext {
   readonly isDryRun: () => boolean
@@ -68,10 +67,8 @@ async function likedMarketMetadata(
     // The engine uses comma-separated IDs. Retain unsupported saved strings locally.
     if (conditionIds.some((id) => id.includes(',')))
       return { markets: [], metadataStatus: 'unavailable' }
-    // Keep the complete local set. The engine returns at most 50 markets in one
-    // page, so each request names at most 50 IDs and asks for that many rows.
-    for (let offset = 0; offset < conditionIds.length; offset += CATALOGUE_PAGE_IDS_MAX) {
-      const ids = conditionIds.slice(offset, offset + CATALOGUE_PAGE_IDS_MAX)
+    // Keep the complete local set. Each batch fits in one catalogue page.
+    for (const ids of marketCatalogueIdBatches(conditionIds)) {
       const response = await client.queryMarkets(
         { ids, state: 'All', pageSize: ids.length },
         AbortSignal.timeout(5_000),

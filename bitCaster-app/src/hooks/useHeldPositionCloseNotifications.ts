@@ -13,9 +13,10 @@ import { useWalletStore } from "@/stores/wallet";
  * Mount once at the app root. Adds the in-app won or lost entry for each held
  * position whose market closed with a verified outcome.
  *
- * It reconciles at start, when the tab becomes visible, and when a live close
- * arrives. A live close arrives only for a condition that a market page or the
- * Portfolio already observes; this hook joins no group and does not poll.
+ * It reconciles every held condition at start and when the tab becomes
+ * visible. A live close reconciles only its condition. A live close arrives
+ * only for a condition that a market page or the Portfolio already observes;
+ * this hook joins no group and does not poll.
  */
 export function useHeldPositionCloseNotifications(): void {
   const walletMnemonic = useWalletStore((state) => state.mnemonic);
@@ -24,6 +25,7 @@ export function useHeldPositionCloseNotifications(): void {
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
     if (scopeId === null) return;
     const reconciler = createHeldPositionCloseReconciler({
+      scopeId,
       isCurrent: () => activeBrowserWalletScopeId() === scopeId,
       readCustody: () => readCanonicalPortfolioCustody(scopeId),
     });

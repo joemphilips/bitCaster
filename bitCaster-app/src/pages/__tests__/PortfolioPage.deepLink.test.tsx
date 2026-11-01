@@ -194,6 +194,25 @@ describe("Portfolio position deep link", () => {
     expect(wonRow()).toHaveFocus();
   });
 
+  it("does not scroll to the position again after a main-tab switch", async () => {
+    const user = userEvent.setup();
+    renderAt(deepLink);
+    expect(wonRow()).toHaveFocus();
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("tab", { name: "Funds" }));
+    await user.click(screen.getByRole("tab", { name: "Positions" }));
+
+    expect(screen.getByText("Won market")).toBeInTheDocument();
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(wonRow()).not.toHaveFocus();
+
+    // A new navigation to the same link is a new request.
+    await user.click(screen.getByRole("button", { name: "Open won position" }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(wonRow()).toHaveFocus();
+  });
+
   it("keeps the active tab and does not scroll without a query", () => {
     renderAt("/portfolio");
 

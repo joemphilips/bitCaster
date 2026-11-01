@@ -73,6 +73,7 @@ describe("useHeldPositionCloseNotifications", () => {
 
     expect(mocks.request.mock.calls).toEqual([[]]);
     const [options] = mocks.reconcilerOptions;
+    expect(options.scopeId).toBe("scope:wallet words");
     expect(options.isCurrent()).toBe(true);
     await options.readCustody();
     expect(mocks.readCustody).toHaveBeenCalledWith("scope:wallet words");

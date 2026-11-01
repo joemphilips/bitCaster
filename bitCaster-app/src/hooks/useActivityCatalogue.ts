@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { marketCatalogueIdBatches } from "@bitcaster/client-sdk/marketCatalogueBatches";
 import type { ActivityItem, ActivityDisplayItem } from "@/types/portfolio";
 import type { MarketCatalogueEntry, MarketCatalogueResponse } from "@/lib/markets";
 
@@ -75,8 +76,9 @@ export function useActivityCatalogue(
     );
     const ids = selectedIds.filter((id) => !markets.has(id));
     void (async () => {
-      for (let offset = 0; offset < ids.length; offset += 50) {
-        const batch = ids.slice(offset, offset + 50).filter((id) => !availableRef.current.has(id));
+      for (const idBatch of marketCatalogueIdBatches(ids)) {
+        // Portfolio can load a market while an earlier batch is in flight.
+        const batch = idBatch.filter((id) => !availableRef.current.has(id));
         if (obsolete || controller.signal.aborted) return;
         if (batch.length === 0) continue;
         try {

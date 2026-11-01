@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { Position, PortfolioProps } from "@/types/portfolio";
 import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
@@ -18,8 +18,10 @@ interface PositionsListProps {
   removalConfirmationPositionId?: string;
   onConfirmDiscardLostPosition?: (positionId: string) => void;
   onCancelDiscardLostPosition?: () => void;
-  /** Scroll to and focus this position once for each request key. */
+  /** A position to scroll to and focus. The owner clears it after the handled callback. */
   positionsRequest?: PortfolioProps["positionsRequest"];
+  /** Called with the request key after the position is scrolled into view and focused. */
+  onPositionsRequestHandled?: (requestKey: string) => void;
 }
 
 export function PositionsList({
@@ -36,6 +38,7 @@ export function PositionsList({
   onConfirmDiscardLostPosition,
   onCancelDiscardLostPosition,
   positionsRequest,
+  onPositionsRequestHandled,
 }: PositionsListProps) {
   const { t } = useTranslation();
   const filtered = positions.filter((p) => p.status === positionsTab);
@@ -45,17 +48,15 @@ export function PositionsList({
   const targetMarketId = positionsRequest?.positionMarketId ?? null;
   const targetRendered =
     targetMarketId !== null && filtered.some(({ marketId }) => marketId === targetMarketId);
-  const handledRequestKey = useRef<string | null>(null);
   useEffect(() => {
     const requestKey = positionsRequest?.key;
     if (!targetRendered || targetMarketId === null || requestKey === undefined) return;
-    if (handledRequestKey.current === requestKey) return;
     const row = document.getElementById(portfolioPositionAnchorId(targetMarketId));
     if (row === null) return;
-    handledRequestKey.current = requestKey;
     row.scrollIntoView?.({ block: "center" });
     row.focus({ preventScroll: true });
-  }, [positionsRequest?.key, targetMarketId, targetRendered]);
+    onPositionsRequestHandled?.(requestKey);
+  }, [positionsRequest?.key, targetMarketId, targetRendered, onPositionsRequestHandled]);
 
   return (
     <div>
