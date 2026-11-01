@@ -3,6 +3,9 @@ import type { OraclePublicationRecord } from "@bitcaster/client-sdk/oraclePublic
 import type { BrowserOracleImportMetadata, StoredCreatorMarket } from "@/stores/creatorMarkets";
 import fixture from "@/lib/__tests__/fixtures/oraclePublication.json";
 
+/** Public test key for the fixture oracle. It is not an application credential. */
+export const fixtureOraclePrivateKey = Uint8Array.from({ length: 32 }, () => 0x11);
+
 export const creatorOracleMetadata: BrowserOracleImportMetadata = {
   binding: {
     conditionId: deriveDlcConditionId({

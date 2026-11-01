@@ -3,7 +3,11 @@ import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { useSettingsStore } from "@/stores/settings";
 import { advanceNostrSignerRevision } from "../nostrSignerRevision";
-import { runBrowserOracleRecoveryPass, startBrowserOracleRecovery } from "../browserOracleRecovery";
+import {
+  runBrowserOraclePublicationPass,
+  runBrowserOracleRecoveryPass,
+  startBrowserOracleRecovery,
+} from "../browserOracleRecovery";
 import type { OracleBackupScanCursor } from "@bitcaster/client-sdk/oracleBackupAccess";
 import type { BrowserOracleBackupDeliveryOptions } from "../browserOracleBackupDelivery";
 import type { BrowserOracleAuthorityReadiness } from "../browserOracleBackup";
@@ -16,6 +20,7 @@ vi.mock("../browserOracleBackupAccess", () => ({
   restoreBrowserOracleBackup: vi.fn(),
 }));
 vi.mock("../browserOracleBackupDelivery", () => ({ deliverBrowserOracleBackup: vi.fn() }));
+vi.mock("../oracleAttestation", () => ({ publishBrowserOracleOutcome: vi.fn() }));
 const pubkey = getPublicKey(generateSecretKey());
 const conditionId = "aa".repeat(32);
 const controller = () => new AbortController();
@@ -157,6 +162,7 @@ it("cancellation during a query starts no readiness check or restore", async () 
   expect(deps.restore).not.toHaveBeenCalled();
 });
 
+const noPublication = async () => {};
 function login() {
   useSettingsStore.setState({
     nostrSignerMode: "nsec",
@@ -170,7 +176,7 @@ async function flush() {
 
 it("starts on later local login, ignores render/store noise and wakes on reconnect or signer revision", async () => {
   const runPass = vi.fn(async () => {});
-  const stop = startBrowserOracleRecovery({ runPass });
+  const stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   expect(runPass).not.toHaveBeenCalled();
   useSettingsStore.setState({ nostrSignerMode: "nip07" });
@@ -204,7 +210,7 @@ it("coalesces in-flight wakes and invalidates A-to-B-to-A before subsequent work
       active.requireCurrent();
     }
   });
-  const stop = startBrowserOracleRecovery({ runPass });
+  const stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   const original = useSettingsStore.getState().nsecSecret;
   login();
@@ -224,13 +230,13 @@ it("a failed pass waits for reconnect and restart retries without publishing any
   const runPass = vi.fn(async () => {
     throw new Error("fixed unavailable");
   });
-  let stop = startBrowserOracleRecovery({ runPass });
+  let stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   expect(runPass).toHaveBeenCalledTimes(1);
   await flush();
   expect(runPass).toHaveBeenCalledTimes(1);
   stop();
-  stop = startBrowserOracleRecovery({ runPass });
+  stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   expect(runPass).toHaveBeenCalledTimes(2);
   stop();
@@ -247,7 +253,7 @@ it("automatically yields and continues more than four cursor pages without anoth
   const runPass = vi.fn((active, checkpoint) =>
     runBrowserOracleRecoveryPass(active, checkpoint, deps),
   );
-  const stop = startBrowserOracleRecovery({ runPass });
+  const stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   await flush();
   expect(count).toBe(7);
@@ -287,7 +293,7 @@ it("continues more than eighty saved owner retries once each and does not rescan
   const runPass = vi.fn((active, checkpoint) =>
     runBrowserOracleRecoveryPass(active, checkpoint, deps),
   );
-  const stop = startBrowserOracleRecovery({ runPass });
+  const stop = startBrowserOracleRecovery({ runPass, runPublicationPass: noPublication });
   await flush();
   await flush();
   expect(deps.deliver).toHaveBeenCalledTimes(85);
@@ -295,4 +301,139 @@ it("continues more than eighty saved owner retries once each and does not rescan
   expect(new Set(deps.deliver.mock.calls.map((args) => args[0])).size).toBe(85);
   expect(deps.readiness).not.toHaveBeenCalled();
   stop();
+});
+
+import { creatorOracleMetadata, creatorOraclePublication } from "@/test/creatorOracleFixture";
+import { fixtureOraclePrivateKey } from "@/test/creatorOracleFixture";
+import type { OraclePublicationRecord } from "@bitcaster/client-sdk/oraclePublication";
+
+function importedOwner(
+  conditionId: string,
+  publication: OraclePublicationRecord | null,
+): BrowserOracleOwner {
+  return {
+    kind: "imported",
+    oracle: {
+      ...creatorOracleMetadata,
+      binding: { ...creatorOracleMetadata.binding, conditionId },
+      publication: publication && {
+        ...publication,
+        binding: { ...publication.binding, conditionId },
+      },
+      importComplete: true,
+    },
+  };
+}
+
+it("resends each saved result once per wake, signing an interrupted choice only with its own key", async () => {
+  const evidence = {
+    conditionId: creatorOracleMetadata.binding.conditionId,
+    oracleEventId: creatorOracleMetadata.binding.oracleEventId,
+    oraclePubkey: creatorOracleMetadata.binding.oraclePubkey,
+    outcome: "YES",
+    announcementEventId: JSON.parse(creatorOracleMetadata.binding.announcementEventJson).id,
+    attestationEventId: JSON.parse(creatorOraclePublication.attestation!.eventJson).id,
+  };
+  const unsigned = { ...creatorOraclePublication, attestation: null };
+  const owners = [
+    importedOwner("01".repeat(32), creatorOraclePublication),
+    importedOwner("02".repeat(32), {
+      ...creatorOraclePublication,
+      relayPublished: true,
+      engineEvidence: evidence,
+    }),
+    importedOwner("03".repeat(32), unsigned),
+    importedOwner("04".repeat(32), null),
+    importedOwner("05".repeat(32), { ...creatorOraclePublication, relayPublished: true }),
+  ];
+  const publish = vi.fn(async (conditionId: string, ..._request: unknown[]) => {
+    if (conditionId === "01".repeat(32)) throw new Error("engine unavailable");
+    return { failures: [], record: creatorOraclePublication };
+  });
+  const requireCurrent = vi.fn();
+  const pass = (signerPublicKey: string | null) => ({
+    signerPublicKey,
+    relayUrls: ["wss://configured.example"],
+    requireCurrent,
+  });
+  await runBrowserOraclePublicationPass(pass(null), { owners: async () => owners, publish });
+  expect(publish.mock.calls.map((call) => call[0])).toEqual(["01".repeat(32), "05".repeat(32)]);
+  for (const call of publish.mock.calls) {
+    expect(call[1]).toBe("YES");
+    expect(call[2]).toBeUndefined();
+    expect(call[3]).toEqual(["wss://configured.example"]);
+    expect(call[6]).toEqual({ engineDelivery: "synchronize", requireCurrent });
+  }
+  publish.mockClear();
+  await runBrowserOraclePublicationPass(pass(getPublicKey(generateSecretKey())), {
+    owners: async () => owners,
+    publish,
+  });
+  expect(publish.mock.calls.map((call) => call[0])).not.toContain("03".repeat(32));
+  publish.mockClear();
+  await runBrowserOraclePublicationPass(pass(getPublicKey(fixtureOraclePrivateKey)), {
+    owners: async () => owners,
+    publish,
+  });
+  expect(publish.mock.calls.map((call) => call[0])).toEqual([
+    "01".repeat(32),
+    "03".repeat(32),
+    "05".repeat(32),
+  ]);
+});
+
+/** Resolve when a driver pass has run the given number of times. */
+function passRecorder() {
+  const calls: { signerPublicKey: string | null; relayUrls: readonly string[] }[] = [];
+  const waiters: { count: number; resolve: () => void }[] = [];
+  const run = vi.fn(
+    async (pass: { signerPublicKey?: string | null; relayUrls: readonly string[] }) => {
+      calls.push({ signerPublicKey: pass.signerPublicKey ?? null, relayUrls: pass.relayUrls });
+      for (const waiter of waiters.filter((item) => calls.length >= item.count)) {
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve();
+      }
+    },
+  );
+  const reached = (count: number) =>
+    calls.length >= count
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => waiters.push({ count, resolve }));
+  return { calls, run, reached };
+}
+
+it("runs the publication pass without a signer on start, online, a visible tab, and signer or relay changes", async () => {
+  const recovery = passRecorder();
+  const publication = passRecorder();
+  const stop = startBrowserOracleRecovery({
+    runPass: recovery.run,
+    runPublicationPass: publication.run,
+  });
+  try {
+    await publication.reached(1);
+    expect(publication.calls[0].signerPublicKey).toBeNull();
+    globalThis.dispatchEvent(new Event("online"));
+    await publication.reached(2);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await publication.reached(3);
+    useSettingsStore.setState({
+      relays: [{ url: "wss://changed.example", connectionStatus: "disconnected" }],
+    });
+    await publication.reached(4);
+    expect(publication.calls[3].relayUrls).toEqual(["wss://changed.example"]);
+    login();
+    await publication.reached(5);
+    await recovery.reached(1);
+    const key = getPublicKey(
+      nip19.decode(useSettingsStore.getState().nsecSecret!).data as Uint8Array,
+    );
+    expect(publication.calls[4].signerPublicKey).toBe(key);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await publication.reached(6);
+    // A visible tab resends saved results. It does not restart backup discovery.
+    expect(recovery.calls).toHaveLength(1);
+  } finally {
+    stop();
+  }
 });

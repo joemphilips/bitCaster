@@ -10,6 +10,7 @@ import {
   createOracleBackupEvent,
   buildTerminalOracleBackupRecord,
   deriveDlcConditionId,
+  OracleBackupDeliveryError,
   type OracleBackupRecord,
   type OraclePrivateAuthority,
 } from '@bitcaster-market/client-sdk'
@@ -1112,6 +1113,170 @@ test(
         assert.equal(pending.terminal.replacementAcknowledgedRelays, 0)
         assert.equal(pending.terminal.localCommitPending, true)
       } finally {
+        if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+        else process.env.BITCASTER_DAEMON_HOME = previousHome
+      }
+    })
+  },
+)
+
+/** The engine read response for the exact saved attestation, verified by the real helper. */
+async function engineResolution(
+  saved: NonNullable<Awaited<ReturnType<Store['readAuthorityByConditionId']>>>,
+) {
+  const exact = saved.attestation!.attestationNostrEventJson
+  const verified = await helper.verifyEnum({
+    eventId: saved.eventId,
+    oraclePublicKeyHex: saved.creatorPublicKeyHex,
+    chosenOutcome: saved.chosenOutcome!,
+    announcementTlvHex: saved.announcement!.announcementTlvHex,
+    announcementNostrEventJson: saved.announcement!.announcementNostrEventJson,
+    attestationHex: saved.attestation!.attestationHex,
+    attestationNostrEventJson: exact,
+  })
+  const { created_at, ...event } = JSON.parse(exact)
+  return {
+    conditionId: saved.announcement!.conditionId,
+    attestedOutcome: saved.chosenOutcome,
+    attestationEvent: { ...event, createdAt: created_at },
+    registeredAuthority: {
+      eventId: saved.eventId,
+      outcomes: ['Yes', 'No'],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey: publicKey,
+          noncePoint: verified.noncePointHex,
+          announcementIdentity: createHash('sha256')
+            .update(Buffer.from(saved.announcement!.announcementTlvHex, 'hex'))
+            .digest('hex'),
+        },
+      ],
+    },
+    oracleWitness: {
+      oracle_sigs: [
+        {
+          oracle_pubkey: publicKey,
+          oracle_sig: verified.oracleSignatureHex,
+          outcome: saved.chosenOutcome,
+        },
+      ],
+    },
+  }
+}
+
+test(
+  'native terminal backup waits for a relay copy because the profile retires nonces only after one',
+  realHelper,
+  async () => {
+    await withOwner('created', async (directory, store, conditionId) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      let relayUp = false
+      const ports = {
+        store,
+        helper,
+        readSigner: async () => ({
+          secretKeyHex: (await store.readCreationSigner('created-delivery')).secretKeyHex,
+          nonceSeedHex: secrets.nativeOracleNonceSeedHex,
+        }),
+        publishRelay: async (bytes: string) => {
+          if (!relayUp) throw new Error('Relay is unavailable.')
+          return { eventId: JSON.parse(bytes).id }
+        },
+        submitEvent: async () => ({ result: 'Closed' }),
+        readResolution: async (id: string) =>
+          engineResolution((await store.readAuthorityByConditionId(id))!),
+      }
+      const engineOnly = await publishNativeMarketOutcome(ports, conditionId, 'Yes')
+      assert.deepEqual(engineOnly.failures, ['relay'])
+      assert.ok(engineOnly.record.engineEvidence)
+      assert.equal(engineOnly.record.relayPublished, false)
+      const before = await store.readBackupDelivery(conditionId)
+      await assert.rejects(
+        store.prepareBackupDelivery(conditionId, helper, 100),
+        (error) =>
+          error instanceof OracleBackupDeliveryError && error.reason === 'terminal-not-ready',
+      )
+      assert.ok(isDeepStrictEqual(await store.readBackupDelivery(conditionId), before))
+      relayUp = true
+      const relayed = await retryNativeMarketPublication(ports, conditionId)
+      assert.equal(relayed.record.relayPublished, true)
+      const stage = await store.prepareBackupDelivery(conditionId, helper, 100)
+      assert.equal(stage.current!.mode, 'terminal')
+    })
+  },
+)
+
+test(
+  'native RPC publishes a created outcome to relays while the engine is down and later sends the same event to it',
+  realHelper,
+  async () => {
+    await withOwner('created', async (directory, store, conditionId) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      const previousHome = process.env.BITCASTER_DAEMON_HOME,
+        previousFetch = globalThis.fetch
+      process.env.BITCASTER_DAEMON_HOME = directory
+      const relayed: string[] = []
+      let engineCalls = 0
+      const engineDown = async (): Promise<never> => {
+        engineCalls++
+        throw new TypeError('fetch failed: connect ECONNREFUSED')
+      }
+      try {
+        const published = await dispatch(
+          { method: 'market.attest', params: { conditionId, outcome: 'Yes', relayOnly: true } },
+          {
+            nativeOraclePublicationPorts: {
+              store,
+              helper,
+              readSigner: async () => ({
+                secretKeyHex: (await store.readCreationSigner('created-delivery')).secretKeyHex,
+                nonceSeedHex: secrets.nativeOracleNonceSeedHex,
+              }),
+              publishRelay: async (bytes) => {
+                relayed.push(bytes)
+                return { eventId: JSON.parse(bytes).id }
+              },
+              submitEvent: engineDown,
+              readResolution: engineDown,
+            },
+            nativeOracleAccessPorts: accessPorts(store),
+          },
+        )
+        assert.equal(published.ok, true)
+        assert.equal(engineCalls, 0)
+        const saved = (await store.readAuthorityByConditionId(conditionId))!
+        const exact = saved.attestation!.attestationNostrEventJson
+        assert.deepEqual(relayed, [exact])
+        assert.equal(saved.relayPublished, true)
+        assert.equal(saved.engineEvidence, null)
+        assert.equal((await nativeOracleBackupStatus(store, saved)).terminal.prepared, true)
+        const observed = await engineResolution(saved)
+        const posted: unknown[] = []
+        globalThis.fetch = async (input, init) => {
+          assert.ok(String(input).startsWith(destinations.engineUrl + '/api/v1/'))
+          if (init?.method === 'POST') {
+            posted.push(JSON.parse(String(init.body)))
+            return new Response(JSON.stringify({ result: 'Closed' }), { status: 200 })
+          }
+          return new Response(JSON.stringify(observed), { status: 200 })
+        }
+        const synchronized = await dispatch(
+          { method: 'market.attestation-retry', params: { conditionId } },
+          { nativeOracleHelper: helper, nativeOracleAccessPorts: accessPorts(store) },
+        )
+        assert.equal(synchronized.ok, true)
+        assert.deepEqual(posted, [observed.attestationEvent])
+        const after = (await store.readAuthorityByConditionId(conditionId))!
+        assert.equal(after.attestation!.attestationNostrEventJson, exact)
+        assert.ok(after.engineEvidence)
+        assert.deepEqual(relayed, [exact])
+      } finally {
+        globalThis.fetch = previousFetch
         if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
         else process.env.BITCASTER_DAEMON_HOME = previousHome
       }

@@ -106,8 +106,22 @@ describe("CreatedMarketRow", () => {
     expect(screen.getByText("Closed")).toBeVisible();
   });
 
-  it("locks the persisted choice and offers only exact delivery retry", async () => {
-    const publish = vi.fn();
+  it.each([
+    ["publishing", {}, "Sending result…"],
+    [
+      "failed",
+      { publicationFailures: ["engine" as const] },
+      "Couldn't publish. Retrying automatically.",
+    ],
+    [
+      "published",
+      {
+        engineEvidence: { attestationEventId: "verified" } as never,
+        publicationFailures: ["relay" as const],
+      },
+      "Published",
+    ],
+  ])("shows the %s state for a saved choice without a retry control", (_state, delivery, label) => {
     render(
       <CreatedMarketRow
         market={fixture({
@@ -117,18 +131,21 @@ describe("CreatedMarketRow", () => {
             eventId: "event",
             outcomes: ["YES", "NO"],
             chosenOutcome: "NO",
+            attestedOutcome: "NO",
+            attestationHex: "aabb",
             attestationEventJson: "saved exact event",
             relayPublished: true,
+            ...delivery,
           },
         })}
-        onPublishOracleAttestation={publish}
+        onPublishOracleAttestation={vi.fn()}
       />,
     );
+    expect(screen.getByText("Resolved: NO")).toBeVisible();
+    expect(screen.getByText(label)).toBeVisible();
     expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.getByText(/Engine unconfirmed/)).toBeVisible();
-    expect(screen.getByText(/Relay confirmed/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Retry saved resolution" }));
-    expect(publish).toHaveBeenCalledWith("m1");
+    expect(screen.queryByRole("button", { name: /close market|retry|republish/i })).toBeNull();
+    expect(screen.queryByText(/Engine|Relay/)).toBeNull();
   });
 
   it("marks closed market thumbnails as Closed", () => {
@@ -181,5 +198,5 @@ it("keeps Portfolio rows without publication capability", () => {
     />,
   );
   expect(screen.queryByRole("combobox")).toBeNull();
-  expect(screen.queryByRole("button", { name: /close market|retry saved resolution/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
 });

@@ -8,6 +8,8 @@ import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrS
 import { browserOracleAuthorityReadiness } from "./browserOracleBackup";
 import { listBrowserOracleBackups, restoreBrowserOracleBackup } from "./browserOracleBackupAccess";
 import { deliverBrowserOracleBackup } from "./browserOracleBackupDelivery";
+import { publishBrowserOracleOutcome } from "./oracleAttestation";
+import { browserOraclePublicationRetry } from "./browserOraclePublicationRetry";
 
 const PAGE_LIMIT = 4;
 const OWNER_PAGE_SIZE = 20;
@@ -128,14 +130,61 @@ export async function runBrowserOracleRecoveryPass(
   return true;
 }
 
+export interface BrowserOraclePublicationPass {
+  /** The selected local key. Null when no local private key is selected. */
+  signerPublicKey: string | null;
+  relayUrls: readonly string[];
+  requireCurrent(): void;
+}
+const defaultPublicationAdapters = {
+  owners: () => useCreatorMarketsStore.getState().readOracleOwners(),
+  publish: publishBrowserOracleOutcome,
+};
+
+/**
+ * Resend each saved resolution once per wake. Exact delivery needs no signer. A failed owner
+ * waits for the next wake, so a failure cannot start a retry loop.
+ */
+export async function runBrowserOraclePublicationPass(
+  pass: BrowserOraclePublicationPass,
+  adapters = defaultPublicationAdapters,
+): Promise<void> {
+  pass.requireCurrent();
+  const owners = await adapters.owners();
+  for (const owner of owners) {
+    pass.requireCurrent();
+    const retry = browserOraclePublicationRetry(owner, pass.signerPublicKey);
+    if (!retry) continue;
+    try {
+      await adapters.publish(
+        retry.conditionId,
+        retry.outcome,
+        undefined,
+        [...pass.relayUrls],
+        useCreatorMarketsStore,
+        undefined,
+        { engineDelivery: "synchronize", requireCurrent: pass.requireCurrent },
+      );
+    } catch {
+      pass.requireCurrent();
+      // The saved failure state stays visible. Another owner's delivery continues.
+    }
+  }
+}
+
 export interface BrowserOracleRecoveryDriverOptions {
   runPass?: (
     pass: BrowserOracleRecoveryPass,
     checkpoint: BrowserOracleRecoveryCheckpoint,
   ) => Promise<boolean | void>;
+  runPublicationPass?: (pass: BrowserOraclePublicationPass) => Promise<void>;
 }
 
-/** One root-owned driver. Store updates do not schedule scans unless eligibility changes. */
+/**
+ * One root-owned driver. Store updates do not schedule scans unless eligibility changes.
+ * Start, `online`, and signer or relay changes run backup recovery and resolution delivery.
+ * A visible tab runs resolution delivery only.
+ */
 export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverOptions = {}) {
   let disposed = false;
   let generation = 0;
@@ -143,6 +192,8 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
   let queued = false;
   let scheduled = false;
   let externalWake = false;
+  let publicationWake = false;
+  let recoveryContinues = false;
   let scheduledTimer: ReturnType<typeof setTimeout> | undefined;
   let controller: AbortController | null = null;
   let checkpoint: BrowserOracleRecoveryCheckpoint = { ownerOffset: 0, cursor: null };
@@ -164,11 +215,19 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
       void drain();
     }, 0);
   };
+  const wakePublication = () => {
+    if (disposed) return;
+    publicationWake = true;
+    queued = true;
+    schedule();
+  };
   const wake = () => {
     if (disposed) return;
     externalWake = true;
-    queued = true;
-    schedule();
+    wakePublication();
+  };
+  const visible = () => {
+    if (document.visibilityState === "visible") wakePublication();
   };
   const changed = () => {
     const next = scope();
@@ -183,23 +242,30 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
     if (running || disposed || !queued) return;
     queued = false;
     const settings = useSettingsStore.getState();
-    if (settings.nostrSignerMode !== "nsec") return;
-    let identity: ReturnType<typeof decodePrivateNostrSignerKey>;
-    try {
-      identity = decodePrivateNostrSignerKey(settings.nsecSecret ?? "");
-    } catch {
-      return;
+    let identity: ReturnType<typeof decodePrivateNostrSignerKey> | null = null;
+    if (settings.nostrSignerMode === "nsec") {
+      try {
+        identity = decodePrivateNostrSignerKey(settings.nsecSecret ?? "");
+      } catch {
+        identity = null;
+      }
     }
+    const deliverPublications = publicationWake;
+    publicationWake = false;
+    const recover = identity !== null && (externalWake || recoveryContinues);
+    if (!deliverPublications && !recover) return;
     running = true;
     const observed = generation;
-    if (externalWake) {
-      checkpoint = {
-        ownerOffset: checkpoint.ownersComplete ? 0 : checkpoint.ownerOffset,
-        ownersComplete: false,
-        cursor: checkpoint.cursor,
-        discoveryComplete: false,
-      };
+    if (recover) {
+      if (externalWake)
+        checkpoint = {
+          ownerOffset: checkpoint.ownersComplete ? 0 : checkpoint.ownerOffset,
+          ownersComplete: false,
+          cursor: checkpoint.cursor,
+          discoveryComplete: false,
+        };
       externalWake = false;
+      recoveryContinues = false;
     }
     const capturedCheckpoint = checkpoint;
     const capturedController = new AbortController();
@@ -208,21 +274,38 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
       if (disposed || observed !== generation || capturedController.signal.aborted)
         throw new Error("Oracle recovery identity changed.");
     };
+    const relayUrls = effectiveRelayUrls(settings.relays);
     try {
       if (!useCreatorMarketsStore.persist.hasHydrated())
         await useCreatorMarketsStore.persist.rehydrate();
       requireCurrent();
+      if (deliverPublications) {
+        try {
+          await (options.runPublicationPass ?? runBrowserOraclePublicationPass)({
+            signerPublicKey: identity?.publicKeyHex ?? null,
+            relayUrls,
+            requireCurrent,
+          });
+        } catch {
+          // Resolution delivery failure must not block backup recovery for the same identity.
+          requireCurrent();
+        }
+      }
+      if (!recover) return;
       const continues = await (options.runPass ?? runBrowserOracleRecoveryPass)(
         {
-          publicKey: identity.publicKeyHex,
-          relayUrls: effectiveRelayUrls(settings.relays),
+          publicKey: identity!.publicKeyHex,
+          relayUrls,
           signal: capturedController.signal,
           requireCurrent,
         },
         capturedCheckpoint,
       );
       requireCurrent();
-      if (continues) queued = true;
+      if (continues) {
+        recoveryContinues = true;
+        queued = true;
+      }
     } catch {
       // Original durable preparation and delivery failures remain available in Creator.
       // Retry only on a new readiness/reconnect wake, never in a failure loop.
@@ -235,6 +318,7 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
   const unsubscribeSettings = useSettingsStore.subscribe(changed);
   const unsubscribeSigner = subscribeToNostrSignerRevision(changed);
   globalThis.addEventListener("online", wake);
+  document.addEventListener("visibilitychange", visible);
   wake();
   return () => {
     disposed = true;
@@ -244,5 +328,6 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
     unsubscribeSettings();
     unsubscribeSigner();
     globalThis.removeEventListener("online", wake);
+    document.removeEventListener("visibilitychange", visible);
   };
 }

@@ -4,6 +4,7 @@ import {
   type OracleBackupScanCursor,
 } from "@bitcaster/client-sdk/oracleBackupAccess";
 import { normalizeNostrRelayUrl } from "@bitcaster/client-sdk/nostrRelays";
+import { oraclePublicationState } from "@bitcaster/client-sdk/oraclePublication";
 import { hexToBytes } from "nostr-tools/utils";
 import { useSettingsStore } from "@/stores/settings";
 import {
@@ -268,6 +269,11 @@ export async function localBrowserOracleBackupStatuses(
         readiness: readinessById.get(binding.conditionId) ?? "unavailable",
         outcomes: binding.outcomes,
         chosenOutcome: publication?.chosenOutcome ?? null,
+        signed: publication !== null && publication.attestation !== null,
+        publicationState:
+          publication === null
+            ? null
+            : oraclePublicationState(publication, oracle.publicationFailures ?? []),
         status: oracleBackupStatus({
           binding,
           destinations,

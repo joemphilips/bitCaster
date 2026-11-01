@@ -76,10 +76,6 @@ export function CreatorDashboard() {
   const [resolutionError, setResolutionError] = useState<"creator.oracleRecoveryRequired" | null>(
     null,
   );
-  const [resolutionSuccess, setResolutionSuccess] = useState<{
-    outcome: string;
-    incomplete: boolean;
-  } | null>(null);
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
   const generation = useRef(0);
@@ -92,7 +88,6 @@ export function CreatorDashboard() {
       publication.current = null;
       setResolutionDialog(null);
       setResolutionError(null);
-      setResolutionSuccess(null);
       setResolvingMarketId(null);
     };
     clear();
@@ -120,7 +115,6 @@ export function CreatorDashboard() {
     savedOutcome?: string;
     savedExplanation?: string;
     recovery?: boolean;
-    republish?: boolean;
     relayUrls?: string[];
   } | null>(null);
   const [explanation, setExplanation] = useState("");
@@ -137,20 +131,11 @@ export function CreatorDashboard() {
   const displayedExplanation = immutableOutcome
     ? (storedExplanation ?? resolutionDialog?.savedExplanation ?? "")
     : explanation;
-  const resolutionTitle = immutableOutcome
-    ? resolutionDialog?.republish
-      ? "creator.republishSavedTitle"
-      : "creator.retrySavedTitle"
-    : "creator.resolveDialogTitle";
-  const resolutionAction = immutableOutcome
-    ? resolvingMarketId
-      ? "creator.sendingSavedResolution"
-      : resolutionDialog?.republish
-        ? "creator.republishSavedAction"
-        : "creator.retrySavedAction"
-    : resolvingMarketId
-      ? "creator.closingMarket"
-      : "creator.confirmResolution";
+  // A saved outcome is delivered automatically. The dialog only confirms the first choice.
+  // If another tab saves a choice while it is open, confirmation sends that saved result.
+  const resolutionAction = resolvingMarketId
+    ? "creator.closingMarket"
+    : "creator.confirmResolution";
   const handlePublishOracleAttestation = (marketId: string) => {
     if (publication.current) return;
     const market = markets.find((m) => m.id === marketId);
@@ -160,7 +145,6 @@ export function CreatorDashboard() {
       retained.outcome ?? market.oracle.chosenOutcome ?? market.oracle.attestedOutcome;
     generation.current++;
     setResolutionError(null);
-    setResolutionSuccess(null);
     setExplanation(retained.explanation ?? market.oracle.explanationDraft ?? "");
     setResolutionDialog({
       marketId,
@@ -176,10 +160,9 @@ export function CreatorDashboard() {
   const handleRecoveryPublication: CreatorOraclePublication = (request) => {
     if (publication.current) return;
     const retained = retainedResolution(request.conditionId);
-    const savedOutcome = retained.outcome ?? request.chosenOutcome ?? undefined;
+    const savedOutcome = retained.outcome;
     generation.current++;
     setResolutionError(null);
-    setResolutionSuccess(null);
     setExplanation(retained.explanation ?? "");
     setResolutionDialog({
       marketId: request.conditionId,
@@ -189,7 +172,6 @@ export function CreatorDashboard() {
       savedOutcome,
       recovery: true,
       savedExplanation: savedOutcome ? (retained.explanation ?? "") : undefined,
-      republish: request.republish,
       relayUrls: [...request.relayUrls],
     });
   };
@@ -201,7 +183,7 @@ export function CreatorDashboard() {
   };
   const confirmResolution = async () => {
     if (!resolutionDialog || publication.current) return;
-    const { marketId, recovery, republish, relayUrls } = resolutionDialog;
+    const { marketId, recovery, relayUrls } = resolutionDialog;
     const retained = retainedResolution(marketId);
     const savedOutcome = retained.outcome ?? resolutionDialog.savedOutcome;
     const chosen = savedOutcome !== undefined;
@@ -230,31 +212,17 @@ export function CreatorDashboard() {
           .getState()
           .saveOracleExplanationDraft(marketId, publicExplanation);
       if (!isCurrent()) return;
-      const result = recovery
-        ? await publishBrowserOracleOutcome(
-            marketId,
-            outcome,
-            chosen ? undefined : publicExplanation,
-            relayUrls ?? [],
-            useCreatorMarketsStore,
-            undefined,
-            {
-              engineDelivery: "synchronize",
-              republishAttestation: republish ?? false,
-              requireCurrent,
-            },
-          )
-        : await publishBrowserOracleOutcome(
-            marketId,
-            outcome,
-            chosen ? undefined : publicExplanation,
-            effectiveRelayUrls(relays),
-            useCreatorMarketsStore,
-            undefined,
-            { engineDelivery: "synchronize", requireCurrent },
-          );
+      // The row shows the result state. Automatic retry continues any failed delivery.
+      await publishBrowserOracleOutcome(
+        marketId,
+        outcome,
+        chosen ? undefined : publicExplanation,
+        recovery ? (relayUrls ?? []) : effectiveRelayUrls(relays),
+        useCreatorMarketsStore,
+        undefined,
+        { engineDelivery: "synchronize", requireCurrent },
+      );
       if (!isCurrent()) return;
-      setResolutionSuccess({ outcome, incomplete: result.failures.length > 0 });
       setResolutionDialog(null);
       refresh();
     } catch {
@@ -368,17 +336,6 @@ export function CreatorDashboard() {
               </div>
             )}
 
-            {resolutionSuccess && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                {t(
-                  resolutionSuccess.incomplete
-                    ? "creator.oracleDeliveryIncomplete"
-                    : "creator.oracleDeliveryComplete",
-                  { outcome: resolutionSuccess.outcome },
-                )}
-              </div>
-            )}
-
             {/* Market list */}
             <div>
               {markets.length === 0 ? (
@@ -399,13 +356,13 @@ export function CreatorDashboard() {
         {activeTab === "analytics" && <AnalyticsComingSoon />}
         {resolutionDialog && (
           <NativeDialog
-            ariaLabel={t(resolutionTitle)}
+            ariaLabel={t("creator.resolveDialogTitle")}
             canDismiss={resolvingMarketId === null}
             onDismiss={dismissResolution}
           >
             {(dismiss) => (
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
-                <h2 className="text-xl font-semibold">{t(resolutionTitle)}</h2>
+                <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
                 <p className="mt-3 break-words font-medium">{resolutionDialog.title}</p>
                 {immutableOutcome ? (
                   <p data-testid="creator-oracle-saved-outcome" className="mt-4 break-words">
@@ -444,13 +401,7 @@ export function CreatorDashboard() {
                     </select>
                   </label>
                 )}
-                <p className="mt-3">
-                  {t(
-                    immutableOutcome
-                      ? "creator.savedResolutionNotice"
-                      : "creator.resolveChoiceNotice",
-                  )}
-                </p>
+                <p className="mt-3">{t("creator.resolveChoiceNotice")}</p>
                 {resolutionError && (
                   <p role="alert" className="mt-3 text-sm text-rose-600">
                     {t(resolutionError)}

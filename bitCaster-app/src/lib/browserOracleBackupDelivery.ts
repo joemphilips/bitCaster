@@ -10,6 +10,7 @@ import {
   type OracleBackupDeliveryState,
 } from "@bitcaster/client-sdk/oracleBackupDelivery";
 import { OracleBackupError } from "@bitcaster/client-sdk";
+import { oraclePublicationTerminal } from "@bitcaster/client-sdk/oraclePublication";
 import { browserOracleOwnerAuthority, useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import {
   browserOracleBackupValidator,
@@ -51,7 +52,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
             const publication = await locked.read(id);
             return retainedDelivery(
               previous,
-              publication?.attestation != null && publication.relayPublished,
+              publication !== null && oraclePublicationTerminal(publication),
             )
               ? previous
               : null;
@@ -74,7 +75,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
               if (!destinations) throw new OracleBackupDeliveryError("invalid-source");
               const previous = await locked.readBackupDelivery(id);
               const publication = await locked.read(id);
-              const terminalReady = publication?.attestation != null && publication.relayPublished;
+              const terminalReady = publication !== null && oraclePublicationTerminal(publication);
               if (binding.oraclePubkey !== admission.publicKey)
                 throw new OracleBackupDeliveryError("invalid-source");
               if (retainedDelivery(previous, terminalReady)) return previous!;

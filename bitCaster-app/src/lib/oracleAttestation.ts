@@ -9,6 +9,7 @@ import {
   type ConditionAttestationResponse,
 } from "@bitcaster/client-sdk";
 import {
+  oraclePublicationTerminal,
   publishOracleOutcome,
   retryOraclePublication,
   type OraclePublicationBinding,
@@ -548,8 +549,9 @@ export async function publishBrowserOracleOutcome(
   await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
   options.requireCurrent?.();
   privateAdmission?.requireCurrent();
-  if (result.record.relayPublished) {
-    // The signed result remains successful while its independent private backup is pending.
+  if (oraclePublicationTerminal(result.record)) {
+    // A relay copy or verified engine evidence makes the result public. The nonce-free
+    // backup can then replace the nonce copy. Its failure does not undo the result.
     requestBrowserOracleBackup(conditionId, { store, requireCurrent: options.requireCurrent });
   }
   return result;

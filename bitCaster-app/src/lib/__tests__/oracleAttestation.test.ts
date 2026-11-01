@@ -418,7 +418,7 @@ describe("production creator row and shared coordinator", () => {
       fetchNip78CreatorMarkets(fixture.oraclePubkey, { relays: ["wss://relay.example"] }),
     ).resolves.toBeNull();
   });
-  it("browser adapter reconciles a lost engine response and cold-retries exact89 without a signer", async () => {
+  it("browser adapter reconciles a lost engine response, starts the terminal backup, and cold-retries exact89 without a signer", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
     await writer.getState().addCreatedMarket(market());
     await writer.getState().saveOraclePublication(conditionId, {
@@ -454,8 +454,9 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(first.failures).toEqual(["relay"]);
-      expect(requestBrowserOracleBackup).not.toHaveBeenCalled();
       expect(first.record.engineEvidence).not.toBeNull();
+      // Verified engine evidence makes the result public. The relay copy is optional.
+      expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId, { store: writer });
       expect(network).toHaveBeenCalledTimes(1);
       expect(JSON.parse(String(network.mock.calls[0]?.[1]?.body))).toEqual(
         oracleEventToWire(artifact.eventJson),
@@ -473,7 +474,7 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(resumed.failures).toEqual([]);
-      expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId, { store: reader });
+      expect(requestBrowserOracleBackup).toHaveBeenLastCalledWith(conditionId, { store: reader });
       expect(network).toHaveBeenCalledTimes(1);
       expect(publish).toHaveBeenCalledTimes(2);
       expect((await reader.getState().readOraclePublication(conditionId))?.attestation).toEqual(

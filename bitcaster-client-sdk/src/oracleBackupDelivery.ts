@@ -11,6 +11,7 @@ import {
 } from './oracleBackup.ts'
 import { normalizeNostrRelayUrls } from './nostrRelays.ts'
 import {
+  oraclePublicationTerminal,
   snapshotOraclePublicationRecord,
   type OraclePublicationBinding,
   type OraclePublicationRecord,
@@ -218,7 +219,7 @@ export function buildTerminalOracleBackupRecord(input: {
     const publication = snapshotOraclePublicationRecord(input.publication)
     if (
       !samePublicationBinding(publication.binding, input.binding) ||
-      !publication.relayPublished ||
+      !oraclePublicationTerminal(publication) ||
       publication.attestation === null
     )
       fail('terminal-not-ready')
@@ -268,7 +269,7 @@ export function assertOracleBackupDeliveryOwner(
       const publication = snapshotOraclePublicationRecord(owner.publication)
       if (
         !samePublicationBinding(publication.binding, owner.binding) ||
-        !publication.relayPublished ||
+        !oraclePublicationTerminal(publication) ||
         publication.attestation === null ||
         readSignedOracleEvent(publication.attestation.eventJson, 89).id !==
           checked.current.attestationEventId
@@ -453,8 +454,7 @@ export async function prepareOracleBackupDelivery(input: {
       record.authority.publicationRecordJson === null
         ? null
         : snapshotOraclePublicationRecord(JSON.parse(record.authority.publicationRecordJson))
-    const terminal =
-      publication !== null && publication.relayPublished && publication.attestation !== null
+    const terminal = publication !== null && oraclePublicationTerminal(publication)
     if (state.current?.mode === 'terminal') {
       if (
         !terminal ||
@@ -632,7 +632,7 @@ export function commitOracleBackupDelivery(
       admission.backupEventId !== state.current.eventId ||
       admission.announcementEventId !== state.binding.announcementEventId ||
       admission.attestationEventId !== state.current.attestationEventId ||
-      !exact.relayPublished ||
+      !oraclePublicationTerminal(exact) ||
       exact.attestation === null ||
       exact.binding.conditionId !== state.binding.conditionId ||
       exact.binding.oraclePubkey !== state.binding.oraclePubkey ||

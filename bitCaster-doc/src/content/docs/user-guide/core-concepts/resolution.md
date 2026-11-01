@@ -62,19 +62,29 @@ or publish a result. Reopening discards unsaved dialog changes.
 Here, closing the market means publishing its oracle result.
 
 Once the choice is saved, the outcome and original explanation draft cannot change.
-The dialog shows that saved outcome without an outcome selector.
 The browser retains the exact signed kind-89 result before delivery.
-Keep browser storage enabled. If delivery is incomplete, choose Retry saved resolution
-and confirm the dialog. Retry delivers the saved result without signing another
-kind-89 event or creating another announcement.
-Retry sends only the saved signed events. If no signed explanation was saved,
-retry does not create one. The original explanation draft stays saved.
-Delivery of the exact saved result does not require the oracle signing key.
+Keep browser storage enabled.
 
-Check engine, relay, and optional explanation progress separately.
-Engine confirmed means that the exact result has verified engine evidence.
-Relay confirmed means that the relay acknowledged the result.
-Neither confirmation guarantees the other or confirms mint redemption.
+If delivery is incomplete, the browser retries it automatically. It retries when
+the app starts, when the connection returns, when you return to the tab, and when
+the signer or the relay settings change. There is no retry button.
+A retry sends the same saved signed events. It never signs a different outcome
+and never creates another announcement. Delivery of a saved signed result does not
+require the oracle signing key.
+If signing stopped before the result was signed, the browser signs the saved outcome
+and its original explanation draft once. It does this when the original oracle key
+is selected again. If the result was signed but its explanation was not, a retry
+does not create a signed explanation. The original explanation draft stays saved.
+
+Your Markets shows one state for a saved outcome:
+
+- **Sending result…**: delivery is in progress.
+- **Published**: the matching engine returned verified evidence for the exact result.
+- **Couldn't publish. Retrying automatically.**: the last engine delivery failed.
+  The browser tries again at the next retry event.
+
+After the engine confirms the result, the browser continues to send it to the relays
+in the background. The relay copy is optional. Published does not confirm mint redemption.
 An explanation failure does not block resolution delivery.
 Its verified text can appear on the closed market page. It is not a paid trade comment.
 
@@ -104,8 +114,9 @@ The client saves the chosen outcome and signed events before delivery.
 Keep the original daemon profile. Retry the saved result instead of selecting
 another outcome. `--retry` takes no outcome or explanation.
 It reuses saved signed events. If explanation preparation failed, it can finish
-the original saved draft. A restart does not require another market creation or
-registration fee.
+the original saved draft. If signing stopped before the result was signed, it signs
+the saved outcome once with the profile's oracle key. It never signs another outcome.
+A restart does not require another market creation or registration fee.
 
 `resolution-status` reports the chosen outcome and both public event IDs.
 `attestationPrepared` and `explanationPrepared` report saved signed events.
@@ -131,16 +142,16 @@ The first saved outcome on this device cannot change.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 
-Ordinary retry skips an attestation with a retained relay acknowledgment.
-Choose **Republish exact resolution** in Creator and confirm the action to send
-the saved kind-89 event again. This action uses identical bytes without fresh signing.
-A terminal restore can use this action without the signing key.
-After durable result acknowledgment, the client attempts the terminal backup.
+A restored record with a saved result uses the same automatic retry.
+It sends the identical saved kind-89 event without fresh signing.
+A terminal restore needs no signing key for this delivery.
+After verified engine evidence or a relay acknowledgment, the browser attempts
+the terminal backup. The CLI attempts it after a relay acknowledgment.
 Backup failure does not undo successful result delivery.
-Check backup, relay, and engine progress separately.
 
-The CLI can sign or retry through the original relays without contacting
-the engine:
+The browser needs the matching engine to publish a result. To publish a result
+while the engine is unavailable, use the CLI. It can sign or retry through the
+original relays without contacting the engine:
 
 ```bash
 bitcaster-cli market close --condition-id <condition-id> --outcome Yes --relay-only

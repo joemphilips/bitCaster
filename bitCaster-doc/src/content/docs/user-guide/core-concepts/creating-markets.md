@@ -122,9 +122,12 @@ responsibilities and what happens after trading closes.
 
 ## Keep and restore your oracle backup
 
-After creation finishes, the client attempts an encrypted oracle backup on
+After creation finishes, the client sends an encrypted oracle backup to
 the original relays. Backup failure does not undo creation or charge another fee.
-Keep the local oracle record until backup delivery is confirmed.
+Delivery runs automatically. The market row shows a message only when you must act:
+
+- No relay has saved the current backup yet. Keep this browser's data.
+- The backup needs the oracle's local key. Add the oracle's nsec in Settings.
 
 Changing your Nostr identity does not erase retained oracle data.
 If a different key owns that data, private oracle preparation and recovery
@@ -139,7 +142,8 @@ an outcome automatically.
 
 Open Creator to see restored oracle records in the normal market list.
 Use the row's Close market action to choose an outcome. Confirm the choice
-before publication. A saved outcome offers exact delivery retry and republication.
+before publication. A saved outcome is delivered automatically.
+See [Resolution](/user-guide/core-concepts/resolution/).
 The client fetches each selected backup event again and checks its signature,
 encryption, and oracle binding before import.
 The browser and native client use the same portable backup format.
@@ -154,17 +158,19 @@ or use the CLI commands below with the exact backup event ID and source relay UR
 Manual discovery and exact restore are CLI operations. Creator has no manual
 recovery panel. CLI exact restore also works without configured discovery relays.
 
-The market row shows incomplete restoration and pending backup delivery.
+The market row shows incomplete restoration. It does not show backup delivery progress.
 CLI status distinguishes preparation, initial delivery, terminal replacement,
 deletion requests, and pending local updates.
 Initial backup confirmation does not confirm the terminal replacement.
 If import is incomplete, restore the same version again before signing.
-Retry preparation with the original key. A saved exact backup retry can run
-without a signer. Retry uses the original destinations.
+Backup preparation needs the original key. A retry of a saved exact backup
+runs without a signer. It uses the original destinations.
 
 Use one current oracle copy. An old restored copy can still sign another
 outcome. After resolution delivery, the client attempts a replacement that
 retains the exact signed result without fresh signing authority.
+The browser starts it after verified engine evidence or a relay acknowledgment.
+The CLI starts it after a relay acknowledgment.
 It also requests deletion of retained older versions.
 A relay acknowledgment does not prove that the relay erased every old copy.
 

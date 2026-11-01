@@ -14,6 +14,8 @@ import {
   snapshotOracleBackupDeliveryState,
   confirmOracleBackupDelivery,
   commitOracleBackupDelivery,
+  OracleBackupDeliveryError,
+  oraclePublicationTerminal,
   type OracleBackupDeliveryState,
   type OracleBackupTerminalAdmission,
   mergeOraclePublicationRecords,
@@ -378,6 +380,14 @@ export function createNativeOracleCreationStore(
       })
       // Terminal export does not retire a nonce or require its private seed.
       const publication = nativeOraclePublicationRecord(captured.record)
+      // The SDK permits a terminal stage after engine evidence alone. This profile schema
+      // retires nonce authority only after a relay copy, so wait for one instead.
+      if (
+        publication !== null &&
+        oraclePublicationTerminal(publication) &&
+        !publication.relayPublished
+      )
+        throw new OracleBackupDeliveryError('terminal-not-ready')
       const backup =
         publication?.relayPublished && publication.attestation !== null
           ? buildTerminalOracleBackupRecord({

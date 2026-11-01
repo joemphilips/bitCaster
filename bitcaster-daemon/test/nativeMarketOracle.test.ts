@@ -519,6 +519,58 @@ test(
 )
 
 test(
+  'native retry signs an interrupted saved choice once with its original explanation draft',
+  realCrypto,
+  async () => {
+    await withPublication(async (ports, conditionId, directory, calls) => {
+      await assert.rejects(
+        publishNativeMarketOutcome(
+          {
+            ...ports,
+            readSigner: async () => {
+              throw new Error('signer unavailable')
+            },
+          },
+          conditionId,
+          'Yes',
+          'Original observed result.',
+        ),
+        /signer unavailable/,
+      )
+      const interrupted =
+        await createNativeOracleCreationStore(directory).readByConditionId(conditionId)
+      assert.equal(interrupted?.chosenOutcome, 'Yes')
+      assert.equal(interrupted?.attestation, null)
+      assert.equal(calls.signed, 0)
+      const resumed = await retryNativeMarketPublication(
+        { ...ports, store: createNativeOracleCreationStore(directory) },
+        conditionId,
+      )
+      assert.deepEqual(resumed.failures, [])
+      assert.equal(calls.signed, 1)
+      assert.equal(resumed.record.chosenOutcome, 'Yes')
+      assert.ok(resumed.record.engineEvidence)
+      assert.equal(
+        JSON.parse(resumed.record.explanationEventJson!).content,
+        'Original observed result.',
+      )
+      const repeated = await retryNativeMarketPublication(
+        {
+          ...ports,
+          store: createNativeOracleCreationStore(directory),
+          readSigner: async () => {
+            throw new Error('A saved signature must not be prepared again.')
+          },
+        },
+        conditionId,
+      )
+      assert.equal(calls.signed, 1)
+      assert.equal(repeated.record.attestation!.eventJson, resumed.record.attestation!.eventJson)
+    })
+  },
+)
+
+test(
   'native publication companion save or delivery failure does not invalidate resolution',
   realCrypto,
   async () => {
