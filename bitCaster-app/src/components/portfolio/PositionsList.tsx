@@ -1,5 +1,7 @@
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { Position, PortfolioProps } from "@/types/portfolio";
+import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
 
@@ -16,6 +18,8 @@ interface PositionsListProps {
   removalConfirmationPositionId?: string;
   onConfirmDiscardLostPosition?: (positionId: string) => void;
   onCancelDiscardLostPosition?: () => void;
+  /** Scroll to and focus this position once for each request key. */
+  positionsRequest?: PortfolioProps["positionsRequest"];
 }
 
 export function PositionsList({
@@ -31,9 +35,27 @@ export function PositionsList({
   removalConfirmationPositionId,
   onConfirmDiscardLostPosition,
   onCancelDiscardLostPosition,
+  positionsRequest,
 }: PositionsListProps) {
   const { t } = useTranslation();
   const filtered = positions.filter((p) => p.status === positionsTab);
+  // One row for each market ID owns the anchor. The same collection can be
+  // held at more than one mint, and a DOM ID must be unique.
+  const anchoredMarketIds = new Set<string>();
+  const targetMarketId = positionsRequest?.positionMarketId ?? null;
+  const targetRendered =
+    targetMarketId !== null && filtered.some(({ marketId }) => marketId === targetMarketId);
+  const handledRequestKey = useRef<string | null>(null);
+  useEffect(() => {
+    const requestKey = positionsRequest?.key;
+    if (!targetRendered || targetMarketId === null || requestKey === undefined) return;
+    if (handledRequestKey.current === requestKey) return;
+    const row = document.getElementById(portfolioPositionAnchorId(targetMarketId));
+    if (row === null) return;
+    handledRequestKey.current = requestKey;
+    row.scrollIntoView?.({ block: "center" });
+    row.focus({ preventScroll: true });
+  }, [positionsRequest?.key, targetMarketId, targetRendered]);
 
   return (
     <div>
@@ -71,21 +93,28 @@ export function PositionsList({
         </div>
       ) : (
         <div className="space-y-1">
-          {filtered.map((position) => (
-            <PositionRow
-              key={position.id}
-              position={position}
-              onSell={onSellPosition}
-              onClaim={onClaimPayout}
-              onDiscard={onDiscardLostPosition}
-              onView={onViewPosition}
-              action={positionAction?.positionId === position.id ? positionAction.kind : undefined}
-              actionsDisabled={positionAction !== undefined}
-              confirmingRemoval={removalConfirmationPositionId === position.id}
-              onConfirmDiscard={onConfirmDiscardLostPosition}
-              onCancelDiscard={onCancelDiscardLostPosition}
-            />
-          ))}
+          {filtered.map((position) => {
+            const ownsAnchor = !anchoredMarketIds.has(position.marketId);
+            anchoredMarketIds.add(position.marketId);
+            return (
+              <PositionRow
+                key={position.id}
+                position={position}
+                anchorId={ownsAnchor ? portfolioPositionAnchorId(position.marketId) : undefined}
+                onSell={onSellPosition}
+                onClaim={onClaimPayout}
+                onDiscard={onDiscardLostPosition}
+                onView={onViewPosition}
+                action={
+                  positionAction?.positionId === position.id ? positionAction.kind : undefined
+                }
+                actionsDisabled={positionAction !== undefined}
+                confirmingRemoval={removalConfirmationPositionId === position.id}
+                onConfirmDiscard={onConfirmDiscardLostPosition}
+                onCancelDiscard={onCancelDiscardLostPosition}
+              />
+            );
+          })}
         </div>
       )}
     </div>

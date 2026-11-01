@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, Check, X, TrendingUp, AlertCircle, Flag } from "lucide-react";
+import { Bell, Check, X, TrendingUp, AlertCircle, Flag, Trophy } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   type Notification,
@@ -7,6 +7,7 @@ import {
   useNotificationsStore,
 } from "@/stores/notifications";
 import { splitMarketId } from "@/lib/orderStatus";
+import { portfolioClosedPositionHref } from "@/lib/portfolioRoute";
 import { formatTimeAgo } from "@/lib/format";
 import { formatAmount } from "@/lib/formatAmount";
 
@@ -42,8 +43,8 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
 
   const handleNotificationClick = (n: Notification) => {
     setIsOpen(false);
-    const parts = splitMarketId(n.marketId);
-    if (parts && onNavigate) onNavigate(`/markets/${parts.conditionId}`);
+    const href = notificationHref(n);
+    if (href !== null && onNavigate) onNavigate(href);
   };
 
   const badge =
@@ -165,10 +166,33 @@ function NotificationIcon({ kind }: { kind: Notification["kind"] }) {
   if (kind === "Matched" || kind === "partially_filled") {
     return <TrendingUp className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />;
   }
-  if (kind === "market_closed") {
+  if (kind === "market_closed" || kind === "position_lost") {
     return <Flag className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />;
   }
+  if (kind === "position_won") {
+    return <Trophy className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />;
+  }
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />;
+}
+
+/**
+ * Order entries open their market. A liked-market close stores the bare
+ * condition ID. A held-position result opens that position in Portfolio.
+ */
+function notificationHref(n: Notification): string | null {
+  switch (n.kind) {
+    case "market_closed": {
+      const conditionId = n.conditionId || n.marketId;
+      return conditionId ? `/markets/${conditionId}` : null;
+    }
+    case "position_won":
+    case "position_lost":
+      return portfolioClosedPositionHref(n.marketId);
+    default: {
+      const parts = splitMarketId(n.marketId);
+      return parts ? `/markets/${parts.conditionId}` : null;
+    }
+  }
 }
 
 function formatNotification(
@@ -196,7 +220,16 @@ function formatNotification(
     return t("notification.matched", { amount: formatAmount(filled, n.unit), market: marketLabel });
   }
   if (n.kind === "market_closed") {
-    return t("notification.marketClosed", { market: n.finalOutcome ?? marketLabel });
+    // Entries stored before titles were kept hold only the bare condition ID.
+    return n.marketTitle
+      ? t("notification.marketClosed", { market: n.marketTitle })
+      : t("notification.marketClosedTitle");
+  }
+  if (n.kind === "position_won") {
+    return t("notification.positionWon", { market: n.marketTitle ?? marketLabel });
+  }
+  if (n.kind === "position_lost") {
+    return t("notification.positionLost", { market: n.marketTitle ?? marketLabel });
   }
   if (n.kind === "cancelled") {
     return t("notification.cancelled", { market: marketLabel });

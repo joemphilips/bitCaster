@@ -122,6 +122,19 @@ describe("useMarketStatusLive", () => {
       expect(notifications[0].marketId).toBe(CONDITION_ID);
     });
 
+    it("stores the title of the viewed market so the bell does not show the condition ID", () => {
+      useLikedMarketStateStore.setState({
+        states: { [CONDITION_ID]: "open" },
+      });
+
+      renderHook(() => useMarketStatusLive(CONDITION_ID, vi.fn(), "Will it rain?"));
+      act(() => {
+        capturedHandlers[0](makeStatus("closed"));
+      });
+
+      expect(useNotificationsStore.getState().items[0].marketTitle).toBe("Will it rain?");
+    });
+
     it("does not invent uniform odds for lifecycle-only close reconciliation", () => {
       useLikedMarketStateStore.setState({
         states: { [CONDITION_ID]: "open" },

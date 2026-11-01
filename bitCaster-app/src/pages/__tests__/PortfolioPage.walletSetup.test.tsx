@@ -9,9 +9,15 @@ let mockWalletState: "none" | "ready" = "none";
 let mockConnectionStatus: "connected" | "connecting" | "disconnected" = "disconnected";
 let mockWalletBackupState: "none" | "needs_backup" | "confirmed" = "none";
 
-vi.mock("react-router", () => ({
-  useNavigate: () => navigate,
-}));
+vi.mock("react-router", () => {
+  const location = { key: "default", pathname: "/portfolio", search: "" };
+  const searchParams = new URLSearchParams();
+  return {
+    useNavigate: () => navigate,
+    useLocation: () => location,
+    useSearchParams: () => [searchParams],
+  };
+});
 
 vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: ({ mode }: { mode: string }) => <div>{mode} overlay</div>,

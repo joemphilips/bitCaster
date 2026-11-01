@@ -43,9 +43,15 @@ vi.mock("@/lib/browserPortfolioRemove", () => ({
   removePortfolioPosition: cashuMocks.removePortfolioPosition,
 }));
 
-vi.mock("react-router", () => ({
-  useNavigate: () => vi.fn(),
-}));
+vi.mock("react-router", () => {
+  const location = { key: "default", pathname: "/portfolio", search: "" };
+  const searchParams = new URLSearchParams();
+  return {
+    useNavigate: () => vi.fn(),
+    useLocation: () => location,
+    useSearchParams: () => [searchParams],
+  };
+});
 
 vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: () => null,

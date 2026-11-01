@@ -15,10 +15,10 @@ const MAX_NOTIFICATIONS = 100;
  * render without translating between a separate vocabulary. `resting` never
  * produces a notification, so it's excluded here.
  *
- * `market_closed` is not an order status — it's a market-lifecycle event the
+ * `market_closed` is not an order status. It is a market-lifecycle event the
  * client detects for the user's bookmarked ("liked") markets (P22 Link G).
- * It carries no order fields; the bell renders it from `conditionId` /
- * `finalOutcome`.
+ * `position_won` and `position_lost` report the verified result of a market in
+ * which the wallet holds outcome tokens. These kinds carry no order fields.
  */
 export type NotificationKind =
   | "accepted"
@@ -30,7 +30,9 @@ export type NotificationKind =
   | "evicted_capacity"
   | "rejected_capacity"
   | "Failed"
-  | "market_closed";
+  | "market_closed"
+  | "position_won"
+  | "position_lost";
 
 export interface Notification {
   /**
@@ -38,17 +40,22 @@ export interface Notification {
    * notification twice (across reloads, retries, etc.) without creating
    * duplicate bell entries. Format:
    *
-   *   filled / cancelled / failed → `{orderId}-{kind}` (terminal, one per order)
-   *   partially_filled   → `{orderId}-partially_filled-{fillCount}` (one per step)
-   *   market_closed      → `{marketId}-market_closed` (one per liked market)
+   *   filled / cancelled / failed → `{orderId}-{status}` (terminal, one per order)
+   *   matched / partially_filled → `{orderId}-{status}-{remainingAmountSubunits}`
+   *   market_closed      → `{conditionId}-market_closed` (one per liked market)
+   *   position_won / position_lost → `{conditionId}-{outcomeCollection}-{kind}`
    */
   id: string;
   kind: NotificationKind;
   /**
-   * Owning order. Empty for non-order notifications (`market_closed`), which
-   * are keyed on the market instead.
+   * Owning order. Empty for non-order notifications, which are keyed on the
+   * market instead.
    */
   orderId: string;
+  /**
+   * `{conditionId}-{outcomeName}` for order and position kinds. The bare
+   * condition ID for `market_closed`.
+   */
   marketId: string;
   /** Absolute market subunits filled at the moment this notification was generated. */
   filledAmountSubunits: number;
@@ -64,15 +71,11 @@ export interface Notification {
   occurredAt: number;
   read: boolean;
 
-  // ── market_closed only (P22 Link G) ──────────────────────────────────────
+  // ── market_closed, position_won and position_lost ────────────────────────
   /** Condition the closed market belongs to. */
   conditionId?: string;
-  /**
-   * The winning outcome name, when the close also carried an attested
-   * resolution. `undefined` when the market merely transitioned to closed
-   * without a known final outcome yet.
-   */
-  finalOutcome?: string;
+  /** Market title when the entry was created. Entries created before titles were stored lack it. */
+  marketTitle?: string;
   /** Unix ms the market was observed closed. */
   closedAt?: number;
 }

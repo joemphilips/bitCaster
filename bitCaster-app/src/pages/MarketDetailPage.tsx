@@ -1784,7 +1784,7 @@ export function MarketDetailPage() {
     },
     [isCurrentRoute, loadMarket, market?.id],
   );
-  useMarketStatusLive(market?.id ?? null, handleLiveStatus);
+  useMarketStatusLive(market?.id ?? null, handleLiveStatus, market?.title);
 
   const handleFundingCredited = useCallback(() => {
     const conditionId = market?.id;

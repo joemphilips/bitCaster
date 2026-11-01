@@ -1,6 +1,69 @@
-import { describe, expect, it, vi } from "vitest";
-import type { Notification } from "@/stores/notifications";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useNotificationsStore, type Notification } from "@/stores/notifications";
 import { addOrderSubmitNotifications } from "../orderNotifications";
+import {
+  buildOrderLifecycleNotifications,
+  buildOrderStatusNotifications,
+  type OrderStatusResponse,
+} from "../orderStatus";
+
+describe("one bell entry for each order transition", () => {
+  const orderId = "881ac8f5-0000-4000-8000-000000000000";
+  const trade = {
+    orderId,
+    marketId: `${"c".repeat(64)}-Yes`,
+    baseAsset: "sat" as const,
+    divisibility: 1_000 as const,
+    amountSubunits: 10_000,
+  };
+
+  beforeEach(() => {
+    useNotificationsStore.setState({ items: [] });
+  });
+
+  // The submit response, the order hub delta and the status read all report
+  // the same transition. The bell must show it once.
+  it.each([
+    ["matched", "Matched", 0],
+    ["partially_filled", "partially_filled", 4_000],
+  ] as const)(
+    "keeps one %s entry when the hub and the status read repeat the submit result",
+    (status, kind, remainingAmountSubunits) => {
+      const add = useNotificationsStore.getState().add;
+      addOrderSubmitNotifications({
+        add,
+        orderId,
+        marketId: trade.marketId,
+        requestedAmountSubunits: trade.amountSubunits,
+        remainingAmountSubunits,
+        fillCount: 1,
+        status,
+        now: 1,
+      });
+      for (const notification of buildOrderLifecycleNotifications(
+        status,
+        remainingAmountSubunits,
+        trade,
+        2,
+      ))
+        add(notification);
+      for (const notification of buildOrderStatusNotifications(
+        {
+          status,
+          remainingAmountSubunits,
+          filledAmountSubunits: trade.amountSubunits - remainingAmountSubunits,
+        } as OrderStatusResponse,
+        trade,
+        3,
+      ))
+        add(notification);
+
+      const items = useNotificationsStore.getState().items;
+      expect(items.filter((item) => item.kind === kind)).toHaveLength(1);
+      expect(items.filter((item) => item.kind === "accepted")).toHaveLength(1);
+    },
+  );
+});
 
 describe("addOrderSubmitNotifications", () => {
   it("adds accepted plus filled notification for an immediately matched order", () => {
@@ -45,7 +108,7 @@ describe("addOrderSubmitNotifications", () => {
       "partially_filled",
     ]);
     expect(add.mock.calls[1][0]).toMatchObject({
-      id: "order-1-partially_filled-1",
+      id: "order-1-partially_filled-100",
       filledAmountSubunits: 100,
       remainingAmountSubunits: 100,
     });
@@ -70,7 +133,7 @@ describe("addOrderSubmitNotifications", () => {
       "Matched",
     ]);
     expect(add.mock.calls[1][0]).toMatchObject({
-      id: "order-1-matched-1",
+      id: "order-1-matched-0",
       filledAmountSubunits: 100,
       remainingAmountSubunits: 0,
     });

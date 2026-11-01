@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PortfolioProps } from "@/types/portfolio";
 import { Zap } from "lucide-react";
@@ -124,6 +124,10 @@ function LoadMoreAssets({
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
   const [mainTab, setMainTab] = useState<MainTab>("positions");
+  const positionsRequestKey = props.positionsRequest?.key;
+  useEffect(() => {
+    if (positionsRequestKey !== undefined) setMainTab("positions");
+  }, [positionsRequestKey]);
 
   // No-wallet CTA state
   if (props.walletState === "none") {
@@ -249,6 +253,7 @@ export function Portfolio(props: PortfolioProps) {
                 onConfirmDiscardLostPosition={props.onConfirmDiscardLostPosition}
                 onCancelDiscardLostPosition={props.onCancelDiscardLostPosition}
                 onViewPosition={props.onViewPosition}
+                positionsRequest={props.positionsRequest}
               />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
               {props.monitoring?.liveUpdateCoverageLimited && (

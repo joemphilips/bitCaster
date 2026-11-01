@@ -6,7 +6,7 @@ function market(id: string, state: Market["state"]): Market {
   // Minimal shape sufficient for the reconcile — only `id` and `state` are read.
   return {
     id,
-    title: id,
+    title: `Title of ${id}`,
     state,
     type: "yesno",
     currentOdds: { yes: 50, no: 50 },
@@ -47,10 +47,8 @@ describe("reconcileLikedMarketCloses", () => {
     expect(n.id).toBe(`${MARKET_ID}-market_closed`);
     expect(n.marketId).toBe(MARKET_ID);
     expect(n.conditionId).toBe(COND);
-    // finalOutcome is the oracle-attested winning outcome — not encoded in the
-    // marketId/conditionId — so the reconcile leaves it unset (the user sees it
-    // on the market/portfolio surface when they open the notification).
-    expect(n.finalOutcome).toBeUndefined();
+    // The bell shows the title; the bare condition ID is not readable.
+    expect(n.marketTitle).toBe(`Title of ${COND}`);
     expect(n.closedAt).toBe(1_700_000_000_000);
     expect(nextStates[MARKET_ID]).toBe("closed");
   });

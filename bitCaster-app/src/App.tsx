@@ -21,6 +21,7 @@ import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
+import { useHeldPositionCloseNotifications } from "@/hooks/useHeldPositionCloseNotifications";
 import { useSettingsStore } from "@/stores/settings";
 import {
   getWalletForMnemonicUnit,
@@ -153,6 +154,7 @@ function AppRoutes() {
   useCreatorSync();
   useActivityLogSync();
   useLikedMarketCloseReconcile();
+  useHeldPositionCloseNotifications();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));

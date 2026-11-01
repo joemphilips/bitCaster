@@ -58,11 +58,10 @@ export function useLikedMarketCloseReconcile(): void {
     for (const notification of notifications) {
       addNotification(notification);
       if (optedIn) {
-        const market = markets.find((m) => m.id === notification.marketId);
         showWebNotification(t("notification.marketClosedTitle"), {
-          body: t("notification.marketClosed", {
-            market: market?.title ?? notification.finalOutcome ?? notification.marketId,
-          }),
+          body: notification.marketTitle
+            ? t("notification.marketClosed", { market: notification.marketTitle })
+            : t("notification.marketClosedTitle"),
           tag: notification.id,
         });
       }

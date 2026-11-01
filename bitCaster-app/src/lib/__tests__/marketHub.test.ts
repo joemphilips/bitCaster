@@ -54,6 +54,7 @@ import {
   onMarketRejoined,
   onMarketResyncRequired,
   observePortfolioValuations,
+  onAnyMarketStatusChanged,
   parseConfirmedTradeRecorded,
   parseMarketFundingUpdated,
   refreshMarketSnapshot,
@@ -119,6 +120,26 @@ beforeEach(async () => {
   signalrMock.connection.onreconnected.mockClear();
   signalrMock.connection.reconnectedHandler = undefined;
   signalrMock.registeredHandlers.clear();
+});
+
+describe("onAnyMarketStatusChanged", () => {
+  it("receives every delivered lifecycle message without joining a group", async () => {
+    const listener = vi.fn();
+    const remove = onAnyMarketStatusChanged(listener);
+    await joinMarket("cond-YES");
+    signalrMock.connection.invoke.mockClear();
+    const closed = { conditionId: "cond", state: "closed", closedAt: null, finalOutcome: "YES" };
+    const other = { conditionId: "other", state: "open", closedAt: null, finalOutcome: null };
+
+    signalrMock.registeredHandlers.get("MarketStatusChanged")?.(closed);
+    signalrMock.registeredHandlers.get("MarketStatusChanged")?.(other);
+    remove();
+    signalrMock.registeredHandlers.get("MarketStatusChanged")?.(closed);
+
+    expect(listener.mock.calls).toEqual([[closed], [other]]);
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+    leaveMarket("cond-YES");
+  });
 });
 
 describe("joinMarket reconnect recovery", () => {

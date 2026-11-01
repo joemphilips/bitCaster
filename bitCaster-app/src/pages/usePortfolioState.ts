@@ -9,16 +9,13 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { readCanonicalPortfolioCustody } from "@/stores/portfolio-custody";
+import { summarizePortfolioCustodyPositions } from "@/lib/heldPositions";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { safeHostname } from "@/lib/url";
 import { canonicalizeOutcomeSet } from "@bitcaster/client-sdk/outcomeSets";
-import {
-  createAuthenticatedBrowserEngineClient,
-  type MarketCatalogueEntry,
-  type MarketCatalogueResponse,
-} from "@/lib/markets";
+import { createAuthenticatedBrowserEngineClient, type MarketCatalogueEntry } from "@/lib/markets";
 import {
   activeBrowserWalletScopeId,
   browserWalletIdFromMnemonic,
@@ -26,7 +23,6 @@ import {
 } from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
-  normalizeMarketBaseAsset,
   parseCashuProofUnit,
   parseMarketDivisibility,
   type MarketBaseAsset,
@@ -48,7 +44,7 @@ import type {
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
-import { deriveWinner } from "@/lib/positionWinner";
+import { classifyHeldPosition } from "@bitcaster/client-sdk/heldPositionStatus";
 import type {
   AssetMonitoringAssetReference,
   AssetMonitoringAssetResponse,
@@ -66,6 +62,7 @@ import {
 import { observePortfolioValuations } from "@/lib/marketHub";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
+import { loadMarketCatalogue } from "@/lib/marketCatalogueBatches";
 
 const automaticPortfolioRefreshDelayMs = 10_000;
 const maximumBuildingPortfolioExtraReads = 3;
@@ -177,36 +174,6 @@ export function enrichPositionWithCatalogue(
 
 function conditionLabel(conditionId: string): string {
   return `Condition ${conditionId.slice(0, 12)}`;
-}
-
-async function loadMarketCatalogue(
-  conditionIds: string[],
-): Promise<Map<string, MarketCatalogueEntry>> {
-  if (conditionIds.length === 0) return new Map();
-  const uniqueConditionIds = [...new Set(conditionIds)];
-  const catalogue = new Map<string, MarketCatalogueEntry>();
-  for (let offset = 0; offset < uniqueConditionIds.length; offset += 50) {
-    const batch = uniqueConditionIds.slice(offset, offset + 50);
-    try {
-      const search = new URLSearchParams({
-        ids: batch.join(","),
-        state: "All",
-        page_size: String(batch.length),
-      });
-      const response = await fetch(`/api/v1/markets/query?${search}`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!response.ok) continue;
-      const body = (await response.json()) as MarketCatalogueResponse;
-      const requestedIds = new Set(batch);
-      for (const market of body.markets ?? []) {
-        if (requestedIds.has(market.conditionId)) catalogue.set(market.conditionId, market);
-      }
-    } catch {
-      // Keep successful sibling batches when one catalogue page is unavailable.
-    }
-  }
-  return catalogue;
 }
 
 function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
@@ -1067,63 +1034,7 @@ export function usePortfolioState(): PortfolioState & {
       if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
       const proofs = await readCanonicalPortfolioCustody(scopeId);
       if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
-      const byOutcome = new Map<
-        string,
-        {
-          conditionId: string;
-          outcomeCollection: string;
-          baseAsset: MarketBaseAsset;
-          unit: string;
-          amount: number;
-          retainedUnverifiedAmountSubunits: number;
-          mintUrl: string;
-          firstReceivedAt: number;
-          allVerifiedLosing: boolean;
-          claimRecoveryPending: boolean;
-          removalPending: boolean;
-        }
-      >();
-      for (const proof of proofs) {
-        if (proof.assetKind !== "conditional") continue;
-        const { conditionId, outcomeCollection } = proof;
-        if (!conditionId || !outcomeCollection) continue;
-        const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
-        const key = JSON.stringify([
-          proof.normalizedMint,
-          proof.unit,
-          conditionId,
-          outcomeCollection,
-          baseAsset,
-        ]);
-        const current = byOutcome.get(key);
-        byOutcome.set(key, {
-          conditionId,
-          outcomeCollection,
-          baseAsset,
-          amount:
-            (current?.amount ?? 0) +
-            (proof.selectability === "retained-unverified" ? 0 : proof.amount),
-          retainedUnverifiedAmountSubunits:
-            (current?.retainedUnverifiedAmountSubunits ?? 0) +
-            (proof.selectability === "retained-unverified" ? proof.amount : 0),
-          unit: proof.unit,
-          mintUrl: proof.normalizedMint,
-          claimRecoveryPending:
-            (current?.claimRecoveryPending ?? false) || proof.claimRecoveryPending,
-          removalPending:
-            (current?.removalPending ?? false) || proof.selectability === "pending-removal",
-          allVerifiedLosing:
-            (current?.allVerifiedLosing ?? true) &&
-            (proof.selectability === "retained-unverified" ||
-              proof.selectability === "verified-losing" ||
-              proof.selectability === "pending-removal"),
-          firstReceivedAt: Math.min(
-            current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
-            proof.receivedAtMs,
-          ),
-        });
-      }
-      const entries = Array.from(byOutcome.values());
+      const entries = summarizePortfolioCustodyPositions(proofs);
       const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
         ? visibleMonitoringConditionIdsKey.split(",")
         : [];
@@ -1138,29 +1049,25 @@ export function usePortfolioState(): PortfolioState & {
       const positions = entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
         const divisibility = parseMarketDivisibility(market?.divisibility);
-        const finalOutcome = market?.finalOutcome?.trim();
-        const historyOnly = entry.amount === 0 && entry.retainedUnverifiedAmountSubunits > 0;
-        const isClosed =
-          historyOnly ||
-          entry.allVerifiedLosing ||
-          entry.claimRecoveryPending ||
-          String(market?.state ?? "").toLowerCase() === "closed";
         // Closure alone does not prove a loss. Only mint classification or an
         // attested outcome can classify this display row.
-        const { status: winnerStatus, claimableValue } = historyOnly
-          ? { status: "pending" as const, claimableValue: 0 }
-          : entry.allVerifiedLosing
-            ? { status: "loser" as const, claimableValue: 0 }
-            : deriveWinner({
-                isClosed,
-                finalOutcome,
-                legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
-              });
-        const isWinner = winnerStatus === "winner";
-        const isLoser = winnerStatus === "loser";
-        const isPending = !historyOnly && winnerStatus === "pending";
+        const classification = classifyHeldPosition(
+          {
+            outcomeCollection: entry.outcomeCollection,
+            amount: entry.amount,
+            retainedUnverifiedAmount: entry.retainedUnverifiedAmountSubunits,
+            allVerifiedLosing: entry.allVerifiedLosing,
+            claimRecoveryPending: entry.claimRecoveryPending,
+          },
+          market,
+        );
+        const historyOnly = classification.result === "history";
+        const isClosed = classification.closed;
+        const isWinner = classification.result === "winner";
+        const isLoser = classification.result === "loser";
+        const isPending = classification.result === "pending";
         const status = isClosed ? "closed" : "active";
-        const currentValueSats = isClosed && isWinner ? claimableValue : 0;
+        const currentValueSats = isClosed && isWinner ? classification.claimableAmount : 0;
         const position: Position = {
           id: JSON.stringify([
             entry.mintUrl,

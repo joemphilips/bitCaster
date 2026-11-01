@@ -97,6 +97,33 @@ export function buildOrderStatusNotifications(
   return buildOrderNotifications(status, trade, now);
 }
 
+/**
+ * The submit response, the order hub delta and the status read can each report
+ * the same order transition. They share this identity so that the bell keeps
+ * one entry for each transition. A fill step is identified by the remaining
+ * amount, which all three sources carry.
+ */
+export function orderTransitionNotificationId(
+  orderId: string,
+  status: Exclude<OrderLifecycleStatus, "resting">,
+  remainingAmountSubunits: number,
+): string {
+  switch (status) {
+    case "matched":
+    case "partially_filled":
+      return `${orderId}-${status}-${remainingAmountSubunits}`;
+    case "filled":
+    case "failed":
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
+      return `${orderId}-${status}`;
+    default:
+      return assertNever(status);
+  }
+}
+
 function buildOrderNotifications(
   state: OrderNotificationState,
   trade: PendingTradeForPromotion,
@@ -109,7 +136,7 @@ function buildOrderNotifications(
     case "partially_filled":
       return [
         {
-          id: `${trade.orderId}-${current}-${state.remainingAmountSubunits}`,
+          id: orderTransitionNotificationId(trade.orderId, current, state.remainingAmountSubunits),
           kind: current === "matched" ? "Matched" : "partially_filled",
           orderId: trade.orderId,
           marketId: trade.marketId,
@@ -128,7 +155,7 @@ function buildOrderNotifications(
     case "rejected_capacity":
       return [
         {
-          id: `${trade.orderId}-${current}`,
+          id: orderTransitionNotificationId(trade.orderId, current, state.remainingAmountSubunits),
           kind: notificationKindForTerminalStatus(current),
           orderId: trade.orderId,
           marketId: trade.marketId,

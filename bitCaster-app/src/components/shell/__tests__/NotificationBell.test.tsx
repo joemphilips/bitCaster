@@ -1,72 +1,134 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotificationBell } from "../NotificationBell";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
+import i18n from "@/i18n";
 
 const COND = "b".repeat(64);
-const MARKET_ID = `${COND}-Alice`;
+const TITLE = "Will Alice win the 2026 cup?";
 
-function marketClosed(overrides: Partial<Notification> = {}): Notification {
+/** The exact shape the liked-market reconcile persisted before titles were stored. */
+function persistedBareMarketClosed(): Notification {
   return {
-    id: `${MARKET_ID}-market_closed`,
+    id: `${COND}-market_closed`,
     kind: "market_closed",
     orderId: "",
-    marketId: MARKET_ID,
+    marketId: COND,
     filledAmountSubunits: 0,
     remainingAmountSubunits: 0,
     unit: "sat",
     occurredAt: Date.now(),
     read: false,
     conditionId: COND,
-    finalOutcome: "Alice",
     closedAt: Date.now(),
-    ...overrides,
   };
 }
 
-beforeEach(() => {
+function positionClosed(kind: "position_won" | "position_lost", outcome: string): Notification {
+  return {
+    id: `${COND}-${outcome}-${kind}`,
+    kind,
+    orderId: "",
+    marketId: `${COND}-${outcome}`,
+    filledAmountSubunits: 0,
+    remainingAmountSubunits: 0,
+    unit: "sat",
+    occurredAt: Date.now(),
+    read: false,
+    conditionId: COND,
+    marketTitle: TITLE,
+  };
+}
+
+function openBell(onNavigate?: (href: string) => void) {
+  render(<NotificationBell onNavigate={onNavigate} />);
+  fireEvent.click(screen.getByLabelText("Notifications"));
+}
+
+beforeEach(async () => {
   useNotificationsStore.setState({ items: [] });
+  await i18n.changeLanguage("en");
+});
+
+afterEach(async () => {
+  await i18n.changeLanguage("en");
 });
 
 describe("NotificationBell market_closed", () => {
-  it("renders a market_closed notification when the panel opens", () => {
-    useNotificationsStore.getState().add(marketClosed());
-
-    render(<NotificationBell />);
-    // Open the panel.
-    fireEvent.click(screen.getByLabelText("Notifications"));
-
-    // "Market closed: Alice" — uses the finalOutcome as the label.
-    expect(screen.getByText(/Market closed:\s*Alice/i)).toBeInTheDocument();
-  });
-
-  it("navigates to the condition page when the entry is clicked", () => {
-    useNotificationsStore.getState().add(marketClosed());
+  it("shows the market title and opens the market page", () => {
+    useNotificationsStore.getState().add({ ...persistedBareMarketClosed(), marketTitle: TITLE });
     let navigated: string | null = null;
 
-    render(<NotificationBell onNavigate={(href) => (navigated = href)} />);
-    fireEvent.click(screen.getByLabelText("Notifications"));
-    fireEvent.click(screen.getByText(/Market closed:\s*Alice/i));
+    openBell((href) => (navigated = href));
+    fireEvent.click(screen.getByText(`Market closed: ${TITLE}`));
 
     expect(navigated).toBe(`/markets/${COND}`);
+  });
+
+  it("opens an old bare-ID entry on the market page without showing the raw ID", () => {
+    useNotificationsStore.getState().add(persistedBareMarketClosed());
+    let navigated: string | null = null;
+
+    openBell((href) => (navigated = href));
+
+    expect(screen.queryByText(new RegExp(COND))).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("A market you follow has closed"));
+    expect(navigated).toBe(`/markets/${COND}`);
+  });
+});
+
+describe("NotificationBell held position results", () => {
+  it("opens the won position in the closed Portfolio tab", () => {
+    useNotificationsStore.getState().add(positionClosed("position_won", "Alice"));
+    let navigated: string | null = null;
+
+    openBell((href) => (navigated = href));
+    fireEvent.click(screen.getByText(`You won the bet for ${TITLE}! Please cash it.`));
+
+    expect(navigated).toBe(`/portfolio?tab=closed&position=${encodeURIComponent(`${COND}-Alice`)}`);
+  });
+
+  it("opens the lost position in the closed Portfolio tab", () => {
+    useNotificationsStore.getState().add(positionClosed("position_lost", "Bob|Carol"));
+    let navigated: string | null = null;
+
+    openBell((href) => (navigated = href));
+    fireEvent.click(screen.getByText(`You lost your bet for ${TITLE} 😢`));
+
+    expect(navigated).toBe(
+      `/portfolio?tab=closed&position=${encodeURIComponent(`${COND}-Bob|Carol`)}`,
+    );
+  });
+
+  it("shows the Japanese result text", async () => {
+    await i18n.changeLanguage("ja");
+    useNotificationsStore.getState().add(positionClosed("position_won", "Alice"));
+    useNotificationsStore.getState().add(positionClosed("position_lost", "Bob"));
+
+    openBell();
+
+    expect(
+      screen.getByText(`「${TITLE}」の予想が当たりました！換金してください。`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(`「${TITLE}」の予想は外れました 😢`)).toBeInTheDocument();
   });
 });
 
 describe("NotificationBell order failures", () => {
   it("does not describe a failed order as cancelled", () => {
-    useNotificationsStore.getState().add(
-      marketClosed({
-        id: "order-1-failed",
-        kind: "Failed",
-        orderId: "order-1",
-        finalOutcome: undefined,
-      }),
-    );
+    useNotificationsStore.getState().add({
+      ...persistedBareMarketClosed(),
+      id: "order-1-failed",
+      kind: "Failed",
+      orderId: "order-1",
+      marketId: `${COND}-Alice`,
+    });
+    let navigated: string | null = null;
 
-    render(<NotificationBell />);
-    fireEvent.click(screen.getByLabelText("Notifications"));
+    openBell((href) => (navigated = href));
+    fireEvent.click(screen.getByText(/Order failed on Alice/i));
 
-    expect(screen.getByText(/Order failed on Alice/i)).toBeInTheDocument();
     expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
+    expect(navigated).toBe(`/markets/${COND}`);
   });
 });

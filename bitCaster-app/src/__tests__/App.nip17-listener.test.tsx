@@ -74,6 +74,9 @@ vi.mock("@/stores/useCreatorSync", () => ({ useCreatorSync: vi.fn() }));
 vi.mock("@/stores/useActivityLogSync", () => ({ useActivityLogSync: vi.fn() }));
 vi.mock("@/hooks/useOrderSettlementLifecycle", () => ({ useOrderSettlementLifecycle: vi.fn() }));
 vi.mock("@/hooks/useLikedMarketCloseReconcile", () => ({ useLikedMarketCloseReconcile: vi.fn() }));
+vi.mock("@/hooks/useHeldPositionCloseNotifications", () => ({
+  useHeldPositionCloseNotifications: vi.fn(),
+}));
 vi.mock("@/hooks/useEncryptedWalletBackupDriver", () => ({
   useEncryptedWalletBackupDriver: () => mocks.backup,
 }));

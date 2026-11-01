@@ -95,6 +95,10 @@
       "types": "./dist/likedMarketClose.d.ts",
       "import": "./dist/likedMarketClose.js"
     },
+    "./heldPositionStatus": {
+      "types": "./dist/heldPositionStatus.d.ts",
+      "import": "./dist/heldPositionStatus.js"
+    },
     "./bookmarks": {
       "types": "./dist/bookmarks.d.ts",
       "import": "./dist/bookmarks.js"
