@@ -201,7 +201,9 @@ an extension to a local private key.
 
 Settings and Portfolio show the same connected Nostr profile card.
 The card shows your picture, display name, and description. Settings also has
-a refresh control. An unavailable relay read is different from an absent profile.
+a refresh control. The card shows the newest profile that the selected relays
+return, even when one relay does not answer. When no relay returns a profile and
+a relay read fails, the card reports an unavailable read, not an absent profile.
 In Nostr Settings, choose **Edit** to change your name, description, and picture URL.
 Choose **Save profile** to publish the changes. Choose **Cancel** to discard an
 unsaved draft. These fields are public. The app publishes standard Nostr profile metadata with your connected

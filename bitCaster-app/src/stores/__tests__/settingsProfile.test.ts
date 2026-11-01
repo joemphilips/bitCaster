@@ -43,3 +43,28 @@ describe("Nostr profile verification claims", () => {
     expect(useSettingsStore.getState().nostrProfileFetchStatus).toBe("found");
   });
 });
+
+describe("saved relay selection", () => {
+  it("drops a retired default relay on reload and keeps the other saved relays", async () => {
+    localStorage.setItem(
+      "bitcaster-settings",
+      JSON.stringify({
+        version: 0,
+        state: {
+          relays: [
+            { url: "wss://relay.damus.io", connectionStatus: "disconnected" },
+            { url: "wss://relay.nostr.band", connectionStatus: "disconnected" },
+            { url: "wss://custom.example", connectionStatus: "disconnected" },
+          ],
+        },
+      }),
+    );
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().relays.map(({ url }) => url)).toEqual([
+      "wss://relay.damus.io",
+      "wss://custom.example",
+    ]);
+  });
+});

@@ -13,6 +13,7 @@ import type {
   RelayConfig,
 } from "@/types/settings";
 import { defaultRelayConfigs, normalizeRelayConfigs } from "@/lib/relayDefaults";
+import { RETIRED_PUBLIC_NOSTR_RELAYS } from "@bitcaster/client-sdk/nostrRelays";
 
 const DEFAULT_RELAYS: RelayConfig[] = defaultRelayConfigs();
 
@@ -209,7 +210,9 @@ export const useSettingsStore = create<SettingsStoreState>()(
             if (state.nostrProfile) {
               state.nostrProfile = { ...state.nostrProfile, nip05verified: false };
             }
-            state.relays = normalizeRelayConfigs(state.relays);
+            state.relays = normalizeRelayConfigs(state.relays).filter(
+              ({ url }) => !RETIRED_PUBLIC_NOSTR_RELAYS.some((retired) => retired === url),
+            );
             applyTheme(state.theme);
           }
         };

@@ -366,9 +366,9 @@ export async function rehydrateNostrSigner(
 
 /**
  * Fetch the current signer's Nostr profile from relays and store it in the
- * settings store. Best-effort: a relay timeout / miss sets status
- * `'not-found'` rather than throwing, so UI callers can await without
- * wrapping in try/catch.
+ * settings store. Best-effort: a relay miss sets status `'not-found'`, and a
+ * failed read without a fresh profile sets `'unavailable'`, rather than
+ * throwing, so UI callers can await without wrapping in try/catch.
  *
  * Shared by {@link rehydrateNostrSigner} (reload path) and the Settings
  * page's nsec / NIP-07 connect flows so the shaping of `NostrProfile` is
@@ -391,7 +391,9 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
     const result = await readBrowserSignerProfile(selection);
     selection.requireCurrent();
     const profile = result.profile ?? cached;
-    const unavailable = result.failedRelayCount > 0 || result.completedRelayCount === 0;
+    // A fresh signed profile from one relay is enough to show. One failed relay must not hide it.
+    const unavailable =
+      !result.profile && (result.failedRelayCount > 0 || result.completedRelayCount === 0);
     useSettingsStore
       .getState()
       .setProfile(profile, unavailable ? "unavailable" : profile ? "found" : "not-found");

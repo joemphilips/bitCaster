@@ -5,9 +5,11 @@ export const DEFAULT_PUBLIC_NOSTR_RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.nostr.net',
   'wss://relay.damus.io',
-  'wss://relay.nostr.band',
   'wss://purplepag.es',
 ] as const
+
+/** Former defaults that no longer answer. A saved browser selection drops them on load. */
+export const RETIRED_PUBLIC_NOSTR_RELAYS = ['wss://relay.nostr.band'] as const
 
 /** Normalize a relay URL without changing path or query case. */
 export function normalizeNostrRelayUrl(value: string): string {

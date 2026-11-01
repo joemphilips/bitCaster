@@ -18,7 +18,7 @@ describe("relay selection", () => {
     vi.resetModules();
     const module = await import("../relayDefaults");
     expect(module.DEFAULT_NOSTR_RELAYS).toEqual([...module.KNOWN_PUBLIC_NOSTR_RELAYS]);
-    expect(module.DEFAULT_NOSTR_RELAYS).toHaveLength(7);
+    expect(module.DEFAULT_NOSTR_RELAYS).toHaveLength(6);
   });
 
   it("lets an environment list replace all defaults with custom and public relays", async () => {
