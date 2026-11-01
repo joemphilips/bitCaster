@@ -538,12 +538,54 @@ describe("DepositStep", () => {
     const user = userEvent.setup();
 
     await enterFundingAmount(user, "1");
-    await user.click(screen.getByTestId("confirm-amm-funding"));
+    await user.tab();
 
+    const message = "Enter an amount divisible by 1000000 market subunits.";
+    const input = screen.getByTestId("amm-funding-custom-budget");
+    expect(screen.getByTestId("amm-funding-amount-error")).toHaveTextContent(message);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(message);
+    expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
+    await user.click(screen.getByTestId("confirm-amm-funding"));
     expect(executeBrowserMarketFundingDelivery).not.toHaveBeenCalled();
-    expect(
-      screen.getByText("Enter an amount divisible by 1000000 market subunits."),
-    ).toBeInTheDocument();
+  });
+
+  it("shows the funding amount rule next to the field after the user leaves it", async () => {
+    renderStep({ presentation: "detail" });
+    const user = userEvent.setup();
+    const input = screen.getByTestId("amm-funding-custom-budget");
+
+    // "1." is a partial entry of "1.0". It is not an error while the user types.
+    await enterFundingAmount(user, "1.");
+    expect(screen.queryByTestId("amm-funding-amount-error")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
+
+    await user.tab();
+    const message = "Enter a positive sats amount with up to three decimal places.";
+    const error = screen.getByTestId("amm-funding-amount-error");
+    expect(error).toHaveAttribute("role", "alert");
+    expect(error).toHaveTextContent(message);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(message);
+
+    await user.type(input, "0");
+    expect(input).toHaveValue("1.0");
+    expect(screen.queryByTestId("amm-funding-amount-error")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(input).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByTestId("confirm-amm-funding")).toBeEnabled();
+  });
+
+  it("shows a zero funding amount as an error after the user leaves the field", async () => {
+    renderStep({ presentation: "detail" });
+    const user = userEvent.setup();
+    await enterFundingAmount(user, "0");
+    await user.tab();
+    expect(screen.getByTestId("amm-funding-amount-error")).toHaveTextContent(
+      "Enter a positive sats amount with up to three decimal places.",
+    );
+    expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
   });
 
   it("converts the exact sats field through the SDK parser", async () => {

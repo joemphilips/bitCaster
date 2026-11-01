@@ -421,6 +421,43 @@ describe("TradingPanel", () => {
     expect(comment).toHaveValue("  My reasoning  ");
   });
 
+  it("keeps a comment above 280 characters and shows the limit only in an error next to it", () => {
+    const confirm = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={confirm}
+      />,
+    );
+    const comment = screen.getByRole("textbox", { name: "Leave a comment!" });
+    expect(screen.queryByText(/\/280/)).not.toBeInTheDocument();
+    expect(comment).toHaveAttribute("aria-invalid", "false");
+
+    fireEvent.change(comment, { target: { value: "x".repeat(281) } });
+
+    const message = "Shorten the comment to 280 characters or less. It has 281 characters.";
+    expect(comment).toHaveValue("x".repeat(281));
+    expect(comment).toHaveAttribute("aria-invalid", "true");
+    expect(comment).toHaveAccessibleDescription(message);
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(confirm).not.toHaveBeenCalled();
+
+    // The submitted comment is trimmed, so trailing spaces do not count.
+    fireEvent.change(comment, { target: { value: `${"x".repeat(280)}  ` } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(comment).toHaveAttribute("aria-invalid", "false");
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(confirm).toHaveBeenCalledExactlyOnceWith("x".repeat(280));
+  });
+
   it.each(["funds", "outcome-tokens", "unavailable"] as const)(
     "ends the fee loading message after a %s refusal",
     (reason) => {

@@ -392,6 +392,88 @@ describe("CreatorDashboard", () => {
       );
     },
   );
+
+  it("shows the explanation byte limit only in an error next to the field", async () => {
+    const user = userEvent.setup();
+    const markets: CreatedMarket[] = [
+      {
+        id: "a".repeat(64),
+        title: "Will BTC hit $150k?",
+        imageUrl: "",
+        status: "active",
+        createdDate: "2026-04-10T00:00:00.000Z",
+        volume: 0,
+        creatorFeesEarned: 0,
+        creatorFeePercent: 0,
+        baseAsset: "sat",
+        divisibility: 1_000,
+        oracle: {
+          type: "self",
+          eventId: "will_btc_hit_150k_abcd",
+          announcementEventId: "c".repeat(64),
+          outcomes: ["Yes", "No"],
+          announcementHex: "aabbccdd",
+        },
+      },
+    ];
+    useSettingsStore.setState({
+      nostrSignerMode: "nsec",
+      nsecSecret: "nsec1test",
+      relays: [{ url: "ws://localhost:7777", connectionStatus: "connected" }],
+    });
+    await seedCreatorMarkets({
+      markets: [
+        {
+          conditionId: "a".repeat(64),
+          title: "Will BTC hit $150k?",
+          thumbnailUrl: null,
+          createdAt: "2026-04-10T00:00:00.000Z",
+          creatorFeePercent: 0,
+          baseAsset: "sat",
+          divisibility: 1_000,
+          oracle: {
+            type: "self",
+            eventId: "will_btc_hit_150k_abcd",
+            announcementEventId: "c".repeat(64),
+            outcomes: ["Yes", "No"],
+          },
+        },
+      ],
+    });
+    mockUseCreatorDashboardState.mockReturnValue({
+      pubkey: "a".repeat(64),
+      stats: { ...emptyStats(), activeMarketsCount: 1 },
+      markets,
+      isLoading: false,
+      error: null,
+      engineDataStatus: "current",
+      refresh: vi.fn(),
+    });
+    renderDashboard();
+    await user.click(screen.getByRole("button", { name: /close market/i }));
+    const dialog = screen.getByRole("dialog", { name: "Close this market" });
+    const field = within(dialog).getByRole("textbox", { name: "Public explanation (optional)" });
+    const confirm = within(dialog).getByTestId("creator-oracle-confirm");
+    await user.selectOptions(within(dialog).getByRole("combobox"), "Yes");
+    expect(within(dialog).queryByText(/UTF-8/)).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(confirm).toBeEnabled();
+
+    // 1,366 three-byte characters are 4,098 UTF-8 bytes.
+    fireEvent.change(field, { target: { value: "あ".repeat(1_366) } });
+
+    const message = "Shorten the explanation to 4096 UTF-8 bytes or less. It has 4098 bytes.";
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(message);
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAccessibleDescription(message);
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: "a".repeat(4_096) } });
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(confirm).toBeEnabled();
+    expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
+  });
 });
 
 it.each(["chosenOutcome", "attestedOutcome"] as const)(

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { Upload, X, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo } from "@/types/market-creation";
@@ -33,6 +33,7 @@ export function BasicInfo({
 }: BasicInfoProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const thumbnailErrorId = useId();
   const canProceed =
     !thumbnailPending &&
     !thumbnailError &&
@@ -96,6 +97,7 @@ export function BasicInfo({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={thumbnailLocked}
+                aria-describedby={thumbnailError ? thumbnailErrorId : undefined}
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
               >
                 <Upload className="w-4 h-4 inline-block mr-1.5" strokeWidth={1.5} />
@@ -117,7 +119,7 @@ export function BasicInfo({
                 </p>
               )}
               {thumbnailError && (
-                <p role="alert" className="mt-2 text-sm text-red-400">
+                <p id={thumbnailErrorId} role="alert" className="mt-2 text-sm text-red-400">
                   {thumbnailError}
                 </p>
               )}

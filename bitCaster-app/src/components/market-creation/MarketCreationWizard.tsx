@@ -137,9 +137,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           feeSubunits={registrationFeeTopUp.feeSubunits}
           balanceSubunits={registrationFeeTopUp.balanceSubunits}
           baseAsset={registrationFeeTopUp.baseAsset}
-          minimumDescription={t("marketCreation.registrationFeeTopUpMinimumDescription", {
-            amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
-          })}
           minimumErrorDescription={t("marketCreation.registrationFeeTopUpMinimumError", {
             amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}

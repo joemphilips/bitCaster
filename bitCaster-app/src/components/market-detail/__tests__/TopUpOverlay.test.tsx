@@ -433,6 +433,59 @@ describe("TopUpOverlay", () => {
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
   });
 
+  it("shows the trade minimum only in an error after the user leaves an amount below it", () => {
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+    const input = screen.getByTestId("top-up-amount-input");
+    expect(screen.queryByText(/minimum|at least/i)).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+
+    // A partial amount is not an error while the user still types.
+    fireEvent.change(input, { target: { value: "9" } });
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+
+    fireEvent.blur(input);
+    const message = "Amount must be at least 10 sats to cover the trade.";
+    const error = screen.getByTestId("top-up-amount-error");
+    expect(error).toHaveAttribute("role", "alert");
+    expect(error).toHaveTextContent(message);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(message);
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "10" } });
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(input).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+  });
+
+  it("shows a caller minimum error and no permanent minimum text for a market creation fee", () => {
+    render(
+      <TopUpOverlay
+        deficit={1_500}
+        balanceSubunits={1_000}
+        feeSubunits={2_500}
+        baseAsset="sat"
+        minimumErrorDescription="Amount must be at least 1.5 sats to cover the market creation fee."
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId("top-up-amount-input");
+    expect(screen.queryByText(/at least/)).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Amount must be at least 1.5 sats to cover the market creation fee.",
+    );
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+  });
+
   it("shows the full registration fee separately from the top-up deficit", () => {
     render(
       <TopUpOverlay
@@ -460,7 +513,7 @@ describe("TopUpOverlay", () => {
       <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
     );
 
-    expect(screen.getByText(/Minimum 10 sats to cover the trade/)).toBeInTheDocument();
+    expect(screen.queryByText(/minimum|at least/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toHaveValue(20);
 
     await user.click(screen.getByTestId("top-up-continue"));
@@ -500,16 +553,23 @@ describe("TopUpOverlay", () => {
         deficit={5_000}
         baseAsset="sat"
         proofUnit="msat"
-        minimumDescription="Top up at least 5 sats to cover Engine Score before placing the order."
+        minimumErrorDescription="Amount must be at least 5 sats to cover Engine Score."
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/Top up at least 5 sats/)).toBeInTheDocument();
+    expect(screen.queryByText(/at least/)).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toHaveValue(15);
     await user.clear(screen.getByTestId("top-up-amount-input"));
+    await user.type(screen.getByTestId("top-up-amount-input"), "4");
+    await user.tab();
+    expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(
+      "Amount must be at least 5 sats to cover Engine Score.",
+    );
+    await user.clear(screen.getByTestId("top-up-amount-input"));
     await user.type(screen.getByTestId("top-up-amount-input"), "5");
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("top-up-continue"));
 

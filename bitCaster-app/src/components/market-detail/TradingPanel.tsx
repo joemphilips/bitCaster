@@ -1,5 +1,5 @@
 import type { MarketTradeRecoveryDisplay } from "@/hooks/useMarketTradeRecovery";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useId } from "react";
 import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react";
 import type {
   MarketDetail,
@@ -29,6 +29,7 @@ import {
   summarizeCtfRangeOrderFees,
   regularCtfRangeOrderFeeTotal,
 } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
+import { TRADE_COMMENT_MAX_LENGTH } from "@bitcaster/client-sdk/tradeComment";
 import { DepositStep } from "@/components/market-creation/DepositStep";
 import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
@@ -930,6 +931,11 @@ export function TradingPanel({
   const { t } = useTranslation();
   const [localTradeComment, setLocalTradeComment] = useState("");
   const tradeComment = controlledTradeComment ?? localTradeComment;
+  const commentFieldId = useId();
+  const commentErrorId = useId();
+  // The order carries the trimmed comment, so the limit applies to the trimmed text.
+  const submittedCommentLength = tradeComment.trim().length;
+  const commentTooLong = submittedCommentLength > TRADE_COMMENT_MAX_LENGTH;
   const [localActiveTab, setLocalActiveTab] = useState<TradingTab>(tradeSide);
   const activeTab = controlledTradeTab ?? localActiveTab;
   const activeTradeSide: TradeSide = activeTab === "Sell" ? "Sell" : "Buy";
@@ -1430,31 +1436,49 @@ export function TradingPanel({
 
           {/* Optional Comment with Trade */}
           <div className="mb-4">
-            <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5 block">
+            <label
+              htmlFor={commentFieldId}
+              className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5 block"
+            >
               {t("trade.comment")}
             </label>
             <textarea
+              id={commentFieldId}
               value={tradeComment}
               disabled={tradingDisabled}
               onChange={(e) => {
-                const comment = e.target.value.slice(0, 280);
+                const comment = e.target.value;
                 if (controlledTradeComment === undefined) setLocalTradeComment(comment);
                 onTradeCommentChange?.(comment);
               }}
               placeholder={t("trade.commentPlaceholder")}
               rows={2}
-              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              aria-invalid={commentTooLong ? "true" : "false"}
+              aria-describedby={commentTooLong ? commentErrorId : undefined}
+              className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${
+                commentTooLong ? "border-red-400" : "border-slate-200 dark:border-slate-700"
+              }`}
             />
-            <div className="text-right text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-              {tradeComment.length}/280
-            </div>
+            {commentTooLong && (
+              <p
+                id={commentErrorId}
+                role="alert"
+                data-testid="trade-comment-error"
+                className="mt-1 text-xs text-red-500 dark:text-red-400"
+              >
+                {t("trade.commentTooLong", {
+                  limit: TRADE_COMMENT_MAX_LENGTH,
+                  length: submittedCommentLength,
+                })}
+              </p>
+            )}
           </div>
 
           {/* Confirm Button */}
           <button
             data-testid="trade-confirm"
             onClick={() => {
-              if (tradingDisabled) return;
+              if (tradingDisabled || commentTooLong) return;
               if (!walletReady) {
                 onWalletRequired?.(tradeComment.trim() || undefined);
                 return;
@@ -1470,6 +1494,7 @@ export function TradingPanel({
             disabled={
               isTradeSubmitting ||
               tradingDisabled ||
+              commentTooLong ||
               selectedSellAmountUnavailable ||
               (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
               (walletReady && !buyNeedsTopUp && previewNeedsAttention) ||

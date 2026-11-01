@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, X } from "lucide-react";
 import {
@@ -59,6 +59,9 @@ export function NostrProfileEditor({
   const dirty = useRef(new Set<EditableField>());
   const [busy, setBusy] = useState<"loading" | "saving" | "uploading" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // An image outside the accepted type, size, or pixel limits is a field error, not a result.
+  const [imageInvalid, setImageInvalid] = useState(false);
+  const imageErrorId = useId();
   const [result, setResult] = useState<BrowserProfileSaveResult | null>(null);
   const operation = useRef<AbortController | null>(null);
   const operationKind = useRef<"loading" | "saving" | "uploading" | null>(null);
@@ -72,7 +75,9 @@ export function NostrProfileEditor({
 
   const showError = (error: unknown) => {
     setResult(null);
-    if (error instanceof NostrMediaUploadError) setMessage(`profileImageError.${error.code}`);
+    if (error instanceof NostrMediaUploadError && error.code === "invalid-image")
+      setImageInvalid(true);
+    else if (error instanceof NostrMediaUploadError) setMessage(`profileImageError.${error.code}`);
     else if (error instanceof BrowserProfileError) setMessage(`profileEditError.${error.code}`);
     else setMessage("profileEditError.cache-unavailable");
   };
@@ -120,7 +125,10 @@ export function NostrProfileEditor({
   }, [editing]);
 
   const change = (field: EditableField, value: string) => {
-    if (field === "picture") releaseImageReceipt();
+    if (field === "picture") {
+      releaseImageReceipt();
+      setImageInvalid(false);
+    }
     if (value === baseline.current[field]) dirty.current.delete(field);
     else dirty.current.add(field);
     setDraft((previous) => ({ ...previous, [field]: value }));
@@ -132,6 +140,7 @@ export function NostrProfileEditor({
     operationKind.current = "uploading";
     setBusy("uploading");
     setMessage(null);
+    setImageInvalid(false);
     setResult(null);
     try {
       const receipt = await upload(file, controller.signal);
@@ -236,8 +245,7 @@ export function NostrProfileEditor({
                       event.preventDefault();
                       if (busy !== null) return;
                       if (event.dataTransfer.files.length !== 1) {
-                        setResult(null);
-                        setMessage("profileImageError.invalid-image");
+                        setImageInvalid(true);
                         return;
                       }
                       void uploadImage(event.dataTransfer.files[0]!);
@@ -268,10 +276,20 @@ export function NostrProfileEditor({
                       type="button"
                       disabled={busy !== null}
                       onClick={() => fileInput.current?.click()}
+                      aria-describedby={imageInvalid ? imageErrorId : undefined}
                       className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50"
                     >
                       {t("settings.profileImageChoose")}
                     </button>
+                    {imageInvalid && (
+                      <p
+                        id={imageErrorId}
+                        role="alert"
+                        className="mt-2 text-xs text-red-600 dark:text-red-400"
+                      >
+                        {t("settings.profileImageError.invalid-image")}
+                      </p>
+                    )}
                     <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                       {t("settings.profileImageHint")}
                     </p>
@@ -322,6 +340,7 @@ export function NostrProfileEditor({
                   }
                 } else {
                   releaseImageReceipt();
+                  setImageInvalid(false);
                   dirty.current.clear();
                   setDraft({ ...baseline.current });
                   onEditEnd?.();

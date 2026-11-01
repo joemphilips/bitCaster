@@ -145,4 +145,21 @@ describe("thumbnail retention controls", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Remove" }));
     expect(onRemove).toHaveBeenCalledOnce();
   });
+
+  it("states the image limit only in an error that describes the upload control", () => {
+    const props = {
+      data: { ...defaultData, title: "Test", closingDate: futureDate() },
+      categoryTags,
+    };
+    const view = render(<BasicInfo {...props} />);
+    const upload = screen.getByRole("button", { name: "Upload image" });
+    expect(screen.queryByText(/MiB/)).not.toBeInTheDocument();
+    expect(upload).not.toHaveAttribute("aria-describedby");
+
+    const message = "Select a nonempty JPG, PNG, or WebP image no larger than 5 MiB.";
+    view.rerender(<BasicInfo {...props} thumbnailError={message} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(upload).toHaveAccessibleDescription(message);
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from "lucide-react";
@@ -131,6 +131,9 @@ export function CreatorDashboard() {
   const displayedExplanation = immutableOutcome
     ? (storedExplanation ?? resolutionDialog?.savedExplanation ?? "")
     : explanation;
+  const explanationBytes = new TextEncoder().encode(displayedExplanation).length;
+  const explanationTooLong = explanationBytes > ORACLE_EXPLANATION_UTF8_BYTES_MAX;
+  const explanationErrorId = useId();
   // A saved outcome is delivered automatically. The dialog only confirms the first choice.
   // If another tab saves a choice while it is open, confirmation sends that saved result.
   const resolutionAction = resolvingMarketId
@@ -422,12 +425,23 @@ export function CreatorDashboard() {
                       readOnly={!!immutableOutcome}
                       disabled={!immutableOutcome && resolvingMarketId !== null}
                       onChange={(event) => setExplanation(event.target.value)}
-                      className="mt-2 min-h-28 w-full rounded-lg border border-slate-300 p-3 dark:border-slate-700 dark:bg-slate-800"
+                      aria-invalid={explanationTooLong ? "true" : "false"}
+                      aria-describedby={explanationTooLong ? explanationErrorId : undefined}
+                      className={`mt-2 min-h-28 w-full rounded-lg border p-3 dark:bg-slate-800 ${
+                        explanationTooLong
+                          ? "border-rose-500"
+                          : "border-slate-300 dark:border-slate-700"
+                      }`}
                     />
-                    {!immutableOutcome && (
-                      <p className="mt-2 text-sm text-slate-500">
-                        {t("creator.explanationLimit", {
+                    {explanationTooLong && (
+                      <p
+                        id={explanationErrorId}
+                        role="alert"
+                        className="mt-2 text-sm text-rose-600"
+                      >
+                        {t("creator.explanationTooLong", {
                           limit: ORACLE_EXPLANATION_UTF8_BYTES_MAX,
+                          bytes: explanationBytes,
                         })}
                       </p>
                     )}
@@ -450,8 +464,7 @@ export function CreatorDashboard() {
                       resolvingMarketId !== null ||
                       !selectedOutcome ||
                       !resolutionDialog.outcomes.includes(selectedOutcome) ||
-                      new TextEncoder().encode(displayedExplanation).length >
-                        ORACLE_EXPLANATION_UTF8_BYTES_MAX
+                      explanationTooLong
                     }
                     className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
                   >

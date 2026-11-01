@@ -3215,10 +3215,10 @@ export function MarketDetailPage() {
           }
           baseAsset={topUpReason?.kind === "score" ? "sat" : marketBaseAsset}
           proofUnit={topUpReason?.kind === "score" ? "msat" : undefined}
-          minimumDescription={
+          minimumErrorDescription={
             topUpReason?.kind === "score"
-              ? t("topUp.scoreMinimumDesc", {
-                  sats: formatMarketSubunits(
+              ? t("topUp.scoreMinimumError", {
+                  amount: formatMarketSubunits(
                     Math.round(Math.max(topUpReason.required - (balanceAtCheck ?? 0), 0) * 1_000),
                     "sat",
                   ),

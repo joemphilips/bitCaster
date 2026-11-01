@@ -1,5 +1,8 @@
 import type { NostrKind1Event } from './engineClient.ts'
 
+/** The largest trade comment, in UTF-16 code units (JavaScript string length). */
+export const TRADE_COMMENT_MAX_LENGTH = 280
+
 export interface TradeCommentTemplate {
   kind: 1
   created_at: number
@@ -22,7 +25,9 @@ export function createTradeCommentTemplate(input: {
   ) {
     throw new Error('Trade comment requires the canonical market page URL')
   }
-  if (input.content.length > 280) throw new Error('Trade comment must be at most 280 characters')
+  if (input.content.length > TRADE_COMMENT_MAX_LENGTH) {
+    throw new Error(`Trade comment must be at most ${TRADE_COMMENT_MAX_LENGTH} characters`)
+  }
   if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) {
     throw new Error('Trade comment timestamp is invalid')
   }
