@@ -118,7 +118,7 @@ In prediction markets, the value of a token depends on what actually happens in 
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
 A valid oracle signature identifies who signed the result. It does not prove that the result is true. bitCaster does not provide an oracle trust score. See [Resolution](../../core-concepts/resolution/) for details.
 
-When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
+When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Select the oracle in the market header to open its profile page, or choose **Copy oracle Nostr ID** and check that identity's history and credibility in your Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
 
 ### Use the supported mint
 

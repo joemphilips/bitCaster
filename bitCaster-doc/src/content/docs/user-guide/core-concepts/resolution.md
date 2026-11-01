@@ -41,6 +41,7 @@ values. To stop the indexer request, turn off **Profile indexer** in Nostr
 Settings.
 
 The selected relays also receive the key of each profile that you open.
+The bitCaster engine also receives the key to list the markets created by it.
 Primal runs one of the default relays. The setting stops only the indexer
 request, not the relay requests. The browser loads the images and the NIP-05
 check from the hosts that the profile names. The relays, the indexer and
@@ -97,8 +98,8 @@ A retry sends the same saved signed events. It never signs a different outcome
 and never creates another announcement. Delivery of a saved signed result does not
 require the oracle signing key.
 If signing stopped before the result was signed, the browser signs the saved outcome
-and its original explanation draft once. It does this when the original oracle key
-is selected again. It signs only when the matching engine is available and has no
+and its original explanation draft once. It does this at the next retry while the
+original oracle's local key (nsec) is selected. It signs only when the matching engine is available and has no
 result for the market. If the result was signed but its explanation was not, a retry
 does not create a signed explanation. The original explanation draft stays saved.
 
@@ -175,7 +176,7 @@ After verified engine evidence or a relay acknowledgment, the browser attempts
 the terminal backup. The CLI attempts it after a relay acknowledgment.
 Backup failure does not undo successful result delivery.
 
-The browser needs the matching engine to publish a result. To publish a result
+The browser shows Published only after the matching engine confirms the result. To publish a result
 while the engine is unavailable, use the CLI. It can sign or retry through the
 original relays without contacting the engine:
 

@@ -127,7 +127,7 @@ the original relays. Backup failure does not undo creation or charge another fee
 Delivery runs automatically. The market row shows a message only when you must act:
 
 - No relay has saved the current backup yet. Keep this browser's data.
-- The backup needs the oracle's local key. Add the oracle's nsec in Settings.
+- The backup or the saved outcome needs the oracle's local key. Add the oracle's nsec in Settings.
 
 Keep this browser's data until the result shows Published and no message appears.
 
@@ -160,7 +160,7 @@ or use the CLI commands below with the exact backup event ID and source relay UR
 Manual discovery and exact restore are CLI operations. Creator has no manual
 recovery panel. CLI exact restore also works without configured discovery relays.
 
-The market row shows incomplete restoration. It does not show backup delivery progress.
+The market row shows incomplete restoration. It shows backup delivery only when you must act, as described above.
 CLI status distinguishes preparation, initial delivery, terminal replacement,
 deletion requests, and pending local updates.
 Initial backup confirmation does not confirm the terminal replacement.
@@ -255,7 +255,9 @@ order-entry reference only.
 
 Disclosure shown before confirming funding:
 
-> This deposit is non-refundable. If the market resolves, the budget is expected to be spent paying traders who informed the price. Any residual at close becomes operator income.
+> These funds become the market's initial liquidity and are not returned.
+
+If the market resolves, the budget is expected to be spent paying traders who informed the price. Any residual at close becomes operator income.
 
 ## Market Lifecycle
 
