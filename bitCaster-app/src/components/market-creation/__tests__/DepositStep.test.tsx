@@ -135,9 +135,7 @@ describe("DepositStep", () => {
       expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
       expect(onCredited).toHaveBeenCalledTimes(progress === "credited" ? 1 : 0);
       if (progress === "received") {
-        expect(
-          screen.getByText("Payment received. Funding the market maker…"),
-        ).toBeInTheDocument();
+        expect(screen.getByText("Payment received. Funding the market maker…")).toBeInTheDocument();
       }
 
       await userEvent.setup().click(screen.getByTestId("confirm-amm-funding"));
