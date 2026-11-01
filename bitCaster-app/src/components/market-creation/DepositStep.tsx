@@ -377,7 +377,7 @@ export function DepositStep({
           <Check className="h-10 w-10 text-emerald-400" />
         </div>
         <h2 className="mb-2 text-xl font-bold text-white sm:text-2xl" aria-live="polite">
-          {t("marketCreation.statusPaymentCredited")}
+          {t("marketCreation.ammFundingComplete")}
         </h2>
         <p className="mt-4 text-sm text-slate-400">
           {t("marketCreation.fundingAutoAdvance", {
@@ -434,7 +434,7 @@ export function DepositStep({
       {deliveryProgress && (deliveryProgress !== "credited" || showCreditedNotice) && (
         <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
           {deliveryProgress === "credited"
-            ? t("marketCreation.statusPaymentCredited")
+            ? t("marketCreation.ammFundingComplete")
             : deliveryProgress === "received"
               ? t("marketCreation.statusPaymentReceived")
               : t("marketCreation.statusAwaitingPayment")}

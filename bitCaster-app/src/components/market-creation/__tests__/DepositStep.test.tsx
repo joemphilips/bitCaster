@@ -132,13 +132,11 @@ describe("DepositStep", () => {
         transferId: "payment-1",
       });
       expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("100");
-      expect(
-        screen.queryByText("Payment credited — market funding complete."),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
       expect(onCredited).toHaveBeenCalledTimes(progress === "credited" ? 1 : 0);
       if (progress === "received") {
         expect(
-          screen.getByText("Payment received — waiting for market credit…"),
+          screen.getByText("Payment received. Funding the market maker…"),
         ).toBeInTheDocument();
       }
 
@@ -187,9 +185,7 @@ describe("DepositStep", () => {
     await waitFor(() => expect(currentRefresh).toHaveBeenCalledTimes(1));
     expect(outdatedRefresh).not.toHaveBeenCalled();
     expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
-    expect(
-      screen.queryByText("Payment credited — market funding complete."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
     expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
     expect(timeoutSpy.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(
       navigationTimerCount,
@@ -204,17 +200,15 @@ describe("DepositStep", () => {
       .mockResolvedValueOnce({ progress: "received", transfer })
       .mockResolvedValue({ progress: "credited", transfer });
     const view = renderStep({ presentation: "detail" });
-    await screen.findByText("Payment received — waiting for market credit…");
+    await screen.findByText("Payment received. Funding the market maker…");
     await userEvent.setup().click(screen.getByTestId("confirm-amm-funding"));
-    await screen.findByText("Payment credited — market funding complete.");
+    await screen.findByText("Market maker funding is complete.");
 
     view.unmount();
     renderStep({ presentation: "detail" });
     await waitFor(() => expect(screen.getByTestId("amm-funding-custom-budget")).toBeEnabled());
     expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("100");
-    expect(
-      screen.queryByText("Payment credited — market funding complete."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
     expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
     expect(executeBrowserMarketFundingDelivery.mock.calls[2]![0].attempt).toEqual({
       kind: "resume",
@@ -278,9 +272,43 @@ describe("DepositStep", () => {
   });
 
   it.each([
+    ["en", "These funds become the market's initial liquidity and are not returned."],
+    ["ja", "この資金はマーケットの初期流動性となり、返還されません。"],
+  ])("states that funding is not returned in %s", async (language, disclosure) => {
+    await i18n.changeLanguage(language);
+    renderStep({ presentation: "detail" });
+
+    expect(screen.getByText(disclosure)).toBeInTheDocument();
+  });
+
+  it.each(["creation", "detail"] as const)(
+    "reports completed %s funding in Japanese without a credited label",
+    async (presentation) => {
+      await i18n.changeLanguage("ja");
+      executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
+        progress: "credited",
+        transfer: { transferId: "payment-1", requestedAmount: "100000" },
+      });
+      renderStep({ presentation });
+      const user = userEvent.setup();
+      if (presentation === "creation") {
+        await user.click(screen.getByRole("button", { name: "トレーダーを集める" }));
+      }
+      await enterFundingAmount(user);
+
+      await user.click(screen.getByTestId("confirm-amm-funding"));
+
+      expect(
+        await screen.findByText("マーケットメイカーへの資金提供が完了しました。"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/クレジット済み/)).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
     ["pending", "Awaiting payment…"],
-    ["received", "Payment received — waiting for market credit…"],
-    ["credited", "Payment credited — market funding complete."],
+    ["received", "Payment received. Funding the market maker…"],
+    ["credited", "Market maker funding is complete."],
   ] as const)("renders %s funding progress honestly", async (progress, message) => {
     const onCredited = vi.fn();
     executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
@@ -319,7 +347,7 @@ describe("DepositStep", () => {
         }),
       );
     });
-    expect(screen.getByText("Payment received — waiting for market credit…")).toBeInTheDocument();
+    expect(screen.getByText("Payment received. Funding the market maker…")).toBeInTheDocument();
   });
 
   it("resumes a pending payment automatically until the engine reports credit", async () => {
@@ -353,7 +381,7 @@ describe("DepositStep", () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(6_000));
     expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
-    expect(screen.getByText("Payment credited — market funding complete.")).toBeInTheDocument();
+    expect(screen.getByText("Market maker funding is complete.")).toBeInTheDocument();
     expect(onCredited).toHaveBeenCalledOnce();
 
     for (let step = 0; step < 10; step++) {
@@ -406,7 +434,7 @@ describe("DepositStep", () => {
     timeoutSpy.mockClear();
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
-    await screen.findByText("Payment credited — market funding complete.");
+    await screen.findByText("Market maker funding is complete.");
     const call = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(call).toBeDefined();
     act(() => (call?.[0] as () => void)());
@@ -428,7 +456,7 @@ describe("DepositStep", () => {
 
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     await user.click(screen.getByTestId("confirm-amm-funding"));
-    await screen.findByText("Payment credited — market funding complete.");
+    await screen.findByText("Market maker funding is complete.");
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
     timeoutSpy.mockRestore();
@@ -545,7 +573,7 @@ describe("DepositStep", () => {
     await enterFundingAmount(user, "100");
     await user.click(screen.getByTestId("confirm-amm-funding"));
 
-    await screen.findByText("Payment received — waiting for market credit…");
+    await screen.findByText("Payment received. Funding the market maker…");
     expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("200");
   });
 

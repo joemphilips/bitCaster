@@ -218,10 +218,10 @@ describe("MarketHeader", () => {
     renderHeader(makeMarket());
 
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+    await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
 
     expect(writeText).toHaveBeenCalledWith(creatorNpub);
-    expect(await screen.findByRole("status")).toHaveTextContent("Oracle public key copied.");
+    expect(await screen.findByRole("status")).toHaveTextContent("Oracle Nostr ID copied.");
   });
 
   it("reports success only after the oracle clipboard write completes", async () => {
@@ -235,13 +235,13 @@ describe("MarketHeader", () => {
       value: { writeText: vi.fn(() => pending) },
     });
     renderHeader(makeMarket());
-    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+    await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await act(async () => {
       complete();
       await pending;
     });
-    expect(screen.getByRole("status")).toHaveTextContent("Oracle public key copied.");
+    expect(screen.getByRole("status")).toHaveTextContent("Oracle Nostr ID copied.");
   });
 
   it.each(["rejected", "unavailable"])(
@@ -256,14 +256,14 @@ describe("MarketHeader", () => {
             : { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
       });
       renderHeader(makeMarket());
-      await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+      await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
       expect(await screen.findByRole("status")).toHaveTextContent(
-        "Could not copy the oracle public key.",
+        "Could not copy the oracle Nostr ID.",
       );
       expect(useToastStore.getState().toasts).toEqual([
         expect.objectContaining({
           type: "error",
-          message: "Could not copy the oracle public key.",
+          message: "Could not copy the oracle Nostr ID.",
         }),
       ]);
     },
@@ -283,8 +283,10 @@ describe("MarketHeader", () => {
         </MemoryRouter>
       </I18nextProvider>,
     );
-    await user.click(screen.getByRole("button", { name: "オラクル公開鍵をコピー" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("オラクル公開鍵をコピーしました。");
+    await user.click(screen.getByRole("button", { name: "オラクルのNostr IDをコピー" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "オラクルのNostr IDをコピーしました。",
+    );
   });
 
   it("does not render a copy button when the detail has no creator pubkey", () => {
@@ -299,7 +301,23 @@ describe("MarketHeader", () => {
       }),
     );
 
-    expect(screen.getByText("Oracle pubkey unavailable")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy oracle pubkey" })).not.toBeInTheDocument();
+    expect(screen.getByText("Oracle Nostr ID unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy oracle Nostr ID" })).not.toBeInTheDocument();
+  });
+
+  it("labels a missing oracle Nostr ID in Japanese", () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <MemoryRouter>
+          <MarketHeader
+            market={makeMarket({
+              creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
+            })}
+          />
+        </MemoryRouter>
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("オラクルのNostr IDを利用できません")).toBeInTheDocument();
   });
 });

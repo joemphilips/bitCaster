@@ -207,7 +207,7 @@ describe("TopUpOverlay", () => {
 
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -218,7 +218,7 @@ describe("TopUpOverlay", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -229,7 +229,20 @@ describe("TopUpOverlay", () => {
     );
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("recommends a seed phrase backup in Japanese before a deposit", async () => {
+    await i18n.changeLanguage("ja");
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByText(
+        "入金する前に、ウォレットのシードフレーズのバックアップを取ることをおすすめします。",
       ),
     ).toBeInTheDocument();
   });
@@ -254,7 +267,7 @@ describe("TopUpOverlay", () => {
 
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -268,7 +281,7 @@ describe("TopUpOverlay", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
 
@@ -282,7 +295,7 @@ describe("TopUpOverlay", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+          "Before you deposit, we recommend that you back up your wallet seed phrase.",
         ),
       ).toBeInTheDocument(),
     );

@@ -118,7 +118,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
     expect(screen.getByText("deposit chooser")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).toBeInTheDocument();
 
@@ -128,7 +128,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByText("deposit chooser")).toBeInTheDocument();
@@ -150,7 +150,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
 
@@ -159,7 +159,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
 
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).toBeInTheDocument();
   });
@@ -171,7 +171,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
 
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByText("deposit chooser")).toBeInTheDocument();
@@ -183,7 +183,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
 
@@ -193,7 +193,7 @@ describe("DepositWithdrawOverlay seed reminder", () => {
 
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).toBeInTheDocument();
   });

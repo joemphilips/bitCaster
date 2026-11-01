@@ -43,10 +43,10 @@ You can make more funding payments later. You do not need to be the creator.
 If a payment is still pending, the app resumes the same payment automatically
 for about two and a half minutes. After that, resume the payment in the app.
 After a reload, the app resumes the same payment. A received payment is not yet
-credited to the market. Wait for the app to confirm credit before you make
-another explicit funding payment. Do not make a second payment only because
-the first one is taking time. A second payment is a separate, non-refundable
-subsidy.
+credited to the market. Wait for the app to show that market maker funding is
+complete before you make another explicit funding payment. Do not make a
+second payment only because the first one is taking time. A second payment is
+a separate, non-refundable subsidy.
 
 If recovery is incomplete or unavailable, that is different from insufficient
 balance. Funds that are already ready in this wallet can be used without
