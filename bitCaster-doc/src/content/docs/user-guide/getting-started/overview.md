@@ -317,6 +317,7 @@ payments increase it. Trades do not reduce it. It is not current order-book
 liquidity.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
+A comment above 280 characters shows an error and blocks the order.
 
 Chart comment bubbles point to the time and price of the associated confirmed
 trade. The pointer stays on that trade when new prices arrive or the chart

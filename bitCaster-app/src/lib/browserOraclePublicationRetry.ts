@@ -8,14 +8,33 @@ export interface BrowserOraclePublicationRetry {
 }
 
 /**
+ * The engine that registered the market. A public creator-market mirror has none. The current
+ * origin cannot replace it, because the mirror can come from another deployment.
+ */
+export function browserOracleSavedEngineUrl(owner: BrowserOracleOwner): string | null {
+  switch (owner.kind) {
+    case "imported":
+      return owner.oracle.destinations.engineUrl;
+    case "created":
+      return (
+        owner.market.oracle?.destinations?.engineUrl ?? owner.market.oracle?.engineBaseUrl ?? null
+      );
+    default:
+      return assertNever(owner);
+  }
+}
+
+/**
  * Select saved resolution work for an automatic retry. The outcome is always the saved one.
  * A saved choice without a signature comes from an interrupted signing. Only the oracle's own
- * local key can sign it, so it waits until that key is selected.
+ * local key can sign it, so it waits until that key is selected. A row without its saved engine
+ * cannot succeed, so it is not retried.
  */
 export function browserOraclePublicationRetry(
   owner: BrowserOracleOwner,
   signerPublicKey: string | null,
 ): BrowserOraclePublicationRetry | null {
+  if (browserOracleSavedEngineUrl(owner) === null) return null;
   switch (owner.kind) {
     case "imported": {
       const publication = owner.oracle.publication;

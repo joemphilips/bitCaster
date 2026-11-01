@@ -10,6 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 import type { OraclePublicationState } from "@bitcaster/client-sdk/oraclePublication";
 import { localBrowserOracleBackupStatuses } from "@/lib/browserOracleBackupAccess";
+import { assertNever } from "@/lib/enumDiscipline";
 import { resolveNsecIdentity } from "@/lib/identityOps";
 import { subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
@@ -44,12 +45,27 @@ function oracleOwnerNotice(row: ReadyRow, keyReady: boolean): string | null {
       : "oracleBackup.authorityUnavailable";
   const unsignedChoice = row.chosenOutcome !== null && !row.signed;
   if ((status.preparationPending || unsignedChoice) && !keyReady) return "oracleBackup.keyRequired";
-  const acknowledged = status.terminal.prepared
-    ? status.terminal.replacementAcknowledgedRelays
-    : status.initial.prepared
-      ? status.initial.acknowledgedRelays
-      : null;
-  return acknowledged === 0 ? "oracleBackup.notOnRelay" : null;
+  if (row.chosenOutcome !== null) {
+    // The initial backup was prepared before the choice. It holds the nonce but not the saved
+    // outcome, so a restore from it could sign another outcome. Only the terminal backup counts.
+    switch (row.publicationState) {
+      case "publishing":
+        return null;
+      case "published":
+      case "failed":
+      case null: {
+        const acknowledged = status.terminal.prepared
+          ? status.terminal.replacementAcknowledgedRelays
+          : 0;
+        return acknowledged === 0 ? "oracleBackup.notOnRelay" : null;
+      }
+      default:
+        return assertNever(row.publicationState);
+    }
+  }
+  return status.initial.prepared && status.initial.acknowledgedRelays === 0
+    ? "oracleBackup.notOnRelay"
+    : null;
 }
 
 const MarketStatuses = createContext<{

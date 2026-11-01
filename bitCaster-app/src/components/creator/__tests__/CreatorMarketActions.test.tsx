@@ -141,7 +141,12 @@ it.each([
     row.signed = true;
     row.publicationState = state;
     row.status.preparationPending = false;
-    row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
+    row.status.initial = { prepared: false, acknowledgedRelays: 0, totalRelays: 1 };
+    row.status.terminal = {
+      ...row.status.terminal,
+      prepared: true,
+      replacementAcknowledgedRelays: 1,
+    };
     h.local.mockResolvedValue({ rows: [row], nextOffset: null });
     show();
     expect(await screen.findByText(`Saved outcome: NO · ${label}`)).toBeVisible();
@@ -149,6 +154,37 @@ it.each([
     expect(screen.queryByText(/Engine|Relay|backup/)).toBeNull();
   },
 );
+it.each([
+  ["failed", "Couldn't publish. Retrying automatically.", false],
+  ["published", "Published", true],
+] as const)(
+  "asks the user to keep local data when the relay copy of a %s result has no saved outcome",
+  async (state, label, terminal) => {
+    const row = local();
+    row.chosenOutcome = "NO";
+    row.signed = true;
+    row.publicationState = state;
+    // A relay holds the initial backup. It was prepared before the choice, so it has no outcome.
+    row.status.preparationPending = terminal;
+    row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
+    h.local.mockResolvedValue({ rows: [row], nextOffset: null });
+    show();
+    expect(await screen.findByText(`Saved outcome: NO · ${label}`)).toBeVisible();
+    expect(screen.getByText(i18n.t("oracleBackup.notOnRelay"))).toBeVisible();
+  },
+);
+it("shows no backup message while the saved result is sending", async () => {
+  const row = local();
+  row.chosenOutcome = "NO";
+  row.signed = true;
+  row.publicationState = "publishing";
+  row.status.preparationPending = false;
+  row.status.initial = { prepared: true, acknowledgedRelays: 0, totalRelays: 1 };
+  h.local.mockResolvedValue({ rows: [row], nextOffset: null });
+  show();
+  expect(await screen.findByText("Saved outcome: NO · Sending result…")).toBeVisible();
+  expect(screen.queryByText(i18n.t("oracleBackup.notOnRelay"))).toBeNull();
+});
 it("shows no backup state while a relay holds the current backup", async () => {
   const row = local();
   row.status.preparationPending = false;

@@ -129,6 +129,8 @@ Delivery runs automatically. The market row shows a message only when you must a
 - No relay has saved the current backup yet. Keep this browser's data.
 - The backup needs the oracle's local key. Add the oracle's nsec in Settings.
 
+Keep this browser's data until the result shows Published and no message appears.
+
 Changing your Nostr identity does not erase retained oracle data.
 If a different key owns that data, private oracle preparation and recovery
 refuse the key change. Keep the data and return to its original key.

@@ -130,10 +130,17 @@ export async function runBrowserOracleRecoveryPass(
   return true;
 }
 
+/** A visible tab retries a failed owner at most once in this interval. */
+export const ORACLE_PUBLICATION_VISIBLE_RETRY_MS = 10 * 60_000;
+
 export interface BrowserOraclePublicationPass {
   /** The selected local key. Null when no local private key is selected. */
   signerPublicKey: string | null;
   relayUrls: readonly string[];
+  /** True when only a visible tab started the pass. A tab can become visible very often. */
+  visibleWake: boolean;
+  /** The time of the last failed attempt of each condition. The driver keeps it between passes. */
+  failedAt: Map<string, number>;
   requireCurrent(): void;
 }
 const defaultPublicationAdapters = {
@@ -143,7 +150,8 @@ const defaultPublicationAdapters = {
 
 /**
  * Resend each saved resolution once per wake. Exact delivery needs no signer. A failed owner
- * waits for the next wake, so a failure cannot start a retry loop.
+ * waits for the next wake, so a failure cannot start a retry loop. A visible-tab wake skips an
+ * owner that failed less than ten minutes ago.
  */
 export async function runBrowserOraclePublicationPass(
   pass: BrowserOraclePublicationPass,
@@ -155,20 +163,32 @@ export async function runBrowserOraclePublicationPass(
     pass.requireCurrent();
     const retry = browserOraclePublicationRetry(owner, pass.signerPublicKey);
     if (!retry) continue;
+    const failedAt = pass.failedAt.get(retry.conditionId);
+    if (
+      pass.visibleWake &&
+      failedAt !== undefined &&
+      Date.now() - failedAt < ORACLE_PUBLICATION_VISIBLE_RETRY_MS
+    )
+      continue;
+    let failed: boolean;
     try {
-      await adapters.publish(
+      const result = await adapters.publish(
         retry.conditionId,
         retry.outcome,
         undefined,
         [...pass.relayUrls],
         useCreatorMarketsStore,
         undefined,
-        { engineDelivery: "synchronize", requireCurrent: pass.requireCurrent },
+        { engineDelivery: "synchronize", requireCurrent: pass.requireCurrent, automatic: true },
       );
+      failed = result.failures.length > 0;
     } catch {
       pass.requireCurrent();
       // The saved failure state stays visible. Another owner's delivery continues.
+      failed = true;
     }
+    if (failed) pass.failedAt.set(retry.conditionId, Date.now());
+    else pass.failedAt.delete(retry.conditionId);
   }
 }
 
@@ -183,7 +203,7 @@ export interface BrowserOracleRecoveryDriverOptions {
 /**
  * One root-owned driver. Store updates do not schedule scans unless eligibility changes.
  * Start, `online`, and signer or relay changes run backup recovery and resolution delivery.
- * A visible tab runs resolution delivery only.
+ * A visible tab runs resolution delivery only, and it waits after a recent owner failure.
  */
 export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverOptions = {}) {
   let disposed = false;
@@ -193,7 +213,10 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
   let scheduled = false;
   let externalWake = false;
   let publicationWake = false;
+  // A wake other than a visible tab: start, `online`, or a signer or relay change.
+  let publicationEventWake = false;
   let recoveryContinues = false;
+  const publicationFailedAt = new Map<string, number>();
   let scheduledTimer: ReturnType<typeof setTimeout> | undefined;
   let controller: AbortController | null = null;
   let checkpoint: BrowserOracleRecoveryCheckpoint = { ownerOffset: 0, cursor: null };
@@ -224,6 +247,7 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
   const wake = () => {
     if (disposed) return;
     externalWake = true;
+    publicationEventWake = true;
     wakePublication();
   };
   const visible = () => {
@@ -251,7 +275,9 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
       }
     }
     const deliverPublications = publicationWake;
+    const visibleWake = !publicationEventWake;
     publicationWake = false;
+    publicationEventWake = false;
     const recover = identity !== null && (externalWake || recoveryContinues);
     if (!deliverPublications && !recover) return;
     running = true;
@@ -284,6 +310,8 @@ export function startBrowserOracleRecovery(options: BrowserOracleRecoveryDriverO
           await (options.runPublicationPass ?? runBrowserOraclePublicationPass)({
             signerPublicKey: identity?.publicKeyHex ?? null,
             relayUrls,
+            visibleWake,
+            failedAt: publicationFailedAt,
             requireCurrent,
           });
         } catch {

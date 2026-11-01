@@ -303,7 +303,11 @@ it("continues more than eighty saved owner retries once each and does not rescan
   stop();
 });
 
-import { creatorOracleMetadata, creatorOraclePublication } from "@/test/creatorOracleFixture";
+import {
+  creatorMarketFixture,
+  creatorOracleMetadata,
+  creatorOraclePublication,
+} from "@/test/creatorOracleFixture";
 import { fixtureOraclePrivateKey } from "@/test/creatorOracleFixture";
 import type { OraclePublicationRecord } from "@bitcaster/client-sdk/oraclePublication";
 
@@ -354,6 +358,8 @@ it("resends each saved result once per wake, signing an interrupted choice only 
   const pass = (signerPublicKey: string | null) => ({
     signerPublicKey,
     relayUrls: ["wss://configured.example"],
+    visibleWake: false,
+    failedAt: new Map<string, number>(),
     requireCurrent,
   });
   await runBrowserOraclePublicationPass(pass(null), { owners: async () => owners, publish });
@@ -362,7 +368,8 @@ it("resends each saved result once per wake, signing an interrupted choice only 
     expect(call[1]).toBe("YES");
     expect(call[2]).toBeUndefined();
     expect(call[3]).toEqual(["wss://configured.example"]);
-    expect(call[6]).toEqual({ engineDelivery: "synchronize", requireCurrent });
+    // An automatic first signature first checks the engine for a public result.
+    expect(call[6]).toEqual({ engineDelivery: "synchronize", requireCurrent, automatic: true });
   }
   publish.mockClear();
   await runBrowserOraclePublicationPass(pass(getPublicKey(generateSecretKey())), {
@@ -384,11 +391,23 @@ it("resends each saved result once per wake, signing an interrupted choice only 
 
 /** Resolve when a driver pass has run the given number of times. */
 function passRecorder() {
-  const calls: { signerPublicKey: string | null; relayUrls: readonly string[] }[] = [];
+  const calls: {
+    signerPublicKey: string | null;
+    relayUrls: readonly string[];
+    visibleWake: boolean | null;
+  }[] = [];
   const waiters: { count: number; resolve: () => void }[] = [];
   const run = vi.fn(
-    async (pass: { signerPublicKey?: string | null; relayUrls: readonly string[] }) => {
-      calls.push({ signerPublicKey: pass.signerPublicKey ?? null, relayUrls: pass.relayUrls });
+    async (pass: {
+      signerPublicKey?: string | null;
+      relayUrls: readonly string[];
+      visibleWake?: boolean;
+    }) => {
+      calls.push({
+        signerPublicKey: pass.signerPublicKey ?? null,
+        relayUrls: pass.relayUrls,
+        visibleWake: pass.visibleWake ?? null,
+      });
       for (const waiter of waiters.filter((item) => calls.length >= item.count)) {
         waiters.splice(waiters.indexOf(waiter), 1);
         waiter.resolve();
@@ -433,7 +452,109 @@ it("runs the publication pass without a signer on start, online, a visible tab, 
     await publication.reached(6);
     // A visible tab resends saved results. It does not restart backup discovery.
     expect(recovery.calls).toHaveLength(1);
+    // Only a visible tab is a frequent wake. The pass delays a recent failure only for it.
+    expect(publication.calls.map((call) => call.visibleWake)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+    ]);
   } finally {
     stop();
+  }
+});
+
+it("does not resend a public mirror row that has no saved engine", async () => {
+  const mirror = (conditionId: string, engineBaseUrl?: string): BrowserOracleOwner => ({
+    kind: "created",
+    market: {
+      ...creatorMarketFixture(conditionId),
+      oracle: {
+        type: "self",
+        eventId: creatorOracleMetadata.binding.oracleEventId,
+        outcomes: ["YES", "NO"],
+        announcementHex: creatorOracleMetadata.announcementHex,
+        announcementEventId: JSON.parse(creatorOracleMetadata.binding.announcementEventJson).id,
+        announcementEventJson: creatorOracleMetadata.binding.announcementEventJson,
+        attestationHex: creatorOraclePublication.attestation!.attestationHex,
+        attestationEventJson: creatorOraclePublication.attestation!.eventJson,
+        attestedOutcome: "YES",
+        ...(engineBaseUrl ? { engineBaseUrl } : {}),
+      },
+    },
+  });
+  const publish = vi.fn(async (..._request: unknown[]) => ({
+    failures: [],
+    record: creatorOraclePublication,
+  }));
+  await runBrowserOraclePublicationPass(
+    {
+      signerPublicKey: null,
+      relayUrls: ["wss://configured.example"],
+      visibleWake: false,
+      failedAt: new Map(),
+      requireCurrent: vi.fn(),
+    },
+    {
+      owners: async () => [
+        mirror("01".repeat(32)),
+        mirror("02".repeat(32), "https://original-engine.example"),
+      ],
+      publish,
+    },
+  );
+  // This origin can be another deployment. Its engine never knows the mirror row.
+  expect(publish.mock.calls.map((call) => call[0])).toEqual(["02".repeat(32)]);
+});
+
+it("retries a failed result on a visible tab at most once in ten minutes", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  const owners = [importedOwner("01".repeat(32), creatorOraclePublication)];
+  let fail = true;
+  const publish = vi.fn(async (..._request: unknown[]) => {
+    if (fail) throw new Error("engine unavailable");
+    return { failures: [], record: creatorOraclePublication };
+  });
+  const passes = passRecorder();
+  const stop = startBrowserOracleRecovery({
+    runPass: async () => {},
+    runPublicationPass: async (active) => {
+      await runBrowserOraclePublicationPass(active, { owners: async () => owners, publish });
+      await passes.run(active);
+    },
+  });
+  let count = 0;
+  // A wake schedules one pass on the next timer turn. Wait until that pass is complete.
+  const wakeAndDrain = async (dispatch: () => void) => {
+    dispatch();
+    await vi.advanceTimersByTimeAsync(0);
+    await passes.reached(++count);
+  };
+  const visible = () => document.dispatchEvent(new Event("visibilitychange"));
+  const online = () => globalThis.dispatchEvent(new Event("online"));
+  try {
+    await wakeAndDrain(() => {});
+    expect(publish).toHaveBeenCalledTimes(1);
+    await wakeAndDrain(visible);
+    expect(publish).toHaveBeenCalledTimes(1);
+    // A start, online, or signer or relay change always retries.
+    await wakeAndDrain(online);
+    expect(publish).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(10 * 60_000 - 1);
+    await wakeAndDrain(visible);
+    expect(publish).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    fail = false;
+    await wakeAndDrain(visible);
+    expect(publish).toHaveBeenCalledTimes(3);
+    // A successful attempt removes the wait.
+    await wakeAndDrain(visible);
+    expect(publish).toHaveBeenCalledTimes(4);
+  } finally {
+    stop();
+    vi.useRealTimers();
   }
 });

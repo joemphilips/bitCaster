@@ -55,7 +55,8 @@ Open Your Markets in the creator page. For a self-oracle market, choose Close
 market. The Close this market dialog shows the market title and its registered
 outcomes. Select the winning outcome inside the dialog. You can add an optional
 public plain-text explanation. Restored oracle records use the same dialog.
-The explanation limit is 4096 UTF-8 bytes. Do not include private information.
+An explanation above 4096 UTF-8 bytes shows an error and blocks Close market with
+this outcome. Do not include private information.
 Select Close market with this outcome to save the choice and start delivery.
 Opening the dialog, changing an unsaved selection, or cancelling does not sign
 or publish a result. Reopening discards unsaved dialog changes.
@@ -68,12 +69,14 @@ Keep browser storage enabled.
 If delivery is incomplete, the browser retries it automatically. It retries when
 the app starts, when the connection returns, when you return to the tab, and when
 the signer or the relay settings change. There is no retry button.
+After a failed attempt, returning to the tab retries at most once in 10 minutes.
 A retry sends the same saved signed events. It never signs a different outcome
 and never creates another announcement. Delivery of a saved signed result does not
 require the oracle signing key.
 If signing stopped before the result was signed, the browser signs the saved outcome
 and its original explanation draft once. It does this when the original oracle key
-is selected again. If the result was signed but its explanation was not, a retry
+is selected again. It signs only when the matching engine is available and has no
+result for the market. If the result was signed but its explanation was not, a retry
 does not create a signed explanation. The original explanation draft stays saved.
 
 Your Markets shows one state for a saved outcome:
@@ -85,7 +88,7 @@ Your Markets shows one state for a saved outcome:
 
 After the engine confirms the result, the browser continues to send it to the relays
 in the background. The relay copy is optional. Published does not confirm mint redemption.
-An explanation failure does not block resolution delivery.
+After the choice is saved, an explanation failure does not block resolution delivery.
 Its verified text can appear on the closed market page. It is not a paid trade comment.
 
 A deadline-closed market with no verified result still permits the creator's
