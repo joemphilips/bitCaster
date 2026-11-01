@@ -87,15 +87,16 @@ const browserFacingProto = (req, host) => {
 // The prefix test includes every path that the "/api/**" and "/hubs/**" proxy filters
 // match. Those filters test this same URL pathname, and they do not proxy a URL that
 // cannot be parsed.
-const isBackendPath = (url) => {
+const isPathUnder = (url, roots) => {
   let pathname;
   try {
     pathname = new URL(url ?? "", "http://0.0.0.0").pathname;
   } catch {
     return false;
   }
-  return ["/api", "/hubs"].some((root) => pathname === root || pathname.startsWith(`${root}/`));
+  return roots.some((root) => pathname === root || pathname.startsWith(`${root}/`));
 };
+const isBackendPath = (url) => isPathUnder(url, ["/api", "/hubs"]);
 
 // Set the forwarded headers on the incoming request, before a proxy copies its headers.
 // A proxy request hook does not run for every request (for example, one with an Expect
@@ -190,6 +191,11 @@ if (hubsProxy) {
   // adds its own upgrade listener on its first HTTP request, and then its upgrade() does
   // nothing. A prepended listener sets the headers before that listener runs.
   server.prependListener("upgrade", (req, socket, head) => {
+    // Only the hub proxy accepts an upgrade. Close any other upgrade socket.
+    if (!isPathUnder(req.url, ["/hubs"])) {
+      socket.destroy();
+      return;
+    }
     setForwardedHeaders(req);
     hubsProxy.upgrade(req, socket, head);
   });

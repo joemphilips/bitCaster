@@ -245,3 +245,9 @@ test('the mint proxy forwards no client-address header', async () => {
   })
   assert.deepEqual(clientAddress, [])
 })
+
+test('an upgrade outside the hub proxy is closed at once', async () => {
+  // An open socket would end only at the deadline, with an AbortError.
+  for (const path of ['/api/probe', '/v1/info', '/'])
+    await assert.rejects(upgrade(path, {}), (error) => error.name !== 'AbortError')
+})
