@@ -27,6 +27,10 @@
       "types": "./dist/mintMetadata.d.ts",
       "import": "./dist/mintMetadata.js"
     },
+    "./mintPaymentLimits": {
+      "types": "./dist/mintPaymentLimits.d.ts",
+      "import": "./dist/mintPaymentLimits.js"
+    },
     "./nostrProfile": {
       "types": "./dist/nostrProfile.d.ts",
       "import": "./dist/nostrProfile.js"

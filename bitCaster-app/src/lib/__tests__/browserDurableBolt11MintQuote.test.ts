@@ -11,11 +11,13 @@ import Dexie from "dexie";
 import {
   OutputData,
   Keyset,
+  MintOperationError,
   deriveKeysetId,
   Wallet as CashuWallet,
   Mint as CashuMint,
   type CounterSource,
 } from "@cashu/cashu-ts";
+import { isMintAmountOutsideLimitError } from "@bitcaster/client-sdk/mintPaymentLimits";
 import {
   createDurableBolt11MintQuote,
   type DurableBolt11MintQuote,
@@ -214,6 +216,26 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
     expect(mocks.wallet.createMintQuote).not.toHaveBeenCalled();
     expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
     expect(await mocks.context().database.mintQuotes.count()).toBe(0);
+  });
+
+  it("passes a mint refusal for an amount outside the limits to the caller unchanged", async () => {
+    const refusal = new MintOperationError(
+      11006,
+      "Amount must be between `1000` and `200000000` is `300000000`",
+    );
+    mocks.wallet.createMintQuote.mockRejectedValueOnce(refusal);
+
+    const failure = await createBrowserDurableBolt11MintQuote({
+      amount: 300_000_000,
+      mintUrl: MINT_URL,
+      unit: UNIT,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBe(refusal);
+    expect(isMintAmountOutsideLimitError(failure)).toBe(true);
+    expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
+    expect(await mocks.context().database.mintQuotes.count()).toBe(0);
+    expect(await mocks.context().database.proofOperations.count()).toBe(0);
   });
 
   it("checks actual owner-enabled permission inside the joint readwrite transaction", async () => {

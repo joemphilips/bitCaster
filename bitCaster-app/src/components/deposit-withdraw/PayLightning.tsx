@@ -8,6 +8,8 @@ interface PayLightningProps {
   selectedMintId: string;
   statusMessage?: ReactNode;
   lightningInput: string;
+  /** Error for an invoice amount outside the mint limits. */
+  invoiceError?: string | null;
   onMintChange?: (mintId: string) => void;
   onLightningInputChange?: (value: string) => void;
   onPaste?: () => void;
@@ -20,6 +22,7 @@ export function PayLightning({
   selectedMintId,
   statusMessage,
   lightningInput,
+  invoiceError = null,
   onMintChange,
   onLightningInputChange,
   onPaste,
@@ -74,6 +77,15 @@ export function PayLightning({
                 </button>
               </div>
             </div>
+            {invoiceError !== null && (
+              <p
+                role="alert"
+                data-testid="withdrawal-invoice-error"
+                className="mt-2 text-sm text-red-300"
+              >
+                {invoiceError}
+              </p>
+            )}
           </div>
 
           {/* Scan QR */}

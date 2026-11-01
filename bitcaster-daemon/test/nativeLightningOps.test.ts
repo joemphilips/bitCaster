@@ -10,6 +10,8 @@ import type {
   NativeBolt11MintQuoteView,
 } from '../src/nativeBolt11MintQuoteCoordinator.ts'
 import { createCustodyReadinessTracker } from '../src/startupRecovery.ts'
+import { MintOperationError } from '@cashu/cashu-ts'
+import { NativeMintPaymentAmountError } from '../src/nativeMintPaymentLimits.ts'
 
 const firstInvoice = invoice('a'.repeat(64), 'UNPAID')
 const secondInvoice = invoice('b'.repeat(64), 'UNPAID')
@@ -381,6 +383,131 @@ test('invoice recovery cursor reset supersedes a stale in-flight page', async ()
   assert.equal(restarted.hasMore, false)
   assert.equal(restarted.blockingPending, false)
   assert.deepEqual(cursors, [null, null])
+})
+
+function mintInfo(maxDepositMsat: number): Record<string, unknown> {
+  return {
+    nuts: {
+      '4': {
+        methods: [
+          { method: 'bolt11', unit: 'msat', min_amount: 1_000, max_amount: maxDepositMsat },
+        ],
+        disabled: false,
+      },
+      '5': { methods: [], disabled: false },
+    },
+  }
+}
+
+function recordingCoordinator(
+  calls: string[],
+  create: (amountMsat: number) => Promise<NativeBolt11MintQuoteView> = async () => secondInvoice,
+): NativeBolt11MintQuoteCoordinatorLike {
+  return {
+    create: async ({ amountMsat }) => {
+      calls.push(`create:${amountMsat}`)
+      return create(amountMsat)
+    },
+    get: async (id) => {
+      calls.push(`get:${id}`)
+      return firstInvoice
+    },
+    hide: async (id) => {
+      calls.push(`hide:${id}`)
+      return { ...firstInvoice, presentationState: 'hidden' }
+    },
+    recoverActivePage: async () => ({ outcomes: [], nextCursor: null, hasMore: false }),
+  }
+}
+
+test('invoice creation refuses an amount above the mint maximum before it asks for a quote', async () => {
+  const calls: string[] = []
+  const reads: string[] = []
+  const ops = createNativeLightningOpsWithCoordinator(
+    recordingCoordinator(calls),
+    'https://mint.example',
+    {
+      readMintInfo: async (mintUrl) => {
+        reads.push(mintUrl)
+        return mintInfo(200_000_000)
+      },
+    },
+  )
+
+  const refused = await ops.createInvoice(200_000_001).then(
+    () => assert.fail('an amount above the maximum must be refused'),
+    (error: unknown) => error,
+  )
+  assert.ok(refused instanceof NativeMintPaymentAmountError)
+  assert.equal(
+    refused.message,
+    'This mint accepts 1 to 200,000 sats for each deposit. Deposit in parts.',
+  )
+  assert.equal(refused.direction, 'deposit')
+  assert.equal(refused.amountMsat, 200_000_001)
+  assert.deepEqual(refused.rejection, { kind: 'above-maximum', minSat: 1, maxSat: 200_000 })
+  assert.deepEqual(calls, [])
+
+  assert.deepEqual(await ops.createInvoice(200_000_000), secondInvoice)
+  assert.deepEqual(calls, ['create:200000000'])
+  assert.deepEqual(reads, ['https://mint.example', 'https://mint.example'])
+})
+
+test('a mint refusal is explained with limits read again after the refusal', async () => {
+  const calls: string[] = []
+  const infos = [mintInfo(300_000_000), mintInfo(100_000_000)]
+  const ops = createNativeLightningOpsWithCoordinator(
+    recordingCoordinator(calls, async () => {
+      throw new MintOperationError(
+        11006,
+        'Amount must be between `1000` and `100000000` is `150000000`',
+      )
+    }),
+    'https://mint.example',
+    { readMintInfo: async () => infos.shift() },
+  )
+
+  await assert.rejects(
+    ops.createInvoice(150_000_000),
+    (error: unknown) =>
+      error instanceof NativeMintPaymentAmountError &&
+      error.message === 'This mint accepts 1 to 100,000 sats for each deposit. Deposit in parts.',
+  )
+  assert.deepEqual(calls, ['create:150000000'])
+  assert.deepEqual(infos, [])
+})
+
+test('unavailable mint limits leave the limit check to the mint', async () => {
+  const calls: string[] = []
+  const ops = createNativeLightningOpsWithCoordinator(
+    recordingCoordinator(calls, async () => {
+      throw new Error('mint request failed')
+    }),
+    'https://mint.example',
+    {
+      readMintInfo: async () => {
+        throw new Error('mint info is unavailable')
+      },
+    },
+  )
+
+  await assert.rejects(ops.createInvoice(300_000_000), /mint request failed/)
+  assert.deepEqual(calls, ['create:300000000'])
+})
+
+test('invoice replacement refuses an amount above the maximum before it hides the old invoice', async () => {
+  const calls: string[] = []
+  const ops = createNativeLightningOpsWithCoordinator(
+    recordingCoordinator(calls),
+    'https://mint.example',
+    { readMintInfo: async () => mintInfo(200_000_000) },
+  )
+
+  await assert.rejects(
+    ops.replaceInvoice(firstInvoice.quoteRecordId, 250_000_000),
+    NativeMintPaymentAmountError,
+  )
+  assert.deepEqual(calls, [`get:${firstInvoice.quoteRecordId}`])
 })
 
 function invoice(

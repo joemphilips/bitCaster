@@ -200,7 +200,9 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         selectedMintId={state.selectedMintId}
         amountSats={state.amountSats}
         amountLabel={state.amountLabel}
+        depositAmountError={state.depositAmountError}
         lightningInput={state.lightningInput}
+        withdrawalInvoiceError={state.withdrawalInvoiceError}
         onSelectMethod={state.onSelectMethod}
         onNumpadPress={state.onNumpadPress}
         onMintChange={state.onMintChange}

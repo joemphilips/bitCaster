@@ -48,6 +48,7 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           statusMessage={statusMessage}
           amountSats={props.amountSats}
           amountLabel={props.amountLabel}
+          amountError={props.depositAmountError ?? null}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
           onCreateInvoice={props.onCreateInvoice}
@@ -78,6 +79,7 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           selectedMintId={props.selectedMintId}
           statusMessage={statusMessage}
           lightningInput={props.lightningInput}
+          invoiceError={props.withdrawalInvoiceError ?? null}
           onMintChange={props.onMintChange}
           onLightningInputChange={props.onLightningInputChange}
           onPaste={props.onPaste}

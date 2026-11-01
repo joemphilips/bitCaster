@@ -17,6 +17,8 @@ interface DepositLightningProps {
   statusMessage?: ReactNode;
   amountSats: number;
   amountLabel?: string;
+  /** Error for an amount outside the mint limits. Null when the mint can accept the amount. */
+  amountError?: string | null;
   onMintChange?: (mintId: string) => void;
   onNumpadPress?: (key: string) => void;
   onCreateInvoice?: () => void;
@@ -30,6 +32,7 @@ export function DepositLightning({
   statusMessage,
   amountSats,
   amountLabel,
+  amountError = null,
   onMintChange,
   onNumpadPress,
   onCreateInvoice,
@@ -73,8 +76,17 @@ export function DepositLightning({
           </div>
 
           {/* Amount */}
-          <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-1 flex-col items-center justify-center">
             <AmountDisplay amountSats={amountSats} amountLabel={amountLabel} />
+            {amountError !== null && (
+              <p
+                role="alert"
+                data-testid="deposit-amount-error"
+                className="px-5 pb-4 text-center text-sm text-red-300"
+              >
+                {amountError}
+              </p>
+            )}
           </div>
 
           {/* Numpad */}
@@ -84,7 +96,11 @@ export function DepositLightning({
           <div className="px-5 py-6">
             <button
               onClick={() => onCreateInvoice?.()}
-              disabled={amountSats === 0 || walletBackupPausesNewChanges(walletBackup)}
+              disabled={
+                amountSats === 0 ||
+                amountError !== null ||
+                walletBackupPausesNewChanges(walletBackup)
+              }
               className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
             >
               Create Invoice

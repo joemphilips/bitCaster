@@ -40,6 +40,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   } = await import('./walletOps.ts')
   const { createNativeLightningOps } = await import('./nativeLightningOps.ts')
   const { NativeWalletPaymentOps } = await import('./nativeWalletPaymentOps.ts')
+  const { readPublicMintInfo } = await import('@bitcaster-market/client-sdk/mintMetadata')
   const { createNativeWalletPaymentRecoveryPager } =
     await import('./nativeWalletPaymentRecovery.ts')
   const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
@@ -114,6 +115,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     secrets,
     getFence: currentFence,
     deps: { getCustodyFence: currentFence },
+    readMintInfo: (mintUrl) => readPublicMintInfo(mintUrl),
   })
   const paymentRecovery = createNativeWalletPaymentRecoveryPager((input) =>
     nativeWalletPaymentService.recoverActivePage(input),

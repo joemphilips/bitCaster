@@ -9,6 +9,8 @@ import {
 import { TopUpOverlay } from "../TopUpOverlay";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
 import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
+import { MintOperationError } from "@cashu/cashu-ts";
+import type { MintPaymentLimits } from "@bitcaster/client-sdk/mintPaymentLimits";
 
 const createBrowserDurableBolt11MintQuote = vi.fn();
 const subscribeActiveBrowserDurableBolt11MintQuote = vi.fn();
@@ -32,6 +34,14 @@ vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
     subscribeActiveBrowserDurableBolt11MintQuote(...args),
   hideBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
     hideBrowserDurableBolt11MintQuote(...args),
+}));
+
+const readBrowserMintPaymentLimits = vi.fn();
+const forgetBrowserMintPaymentLimits = vi.fn();
+
+vi.mock("@/lib/mintPaymentLimits", () => ({
+  readBrowserMintPaymentLimits: (...args: unknown[]) => readBrowserMintPaymentLimits(...args),
+  forgetBrowserMintPaymentLimits: (...args: unknown[]) => forgetBrowserMintPaymentLimits(...args),
 }));
 
 vi.mock("@/lib/walletOps", () => ({
@@ -98,6 +108,119 @@ describe("TopUpOverlay", () => {
     navigate.mockReset();
     walletSeedReminderAcknowledgedScopeId = null;
     setActiveBrowserWalletProfile(walletMnemonic);
+    // Limits that never load leave the mint to enforce them.
+    readBrowserMintPaymentLimits.mockReset();
+    readBrowserMintPaymentLimits.mockReturnValue(new Promise(() => undefined));
+    forgetBrowserMintPaymentLimits.mockReset();
+  });
+
+  describe("mint deposit limits", () => {
+    const PRODUCTION: MintPaymentLimits = { state: "enabled", minSat: 1, maxSat: 200_000 };
+    const LIMIT_ERROR = "This mint accepts 1 to 200,000 sats for each deposit. Deposit in parts.";
+
+    it("prefills at most the mint maximum and lets a larger shortfall be paid in parts", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue(PRODUCTION);
+      render(
+        <TopUpOverlay
+          deficit={300_000_000}
+          baseAsset="sat"
+          onCancel={vi.fn()}
+          onSuccess={vi.fn()}
+        />,
+      );
+      expect(readBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example", {
+        direction: "deposit",
+        method: "bolt11",
+        unit: "msat",
+      });
+      await waitFor(() => expect(screen.getByTestId("top-up-amount-input")).toHaveValue(200_000));
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      await waitFor(() =>
+        expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+          amount: 200_000_000,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+        }),
+      );
+    });
+
+    it("caps a whole-sat prefill for a sat proof unit", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue({
+        state: "enabled",
+        minSat: null,
+        maxSat: 1_000,
+      });
+      render(
+        <TopUpOverlay
+          deficit={900}
+          baseAsset="sat"
+          proofUnit="sat"
+          onCancel={vi.fn()}
+          onSuccess={vi.fn()}
+        />,
+      );
+      expect(readBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example", {
+        direction: "deposit",
+        method: "bolt11",
+        unit: "sat",
+      });
+      await waitFor(() => expect(screen.getByTestId("top-up-amount-input")).toHaveValue(1_000));
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+    });
+
+    it("shows the limit next to the amount only outside the limits and disables Continue", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue(PRODUCTION);
+      render(
+        <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+      );
+      await waitFor(() => expect(readBrowserMintPaymentLimits).toHaveBeenCalled());
+      await act(async () => undefined);
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "200001" },
+      });
+      expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(LIMIT_ERROR);
+      expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "200000" },
+      });
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+    });
+
+    it("maps a mint refusal to the limit message and reads the limits again", async () => {
+      readBrowserMintPaymentLimits
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ state: "enabled", minSat: 1, maxSat: 100_000 });
+      createBrowserDurableBolt11MintQuote.mockRejectedValueOnce(
+        new MintOperationError(
+          11006,
+          "Amount must be between `1000` and `100000000` is `150000000`",
+        ),
+      );
+      render(
+        <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+      );
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "150000" },
+      });
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+
+      expect(await screen.findByTestId("top-up-amount-error")).toHaveTextContent(
+        "This mint accepts 1 to 100,000 sats for each deposit. Deposit in parts.",
+      );
+      expect(forgetBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example");
+      expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+      expect(screen.queryByText(/Amount must be between/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("bolt11-display")).not.toBeInTheDocument();
+    });
   });
 
   it.each(["authentication", "leadership-wait", "retry", "driver-unavailable"] as const)(

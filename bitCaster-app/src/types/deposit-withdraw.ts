@@ -60,9 +60,13 @@ export interface DepositWithdrawProps {
   /** Current amount entered (in sats) */
   amountSats: number;
   amountLabel?: string;
+  /** Error for a deposit amount outside the mint limits (deposit lightning). */
+  depositAmountError?: string | null;
 
   /** Lightning address or invoice text entered by user */
   lightningInput: string;
+  /** Error for an invoice amount outside the mint limits (pay lightning). */
+  withdrawalInvoiceError?: string | null;
 
   /** Called when user selects a method (ecash or lightning) from the chooser */
   onSelectMethod?: (method: MethodType) => void;

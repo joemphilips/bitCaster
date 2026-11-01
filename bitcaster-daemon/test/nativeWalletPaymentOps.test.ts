@@ -39,6 +39,8 @@ import {
 import { NativeBolt11MintQuoteCoordinator } from '../src/nativeBolt11MintQuoteCoordinator.ts'
 import { createWallet } from '../src/walletOps.ts'
 import { NativeWalletPaymentOps } from '../src/nativeWalletPaymentOps.ts'
+import { NativeMintPaymentAmountError, type ReadMintInfo } from '../src/nativeMintPaymentLimits.ts'
+import { MintOperationError } from '@cashu/cashu-ts'
 import type { NativeWalletPaymentWallet } from '../src/nativeWalletPaymentOps.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
@@ -105,6 +107,71 @@ test('quote reports exact msat debit facts without preparing outputs or reservin
     })
     assert.deepEqual(await fixture.availableSecrets(), ['melt-input'])
     assert.equal(await fixture.operationCount(), 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+function withdrawalInfo(maxWithdrawalMsat: number): Record<string, unknown> {
+  return {
+    nuts: {
+      '4': { methods: [], disabled: false },
+      '5': {
+        methods: [
+          { method: 'bolt11', unit: 'msat', min_amount: 1_000, max_amount: maxWithdrawalMsat },
+        ],
+        disabled: false,
+      },
+    },
+  }
+}
+
+test('quote refuses an invoice above the NUT-05 maximum before it loads the wallet', async () => {
+  const reads: string[] = []
+  const fixture = await createFixture(false, false, false, {
+    readMintInfo: async (mintUrl) => {
+      reads.push(mintUrl)
+      return withdrawalInfo(150_000_000)
+    },
+  })
+  try {
+    await assert.rejects(
+      fixture.ops.quote({ invoice: 'lnbc2m1pfakeinvoice' }),
+      (error: unknown) =>
+        error instanceof NativeMintPaymentAmountError &&
+        error.direction === 'withdrawal' &&
+        error.amountMsat === 200_000_000 &&
+        error.message ===
+          'This mint accepts 1 to 150,000 sats for each withdrawal. Withdraw in parts.',
+    )
+    assert.deepEqual(reads, [MINT_URL])
+    assert.equal(fixture.calls.load, 0)
+    assert.equal(fixture.calls.createQuote, 0)
+    assert.equal(await fixture.operationCount(), 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('quote explains a melt quote refusal with limits read again', async () => {
+  const infos = [withdrawalInfo(300_000_000), withdrawalInfo(150_000_000)]
+  const fixture = await createFixture(false, false, false, {
+    readMintInfo: async () => infos.shift(),
+    refuseQuote: new MintOperationError(
+      11006,
+      'Amount must be between `1000` and `150000000` is `200000000`',
+    ),
+  })
+  try {
+    await assert.rejects(
+      fixture.ops.quote({ invoice: 'lnbc2m1pfakeinvoice' }),
+      (error: unknown) =>
+        error instanceof NativeMintPaymentAmountError &&
+        error.message ===
+          'This mint accepts 1 to 150,000 sats for each withdrawal. Withdraw in parts.',
+    )
+    assert.equal(fixture.calls.createQuote, 1)
+    assert.deepEqual(infos, [])
   } finally {
     await fixture.close()
   }
@@ -608,7 +675,17 @@ test('completed real NUT08 change is recovered by production regular-msat seed s
   }
 })
 
-async function createFixture(realWallet = false, noChange = false, legacySelection = false) {
+interface FixtureMintLimits {
+  readonly readMintInfo?: ReadMintInfo
+  readonly refuseQuote?: Error
+}
+
+async function createFixture(
+  realWallet = false,
+  noChange = false,
+  legacySelection = false,
+  mintLimits: FixtureMintLimits = {},
+) {
   const keysetId = noChange
     ? deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 })
     : KEYSET_ID
@@ -667,6 +744,7 @@ async function createFixture(realWallet = false, noChange = false, legacySelecti
     },
     async createMeltQuoteBolt11(invoice) {
       calls.createQuote += 1
+      if (mintLimits.refuseQuote !== undefined) throw mintLimits.refuseQuote
       return quoteResponse()
     },
     async checkMeltQuote(_method, quote) {
@@ -760,6 +838,7 @@ async function createFixture(realWallet = false, noChange = false, legacySelecti
       profile,
       secrets,
       directory,
+      ...(mintLimits.readMintInfo === undefined ? {} : { readMintInfo: mintLimits.readMintInfo }),
       getFence: () => fence,
       now: () => ++nowMs,
       observePrepared: async (operation) => {

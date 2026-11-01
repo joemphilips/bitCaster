@@ -1,5 +1,6 @@
 import type { Proof } from '@cashu/cashu-ts'
 import type { DurableWalletOutputData } from '@bitcaster-market/client-sdk/durableWalletOperation'
+import { readPublicMintInfo } from '@bitcaster-market/client-sdk/mintMetadata'
 import {
   NativeBolt11MintQuoteCoordinator,
   type NativeBolt11MintQuoteCoordinatorOptions,
@@ -15,6 +16,12 @@ import {
   type BoundedRecoveryPage,
   type NormalizedRecoveryOutcome,
 } from './boundedRecoveryPager.ts'
+import {
+  assertNativeMintPaymentAmount,
+  explainNativeMintAmountRefusal,
+  type NativeMintPaymentLimitCheck,
+  type ReadMintInfo,
+} from './nativeMintPaymentLimits.ts'
 
 const RESTORE_GROUP = 'native-bolt11-mint-quote'
 
@@ -40,6 +47,11 @@ export type NativeBolt11MintQuoteCoordinatorLike = Pick<
   NativeBolt11MintQuoteCoordinator,
   'create' | 'get' | 'hide' | 'recoverActivePage'
 >
+
+export interface NativeLightningOpsOptions {
+  /** Read mint info for the NUT-04 limit check. Omit it to let the mint enforce its limits alone. */
+  readonly readMintInfo?: ReadMintInfo
+}
 
 /** Build the invoice-only SDK adapter for one fenced daemon runtime. */
 export function createNativeLightningOps(input: {
@@ -68,6 +80,7 @@ export function createNativeLightningOps(input: {
   return createNativeLightningOpsWithCoordinator(
     new NativeBolt11MintQuoteCoordinator(coordinatorOptions),
     input.mintUrl,
+    { readMintInfo: (mintUrl) => readPublicMintInfo(mintUrl) },
   )
 }
 
@@ -75,14 +88,26 @@ export function createNativeLightningOps(input: {
 export function createNativeLightningOpsWithCoordinator(
   coordinator: NativeBolt11MintQuoteCoordinatorLike,
   mintUrl: string,
+  options: NativeLightningOpsOptions = {},
 ): NativeLightningOps {
   const recovery = createNativeLightningRecoveryPager((cursor) =>
     coordinator.recoverActivePage({ cursor }),
   )
+  const limitCheck = (amountMsat: number): NativeMintPaymentLimitCheck => ({
+    readMintInfo: options.readMintInfo,
+    mintUrl,
+    direction: 'deposit',
+    amountMsat,
+  })
+  const createQuote = (amountMsat: number) =>
+    explainNativeMintAmountRefusal(limitCheck(amountMsat), () =>
+      coordinator.create({ mintUrl, amountMsat }),
+    )
 
   return {
     createInvoice: async (amountMsat) => {
-      const invoice = await coordinator.create({ mintUrl, amountMsat })
+      await assertNativeMintPaymentAmount(limitCheck(amountMsat))
+      const invoice = await createQuote(amountMsat)
       recovery.restart()
       return invoice
     },
@@ -91,10 +116,12 @@ export function createNativeLightningOpsWithCoordinator(
     replaceInvoice: async (quoteRecordId, amountMsat) => {
       const previous = await coordinator.get(quoteRecordId)
       if (previous === null) throw new Error('native BOLT11 mint quote was not found')
+      // Keep the old invoice visible when the mint cannot accept the new amount.
+      await assertNativeMintPaymentAmount(limitCheck(amountMsat))
 
       try {
         await coordinator.hide(quoteRecordId)
-        return { invoice: await coordinator.create({ mintUrl, amountMsat }) }
+        return { invoice: await createQuote(amountMsat) }
       } finally {
         recovery.restart()
       }

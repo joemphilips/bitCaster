@@ -1079,6 +1079,24 @@
       "errorAmountTooLow": "Token covers {{covered}}, need at least {{needed}}."
     }
   },
+  "mintLimits": {
+    "deposit": {
+      "rangeInParts": "This mint accepts {{min}} to {{max}} sats for each deposit. Deposit in parts.",
+      "maximumInParts": "This mint accepts up to {{max}} sats for each deposit. Deposit in parts.",
+      "range": "This mint accepts {{min}} to {{max}} sats for each deposit.",
+      "minimum": "This mint accepts at least {{min}} sats for each deposit.",
+      "notAccepted": "This mint does not accept Lightning deposits.",
+      "refused": "This mint does not accept this deposit amount."
+    },
+    "withdrawal": {
+      "rangeInParts": "This mint accepts {{min}} to {{max}} sats for each withdrawal. Withdraw in parts.",
+      "maximumInParts": "This mint accepts up to {{max}} sats for each withdrawal. Withdraw in parts.",
+      "range": "This mint accepts {{min}} to {{max}} sats for each withdrawal.",
+      "minimum": "This mint accepts at least {{min}} sats for each withdrawal.",
+      "notAccepted": "This mint does not accept Lightning withdrawals.",
+      "refused": "This mint does not accept this withdrawal amount."
+    }
+  },
   "insufficientBalance": {
     "title": "Insufficient Balance",
     "scoreTitle": "Top Up Engine Score",

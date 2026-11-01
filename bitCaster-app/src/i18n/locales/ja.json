@@ -1075,6 +1075,24 @@
       "errorAmountTooLow": "トークンは {{covered}} 分です。少なくとも {{needed}} 必要です。"
     }
   },
+  "mintLimits": {
+    "deposit": {
+      "rangeInParts": "このミントへの1回の入金は{{min}}〜{{max}} satsです。分けて入金してください。",
+      "maximumInParts": "このミントへの1回の入金は{{max}} satsまでです。分けて入金してください。",
+      "range": "このミントへの1回の入金は{{min}}〜{{max}} satsです。",
+      "minimum": "このミントへの1回の入金は{{min}} sats以上です。",
+      "notAccepted": "このミントはLightningでの入金を受け付けていません。",
+      "refused": "このミントはこの入金額を受け付けていません。"
+    },
+    "withdrawal": {
+      "rangeInParts": "このミントからの1回の出金は{{min}}〜{{max}} satsです。分けて出金してください。",
+      "maximumInParts": "このミントからの1回の出金は{{max}} satsまでです。分けて出金してください。",
+      "range": "このミントからの1回の出金は{{min}}〜{{max}} satsです。",
+      "minimum": "このミントからの1回の出金は{{min}} sats以上です。",
+      "notAccepted": "このミントはLightningでの出金を受け付けていません。",
+      "refused": "このミントはこの出金額を受け付けていません。"
+    }
+  },
   "insufficientBalance": {
     "title": "残高不足",
     "scoreTitle": "Engine Score をチャージ",
