@@ -23,13 +23,20 @@ globalThis.fetch = async (input) => {
   })
   if (process.env.BITCASTER_TEST_BOOKMARK_FAIL_ENGINE === '1')
     throw new Error('Fixture engine unavailable.')
+  // Public catalogue bounds: at most 100 IDs, page_size in [1, 50], default 20.
+  // A filtered query returns one page only.
+  const rawPageSize = url.searchParams.get('page_size')
+  const pageSize = rawPageSize === null ? 20 : Number(rawPageSize)
+  if (ids.length > 100 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50)
+    return new Response(JSON.stringify({ title: 'Bad Request' }), { status: 400 })
+  const matches = ids
+    .filter((id) => id !== 'unresolved')
+    .reverse()
+    .map((conditionId) => ({ conditionId, title: `Title ${conditionId}`, state: 'open' }))
   return new Response(
     JSON.stringify({
-      markets: ids
-        .filter((id) => id !== 'unresolved')
-        .reverse()
-        .map((id) => ({ id, title: `Title ${id}`, state: 'Open' })),
-      nextCursor: null,
+      markets: matches.slice(0, pageSize),
+      nextCursor: matches.length > pageSize ? 'next-page' : null,
     }),
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   )

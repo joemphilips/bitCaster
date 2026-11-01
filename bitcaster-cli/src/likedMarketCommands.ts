@@ -1,6 +1,8 @@
 import type { Command } from 'commander'
 import { BitcasterEngineClient } from '@bitcaster-market/client-sdk/engineClient'
 
+const CATALOGUE_PAGE_IDS_MAX = 50
+
 interface LikedMarketCommandContext {
   readonly isDryRun: () => boolean
   readonly engineUrl: () => string | undefined
@@ -66,16 +68,23 @@ async function likedMarketMetadata(
     // The engine uses comma-separated IDs. Retain unsupported saved strings locally.
     if (conditionIds.some((id) => id.includes(',')))
       return { markets: [], metadataStatus: 'unavailable' }
-    // Keep the complete local set. Only each engine request has the API's 100-ID bound.
-    for (let offset = 0; offset < conditionIds.length; offset += 100) {
-      const ids = conditionIds.slice(offset, offset + 100)
+    // Keep the complete local set. The engine returns at most 50 markets in one
+    // page, so each request names at most 50 IDs and asks for that many rows.
+    for (let offset = 0; offset < conditionIds.length; offset += CATALOGUE_PAGE_IDS_MAX) {
+      const ids = conditionIds.slice(offset, offset + CATALOGUE_PAGE_IDS_MAX)
       const response = await client.queryMarkets(
-        { ids, state: 'All', pageSize: 100 },
+        { ids, state: 'All', pageSize: ids.length },
         AbortSignal.timeout(5_000),
       )
+      // A catalogue entry names its market by the wire field `conditionId`.
       for (const value of response.markets) {
-        if (value && typeof value === 'object' && 'id' in value && typeof value.id === 'string')
-          byId.set(value.id, value)
+        if (
+          value &&
+          typeof value === 'object' &&
+          'conditionId' in value &&
+          typeof value.conditionId === 'string'
+        )
+          byId.set(value.conditionId, value)
       }
     }
     return {
