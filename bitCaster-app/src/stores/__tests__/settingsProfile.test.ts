@@ -68,3 +68,25 @@ describe("saved relay selection", () => {
     ]);
   });
 });
+
+describe("profile indexer setting", () => {
+  afterEach(() => useSettingsStore.getState().setProfileIndexerEnabled(true));
+
+  it("is on by default and saves a change", () => {
+    expect(useSettingsStore.getState().profileIndexerEnabled).toBe(true);
+    useSettingsStore.getState().setProfileIndexerEnabled(false);
+    const saved = JSON.parse(localStorage.getItem("bitcaster-settings")!) as {
+      state: { profileIndexerEnabled?: boolean };
+    };
+    expect(saved.state.profileIndexerEnabled).toBe(false);
+  });
+
+  it("restores a saved off setting on reload", async () => {
+    localStorage.setItem(
+      "bitcaster-settings",
+      JSON.stringify({ version: 0, state: { profileIndexerEnabled: false } }),
+    );
+    await useSettingsStore.persist.rehydrate();
+    expect(useSettingsStore.getState().profileIndexerEnabled).toBe(false);
+  });
+});

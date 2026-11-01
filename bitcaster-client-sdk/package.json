@@ -47,6 +47,18 @@
       "types": "./dist/publicNostrProfileCache.d.ts",
       "import": "./dist/publicNostrProfileCache.js"
     },
+    "./nostrProfilePage": {
+      "types": "./dist/nostrProfilePage.d.ts",
+      "import": "./dist/nostrProfilePage.js"
+    },
+    "./primalProfileIndexer": {
+      "types": "./dist/primalProfileIndexer.d.ts",
+      "import": "./dist/primalProfileIndexer.js"
+    },
+    "./nip05Verification": {
+      "types": "./dist/nip05Verification.d.ts",
+      "import": "./dist/nip05Verification.js"
+    },
     "./outgoingCashuActivity": {
       "types": "./dist/outgoingCashuActivity.d.ts",
       "import": "./dist/outgoingCashuActivity.js"

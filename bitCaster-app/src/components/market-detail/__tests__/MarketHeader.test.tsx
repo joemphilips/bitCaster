@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { MarketHeader } from "../MarketHeader";
 import { ToastContainer } from "@/components/ui/Toast";
 import { useToastStore } from "@/stores/toast";
 import type { YesNoMarketDetail } from "@/types/market-detail";
+import { fetchPublicNostrProfile } from "@/lib/nostr";
 
 vi.mock("@/lib/nostr", () => ({
   fetchPublicNostrProfile: vi.fn().mockResolvedValue(null),
@@ -319,5 +320,47 @@ describe("MarketHeader", () => {
     );
 
     expect(screen.getByText("オラクルのNostr IDを利用できません")).toBeInTheDocument();
+  });
+
+  it("links the oracle to its profile page and keeps the copy button outside the link", async () => {
+    renderHeader(makeMarket());
+
+    const link = await screen.findByRole("link", {
+      name: new RegExp(shortCreatorNpub.replace(/\./g, "\\.")),
+    });
+    expect(link).toHaveAttribute("href", `/user/${creatorNpub}`);
+    expect(link).not.toContainElement(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
+  });
+
+  it("does not link a market without a valid oracle Nostr ID", () => {
+    renderHeader(
+      makeMarket({
+        creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
+      }),
+    );
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("loads only an http or https oracle picture and sends no referrer", async () => {
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Oracle",
+      avatar: "javascript:alert(1)",
+    });
+    const unsafe = renderHeader(makeMarket());
+    expect(await screen.findByText("Oracle", { selector: "p.font-mono" })).toBeInTheDocument();
+    expect(unsafe.container.querySelector("img")).toBeNull();
+    unsafe.unmount();
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Oracle",
+      avatar: "https://img.example/oracle.png",
+    });
+    const safe = renderHeader(makeMarket());
+    await waitFor(() =>
+      expect(safe.container.querySelector("img")).toHaveAttribute("referrerpolicy", "no-referrer"),
+    );
   });
 });

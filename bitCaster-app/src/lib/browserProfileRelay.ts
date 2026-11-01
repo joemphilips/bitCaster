@@ -12,13 +12,19 @@ interface ProfileTransportOptions {
   readonly signal?: AbortSignal;
   readonly websocketImplementation?: typeof WebSocket;
   readonly timeoutMs?: number;
+  /** Profile reads use the kind-0 bounds unless the SDK reader supplies others. */
+  readonly maxFrameBytes?: number;
+  readonly maxFrames?: number;
 }
 
-function boundedFrame(message: MessageEvent): unknown {
+function boundedFrame(
+  message: MessageEvent,
+  maxBytes = MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
+): unknown {
   if (
     typeof message.data !== "string" ||
-    message.data.length > MAX_NOSTR_PROFILE_TRANSPORT_BYTES ||
-    new TextEncoder().encode(message.data).byteLength > MAX_NOSTR_PROFILE_TRANSPORT_BYTES
+    message.data.length > maxBytes ||
+    new TextEncoder().encode(message.data).byteLength > maxBytes
   )
     throw new Error("Nostr profile relay frame is invalid.");
   return JSON.parse(message.data);
@@ -71,8 +77,8 @@ export function queryBrowserProfileRelay(
       socket.onmessage = (message) => {
         if (settled) return;
         try {
-          if (++frames > MAX_NOSTR_PROFILE_RELAY_FRAMES) throw new Error();
-          const frame = boundedFrame(message);
+          if (++frames > (options.maxFrames ?? MAX_NOSTR_PROFILE_RELAY_FRAMES)) throw new Error();
+          const frame = boundedFrame(message, options.maxFrameBytes);
           if (!Array.isArray(frame) || frame[1] !== subscription) return;
           if (frame[0] === "EVENT" && frame.length === 3) onEvent(frame[2]);
           else if (frame[0] === "EOSE" && frame.length === 2) finish(true);

@@ -144,6 +144,7 @@ export function Settings({
   onConfirmSignerBackup,
   onConfirmWalletBackup,
   onDisconnectNostr,
+  onProfileIndexerChange,
   onRetryNostrProfile,
   onLoadNostrProfileEdit,
   onSaveNostrProfileEdit,
@@ -920,6 +921,38 @@ export function Settings({
               Add Relay
             </button>
           )}
+        </div>
+
+        {/* Optional profile indexer (ADR-028 amendment 2026-11-02) */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-slate-900 dark:text-white">
+              {t("settings.profileIndexer")}
+            </p>
+            <p
+              id="profile-indexer-description"
+              className="mt-0.5 text-sm text-slate-500 dark:text-slate-400"
+            >
+              {t("settings.profileIndexerDesc")}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={nostr.profileIndexerEnabled}
+            aria-label={t("settings.profileIndexer")}
+            aria-describedby="profile-indexer-description"
+            onClick={() => onProfileIndexerChange?.(!nostr.profileIndexerEnabled)}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+              nostr.profileIndexerEnabled ? "bg-blue-600" : "bg-slate-300 dark:bg-slate-600"
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                nostr.profileIndexerEnabled ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
         </div>
       </CategoryCard>
 

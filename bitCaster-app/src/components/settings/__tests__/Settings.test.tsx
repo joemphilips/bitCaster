@@ -27,6 +27,7 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
       profile: null,
       profileFetchStatus: "idle",
       relays: [],
+      profileIndexerEnabled: true,
       ...overrides,
     },
   };
@@ -509,5 +510,33 @@ describe("Settings deferred profile editing", () => {
     await waitFor(() => expect(screen.getByTestId("nostr-profile-name")).toHaveValue("Canonical"));
     expect(load).toHaveBeenCalledOnce();
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings profile indexer", () => {
+  it("shows the indexer switch in Nostr settings and reports the requested value", () => {
+    const changes: boolean[] = [];
+    const view = render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState()}
+        onProfileIndexerChange={(enabled) => changes.push(enabled)}
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Profile indexer" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAccessibleDescription(/Primal/);
+    fireEvent.click(toggle);
+    expect(changes).toEqual([false]);
+    view.rerender(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({ profileIndexerEnabled: false })}
+      />,
+    );
+    expect(screen.getByRole("switch", { name: "Profile indexer" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
   });
 });

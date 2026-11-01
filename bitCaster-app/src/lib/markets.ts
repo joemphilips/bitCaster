@@ -165,6 +165,8 @@ export interface GetMarketsParams {
   pageSize?: number;
   /** Full-text market search query. */
   search?: string;
+  /** Lowercase hex public key of the market creator. */
+  creatorPubkey?: string;
 }
 
 export interface GetMarketsResult {
@@ -360,6 +362,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
   if (params.cursor) search.set("cursor", params.cursor);
   if (params.pageSize) search.set("page_size", String(params.pageSize));
   if (params.search?.trim()) search.set("search", params.search.trim());
+  if (params.creatorPubkey) search.set("creator_pubkey", params.creatorPubkey);
   for (const t of params.tags ?? []) search.append("tag", t);
   // ?ids= is comma-separated per the OpenAPI spec, not repeated.
   if (params.ids && params.ids.length > 0) search.set("ids", params.ids.join(","));

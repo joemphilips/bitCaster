@@ -80,6 +80,8 @@ export interface NostrSettings {
   profile: NostrProfile | null;
   profileFetchStatus: NostrProfileFetchStatus;
   relays: RelayConfig[];
+  /** Read profile statistics from the optional indexer. */
+  profileIndexerEnabled: boolean;
   profileEditorKey?: string;
 }
 
@@ -138,6 +140,7 @@ export interface SettingsProps {
   onConfirmSignerBackup?: () => void;
   onConfirmWalletBackup?: () => void;
   onDisconnectNostr?: () => void;
+  onProfileIndexerChange?: (enabled: boolean) => void;
   onRetryNostrProfile?: () => Promise<void>;
   onLoadNostrProfileEdit?: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
   onSaveNostrProfileEdit?: (

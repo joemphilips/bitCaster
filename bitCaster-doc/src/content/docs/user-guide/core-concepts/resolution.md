@@ -25,6 +25,24 @@ the result is true or that the question was clear. Choose an oracle whose
 evidence and judgment you trust. bitCaster does not replace that judgment
 with a platform trust score.
 
+### Check the oracle profile
+
+Select the oracle in the market header to open its profile page. The page
+shows what the selected Nostr relays return for this key: the banner, the
+picture, the name, the description, the follow count, and the latest notes.
+It also lists the markets created by this key. A NIP-05 address appears only
+when its domain confirms that the address belongs to this key.
+
+An optional profile indexer, the Primal cache service, adds the follower
+count and the date when the indexer first saw this key. If the indexer does
+not answer, the page does not show these values. To stop these requests,
+turn off **Profile indexer** in Nostr Settings.
+
+The browser loads the images and the NIP-05 check from the hosts that the
+profile names. The indexer and these hosts see your IP address and the
+profile that you open. A long history and real followers help you judge the
+identity. They do not prove that a result is true.
+
 ## When trading ends
 
 The market closes for new orders and funding when it accepts a valid oracle

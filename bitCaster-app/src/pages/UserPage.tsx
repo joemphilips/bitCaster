@@ -1,34 +1,426 @@
-import { useParams } from "react-router";
-import { UserCircle } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Link, useParams } from "react-router";
+import { nip19 } from "nostr-tools";
+import { BadgeCheck, Copy, Globe } from "lucide-react";
+import {
+  parseNostrPublicKey,
+  type NostrFollowCount,
+  type NostrProfilePageMetadata,
+  type NostrProfilePageRead,
+  type NostrRecentNote,
+} from "@bitcaster/client-sdk/nostrProfilePage";
+import type { NostrProfileIndexerStats } from "@bitcaster/client-sdk/primalProfileIndexer";
+import { useAbortableLoad, type Loadable } from "@/hooks/useAbortableLoad";
+import { assertNever } from "@/lib/enumDiscipline";
+import { getMarketThumbnail, getMarkets } from "@/lib/markets";
+import {
+  loadNip05Verification,
+  loadProfileFollowCount,
+  loadProfileIndexerStats,
+  loadProfilePageMetadata,
+  loadProfileRecentNotes,
+  profilePageRelayUrls,
+} from "@/lib/nostrProfilePage";
+import { useSettingsStore } from "@/stores/settings";
+import { useToastStore } from "@/stores/toast";
+import type { Market } from "@/types/market";
+
+const CREATED_MARKETS_PAGE_SIZE = 20;
+
+function formatShortNpub(npub: string): string {
+  return npub.length <= 24 ? npub : `${npub.slice(0, 12)}...${npub.slice(-8)}`;
+}
 
 export function UserPage() {
-  const { pubkey = "" } = useParams();
-  const shortPubkey = pubkey.length > 16 ? `${pubkey.slice(0, 12)}...${pubkey.slice(-8)}` : pubkey;
-
+  const { t } = useTranslation();
+  const { pubkey: routeKey = "" } = useParams();
+  const pubkey = parseNostrPublicKey(routeKey);
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <div className="max-w-3xl mx-auto px-4 py-8">
-        <div className="flex items-center gap-4 border-b border-slate-200 dark:border-slate-800 pb-6">
-          <div className="w-14 h-14 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400">
-            <UserCircle className="w-8 h-8" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">User</h1>
-            <p className="font-mono text-sm text-slate-500 dark:text-slate-400 truncate">
-              {shortPubkey}
-            </p>
-          </div>
-        </div>
-
-        <section className="py-8">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Markets
-          </h2>
-          <div className="mt-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-6 text-sm text-slate-500 dark:text-slate-400">
-            No creator markets found.
-          </div>
-        </section>
+      <div className="mx-auto max-w-3xl pb-10">
+        {pubkey ? (
+          <NostrProfileView key={pubkey} pubkey={pubkey} />
+        ) : (
+          <p className="px-4 py-8 text-sm text-slate-600 dark:text-slate-400">
+            {t("userProfile.invalidKey")}
+          </p>
+        )}
       </div>
     </div>
+  );
+}
+
+function NostrProfileView({ pubkey }: { pubkey: string }) {
+  const relayConfigs = useSettingsStore((s) => s.relays);
+  const indexerEnabled = useSettingsStore((s) => s.profileIndexerEnabled);
+  const relays = useMemo(() => profilePageRelayUrls(relayConfigs), [relayConfigs]);
+  const relayKey = `${pubkey} ${relays.join(" ")}`;
+  const metadata = useAbortableLoad(relayKey, (signal) =>
+    loadProfilePageMetadata(pubkey, relays, signal),
+  );
+  const follows = useAbortableLoad(relayKey, (signal) =>
+    loadProfileFollowCount(pubkey, relays, signal),
+  );
+  const notes = useAbortableLoad(relayKey, (signal) =>
+    loadProfileRecentNotes(pubkey, relays, signal),
+  );
+  const indexer = useAbortableLoad(`${pubkey} ${indexerEnabled}`, (signal) =>
+    loadProfileIndexerStats(pubkey, indexerEnabled, signal),
+  );
+  const markets = useAbortableLoad(pubkey, async () => {
+    const page = await getMarkets({
+      creatorPubkey: pubkey,
+      state: "All",
+      sort: "new",
+      pageSize: CREATED_MARKETS_PAGE_SIZE,
+    });
+    return page.markets;
+  });
+  return (
+    <>
+      <ProfileHeader pubkey={pubkey} metadata={metadata} follows={follows} indexer={indexer} />
+      <RecentNotes notes={notes} />
+      <CreatedMarkets markets={markets} />
+    </>
+  );
+}
+
+function ProfileHeader({
+  pubkey,
+  metadata,
+  follows,
+  indexer,
+}: {
+  pubkey: string;
+  metadata: Loadable<NostrProfilePageRead>;
+  follows: Loadable<NostrFollowCount>;
+  indexer: Loadable<NostrProfileIndexerStats | null>;
+}) {
+  const { t } = useTranslation();
+  const npub = nip19.npubEncode(pubkey);
+  const profile =
+    metadata.status === "ready" && metadata.value.status === "found"
+      ? metadata.value.metadata
+      : null;
+  const title = profile?.displayName || formatShortNpub(npub);
+  return (
+    <header aria-busy={metadata.status === "loading"}>
+      <ProfileImage
+        url={profile?.banner ?? null}
+        testId="profile-banner"
+        className="h-32 w-full object-cover sm:h-48"
+        fallback={
+          <div className="h-32 w-full bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-900 sm:h-48" />
+        }
+      />
+      <div className="px-4 sm:px-6">
+        <div className="-mt-10 h-20 w-20 overflow-hidden rounded-full border-4 border-slate-50 bg-slate-200 dark:border-slate-950 dark:bg-slate-800">
+          <ProfileImage
+            url={profile?.picture ?? null}
+            testId="profile-picture"
+            className="h-full w-full object-cover"
+            fallback={
+              <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-slate-500 dark:text-slate-400">
+                {Array.from(title)[0]?.toUpperCase()}
+              </div>
+            }
+          />
+        </div>
+        <h1 className="mt-3 text-2xl font-bold text-slate-900 [overflow-wrap:anywhere] dark:text-white">
+          {title}
+        </h1>
+        {profile?.name && profile.name !== profile.displayName && (
+          <p className="text-sm text-slate-500 [overflow-wrap:anywhere] dark:text-slate-400">
+            @{profile.name}
+          </p>
+        )}
+        {profile?.nip05 && <Nip05Address address={profile.nip05} pubkey={pubkey} />}
+        <NpubCopy npub={npub} />
+        {profile && <ProfileDetails profile={profile} />}
+        <ProfileStats follows={follows} indexer={indexer} />
+        <ProfileReadState metadata={metadata} />
+        {metadata.status === "loading" && (
+          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+            {t("userProfile.loading")}
+          </p>
+        )}
+      </div>
+    </header>
+  );
+}
+
+/** The profile owner names the image hosts. Send those hosts no referrer. */
+function ProfileImage({
+  url,
+  testId,
+  className,
+  fallback,
+}: {
+  url: string | null;
+  testId: string;
+  className: string;
+  fallback: React.ReactNode;
+}) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (!url || failedUrl === url) return <>{fallback}</>;
+  return (
+    <img
+      src={url}
+      alt=""
+      data-testid={testId}
+      className={className}
+      referrerPolicy="no-referrer"
+      decoding="async"
+      onError={() => setFailedUrl(url)}
+    />
+  );
+}
+
+/** Show the address only after its domain maps it to this key. A failed check shows nothing. */
+function Nip05Address({ address, pubkey }: { address: string; pubkey: string }) {
+  const verified = useAbortableLoad(`${pubkey} ${address}`, (signal) =>
+    loadNip05Verification(address, pubkey, signal),
+  );
+  if (verified.status !== "ready" || !verified.value) return null;
+  return (
+    <p className="mt-1 flex min-w-0 items-center gap-1 text-sm text-slate-600 dark:text-slate-300">
+      <BadgeCheck aria-hidden="true" className="h-4 w-4 shrink-0 text-blue-500" />
+      <span className="truncate">{address.startsWith("_@") ? address.slice(2) : address}</span>
+    </p>
+  );
+}
+
+function ProfileDetails({ profile }: { profile: NostrProfilePageMetadata }) {
+  return (
+    <>
+      {profile.website && (
+        <a
+          href={profile.website}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-2 inline-flex max-w-full items-center gap-1 text-sm text-blue-600 hover:underline dark:text-blue-400"
+        >
+          <Globe aria-hidden="true" className="h-4 w-4 shrink-0" />
+          <span className="truncate">{new URL(profile.website).hostname}</span>
+        </a>
+      )}
+      {profile.about && (
+        <p
+          data-testid="profile-about"
+          className="mt-3 whitespace-pre-wrap text-sm text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300"
+        >
+          {profile.about}
+        </p>
+      )}
+    </>
+  );
+}
+
+function ProfileReadState({ metadata }: { metadata: Loadable<NostrProfilePageRead> }) {
+  const { t } = useTranslation();
+  const message =
+    metadata.status === "unavailable"
+      ? t("userProfile.relaysUnavailable")
+      : metadata.status === "ready" && metadata.value.status === "not-found"
+        ? t("userProfile.notFound")
+        : null;
+  return message ? (
+    <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">{message}</p>
+  ) : null;
+}
+
+function NpubCopy({ npub }: { npub: string }) {
+  const { t } = useTranslation();
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(npub);
+      useToastStore.getState().addToast({ type: "success", message: t("userProfile.npubCopied") });
+    } catch {
+      useToastStore
+        .getState()
+        .addToast({ type: "error", message: t("userProfile.npubCopyFailed") });
+    }
+  };
+  return (
+    <div className="mt-1 flex items-center gap-1 text-slate-500 dark:text-slate-400">
+      <span className="font-mono text-xs" title={npub}>
+        {formatShortNpub(npub)}
+      </span>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={t("userProfile.copyNpub")}
+        title={t("userProfile.copyNpub")}
+        className="rounded-full p-1.5 transition-colors hover:bg-slate-200 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-white"
+      >
+        <Copy className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ProfileStats({
+  follows,
+  indexer,
+}: {
+  follows: Loadable<NostrFollowCount>;
+  indexer: Loadable<NostrProfileIndexerStats | null>;
+}) {
+  const { t, i18n } = useTranslation();
+  const counted = (count: number) => ({
+    count,
+    formattedCount: count.toLocaleString(i18n.language),
+  });
+  const stats = indexer.status === "ready" ? indexer.value : null;
+  const items: string[] = [];
+  if (follows.status === "ready" && follows.value.status === "counted")
+    items.push(t("userProfile.following", counted(follows.value.count)));
+  if (stats?.followersCount != null)
+    items.push(t("userProfile.followers", counted(stats.followersCount)));
+  if (stats?.firstActivityAt != null) {
+    const date = new Date(stats.firstActivityAt * 1000).toLocaleDateString(i18n.language, {
+      year: "numeric",
+      month: "long",
+    });
+    items.push(t("userProfile.usingKeySince", { date }));
+  }
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-400">
+      {items.map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+      {(follows.status === "loading" || indexer.status === "loading") && (
+        <span
+          aria-hidden="true"
+          data-testid={indexer.status === "loading" ? "indexer-loading" : undefined}
+          className="h-4 w-24 animate-pulse rounded bg-slate-200 dark:bg-slate-800"
+        />
+      )}
+    </div>
+  );
+}
+
+function SectionMessage({ children }: { children: React.ReactNode }) {
+  return <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">{children}</p>;
+}
+
+function ProfileSection({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id} className="mt-8 px-4 sm:px-6">
+      <h2
+        id={id}
+        className="text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400"
+      >
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function RecentNotes({ notes }: { notes: Loadable<NostrRecentNote[]> }) {
+  const { t, i18n } = useTranslation();
+  return (
+    <ProfileSection id="profile-notes-heading" title={t("userProfile.notes")}>
+      {notes.status === "loading" && <SectionMessage>{t("common.loading")}</SectionMessage>}
+      {notes.status === "unavailable" && (
+        <SectionMessage>{t("userProfile.notesUnavailable")}</SectionMessage>
+      )}
+      {notes.status === "ready" && notes.value.length === 0 && (
+        <SectionMessage>{t("userProfile.noNotes")}</SectionMessage>
+      )}
+      {notes.status === "ready" && notes.value.length > 0 && (
+        <ol className="mt-3 space-y-3">
+          {notes.value.map((note) => (
+            <li
+              key={note.id}
+              data-testid="profile-note"
+              className="rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900"
+            >
+              <time
+                dateTime={new Date(note.createdAt * 1000).toISOString()}
+                className="text-xs text-slate-500 dark:text-slate-400"
+              >
+                {new Date(note.createdAt * 1000).toLocaleString(i18n.language, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </time>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 [overflow-wrap:anywhere] dark:text-slate-200">
+                {note.content}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
+    </ProfileSection>
+  );
+}
+
+function marketStateLabel(state: Market["state"], t: (key: string) => string): string {
+  switch (state) {
+    case "open":
+      return t("marketStatus.active");
+    case "closed":
+      return t("market.closed");
+    default:
+      return assertNever(state);
+  }
+}
+
+function CreatedMarkets({ markets }: { markets: Loadable<Market[]> }) {
+  const { t } = useTranslation();
+  return (
+    <ProfileSection id="profile-markets-heading" title={t("userProfile.createdMarkets")}>
+      {markets.status === "loading" && <SectionMessage>{t("common.loading")}</SectionMessage>}
+      {markets.status === "unavailable" && (
+        <SectionMessage>{t("userProfile.createdMarketsUnavailable")}</SectionMessage>
+      )}
+      {markets.status === "ready" && markets.value.length === 0 && (
+        <SectionMessage>{t("userProfile.noCreatedMarkets")}</SectionMessage>
+      )}
+      {markets.status === "ready" && markets.value.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {markets.value.map((market) => (
+            <li key={market.id}>
+              <CreatedMarketLink market={market} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </ProfileSection>
+  );
+}
+
+function CreatedMarketLink({ market }: { market: Market }) {
+  const { t } = useTranslation();
+  const thumbnail = getMarketThumbnail(market);
+  return (
+    <Link
+      to={`/markets/${encodeURIComponent(market.id)}`}
+      className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 transition-colors hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+    >
+      {thumbnail ? (
+        <img src={thumbnail} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+      ) : (
+        <div className="h-10 w-10 shrink-0 rounded-md bg-slate-200 dark:bg-slate-800" />
+      )}
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 dark:text-white">
+        {market.title}
+      </span>
+      <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">
+        {marketStateLabel(market.state, t)}
+      </span>
+    </Link>
   );
 }

@@ -3,7 +3,7 @@ import {
   type NostrProfileQuery,
   type NostrPublicProfile,
 } from './nostrProfile.ts'
-import { normalizeNostrRelayUrls } from './nostrRelays.ts'
+import { selectPublicNostrProfileRelays } from './nostrProfilePage.ts'
 
 type AbortableProfileQuery = (
   ...args: [...Parameters<NostrProfileQuery>, AbortSignal]
@@ -63,7 +63,7 @@ export function createPublicNostrProfileCache(query: AbortableProfileQuery, now 
     ): Promise<NostrPublicProfile | null> {
       if (signal?.aborted || !/^[0-9a-f]{64}$/.test(publicKey)) return Promise.resolve(null)
       // Four authors, each with at most three relay sockets, can be active.
-      const relays = normalizeNostrRelayUrls(relayUrls).slice(0, 3)
+      const relays = selectPublicNostrProfileRelays(relayUrls)
       const key = JSON.stringify([publicKey, relays])
       const cached = entries.get(key)
       if (cached && (cached.pending || cached.expires > now())) return lease(key, cached, signal)

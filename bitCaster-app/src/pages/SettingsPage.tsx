@@ -151,6 +151,7 @@ export function SettingsPage() {
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
+      profileIndexerEnabled: settingsStore.profileIndexerEnabled,
       profileEditorKey: `${settingsStore.nostrSignerMode}:${signerRevision}:${resolveCreatorPubkey({ nostrSignerMode: settingsStore.nostrSignerMode, nsecSecret: settingsStore.nsecSecret }) ?? ""}`,
     },
   };
@@ -326,6 +327,7 @@ export function SettingsPage() {
         onCategoryToggle={settingsStore.setActiveCategory}
         onThemeChange={handleThemeChange}
         onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
+        onProfileIndexerChange={settingsStore.setProfileIndexerEnabled}
         onAddMint={handleAddMint}
         onRemoveMint={handleRemoveMint}
         onMintClick={handleMintClick}
