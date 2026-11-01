@@ -223,7 +223,7 @@ export function createNativeOracleCreationStore(
             summary.outcomes,
           )
           if (publication !== null) writeCreatedPublication(database, created, publication)
-          if (backup.authority.nonceScalarHex === null)
+          if (retiresNonce(backup, publication))
             database
               .prepare('UPDATE daemon_oracle_creations SET backup_terminal=1 WHERE creation_id=?')
               .run(created.creationId)
@@ -283,8 +283,7 @@ export function createNativeOracleCreationStore(
             summary.outcomes,
           )
           writeImportedMerge(database, current, merged)
-          if (backup.authority.nonceScalarHex === null)
-            removeImportedNonce(database, backup.conditionId)
+          if (retiresNonce(backup, merged)) removeImportedNonce(database, backup.conditionId)
           const saved = decodeImport(requireImport(database, backup.conditionId))
           if (admitted !== null) writeBackupDelivery(database, saved, admitted)
           return saved
@@ -1652,6 +1651,15 @@ function mergeBackupPublication(
   } catch {
     throw new NativeOracleStoreError('conflict')
   }
+}
+
+/**
+ * A nonce-free terminal backup can follow engine evidence alone. This profile schema retires
+ * nonce authority only after a relay copy, so an engine-only import keeps the nonce. The merged
+ * publication still saves the signed choice, so this profile cannot sign another outcome.
+ */
+function retiresNonce(backup: OracleBackupRecord, merged: OraclePublicationRecord | null): boolean {
+  return backup.authority.nonceScalarHex === null && merged?.relayPublished === true
 }
 
 function assertImportedBackupBinding(

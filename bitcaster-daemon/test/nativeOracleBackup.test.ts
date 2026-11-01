@@ -13,6 +13,7 @@ import {
   OracleBackupDeliveryError,
   type OracleBackupRecord,
   type OraclePrivateAuthority,
+  type OraclePublicationRecord,
 } from '@bitcaster-market/client-sdk'
 import { bootstrapFreshDaemonProfile, readProfileSecretAuthority } from '../src/profileBootstrap.ts'
 import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
@@ -1208,6 +1209,185 @@ test(
     })
   },
 )
+
+/**
+ * Another client signs with the same nonce from its backup. The engine verifies the attestation,
+ * but no relay acknowledges it. That client then sends its nonce-free terminal backup to a relay.
+ */
+async function engineOnlyTerminalBackup(store: Store, conditionId: string, outcome: string) {
+  const owner = (await store.readAuthorityByConditionId(conditionId))!
+  const exported = await store.exportBackup(conditionId, helper)
+  const signed = await helper.signExplicitEnum({
+    oracleSecretKeyHex: signer,
+    privateDtoJson: JSON.stringify(exported.authority),
+    chosenOutcome: outcome,
+  })
+  const publication: OraclePublicationRecord = {
+    binding: nativeOraclePublicationBinding(owner),
+    chosenOutcome: outcome,
+    attestation: {
+      attestationHex: signed.attestationHex,
+      eventJson: signed.attestationNostrEventJson,
+    },
+    relayPublished: false,
+    engineEvidence: {
+      conditionId,
+      oracleEventId: owner.eventId,
+      oraclePubkey: publicKey,
+      outcome,
+      announcementEventId: JSON.parse(owner.announcement!.announcementNostrEventJson).id,
+      attestationEventId: signed.attestationNostrEventId,
+    },
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const record = buildTerminalOracleBackupRecord({
+    binding: publication.binding,
+    announcementTlvHex: owner.announcement!.announcementTlvHex,
+    destinations: nativeOracleDestinations(owner),
+    publication,
+  })
+  assert.ok(record.authority.nonceScalarHex === null, 'Terminal backup retained nonce authority.')
+  const event = await createOracleBackupEvent({
+    record,
+    privateKey: Buffer.from(signer, 'hex'),
+    createdAt: 300,
+    validator: helper,
+  })
+  return { publication, event }
+}
+
+function restoreFromRelay(store: Store, event: { id: string }) {
+  return dispatchNativeOracleAccess(
+    {
+      method: 'market.oracle-backup-restore',
+      params: { eventId: event.id, relay: 'wss://source.example' },
+    },
+    accessPorts(store, { queryRelay: async () => ({ events: [event], complete: true }) }),
+  )
+}
+
+for (const kind of ['created', 'imported'] as const) {
+  test(
+    `real SQLite ${kind} engine-only terminal restore saves the signed choice and keeps the nonce until a relay copy`,
+    realHelper,
+    async () => {
+      await withOwner(kind, async (directory, store, conditionId) => {
+        const { publication, event } = await engineOnlyTerminalBackup(store, conditionId, 'Yes')
+        const restored = await restoreFromRelay(store, event)
+        assert.equal(restored.ok, true)
+        const saved =
+          (await createNativeOracleCreationStore(directory).readAuthorityByConditionId(
+            conditionId,
+          ))!
+        assert.equal(saved.chosenOutcome, 'Yes')
+        assert.ok(
+          saved.attestation?.attestationHex === publication.attestation!.attestationHex &&
+            saved.attestation.attestationNostrEventJson === publication.attestation!.eventJson,
+          'Restore changed the exact attestation.',
+        )
+        assert.deepEqual(saved.engineEvidence, publication.engineEvidence)
+        assert.equal(saved.relayPublished, false)
+        if (saved.kind === 'imported') assert.equal(saved.nonceAvailable, true)
+        else assert.equal(saved.backupTerminal, false)
+        const source = (await store.readBackupDelivery(conditionId))!
+        assert.deepEqual(source.knownEventIds, [event.id])
+        assert.equal(source.current, null)
+
+        const previousHome = process.env.BITCASTER_DAEMON_HOME
+        process.env.BITCASTER_DAEMON_HOME = directory
+        try {
+          const relayed: string[] = []
+          let signerReads = 0,
+            engineCalls = 0
+          const deps = {
+            nativeOraclePublicationPorts: {
+              store,
+              helper,
+              readSigner: async () => {
+                signerReads++
+                throw new Error('A saved signature must not be prepared again.')
+              },
+              publishRelay: async (bytes: string) => {
+                relayed.push(bytes)
+                return { eventId: JSON.parse(bytes).id }
+              },
+              submitEvent: async () => {
+                engineCalls++
+                throw new Error('Engine evidence is already saved.')
+              },
+              readResolution: async () => {
+                engineCalls++
+                throw new Error('Engine evidence is already saved.')
+              },
+            },
+            nativeOracleAccessPorts: accessPorts(store),
+          }
+          // `market close --outcome No` must not sign a second outcome with the same nonce.
+          await assert.rejects(
+            publishNativeMarketOutcome(deps.nativeOraclePublicationPorts, conditionId, 'No'),
+            /conflicts with the saved outcome/,
+          )
+          const refused = await dispatch(
+            { method: 'market.attest', params: { conditionId, outcome: 'No' } },
+            deps,
+          )
+          assert.equal(refused.ok, false)
+          assert.equal(signerReads, 0)
+          assert.equal(relayed.length, 0)
+          assert.ok(
+            isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), saved),
+            'A refused outcome changed the saved choice.',
+          )
+          // `market close --retry` relays the exact saved attestation. The terminal stage follows.
+          const retried = await dispatch(
+            { method: 'market.attestation-retry', params: { conditionId } },
+            deps,
+          )
+          assert.equal(retried.ok, true)
+          assert.ok(
+            relayed.length === 1 && relayed[0] === publication.attestation!.eventJson,
+            'Retry did not relay the exact saved attestation.',
+          )
+          assert.equal(signerReads, 0)
+          assert.equal(engineCalls, 0)
+          const retired = (await store.readAuthorityByConditionId(conditionId))!
+          assert.equal(retired.relayPublished, true)
+          assert.deepEqual(retired.engineEvidence, publication.engineEvidence)
+          assert.equal((await store.readBackupDelivery(conditionId))!.current!.mode, 'terminal')
+          if (retired.kind === 'imported') assert.equal(retired.nonceAvailable, false)
+          else assert.equal(retired.backupTerminal, true)
+        } finally {
+          if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+          else process.env.BITCASTER_DAEMON_HOME = previousHome
+        }
+      })
+    },
+  )
+
+  test(
+    `real SQLite ${kind} engine-only terminal restore refuses a different saved choice and keeps the nonce`,
+    realHelper,
+    async () => {
+      await withOwner(kind, async (_directory, store, conditionId) => {
+        const { event } = await engineOnlyTerminalBackup(store, conditionId, 'Yes')
+        await store.chooseAuthorityOutcome(conditionId, 'No')
+        const before = await store.readAuthorityByConditionId(conditionId)
+        const beforeDelivery = await store.readBackupDelivery(conditionId)
+        const refused = await restoreFromRelay(store, event)
+        assert.equal(refused.ok, false)
+        assert.ok(
+          isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), before),
+          'A conflicting restore changed the saved choice or nonce authority.',
+        )
+        assert.ok(
+          isDeepStrictEqual(await store.readBackupDelivery(conditionId), beforeDelivery),
+          'A conflicting restore changed backup delivery.',
+        )
+      })
+    },
+  )
+}
 
 test(
   'native RPC publishes a created outcome to relays while the engine is down and later sends the same event to it',
