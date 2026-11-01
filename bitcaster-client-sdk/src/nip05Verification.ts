@@ -22,21 +22,42 @@ export interface Nip05VerificationOptions {
 }
 
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+// The URL parser reads a host with a numeric or 0x last label as IPv4: 127.0x1 is 127.0.0.1.
+const NUMERIC_LABEL = /^(0x[0-9a-f]*|\d+)$/
+// Special-use and common private names that resolve only on a local network.
+const LOCAL_NAME = /(^|\.)(localhost|local|internal|home\.arpa|lan)$/
 
 /**
- * Accept only `name@domain` with a public DNS name. An IP literal, a port, a
- * path or a single-label host such as `localhost` is not a NIP-05 domain and
- * must not make the browser contact a local service.
+ * True for a lowercase DNS name that is not local by syntax. The name has at
+ * least two labels, the URL parser does not change it, it is not an IPv4 form,
+ * and it has no local suffix. This is a syntax check only: a public DNS name
+ * can still resolve to a private or loopback address.
+ */
+export function isPublicDnsName(host: string): boolean {
+  if (host.length > 253) return false
+  const labels = host.split('.')
+  if (labels.length < 2 || !labels.every((label) => DOMAIN_LABEL.test(label))) return false
+  const last = labels[labels.length - 1]!
+  if (NUMERIC_LABEL.test(last) || !/[a-z]/.test(last) || LOCAL_NAME.test(host)) return false
+  try {
+    return new URL(`https://${host}`).hostname === host
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Accept only `name@domain` where the domain passes `isPublicDnsName`. An IP
+ * literal, a port, a path, `localhost` or a local suffix is not a NIP-05
+ * domain. The check cannot stop a public name that resolves to a private
+ * address.
  */
 export function parseNip05Address(value: unknown): Nip05Address | null {
   if (typeof value !== 'string') return null
   const parts = value.trim().toLowerCase().split('@')
   if (parts.length !== 2) return null
   const [name, domain] = parts as [string, string]
-  if (!/^[a-z0-9._-]{1,64}$/.test(name) || domain.length > 253) return null
-  const labels = domain.split('.')
-  if (labels.length < 2 || !labels.every((label) => DOMAIN_LABEL.test(label))) return null
-  if (!/[a-z]/.test(labels[labels.length - 1]!)) return null
+  if (!/^[a-z0-9._-]{1,64}$/.test(name) || !isPublicDnsName(domain)) return null
   return { name, domain }
 }
 

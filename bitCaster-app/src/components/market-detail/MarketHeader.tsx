@@ -14,7 +14,12 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
-import { parseNostrPublicKey, safeNostrHttpUrl } from "@bitcaster/client-sdk/nostrProfilePage";
+import {
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  parseNostrPublicKey,
+  safeNostrImageUrl,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { MetricExplanation } from "@/components/shared/MetricExplanation";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
@@ -112,11 +117,17 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
   const creatorHex = parseNostrPublicKey(market.creator.id);
-  // A kind-0 picture names a host that the oracle chose. Load only http(s) without a referrer.
+  // A kind-0 picture names a host that the oracle chose. Load only https without a referrer.
   const oracleAvatar =
-    safeNostrHttpUrl(oracleProfile?.avatar) ?? safeNostrHttpUrl(market.creator.avatarUrl);
+    safeNostrImageUrl(oracleProfile?.avatar) ?? safeNostrImageUrl(market.creator.avatarUrl);
+  // An empty sanitized name has no visible character, so the label falls back to the key.
+  const oracleName = sanitizeNostrDisplayText(
+    oracleProfile?.displayName,
+    MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+    { singleLine: true },
+  );
   const creatorLabel =
-    oracleProfile?.displayName ??
+    oracleName ||
     (creatorNpub ? formatShortNpub(creatorNpub) : t("market.oraclePubkeyUnavailable"));
   const mintIconUrl = activeMint
     ? getMintIconUrl(activeMint.url, activeMint.info as Record<string, unknown> | undefined)

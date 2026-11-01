@@ -34,14 +34,19 @@ It also lists the markets created by this key. A NIP-05 address appears only
 when its domain confirms that the address belongs to this key.
 
 An optional profile indexer, the Primal cache service, adds the follower
-count and the date when the indexer first saw this key. If the indexer does
-not answer, the page does not show these values. To stop these requests,
-turn off **Profile indexer** in Nostr Settings.
+count and the date when the indexer first saw activity for this key. The page
+names Primal as the source of these values. This date does not prove the age
+of the key. If the indexer does not answer, the page does not show these
+values. To stop the indexer request, turn off **Profile indexer** in Nostr
+Settings.
 
-The browser loads the images and the NIP-05 check from the hosts that the
-profile names. The indexer and these hosts see your IP address and the
-profile that you open. A long history and real followers help you judge the
-identity. They do not prove that a result is true.
+The selected relays also receive the key of each profile that you open.
+Primal runs one of the default relays. The setting stops only the indexer
+request, not the relay requests. The browser loads the images and the NIP-05
+check from the hosts that the profile names. The relays, the indexer and
+these hosts see your IP address and the profile that you open. A long
+history and real followers help you judge the identity. They do not prove
+that a result is true.
 
 ## When trading ends
 
@@ -224,6 +229,13 @@ The message stays visible until you close it.
 A restored refusal record can lack verified losing evidence. The wallet keeps
 these conditional tokens and shows their retained amount. You cannot claim,
 sell, or remove tokens in this retained, unverified state.
+
+When a market in which you hold tokens closes with a verified result, the
+Notifications bell shows one entry for each position: "You won the bet for
+*market*! Please cash it." or "You lost your bet for *market* 😢". Select the
+entry to open that position on the Closed tab of Portfolio. A closed market
+without a verified result shows no entry until the result is verified. The
+entry appears only in the app. Clear all does not bring the same entries back.
 
 Open Portfolio and select Claim for a winning position. A claim can finish
 in parts. Each completed payout stays in your wallet if another part fails.

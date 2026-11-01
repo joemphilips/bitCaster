@@ -1,3 +1,5 @@
+import { MAX_NOSTR_CLOCK_SKEW_SECONDS } from './nostrProfilePage.ts'
+
 /**
  * Optional profile statistics from the Primal cache service. A relay does not
  * supply follower counts or a first-activity date, so this indexer is the only
@@ -15,13 +17,15 @@ export const MAX_PRIMAL_INDEXER_TOTAL_BYTES = 524_288
 export const MAX_PRIMAL_INDEXER_FRAMES = 32
 // Nostr started in 2020. An earlier first-seen time comes from a backdated event.
 export const MIN_PLAUSIBLE_NOSTR_ACTIVITY_SECONDS = 1_577_836_800
-const MAX_CLOCK_SKEW_SECONDS = 3_600
 
 export interface NostrProfileIndexerStats {
   readonly followersCount: number | null
   readonly followsCount: number | null
   readonly noteCount: number | null
-  /** Unix seconds of the first event that the indexer saw for this key. */
+  /**
+   * Unix seconds of Primal `time_joined`: the date when the indexer first saw
+   * activity for this key. It does not prove the age of the key.
+   */
   readonly firstActivityAt: number | null
 }
 
@@ -73,7 +77,7 @@ export function decodePrimalUserStats(
     firstActivityAt:
       joined !== null &&
       joined >= MIN_PLAUSIBLE_NOSTR_ACTIVITY_SECONDS &&
-      joined <= nowSeconds + MAX_CLOCK_SKEW_SECONDS
+      joined <= nowSeconds + MAX_NOSTR_CLOCK_SKEW_SECONDS
         ? joined
         : null,
   }

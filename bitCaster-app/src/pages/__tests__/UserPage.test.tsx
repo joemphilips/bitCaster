@@ -12,18 +12,20 @@ import { useSettingsStore } from "@/stores/settings";
 import { useToastStore } from "@/stores/toast";
 import type { Market } from "@/types/market";
 
-const relayBehavior = vi.hoisted(
-  () => new Map<string, ((filter: Filter, onEvent: (event: Event) => void) => void) | Error>(),
-);
-vi.mock("@/lib/browserProfileRelay", () => ({
-  queryBrowserProfileRelay: vi.fn(
-    async (url: string, filter: Filter, onEvent: (event: Event) => void) => {
+type RelayBehavior =
+  | ((filters: readonly Filter[], onEvent: (event: Event) => void) => void)
+  | Error;
+const relayBehavior = vi.hoisted(() => new Map<string, RelayBehavior>());
+const relayTransport = vi.hoisted(() => ({
+  queryBrowserProfileRelayFilters: vi.fn(
+    async (url: string, filters: readonly Filter[], onEvent: (event: Event) => void) => {
       const behavior = relayBehavior.get(url);
       if (behavior instanceof Error) throw behavior;
-      behavior?.(filter, onEvent);
+      behavior?.(filters, onEvent);
     },
   ),
 }));
+vi.mock("@/lib/browserProfileRelay", () => relayTransport);
 const readPrimalProfileStats = vi.hoisted(() =>
   vi.fn<(pubkey: string) => Promise<NostrProfileIndexerStats | null>>(),
 );
@@ -31,7 +33,11 @@ vi.mock("@bitcaster/client-sdk/primalProfileIndexer", () => ({ readPrimalProfile
 const verifyNip05Address = vi.hoisted(() =>
   vi.fn<(address: string, pubkey: string) => Promise<boolean>>(),
 );
-vi.mock("@bitcaster/client-sdk/nip05Verification", () => ({ verifyNip05Address }));
+// Keep the real host rule: the SDK URL checks import it from this module.
+vi.mock("@bitcaster/client-sdk/nip05Verification", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@bitcaster/client-sdk/nip05Verification")>()),
+  verifyNip05Address,
+}));
 const getMarkets = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/markets", () => ({
   getMarkets,
@@ -69,10 +75,13 @@ const market = {
 } as unknown as Market;
 
 function serve(url: string, events: Event[]) {
-  relayBehavior.set(url, (filter, onEvent) => {
-    for (const event of events) if (filter.kinds?.includes(event.kind)) onEvent(event);
+  relayBehavior.set(url, (filters, onEvent) => {
+    for (const event of events)
+      if (filters.some((filter) => filter.kinds?.includes(event.kind))) onEvent(event);
   });
 }
+
+const shortNpub = `${npub.slice(0, 12)}...${npub.slice(-8)}`;
 
 function renderPage(route = `/user/${npub}`) {
   return render(
@@ -135,8 +144,8 @@ describe("UserPage", () => {
     expect(website).toHaveAttribute("href", "https://alice.example/");
     expect(website).toHaveAttribute("rel", "noopener noreferrer");
     expect(await screen.findByText("2 following")).toBeInTheDocument();
-    expect(await screen.findByText("1,234 followers")).toBeInTheDocument();
-    expect(screen.getByText("Using this key since December 2022")).toBeInTheDocument();
+    expect(await screen.findByText("1,234 followers via Primal")).toBeInTheDocument();
+    expect(screen.getByText("First seen by Primal in December 2022")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getAllByTestId("profile-note").map((note) => note.textContent)).toEqual([
         expect.stringContaining("newest note"),
@@ -153,7 +162,7 @@ describe("UserPage", () => {
     );
     expect(readPrimalProfileStats).toHaveBeenCalledWith(pubkey, expect.anything());
 
-    expect(screen.getByText(`${npub.slice(0, 12)}...${npub.slice(-8)}`)).toBeInTheDocument();
+    expect(screen.getByText(shortNpub)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy Nostr ID" }));
     expect(writeText).toHaveBeenCalledWith(npub);
     expect(await screen.findByRole("status")).toHaveTextContent("Nostr ID copied.");
@@ -167,8 +176,8 @@ describe("UserPage", () => {
     expect(await screen.findByText("2 following")).toBeInTheDocument();
     await waitFor(() => expect(readPrimalProfileStats).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByTestId("indexer-loading")).not.toBeInTheDocument());
-    expect(screen.queryByText(/followers?$/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Using this key since/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/followers?/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/First seen/)).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(/indexer|Primal/i)).not.toBeInTheDocument();
     expect(await screen.findAllByTestId("profile-note")).toHaveLength(3);
@@ -181,7 +190,71 @@ describe("UserPage", () => {
 
     expect(await screen.findByText("2 following")).toBeInTheDocument();
     expect(readPrimalProfileStats).not.toHaveBeenCalled();
-    expect(screen.queryByText(/followers?$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/followers?/)).not.toBeInTheDocument();
+  });
+
+  it("reads each selected relay with one request for the profile, the follow list and the notes", async () => {
+    serve(relays[0]!, [profileEvent({ name: "alice" }), followList, ...notes]);
+    serve(relays[1]!, []);
+    renderPage();
+
+    expect(await screen.findByText("2 following")).toBeInTheDocument();
+    expect(await screen.findAllByTestId("profile-note")).toHaveLength(3);
+    expect(
+      relayTransport.queryBrowserProfileRelayFilters.mock.calls.map(([url, filters]) => [
+        url,
+        filters.map((filter) => filter.kinds),
+      ]),
+    ).toEqual(relays.map((url) => [url, [[0], [3], [1]]]));
+  });
+
+  it("drops a note dated after the Date range and still shows the page", async () => {
+    serve(relays[0]!, [
+      profileEvent({ name: "alice" }),
+      sign(1, "far future note", 9_000_000_000_000),
+      ...notes,
+    ]);
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId("profile-note")).toHaveLength(3));
+    expect(screen.getByRole("heading", { name: "alice" })).toBeInTheDocument();
+    expect(screen.queryByText("far future note")).not.toBeInTheDocument();
+  });
+
+  it("keeps a profile render failure inside the page", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      getMarkets.mockResolvedValue({
+        markets: [{ ...market, state: "paused" }],
+        nextCursor: null,
+        lastSuccessfulRefreshAt: "",
+      });
+      serve(relays[0]!, [profileEvent({ name: "alice" })]);
+      render(
+        <MemoryRouter initialEntries={[`/user/${npub}`]}>
+          <p>App shell</p>
+          <Routes>
+            <Route path="/user/:pubkey" element={<UserPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("This profile could not be shown.")).toBeInTheDocument();
+      expect(screen.getByText("App shell")).toBeInTheDocument();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("shows the short Nostr ID when the profile names have no visible character", async () => {
+    serve(relays[0]!, [profileEvent({ name: "\u3164", display_name: "\u200B\u2060" })]);
+    const { container } = renderPage();
+
+    await waitFor(() =>
+      expect(container.querySelector("header")).toHaveAttribute("aria-busy", "false"),
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(shortNpub);
+    expect(screen.queryByText(/^@/)).not.toBeInTheDocument();
   });
 
   it("shows what the answering relay returns when another selected relay fails", async () => {
@@ -204,7 +277,7 @@ describe("UserPage", () => {
       await screen.findByText("Could not read this profile from the selected relays."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/following$/)).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: `${npub.slice(0, 12)}...${npub.slice(-8)}` }));
+    expect(screen.getByRole("heading", { name: shortNpub })).toBeInTheDocument();
   });
 
   it("renders hostile profile and note content as inert text", async () => {

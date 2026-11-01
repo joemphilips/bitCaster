@@ -342,16 +342,23 @@ describe("MarketHeader", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
-  it("loads only an http or https oracle picture and sends no referrer", async () => {
-    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
-      displayName: "Oracle",
-      avatar: "javascript:alert(1)",
-    });
-    const unsafe = renderHeader(makeMarket());
-    expect(await screen.findByText("Oracle", { selector: "p.font-mono" })).toBeInTheDocument();
-    expect(unsafe.container.querySelector("img")).toBeNull();
-    unsafe.unmount();
+  it("loads only an https oracle picture on a public host and sends no referrer", async () => {
+    for (const avatar of [
+      "javascript:alert(1)",
+      "http://img.example/oracle.png",
+      "https://127.0x1/oracle.png",
+      "https://printer.local/oracle.png",
+    ]) {
+      vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+        pubkey: creatorPubkey,
+        displayName: "Oracle",
+        avatar,
+      });
+      const unsafe = renderHeader(makeMarket());
+      expect(await screen.findByText("Oracle", { selector: "p.font-mono" })).toBeInTheDocument();
+      expect(unsafe.container.querySelector("img"), avatar).toBeNull();
+      unsafe.unmount();
+    }
 
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
       pubkey: creatorPubkey,
@@ -362,5 +369,39 @@ describe("MarketHeader", () => {
     await waitFor(() =>
       expect(safe.container.querySelector("img")).toHaveAttribute("referrerpolicy", "no-referrer"),
     );
+  });
+
+  it("shows the oracle name as bounded single-line text without invisible characters", async () => {
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Evil\u202Egnp.exe\u200B\nline",
+      avatar: "",
+    });
+    const hostile = renderHeader(makeMarket());
+    expect(
+      await screen.findByText("Evilgnp.exe line", { selector: "p.font-mono" }),
+    ).toBeInTheDocument();
+    hostile.unmount();
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "n".repeat(500),
+      avatar: "",
+    });
+    const long = renderHeader(makeMarket());
+    expect(
+      await screen.findByText(`${"n".repeat(100)}…`, { selector: "p.font-mono" }),
+    ).toBeInTheDocument();
+    long.unmount();
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "\u3164\u200B\u2060",
+      avatar: "",
+    });
+    renderHeader(makeMarket());
+    expect(
+      await screen.findByText(shortCreatorNpub, { selector: "p.font-mono" }),
+    ).toBeInTheDocument();
   });
 });

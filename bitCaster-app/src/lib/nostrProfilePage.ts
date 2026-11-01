@@ -1,7 +1,5 @@
 import {
-  readNostrFollowCount,
-  readNostrProfilePageMetadata,
-  readNostrRecentNotes,
+  readNostrProfilePage,
   selectPublicNostrProfileRelays,
   type NostrBoundedRelayQuery,
 } from "@bitcaster/client-sdk/nostrProfilePage";
@@ -10,7 +8,7 @@ import {
   type NostrProfileIndexerStats,
 } from "@bitcaster/client-sdk/primalProfileIndexer";
 import { verifyNip05Address } from "@bitcaster/client-sdk/nip05Verification";
-import { queryBrowserProfileRelay } from "./browserProfileRelay";
+import { queryBrowserProfileRelayFilters } from "./browserProfileRelay";
 import { effectiveRelayUrls } from "./relayDefaults";
 import type { RelayConfig } from "@/types/settings";
 
@@ -18,13 +16,14 @@ import type { RelayConfig } from "@/types/settings";
 const PROFILE_PAGE_RELAY_TIMEOUT_MS = 5_000;
 
 function relayQuery(signal: AbortSignal): NostrBoundedRelayQuery {
-  return (url, filter, onEvent, bounds) =>
-    queryBrowserProfileRelay(url, filter, onEvent, {
+  return (url, filters, onEvent, bounds) =>
+    queryBrowserProfileRelayFilters(url, filters, onEvent, {
       requireCurrent: () => {},
       signal,
       timeoutMs: PROFILE_PAGE_RELAY_TIMEOUT_MS,
       maxFrameBytes: bounds.maxFrameBytes,
       maxFrames: bounds.maxFrames,
+      maxTotalBytes: bounds.maxTotalBytes,
     });
 }
 
@@ -33,16 +32,9 @@ export function profilePageRelayUrls(relays: RelayConfig[]): string[] {
   return selectPublicNostrProfileRelays(effectiveRelayUrls(relays));
 }
 
-export function loadProfilePageMetadata(pubkey: string, relays: string[], signal: AbortSignal) {
-  return readNostrProfilePageMetadata(pubkey, relays, relayQuery(signal));
-}
-
-export function loadProfileFollowCount(pubkey: string, relays: string[], signal: AbortSignal) {
-  return readNostrFollowCount(pubkey, relays, relayQuery(signal));
-}
-
-export function loadProfileRecentNotes(pubkey: string, relays: string[], signal: AbortSignal) {
-  return readNostrRecentNotes(pubkey, relays, relayQuery(signal));
+/** One request to each relay reads the profile, the follow list and the notes. */
+export function loadProfilePage(pubkey: string, relays: string[], signal: AbortSignal) {
+  return readNostrProfilePage(pubkey, relays, relayQuery(signal), Math.floor(Date.now() / 1000));
 }
 
 /** The setting turns the indexer off. A disabled indexer makes no request. */

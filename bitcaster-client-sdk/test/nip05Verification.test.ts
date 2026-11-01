@@ -25,6 +25,21 @@ const json = (value: unknown, init: ResponseInit = {}) =>
     ...init,
   })
 
+// The URL parser reads a numeric or 0x last label as IPv4, and these names are local by syntax.
+const localHostAddresses = [
+  '_@127.0x1',
+  '_@0x7f.0x1',
+  '_@192.168.0x1',
+  '_@10.0.0.1',
+  '_@1.0x',
+  '_@x.localhost',
+  '_@printer.local',
+  '_@db.internal',
+  '_@router.home.arpa',
+  '_@home.arpa',
+  '_@nas.lan',
+]
+
 test('address parser lowercases a valid address and rejects hosts that are not public domains', () => {
   assert.deepEqual(parseNip05Address(' Alice@Example.COM '), {
     name: 'alice',
@@ -46,6 +61,7 @@ test('address parser lowercases a valid address and rejects hosts that are not p
     'alice@example',
     `alice@${'a'.repeat(250)}.com`,
     42,
+    ...localHostAddresses,
   ])
     assert.equal(parseNip05Address(value), null, String(value).slice(0, 40))
 })
@@ -122,6 +138,8 @@ test('an invalid address, an invalid key or a cancelled read makes no request', 
   const controller = new AbortController()
   controller.abort()
   assert.equal(await verifyNip05Address('alice@localhost', pubkey, { fetch }), false)
+  for (const address of localHostAddresses)
+    assert.equal(await verifyNip05Address(address, pubkey, { fetch }), false, address)
   assert.equal(await verifyNip05Address('alice@example.com', 'AB'.repeat(32), { fetch }), false)
   assert.equal(
     await verifyNip05Address('alice@example.com', pubkey, { fetch, signal: controller.signal }),

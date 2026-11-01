@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Component, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams } from "react-router";
 import { nip19 } from "nostr-tools";
@@ -7,8 +7,7 @@ import {
   parseNostrPublicKey,
   type NostrFollowCount,
   type NostrProfilePageMetadata,
-  type NostrProfilePageRead,
-  type NostrRecentNote,
+  type NostrProfilePageSnapshot,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import type { NostrProfileIndexerStats } from "@bitcaster/client-sdk/primalProfileIndexer";
 import { useAbortableLoad, type Loadable } from "@/hooks/useAbortableLoad";
@@ -16,10 +15,8 @@ import { assertNever } from "@/lib/enumDiscipline";
 import { getMarketThumbnail, getMarkets } from "@/lib/markets";
 import {
   loadNip05Verification,
-  loadProfileFollowCount,
   loadProfileIndexerStats,
-  loadProfilePageMetadata,
-  loadProfileRecentNotes,
+  loadProfilePage,
   profilePageRelayUrls,
 } from "@/lib/nostrProfilePage";
 import { useSettingsStore } from "@/stores/settings";
@@ -32,6 +29,34 @@ function formatShortNpub(npub: string): string {
   return npub.length <= 24 ? npub : `${npub.slice(0, 12)}...${npub.slice(-8)}`;
 }
 
+/** A Date for Unix seconds, or null outside the Date range. */
+function dateFromSeconds(seconds: number): Date | null {
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** A render failure in one profile shows a local message instead of a blank app. */
+class ProfileRenderBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? <ProfileRenderFailed /> : this.props.children;
+  }
+}
+
+function ProfileRenderFailed() {
+  const { t } = useTranslation();
+  return (
+    <p className="px-4 py-8 text-sm text-slate-600 dark:text-slate-400">
+      {t("userProfile.renderFailed")}
+    </p>
+  );
+}
+
 export function UserPage() {
   const { t } = useTranslation();
   const { pubkey: routeKey = "" } = useParams();
@@ -40,7 +65,9 @@ export function UserPage() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <div className="mx-auto max-w-3xl pb-10">
         {pubkey ? (
-          <NostrProfileView key={pubkey} pubkey={pubkey} />
+          <ProfileRenderBoundary key={pubkey}>
+            <NostrProfileView pubkey={pubkey} />
+          </ProfileRenderBoundary>
         ) : (
           <p className="px-4 py-8 text-sm text-slate-600 dark:text-slate-400">
             {t("userProfile.invalidKey")}
@@ -56,15 +83,7 @@ function NostrProfileView({ pubkey }: { pubkey: string }) {
   const indexerEnabled = useSettingsStore((s) => s.profileIndexerEnabled);
   const relays = useMemo(() => profilePageRelayUrls(relayConfigs), [relayConfigs]);
   const relayKey = `${pubkey} ${relays.join(" ")}`;
-  const metadata = useAbortableLoad(relayKey, (signal) =>
-    loadProfilePageMetadata(pubkey, relays, signal),
-  );
-  const follows = useAbortableLoad(relayKey, (signal) =>
-    loadProfileFollowCount(pubkey, relays, signal),
-  );
-  const notes = useAbortableLoad(relayKey, (signal) =>
-    loadProfileRecentNotes(pubkey, relays, signal),
-  );
+  const page = useAbortableLoad(relayKey, (signal) => loadProfilePage(pubkey, relays, signal));
   const indexer = useAbortableLoad(`${pubkey} ${indexerEnabled}`, (signal) =>
     loadProfileIndexerStats(pubkey, indexerEnabled, signal),
   );
@@ -79,8 +98,8 @@ function NostrProfileView({ pubkey }: { pubkey: string }) {
   });
   return (
     <>
-      <ProfileHeader pubkey={pubkey} metadata={metadata} follows={follows} indexer={indexer} />
-      <RecentNotes notes={notes} />
+      <ProfileHeader pubkey={pubkey} page={page} indexer={indexer} />
+      <RecentNotes page={page} />
       <CreatedMarkets markets={markets} />
     </>
   );
@@ -88,24 +107,23 @@ function NostrProfileView({ pubkey }: { pubkey: string }) {
 
 function ProfileHeader({
   pubkey,
-  metadata,
-  follows,
+  page,
   indexer,
 }: {
   pubkey: string;
-  metadata: Loadable<NostrProfilePageRead>;
-  follows: Loadable<NostrFollowCount>;
+  page: Loadable<NostrProfilePageSnapshot>;
   indexer: Loadable<NostrProfileIndexerStats | null>;
 }) {
   const { t } = useTranslation();
   const npub = nip19.npubEncode(pubkey);
   const profile =
-    metadata.status === "ready" && metadata.value.status === "found"
-      ? metadata.value.metadata
+    page.status === "ready" && page.value.metadata.status === "found"
+      ? page.value.metadata.metadata
       : null;
+  // Single-line names have no invisible characters, so an empty name falls back to the key.
   const title = profile?.displayName || formatShortNpub(npub);
   return (
-    <header aria-busy={metadata.status === "loading"}>
+    <header aria-busy={page.status === "loading"}>
       <ProfileImage
         url={profile?.banner ?? null}
         testId="profile-banner"
@@ -138,9 +156,13 @@ function ProfileHeader({
         {profile?.nip05 && <Nip05Address address={profile.nip05} pubkey={pubkey} />}
         <NpubCopy npub={npub} />
         {profile && <ProfileDetails profile={profile} />}
-        <ProfileStats follows={follows} indexer={indexer} />
-        <ProfileReadState metadata={metadata} />
-        {metadata.status === "loading" && (
+        <ProfileStats
+          follows={page.status === "ready" ? page.value.follows : null}
+          loading={page.status === "loading" || indexer.status === "loading"}
+          indexer={indexer}
+        />
+        <ProfileReadState page={page} />
+        {page.status === "loading" && (
           <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
             {t("userProfile.loading")}
           </p>
@@ -217,12 +239,12 @@ function ProfileDetails({ profile }: { profile: NostrProfilePageMetadata }) {
   );
 }
 
-function ProfileReadState({ metadata }: { metadata: Loadable<NostrProfilePageRead> }) {
+function ProfileReadState({ page }: { page: Loadable<NostrProfilePageSnapshot> }) {
   const { t } = useTranslation();
   const message =
-    metadata.status === "unavailable"
+    page.status === "unavailable"
       ? t("userProfile.relaysUnavailable")
-      : metadata.status === "ready" && metadata.value.status === "not-found"
+      : page.status === "ready" && page.value.metadata.status === "not-found"
         ? t("userProfile.notFound")
         : null;
   return message ? (
@@ -261,11 +283,14 @@ function NpubCopy({ npub }: { npub: string }) {
   );
 }
 
+/** The indexer values name their source: they are not relay data. */
 function ProfileStats({
   follows,
+  loading,
   indexer,
 }: {
-  follows: Loadable<NostrFollowCount>;
+  follows: NostrFollowCount | null;
+  loading: boolean;
   indexer: Loadable<NostrProfileIndexerStats | null>;
 }) {
   const { t, i18n } = useTranslation();
@@ -275,23 +300,22 @@ function ProfileStats({
   });
   const stats = indexer.status === "ready" ? indexer.value : null;
   const items: string[] = [];
-  if (follows.status === "ready" && follows.value.status === "counted")
-    items.push(t("userProfile.following", counted(follows.value.count)));
+  if (follows?.status === "counted") items.push(t("userProfile.following", counted(follows.count)));
   if (stats?.followersCount != null)
     items.push(t("userProfile.followers", counted(stats.followersCount)));
-  if (stats?.firstActivityAt != null) {
-    const date = new Date(stats.firstActivityAt * 1000).toLocaleDateString(i18n.language, {
-      year: "numeric",
-      month: "long",
-    });
-    items.push(t("userProfile.usingKeySince", { date }));
-  }
+  const firstSeen = stats?.firstActivityAt != null ? dateFromSeconds(stats.firstActivityAt) : null;
+  if (firstSeen)
+    items.push(
+      t("userProfile.firstSeen", {
+        date: firstSeen.toLocaleDateString(i18n.language, { year: "numeric", month: "long" }),
+      }),
+    );
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-400">
       {items.map((item) => (
         <span key={item}>{item}</span>
       ))}
-      {(follows.status === "loading" || indexer.status === "loading") && (
+      {loading && (
         <span
           aria-hidden="true"
           data-testid={indexer.status === "loading" ? "indexer-loading" : undefined}
@@ -328,34 +352,27 @@ function ProfileSection({
   );
 }
 
-function RecentNotes({ notes }: { notes: Loadable<NostrRecentNote[]> }) {
-  const { t, i18n } = useTranslation();
+function RecentNotes({ page }: { page: Loadable<NostrProfilePageSnapshot> }) {
+  const { t } = useTranslation();
+  const notes = page.status === "ready" ? page.value.notes : [];
   return (
     <ProfileSection id="profile-notes-heading" title={t("userProfile.notes")}>
-      {notes.status === "loading" && <SectionMessage>{t("common.loading")}</SectionMessage>}
-      {notes.status === "unavailable" && (
+      {page.status === "loading" && <SectionMessage>{t("common.loading")}</SectionMessage>}
+      {page.status === "unavailable" && (
         <SectionMessage>{t("userProfile.notesUnavailable")}</SectionMessage>
       )}
-      {notes.status === "ready" && notes.value.length === 0 && (
+      {page.status === "ready" && notes.length === 0 && (
         <SectionMessage>{t("userProfile.noNotes")}</SectionMessage>
       )}
-      {notes.status === "ready" && notes.value.length > 0 && (
+      {notes.length > 0 && (
         <ol className="mt-3 space-y-3">
-          {notes.value.map((note) => (
+          {notes.map((note) => (
             <li
               key={note.id}
               data-testid="profile-note"
               className="rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900"
             >
-              <time
-                dateTime={new Date(note.createdAt * 1000).toISOString()}
-                className="text-xs text-slate-500 dark:text-slate-400"
-              >
-                {new Date(note.createdAt * 1000).toLocaleString(i18n.language, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                })}
-              </time>
+              <NoteTime seconds={note.createdAt} />
               <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 [overflow-wrap:anywhere] dark:text-slate-200">
                 {note.content}
               </p>
@@ -364,6 +381,18 @@ function RecentNotes({ notes }: { notes: Loadable<NostrRecentNote[]> }) {
         </ol>
       )}
     </ProfileSection>
+  );
+}
+
+/** The reader bounds note times. The check keeps an out-of-range time from failing the render. */
+function NoteTime({ seconds }: { seconds: number }) {
+  const { i18n } = useTranslation();
+  const date = dateFromSeconds(seconds);
+  if (!date) return null;
+  return (
+    <time dateTime={date.toISOString()} className="text-xs text-slate-500 dark:text-slate-400">
+      {date.toLocaleString(i18n.language, { dateStyle: "medium", timeStyle: "short" })}
+    </time>
   );
 }
 

@@ -32,6 +32,13 @@ export const MAX_NOSTR_PROFILE_RELAY_FRAMES = 64
 // Reserve space for an EVENT frame and its maximum 64-character subscription ID.
 export const MAX_NOSTR_PROFILE_EVENT_BYTES = MAX_NOSTR_PROFILE_TRANSPORT_BYTES - 128
 
+/** A relay transport rejects a read with this error when a frame is above its byte bound. */
+export class NostrRelayFrameTooLargeError extends Error {
+  constructor() {
+    super('Nostr relay frame is above the size bound.')
+  }
+}
+
 function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }

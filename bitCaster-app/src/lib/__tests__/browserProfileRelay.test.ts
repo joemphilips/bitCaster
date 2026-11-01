@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { queryBrowserProfileRelay } from "../browserProfileRelay";
+import { NostrRelayFrameTooLargeError } from "@bitcaster/client-sdk/nostrProfile";
+import { queryBrowserProfileRelay, queryBrowserProfileRelayFilters } from "../browserProfileRelay";
 
 it("does not create a socket for an already cancelled profile read", async () => {
   const controller = new AbortController();
@@ -41,7 +42,11 @@ class BoundedSocket {
   }
 }
 
-function boundedRead(bounds: { maxFrameBytes?: number; maxFrames?: number }) {
+function boundedRead(bounds: {
+  maxFrameBytes?: number;
+  maxFrames?: number;
+  maxTotalBytes?: number;
+}) {
   const events: unknown[] = [];
   const read = queryBrowserProfileRelay(
     "wss://example.com",
@@ -78,6 +83,41 @@ it("rejects a read when frames exceed the caller's frame or byte bound", async (
   large.socket.onmessage?.({
     data: JSON.stringify(["EVENT", large.socket.subscription(), { content: "x".repeat(1_000) }]),
   });
-  await expect(large.read).rejects.toThrow("incomplete");
+  await expect(large.read).rejects.toBeInstanceOf(NostrRelayFrameTooLargeError);
   expect(large.events).toHaveLength(0);
+});
+
+it("rejects a read when the frames together exceed the caller's total byte bound", async () => {
+  const total = boundedRead({ maxFrameBytes: 1_000, maxTotalBytes: 1_500 });
+  const frame = JSON.stringify([
+    "EVENT",
+    total.socket.subscription(),
+    { content: "x".repeat(700) },
+  ]);
+  total.socket.onmessage?.({ data: frame });
+  total.socket.onmessage?.({ data: frame });
+  await expect(total.read).rejects.toThrow("incomplete");
+  expect(total.events).toHaveLength(1);
+});
+
+it("sends one REQ with every filter and rejects the read when the event handler throws", async () => {
+  const filters = [{ kinds: [0] }, { kinds: [3] }, { kinds: [1], limit: 10 }];
+  const read = queryBrowserProfileRelayFilters(
+    "wss://example.com",
+    filters,
+    () => {
+      throw new Error("filter bound");
+    },
+    {
+      requireCurrent: () => {},
+      websocketImplementation: BoundedSocket as unknown as typeof WebSocket,
+    },
+  );
+  const socket = BoundedSocket.last!;
+  socket.open();
+  const [verb, subscription, ...sent] = JSON.parse(socket.sent[0]!) as unknown[];
+  expect(verb).toBe("REQ");
+  expect(sent).toEqual(filters);
+  socket.onmessage?.({ data: JSON.stringify(["EVENT", subscription, { kind: 1 }]) });
+  await expect(read).rejects.toThrow("incomplete");
 });

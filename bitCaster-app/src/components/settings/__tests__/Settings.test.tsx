@@ -526,6 +526,8 @@ describe("Settings profile indexer", () => {
     const toggle = screen.getByRole("switch", { name: "Profile indexer" });
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(toggle).toHaveAccessibleDescription(/Primal/);
+    // The setting stops only the indexer request. The relays still receive the viewed key.
+    expect(toggle).toHaveAccessibleDescription(/selected relays/);
     fireEvent.click(toggle);
     expect(changes).toEqual([false]);
     view.rerender(

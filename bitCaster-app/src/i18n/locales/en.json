@@ -549,9 +549,9 @@
     "npubCopied": "Nostr ID copied.",
     "npubCopyFailed": "Could not copy the Nostr ID.",
     "following": "{{formattedCount}} following",
-    "followers_one": "{{formattedCount}} follower",
-    "followers_other": "{{formattedCount}} followers",
-    "usingKeySince": "Using this key since {{date}}",
+    "followers_one": "{{formattedCount}} follower via Primal",
+    "followers_other": "{{formattedCount}} followers via Primal",
+    "firstSeen": "First seen by Primal in {{date}}",
     "notFound": "No profile found on the selected relays.",
     "relaysUnavailable": "Could not read this profile from the selected relays.",
     "notes": "Notes",
@@ -559,7 +559,8 @@
     "notesUnavailable": "Could not read notes from the selected relays.",
     "createdMarkets": "Markets created by this key",
     "noCreatedMarkets": "This key has not created a market.",
-    "createdMarketsUnavailable": "Could not load the markets created by this key."
+    "createdMarketsUnavailable": "Could not load the markets created by this key.",
+    "renderFailed": "This profile could not be shown."
   },
   "marketStatus": {
     "active": "Active",
@@ -636,7 +637,7 @@
     "notificationsBlocked": "Notifications are blocked in your browser settings.",
     "notificationsUnsupported": "Your browser does not support notifications.",
     "profileIndexer": "Profile indexer",
-    "profileIndexerDesc": "Profile pages show follower counts and the first activity date from Primal. Primal sees your IP address and the profiles you open.",
+    "profileIndexerDesc": "Profile pages show follower counts and the first activity date from the Primal indexer. The indexer sees your IP address and the profiles that you open. Turning this off stops only the indexer request: the selected relays also receive the key of each profile that you open, and Primal runs one of the default relays.",
     "pageLoading": "Loading Settings…",
     "pageLoadFailed": "Settings could not load. Retry to continue.",
     "pageLoadRetry": "Retry loading Settings",
@@ -1059,7 +1060,9 @@
     "rejectedCapacity": "Order rejected because the order book reached capacity on {{market}}",
     "failed": "Order failed on {{market}}",
     "marketClosed": "Market closed: {{market}}",
-    "marketClosedTitle": "A market you follow has closed"
+    "marketClosedTitle": "A market you follow has closed",
+    "positionWon": "You won the bet for {{market}}! Please cash it.",
+    "positionLost": "You lost your bet for {{market}} 😢"
   },
   "topUp": {
     "title": "Top Up Wallet",

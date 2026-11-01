@@ -545,8 +545,8 @@
     "npubCopied": "Nostr IDをコピーしました。",
     "npubCopyFailed": "Nostr IDをコピーできませんでした。",
     "following": "フォロー {{formattedCount}}",
-    "followers_other": "フォロワー {{formattedCount}}",
-    "usingKeySince": "{{date}}からこの鍵を使用",
+    "followers_other": "フォロワー {{formattedCount}}（Primal経由）",
+    "firstSeen": "Primalの初回確認: {{date}}",
     "notFound": "選択したリレーにプロフィールがありません。",
     "relaysUnavailable": "選択したリレーからプロフィールを読み込めませんでした。",
     "notes": "ノート",
@@ -554,7 +554,8 @@
     "notesUnavailable": "選択したリレーからノートを読み込めませんでした。",
     "createdMarkets": "この鍵で作成されたマーケット",
     "noCreatedMarkets": "この鍵で作成されたマーケットはありません。",
-    "createdMarketsUnavailable": "この鍵で作成されたマーケットを読み込めませんでした。"
+    "createdMarketsUnavailable": "この鍵で作成されたマーケットを読み込めませんでした。",
+    "renderFailed": "このプロフィールを表示できませんでした。"
   },
   "marketStatus": {
     "active": "アクティブ",
@@ -631,7 +632,7 @@
     "notificationsBlocked": "ブラウザーの設定で通知がブロックされています。",
     "notificationsUnsupported": "お使いのブラウザーは通知に対応していません。",
     "profileIndexer": "プロフィールインデクサー",
-    "profileIndexerDesc": "プロフィールページに、Primalから取得したフォロワー数と最初の活動日を表示します。PrimalにはあなたのIPアドレスと、開いたプロフィールが伝わります。",
+    "profileIndexerDesc": "プロフィールページに、Primalのインデクサーから取得したフォロワー数と最初の活動日を表示します。インデクサーにはあなたのIPアドレスと、開いたプロフィールが伝わります。オフにして止まるのはインデクサーへのリクエストだけです。選択したリレーにも開いたプロフィールの鍵が伝わり、既定のリレーの1つはPrimalが運営しています。",
     "pageLoading": "設定画面を読み込み中…",
     "pageLoadFailed": "設定画面を読み込めませんでした。再試行してください。",
     "pageLoadRetry": "設定画面の読み込みを再試行",
@@ -1054,7 +1055,9 @@
     "rejectedCapacity": "{{market}} の注文はオーダーブックの容量上限により拒否されました",
     "failed": "{{market}} の注文が失敗しました",
     "marketClosed": "マーケットがクローズしました: {{market}}",
-    "marketClosedTitle": "フォロー中のマーケットがクローズしました"
+    "marketClosedTitle": "フォロー中のマーケットがクローズしました",
+    "positionWon": "「{{market}}」の予想が当たりました！換金してください。",
+    "positionLost": "「{{market}}」の予想は外れました 😢"
   },
   "topUp": {
     "title": "ウォレットをチャージ",
