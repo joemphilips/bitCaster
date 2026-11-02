@@ -102,9 +102,14 @@ capability の復旧が成功したという理由だけで注文を送信しな
 | 409 | `order-market-closed` | 送信中に市場が閉鎖されました。 |
 | 503 | `order-admission-unavailable` | 注文受付を一時的に利用できません。 |
 | 503 | `order-processing-unavailable` | 注文処理を一時的に利用できません。 |
+| 503 | `order-quotes-refreshing` | 提示価格の準備ができていません。注文は受け付け前に拒否されました。 |
 
 アプリケーションの `409` で再試行できるのは `order-book-conflict` だけです。
-すべての競合に同じ規則を適用しないでください。SDK は `403` と `503` に対して元の操作を保持します。
+すべての競合に同じ規則を適用しないでください。
+自動で再試行できる `503` は `order-quotes-refreshing` だけです。
+これは、たとえばサービスの起動直後に返ることがあります。
+[気配値の更新を待つ](/ja/technical/architecture/trading-model/#気配値の更新を待つ)の上限内で、同一のリクエストを再試行してください。
+`order-admission-unavailable` と `order-processing-unavailable` では、この再試行を行わないでください。SDK は `403` と `503` に対して元の操作を保持します。
 エラーは返金完了の証拠でも、ウォレット記録を削除する許可でもありません。
 受付済みリクエストの同一再送には、以前の受付結果を返します。
 存在しない capability と他のユーザーの capability は同じ応答になります。

@@ -111,9 +111,15 @@ is `/errors/` followed by the `code`. Use the code, not the message wording.
 | 409 | `order-market-closed` | The market closed during submission. |
 | 503 | `order-admission-unavailable` | Order admission is temporarily unavailable. |
 | 503 | `order-processing-unavailable` | Order processing is temporarily unavailable. |
+| 503 | `order-quotes-refreshing` | Quotes are not ready. The order was refused before acceptance. |
 
 Only `order-book-conflict` is the retryable application `409`. Do not apply
-that rule to every conflict. The SDK retains the original operation for `403`
+that rule to every conflict. The only automatically retryable `503` is
+`order-quotes-refreshing`. It can occur, for example, shortly after a service
+start. Retry the identical request within the limits in
+[Waiting for fresh quotes](/technical/architecture/trading-model/#waiting-for-fresh-quotes).
+`order-admission-unavailable` and `order-processing-unavailable` do not permit
+this retry. The SDK retains the original operation for `403`
 and `503` responses. An error does not prove that a refund is complete or
 authorize deletion of wallet records. An exact accepted replay returns the
 prior admission result. Missing and foreign capabilities have the same response.
