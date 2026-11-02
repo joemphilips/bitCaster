@@ -1,4 +1,5 @@
 import { ChevronLeft } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface NumpadProps {
   onPress?: (key: string) => void;
@@ -12,6 +13,7 @@ const KEYS = [
 ];
 
 export function Numpad({ onPress }: NumpadProps) {
+  const { t } = useTranslation();
   return (
     <div className="grid grid-cols-3 gap-1 px-8">
       {KEYS.flat().map((key, i) => {
@@ -24,6 +26,7 @@ export function Numpad({ onPress }: NumpadProps) {
             <button
               key={i}
               onClick={() => onPress?.("backspace")}
+              aria-label={t("deposit.deleteDigit")}
               className="flex items-center justify-center h-14 rounded-lg text-white hover:bg-slate-800 active:bg-slate-700 transition-colors"
             >
               <ChevronLeft className="w-6 h-6" />

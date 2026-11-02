@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { X, Bitcoin } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { MintInfo } from "@/types/deposit-withdraw";
 import { MintSelector } from "./MintSelector";
 import { AmountDisplay } from "./AmountDisplay";
@@ -38,6 +39,7 @@ export function DepositLightning({
   onCreateInvoice,
   onClose,
 }: DepositLightningProps) {
+  const { t } = useTranslation();
   const walletBackup = useWalletBackupPresentation();
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
@@ -45,11 +47,12 @@ export function DepositLightning({
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={() => onClose?.()}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Deposit Lightning</h2>
+        <h2 className="text-lg font-semibold text-white">{t("deposit.depositLightning")}</h2>
         <div className="p-1.5 text-slate-400">
           <Bitcoin className="w-5 h-5" />
         </div>
@@ -103,7 +106,7 @@ export function DepositLightning({
               }
               className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
             >
-              Create Invoice
+              {t("deposit.createInvoice")}
             </button>
           </div>
         </div>

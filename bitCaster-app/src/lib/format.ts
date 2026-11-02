@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+
 /** Format sats with ₿ prefix. Abbreviates large values. */
 export function formatBtc(sats: number): string {
   const abs = Math.abs(sats);
@@ -11,22 +13,26 @@ export function formatBalance(sats?: number): string {
   return formatBtc(sats);
 }
 
-/** Short relative-time label ("Just now", "5m ago", "2h ago"). Falls back to a
- *  localized "Mon DD" date after a week. Accepts an ISO string, unix ms, or
- *  Date — callers pick whichever form they already have. */
+/** Short relative-time label in the active language ("Just now", "5m ago",
+ *  "2h ago"). Falls back to a "Mon DD" date after a week. Accepts an ISO
+ *  string, unix ms, or Date — callers pick whichever form they already have.
+ *  The caller re-renders on a language change through `useTranslation`. */
 export function formatTimeAgo(timestamp: string | number | Date): string {
   const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
   const diff = Date.now() - date.getTime();
-  if (!Number.isFinite(diff)) return "recently";
+  if (!Number.isFinite(diff)) return i18n.t("relativeTime.unknown");
 
   const minutes = Math.floor(diff / (1000 * 60));
   const hours = Math.floor(diff / (1000 * 60 * 60));
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
 
-  if (minutes < 1) return "Just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
+  if (minutes < 1) return i18n.t("relativeTime.justNow");
+  if (minutes < 60) return i18n.t("relativeTime.minutesAgo", { minutes });
+  if (hours < 24) return i18n.t("relativeTime.hoursAgo", { hours });
+  if (days < 7) return i18n.t("relativeTime.daysAgo", { days });
 
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return date.toLocaleDateString(i18n.resolvedLanguage ?? "en", {
+    month: "short",
+    day: "numeric",
+  });
 }

@@ -91,6 +91,10 @@ export function DepositStep({
   onCredited,
 }: DepositStepProps) {
   const { t } = useTranslation();
+  // A language change replaces `t`. It must not restart the funding head read,
+  // because that read resets the payment state and the success screen.
+  const tRef = useRef(t);
+  tRef.current = t;
   const navigate = useNavigate();
   const [fundingAmountSats, setFundingAmountSats] = useState("");
   const [stage, setStage] = useState<"created" | "funding">(
@@ -194,7 +198,9 @@ export function DepositStep({
         setHeadReady(true);
       } catch (err) {
         if (!cancelled && current === generation.current) {
-          setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
+          setError(
+            err instanceof Error ? err.message : tRef.current("marketCreation.ecashSubmitError"),
+          );
         }
       } finally {
         if (!cancelled && current === generation.current) setFundingBusy(false);
@@ -213,7 +219,6 @@ export function DepositStep({
     divisibility,
     applyFundingResult,
     headReadRevision,
-    t,
   ]);
 
   useEffect(() => {

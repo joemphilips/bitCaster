@@ -72,6 +72,29 @@ describe("public profile card and editor", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it("shows the own kind 0 name and description without bidi controls", () => {
+    const rlo = "\u202E";
+    render(
+      <NostrProfilePanel
+        profile={{
+          ...profile,
+          displayName: `Aki ${rlo}arumakaN ${"x".repeat(120)}`,
+          bio: `Bitcoin ${rlo}researcher.\nIndependent forecasts.`,
+        }}
+        status="found"
+        retry={vi.fn()}
+        retrying={false}
+      />,
+    );
+
+    const card = screen.getByTestId("identity-profile");
+    expect(card.textContent).not.toContain(rlo);
+    const name = screen.getByRole("heading", { level: 3 });
+    expect(name.textContent).toMatch(/^Aki arumakaN x+…$/);
+    expect(Array.from(name.textContent ?? "")).toHaveLength(101);
+    expect(card).toHaveTextContent("Bitcoin researcher. Independent forecasts.");
+  });
+
   it("discards an idle draft on Cancel and opens fresh metadata next time", async () => {
     const { save } = panel();
     await edit();

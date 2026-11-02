@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { X, Bitcoin, ScanLine } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { MintInfo } from "@/types/deposit-withdraw";
 import { MintSelector } from "./MintSelector";
 
@@ -29,17 +30,19 @@ export function PayLightning({
   onScanQR,
   onClose,
 }: PayLightningProps) {
+  const { t } = useTranslation();
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={() => onClose?.()}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Pay Lightning</h2>
+        <h2 className="text-lg font-semibold text-white">{t("deposit.payLightning")}</h2>
         <div className="p-1.5 text-slate-400">
           <Bitcoin className="w-5 h-5" />
         </div>
@@ -64,7 +67,7 @@ export function PayLightning({
               <textarea
                 value={lightningInput}
                 onChange={(e) => onLightningInputChange?.(e.target.value)}
-                placeholder="Lightning address or invoice"
+                placeholder={t("deposit.lightningAddressOrInvoice")}
                 rows={3}
                 className="w-full bg-transparent text-white placeholder-slate-500 text-sm resize-none focus:outline-none"
               />
@@ -73,7 +76,7 @@ export function PayLightning({
                   onClick={() => onPaste?.()}
                   className="text-sm font-semibold text-white hover:text-slate-300 transition-colors"
                 >
-                  Paste
+                  {t("common.paste")}
                 </button>
               </div>
             </div>
@@ -98,8 +101,8 @@ export function PayLightning({
                 <ScanLine className="w-5 h-5 text-slate-300" />
               </div>
               <div className="text-left">
-                <div className="text-sm font-semibold text-white">Scan QR Code</div>
-                <div className="text-xs text-slate-400">Tap to scan an address</div>
+                <div className="text-sm font-semibold text-white">{t("deposit.scanQrCode")}</div>
+                <div className="text-xs text-slate-400">{t("deposit.tapToScan")}</div>
               </div>
             </button>
           </div>

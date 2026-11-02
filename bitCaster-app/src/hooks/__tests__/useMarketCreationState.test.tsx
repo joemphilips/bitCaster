@@ -682,6 +682,28 @@ describe("preparation-independent draft image", () => {
     retain.mockRestore();
   });
 
+  it("keeps the size error of a rejected image through a language change", async () => {
+    const result = await setupDraftForSubmission();
+    const oversized = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", {
+      type: "image/png",
+    });
+    await act(async () => result.current.onThumbnailUpload(oversized));
+    await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+    expect(result.current.thumbnailError).toBe(i18n.t("marketCreation.imageRetentionInvalid"));
+
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+      await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
+      expect(result.current.thumbnailError).toBe(
+        i18n.t("marketCreation.imageRetentionInvalid", { lng: "ja" }),
+      );
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("does not let delayed cleanup failure block a newer retained image", async () => {
     const result = await setupDraftForSubmission();
     await act(async () =>

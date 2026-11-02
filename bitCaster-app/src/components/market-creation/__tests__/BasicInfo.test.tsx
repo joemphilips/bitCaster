@@ -156,7 +156,7 @@ describe("thumbnail retention controls", () => {
     expect(screen.queryByText(/MiB/)).not.toBeInTheDocument();
     expect(upload).not.toHaveAttribute("aria-describedby");
 
-    const message = "Select a nonempty JPG, PNG, or WebP image no larger than 5 MiB.";
+    const message = "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
     view.rerender(<BasicInfo {...props} thumbnailError={message} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(message);

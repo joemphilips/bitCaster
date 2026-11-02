@@ -493,6 +493,65 @@ describe("DepositStep", () => {
     expect(onCredited).toHaveBeenCalledOnce();
   });
 
+  it("keeps the success screen and its countdown through a language change", async () => {
+    executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
+      progress: "credited",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    vi.useFakeTimers();
+    renderStep();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Attract Traders" })));
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), { target: { value: "100" } });
+    await act(async () => fireEvent.click(screen.getByTestId("confirm-amm-funding")));
+    expect(screen.getByTestId("amm-funding-success")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2_000));
+
+    await act(async () => {
+      await i18n.changeLanguage("ja");
+    });
+
+    // A language change must not reread the funding head or offer a second payment.
+    expect(screen.getByTestId("amm-funding-success")).toHaveTextContent(
+      "マーケットメイカーへの資金提供が完了しました。",
+    );
+    expect(screen.queryByTestId("confirm-amm-funding")).not.toBeInTheDocument();
+    expect(readBrowserMarketFundingHeadId).toHaveBeenCalledOnce();
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledOnce();
+    act(() => vi.advanceTimersByTime(2_999));
+    expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+  });
+
+  it("keeps a pending detail payment and its automatic resume through a language change", async () => {
+    const transfer = { transferId: "payment-1", requestedAmount: "100000" };
+    executeBrowserMarketFundingDelivery
+      .mockResolvedValueOnce({ progress: "pending", transfer })
+      .mockResolvedValueOnce({ progress: "credited", transfer });
+    vi.useFakeTimers();
+    renderStep({ presentation: "detail" });
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), { target: { value: "100" } });
+    await act(async () => fireEvent.click(screen.getByTestId("confirm-amm-funding")));
+    expect(screen.getByText("Awaiting payment…")).toBeInTheDocument();
+
+    await act(async () => {
+      await i18n.changeLanguage("ja");
+    });
+
+    expect(readBrowserMarketFundingHeadId).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("amm-funding-custom-budget")).toBeDisabled();
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(2);
+    expect(executeBrowserMarketFundingDelivery.mock.calls[1]![0].attempt).toEqual({
+      kind: "resume",
+      transferId: "payment-1",
+    });
+    expect(screen.getByText("マーケットメイカーへの資金提供が完了しました。")).toBeInTheDocument();
+  });
+
   it.each(["unmount", "wallet change"])("cleans up the success countdown on %s", async (change) => {
     executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
       progress: "credited",

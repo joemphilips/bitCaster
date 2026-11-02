@@ -106,7 +106,4 @@ export interface DepositWithdrawProps {
 
   /** Called when user closes the entire modal */
   onClose?: () => void;
-
-  /** Called when user taps fullscreen toggle */
-  onToggleFullscreen?: () => void;
 }

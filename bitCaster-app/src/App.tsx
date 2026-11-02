@@ -46,6 +46,10 @@ import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
+import {
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
@@ -97,7 +101,11 @@ export function ShellRoutes({
   ];
 
   const user = {
-    name: nostrProfile?.displayName ?? "Anon",
+    // The own kind 0 name is untrusted relay text, as on the profile page.
+    name:
+      sanitizeNostrDisplayText(nostrProfile?.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
+        singleLine: true,
+      }) || "Anon",
     avatarUrl: nostrProfile?.avatar ?? undefined,
     balance: totalBalance,
   };

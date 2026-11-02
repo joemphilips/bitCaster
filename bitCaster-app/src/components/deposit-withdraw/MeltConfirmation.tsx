@@ -1,4 +1,5 @@
 import { X, Zap, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface MeltConfirmationProps {
   amountSats: number;
@@ -17,6 +18,7 @@ export function MeltConfirmation({
   onConfirm,
   onClose,
 }: MeltConfirmationProps) {
+  const { t } = useTranslation();
   const total = amountSats + feeSats;
 
   return (
@@ -26,11 +28,12 @@ export function MeltConfirmation({
         <button
           onClick={() => onClose?.()}
           disabled={isPaying}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-40"
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Confirm Payment</h2>
+        <h2 className="text-lg font-semibold text-white">{t("deposit.confirmPayment")}</h2>
         <div className="p-1.5 text-slate-400">
           <Zap className="w-5 h-5" />
         </div>
@@ -46,15 +49,15 @@ export function MeltConfirmation({
         {/* Amount breakdown */}
         <div className="mt-8 space-y-4">
           <div className="flex justify-between items-center">
-            <span className="text-sm text-slate-400">Invoice amount</span>
+            <span className="text-sm text-slate-400">{t("deposit.invoiceAmount")}</span>
             <span className="text-sm font-mono text-white">₿{amountSats.toLocaleString()}</span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-sm text-slate-400">Network fee (estimate)</span>
+            <span className="text-sm text-slate-400">{t("deposit.networkFee")}</span>
             <span className="text-sm font-mono text-white">₿{feeSats.toLocaleString()}</span>
           </div>
           <div className="border-t border-slate-700 pt-4 flex justify-between items-center">
-            <span className="text-base font-semibold text-white">Total</span>
+            <span className="text-base font-semibold text-white">{t("deposit.total")}</span>
             <span className="text-base font-bold font-mono text-white">
               ₿{total.toLocaleString()}
             </span>
@@ -74,10 +77,10 @@ export function MeltConfirmation({
             {isPaying ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                Paying...
+                {t("deposit.paying")}
               </>
             ) : (
-              "Pay"
+              t("common.pay")
             )}
           </button>
         </div>

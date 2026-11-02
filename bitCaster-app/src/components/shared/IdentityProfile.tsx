@@ -3,6 +3,11 @@ import { Loader2, UserCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { NostrProfileFetchStatus } from "@/types/settings";
+import {
+  MAX_NOSTR_PROFILE_ABOUT_CHARACTERS,
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
 
 export interface IdentityProfileData {
   displayName: string;
@@ -22,7 +27,12 @@ export function IdentityProfile({
 }) {
   const { t } = useTranslation();
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
-  const name = profile.displayName.trim() || t("settings.profileAnonymous");
+  // Kind 0 text is untrusted relay text, as on the profile page.
+  const name =
+    sanitizeNostrDisplayText(profile.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
+      singleLine: true,
+    }) || t("settings.profileAnonymous");
+  const bio = sanitizeNostrDisplayText(profile.bio, MAX_NOSTR_PROFILE_ABOUT_CHARACTERS);
   const [dismissedReadError, setDismissedReadError] = useState(false);
   useEffect(() => {
     if (status !== "unavailable") setDismissedReadError(false);
@@ -57,9 +67,9 @@ export function IdentityProfile({
           </h3>
           {action}
         </div>
-        {profile.bio && (
+        {bio && (
           <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600 dark:text-slate-300 [overflow-wrap:anywhere]">
-            {profile.bio}
+            {bio}
           </p>
         )}
         {(loading || unavailable || absent) && (

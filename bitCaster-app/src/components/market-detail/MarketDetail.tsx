@@ -14,6 +14,7 @@ import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 import { deriveExecutableOrderBook } from "./orderBookViewModel";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { TRADE_COMMENT_MAX_LENGTH } from "@bitcaster/client-sdk/tradeComment";
 
 function formatNumericPrice(value: number, unit: string, precision: number): string {
   const safePrecision = Number.isFinite(precision)
@@ -144,6 +145,9 @@ export function MarketDetail({
   const backingBlockReason =
     tradeFeasibility?.reason ?? (tradeSide === "Sell" ? "outcome-tokens" : "funds");
   const buyNeedsTopUp = backingBlocked && backingBlockReason === "funds";
+  // Same rule as the trading panel: the order carries the trimmed comment, and
+  // the panel shows the error next to the field.
+  const tradeCommentTooLong = (tradeComment ?? "").trim().length > TRADE_COMMENT_MAX_LENGTH;
 
   // Get outcome-specific data for categorical markets
   const outcomePriceHistories =
@@ -451,6 +455,7 @@ export function MarketDetail({
               </button>
               <button
                 onClick={() => {
+                  if (tradeCommentTooLong) return;
                   if (!walletReady) {
                     onWalletRequired?.();
                     return;
@@ -463,6 +468,7 @@ export function MarketDetail({
                 }}
                 disabled={
                   isTradeSubmitting ||
+                  tradeCommentTooLong ||
                   (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
                   (walletReady && !buyNeedsTopUp && previewNeedsAttention) ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))

@@ -45,6 +45,7 @@ export function InvoiceDisplay({
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={() => onClose?.()}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
@@ -117,6 +118,7 @@ export function InvoiceDisplay({
             </span>
             <button
               onClick={handleCopy}
+              aria-label={t("common.copy")}
               className="flex-shrink-0 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
             >
               {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}

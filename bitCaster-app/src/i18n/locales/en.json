@@ -711,6 +711,13 @@
     "sendEcash": "Send Ecash",
     "payLightning": "Pay Lightning",
     "createInvoice": "Create Invoice",
+    "depositEcash": "Deposit Ecash",
+    "paymentRequest": "Payment Request",
+    "selectMint": "Select Mint",
+    "mintAvailable": "{{amount}} available",
+    "deleteDigit": "Delete last digit",
+    "paying": "Paying...",
+    "paymentRequestHint": "Share this request with the sender. They can pay it from any Cashu wallet.",
     "lightningInvoice": "Lightning Invoice",
     "waitingForPayment": "Waiting for payment...",
     "awaitingPaymentExpires": "Awaiting payment (expires in {{remaining}})",
@@ -928,7 +935,7 @@
     "statusPollError": "Status poll failed",
     "imageRetentionMissing": "The selected image is missing from this browser. Select it again or remove it before continuing.",
     "imageRetentionFailed": "The image could not be saved in this browser. Enable browser storage and select the image again, or remove it before continuing.",
-    "imageRetentionInvalid": "Select a nonempty JPG, PNG, or WebP image no larger than 5 MiB.",
+    "imageRetentionInvalid": "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.",
     "creationImageMismatch": "The registered market image does not match this saved creation. Keep this creation and its browser data. Do not pay again or create a replacement. Automatic image repair is not available."
   },
   "filter": {
@@ -1050,6 +1057,7 @@
   },
   "notification": {
     "empty": "No notifications yet.",
+    "close": "Close notifications",
     "accepted": "Order accepted on {{market}}",
     "matched": "Order matched: {{amount}} reserved on {{market}}",
     "filled": "Order filled: {{amount}} on {{market}}",
@@ -1143,5 +1151,12 @@
     "previous": "Previous page",
     "unavailable": "Original oracle metadata is unavailable. Restore its backup before preparing a new backup."
   },
-  "betaNotice": "Beta: this service uses real funds and has limited capacity."
+  "betaNotice": "Beta: this service uses real funds and has limited capacity.",
+  "relativeTime": {
+    "justNow": "Just now",
+    "minutesAgo": "{{minutes}}m ago",
+    "hoursAgo": "{{hours}}h ago",
+    "daysAgo": "{{days}}d ago",
+    "unknown": "recently"
+  }
 }

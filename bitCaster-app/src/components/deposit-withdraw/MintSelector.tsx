@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, Check, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { MintInfo } from "@/types/deposit-withdraw";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { normalizeUrl } from "@/lib/url";
@@ -14,6 +15,7 @@ interface MintSelectorProps {
 }
 
 export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelectorProps) {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0];
   if (!selected) return null;
@@ -48,7 +50,7 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
         <div className="flex-1 text-left">
           <div className="text-sm font-semibold text-white">{selected.name}</div>
           <div className="text-xs text-slate-400 font-mono">
-            {formatAmount(selected.balanceSats, "sat")} available
+            {t("deposit.mintAvailable", { amount: formatAmount(selected.balanceSats, "sat") })}
           </div>
         </div>
 
@@ -58,7 +60,7 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
 
       {/* Bottom sheet modal */}
       {isOpen && (
-        <NativeDialog ariaLabel="Select Mint" onDismiss={() => setIsOpen(false)}>
+        <NativeDialog ariaLabel={t("deposit.selectMint")} onDismiss={() => setIsOpen(false)}>
           {(dismiss) => (
             <div
               data-testid="mint-selector-backdrop"
@@ -70,9 +72,10 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
               <div className="relative flex max-h-[60vh] flex-col rounded-t-2xl border-t border-slate-700 bg-slate-900">
                 {/* Header */}
                 <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
-                  <h3 className="text-base font-semibold text-white">Select Mint</h3>
+                  <h3 className="text-base font-semibold text-white">{t("deposit.selectMint")}</h3>
                   <button
                     onClick={dismiss}
+                    aria-label={t("common.close")}
                     className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
                   >
                     <X className="w-5 h-5" />
@@ -101,7 +104,9 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
                       <div className="flex-1 text-left">
                         <div className="text-sm font-semibold text-white">{mint.name}</div>
                         <div className="text-xs text-slate-400 font-mono">
-                          {formatAmount(mint.balanceSats, "sat")} available
+                          {t("deposit.mintAvailable", {
+                            amount: formatAmount(mint.balanceSats, "sat"),
+                          })}
                         </div>
                       </div>
 
@@ -114,7 +119,7 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
                   <div className="px-1 py-3">
                     <AddMintForm
                       onAddMint={handleAddMint}
-                      triggerLabel="Add Mint"
+                      triggerLabel={t("mint.addMint")}
                       variant="sheet"
                     />
                   </div>

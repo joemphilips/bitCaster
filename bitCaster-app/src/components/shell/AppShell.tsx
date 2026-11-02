@@ -192,15 +192,20 @@ export function AppShell({
           <div className="absolute bottom-0 left-0 right-0 bg-white dark:bg-slate-900 rounded-t-xl p-6 space-y-4">
             {/* User Info */}
             <div className="flex items-center gap-3 pb-4 border-b border-slate-200 dark:border-slate-700">
-              <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
+              <div className="w-12 h-12 shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
                 {user.avatarUrl ? (
                   <img src={user.avatarUrl} alt={user.name} className="w-12 h-12 rounded-full" />
                 ) : (
                   <User className="w-6 h-6 text-slate-400" />
                 )}
               </div>
-              <div>
-                <div className="font-medium text-slate-900 dark:text-slate-100">{user.name}</div>
+              <div className="min-w-0">
+                <div
+                  data-testid="mobile-user-menu-name"
+                  className="truncate font-medium text-slate-900 dark:text-slate-100"
+                >
+                  {user.name}
+                </div>
                 <div className="text-sm text-amber-400 font-mono">
                   <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
                 </div>

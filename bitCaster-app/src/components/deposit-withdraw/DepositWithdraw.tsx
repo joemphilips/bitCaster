@@ -19,7 +19,6 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           statusMessage={statusMessage}
           onSelectMethod={props.onSelectMethod}
           onClose={props.onClose}
-          onToggleFullscreen={props.onToggleFullscreen}
         />
       );
 
@@ -35,7 +34,6 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onScan={props.onScan}
           onRequest={props.onRequest}
           onBack={props.onBack}
-          onToggleFullscreen={props.onToggleFullscreen}
         />
       );
 

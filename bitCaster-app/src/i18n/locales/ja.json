@@ -706,6 +706,13 @@
     "sendEcash": "Ecashを送る",
     "payLightning": "Lightningで支払う",
     "createInvoice": "インボイスを作成",
+    "depositEcash": "Ecashで入金",
+    "paymentRequest": "支払いリクエスト",
+    "selectMint": "ミントを選択",
+    "mintAvailable": "利用可能: {{amount}}",
+    "deleteDigit": "最後の数字を削除",
+    "paying": "支払い中...",
+    "paymentRequestHint": "このリクエストを送金者に共有してください。任意のCashuウォレットから支払えます。",
     "lightningInvoice": "Lightningインボイス",
     "waitingForPayment": "支払いを待っています...",
     "awaitingPaymentExpires": "支払い待ち (残り {{remaining}})",
@@ -923,7 +930,7 @@
     "statusPollError": "状態の取得に失敗しました",
     "imageRetentionMissing": "選択した画像がこのブラウザーに保存されていません。続行する前に、画像を選び直すか削除してください。",
     "imageRetentionFailed": "このブラウザーに画像を保存できませんでした。ブラウザーの保存機能を有効にして画像を選び直すか、続行する前に画像を削除してください。",
-    "imageRetentionInvalid": "サイズが 5 MiB 以下で、空ではない JPG、PNG、WebP 画像を選択してください。",
+    "imageRetentionInvalid": "5 MiB以内の有効なJPEG・PNG・WebP画像を選択してください。",
     "creationImageMismatch": "登録済みマーケットの画像が、保存した作成内容と一致しません。この作成内容とブラウザーのデータを保持してください。再度支払ったり、代わりのマーケットを作成したりしないでください。画像の自動修復はできません。"
   },
   "filter": {
@@ -1045,6 +1052,7 @@
   },
   "notification": {
     "empty": "通知はまだありません。",
+    "close": "通知を閉じる",
     "accepted": "{{market}} の注文が受理されました",
     "matched": "注文がマッチしました: {{market}} で {{amount}} 予約済み",
     "filled": "注文が約定しました: {{market}} で {{amount}}",
@@ -1138,5 +1146,12 @@
     "previous": "前のページ",
     "unavailable": "元のオラクルの情報がありません。新たなバックアップを準備する前にバックアップを復元してください。"
   },
-  "betaNotice": "ベータ版：実際の資金を扱います。容量には制限があります。"
+  "betaNotice": "ベータ版：実際の資金を扱います。容量には制限があります。",
+  "relativeTime": {
+    "justNow": "たった今",
+    "minutesAgo": "{{minutes}}分前",
+    "hoursAgo": "{{hours}}時間前",
+    "daysAgo": "{{days}}日前",
+    "unknown": "最近"
+  }
 }

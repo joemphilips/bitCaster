@@ -487,6 +487,7 @@ export function TopUpOverlay({
                 <button
                   data-testid="top-up-close"
                   onClick={dismiss}
+                  aria-label={t("common.close")}
                   className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
                 >
                   <X className="w-5 h-5" />

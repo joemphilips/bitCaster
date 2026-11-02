@@ -38,11 +38,12 @@ export function SendEcash({
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={() => onClose?.()}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Send Ecash</h2>
+        <h2 className="text-lg font-semibold text-white">{t("deposit.sendEcash")}</h2>
         <div className="flex items-center gap-1 text-slate-400">
           <Lock className="w-4 h-4" />
           <Bitcoin className="w-5 h-5" />

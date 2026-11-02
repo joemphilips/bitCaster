@@ -42,7 +42,7 @@ function positionClosed(kind: "position_won" | "position_lost", outcome: string)
 
 function openBell(onNavigate?: (href: string) => void) {
   render(<NotificationBell onNavigate={onNavigate} />);
-  fireEvent.click(screen.getByLabelText("Notifications"));
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("nav.notifications") }));
 }
 
 beforeEach(async () => {
@@ -111,6 +111,21 @@ describe("NotificationBell held position results", () => {
       screen.getByText(`「${TITLE}」の予想が当たりました！換金してください。`),
     ).toBeInTheDocument();
     expect(screen.getByText(`「${TITLE}」の予想は外れました 😢`)).toBeInTheDocument();
+  });
+});
+
+describe("NotificationBell language", () => {
+  it("names the panel controls and the entry age in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    useNotificationsStore.getState().add(positionClosed("position_won", "Alice"));
+    render(<NotificationBell />);
+
+    fireEvent.click(screen.getByRole("button", { name: "通知" }));
+
+    expect(screen.getByText("たった今")).toBeInTheDocument();
+    expect(screen.queryByText("Just now")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "通知を閉じる" }));
+    expect(screen.queryByText("たった今")).not.toBeInTheDocument();
   });
 });
 

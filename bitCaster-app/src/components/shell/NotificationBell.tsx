@@ -74,7 +74,7 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-        aria-label="Notifications"
+        aria-label={t("nav.notifications")}
       >
         <Bell className="w-5 h-5" />
         {badge}
@@ -114,7 +114,7 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                 <button
                   onClick={() => setIsOpen(false)}
                   className="p-1 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 rounded"
-                  aria-label="Close notifications"
+                  aria-label={t("notification.close")}
                 >
                   <X className="w-4 h-4" />
                 </button>

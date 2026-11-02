@@ -1,6 +1,7 @@
 import { X, Copy, Check, Loader2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface PaymentRequestDisplayProps {
   paymentRequestEncoded: string;
@@ -15,6 +16,7 @@ export function PaymentRequestDisplay({
   amountSats,
   onClose,
 }: PaymentRequestDisplayProps) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -29,11 +31,12 @@ export function PaymentRequestDisplay({
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={onClose}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Payment Request</h2>
+        <h2 className="text-lg font-semibold text-white">{t("deposit.paymentRequest")}</h2>
         <div className="w-8" />
       </div>
 
@@ -44,13 +47,13 @@ export function PaymentRequestDisplay({
           {status === "waiting" && (
             <>
               <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
-              <span className="text-sm text-amber-400">Waiting for payment...</span>
+              <span className="text-sm text-amber-400">{t("deposit.waitingForPayment")}</span>
             </>
           )}
           {status === "received" && (
             <>
               <Check className="w-5 h-5 text-green-400" />
-              <span className="text-sm text-green-400">Payment received!</span>
+              <span className="text-sm text-green-400">{t("deposit.paymentReceived")}</span>
             </>
           )}
         </div>
@@ -75,6 +78,7 @@ export function PaymentRequestDisplay({
             </span>
             <button
               onClick={handleCopy}
+              aria-label={t("common.copy")}
               className="flex-shrink-0 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
             >
               {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
@@ -83,9 +87,7 @@ export function PaymentRequestDisplay({
         </div>
 
         {/* Instruction */}
-        <p className="mt-4 text-sm text-slate-400 text-center">
-          Share this request with the sender. They can pay it from any Cashu wallet.
-        </p>
+        <p className="mt-4 text-sm text-slate-400 text-center">{t("deposit.paymentRequestHint")}</p>
       </div>
     </div>
   );

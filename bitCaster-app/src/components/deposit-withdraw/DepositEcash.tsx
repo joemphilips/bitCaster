@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { ChevronLeft, Maximize2, Clipboard, ScanLine, FileText } from "lucide-react";
+import { ChevronLeft, Clipboard, ScanLine, FileText } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { MintSelector } from "./MintSelector";
 import type { MintInfo } from "@/types/deposit-withdraw";
 
@@ -13,7 +14,6 @@ interface DepositEcashProps {
   onScan?: () => void;
   onRequest?: () => void;
   onBack?: () => void;
-  onToggleFullscreen?: () => void;
 }
 
 export function DepositEcash({
@@ -26,8 +26,8 @@ export function DepositEcash({
   onScan,
   onRequest,
   onBack,
-  onToggleFullscreen,
 }: DepositEcashProps) {
+  const { t } = useTranslation();
   return (
     <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       {/* Backdrop */}
@@ -39,17 +39,13 @@ export function DepositEcash({
         <div className="flex items-center justify-between px-5 py-4">
           <button
             onClick={() => onBack?.()}
+            aria-label={t("common.back")}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-lg font-semibold text-white">Deposit Ecash</h2>
-          <button
-            onClick={() => onToggleFullscreen?.()}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
-          >
-            <Maximize2 className="w-5 h-5" />
-          </button>
+          <h2 className="text-lg font-semibold text-white">{t("deposit.depositEcash")}</h2>
+          <div className="w-8" />
         </div>
 
         {(statusMessage || depositReminder) && (
@@ -79,7 +75,7 @@ export function DepositEcash({
             <div className="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center group-hover:bg-slate-500 transition-colors">
               <Clipboard className="w-5 h-5 text-slate-300" />
             </div>
-            <span className="text-base font-medium text-white">Paste</span>
+            <span className="text-base font-medium text-white">{t("common.paste")}</span>
           </button>
 
           <button
@@ -89,7 +85,7 @@ export function DepositEcash({
             <div className="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center group-hover:bg-slate-500 transition-colors">
               <ScanLine className="w-5 h-5 text-slate-300" />
             </div>
-            <span className="text-base font-medium text-white">Scan</span>
+            <span className="text-base font-medium text-white">{t("common.scan")}</span>
           </button>
 
           <button
@@ -99,7 +95,7 @@ export function DepositEcash({
             <div className="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center group-hover:bg-slate-500 transition-colors">
               <FileText className="w-5 h-5 text-slate-300" />
             </div>
-            <span className="text-base font-medium text-white">Request</span>
+            <span className="text-base font-medium text-white">{t("common.request")}</span>
           </button>
         </div>
       </div>
