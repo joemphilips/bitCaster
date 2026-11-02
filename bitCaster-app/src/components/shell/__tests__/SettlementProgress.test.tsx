@@ -305,13 +305,15 @@ describe("active settlement progress", () => {
       await act(async () => {
         await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
       });
-      const region = screen.getByRole("region", { name: en.settlementProgress.title });
-      // The IndexedDB live query delivers the terminal journal asynchronously; allow a slow run.
+      // The terminal read can remove and remount the region. Wait on the live
+      // document, then acquire the current region for the remaining assertions.
       expect(
-        await within(region).findByText(en.settlementProgress.complete, undefined, {
+        await screen.findByText(en.settlementProgress.complete, undefined, {
           timeout: 5_000,
         }),
       ).toBeVisible();
+      const region = screen.getByRole("region", { name: en.settlementProgress.title });
+      expect(within(region).getByText(en.settlementProgress.complete)).toBeVisible();
       expect(within(region).queryByText(en.settlementProgress.Confirmed)).not.toBeInTheDocument();
       expect(within(region).queryByText(en.settlementProgress.fees)).not.toBeInTheDocument();
       expect(
@@ -326,7 +328,7 @@ describe("active settlement progress", () => {
       schedule.mockRestore();
     }
     expect(ja.settlementProgress.complete).not.toBe("");
-  });
+  }, 15_000);
 });
 
 function group(status: SettlementGroupStatus) {

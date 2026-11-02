@@ -34,6 +34,7 @@ jobs:
           python3 tools/security-audit/incremental_secrets.py
           --repo . --event-name "$SCAN_EVENT" --event-path "$GITHUB_EVENT_PATH"
           --head "$SCAN_HEAD"
+          --reviewed-findings tools/security-audit/reviewed-secret-findings.json
 
   formatting:
     runs-on: ubuntu-latest

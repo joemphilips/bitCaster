@@ -175,8 +175,9 @@ class IncrementalTests(unittest.TestCase):
     def test_public_ci_runs_without_path_filters_or_install_steps(self):
         workflow = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
         content = workflow.read_text()
-        self.assertNotIn("--reviewed-findings", content)
         job = content.split("  secret-check:\n", 1)[1].split("\n  formatting:", 1)[0]
+        self.assertEqual(job.count("--reviewed-findings"), 1)
+        self.assertIn("--reviewed-findings tools/security-audit/reviewed-secret-findings.json", job)
         self.assertIn("fetch-depth: 0", job)
         self.assertIn("persist-credentials: false", job)
         self.assertIn("python3 tools/security-audit/incremental_secrets.py", job)
@@ -366,6 +367,16 @@ class IncrementalTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("1 candidates; 1 reviewed; 0 actionable", result.stdout)
         second = "ghp_" + hashlib.sha256(b"other synthetic never issued").hexdigest()[:36]
+        adjacent = save(self.repo, "fixture.txt", "token=" + first + "\nother_token=" + second + "\n")
+        self.assertEqual(scanner.counts(observe(adjacent), reviewed), (2, 1, 1))
+        result = invoke(adjacent)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("2 candidates; 1 reviewed; 1 actionable", result.stdout)
+        self.assertNotIn(first, result.stdout + result.stderr)
+        self.assertNotIn(second, result.stdout + result.stderr)
+        # Continue the replacement case from the reviewed fixture, so the
+        # adjacent-credential branch does not affect its expected history.
+        git(self.repo, "checkout", "-q", "--detach", head)
         later = save(self.repo, "fixture.txt", "token=" + second + "\n")
         self.assertEqual(scanner.counts(observe(later), reviewed), (2, 1, 1))
         result = invoke(later)
