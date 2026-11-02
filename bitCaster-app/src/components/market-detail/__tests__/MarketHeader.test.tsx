@@ -329,6 +329,7 @@ describe("MarketHeader", () => {
       name: new RegExp(shortCreatorNpub.replace(/\./g, "\\.")),
     });
     expect(link).toHaveAttribute("href", `/user/${creatorNpub}`);
+    expect(link).toHaveAttribute("title", "Open the oracle's profile");
     expect(link).not.toContainElement(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
   });
 
@@ -351,18 +352,20 @@ describe("MarketHeader", () => {
     ]) {
       vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
         pubkey: creatorPubkey,
-        displayName: "Oracle",
+        displayName: "Alice Oracle",
         avatar,
       });
       const unsafe = renderHeader(makeMarket());
-      expect(await screen.findByText("Oracle", { selector: "p.font-mono" })).toBeInTheDocument();
+      expect(
+        await screen.findByText("Alice Oracle", { selector: "p:not(.font-mono)" }),
+      ).toBeInTheDocument();
       expect(unsafe.container.querySelector("img"), avatar).toBeNull();
       unsafe.unmount();
     }
 
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
       pubkey: creatorPubkey,
-      displayName: "Oracle",
+      displayName: "Alice Oracle",
       avatar: "https://img.example/oracle.png",
     });
     const safe = renderHeader(makeMarket());
@@ -379,7 +382,7 @@ describe("MarketHeader", () => {
     });
     const hostile = renderHeader(makeMarket());
     expect(
-      await screen.findByText("Evilgnp.exe line", { selector: "p.font-mono" }),
+      await screen.findByText("Evilgnp.exe line", { selector: "p:not(.font-mono)" }),
     ).toBeInTheDocument();
     hostile.unmount();
 
@@ -390,7 +393,7 @@ describe("MarketHeader", () => {
     });
     const long = renderHeader(makeMarket());
     expect(
-      await screen.findByText(`${"n".repeat(100)}…`, { selector: "p.font-mono" }),
+      await screen.findByText(`${"n".repeat(100)}…`, { selector: "p:not(.font-mono)" }),
     ).toBeInTheDocument();
     long.unmount();
 

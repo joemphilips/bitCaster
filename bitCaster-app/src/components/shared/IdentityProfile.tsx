@@ -6,6 +6,7 @@ import type { NostrProfileFetchStatus } from "@/types/settings";
 import {
   MAX_NOSTR_PROFILE_ABOUT_CHARACTERS,
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  safeNostrImageUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 
@@ -33,6 +34,7 @@ export function IdentityProfile({
       singleLine: true,
     }) || t("settings.profileAnonymous");
   const bio = sanitizeNostrDisplayText(profile.bio, MAX_NOSTR_PROFILE_ABOUT_CHARACTERS);
+  const avatarUrl = safeNostrImageUrl(profile.avatarUrl);
   const [dismissedReadError, setDismissedReadError] = useState(false);
   useEffect(() => {
     if (status !== "unavailable") setDismissedReadError(false);
@@ -46,12 +48,12 @@ export function IdentityProfile({
       className="flex min-w-0 items-start gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/30"
     >
       <div className="h-16 w-16 shrink-0 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-        {profile.avatarUrl && profile.avatarUrl !== failedAvatar ? (
+        {avatarUrl && avatarUrl !== failedAvatar ? (
           <img
-            src={profile.avatarUrl}
+            src={avatarUrl}
             alt={name}
             className="h-full w-full object-cover"
-            onError={() => setFailedAvatar(profile.avatarUrl)}
+            onError={() => setFailedAvatar(avatarUrl)}
           />
         ) : (
           <UserCircle

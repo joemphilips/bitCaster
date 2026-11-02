@@ -48,6 +48,7 @@ import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrder
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  safeNostrImageUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
@@ -105,8 +106,9 @@ export function ShellRoutes({
     name:
       sanitizeNostrDisplayText(nostrProfile?.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
         singleLine: true,
-      }) || "Anon",
-    avatarUrl: nostrProfile?.avatar ?? undefined,
+      }) || t("settings.profileAnonymous"),
+    // The own kind 0 picture is relay data too. Load only https from a public host.
+    avatarUrl: safeNostrImageUrl(nostrProfile?.avatar) ?? undefined,
     balance: totalBalance,
   };
 

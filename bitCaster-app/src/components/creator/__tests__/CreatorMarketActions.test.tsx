@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import i18n from "@/i18n";
+import { trackOracleBackupDelivery } from "@/lib/oracleBackupDeliveryActivity";
 import { CreatorMarketActions, CreatorMarketActionsProvider } from "../CreatorMarketActions";
 
 const oracleKey = generateSecretKey();
@@ -149,30 +150,112 @@ it.each([
     };
     h.local.mockResolvedValue({ rows: [row], nextOffset: null });
     show();
-    expect(await screen.findByText(`Saved outcome: NO · ${label}`)).toBeVisible();
+    expect(await screen.findByText(`Outcome: NO · ${label}`)).toBeVisible();
     expect(screen.queryAllByRole("button")).toHaveLength(0);
     expect(screen.queryByText(/Engine|Relay|backup/)).toBeNull();
   },
 );
+it("asks the user to keep local data when the relay copy of a failed result has no saved outcome", async () => {
+  const row = local();
+  row.chosenOutcome = "NO";
+  row.signed = true;
+  row.publicationState = "failed";
+  // A relay holds the initial backup. It was prepared before the choice, so it has no outcome.
+  row.status.preparationPending = false;
+  row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
+  h.local.mockResolvedValue({ rows: [row], nextOffset: null });
+  show();
+  expect(
+    await screen.findByText("Outcome: NO · Couldn't publish. Retrying automatically."),
+  ).toBeVisible();
+  expect(screen.getByText(i18n.t("oracleBackup.notOnRelay"))).toBeVisible();
+});
+
+/** A published result whose terminal backup belongs to a separate condition. */
+function publishedRow(terminalPrepared: boolean) {
+  const row = local();
+  const conditionId = "ee".repeat(32);
+  row.conditionId = conditionId;
+  row.status.binding = { ...row.status.binding, conditionId };
+  row.chosenOutcome = "NO";
+  row.signed = true;
+  row.publicationState = "published";
+  row.status.preparationPending = !terminalPrepared;
+  row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
+  row.status.terminal = { ...row.status.terminal, prepared: terminalPrepared };
+  h.local.mockResolvedValue({ rows: [row], nextOffset: null });
+  render(
+    <CreatorMarketActionsProvider conditionIds={[conditionId]}>
+      <CreatorMarketActions
+        conditionId={conditionId}
+        title="Restored event"
+        onPublish={h.publication}
+        publicationBusy={false}
+      />
+    </CreatorMarketActionsProvider>,
+  );
+  return conditionId;
+}
+
+function pendingDelivery(conditionId: string) {
+  let finish!: (failures: string[]) => void;
+  const attempt = trackOracleBackupDelivery(
+    conditionId,
+    () =>
+      new Promise<{ failures: string[] }>((resolve) => {
+        finish = (failures) => resolve({ failures });
+      }),
+  );
+  return async (failures: string[]) => {
+    await act(async () => {
+      finish(failures);
+      await attempt;
+    });
+  };
+}
+
 it.each([
-  ["failed", "Couldn't publish. Retrying automatically.", false],
-  ["published", "Published", true],
+  ["before the terminal backup exists", false, ["preparation"]],
+  ["while relays have not acknowledged the terminal backup", true, ["backup-relay"]],
 ] as const)(
-  "asks the user to keep local data when the relay copy of a %s result has no saved outcome",
-  async (state, label, terminal) => {
-    const row = local();
-    row.chosenOutcome = "NO";
-    row.signed = true;
-    row.publicationState = state;
-    // A relay holds the initial backup. It was prepared before the choice, so it has no outcome.
-    row.status.preparationPending = terminal;
-    row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
-    h.local.mockResolvedValue({ rows: [row], nextOffset: null });
-    show();
-    expect(await screen.findByText(`Saved outcome: NO · ${label}`)).toBeVisible();
-    expect(screen.getByText(i18n.t("oracleBackup.notOnRelay"))).toBeVisible();
+  "shows no relay message %s while its delivery runs, then a settled warning",
+  async (_, terminalPrepared, failures) => {
+    const finish = pendingDelivery("ee".repeat(32));
+    publishedRow(terminalPrepared);
+    expect(await screen.findByText("Outcome: NO · Published")).toBeVisible();
+    expect(screen.queryByText(i18n.t("oracleBackup.notOnRelay"))).toBeNull();
+
+    await finish([...failures]);
+
+    const notice = screen.getByText(i18n.t("oracleBackup.notOnRelay"));
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.className).toMatch(/\bborder-amber-/);
   },
 );
+
+it("shows no relay message right after publication before a terminal attempt finishes", async () => {
+  const conditionId = "ff".repeat(32);
+  const row = local();
+  row.conditionId = conditionId;
+  row.status.binding = { ...row.status.binding, conditionId };
+  row.chosenOutcome = "NO";
+  row.signed = true;
+  row.publicationState = "published";
+  row.status.initial = { prepared: true, acknowledgedRelays: 1, totalRelays: 1 };
+  h.local.mockResolvedValue({ rows: [row], nextOffset: null });
+  render(
+    <CreatorMarketActionsProvider conditionIds={[conditionId]}>
+      <CreatorMarketActions
+        conditionId={conditionId}
+        title="Restored event"
+        onPublish={h.publication}
+        publicationBusy={false}
+      />
+    </CreatorMarketActionsProvider>,
+  );
+  expect(await screen.findByText("Outcome: NO · Published")).toBeVisible();
+  expect(screen.queryByText(i18n.t("oracleBackup.notOnRelay"))).toBeNull();
+});
 it("shows no backup message while the saved result is sending", async () => {
   const row = local();
   row.chosenOutcome = "NO";
@@ -182,7 +265,7 @@ it("shows no backup message while the saved result is sending", async () => {
   row.status.initial = { prepared: true, acknowledgedRelays: 0, totalRelays: 1 };
   h.local.mockResolvedValue({ rows: [row], nextOffset: null });
   show();
-  expect(await screen.findByText("Saved outcome: NO · Sending result…")).toBeVisible();
+  expect(await screen.findByText("Outcome: NO · Sending result…")).toBeVisible();
   expect(screen.queryByText(i18n.t("oracleBackup.notOnRelay"))).toBeNull();
 });
 it("shows no backup state while a relay holds the current backup", async () => {
@@ -244,7 +327,7 @@ it.each(["backup preparation", "interrupted signing"] as const)(
     other.unmount();
     signIn(oracleKey);
     show();
-    await screen.findByText("Saved outcome: NO · Sending result…");
+    await screen.findByText("Outcome: NO · Sending result…");
     expect(screen.queryByText(i18n.t("oracleBackup.keyRequired"))).toBeNull();
   },
 );

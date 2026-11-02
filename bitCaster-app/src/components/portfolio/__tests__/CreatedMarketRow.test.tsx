@@ -172,7 +172,7 @@ describe("CreatedMarketRow", () => {
     expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
   });
 
-  it("labels retained closed state and volume as last known", () => {
+  it("keeps retained closed state and volume without a per-row engine label", () => {
     render(
       <CreatedMarketRow
         market={fixture({ status: "resolved", engineDataStatus: "stale", volume: 75_000 })}
@@ -180,8 +180,34 @@ describe("CreatedMarketRow", () => {
     );
     expect(screen.getByText("Closed")).toBeInTheDocument();
     expect(screen.getByText("Vol: 75 sats")).toBeInTheDocument();
-    expect(screen.getByText("Last known engine state and volume")).toBeInTheDocument();
+    expect(screen.queryByText(/engine state/i)).toBeNull();
   });
+
+  it.each([
+    ["stale", false],
+    ["current", true],
+  ] as const)(
+    "shows Active for an open market with a published outcome only from %s engine data",
+    (engineDataStatus, active) => {
+      render(
+        <CreatedMarketRow
+          market={fixture({
+            status: "active",
+            engineDataStatus,
+            oracle: {
+              type: "self",
+              eventId: "oracle",
+              outcomes: ["YES", "NO"],
+              chosenOutcome: "NO",
+              engineEvidence: {} as NonNullable<CreatedMarket["oracle"]>["engineEvidence"],
+            },
+          })}
+        />,
+      );
+      if (active) expect(screen.getByText("Active")).toBeInTheDocument();
+      else expect(screen.queryByText("Active")).toBeNull();
+    },
+  );
 });
 
 it("keeps Portfolio rows without publication capability", () => {

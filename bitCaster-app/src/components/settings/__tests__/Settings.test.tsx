@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { Settings } from "../Settings";
+import i18n from "@/i18n";
 import type { SettingsState } from "@/types/settings";
 
 function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): SettingsState {
@@ -514,6 +515,19 @@ describe("Settings deferred profile editing", () => {
 });
 
 describe("Settings profile indexer", () => {
+  it("links the Japanese description to the Japanese user guide", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(<Settings activeCategory="nostr" settings={settingsState()} />);
+      expect(screen.getByRole("link", { name: "インデクサーに伝わる情報" })).toHaveAttribute(
+        "href",
+        "https://bitcasterdoc.com/ja/user-guide/core-concepts/resolution/#オラクルのプロフィールを確認する",
+      );
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("shows the indexer switch in Nostr settings and reports the requested value", () => {
     const changes: boolean[] = [];
     const view = render(
@@ -525,9 +539,14 @@ describe("Settings profile indexer", () => {
     );
     const toggle = screen.getByRole("switch", { name: "Profile indexer" });
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(toggle).toHaveAccessibleDescription(/Primal/);
-    // The setting stops only the indexer request. The relays still receive the viewed key.
-    expect(toggle).toHaveAccessibleDescription(/selected relays/);
+    // One sentence states the feature. The user guide states what the indexer and relays see.
+    expect(toggle).toHaveAccessibleDescription(
+      "Profile pages show follower counts and the first activity date from the Primal indexer.",
+    );
+    expect(screen.getByRole("link", { name: "What the indexer sees" })).toHaveAttribute(
+      "href",
+      "https://bitcasterdoc.com/user-guide/core-concepts/resolution/#check-the-oracle-profile",
+    );
     fireEvent.click(toggle);
     expect(changes).toEqual([false]);
     view.rerender(

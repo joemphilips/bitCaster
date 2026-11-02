@@ -583,7 +583,6 @@ export function Settings({
                 if (!onAddMint) return;
                 await onAddMint(url);
               }}
-              triggerLabel="Add Mint"
             />
           </div>
         </div>
@@ -935,6 +934,15 @@ export function Settings({
             >
               {t("settings.profileIndexerDesc")}
             </p>
+            {/* The user guide states what the indexer, the relays and image hosts receive. */}
+            <a
+              href={t("settings.profileIndexerHelpUrl")}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-0.5 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+            >
+              {t("settings.profileIndexerHelp")}
+            </a>
           </div>
           <button
             type="button"

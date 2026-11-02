@@ -138,11 +138,13 @@ export function DepositStep({
   const fundingAmountRuleError =
     fundingAmountSats.trim() === ""
       ? null
-      : fundingAmountMsat === null || fundingAmountMsat < 1
+      : fundingAmountMsat === null
         ? t("marketCreation.ammFundingAmountError")
-        : fundingAmountMsat % divisibility !== 0
-          ? t("marketCreation.ammFundingDivisibilityError", { divisibility })
-          : null;
+        : fundingAmountMsat < 1
+          ? t("marketCreation.ammFundingAmountPositive")
+          : fundingAmountMsat % divisibility !== 0
+            ? t("marketCreation.ammFundingDivisibilityError", { divisibility })
+            : null;
   // "1." is a partial entry, so the format error waits until the user leaves the field.
   const fundingAmountError = useErrorAfterBlur(fundingAmountRuleError);
   const fundingAmountErrorId = useId();
@@ -150,7 +152,13 @@ export function DepositStep({
   const applyFundingResult = useCallback(
     (result: BrowserMarketFundingDeliveryResult, showSuccess: boolean) => {
       setHeadTransferId(result.transfer.transferId);
-      setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
+      // A credited payment is complete. Leave the amount empty, so that the same
+      // amount is not offered as a second payment.
+      setFundingAmountSats(
+        result.progress === "credited"
+          ? ""
+          : formatFundingInput(Number(result.transfer.requestedAmount)),
+      );
       setDeliveryProgress(result.progress);
       setShowCreditedNotice(showSuccess && result.progress === "credited");
     },
@@ -458,7 +466,8 @@ export function DepositStep({
         <p>{t("marketCreation.ammFundingDisclosure")}</p>
       </div>
 
-      {deliveryProgress && (deliveryProgress !== "credited" || showCreditedNotice) && (
+      {/* A new payment after a credit hides the old completion while it runs. */}
+      {deliveryProgress && !(deliveryProgress === "credited" && fundingBusy) && (
         <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
           {deliveryProgress === "credited"
             ? t("marketCreation.ammFundingComplete")
@@ -483,7 +492,8 @@ export function DepositStep({
           {fundingBusy ? (
             <span className="inline-flex items-center justify-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {t("marketCreation.payingFromWallet")}
+              {/* Until the head read completes, this step only reads the wallet. */}
+              {headReady ? t("marketCreation.payingFromWallet") : t("common.loading")}
             </span>
           ) : deliveryProgress === "pending" || deliveryProgress === "received" ? (
             t("marketCreation.retryWalletPayment")

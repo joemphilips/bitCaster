@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, Check, X, TrendingUp, AlertCircle, Flag, Trophy } from "lucide-react";
+import { Bell, Check, X, TrendingUp, AlertCircle, Flag, Trophy, CircleX } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   type Notification,
@@ -166,8 +166,11 @@ function NotificationIcon({ kind }: { kind: Notification["kind"] }) {
   if (kind === "Matched" || kind === "partially_filled") {
     return <TrendingUp className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />;
   }
-  if (kind === "market_closed" || kind === "position_lost") {
+  if (kind === "market_closed") {
     return <Flag className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />;
+  }
+  if (kind === "position_lost") {
+    return <CircleX className="w-4 h-4 text-slate-400 flex-shrink-0 mt-0.5" />;
   }
   if (kind === "position_won") {
     return <Trophy className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />;

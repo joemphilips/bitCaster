@@ -146,6 +146,26 @@ describe("thumbnail retention controls", () => {
     expect(onRemove).toHaveBeenCalledOnce();
   });
 
+  it("shows a rejected file's error without a selection to remove and without blocking Next", () => {
+    const message = "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
+    render(
+      <BasicInfo
+        data={{ ...defaultData, title: "Test", closingDate: futureDate() }}
+        categoryTags={categoryTags}
+        onThumbnailRemove={vi.fn()}
+        thumbnailRejectionError={message}
+      />,
+    );
+
+    expect(screen.getByText("No image")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("button", { name: "Upload image" })).toHaveAccessibleDescription(
+      message,
+    );
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  });
+
   it("states the image limit only in an error that describes the upload control", () => {
     const props = {
       data: { ...defaultData, title: "Test", closingDate: futureDate() },

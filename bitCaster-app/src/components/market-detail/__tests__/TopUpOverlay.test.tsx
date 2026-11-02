@@ -184,6 +184,8 @@ describe("TopUpOverlay", () => {
         target: { value: "200001" },
       });
       expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(LIMIT_ERROR);
+      // The same invalid border as the market funding field.
+      expect(screen.getByTestId("top-up-amount-input")).toHaveClass("border-red-400");
       expect(screen.getByTestId("top-up-continue")).toBeDisabled();
       await userEvent.click(screen.getByTestId("top-up-continue"));
       expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
@@ -192,6 +194,7 @@ describe("TopUpOverlay", () => {
         target: { value: "200000" },
       });
       expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+      expect(screen.getByTestId("top-up-amount-input")).not.toHaveClass("border-red-400");
       expect(screen.getByTestId("top-up-continue")).toBeEnabled();
     });
 

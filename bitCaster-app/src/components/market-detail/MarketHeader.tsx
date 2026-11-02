@@ -183,8 +183,9 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         >
           {t("market.oracle")}
         </p>
+        {/* A name is text. Only the Nostr ID fallback is an identifier in monospace. */}
         <p
-          className={`truncate text-xs font-mono ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
+          className={`truncate text-xs ${oracleProfileLoaded && !oracleName ? "font-mono" : ""} ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
         >
           {oracleProfileLoaded ? creatorLabel : t("market.searchingNostr")}
         </p>

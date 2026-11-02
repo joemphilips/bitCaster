@@ -1,4 +1,8 @@
-import { DraftImageRetentionError, marketDraftImages } from "@/stores/marketDraftImage";
+import {
+  DraftImageRetentionError,
+  assertDraftImageAccepted,
+  marketDraftImages,
+} from "@/stores/marketDraftImage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -297,6 +301,11 @@ export function useMarketCreationState() {
   // that replaces the original error.
   const [thumbnailErrorKey, setThumbnailErrorKey] = useState<DraftImageErrorKey | null>(null);
   const thumbnailError = thumbnailErrorKey === null ? null : t(thumbnailErrorKey);
+  // A rejected file never becomes the selection. Its error does not block the draft.
+  const [thumbnailRejected, setThumbnailRejected] = useState(false);
+  const thumbnailRejectionError = thumbnailRejected
+    ? t("marketCreation.imageRetentionInvalid")
+    : null;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
@@ -499,6 +508,13 @@ export function useMarketCreationState() {
   const onThumbnailUpload = useCallback(
     async (file: File) => {
       if (useMarketDraftStore.getState().draft.creation) return;
+      try {
+        assertDraftImageAccepted(file);
+      } catch {
+        setThumbnailRejected(true);
+        return;
+      }
+      setThumbnailRejected(false);
       const selectionId = crypto.randomUUID();
       setThumbnailPending(true);
       setThumbnailErrorKey(null);
@@ -528,6 +544,7 @@ export function useMarketCreationState() {
     const current = useMarketDraftStore.getState().draft;
     if (current.creation) return;
     const selectionId = current.thumbnailId;
+    setThumbnailRejected(false);
     try {
       setDraft((previous) => {
         const remaining = { ...previous, lastModified: new Date().toISOString() };
@@ -981,6 +998,7 @@ export function useMarketCreationState() {
     thumbnailFile,
     thumbnailPending,
     thumbnailError,
+    thumbnailRejectionError,
     onThumbnailRemove,
     isSubmitting,
     submitError,

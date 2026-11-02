@@ -10,6 +10,10 @@ import {
 import { useTranslation } from "react-i18next";
 import type { OraclePublicationState } from "@bitcaster/client-sdk/oraclePublication";
 import { localBrowserOracleBackupStatuses } from "@/lib/browserOracleBackupAccess";
+import {
+  useOracleBackupDeliveryActivity,
+  type OracleBackupDeliveryActivity,
+} from "@/lib/oracleBackupDeliveryActivity";
 import { assertNever } from "@/lib/enumDiscipline";
 import { resolveNsecIdentity } from "@/lib/identityOps";
 import { subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
@@ -35,8 +39,13 @@ export const ORACLE_PUBLICATION_STATE_LABELS: Record<OraclePublicationState, str
 /**
  * Backup and resolution delivery run automatically. Show a message only when the user must act:
  * restore or sign with the oracle key, or keep local data that no relay has stored yet.
+ * A running delivery has no settled relay result, so it shows no relay message.
  */
-function oracleOwnerNotice(row: ReadyRow, keyReady: boolean): string | null {
+function oracleOwnerNotice(
+  row: ReadyRow,
+  keyReady: boolean,
+  delivery: OracleBackupDeliveryActivity,
+): string | null {
   const status = row.status;
   if (!status.importComplete) return "oracleBackup.importIncomplete";
   if (!row.chosenOutcome && row.readiness !== "ready")
@@ -51,7 +60,15 @@ function oracleOwnerNotice(row: ReadyRow, keyReady: boolean): string | null {
     switch (row.publicationState) {
       case "publishing":
         return null;
-      case "published":
+      case "published": {
+        // Publication starts the terminal backup delivery. Until that attempt has a stage
+        // or has failed to prepare one, "no relay has saved it" is not a result.
+        if (delivery.running) return null;
+        const settled = status.terminal.prepared || delivery.preparationFailed;
+        return settled && status.terminal.replacementAcknowledgedRelays === 0
+          ? "oracleBackup.notOnRelay"
+          : null;
+      }
       case "failed":
       case null: {
         const acknowledged = status.terminal.prepared
@@ -63,7 +80,7 @@ function oracleOwnerNotice(row: ReadyRow, keyReady: boolean): string | null {
         return assertNever(row.publicationState);
     }
   }
-  return status.initial.prepared && status.initial.acknowledgedRelays === 0
+  return !delivery.running && status.initial.prepared && status.initial.acknowledgedRelays === 0
     ? "oracleBackup.notOnRelay"
     : null;
 }
@@ -176,10 +193,12 @@ export function CreatorMarketActions({
   useEffect(() => {
     if (page.failed) setError(true);
   }, [page.failed]);
+  const delivery = useOracleBackupDeliveryActivity(conditionId);
   const ready = row?.available ? row : null;
   const chosen = ready?.chosenOutcome;
   const notice =
-    ready && oracleOwnerNotice(ready, signerPublicKey === ready.status.binding.oraclePubkey);
+    ready &&
+    oracleOwnerNotice(ready, signerPublicKey === ready.status.binding.oraclePubkey, delivery);
   const publish = () => {
     if (!ready || publicationBusy) return;
     onPublish({
@@ -209,7 +228,14 @@ export function CreatorMarketActions({
               {t(ORACLE_PUBLICATION_STATE_LABELS[ready.publicationState])}
             </p>
           )}
-          {notice && <p>{t(notice)}</p>}
+          {notice && (
+            <p
+              role="status"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-100"
+            >
+              {t(notice)}
+            </p>
+          )}
           {!chosen && (
             <div className="flex flex-wrap gap-2">
               <button

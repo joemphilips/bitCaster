@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { AddMintForm } from "../AddMintForm";
 
 describe("AddMintForm", () => {
@@ -39,6 +40,25 @@ describe("AddMintForm", () => {
     expect(screen.getByTestId("add-mint-url-input")).toBeInTheDocument();
   });
 
+  it("labels the form in Japanese and names a failure without a message", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      const user = userEvent.setup();
+      render(<AddMintForm onAddMint={vi.fn().mockRejectedValue(new Error(""))} />);
+
+      await user.click(screen.getByRole("button", { name: "ミントを追加" }));
+      await user.type(screen.getByTestId("add-mint-url-input"), "https://broken.example.com");
+      expect(screen.getByRole("button", { name: "キャンセル" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "追加" }));
+
+      expect(await screen.findByTestId("add-mint-error")).toHaveTextContent(
+        "ミントに接続できませんでした。",
+      );
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("ignores empty submissions", async () => {
     const user = userEvent.setup();
     const onAddMint = vi.fn().mockResolvedValue(undefined);
@@ -51,7 +71,7 @@ describe("AddMintForm", () => {
   });
 
   it("respects the sheet variant for visual differentiation in bottom sheets", () => {
-    render(<AddMintForm onAddMint={vi.fn()} variant="sheet" triggerLabel="Add Mint" />);
+    render(<AddMintForm onAddMint={vi.fn()} variant="sheet" />);
     const trigger = screen.getByTestId("add-mint-trigger");
     expect(trigger.className).toContain("border-dashed");
   });

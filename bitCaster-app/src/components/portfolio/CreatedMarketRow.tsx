@@ -28,9 +28,10 @@ const CLOSED_THUMBNAIL: Record<CreatedMarketStatus, boolean> = {
   refunded: true,
   unknown: false,
 };
+// A refresh of known data has one list-level indicator, so a stale row has no own label.
 const ENGINE_DATA_LABELS: Record<CreatorEngineDataStatus, string | null> = {
   current: null,
-  stale: "creator.engineDataStale",
+  stale: null,
   unavailable: "creator.engineDataUnavailable",
 };
 
@@ -74,6 +75,12 @@ export function CreatedMarketRow({
     !immutableOutcome &&
     market.oracle.outcomes.length > 0 &&
     !!onPublishOracleAttestation;
+  // A stale open state predates the published result. It is not evidence that trading continues.
+  const hideStaleActive =
+    market.status === "active" &&
+    market.engineDataStatus === "stale" &&
+    !!immutableOutcome &&
+    !!market.oracle?.engineEvidence;
   const publicationState =
     !hasOwnerActions && market.oracle && immutableOutcome
       ? oraclePublicationState(
@@ -140,11 +147,13 @@ export function CreatedMarketRow({
             <p className="text-xs text-slate-500">{t("oracleBackup.owner_imported")}</p>
           )}
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLES[market.status]}`}
-            >
-              {t(`marketStatus.${market.status}`)}
-            </span>
+            {!hideStaleActive && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLES[market.status]}`}
+              >
+                {t(`marketStatus.${market.status}`)}
+              </span>
+            )}
             {market.volume !== null && market.volume > 0 && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
                 {t("portfolio.volLabel", {

@@ -159,9 +159,7 @@ const removalConfirmation = () => screen.getByTestId("position-removal-confirmat
 const actionDialog = () => screen.getByRole("dialog", { name: "Position action" });
 async function startAction(operation: Operation, confirm = true) {
   await userEvent.click(
-    screen.getByLabelText(
-      operation === "claim" ? /claim payout for/i : /remove losing position for/i,
-    ),
+    screen.getByLabelText(operation === "claim" ? /^cash out /i : /remove losing position for/i),
   );
   if (operation === "remove" && confirm) {
     await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
@@ -223,7 +221,7 @@ describe("PortfolioPage position action dialogs", () => {
         operation === "claim" ? "Claiming your payout" : "Removing the position",
       );
       // A repeated action must not start another coordinator.
-      if (operation === "claim") await userEvent.click(screen.getByLabelText(/claim payout for/i));
+      if (operation === "claim") await userEvent.click(screen.getByLabelText(/^cash out /i));
       else expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
       expect(coordinator(operation)).toHaveBeenCalledOnce();
       cashuMocks.walletState.mnemonic = "other fake wallet seed";
@@ -314,7 +312,7 @@ describe("PortfolioPage position action dialogs", () => {
   });
 
   async function claimWithTimers() {
-    await act(async () => fireEvent.click(screen.getByLabelText(/claim payout for/i)));
+    await act(async () => fireEvent.click(screen.getByLabelText(/^cash out /i)));
   }
 
   it("celebrates only completed exact fractional credit and never hides a residual holding", async () => {
@@ -827,9 +825,9 @@ describe("PortfolioPage position action dialogs", () => {
     if (kind === "winner") {
       expect(screen.getByText("Won")).toBeInTheDocument();
       expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
-      expect(screen.getByLabelText(/claim payout for/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/^cash out /i)).toBeInTheDocument();
     } else {
-      expect(screen.queryByLabelText(/claim payout for/i)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/^cash out /i)).not.toBeInTheDocument();
       expect(screen.getByText("Price estimate unavailable")).toBeInTheDocument();
     }
     expect(removeProofs).not.toHaveBeenCalled();

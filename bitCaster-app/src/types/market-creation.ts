@@ -164,6 +164,8 @@ export interface MarketCreationWizardProps {
   onThumbnailRemove?: () => void;
   thumbnailPending?: boolean;
   thumbnailError?: string | null;
+  /** The latest file was rejected. It is not the selection and does not block the draft. */
+  thumbnailRejectionError?: string | null;
 
   // -------------------------------------------------------------------------
   // Outcomes Callbacks (Step 4)

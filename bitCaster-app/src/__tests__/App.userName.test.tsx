@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { ShellRoutes } from "../App";
 
 const settingsState = vi.hoisted(() => ({
@@ -37,7 +38,7 @@ const RLO = "\u202E";
 const LONG_NAME = `Release Three Oracle ${RLO}ruoivaheB evil ${"x".repeat(90)}`;
 
 function renderShell() {
-  render(
+  return render(
     <MemoryRouter initialEntries={["/markets"]}>
       <ShellRoutes canReadOrderStatus={false} />
     </MemoryRouter>,
@@ -71,5 +72,30 @@ describe("ShellRoutes own profile name", () => {
     renderShell();
 
     expect(screen.getByTestId("user-menu-name")).toHaveTextContent(/^Anon$/);
+  });
+
+  it("names the anonymous fallback in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      renderShell();
+      expect(screen.getByTestId("user-menu-name")).toHaveTextContent(/^匿名$/);
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it.each([
+    ["javascript:alert(1)", false],
+    ["http://img.example/me.png", false],
+    ["https://img.example/me.png", true],
+  ])("loads the own avatar %s only from a public https host", (avatar, loaded) => {
+    settingsState.nostrProfile = { displayName: "Me", avatar };
+    const { container } = renderShell();
+
+    const images = Array.from(container.querySelectorAll("img")).map((image) =>
+      image.getAttribute("src"),
+    );
+    if (loaded) expect(images).toContain("https://img.example/me.png");
+    else expect(images).not.toContain(avatar);
   });
 });

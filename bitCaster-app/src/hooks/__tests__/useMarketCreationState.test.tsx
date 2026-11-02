@@ -689,19 +689,50 @@ describe("preparation-independent draft image", () => {
     });
     await act(async () => result.current.onThumbnailUpload(oversized));
     await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
-    expect(result.current.thumbnailError).toBe(i18n.t("marketCreation.imageRetentionInvalid"));
+    // A rejected file never becomes the draft selection, so it neither blocks nor needs removal.
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+    expect(result.current.thumbnailError).toBeNull();
+    expect(result.current.thumbnailRejectionError).toBe(
+      i18n.t("marketCreation.imageRetentionInvalid"),
+    );
 
     try {
       await act(async () => {
         await i18n.changeLanguage("ja");
       });
       await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
-      expect(result.current.thumbnailError).toBe(
+      expect(result.current.thumbnailRejectionError).toBe(
         i18n.t("marketCreation.imageRetentionInvalid", { lng: "ja" }),
       );
     } finally {
       await i18n.changeLanguage("en");
     }
+  });
+
+  it("keeps the retained image when a later file is rejected and clears the rejection on removal", async () => {
+    const result = await setupDraftForSubmission();
+    await act(async () =>
+      result.current.onThumbnailUpload(
+        new File([new Uint8Array([255, 216, 255, 217])], "kept.jpg", { type: "image/jpeg" }),
+      ),
+    );
+    await waitFor(() => expect(result.current.thumbnailFile?.name).toBe("kept.jpg"));
+    const selectionId = useMarketDraftStore.getState().draft.thumbnailId;
+
+    await act(async () =>
+      result.current.onThumbnailUpload(new File(["gif"], "rejected.gif", { type: "image/gif" })),
+    );
+
+    expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(selectionId);
+    expect(result.current.thumbnailFile?.name).toBe("kept.jpg");
+    expect(result.current.thumbnailError).toBeNull();
+    expect(result.current.thumbnailRejectionError).toBe(
+      i18n.t("marketCreation.imageRetentionInvalid"),
+    );
+    await act(async () => {
+      await result.current.onThumbnailRemove();
+    });
+    expect(result.current.thumbnailRejectionError).toBeNull();
   });
 
   it("does not let delayed cleanup failure block a newer retained image", async () => {
@@ -1241,13 +1272,18 @@ describe("durable browser market creation", () => {
           );
           break;
       }
+      if (limit === "thumbnail") {
+        // The oversized file is refused when it is selected. It never joins the draft.
+        expect(result.current.thumbnailRejectionError).not.toBeNull();
+        expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
+        expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+        expect(runtime.feeOperations).toHaveLength(0);
+        return;
+      }
       await act(async () => {
         await result.current.onCreateMarket();
       });
-      if (limit === "thumbnail") {
-        expect(result.current.thumbnailError).not.toBeNull();
-        expect(result.current.submitError).toBe(result.current.thumbnailError);
-      } else expect(result.current.submitError).toMatch(/Market (metadata|creation)/);
+      expect(result.current.submitError).toMatch(/Market (metadata|creation)/);
       expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);

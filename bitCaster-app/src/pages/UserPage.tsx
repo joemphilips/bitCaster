@@ -99,8 +99,8 @@ function NostrProfileView({ pubkey }: { pubkey: string }) {
   return (
     <>
       <ProfileHeader pubkey={pubkey} page={page} indexer={indexer} />
-      <RecentNotes page={page} />
       <CreatedMarkets markets={markets} />
+      <RecentNotes page={page} />
     </>
   );
 }
@@ -122,18 +122,26 @@ function ProfileHeader({
       : null;
   // Single-line names have no invisible characters, so an empty name falls back to the key.
   const title = profile?.displayName || formatShortNpub(npub);
+  // Without a banner image the page shows no banner area, so the picture does not overlap it.
+  const [failedBanner, setFailedBanner] = useState<string | null>(null);
+  const banner = profile?.banner && profile.banner !== failedBanner ? profile.banner : null;
   return (
     <header aria-busy={page.status === "loading"}>
-      <ProfileImage
-        url={profile?.banner ?? null}
-        testId="profile-banner"
-        className="h-32 w-full object-cover sm:h-48"
-        fallback={
-          <div className="h-32 w-full bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-900 sm:h-48" />
-        }
-      />
+      {banner && (
+        <img
+          src={banner}
+          alt=""
+          data-testid="profile-banner"
+          className="h-32 w-full object-cover sm:h-48"
+          referrerPolicy="no-referrer"
+          decoding="async"
+          onError={() => setFailedBanner(banner)}
+        />
+      )}
       <div className="px-4 sm:px-6">
-        <div className="-mt-10 h-20 w-20 overflow-hidden rounded-full border-4 border-slate-50 bg-slate-200 dark:border-slate-950 dark:bg-slate-800">
+        <div
+          className={`${banner ? "-mt-10" : "mt-6"} h-20 w-20 overflow-hidden rounded-full border-4 border-slate-50 bg-slate-200 dark:border-slate-950 dark:bg-slate-800`}
+        >
           <ProfileImage
             url={profile?.picture ?? null}
             testId="profile-picture"
@@ -154,7 +162,7 @@ function ProfileHeader({
           </p>
         )}
         {profile?.nip05 && <Nip05Address address={profile.nip05} pubkey={pubkey} />}
-        <NpubCopy npub={npub} />
+        <NpubCopy npub={npub} showNpub={!!profile?.displayName} />
         {profile && <ProfileDetails profile={profile} />}
         <ProfileStats
           follows={page.status === "ready" ? page.value.follows : null}
@@ -213,7 +221,17 @@ function Nip05Address({ address, pubkey }: { address: string; pubkey: string }) 
   );
 }
 
+/** On a narrow screen a long description shows its first lines until the user opens it. */
+const ABOUT_CLAMP_LINES = 6;
+const ABOUT_CLAMP_CHARACTERS = 320;
+
 function ProfileDetails({ profile }: { profile: NostrProfilePageMetadata }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const longAbout =
+    profile.about.length > ABOUT_CLAMP_CHARACTERS ||
+    profile.about.split("\n").length > ABOUT_CLAMP_LINES;
+  const clamped = longAbout && !expanded;
   return (
     <>
       {profile.website && (
@@ -229,11 +247,25 @@ function ProfileDetails({ profile }: { profile: NostrProfilePageMetadata }) {
       )}
       {profile.about && (
         <p
+          id="profile-about"
           data-testid="profile-about"
-          className="mt-3 whitespace-pre-wrap text-sm text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300"
+          className={`mt-3 whitespace-pre-wrap text-sm text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300 ${
+            clamped ? "line-clamp-6 sm:line-clamp-none" : ""
+          }`}
         >
           {profile.about}
         </p>
+      )}
+      {longAbout && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls="profile-about"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 text-sm font-medium text-blue-600 hover:underline dark:text-blue-400 sm:hidden"
+        >
+          {t(expanded ? "userProfile.showLess" : "userProfile.showMore")}
+        </button>
       )}
     </>
   );
@@ -252,7 +284,7 @@ function ProfileReadState({ page }: { page: Loadable<NostrProfilePageSnapshot> }
   ) : null;
 }
 
-function NpubCopy({ npub }: { npub: string }) {
+function NpubCopy({ npub, showNpub }: { npub: string; showNpub: boolean }) {
   const { t } = useTranslation();
   const copy = async () => {
     try {
@@ -267,9 +299,11 @@ function NpubCopy({ npub }: { npub: string }) {
   };
   return (
     <div className="mt-1 flex items-center gap-1 text-slate-500 dark:text-slate-400">
-      <span className="font-mono text-xs" title={npub}>
-        {formatShortNpub(npub)}
-      </span>
+      {showNpub && (
+        <span className="font-mono text-xs" title={npub}>
+          {formatShortNpub(npub)}
+        </span>
+      )}
       <button
         type="button"
         onClick={copy}

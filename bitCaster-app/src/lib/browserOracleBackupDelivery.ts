@@ -18,6 +18,7 @@ import {
   type BrowserOracleMutation,
 } from "./kormir";
 import { exportLockedBrowserOracleBackup } from "./browserOracleBackup";
+import { trackOracleBackupDelivery } from "./oracleBackupDeliveryActivity";
 import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 
 export interface BrowserOracleBackupDeliveryOptions {
@@ -134,7 +135,9 @@ export function deliverBrowserOracleBackup(
   conditionId: string,
   options: BrowserOracleBackupDeliveryOptions = {},
 ) {
-  return deliverOracleBackup(createBrowserOracleBackupDeliveryAdapters(options), conditionId);
+  return trackOracleBackupDelivery(conditionId, () =>
+    deliverOracleBackup(createBrowserOracleBackupDeliveryAdapters(options), conditionId),
+  );
 }
 
 /** Primary creation and resolution do not depend on independent backup delivery. */
@@ -149,5 +152,7 @@ export function retryBrowserOracleBackupDelivery(
   conditionId: string,
   options: BrowserOracleBackupDeliveryOptions = {},
 ) {
-  return retryOracleBackupDelivery(createBrowserOracleBackupDeliveryAdapters(options), conditionId);
+  return trackOracleBackupDelivery(conditionId, () =>
+    retryOracleBackupDelivery(createBrowserOracleBackupDeliveryAdapters(options), conditionId),
+  );
 }

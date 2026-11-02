@@ -255,6 +255,50 @@ describe("UserPage", () => {
     );
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(shortNpub);
     expect(screen.queryByText(/^@/)).not.toBeInTheDocument();
+    // The title already shows the short Nostr ID. The copy control does not repeat it.
+    expect(screen.getAllByText(shortNpub)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Copy Nostr ID" })).toBeInTheDocument();
+  });
+
+  it("shows no banner placeholder without a banner and lists created markets before notes", async () => {
+    serve(relays[0]!, [profileEvent({ display_name: "Carol" }), ...notes]);
+    const { container } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Carol" })).toBeInTheDocument();
+    expect(screen.queryByTestId("profile-banner")).not.toBeInTheDocument();
+    expect(container.querySelector("header .bg-gradient-to-br")).toBeNull();
+    const markets = screen.getByRole("region", { name: "Markets created by this key" });
+    const notesRegion = screen.getByRole("region", { name: "Notes" });
+    expect(markets.compareDocumentPosition(notesRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("clamps a long description on a narrow screen until the user opens it", async () => {
+    const user = userEvent.setup();
+    const about = Array.from({ length: 12 }, (_, line) => `Line ${line + 1} of the policy.`).join(
+      "\n",
+    );
+    serve(relays[0]!, [profileEvent({ display_name: "Dave", about })]);
+    renderPage();
+
+    const description = await screen.findByTestId("profile-about");
+    expect(description).toHaveClass("line-clamp-6", "sm:line-clamp-none");
+    const more = screen.getByRole("button", { name: "More" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(more).toHaveClass("sm:hidden");
+
+    await user.click(more);
+    expect(description).not.toHaveClass("line-clamp-6");
+    expect(screen.getByRole("button", { name: "Less" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("does not clamp a short description", async () => {
+    serve(relays[0]!, [profileEvent({ display_name: "Erin", about: "Short policy." })]);
+    renderPage();
+
+    expect(await screen.findByTestId("profile-about")).not.toHaveClass("line-clamp-6");
+    expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
   });
 
   it("shows what the answering relay returns when another selected relay fails", async () => {

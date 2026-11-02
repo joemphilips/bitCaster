@@ -604,7 +604,11 @@ export function TopUpOverlay({
                     onBlur={minimumError.onBlur}
                     aria-invalid={amountError !== null ? "true" : "false"}
                     aria-describedby={amountError !== null ? amountErrorId : undefined}
-                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
+                    className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a] ${
+                      amountError !== null
+                        ? "border-red-400"
+                        : "border-slate-200 dark:border-slate-700"
+                    }`}
                   />
                   {amountError !== null && (
                     <p

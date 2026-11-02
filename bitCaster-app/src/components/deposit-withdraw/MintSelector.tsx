@@ -117,11 +117,7 @@ export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelect
 
                   {/* Add Mint trigger — same shared form as /settings (T5.2.c). */}
                   <div className="px-1 py-3">
-                    <AddMintForm
-                      onAddMint={handleAddMint}
-                      triggerLabel={t("mint.addMint")}
-                      variant="sheet"
-                    />
+                    <AddMintForm onAddMint={handleAddMint} variant="sheet" />
                   </div>
                 </div>
               </div>

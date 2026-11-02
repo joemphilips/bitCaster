@@ -83,7 +83,7 @@ describe("NotificationBell held position results", () => {
     let navigated: string | null = null;
 
     openBell((href) => (navigated = href));
-    fireEvent.click(screen.getByText(`You won the bet for ${TITLE}! Please cash it.`));
+    fireEvent.click(screen.getByText(`You won your bet on “${TITLE}”. Please cash it.`));
 
     expect(navigated).toBe(`/portfolio?tab=closed&position=${encodeURIComponent(`${COND}-Alice`)}`);
   });
@@ -111,6 +111,22 @@ describe("NotificationBell held position results", () => {
       screen.getByText(`「${TITLE}」の予想が当たりました！換金してください。`),
     ).toBeInTheDocument();
     expect(screen.getByText(`「${TITLE}」の予想は外れました 😢`)).toBeInTheDocument();
+  });
+});
+
+describe("NotificationBell result icons", () => {
+  it("marks a lost position with its own icon, not the market-closed flag", () => {
+    useNotificationsStore.getState().add({ ...persistedBareMarketClosed(), marketTitle: TITLE });
+    useNotificationsStore.getState().add(positionClosed("position_lost", "Bob"));
+    openBell();
+
+    const icon = (text: string) =>
+      screen.getByText(text).closest("button")!.querySelector("svg")!.getAttribute("class");
+    const closed = icon(`Market closed: ${TITLE}`);
+    const lost = icon(`You lost your bet for ${TITLE} 😢`);
+    expect(closed).toMatch(/lucide-flag/);
+    expect(lost).not.toMatch(/lucide-flag/);
+    expect(lost).not.toMatch(/text-amber-500/);
   });
 });
 

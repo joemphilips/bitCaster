@@ -61,6 +61,15 @@
   }
 }
 
+/* Japanese text breaks between phrases, not inside a word. The document language
+   comes from the active app language. A browser without auto-phrase keeps its
+   default line breaking. */
+@supports (word-break: auto-phrase) {
+  :lang(ja) {
+    word-break: auto-phrase;
+  }
+}
+
 /* Button shine animation used by the "Create Market" CTA in CreatorDashboard
    (via the arbitrary `animate-[shimmer_3s_infinite]` utility). Defined outside
    @layer base so Tailwind's JIT purge does not drop it. */

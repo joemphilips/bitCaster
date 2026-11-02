@@ -1,7 +1,15 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
-import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from "lucide-react";
+import {
+  Plus,
+  TrendingUp,
+  CheckCircle2,
+  BarChart3,
+  Coins,
+  AlertCircle,
+  Loader2,
+} from "lucide-react";
 import { formatBtc } from "@/lib/format";
 import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 import { publishBrowserOracleOutcome } from "@/lib/oracleAttestation";
@@ -18,9 +26,10 @@ import type { CreatorOraclePublication } from "./CreatorMarketActions";
 import { AnalyticsComingSoon } from "./AnalyticsComingSoon";
 import type { CreatorEngineDataStatus } from "@/types/portfolio";
 
+// A refresh of known data shows one list-level indicator instead of a stale label.
 const ENGINE_VOLUME_SUBLABELS: Record<CreatorEngineDataStatus, string> = {
   current: "creator.statTotalVolumeSub",
-  stale: "creator.engineDataStale",
+  stale: "creator.statTotalVolumeSub",
   unavailable: "creator.engineDataUnavailable",
 };
 
@@ -341,6 +350,15 @@ export function CreatorDashboard() {
 
             {/* Market list */}
             <div>
+              {engineDataStatus === "stale" && isLoading && (
+                <p
+                  role="status"
+                  className="mb-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400"
+                >
+                  <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                  {t("creator.engineDataUpdating")}
+                </p>
+              )}
               {markets.length === 0 ? (
                 <EmptyState isLoading={isLoading} onCreate={handleCreateMarket} />
               ) : (
@@ -375,11 +393,7 @@ export function CreatorDashboard() {
                   </p>
                 ) : (
                   <label className="mt-4 block">
-                    <span className="block [overflow-wrap:anywhere]">
-                      {t("creator.winningOutcomeLabel", {
-                        title: resolutionDialog.title,
-                      })}
-                    </span>
+                    <span className="block">{t("creator.winningOutcomeLabel")}</span>
                     <select
                       data-testid="creator-oracle-outcome"
                       value={resolutionDialog.outcome}
@@ -406,7 +420,7 @@ export function CreatorDashboard() {
                 )}
                 <p className="mt-3">{t("creator.resolveChoiceNotice")}</p>
                 {resolutionError && (
-                  <p role="alert" className="mt-3 text-sm text-rose-600">
+                  <p role="alert" className="mt-3 text-sm text-red-500 dark:text-red-400">
                     {t(resolutionError)}
                   </p>
                 )}
@@ -429,7 +443,7 @@ export function CreatorDashboard() {
                       aria-describedby={explanationTooLong ? explanationErrorId : undefined}
                       className={`mt-2 min-h-28 w-full rounded-lg border p-3 dark:bg-slate-800 ${
                         explanationTooLong
-                          ? "border-rose-500"
+                          ? "border-red-400"
                           : "border-slate-300 dark:border-slate-700"
                       }`}
                     />
@@ -437,12 +451,9 @@ export function CreatorDashboard() {
                       <p
                         id={explanationErrorId}
                         role="alert"
-                        className="mt-2 text-sm text-rose-600"
+                        className="mt-2 text-sm text-red-500 dark:text-red-400"
                       >
-                        {t("creator.explanationTooLong", {
-                          limit: ORACLE_EXPLANATION_UTF8_BYTES_MAX,
-                          bytes: explanationBytes,
-                        })}
+                        {t("creator.explanationTooLong")}
                       </p>
                     )}
                   </>
@@ -450,7 +461,7 @@ export function CreatorDashboard() {
                 <div className="mt-6 flex justify-end gap-3">
                   <button
                     type="button"
-                    className="shrink-0 whitespace-nowrap"
+                    className="shrink-0 whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-30"
                     disabled={resolvingMarketId !== null}
                     onClick={dismiss}
                   >
@@ -466,7 +477,7 @@ export function CreatorDashboard() {
                       !resolutionDialog.outcomes.includes(selectedOutcome) ||
                       explanationTooLong
                     }
-                    className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
+                    className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-30"
                   >
                     {t(resolutionAction)}
                   </button>

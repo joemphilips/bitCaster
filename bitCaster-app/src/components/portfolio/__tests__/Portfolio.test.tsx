@@ -249,7 +249,7 @@ describe("PositionRow", () => {
     expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
       backgroundColor: "#123ABC",
     });
-    expect(screen.getByLabelText(/claim payout.*ethereum/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/cash out .*ethereum/i)).toBeInTheDocument();
   });
 
   it("shows a winning payout value and Claim action without reporting profit", () => {
@@ -257,7 +257,7 @@ describe("PositionRow", () => {
 
     expect(screen.getByText(/Won/)).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/claim payout.*ethereum/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/cash out .*ethereum/i)).toBeInTheDocument();
     expect(container.querySelector(".text-xs.font-mono")).not.toBeInTheDocument();
     expect(container).not.toHaveTextContent(/%/);
   });
@@ -270,10 +270,10 @@ describe("PositionRow", () => {
       buttonName: /sell.*bitcoin/i,
     },
     {
-      action: "Claim",
+      action: "Cash out",
       kind: "claim",
       position: mockPositions[1],
-      buttonName: /claim payout.*ethereum/i,
+      buttonName: /^cash out .*ethereum/i,
     },
     {
       action: "Remove",
@@ -539,7 +539,7 @@ describe("Portfolio", () => {
       view.unmount();
       renderPortfolio(props);
       expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
-      await userEvent.click(screen.getByRole("button", { name: /claim payout/i }));
+      await userEvent.click(screen.getByRole("button", { name: /^cash out /i }));
       expect(onClaimPayout).toHaveBeenCalledWith(position.id);
     });
     it("shows active positions by default", () => {
@@ -702,7 +702,7 @@ describe("Portfolio", () => {
       const onClaimPayout = vi.fn();
       renderPortfolio({ positionsTab: "closed", onClaimPayout });
       // Winner classification authorizes Claim independently of displayed value.
-      expect(screen.getByLabelText(/claim.*ethereum/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/cash out .*ethereum/i)).toBeInTheDocument();
     });
 
     it("does not show Claim button on losing closed positions", () => {
@@ -739,9 +739,10 @@ describe("Portfolio", () => {
         expect(badge).toHaveTextContent(text + emoji);
         expect(badge.querySelector('[aria-hidden="true"]')).toHaveTextContent(emoji);
       }
-      expect(
-        screen.getByRole("button", { name: "Will Ethereum merge complete? の報酬を受け取る" }),
-      ).toBeInTheDocument();
+      const cashOut = screen.getByRole("button", {
+        name: "Will Ethereum merge complete? を換金する",
+      });
+      expect(cashOut).toHaveTextContent(/^換金する$/);
     });
 
     it("uses explicit Won and Lost text with neutral closed-position colors", () => {
