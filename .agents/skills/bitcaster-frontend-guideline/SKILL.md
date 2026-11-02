@@ -13,6 +13,12 @@ description: Apply bitCaster GUI layout, interface copy, form limit, browser sta
 - Use precise CLI output that supports diagnosis.
 - Keep required recovery actions and material funds warnings in both interfaces.
 - Do not show relay delivery counts for a routine successful profile save.
+- Japanese UI copy uses マーケット for a market, never 市場.
+- The action that claims a winning position is 換金する / Cash out, the same
+  verb as its notification.
+- Quote a market title in running text (“{market}”, 「{market}」), because
+  most titles end in a question mark.
+- Keep every interface string in the locale files, in English and Japanese.
 
 ## Form Limits
 
