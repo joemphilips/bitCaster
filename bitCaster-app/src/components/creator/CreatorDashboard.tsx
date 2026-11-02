@@ -45,16 +45,27 @@ interface StatCardProps {
 function StatCard({ label, value, subValue, icon }: StatCardProps) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      {/* A long label wraps before it can touch the icon. */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
           {label}
         </span>
-        <span className="text-slate-400 dark:text-slate-500">{icon}</span>
+        <span className="shrink-0 text-slate-400 dark:text-slate-500">{icon}</span>
       </div>
       <div className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{value}</div>
       <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{subValue}</div>
     </div>
   );
+}
+
+/**
+ * The user counts characters, not UTF-8 bytes. Estimate how many typed characters exceed the
+ * byte limit from the average bytes per character of this text.
+ */
+function explanationExcessCharacters(text: string, bytes: number): number {
+  const overflow = bytes - ORACLE_EXPLANATION_UTF8_BYTES_MAX;
+  const bytesPerCharacter = bytes / Math.max(1, Array.from(text).length);
+  return Math.max(1, Math.ceil(overflow / bytesPerCharacter));
 }
 
 function retainedResolution(marketId: string, state = useCreatorMarketsStore.getState()) {
@@ -443,7 +454,7 @@ export function CreatorDashboard() {
                       aria-describedby={explanationTooLong ? explanationErrorId : undefined}
                       className={`mt-2 min-h-28 w-full rounded-lg border p-3 dark:bg-slate-800 ${
                         explanationTooLong
-                          ? "border-red-400"
+                          ? "border-red-400 focus:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-400"
                           : "border-slate-300 dark:border-slate-700"
                       }`}
                     />
@@ -453,7 +464,12 @@ export function CreatorDashboard() {
                         role="alert"
                         className="mt-2 text-sm text-red-500 dark:text-red-400"
                       >
-                        {t("creator.explanationTooLong")}
+                        {t("creator.explanationTooLong", {
+                          count: explanationExcessCharacters(
+                            displayedExplanation,
+                            explanationBytes,
+                          ),
+                        })}
                       </p>
                     )}
                   </>

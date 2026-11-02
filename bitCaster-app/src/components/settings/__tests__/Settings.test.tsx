@@ -514,6 +514,73 @@ describe("Settings deferred profile editing", () => {
   });
 });
 
+describe("Settings language", () => {
+  const walletSeedPhrase =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+  const mints = [
+    {
+      url: "https://mint.example",
+      name: "Mint A",
+      isDefault: true,
+      connectionStatus: "connected" as const,
+      supportsCTF: true,
+      addedDate: "2026-01-01",
+    },
+  ];
+
+  it("shows the Cashu settings in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(
+        <Settings
+          activeCategory="cashu"
+          settings={{ ...settingsState(), cashu: { mints } }}
+          seedPhrase={walletSeedPhrase}
+          walletBackupState="needs_backup"
+        />,
+      );
+      for (const text of [
+        "設定",
+        "一般設定",
+        "Cashu設定",
+        "Nostr設定",
+        "接続済みミント",
+        "CTF対応",
+        "デフォルト",
+        "シードバックアップ",
+        "ウォレットのシードフレーズをバックアップします。このフレーズを持つ人は誰でも資産にアクセスできます。",
+        "このブラウザーに頼る前に、このフレーズを保存してください。",
+      ])
+        expect(screen.getByText(text)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "シードフレーズを表示" })).toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          /General Settings|Cashu Settings|Nostr Settings|Connected Mints|CTF supported|Seed Backup|View Seed Phrase|Default/,
+        ),
+      ).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("shows the Nostr connection controls in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(<Settings activeCategory="nostr" settings={settingsState()} />);
+      expect(screen.getByText("Nostrに接続")).toBeInTheDocument();
+      expect(screen.getByText("Nostrの認証方法を選択します。")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "NIP-07拡張機能で接続" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "秘密鍵で接続" }));
+      expect(screen.getByText("秘密鍵（nsec または ncryptsec）")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "鍵を表示" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "リレーを追加" })).toBeInTheDocument();
+      expect(screen.queryByText(/Connect to Nostr|Pasting nsec|Private Key \(/)).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+});
+
 describe("Settings profile indexer", () => {
   it("links the Japanese description to the Japanese user guide", async () => {
     await i18n.changeLanguage("ja");

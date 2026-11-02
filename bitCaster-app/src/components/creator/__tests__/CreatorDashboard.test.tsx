@@ -132,6 +132,25 @@ describe("CreatorDashboard", () => {
     },
   );
 
+  it("keeps a gap between each statistic label and its icon", () => {
+    mockUseCreatorDashboardState.mockReturnValue({
+      pubkey: "a".repeat(64),
+      stats: emptyStats(),
+      markets: [],
+      isLoading: false,
+      error: null,
+      refresh: vi.fn(),
+      engineDataStatus: "current",
+    });
+    renderDashboard();
+    for (const name of ["Active Markets", "Resolved", "Total Volume", "Fees Earned"]) {
+      const label = screen.getByText(name);
+      expect(label).toHaveClass("min-w-0");
+      expect(label.parentElement).toHaveClass("gap-2");
+      expect(label.nextElementSibling).toHaveClass("shrink-0");
+    }
+  });
+
   it("shows no updating indicator when a refresh of known data failed", () => {
     mockUseCreatorDashboardState.mockReturnValue({
       pubkey: "a".repeat(64),
@@ -480,16 +499,38 @@ describe("CreatorDashboard", () => {
     // 1,366 three-byte characters are 4,098 UTF-8 bytes.
     fireEvent.change(field, { target: { value: "あ".repeat(1_366) } });
 
-    const message = "The explanation is too long. Shorten it.";
+    // Two bytes over the limit at three bytes a character is about one character.
+    const message = "The explanation is about 1 character too long.";
     const error = within(dialog).getByRole("alert");
     expect(error).toHaveTextContent(message);
     expect(error).not.toHaveTextContent(/UTF-8|bytes/);
     // The same field error style as the other form limits.
     expect(error).toHaveClass("text-red-500", "dark:text-red-400");
     expect(field).toHaveClass("border-red-400");
+    // The focus style keeps the invalid state visible while the user types.
+    expect(field).toHaveClass("focus:border-red-400", "focus:ring-red-400", "focus:outline-none");
     expect(field).toHaveAttribute("aria-invalid", "true");
     expect(field).toHaveAccessibleDescription(message);
     expect(confirm).toBeDisabled();
+
+    // Four one-byte characters over the limit.
+    fireEvent.change(field, { target: { value: "a".repeat(4_100) } });
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "The explanation is about 4 characters too long.",
+    );
+
+    // 14 bytes over the limit at three bytes a character is about five characters.
+    await act(async () => {
+      await i18n.changeLanguage("ja");
+    });
+    try {
+      fireEvent.change(field, { target: { value: "あ".repeat(1_370) } });
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("説明が約5文字長すぎます。");
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
 
     fireEvent.change(field, { target: { value: "a".repeat(4_096) } });
     expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();

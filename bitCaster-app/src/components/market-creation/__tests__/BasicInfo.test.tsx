@@ -146,19 +146,23 @@ describe("thumbnail retention controls", () => {
     expect(onRemove).toHaveBeenCalledOnce();
   });
 
-  it("shows a rejected file's error without a selection to remove and without blocking Next", () => {
-    const message = "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
+  it("shows a rejected file as a neutral notice without a selection to remove or a blocked Next", () => {
+    const message = "Image not added. Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
     render(
       <BasicInfo
         data={{ ...defaultData, title: "Test", closingDate: futureDate() }}
         categoryTags={categoryTags}
         onThumbnailRemove={vi.fn()}
-        thumbnailRejectionError={message}
+        thumbnailRejectionNotice={message}
       />,
     );
 
     expect(screen.getByText("No image")).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    // The draft is valid without an image, so the notice is not an error.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent(message);
+    expect(notice.className).not.toMatch(/text-red/);
     expect(screen.getByRole("button", { name: "Upload image" })).toHaveAccessibleDescription(
       message,
     );

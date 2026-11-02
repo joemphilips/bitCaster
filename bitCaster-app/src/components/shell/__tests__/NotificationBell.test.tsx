@@ -93,7 +93,7 @@ describe("NotificationBell held position results", () => {
     let navigated: string | null = null;
 
     openBell((href) => (navigated = href));
-    fireEvent.click(screen.getByText(`You lost your bet for ${TITLE} 😢`));
+    fireEvent.click(screen.getByText(`You lost your bet on “${TITLE}” 😢`));
 
     expect(navigated).toBe(
       `/portfolio?tab=closed&position=${encodeURIComponent(`${COND}-Bob|Carol`)}`,
@@ -123,7 +123,7 @@ describe("NotificationBell result icons", () => {
     const icon = (text: string) =>
       screen.getByText(text).closest("button")!.querySelector("svg")!.getAttribute("class");
     const closed = icon(`Market closed: ${TITLE}`);
-    const lost = icon(`You lost your bet for ${TITLE} 😢`);
+    const lost = icon(`You lost your bet on “${TITLE}” 😢`);
     expect(closed).toMatch(/lucide-flag/);
     expect(lost).not.toMatch(/lucide-flag/);
     expect(lost).not.toMatch(/text-amber-500/);

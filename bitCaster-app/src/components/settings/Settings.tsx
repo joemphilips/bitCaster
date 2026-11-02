@@ -382,14 +382,16 @@ export function Settings({
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-      <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Settings</h1>
+      <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
+        {t("settings.title")}
+      </h1>
 
       {/* ════════════════════════════════════════════════════════════════════ */}
       {/* 1. General Settings                                                */}
       {/* ════════════════════════════════════════════════════════════════════ */}
       <CategoryCard
         icon={Settings2}
-        label="General Settings"
+        label={t("settings.general")}
         category="general"
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
@@ -397,13 +399,13 @@ export function Settings({
         {/* Theme */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Theme
+            {t("settings.theme")}
           </h3>
           <SegmentedControl<ThemeOption>
             options={[
-              { label: "Light", value: "light" },
-              { label: "Dark", value: "dark" },
-              { label: "System", value: "system" },
+              { label: t("settings.themeLight"), value: "light" },
+              { label: t("settings.themeDark"), value: "dark" },
+              { label: t("settings.themeSystem"), value: "system" },
             ]}
             value={general.theme}
             onChange={onThemeChange}
@@ -458,20 +460,25 @@ export function Settings({
         {/* About */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-            About
+            {t("settings.about")}
           </h3>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-slate-600 dark:text-slate-400">Version</span>
+              <span className="text-sm text-slate-600 dark:text-slate-400">
+                {t("common.version")}
+              </span>
               <span className="text-sm font-mono text-slate-900 dark:text-white">
                 {general.appVersion}
               </span>
             </div>
             <div className="border-t border-slate-100 dark:border-slate-700" />
             {[
-              { label: "Source Code", href: "https://github.com/joemphilips/bitCaster" },
-              { label: "Documentation", href: "https://bitcasterdoc.com" },
-              { label: "Support", href: "https://github.com/joemphilips/bitCaster/issues" },
+              { label: t("settings.sourceCode"), href: "https://github.com/joemphilips/bitCaster" },
+              { label: t("settings.documentation"), href: "https://bitcasterdoc.com" },
+              {
+                label: t("settings.support"),
+                href: "https://github.com/joemphilips/bitCaster/issues",
+              },
             ].map((link) => (
               <a
                 key={link.label}
@@ -495,7 +502,7 @@ export function Settings({
       {/* ════════════════════════════════════════════════════════════════════ */}
       <CategoryCard
         icon={Landmark}
-        label="Cashu Settings"
+        label={t("settings.cashu")}
         category="cashu"
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
@@ -510,7 +517,7 @@ export function Settings({
         {/* Connected Mints */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-            Connected Mints
+            {t("settings.connectedMints")}
           </h3>
           <div className="space-y-3">
             {cashu.mints.map((mint) => (
@@ -549,7 +556,9 @@ export function Settings({
                           : "bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300"
                       }`}
                     >
-                      {mint.supportsCTF ? "CTF supported" : "Ecash only"}
+                      {mint.supportsCTF
+                        ? t("settings.mintSupportsCtf")
+                        : t("settings.mintEcashOnly")}
                     </span>
                   </div>
                   <div className="font-mono text-xs text-slate-500 dark:text-slate-400 truncate">
@@ -558,7 +567,7 @@ export function Settings({
                 </div>
                 {mint.isDefault && (
                   <span className="shrink-0 px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-xs font-semibold">
-                    Default
+                    {t("settings.default")}
                   </span>
                 )}
                 {!mint.isDefault && (
@@ -568,7 +577,7 @@ export function Settings({
                       onRemoveMint?.(mint.url);
                     }}
                     className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                    title="Remove mint"
+                    title={t("settings.removeMint")}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -591,15 +600,15 @@ export function Settings({
           <div>
             {/* Seed Backup */}
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              Seed Backup
+              {t("settings.seedBackup")}
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-              Back up your wallet seed phrase. Anyone with this phrase can access your funds.
+              {t("settings.seedBackupDesc")}
             </p>
             {walletBackupState === "needs_backup" && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
-                Save this phrase before relying on this browser.
+                {t("settings.seedBackupReminder")}
               </div>
             )}
             <button
@@ -607,7 +616,7 @@ export function Settings({
               className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
             >
               <Eye className="w-4 h-4" />
-              View Seed Phrase
+              {t("settings.viewSeedPhrase")}
             </button>
             {onReplaceWallet && (
               <>
@@ -632,7 +641,7 @@ export function Settings({
       {/* ════════════════════════════════════════════════════════════════════ */}
       <CategoryCard
         icon={Radio}
-        label="Nostr Settings"
+        label={t("settings.nostr")}
         category="nostr"
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
@@ -641,10 +650,10 @@ export function Settings({
         {!signerConnected && !connectionPending && (
           <div>
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              Connect to Nostr
+              {t("settings.connectNostr")}
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-              Choose how to authenticate with Nostr.
+              {t("settings.signerModeDesc")}
             </p>
             <div className="space-y-3">
               <button
@@ -657,14 +666,14 @@ export function Settings({
                 ) : (
                   <Plug className="w-4 h-4" />
                 )}
-                Connect with NIP-07 Extension
+                {t("settings.connectNip07")}
               </button>
               <button
                 onClick={() => setShowNsecInput(!showNsecInput)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
               >
                 <KeyRound className="w-4 h-4" />
-                Connect with Private Key
+                {t("settings.connectPrivateKey")}
               </button>
             </div>
           </div>
@@ -724,14 +733,13 @@ export function Settings({
               <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
                 <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-sm text-amber-800 dark:text-amber-300">
-                  <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is
-                  necessary for now if you want to become an oracle. It is left for future
-                  improvement to make this not mandatory.
+                  <span className="font-semibold">{t("settings.nsecPasteWarningLabel")}</span>{" "}
+                  {t("settings.nsecPasteWarning")}
                 </p>
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                  Private Key (nsec or ncryptsec)
+                  {t("settings.privateKeyInputLabel")}
                 </h3>
                 <div className="relative">
                   <input
@@ -743,7 +751,7 @@ export function Settings({
                       if (!v.trim().startsWith("ncryptsec1")) setNcryptsecPassphrase("");
                     }}
                     onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
-                    placeholder="nsec1... or ncryptsec1..."
+                    placeholder={t("settings.nsecPlaceholder")}
                     autoComplete="off"
                     spellCheck={false}
                     className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -751,6 +759,7 @@ export function Settings({
                   />
                   <button
                     onClick={() => setShowNsec(!showNsec)}
+                    aria-label={showNsec ? t("settings.hideKey") : t("settings.showKey")}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                   >
                     {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -759,14 +768,14 @@ export function Settings({
                 {isNcryptsec && (
                   <div className="mt-3">
                     <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                      Passphrase
+                      {t("settings.passphrase")}
                     </label>
                     <input
                       type="password"
                       value={ncryptsecPassphrase}
                       onChange={(e) => setNcryptsecPassphrase(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
-                      placeholder="Decrypt passphrase (NIP-49)"
+                      placeholder={t("settings.passphrasePlaceholder")}
                       autoComplete="off"
                       spellCheck={false}
                       className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -781,7 +790,7 @@ export function Settings({
                   className="mt-3 w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
-                  {isNcryptsec ? "Decrypt & Connect" : "Connect"}
+                  {isNcryptsec ? t("settings.decryptAndConnect") : t("common.connect")}
                 </button>
               </div>
             </div>
@@ -811,14 +820,14 @@ export function Settings({
                   ) : (
                     <Plug className="w-4 h-4" />
                   )}
-                  Re-authenticate
+                  {t("settings.reauthenticate")}
                 </button>
               )}
               <button
                 onClick={() => onDisconnectNostr?.()}
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium transition-colors"
               >
-                Disconnect
+                {t("settings.disconnect")}
               </button>
             </div>
             {nostr.canRevealLocalNsec && (
@@ -830,8 +839,7 @@ export function Settings({
                       {t("settings.localNostrKey")}
                     </h4>
                     <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-                      Back up this nsec if you want to recover this Nostr identity outside this
-                      browser.
+                      {t("settings.localNsecBackupHint")}
                     </p>
                     <button
                       onClick={() => setShowGeneratedNsecConfirm(true)}
@@ -855,7 +863,7 @@ export function Settings({
         {/* Relay Management */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-            Relays
+            {t("settings.relays")}
           </h3>
           <div className="space-y-3">
             {nostr.relays.map((relay) => (
@@ -870,7 +878,7 @@ export function Settings({
                 <button
                   onClick={() => onRemoveRelay?.(relay.url)}
                   className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                  title="Remove relay"
+                  title={t("settings.removeRelay")}
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -894,7 +902,7 @@ export function Settings({
                 disabled={!newRelayUrl.trim() || !!relayError}
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
               >
-                Add
+                {t("common.add")}
               </button>
               <button
                 onClick={() => {
@@ -903,7 +911,7 @@ export function Settings({
                 }}
                 className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               {relayError && (
                 <div className="basis-full text-xs text-red-500 dark:text-red-400">
@@ -917,7 +925,7 @@ export function Settings({
               className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors"
             >
               <Plus className="w-4 h-4" />
-              Add Relay
+              {t("settings.addRelay")}
             </button>
           )}
         </div>

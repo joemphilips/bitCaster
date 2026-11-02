@@ -153,16 +153,27 @@ function ProfileHeader({
             }
           />
         </div>
-        <h1 className="mt-3 text-2xl font-bold text-slate-900 [overflow-wrap:anywhere] dark:text-white">
-          {title}
-        </h1>
+        {/* Without a name the heading is the short Nostr ID, so its copy control sits beside it. */}
+        <div className="mt-3 flex items-center gap-1">
+          <h1 className="min-w-0 text-2xl font-bold text-slate-900 [overflow-wrap:anywhere] dark:text-white">
+            {title}
+          </h1>
+          {!profile?.displayName && <NpubCopyButton npub={npub} />}
+        </div>
         {profile?.name && profile.name !== profile.displayName && (
           <p className="text-sm text-slate-500 [overflow-wrap:anywhere] dark:text-slate-400">
             @{profile.name}
           </p>
         )}
         {profile?.nip05 && <Nip05Address address={profile.nip05} pubkey={pubkey} />}
-        <NpubCopy npub={npub} showNpub={!!profile?.displayName} />
+        {profile?.displayName && (
+          <div className="mt-1 flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            <span className="font-mono text-xs" title={npub}>
+              {formatShortNpub(npub)}
+            </span>
+            <NpubCopyButton npub={npub} />
+          </div>
+        )}
         {profile && <ProfileDetails profile={profile} />}
         <ProfileStats
           follows={page.status === "ready" ? page.value.follows : null}
@@ -249,6 +260,7 @@ function ProfileDetails({ profile }: { profile: NostrProfilePageMetadata }) {
         <p
           id="profile-about"
           data-testid="profile-about"
+          data-user-content
           className={`mt-3 whitespace-pre-wrap text-sm text-slate-700 [overflow-wrap:anywhere] dark:text-slate-300 ${
             clamped ? "line-clamp-6 sm:line-clamp-none" : ""
           }`}
@@ -284,7 +296,7 @@ function ProfileReadState({ page }: { page: Loadable<NostrProfilePageSnapshot> }
   ) : null;
 }
 
-function NpubCopy({ npub, showNpub }: { npub: string; showNpub: boolean }) {
+function NpubCopyButton({ npub }: { npub: string }) {
   const { t } = useTranslation();
   const copy = async () => {
     try {
@@ -298,22 +310,15 @@ function NpubCopy({ npub, showNpub }: { npub: string; showNpub: boolean }) {
     }
   };
   return (
-    <div className="mt-1 flex items-center gap-1 text-slate-500 dark:text-slate-400">
-      {showNpub && (
-        <span className="font-mono text-xs" title={npub}>
-          {formatShortNpub(npub)}
-        </span>
-      )}
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={t("userProfile.copyNpub")}
-        title={t("userProfile.copyNpub")}
-        className="rounded-full p-1.5 transition-colors hover:bg-slate-200 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-white"
-      >
-        <Copy className="h-3.5 w-3.5" />
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={t("userProfile.copyNpub")}
+      title={t("userProfile.copyNpub")}
+      className="shrink-0 rounded-full p-1.5 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+    >
+      <Copy className="h-3.5 w-3.5" />
+    </button>
   );
 }
 
@@ -407,7 +412,10 @@ function RecentNotes({ page }: { page: Loadable<NostrProfilePageSnapshot> }) {
               className="rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900"
             >
               <NoteTime seconds={note.createdAt} />
-              <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 [overflow-wrap:anywhere] dark:text-slate-200">
+              <p
+                data-user-content
+                className="mt-1 whitespace-pre-wrap text-sm text-slate-800 [overflow-wrap:anywhere] dark:text-slate-200"
+              >
                 {note.content}
               </p>
             </li>

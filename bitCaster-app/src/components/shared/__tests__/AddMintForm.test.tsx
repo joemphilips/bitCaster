@@ -27,16 +27,20 @@ describe("AddMintForm", () => {
     expect(screen.queryByTestId("add-mint-url-input")).not.toBeInTheDocument();
   });
 
-  it("surfaces error on failed add and stays expanded so the user can retry", async () => {
+  it("shows a localized connection error, not the raw error text, and stays expanded", async () => {
     const user = userEvent.setup();
-    const onAddMint = vi.fn().mockRejectedValue(new Error("Failed to connect"));
+    const onAddMint = vi
+      .fn()
+      .mockRejectedValue(new Error("Failed to connect — mint is unreachable or invalid"));
     render(<AddMintForm onAddMint={onAddMint} />);
 
     await user.click(screen.getByTestId("add-mint-trigger"));
     await user.type(screen.getByTestId("add-mint-url-input"), "https://broken.example.com");
     await user.click(screen.getByTestId("add-mint-submit"));
 
-    expect(await screen.findByTestId("add-mint-error")).toHaveTextContent("Failed to connect");
+    const error = await screen.findByTestId("add-mint-error");
+    expect(error).toHaveTextContent(/^Could not connect to the mint\.$/);
+    expect(error).not.toHaveTextContent(/unreachable/);
     expect(screen.getByTestId("add-mint-url-input")).toBeInTheDocument();
   });
 
@@ -57,6 +61,19 @@ describe("AddMintForm", () => {
     } finally {
       await i18n.changeLanguage("en");
     }
+  });
+
+  it("puts the actions below the URL field when the row is narrow", async () => {
+    const user = userEvent.setup();
+    render(<AddMintForm onAddMint={vi.fn()} />);
+    await user.click(screen.getByTestId("add-mint-trigger"));
+
+    const input = screen.getByTestId("add-mint-url-input");
+    // jsdom has no layout. The row wraps, and the field fills a narrow row.
+    expect(input.parentElement).toHaveClass("flex-wrap");
+    expect(input).toHaveClass("basis-full", "min-w-0", "sm:basis-0");
+    for (const name of ["Add", "Cancel"])
+      expect(screen.getByRole("button", { name })).toHaveClass("shrink-0");
   });
 
   it("ignores empty submissions", async () => {

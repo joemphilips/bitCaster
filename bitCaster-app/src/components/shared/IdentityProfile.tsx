@@ -70,7 +70,10 @@ export function IdentityProfile({
           {action}
         </div>
         {bio && (
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600 dark:text-slate-300 [overflow-wrap:anywhere]">
+          <p
+            data-user-content
+            className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600 dark:text-slate-300 [overflow-wrap:anywhere]"
+          >
             {bio}
           </p>
         )}

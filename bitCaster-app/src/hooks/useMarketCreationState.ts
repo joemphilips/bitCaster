@@ -303,9 +303,7 @@ export function useMarketCreationState() {
   const thumbnailError = thumbnailErrorKey === null ? null : t(thumbnailErrorKey);
   // A rejected file never becomes the selection. Its error does not block the draft.
   const [thumbnailRejected, setThumbnailRejected] = useState(false);
-  const thumbnailRejectionError = thumbnailRejected
-    ? t("marketCreation.imageRetentionInvalid")
-    : null;
+  const thumbnailRejectionNotice = thumbnailRejected ? t("marketCreation.imageNotAdded") : null;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
@@ -998,7 +996,7 @@ export function useMarketCreationState() {
     thumbnailFile,
     thumbnailPending,
     thumbnailError,
-    thumbnailRejectionError,
+    thumbnailRejectionNotice,
     onThumbnailRemove,
     isSubmitting,
     submitError,

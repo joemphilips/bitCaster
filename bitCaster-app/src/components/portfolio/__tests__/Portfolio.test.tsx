@@ -415,7 +415,7 @@ describe("Portfolio", () => {
           .find((element) => element.textContent?.includes("last successful"));
         expect(notice).toHaveTextContent("Showing the last successful portfolio estimate.");
         expect(notice).toHaveTextContent("It is not a spendable balance.");
-        expect(notice).toHaveTextContent("Loading...");
+        expect(notice).toHaveTextContent("Loading…");
         expect(notice).not.toHaveTextContent("Local wallet data is shown.");
         if (error) expect(notice).toHaveTextContent("Portfolio monitoring is unavailable.");
       },

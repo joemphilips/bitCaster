@@ -24,6 +24,9 @@ describe("ResolutionInfo", () => {
     );
     expect(screen.getByText("Final Outcome")).toBeVisible();
     expect(await screen.findByText(/<b>Official result<\/b>/)).toBeVisible();
+    // Oracle text keeps normal line breaking in Japanese.
+    expect(screen.getByText(/<b>Official result<\/b>/)).toHaveAttribute("data-user-content");
+    expect(screen.getByText("Rule")).toHaveAttribute("data-user-content");
     expect(container.querySelector("b")).toBeNull();
     expect(screen.getByRole("region", { name: "Verified oracle explanation" })).toBeVisible();
   });

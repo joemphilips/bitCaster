@@ -532,6 +532,7 @@ export function PriceChartAnnotations({
                     >
                       <span
                         data-testid="price-chart-comment-preview"
+                        data-user-content
                         className="line-clamp-2 break-words [overflow-wrap:anywhere]"
                       >
                         {commentPreview(group.comments[0]?.content ?? "")}
@@ -616,7 +617,10 @@ export function PriceChartAnnotations({
                                       </button>
                                     )}
                                   </div>
-                                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+                                  <p
+                                    data-user-content
+                                    className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]"
+                                  >
                                     {comment.content}
                                   </p>
                                 </li>

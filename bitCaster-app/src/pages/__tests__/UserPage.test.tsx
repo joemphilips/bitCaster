@@ -147,6 +147,13 @@ describe("UserPage", () => {
     expect(await screen.findByText("1,234 followers via Primal")).toBeInTheDocument();
     expect(screen.getByText("First seen by Primal in December 2022")).toBeInTheDocument();
     await waitFor(() =>
+      expect(
+        screen
+          .getAllByTestId("profile-note")
+          .map((note) => note.querySelector("[data-user-content]")),
+      ).not.toContain(null),
+    );
+    await waitFor(() =>
       expect(screen.getAllByTestId("profile-note").map((note) => note.textContent)).toEqual([
         expect.stringContaining("newest note"),
         expect.stringContaining("middle note"),
@@ -257,7 +264,22 @@ describe("UserPage", () => {
     expect(screen.queryByText(/^@/)).not.toBeInTheDocument();
     // The title already shows the short Nostr ID. The copy control does not repeat it.
     expect(screen.getAllByText(shortNpub)).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Copy Nostr ID" })).toBeInTheDocument();
+    // The copy control sits on the heading line, not alone on its own line.
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.parentElement).toContainElement(
+      screen.getByRole("button", { name: "Copy Nostr ID" }),
+    );
+    expect(heading.parentElement).toHaveClass("flex", "items-center");
+  });
+
+  it("keeps the copy control beside the short Nostr ID when the profile has a name", async () => {
+    serve(relays[0]!, [profileEvent({ display_name: "Frank" })]);
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "Frank" });
+    const copy = screen.getByRole("button", { name: "Copy Nostr ID" });
+    expect(heading).not.toContainElement(copy);
+    expect(copy.parentElement).toContainElement(screen.getByText(shortNpub));
   });
 
   it("shows no banner placeholder without a banner and lists created markets before notes", async () => {
@@ -283,6 +305,8 @@ describe("UserPage", () => {
     renderPage();
 
     const description = await screen.findByTestId("profile-about");
+    // User text keeps normal line breaking in Japanese.
+    expect(description).toHaveAttribute("data-user-content");
     expect(description).toHaveClass("line-clamp-6", "sm:line-clamp-none");
     const more = screen.getByRole("button", { name: "More" });
     expect(more).toHaveAttribute("aria-expanded", "false");

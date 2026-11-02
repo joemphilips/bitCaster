@@ -41,7 +41,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onThumbnailRemove,
     thumbnailPending,
     thumbnailError,
-    thumbnailRejectionError,
+    thumbnailRejectionNotice,
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
@@ -299,7 +299,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onThumbnailRemove={onThumbnailRemove}
             thumbnailPending={thumbnailPending}
             thumbnailError={thumbnailError}
-            thumbnailRejectionError={thumbnailRejectionError}
+            thumbnailRejectionNotice={thumbnailRejectionNotice}
             thumbnailLocked={isSubmitting || !!draft.creation}
             onNext={onNext}
           />

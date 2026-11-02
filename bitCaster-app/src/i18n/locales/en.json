@@ -9,7 +9,7 @@
     "remove": "Remove",
     "close": "Close",
     "save": "Save",
-    "loading": "Loading...",
+    "loading": "Loading…",
     "error": "Error",
     "copied": "Copied",
     "copy": "Copy to Clipboard",
@@ -699,6 +699,26 @@
     "profileAbsent": "No public profile was found.",
     "profileAnonymous": "Anon",
     "profileEditAction": "Edit",
+    "mintSupportsCtf": "CTF supported",
+    "mintEcashOnly": "Ecash only",
+    "removeMint": "Remove mint",
+    "seedBackupReminder": "Save this phrase before relying on this browser.",
+    "connectNostr": "Connect to Nostr",
+    "connectNip07": "Connect with NIP-07 Extension",
+    "connectPrivateKey": "Connect with Private Key",
+    "nsecPasteWarningLabel": "WARNING:",
+    "nsecPasteWarning": "Pasting nsec is dangerous. This is necessary for now if you want to become an oracle. It is left for future improvement to make this not mandatory.",
+    "privateKeyInputLabel": "Private Key (nsec or ncryptsec)",
+    "nsecPlaceholder": "nsec1... or ncryptsec1...",
+    "passphrase": "Passphrase",
+    "passphrasePlaceholder": "Decrypt passphrase (NIP-49)",
+    "decryptAndConnect": "Decrypt & Connect",
+    "showKey": "Show key",
+    "hideKey": "Hide key",
+    "reauthenticate": "Re-authenticate",
+    "disconnect": "Disconnect",
+    "localNsecBackupHint": "Back up this nsec if you want to recover this Nostr identity outside this browser.",
+    "removeRelay": "Remove relay",
     "profileFetching": "Fetching profile…",
     "profileReadUnavailable": "The profile could not be refreshed. Check your selected relays and retry.",
     "profileRefresh": "Refresh",
@@ -753,7 +773,8 @@
     "resolveDialogTitle": "Close this market",
     "confirmResolution": "Close market with this outcome",
     "explanationOptional": "Public explanation (optional)",
-    "explanationTooLong": "The explanation is too long. Shorten it.",
+    "explanationTooLong_one": "The explanation is about {{count}} character too long.",
+    "explanationTooLong_other": "The explanation is about {{count}} characters too long.",
     "oracleRecoveryRequired": "Resolution is incomplete. Enable browser storage and restore the original oracle key and announcement. The saved outcome is retried automatically. Do not create another announcement.",
     "resolutionPublishing": "Sending result…",
     "resolutionPublished": "Published",
@@ -939,6 +960,7 @@
     "imageRetentionMissing": "The selected image is missing from this browser. Select it again or remove it before continuing.",
     "imageRetentionFailed": "The image could not be saved in this browser. Enable browser storage and select the image again, or remove it before continuing.",
     "imageRetentionInvalid": "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.",
+    "imageNotAdded": "Image not added. Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.",
     "creationImageMismatch": "The registered market image does not match this saved creation. Keep this creation and its browser data. Do not pay again or create a replacement. Automatic image repair is not available."
   },
   "filter": {
@@ -1073,7 +1095,7 @@
     "marketClosed": "Market closed: {{market}}",
     "marketClosedTitle": "A market you follow has closed",
     "positionWon": "You won your bet on “{{market}}”. Please cash it.",
-    "positionLost": "You lost your bet for {{market}} 😢"
+    "positionLost": "You lost your bet on “{{market}}” 😢"
   },
   "topUp": {
     "title": "Top Up Wallet",
@@ -1161,5 +1183,15 @@
     "hoursAgo": "{{hours}}h ago",
     "daysAgo": "{{days}}d ago",
     "unknown": "recently"
+  },
+  "chartRange": {
+    "1h": "1H",
+    "24h": "24H",
+    "7d": "7D",
+    "30d": "1 Month",
+    "1d": "1D",
+    "1w": "1W",
+    "1m": "1M",
+    "all": "ALL"
   }
 }

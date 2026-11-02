@@ -692,17 +692,15 @@ describe("preparation-independent draft image", () => {
     // A rejected file never becomes the draft selection, so it neither blocks nor needs removal.
     expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
     expect(result.current.thumbnailError).toBeNull();
-    expect(result.current.thumbnailRejectionError).toBe(
-      i18n.t("marketCreation.imageRetentionInvalid"),
-    );
+    expect(result.current.thumbnailRejectionNotice).toBe(i18n.t("marketCreation.imageNotAdded"));
 
     try {
       await act(async () => {
         await i18n.changeLanguage("ja");
       });
       await waitFor(() => expect(result.current.thumbnailPending).toBe(false));
-      expect(result.current.thumbnailRejectionError).toBe(
-        i18n.t("marketCreation.imageRetentionInvalid", { lng: "ja" }),
+      expect(result.current.thumbnailRejectionNotice).toBe(
+        i18n.t("marketCreation.imageNotAdded", { lng: "ja" }),
       );
     } finally {
       await i18n.changeLanguage("en");
@@ -726,13 +724,11 @@ describe("preparation-independent draft image", () => {
     expect(useMarketDraftStore.getState().draft.thumbnailId).toBe(selectionId);
     expect(result.current.thumbnailFile?.name).toBe("kept.jpg");
     expect(result.current.thumbnailError).toBeNull();
-    expect(result.current.thumbnailRejectionError).toBe(
-      i18n.t("marketCreation.imageRetentionInvalid"),
-    );
+    expect(result.current.thumbnailRejectionNotice).toBe(i18n.t("marketCreation.imageNotAdded"));
     await act(async () => {
       await result.current.onThumbnailRemove();
     });
-    expect(result.current.thumbnailRejectionError).toBeNull();
+    expect(result.current.thumbnailRejectionNotice).toBeNull();
   });
 
   it("does not let delayed cleanup failure block a newer retained image", async () => {
@@ -1274,7 +1270,7 @@ describe("durable browser market creation", () => {
       }
       if (limit === "thumbnail") {
         // The oversized file is refused when it is selected. It never joins the draft.
-        expect(result.current.thumbnailRejectionError).not.toBeNull();
+        expect(result.current.thumbnailRejectionNotice).not.toBeNull();
         expect(useMarketDraftStore.getState().draft.thumbnailId).toBeUndefined();
         expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
         expect(runtime.feeOperations).toHaveLength(0);

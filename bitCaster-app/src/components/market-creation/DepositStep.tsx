@@ -466,16 +466,20 @@ export function DepositStep({
         <p>{t("marketCreation.ammFundingDisclosure")}</p>
       </div>
 
-      {/* A new payment after a credit hides the old completion while it runs. */}
-      {deliveryProgress && !(deliveryProgress === "credited" && fundingBusy) && (
-        <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-          {deliveryProgress === "credited"
-            ? t("marketCreation.ammFundingComplete")
-            : deliveryProgress === "received"
-              ? t("marketCreation.statusPaymentReceived")
-              : t("marketCreation.statusAwaitingPayment")}
-        </p>
-      )}
+      {/* A new payment after a credit hides the old completion while it runs. The
+          LIQUIDITY tab stays open to later makers, so it announces only a credit from
+          this visit. The creation wizard shows a restored credit as the funded state. */}
+      {deliveryProgress &&
+        !(deliveryProgress === "credited" && fundingBusy) &&
+        (deliveryProgress !== "credited" || presentation === "creation" || showCreditedNotice) && (
+          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+            {deliveryProgress === "credited"
+              ? t("marketCreation.ammFundingComplete")
+              : deliveryProgress === "received"
+                ? t("marketCreation.statusPaymentReceived")
+                : t("marketCreation.statusAwaitingPayment")}
+          </p>
+        )}
 
       <div className="flex flex-col gap-3 sm:flex-row-reverse">
         <button

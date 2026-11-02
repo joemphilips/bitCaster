@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { Chart } from "chart.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -187,6 +187,27 @@ describe("PriceChart", () => {
     expect(nativeChart().scales.y.max).toBe(100);
     expect(nativeChart().scales.y.ticks.map((tick) => tick.label)).toContain("50.00%");
     expect(nativeChart().data.datasets[0].pointRadius).toBe(0);
+  });
+
+  it("names the chart ranges in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      const onTimeframeChange = vi.fn();
+      render(
+        <PriceChart
+          chartTimeframe="30d"
+          priceHistory={{ data: [], timeframe: "30d" }}
+          onTimeframeChange={onTimeframeChange}
+        />,
+      );
+      for (const name of ["1時間", "24時間", "7日", "1か月", "全期間"])
+        expect(screen.getByRole("button", { name })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^(1H|24H|7D|1 Month|ALL)$/ })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "1か月" }));
+      expect(onTimeframeChange).toHaveBeenCalledWith("30d");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("extends the latest confirmed price without appending a history point", () => {
@@ -1454,6 +1475,11 @@ describe("PriceChart", () => {
     expect(screen.getAllByTestId("price-chart-comment-marker")).toHaveLength(2);
     fireEvent.click(screen.getAllByTestId("price-chart-comment-marker")[0]);
     expect(screen.getByRole("dialog")).toHaveTextContent("Comment old");
+    expect(within(screen.getByRole("dialog")).getByText("Comment old")).toHaveAttribute(
+      "data-user-content",
+    );
+    for (const preview of screen.getAllByTestId("price-chart-comment-preview"))
+      expect(preview).toHaveAttribute("data-user-content");
     for (const name of ["1H", "24H", "7D", "1 Month"]) {
       fireEvent.click(screen.getByRole("button", { name }));
       expect(screen.getAllByTestId("price-chart-comment-marker")).toHaveLength(1);

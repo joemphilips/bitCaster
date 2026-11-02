@@ -37,8 +37,9 @@ export function AddMintForm({ onAddMint, variant = "inline" }: AddMintFormProps)
       await onAddMint(trimmed);
       setUrl("");
       setShowInput(false);
-    } catch (e) {
-      setError((e as Error).message || t("mint.connectFailed"));
+    } catch {
+      // Every add failure is a mint that cannot be reached or read. Raw error text is not shown.
+      setError(t("mint.connectFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -69,7 +70,8 @@ export function AddMintForm({ onAddMint, variant = "inline" }: AddMintFormProps)
 
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      {/* On a narrow screen the field fills its own row and the actions wrap below it. */}
+      <div className="flex flex-wrap gap-2">
         <input
           type="url"
           value={url}
@@ -81,14 +83,14 @@ export function AddMintForm({ onAddMint, variant = "inline" }: AddMintFormProps)
           placeholder={t("mint.mintUrlPlaceholder")}
           disabled={submitting}
           data-testid="add-mint-url-input"
-          className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+          className="min-w-0 flex-1 basis-full sm:basis-0 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
           autoFocus
         />
         <button
           onClick={submit}
           disabled={submitting}
           data-testid="add-mint-submit"
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+          className="shrink-0 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
           {t("common.add")}
@@ -96,7 +98,7 @@ export function AddMintForm({ onAddMint, variant = "inline" }: AddMintFormProps)
         <button
           onClick={cancel}
           disabled={submitting}
-          className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors disabled:opacity-60"
+          className="shrink-0 px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors disabled:opacity-60"
         >
           {t("common.cancel")}
         </button>

@@ -234,7 +234,7 @@ sell, or remove tokens in this retained, unverified state.
 
 When a market in which you hold tokens closes with a verified result, the
 Notifications bell shows one entry for that market: "You won your bet on
-“*market*”. Please cash it." or "You lost your bet for *market* 😢". The entry
+“*market*”. Please cash it." or "You lost your bet on “*market*” 😢". The entry
 reports a win when one of the outcomes that you hold won. Select the entry to
 open that position on the Closed tab of Portfolio. A closed market
 without a verified result shows no entry until the result is verified. The

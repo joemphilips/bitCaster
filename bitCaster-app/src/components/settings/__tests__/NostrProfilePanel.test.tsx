@@ -93,6 +93,7 @@ describe("public profile card and editor", () => {
     expect(name.textContent).toMatch(/^Aki arumakaN x+…$/);
     expect(Array.from(name.textContent ?? "")).toHaveLength(101);
     expect(card).toHaveTextContent("Bitcoin researcher. Independent forecasts.");
+    expect(screen.getByText(/^Bitcoin researcher\./)).toHaveAttribute("data-user-content");
   });
 
   it("discards an idle draft on Cancel and opens fresh metadata next time", async () => {

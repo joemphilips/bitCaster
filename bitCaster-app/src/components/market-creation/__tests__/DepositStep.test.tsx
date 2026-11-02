@@ -139,7 +139,7 @@ describe("DepositStep", () => {
     });
   });
 
-  it("reload shows a credited payment as funded and needs a new amount for another payment", async () => {
+  it("reload of the LIQUIDITY tab offers another funding without an old completion notice", async () => {
     const onCredited = vi.fn();
     readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
     executeBrowserMarketFundingDelivery.mockResolvedValue({
@@ -150,7 +150,8 @@ describe("DepositStep", () => {
     const input = screen.getByTestId("amm-funding-custom-budget");
     await waitFor(() => expect(input).toBeEnabled());
 
-    expect(screen.getByText("Market maker funding is complete.")).toBeInTheDocument();
+    // Funding stays open to later makers, so an earlier credit is not announced again.
+    expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
     expect(input).toHaveValue("");
     expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
     expect(onCredited).toHaveBeenCalledOnce();
@@ -196,11 +197,11 @@ describe("DepositStep", () => {
 
     const confirm = screen.getByTestId("confirm-amm-funding");
     expect(confirm).toBeDisabled();
-    expect(confirm).toHaveTextContent("Loading...");
+    expect(confirm).toHaveTextContent("Loading…");
     expect(confirm).not.toHaveTextContent("Paying from wallet…");
 
     await act(async () => resolveHead(null));
-    expect(confirm).not.toHaveTextContent("Loading...");
+    expect(confirm).not.toHaveTextContent("Loading…");
   });
 
   it("refreshes after credited receipt recovery without replaying success presentation", async () => {
@@ -240,7 +241,24 @@ describe("DepositStep", () => {
     timeoutSpy.mockRestore();
   });
 
-  it("shows a resumed payment's credit as the funded state after the form is remounted", async () => {
+  it("restores a credited payment in the creation wizard as the funded state", async () => {
+    readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
+    executeBrowserMarketFundingDelivery.mockResolvedValue({
+      progress: "credited",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    renderStep();
+    await waitFor(() => expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledOnce());
+    await openFunding();
+
+    await waitFor(() => expect(screen.getByTestId("amm-funding-custom-budget")).toBeEnabled());
+    expect(screen.getByText("Market maker funding is complete.")).toBeInTheDocument();
+    expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("");
+    expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
+    expect(screen.queryByTestId("amm-funding-success")).not.toBeInTheDocument();
+  });
+
+  it("announces a LIQUIDITY credit only in the visit that made it", async () => {
     readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
     const transfer = { transferId: "payment-1", requestedAmount: "100000" };
     executeBrowserMarketFundingDelivery
@@ -254,9 +272,9 @@ describe("DepositStep", () => {
     view.unmount();
     renderStep({ presentation: "detail" });
     await waitFor(() => expect(screen.getByTestId("amm-funding-custom-budget")).toBeEnabled());
-    // The remounted form shows the funded state. It does not offer the same amount again.
+    // A later visit does not offer the same amount again and does not repeat the notice.
     expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("");
-    expect(screen.getByText("Market maker funding is complete.")).toBeInTheDocument();
+    expect(screen.queryByText("Market maker funding is complete.")).not.toBeInTheDocument();
     expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
     expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
     expect(executeBrowserMarketFundingDelivery.mock.calls[2]![0].attempt).toEqual({
