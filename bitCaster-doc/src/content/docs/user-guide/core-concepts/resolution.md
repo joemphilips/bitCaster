@@ -29,9 +29,10 @@ with a platform trust score.
 
 Select the oracle in the market header to open its profile page. The page
 shows what the selected Nostr relays return for this key: the banner, the
-picture, the name, the description, the follow count, and the latest notes.
-It also lists the markets created by this key. A NIP-05 address appears only
-when its domain confirms that the address belongs to this key.
+picture, the name, the description, and the follow count. Then it lists the
+markets created by this key, and after them the latest notes. A NIP-05
+address appears only when its domain confirms that the address belongs to
+this key.
 
 An optional profile indexer, the Primal cache service, adds the follower
 count and the date when the indexer first saw activity for this key. The page
@@ -217,14 +218,14 @@ the tokens were not spent. See [settlement and recovery](/user-guide/core-concep
 
 ### Using the browser
 
-Claim checks evidence from the intended oracle when that evidence is available.
+Cash out checks evidence from the intended oracle when that evidence is available.
 The client can reuse verified evidence for the same reported outcome.
 A changed outcome needs new verification or the unverified warning below.
 If the evidence is missing, unavailable, or invalid, the app shows this warning:
 “The mint reports this outcome, but we have not verified evidence from the intended oracle.”
 You can still claim. The wallet must verify each received proof before it records
 the payout. A mint refusal alone does not prove that a holding lost.
-The same warning applies when Remove checks a position through Claim.
+The same warning applies when Remove checks a position through Cash out.
 The message stays visible until you close it.
 
 A restored refusal record can lack verified losing evidence. The wallet keeps
@@ -232,17 +233,17 @@ these conditional tokens and shows their retained amount. You cannot claim,
 sell, or remove tokens in this retained, unverified state.
 
 When a market in which you hold tokens closes with a verified result, the
-Notifications bell shows one entry for that market: "You won the bet for
-*market*! Please cash it." or "You lost your bet for *market* 😢". The entry
+Notifications bell shows one entry for that market: "You won your bet on
+“*market*”. Please cash it." or "You lost your bet for *market* 😢". The entry
 reports a win when one of the outcomes that you hold won. Select the entry to
 open that position on the Closed tab of Portfolio. A closed market
 without a verified result shows no entry until the result is verified. The
 entry appears only in the app. Clear all does not bring the same entries back.
 
-Open Portfolio and select Claim for a winning position. A claim can finish
+Open Portfolio and select Cash out for a winning position. A claim can finish
 in parts. Each completed payout stays in your wallet if another part fails.
 
-If the claim is pending, keep the wallet data and retry Claim. The pending
+If the claim is pending, keep the wallet data and select Cash out again. The pending
 status remains visible after a reload. Retrying recovers the unfinished part;
 it does not credit a completed payout again. A lost connection does not mean
 that the mint rejected the payment.
