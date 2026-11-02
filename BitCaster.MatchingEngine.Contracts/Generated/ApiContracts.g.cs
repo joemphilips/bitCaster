@@ -3951,7 +3951,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
 
         /// <summary>
-        /// Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions.
+        /// Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. During a short read-model catch-up, a request without `ids` can get the last array that the engine read for this market. That array can lag the latest confirmed trade. An empty array then means that no confirmed trade existed at that read.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("latestConfirmedTrades")]

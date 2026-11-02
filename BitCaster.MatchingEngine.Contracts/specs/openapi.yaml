@@ -1167,7 +1167,11 @@ paths:
           description: >
             Latest confirmed trade data is temporarily unavailable. Retry the
             request later. The ProblemDetails `type` is
-            `/errors/market-latest-trades-unavailable`.
+            `/errors/market-latest-trades-unavailable`. During a short
+            read-model catch-up, a request without `ids` gets the last
+            `latestConfirmedTrades` values that the engine read. This response
+            is still possible when a market on the page has no earlier value.
+            A request with `ids` gets this response instead of earlier values.
           content:
             application/problem+json:
               schema:
@@ -4592,6 +4596,10 @@ components:
             midpoint. A midpoint is an order-entry reference only. For a
             yes/no market, derive the complementary display price from the same
             confirmed fill; do not combine trades from different executions.
+            During a short read-model catch-up, a request without `ids` can get
+            the last array that the engine read for this market. That array
+            can lag the latest confirmed trade. An empty array then means that
+            no confirmed trade existed at that read.
 
     MarketCatalogueResponse:
       type: object
