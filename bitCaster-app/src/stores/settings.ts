@@ -13,6 +13,7 @@ import type {
   RelayConfig,
 } from "@/types/settings";
 import { defaultRelayConfigs, normalizeRelayConfigs } from "@/lib/relayDefaults";
+import { RETIRED_PUBLIC_NOSTR_RELAYS } from "@bitcaster/client-sdk/nostrRelays";
 
 const DEFAULT_RELAYS: RelayConfig[] = defaultRelayConfigs();
 
@@ -52,6 +53,13 @@ interface SettingsStoreState {
    */
   likedMarketCloseNotifications: boolean;
 
+  /**
+   * Profile pages read follower counts and the first activity date from an
+   * optional indexer (ADR-028 amendment 2026-11-02). The indexer sees which
+   * profiles the user opens. The default is on; the user can turn it off.
+   */
+  profileIndexerEnabled: boolean;
+
   setActiveCategory: (category: SettingsCategory) => void;
   /**
    * Deep-link setter — always opens the given category (no toggle).
@@ -74,6 +82,7 @@ interface SettingsStoreState {
   setProfile: (profile: NostrProfile | null, status: NostrProfileFetchStatus) => void;
   setNsecSecret: (nsec: string | null) => void;
   setLikedMarketCloseNotifications: (enabled: boolean) => void;
+  setProfileIndexerEnabled: (enabled: boolean) => void;
   addRelay: (url: string) => void;
   removeRelay: (url: string) => void;
 }
@@ -111,6 +120,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       relays: DEFAULT_RELAYS,
       nsecSecret: null,
       likedMarketCloseNotifications: false,
+      profileIndexerEnabled: true,
 
       setActiveCategory: (category) =>
         set((s) => ({
@@ -173,6 +183,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       setNsecSecret: (nsec) => set({ nsecSecret: nsec }),
       setLikedMarketCloseNotifications: (enabled) =>
         set({ likedMarketCloseNotifications: enabled }),
+      setProfileIndexerEnabled: (enabled) => set({ profileIndexerEnabled: enabled }),
       addRelay: (url) =>
         set((s) => {
           if (s.relays.some((r) => r.url === url)) return s;
@@ -201,6 +212,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
         // reload. Same localStorage surface as the BIP-39 mnemonic.
         nsecSecret: state.nsecSecret,
         likedMarketCloseNotifications: state.likedMarketCloseNotifications,
+        profileIndexerEnabled: state.profileIndexerEnabled,
       }),
       onRehydrateStorage: () => {
         return (state: SettingsStoreState | undefined) => {
@@ -209,7 +221,9 @@ export const useSettingsStore = create<SettingsStoreState>()(
             if (state.nostrProfile) {
               state.nostrProfile = { ...state.nostrProfile, nip05verified: false };
             }
-            state.relays = normalizeRelayConfigs(state.relays);
+            state.relays = normalizeRelayConfigs(state.relays).filter(
+              ({ url }) => !RETIRED_PUBLIC_NOSTR_RELAYS.some((retired) => retired === url),
+            );
             applyTheme(state.theme);
           }
         };

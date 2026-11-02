@@ -2,6 +2,7 @@ import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
+import { nip19 } from "nostr-tools";
 import { finalizeEvent } from "nostr-tools/pure";
 import { hexToBytes } from "nostr-tools/utils";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,6 +40,7 @@ import {
   readBrowserResolutionExplanation,
 } from "../oracleAttestation";
 import fixture from "./fixtures/oraclePublication.json";
+import { fixtureOraclePrivateKey } from "@/test/creatorOracleFixture";
 import { useSettingsStore } from "@/stores/settings";
 import { requestBrowserOracleBackup } from "../browserOracleBackupDelivery";
 
@@ -120,6 +122,7 @@ function market(): StoredCreatorMarket {
       announcementEventId: JSON.parse(fixture.announcementEventJson).id,
       announcementEventJson: fixture.announcementEventJson,
       oraclePubkey: fixture.oraclePubkey,
+      engineBaseUrl: "https://original-engine.example",
     },
   };
 }
@@ -324,7 +327,7 @@ describe("production creator row and shared coordinator", () => {
       const publish = vi
         .spyOn(NDKEvent.prototype, "publish")
         .mockResolvedValue(new Set([{}]) as unknown as Awaited<ReturnType<NDKEvent["publish"]>>);
-      const network = vi.fn(async () => {
+      const network = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
         throw new Error("lost response");
       });
       vi.stubGlobal("fetch", network);
@@ -349,6 +352,8 @@ describe("production creator row and shared coordinator", () => {
         expect(result.record.engineEvidence).not.toBeNull();
         expect(publish).toHaveBeenCalledTimes(1);
         expect(network).toHaveBeenCalledTimes(source === "signed public pair" ? 1 : 0);
+        for (const [input] of network.mock.calls)
+          expect(String(input)).toMatch(/^https:\/\/original-engine\.example\//);
         expect(fetchAnnouncement.mock.calls[0]?.[0]).toMatchObject({
           ids: [JSON.parse(fixture.announcementEventJson).id],
           kinds: [88],
@@ -369,6 +374,124 @@ describe("production creator row and shared coordinator", () => {
       }
     },
   );
+  it("does not send a public mirror row without a saved engine to this origin's engine", async () => {
+    // A creator-market mirror has no saved engine. This origin can be another deployment.
+    const mirror = market();
+    delete mirror.oracle!.engineBaseUrl;
+    mirror.oracle = {
+      ...mirror.oracle!,
+      attestationHex: artifact.attestationHex,
+      attestationEventJson: artifact.eventJson,
+      attestedOutcome: "YES",
+    };
+    const writer = createCreatorMarketsStore(() => localStorage);
+    await writer.getState().addCreatedMarket(mirror);
+    const publish = vi
+      .spyOn(NDKEvent.prototype, "publish")
+      .mockResolvedValue(new Set([{}]) as unknown as Awaited<ReturnType<NDKEvent["publish"]>>);
+    const network = vi.fn();
+    vi.stubGlobal("fetch", network);
+    try {
+      await expect(
+        publishBrowserOracleOutcome(conditionId, "YES", undefined, ["wss://relay.example"], writer),
+      ).rejects.toThrow(/engine/);
+      expect(network).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(fetchAnnouncement).not.toHaveBeenCalled();
+    } finally {
+      publish.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+  describe("automatic retry of an interrupted signing", () => {
+    async function interruptedChoice() {
+      const writer = createCreatorMarketsStore(() => localStorage);
+      await writer.getState().addCreatedMarket(market());
+      await writer.getState().saveOraclePublication(conditionId, {
+        binding,
+        chosenOutcome: "YES",
+        attestation: null,
+        relayPublished: false,
+        engineEvidence: null,
+        explanationEventJson: null,
+        explanationRelayPublished: false,
+      });
+      useSettingsStore.setState({
+        nostrSignerMode: "nsec",
+        nsecSecret: nip19.nsecEncode(fixtureOraclePrivateKey),
+      });
+      return writer;
+    }
+    const engineResult = async () => ({
+      conditionId,
+      attestedOutcome: "NO",
+      oracleWitness: {},
+      registeredAuthority,
+      attestationEvent: oracleEventToWire(artifact.eventJson),
+    });
+    const engineDown = async () => {
+      throw new Error("engine unavailable");
+    };
+    it.each([
+      ["shows a result", engineResult],
+      ["cannot be read", engineDown],
+    ] as const)("does not sign the saved choice when the engine %s", async (_case, read) => {
+      const writer = await interruptedChoice();
+      // Signing starts by opening the private oracle core.
+      const restore = vi.spyOn(wasm.Kormir, "restore").mockRejectedValue(new Error("signing"));
+      const publish = vi.spyOn(NDKEvent.prototype, "publish");
+      const network = vi.fn();
+      vi.stubGlobal("fetch", network);
+      try {
+        await expect(
+          publishBrowserOracleOutcome(
+            conditionId,
+            "YES",
+            undefined,
+            ["wss://relay.example"],
+            writer,
+            read,
+            { engineDelivery: "synchronize", automatic: true },
+          ),
+        ).rejects.toThrow(/not signed/);
+        expect(restore).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+        expect(network).not.toHaveBeenCalled();
+        const reader = createCreatorMarketsStore(() => localStorage);
+        expect(
+          (await reader.getState().readOraclePublication(conditionId))?.attestation,
+        ).toBeNull();
+        expect(reader.getState().markets[0]?.oracle?.publicationFailures).toEqual(["engine"]);
+      } finally {
+        restore.mockRestore();
+        publish.mockRestore();
+        vi.unstubAllGlobals();
+      }
+    });
+    it("starts signing only after the engine shows no result", async () => {
+      const writer = await interruptedChoice();
+      const restore = vi.spyOn(wasm.Kormir, "restore").mockRejectedValue(new Error("signing"));
+      const read = vi.fn(async (_conditionId: string) => null);
+      try {
+        await expect(
+          publishBrowserOracleOutcome(
+            conditionId,
+            "YES",
+            undefined,
+            ["wss://relay.example"],
+            writer,
+            read,
+            { engineDelivery: "synchronize", automatic: true },
+          ),
+        ).rejects.toThrow();
+        expect(read).toHaveBeenCalledWith(conditionId);
+        expect(restore).toHaveBeenCalledTimes(1);
+        expect(read.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]!);
+      } finally {
+        restore.mockRestore();
+      }
+    });
+  });
   it("refuses the actual browser adapter before recovery or delivery when startup storage is unavailable", async () => {
     const store = createCreatorMarketsStore(() => {
       throw new Error("unavailable");
@@ -418,7 +541,7 @@ describe("production creator row and shared coordinator", () => {
       fetchNip78CreatorMarkets(fixture.oraclePubkey, { relays: ["wss://relay.example"] }),
     ).resolves.toBeNull();
   });
-  it("browser adapter reconciles a lost engine response and cold-retries exact89 without a signer", async () => {
+  it("browser adapter reconciles a lost engine response, starts the terminal backup, and cold-retries exact89 without a signer", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
     await writer.getState().addCreatedMarket(market());
     await writer.getState().saveOraclePublication(conditionId, {
@@ -454,8 +577,9 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(first.failures).toEqual(["relay"]);
-      expect(requestBrowserOracleBackup).not.toHaveBeenCalled();
       expect(first.record.engineEvidence).not.toBeNull();
+      // Verified engine evidence makes the result public. The relay copy is optional.
+      expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId, { store: writer });
       expect(network).toHaveBeenCalledTimes(1);
       expect(JSON.parse(String(network.mock.calls[0]?.[1]?.body))).toEqual(
         oracleEventToWire(artifact.eventJson),
@@ -473,7 +597,7 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(resumed.failures).toEqual([]);
-      expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId, { store: reader });
+      expect(requestBrowserOracleBackup).toHaveBeenLastCalledWith(conditionId, { store: reader });
       expect(network).toHaveBeenCalledTimes(1);
       expect(publish).toHaveBeenCalledTimes(2);
       expect((await reader.getState().readOraclePublication(conditionId))?.attestation).toEqual(

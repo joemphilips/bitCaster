@@ -9,6 +9,7 @@ import {
   type ConditionAttestationResponse,
 } from "@bitcaster/client-sdk";
 import {
+  oraclePublicationTerminal,
   publishOracleOutcome,
   retryOraclePublication,
   type OraclePublicationBinding,
@@ -44,6 +45,7 @@ import {
 } from "./oracleRelayTransport";
 export { publishRetainedOracleEvent } from "./oracleRelayTransport";
 import { requestBrowserOracleBackup } from "./browserOracleBackupDelivery";
+import { browserOracleSavedEngineUrl } from "./browserOraclePublicationRetry";
 import { sha256Hex } from "./markets";
 import { announcementContentFromTlv } from "@bitcaster/client-sdk/oracleAnnouncementEncoding";
 
@@ -420,7 +422,11 @@ export async function publishBrowserOracleOutcome(
   relays: string[],
   store = useCreatorMarketsStore,
   read?: OracleAttestationReadPort,
-  options: OraclePublicationOptions & { requireCurrent?: () => void } = {
+  options: OraclePublicationOptions & {
+    requireCurrent?: () => void;
+    /** An automatic retry, not a user action. It signs only when the engine shows no result. */
+    automatic?: boolean;
+  } = {
     engineDelivery: "synchronize",
   },
 ) {
@@ -430,6 +436,11 @@ export async function publishBrowserOracleOutcome(
   let owner = await store.getState().readOracleOwner(conditionId);
   if (!owner) throw new Error("Creator oracle record is unavailable.");
   options.requireCurrent?.();
+  // A creator-market mirror has no saved engine. The engine of this origin can belong to another
+  // deployment, so it does not replace the original engine.
+  const engineUrl = browserOracleSavedEngineUrl(owner);
+  if (engineUrl === null)
+    throw new Error("The original engine of this market is unknown. Restore its oracle backup.");
   if (owner.kind === "created") {
     const market = owner.market;
     if (!market.oracle) throw new Error("Creator oracle record is unavailable.");
@@ -453,7 +464,6 @@ export async function publishBrowserOracleOutcome(
   const legacy = owner.kind === "created" ? owner.market.oracle : undefined;
   if (legacy && announcement.id !== legacy.announcementEventId)
     throw new Error("Original oracle preparation does not match this destination.");
-  const engineUrl = destinations?.engineUrl ?? legacy?.engineBaseUrl ?? window.location.origin;
   const originalRelays = destinations ? [...destinations.relayUrls] : relays;
   const readOriginal = (id: string) => {
     options.requireCurrent?.();
@@ -502,6 +512,24 @@ export async function publishBrowserOracleOutcome(
   const exactRetry = retained?.attestation !== null && retained?.attestation !== undefined;
   let privateAdmission: BrowserOracleMutation | undefined;
   options.requireCurrent?.();
+  if (!exactRetry && options.automatic === true) {
+    // This profile has no signature yet. Another profile with the same key can have published
+    // another outcome. Two outcomes with the committed nonce expose the oracle key. The GUI has
+    // no engine-down path, so a failed read also stops the automatic signature.
+    let published: Awaited<ReturnType<OracleAttestationReadPort>> | undefined;
+    try {
+      published = await readOriginal(conditionId);
+    } catch {
+      published = undefined;
+    }
+    options.requireCurrent?.();
+    if (published !== null) {
+      await store.getState().saveOraclePublicationFailures(conditionId, ["engine"]);
+      throw new Error(
+        "The engine shows a result or is unavailable. The saved outcome was not signed.",
+      );
+    }
+  }
   if (!exactRetry) {
     privateAdmission = await prepareBrowserOracleMutation(binding.oraclePubkey);
     const admission = privateAdmission;
@@ -548,8 +576,9 @@ export async function publishBrowserOracleOutcome(
   await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
   options.requireCurrent?.();
   privateAdmission?.requireCurrent();
-  if (result.record.relayPublished) {
-    // The signed result remains successful while its independent private backup is pending.
+  if (oraclePublicationTerminal(result.record)) {
+    // A relay copy or verified engine evidence makes the result public. The nonce-free
+    // backup can then replace the nonce copy. Its failure does not undo the result.
     requestBrowserOracleBackup(conditionId, { store, requireCurrent: options.requireCurrent });
   }
   return result;

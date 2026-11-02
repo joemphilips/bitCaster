@@ -118,7 +118,7 @@ In prediction markets, the value of a token depends on what actually happens in 
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
 A valid oracle signature identifies who signed the result. It does not prove that the result is true. bitCaster does not provide an oracle trust score. See [Resolution](../../core-concepts/resolution/) for details.
 
-When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
+When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Select the oracle in the market header to open its profile page, or choose **Copy oracle Nostr ID** and check that identity's history and credibility in your Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
 
 ### Use the supported mint
 
@@ -201,7 +201,9 @@ an extension to a local private key.
 
 Settings and Portfolio show the same connected Nostr profile card.
 The card shows your picture, display name, and description. Settings also has
-a refresh control. An unavailable relay read is different from an absent profile.
+a refresh control. The card shows the newest profile that the selected relays
+return, even when one relay does not answer. When no relay returns a profile and
+a relay read fails, the card reports an unavailable read, not an absent profile.
 In Nostr Settings, choose **Edit** to change your name, description, and picture URL.
 Choose **Save profile** to publish the changes. Choose **Cancel** to discard an
 unsaved draft. These fields are public. The app publishes standard Nostr profile metadata with your connected
@@ -315,6 +317,7 @@ payments increase it. Trades do not reduce it. It is not current order-book
 liquidity.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
+A comment above 280 characters shows an error and blocks the order.
 
 Chart comment bubbles point to the time and price of the associated confirmed
 trade. The pointer stays on that trade when new prices arrive or the chart

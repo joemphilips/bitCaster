@@ -11,6 +11,15 @@ export const LANGUAGES = [
 
 export type LanguageCode = (typeof LANGUAGES)[number]["code"];
 
+// Assistive technology and the browser select pronunciation, fonts and line
+// breaking from the document language.
+function markDocumentLanguage() {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = i18n.resolvedLanguage ?? i18n.language;
+}
+
+i18n.on("languageChanged", markDocumentLanguage);
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -30,5 +39,6 @@ i18n
       escapeValue: false,
     },
   });
+markDocumentLanguage();
 
 export default i18n;

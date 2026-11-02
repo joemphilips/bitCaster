@@ -4,6 +4,7 @@ import {
   DEFAULT_PUBLIC_NOSTR_RELAYS,
   normalizeNostrRelayUrl,
   normalizeNostrRelayUrls,
+  RETIRED_PUBLIC_NOSTR_RELAYS,
   selectNostrRelayUrls,
 } from '../src/nostrRelays.ts'
 
@@ -14,7 +15,6 @@ test('curated defaults apply only to missing configuration', () => {
     'wss://relay.primal.net',
     'wss://relay.nostr.net',
     'wss://relay.damus.io',
-    'wss://relay.nostr.band',
     'wss://purplepag.es',
   ])
   assert.deepEqual(selectNostrRelayUrls([]), [])
@@ -28,7 +28,9 @@ test('curated defaults apply only to missing configuration', () => {
   selected.splice(selected.indexOf('wss://nos.lol'), 1)
   assert.deepEqual(selectNostrRelayUrls(selected), selected)
   assert.deepEqual(selectNostrRelayUrls([...selected, 'wss://nos.lol']).at(-1), 'wss://nos.lol')
-  assert.equal(DEFAULT_PUBLIC_NOSTR_RELAYS.length, 7)
+  assert.equal(DEFAULT_PUBLIC_NOSTR_RELAYS.length, 6)
+  for (const url of RETIRED_PUBLIC_NOSTR_RELAYS)
+    assert.ok(!DEFAULT_PUBLIC_NOSTR_RELAYS.some((relay) => relay === url))
 })
 
 test('normalization preserves path and query case and deduplicates exact URLs, not origins', () => {

@@ -22,6 +22,17 @@ function retentionError(error: unknown): DraftImageRetentionError {
     : new DraftImageRetentionError("unavailable", "Draft image storage is unavailable.");
 }
 
+/** Reject a file that the draft cannot retain, before it becomes the selection. */
+export function assertDraftImageAccepted(file: File): void {
+  if (file.size === 0 || file.size > MAX_MARKET_CREATION_THUMBNAIL_BYTES)
+    throw new DraftImageRetentionError("invalid", "Market thumbnail must contain at most 5 MiB.");
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase()))
+    throw new DraftImageRetentionError(
+      "invalid",
+      "Market thumbnail must be a JPEG, PNG, or WebP image.",
+    );
+}
+
 interface DraftImageRow {
   slot: "current";
   selectionId: string;
@@ -48,13 +59,7 @@ export class MarketDraftImageStore extends Dexie {
   }
 
   private async write(selectionId: string, file: File, isCurrent: () => boolean) {
-    if (file.size === 0 || file.size > MAX_MARKET_CREATION_THUMBNAIL_BYTES)
-      throw new DraftImageRetentionError("invalid", "Market thumbnail must contain at most 5 MiB.");
-    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase()))
-      throw new DraftImageRetentionError(
-        "invalid",
-        "Market thumbnail must be a JPEG, PNG, or WebP image.",
-      );
+    assertDraftImageAccepted(file);
     const thumbnail = snapshotMarketCreationThumbnail({
       data: new Uint8Array(await file.arrayBuffer()),
       filename: file.name,

@@ -331,6 +331,9 @@ let _portfolioValuationReplacementTail: Promise<void> = Promise.resolve();
 // every per-outcome group of the condition, so a client joined to any one
 // outcome group receives it; we key handlers by conditionId.
 const _marketStatusHandlers = new Map<string, Set<MarketStatusHandler>>();
+// Condition-independent lifecycle listeners. They see only the messages that
+// the client's existing group memberships deliver; they never join a group.
+const _anyMarketStatusHandlers = new Set<MarketStatusHandler>();
 
 function buildConnection(): HubConnection {
   // Order-book updates are public — no NIP-98 needed on this hub.
@@ -366,8 +369,10 @@ function buildConnection(): HubConnection {
   });
 
   conn.on("MarketStatusChanged", (status: MarketStatusChanged) => {
-    const handlers = _marketStatusHandlers.get(status.conditionId);
-    if (!handlers) return;
+    const handlers = [
+      ...(_marketStatusHandlers.get(status.conditionId) ?? []),
+      ..._anyMarketStatusHandlers,
+    ];
     for (const handler of handlers) {
       try {
         handler(status);
@@ -916,6 +921,18 @@ export function onMarketStatusChanged(
     if (!s) return;
     s.delete(handler);
     if (s.size === 0) _marketStatusHandlers.delete(conditionId);
+  };
+}
+
+/**
+ * Register a handler for every lifecycle message that this client receives,
+ * for any condition. It adds no group membership: a message arrives only while
+ * a market page or the Portfolio already subscribes to that condition.
+ */
+export function onAnyMarketStatusChanged(handler: MarketStatusHandler): () => void {
+  _anyMarketStatusHandlers.add(handler);
+  return () => {
+    _anyMarketStatusHandlers.delete(handler);
   };
 }
 

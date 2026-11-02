@@ -145,4 +145,45 @@ describe("thumbnail retention controls", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Remove" }));
     expect(onRemove).toHaveBeenCalledOnce();
   });
+
+  it("shows a rejected file as a neutral notice without a selection to remove or a blocked Next", () => {
+    const message = "Image not added. Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
+    render(
+      <BasicInfo
+        data={{ ...defaultData, title: "Test", closingDate: futureDate() }}
+        categoryTags={categoryTags}
+        onThumbnailRemove={vi.fn()}
+        thumbnailRejectionNotice={message}
+      />,
+    );
+
+    expect(screen.getByText("No image")).toBeInTheDocument();
+    // The draft is valid without an image, so the notice is not an error.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent(message);
+    expect(notice.className).not.toMatch(/text-red/);
+    expect(screen.getByRole("button", { name: "Upload image" })).toHaveAccessibleDescription(
+      message,
+    );
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  });
+
+  it("states the image limit only in an error that describes the upload control", () => {
+    const props = {
+      data: { ...defaultData, title: "Test", closingDate: futureDate() },
+      categoryTags,
+    };
+    const view = render(<BasicInfo {...props} />);
+    const upload = screen.getByRole("button", { name: "Upload image" });
+    expect(screen.queryByText(/MiB/)).not.toBeInTheDocument();
+    expect(upload).not.toHaveAttribute("aria-describedby");
+
+    const message = "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB.";
+    view.rerender(<BasicInfo {...props} thumbnailError={message} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(upload).toHaveAccessibleDescription(message);
+  });
 });

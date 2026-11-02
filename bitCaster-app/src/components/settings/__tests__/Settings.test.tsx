@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { Settings } from "../Settings";
+import i18n from "@/i18n";
 import type { SettingsState } from "@/types/settings";
 
 function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): SettingsState {
@@ -27,6 +28,7 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
       profile: null,
       profileFetchStatus: "idle",
       relays: [],
+      profileIndexerEnabled: true,
       ...overrides,
     },
   };
@@ -509,5 +511,120 @@ describe("Settings deferred profile editing", () => {
     await waitFor(() => expect(screen.getByTestId("nostr-profile-name")).toHaveValue("Canonical"));
     expect(load).toHaveBeenCalledOnce();
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings language", () => {
+  const walletSeedPhrase =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+  const mints = [
+    {
+      url: "https://mint.example",
+      name: "Mint A",
+      isDefault: true,
+      connectionStatus: "connected" as const,
+      supportsCTF: true,
+      addedDate: "2026-01-01",
+    },
+  ];
+
+  it("shows the Cashu settings in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(
+        <Settings
+          activeCategory="cashu"
+          settings={{ ...settingsState(), cashu: { mints } }}
+          seedPhrase={walletSeedPhrase}
+          walletBackupState="needs_backup"
+        />,
+      );
+      for (const text of [
+        "設定",
+        "一般設定",
+        "Cashu設定",
+        "Nostr設定",
+        "接続済みミント",
+        "CTF対応",
+        "デフォルト",
+        "シードバックアップ",
+        "ウォレットのシードフレーズをバックアップします。このフレーズを持つ人は誰でも資産にアクセスできます。",
+        "このブラウザーに頼る前に、このフレーズを保存してください。",
+      ])
+        expect(screen.getByText(text)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "シードフレーズを表示" })).toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          /General Settings|Cashu Settings|Nostr Settings|Connected Mints|CTF supported|Seed Backup|View Seed Phrase|Default/,
+        ),
+      ).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("shows the Nostr connection controls in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(<Settings activeCategory="nostr" settings={settingsState()} />);
+      expect(screen.getByText("Nostrに接続")).toBeInTheDocument();
+      expect(screen.getByText("Nostrの認証方法を選択します。")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "NIP-07拡張機能で接続" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "秘密鍵で接続" }));
+      expect(screen.getByText("秘密鍵（nsec または ncryptsec）")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "鍵を表示" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "リレーを追加" })).toBeInTheDocument();
+      expect(screen.queryByText(/Connect to Nostr|Pasting nsec|Private Key \(/)).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+});
+
+describe("Settings profile indexer", () => {
+  it("links the Japanese description to the Japanese user guide", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(<Settings activeCategory="nostr" settings={settingsState()} />);
+      expect(screen.getByRole("link", { name: "インデクサーに伝わる情報" })).toHaveAttribute(
+        "href",
+        "https://bitcasterdoc.com/ja/user-guide/core-concepts/resolution/#オラクルのプロフィールを確認する",
+      );
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("shows the indexer switch in Nostr settings and reports the requested value", () => {
+    const changes: boolean[] = [];
+    const view = render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState()}
+        onProfileIndexerChange={(enabled) => changes.push(enabled)}
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Profile indexer" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // One sentence states the feature. The user guide states what the indexer and relays see.
+    expect(toggle).toHaveAccessibleDescription(
+      "Profile pages show follower counts and the first activity date from the Primal indexer.",
+    );
+    expect(screen.getByRole("link", { name: "What the indexer sees" })).toHaveAttribute(
+      "href",
+      "https://bitcasterdoc.com/user-guide/core-concepts/resolution/#check-the-oracle-profile",
+    );
+    fireEvent.click(toggle);
+    expect(changes).toEqual([false]);
+    view.rerender(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({ profileIndexerEnabled: false })}
+      />,
+    );
+    expect(screen.getByRole("switch", { name: "Profile indexer" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
   });
 });

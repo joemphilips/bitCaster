@@ -4,6 +4,7 @@ import { captureDeploymentIdentity, deploymentIdentityHandler } from "./deployme
 import compression from "compression";
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -29,6 +30,30 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Only this server sets the client-address header, and only on a request to the backend
+// (/api and /hubs), so that the backend can apply its request limits per client. Other
+// requests, such as those to the mint, have no client-address header. The hosting front
+// end appends the address of its own peer to X-Forwarded-For. Thus only the rightmost
+// element is trustworthy: a browser controls every element to its left. Without a valid
+// rightmost element, the backend request has no client-address header.
+const CLIENT_ADDRESS_HEADER = "x-bitcaster-client-ip";
+
+// "203.0.113.7:5678" and "[2001:db8::1]:5678" carry a port. Returns [address, IP family].
+const withoutPort = (element) => {
+  const bracketed = /^\[([^\]]*)\](?::\d{1,5})?$/.exec(element);
+  if (bracketed) return [bracketed[1], 6];
+  const ipv4 = /^([^:]*):\d{1,5}$/.exec(element);
+  if (ipv4) return [ipv4[1], 4];
+  return [element, isIP(element)];
+};
+
+/** Returns the plain address in the rightmost X-Forwarded-For element, or undefined. */
+export const clientAddressFromForwardedFor = (forwardedFor) => {
+  const [address, family] = withoutPort((forwardedFor ?? "").split(",").at(-1).trim());
+  // A zone index ("fe80::1%eth0") names a front-end interface, not a client.
+  return family !== 0 && isIP(address) === family && !address.includes("%") ? address : undefined;
+};
+
 const proxyErrorHandler = (err, _req, res) => {
   console.error("Proxy error:", err.message);
   if (!res.headersSent) res.status(502).json({ error: "Bad Gateway" });
@@ -41,8 +66,15 @@ const firstHeaderValue = (value) => {
 
 const isAzurePublicHost = (host) => host?.endsWith(".azurewebsites.net");
 
+const lastHeaderValue = (value) => {
+  const raw = Array.isArray(value) ? value.at(-1) : value;
+  return raw?.split(",").at(-1)?.trim().toLowerCase();
+};
+const forwardedProtos = new Set(["http", "https", "ws", "wss"]);
 const browserFacingProto = (req, host) => {
-  const forwardedProto = firstHeaderValue(req.headers["x-forwarded-proto"]);
+  // The platform front end sets or appends the rightmost element.
+  const rightmost = lastHeaderValue(req.headers["x-forwarded-proto"]);
+  const forwardedProto = forwardedProtos.has(rightmost) ? rightmost : undefined;
   if (forwardedProto === "wss") return "https";
   if (forwardedProto === "ws") {
     return req.headers["x-arr-ssl"] || isAzurePublicHost(host) ? "https" : "http";
@@ -52,13 +84,46 @@ const browserFacingProto = (req, host) => {
   return req.socket.encrypted ? "https" : "http";
 };
 
-const setBrowserForwardedHeaders = (proxyReq, req) => {
+// The prefix test includes every path that the "/api/**" and "/hubs/**" proxy filters
+// match. Those filters test this same URL pathname, and they do not proxy a URL that
+// cannot be parsed.
+const isPathUnder = (url, roots) => {
+  let pathname;
+  try {
+    pathname = new URL(url ?? "", "http://0.0.0.0").pathname;
+  } catch {
+    return false;
+  }
+  return roots.some((root) => pathname === root || pathname.startsWith(`${root}/`));
+};
+const isBackendPath = (url) => isPathUnder(url, ["/api", "/hubs"]);
+
+// Set the forwarded headers on the incoming request, before a proxy copies its headers.
+// A proxy request hook does not run for every request (for example, one with an Expect
+// header). The proxy keeps an X-Forwarded-Host that a browser sends, and it adds this
+// server's own peer to X-Forwarded-For when that header is absent.
+const setForwardedHeaders = (req) => {
+  if (!isBackendPath(req.url)) {
+    delete req.headers[CLIENT_ADDRESS_HEADER];
+    return;
+  }
   // Use the frontend request Host, not a client-supplied X-Forwarded-Host.
   // NIP-98 URL binding should reflect the origin the browser actually opened.
   const host = firstHeaderValue(req.headers.host);
-  if (host) proxyReq.setHeader("x-forwarded-host", host);
-  proxyReq.setHeader("x-forwarded-proto", browserFacingProto(req, host));
+  const proto = browserFacingProto(req, host);
+  if (host) req.headers["x-forwarded-host"] = host;
+  else delete req.headers["x-forwarded-host"];
+  req.headers["x-forwarded-proto"] = proto;
+  // Node joins repeated X-Forwarded-For lines with ", " in the order received.
+  const address = clientAddressFromForwardedFor(req.headers["x-forwarded-for"]);
+  if (address) req.headers[CLIENT_ADDRESS_HEADER] = address;
+  else delete req.headers[CLIENT_ADDRESS_HEADER];
 };
+
+app.use((req, _res, next) => {
+  setForwardedHeaders(req);
+  next();
+});
 
 if (MINT_URL) {
   app.use(
@@ -74,21 +139,21 @@ if (MINT_URL) {
 
 let hubsProxy;
 if (BACKEND_URL) {
-  // xfwd:true sets X-Forwarded-{For,Port,Proto,Host} on the upstream request.
+  // xfwd:true sets X-Forwarded-{For,Port,Proto,Host} on the upstream request
+  // when the incoming request does not have them.
   // The matching engine signs/verifies NIP-98 against the user-facing URL
   // (browser origin); without X-Forwarded-Host the engine reconstructs the URL
   // from its own Host header (which changeOrigin:true rewrites to the backend
   // hostname) and rejects every body-bearing request as "Invalid NIP-98 event".
-  // setBrowserForwardedHeaders is applied here (HTTP /api) for the same reason
-  // it is applied to the WebSocket proxy: NIP-98 host-binding must reflect the
-  // origin the browser actually opened, not the backend-rewritten host.
+  // setForwardedHeaders sets the browser-facing host and protocol for /api and
+  // /hubs, over HTTP and WebSocket, before these proxies run.
   app.use(
     createProxyMiddleware({
       target: BACKEND_URL,
       changeOrigin: true,
       xfwd: true,
       pathFilter: "/api/**",
-      on: { proxyReq: setBrowserForwardedHeaders, error: proxyErrorHandler },
+      on: { error: proxyErrorHandler },
     }),
   );
   hubsProxy = createProxyMiddleware({
@@ -97,10 +162,7 @@ if (BACKEND_URL) {
     xfwd: true,
     pathFilter: "/hubs/**",
     ws: true,
-    on: {
-      proxyReqWs: setBrowserForwardedHeaders,
-      error: proxyErrorHandler,
-    },
+    on: { error: proxyErrorHandler },
   });
   app.use(hubsProxy);
   console.log(`/api/* -> ${BACKEND_URL}`);
@@ -124,4 +186,17 @@ app.use(express.static(__dirname));
 app.get("*", (_req, res) => res.sendFile(join(__dirname, "index.html")));
 
 const server = app.listen(PORT, () => console.log(`Listening on port ${PORT}`));
-if (hubsProxy) server.on("upgrade", hubsProxy.upgrade);
+if (hubsProxy) {
+  // An upgrade request does not pass through the Express middleware. The proxy library
+  // adds its own upgrade listener on its first HTTP request, and then its upgrade() does
+  // nothing. A prepended listener sets the headers before that listener runs.
+  server.prependListener("upgrade", (req, socket, head) => {
+    // Only the hub proxy accepts an upgrade. Close any other upgrade socket.
+    if (!isPathUnder(req.url, ["/hubs"])) {
+      socket.destroy();
+      return;
+    }
+    setForwardedHeaders(req);
+    hubsProxy.upgrade(req, socket, head);
+  });
+}

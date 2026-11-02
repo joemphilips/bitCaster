@@ -11,6 +11,8 @@ interface QrScannerProps {
 
 let activeScannerSession = false;
 
+type ScanErrorKey = "deposit.scanAlreadyActive" | "deposit.scanInvalid" | "deposit.scanTimedOut";
+
 export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -19,7 +21,9 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
   const decoderRef = useRef<Nut16UrDecoderSession | null>(null);
   const completedRef = useRef(false);
   const [progress, setProgress] = useState(0);
-  const [scanError, setScanError] = useState<string | null>(null);
+  // Keep the key, not the text. A language change must not restart the camera
+  // session, because a restart loses the animated QR progress.
+  const [scanError, setScanError] = useState<ScanErrorKey | null>(null);
 
   useEffect(() => {
     onDecodeRef.current = onDecode;
@@ -30,7 +34,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
     if (!video) return;
 
     if (activeScannerSession) {
-      setScanError(t("deposit.scanAlreadyActive"));
+      setScanError("deposit.scanAlreadyActive");
       return;
     }
     activeScannerSession = true;
@@ -55,7 +59,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
           onDecodeRef.current(received.token);
         } else if (received.status === "rejected") {
           scanner.stop();
-          setScanError(t("deposit.scanInvalid"));
+          setScanError("deposit.scanInvalid");
         }
       },
       {
@@ -71,7 +75,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
     const timeout = window.setTimeout(() => {
       if (decoderRef.current?.expire()) {
         scanner.stop();
-        setScanError(t("deposit.scanTimedOut"));
+        setScanError("deposit.scanTimedOut");
       }
     }, 120_001);
 
@@ -82,7 +86,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
       decoderRef.current = null;
       activeScannerSession = false;
     };
-  }, [t]);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
@@ -90,6 +94,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
       <div className="flex items-center justify-between px-5 py-4">
         <button
           onClick={onClose}
+          aria-label={t("common.close")}
           className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
         >
           <X className="w-5 h-5" />
@@ -109,7 +114,7 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
       ) : null}
       {scanError ? (
         <p role="alert" className="pb-4 text-center text-sm text-red-300">
-          {scanError}
+          {t(scanError)}
         </p>
       ) : null}
     </div>

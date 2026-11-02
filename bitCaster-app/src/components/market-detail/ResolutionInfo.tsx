@@ -66,7 +66,9 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
           className="mb-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700"
         >
           <h4 className="font-semibold">{t("creator.verifiedExplanation")}</h4>
-          <p className="mt-2 whitespace-pre-wrap break-words text-sm">{currentExplanation.text}</p>
+          <p data-user-content className="mt-2 whitespace-pre-wrap break-words text-sm">
+            {currentExplanation.text}
+          </p>
         </section>
       )}
       {resolution.status === "resolved" && currentExplanation?.unavailable && (
@@ -105,7 +107,10 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
             {t("market.resolutionCriteria")}
           </span>
         </div>
-        <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed pl-6">
+        <p
+          data-user-content
+          className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed pl-6"
+        >
           {resolution.criteria}
         </p>
       </div>

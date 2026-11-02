@@ -34,6 +34,14 @@ to your wallet by paying a Lightning invoice or importing a Cashu token from
 that mint. You can withdraw ordinary ecash by paying a Lightning invoice
 through the mint. Check the amount and estimated fees before confirmation.
 
+A mint can limit the amount of each Lightning deposit and each Lightning
+withdrawal. If an amount is outside the limit, the app shows the limit next to
+the amount or the invoice and does not continue. Deposit or withdraw a larger
+amount in parts. When the required top-up is above the limit, the app
+suggests the limit. After that deposit, continue and deposit the
+remaining amount. The CLI refuses the same amounts with the error code
+`amount-outside-mint-limits`.
+
 The success screen appears after a confirmed receipt or Lightning payment.
 A pending or failed payment is not a success.
 

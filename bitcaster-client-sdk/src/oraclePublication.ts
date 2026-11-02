@@ -99,6 +99,36 @@ export interface OraclePublicationOptions {
   readonly republishAttestation?: boolean
 }
 
+/** The user-visible result of a saved choice. Relay copies continue after engine evidence. */
+export type OraclePublicationState = 'publishing' | 'published' | 'failed'
+
+/** Verified engine evidence publishes the result. A failed engine attempt retries automatically. */
+export function oraclePublicationState(
+  record: Pick<OraclePublicationRecord, 'engineEvidence'>,
+  lastFailures: readonly OraclePublicationFailureStage[],
+): OraclePublicationState {
+  if (record.engineEvidence !== null) return 'published'
+  return lastFailures.includes('engine') ? 'failed' : 'publishing'
+}
+
+/** A saved choice needs work until it is signed, engine-verified, and copied to a relay. */
+export function oraclePublicationDeliveryPending(record: OraclePublicationRecord): boolean {
+  return (
+    record.attestation === null ||
+    record.engineEvidence === null ||
+    !record.relayPublished ||
+    (record.explanationEventJson !== null && !record.explanationRelayPublished)
+  )
+}
+
+/**
+ * The signed result is public when a relay acknowledged it or the engine returned verified
+ * evidence. Only then can a nonce-free terminal backup replace the copy with nonce authority.
+ */
+export function oraclePublicationTerminal(record: OraclePublicationRecord): boolean {
+  return record.attestation !== null && (record.relayPublished || record.engineEvidence !== null)
+}
+
 /** Validate a loaded port view without adding another storage owner. DLC verification remains a port. */
 export function snapshotOraclePublicationRecord(
   record: OraclePublicationRecord,
@@ -224,15 +254,17 @@ function engineDeliveryEnabled(options: OraclePublicationOptions): boolean {
   }
 }
 
-/** Reload the saved choice. Retry without a signer or a new outcome selection. */
+/**
+ * Reload the saved choice and resend its exact signed artifact. A saved choice without a
+ * signature comes from an interrupted signing: sign that same outcome once. Never select another.
+ */
 export async function retryOraclePublication(
   adapters: OraclePublicationAdapters,
   binding: OraclePublicationBinding,
   options: OraclePublicationOptions = { engineDelivery: 'synchronize' },
 ): Promise<OraclePublicationResult> {
   const stored = await adapters.store.read(binding.conditionId)
-  if (stored === null || stored.attestation === null)
-    throw new Error('Signed oracle publication is unavailable.')
+  if (stored === null) throw new Error('Saved oracle publication is unavailable.')
   return publishOracleOutcome(adapters, binding, stored.chosenOutcome, undefined, options)
 }
 

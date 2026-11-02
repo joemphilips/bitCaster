@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { Position, PortfolioProps } from "@/types/portfolio";
+import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
 
@@ -16,6 +18,10 @@ interface PositionsListProps {
   removalConfirmationPositionId?: string;
   onConfirmDiscardLostPosition?: (positionId: string) => void;
   onCancelDiscardLostPosition?: () => void;
+  /** A position to scroll to and focus. The owner clears it after the handled callback. */
+  positionsRequest?: PortfolioProps["positionsRequest"];
+  /** Called with the request key after the position is scrolled into view and focused. */
+  onPositionsRequestHandled?: (requestKey: string) => void;
 }
 
 export function PositionsList({
@@ -31,9 +37,26 @@ export function PositionsList({
   removalConfirmationPositionId,
   onConfirmDiscardLostPosition,
   onCancelDiscardLostPosition,
+  positionsRequest,
+  onPositionsRequestHandled,
 }: PositionsListProps) {
   const { t } = useTranslation();
   const filtered = positions.filter((p) => p.status === positionsTab);
+  // One row for each market ID owns the anchor. The same collection can be
+  // held at more than one mint, and a DOM ID must be unique.
+  const anchoredMarketIds = new Set<string>();
+  const targetMarketId = positionsRequest?.positionMarketId ?? null;
+  const targetRendered =
+    targetMarketId !== null && filtered.some(({ marketId }) => marketId === targetMarketId);
+  useEffect(() => {
+    const requestKey = positionsRequest?.key;
+    if (!targetRendered || targetMarketId === null || requestKey === undefined) return;
+    const row = document.getElementById(portfolioPositionAnchorId(targetMarketId));
+    if (row === null) return;
+    row.scrollIntoView?.({ block: "center" });
+    row.focus({ preventScroll: true });
+    onPositionsRequestHandled?.(requestKey);
+  }, [positionsRequest?.key, targetMarketId, targetRendered, onPositionsRequestHandled]);
 
   return (
     <div>
@@ -71,21 +94,28 @@ export function PositionsList({
         </div>
       ) : (
         <div className="space-y-1">
-          {filtered.map((position) => (
-            <PositionRow
-              key={position.id}
-              position={position}
-              onSell={onSellPosition}
-              onClaim={onClaimPayout}
-              onDiscard={onDiscardLostPosition}
-              onView={onViewPosition}
-              action={positionAction?.positionId === position.id ? positionAction.kind : undefined}
-              actionsDisabled={positionAction !== undefined}
-              confirmingRemoval={removalConfirmationPositionId === position.id}
-              onConfirmDiscard={onConfirmDiscardLostPosition}
-              onCancelDiscard={onCancelDiscardLostPosition}
-            />
-          ))}
+          {filtered.map((position) => {
+            const ownsAnchor = !anchoredMarketIds.has(position.marketId);
+            anchoredMarketIds.add(position.marketId);
+            return (
+              <PositionRow
+                key={position.id}
+                position={position}
+                anchorId={ownsAnchor ? portfolioPositionAnchorId(position.marketId) : undefined}
+                onSell={onSellPosition}
+                onClaim={onClaimPayout}
+                onDiscard={onDiscardLostPosition}
+                onView={onViewPosition}
+                action={
+                  positionAction?.positionId === position.id ? positionAction.kind : undefined
+                }
+                actionsDisabled={positionAction !== undefined}
+                confirmingRemoval={removalConfirmationPositionId === position.id}
+                onConfirmDiscard={onConfirmDiscardLostPosition}
+                onCancelDiscard={onCancelDiscardLostPosition}
+              />
+            );
+          })}
         </div>
       )}
     </div>

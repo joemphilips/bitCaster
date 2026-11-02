@@ -51,6 +51,11 @@ import {
   parseSatsToMsat,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
+import {
+  bolt11InvoiceAmountMsat,
+  isMintAmountOutsideLimitError,
+} from "@bitcaster/client-sdk/mintPaymentLimits";
+import { useMintPaymentAmountLimit } from "@/hooks/useMintPaymentAmountLimit";
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -70,7 +75,11 @@ export interface DepositWithdrawState {
   selectedMintId: string;
   amountSats: number;
   amountLabel: string;
+  /** Error next to the deposit amount when the mint does not accept it. */
+  depositAmountError: string | null;
   lightningInput: string;
+  /** Error next to the invoice when the mint does not accept its amount. */
+  withdrawalInvoiceError: string | null;
   isLoading: boolean;
   error: string | null;
 
@@ -271,8 +280,25 @@ export function useDepositWithdrawState(
     setPendingRequestId(null);
   }, [pendingRequestId, inboxEntry]);
 
-  const amountSats = parseDisplayAmountSats(amountString);
+  const amountMsat = parseDisplayAmountMsat(amountString);
+  const amountSats = amountMsat / 1_000;
   const amountLabel = `${amountSats.toLocaleString(undefined, { maximumFractionDigits: 3 })} sats`;
+  const depositLimit = useMintPaymentAmountLimit({
+    mintUrl: mode === "deposit" && selectedMintId ? selectedMintId : null,
+    direction: "deposit",
+    unit: defaultCollateralUnit("sat"),
+    amountMsat: amountMsat > 0 ? amountMsat : null,
+  });
+  const withdrawalLimit = useMintPaymentAmountLimit({
+    mintUrl: mode === "withdraw" && selectedMintId ? selectedMintId : null,
+    direction: "withdrawal",
+    unit: "msat",
+    amountMsat: lightningInvoiceAmountMsat(lightningInput),
+  });
+  const rejectsWithdrawalAmount = withdrawalLimit.rejects;
+  const recordWithdrawalRefusal = withdrawalLimit.recordMintRefusal;
+  const recordDepositRefusal = depositLimit.recordMintRefusal;
+  const depositAmountError = depositLimit.error;
 
   const onSelectMethod = useCallback(
     (method: MethodType) => {
@@ -445,6 +471,7 @@ export function useDepositWithdrawState(
 
   const onCreateInvoice = useCallback(async () => {
     if (amountSats <= 0) return;
+    if (depositAmountError !== null) return;
     if (walletBackupPausesNewChanges(walletBackup)) return;
     if (inflightRef.current) return;
     inflightRef.current = true;
@@ -532,8 +559,15 @@ export function useDepositWithdrawState(
         !mintQuoteDisposedRef.current &&
         presentationGeneration === mintQuotePresentationGenerationRef.current
       ) {
-        setInvoiceStatus("error");
-        setError(walletBackupWriteErrorMessage(e, t));
+        if (isMintAmountOutsideLimitError(e)) {
+          // The amount field shows the mint limits read again after this refusal,
+          // also when a re-quote started from the invoice view.
+          recordDepositRefusal(amountMsat);
+          setCurrentView("deposit-lightning");
+        } else {
+          setInvoiceStatus("error");
+          setError(walletBackupWriteErrorMessage(e, t));
+        }
       }
       inflightRef.current = false;
     } finally {
@@ -544,7 +578,39 @@ export function useDepositWithdrawState(
         setIsLoading(false);
       }
     }
-  }, [amountSats, amountString, selectedMintId, handleInvoiceWaitResult, walletBackup, t]);
+  }, [
+    amountMsat,
+    amountSats,
+    amountString,
+    depositAmountError,
+    selectedMintId,
+    handleInvoiceWaitResult,
+    recordDepositRefusal,
+    walletBackup,
+    t,
+  ]);
+
+  /**
+   * Ask the mint for a melt quote unless the known limits refuse the invoice
+   * amount. Returns null when the invoice field shows a limit error instead.
+   */
+  const quoteWithdrawalInvoice = useCallback(
+    async (invoice: string): Promise<MeltQuoteResponse | null> => {
+      const invoiceAmountMsat = lightningInvoiceAmountMsat(invoice);
+      if (invoiceAmountMsat !== null && rejectsWithdrawalAmount(invoiceAmountMsat)) return null;
+      try {
+        return await createMeltQuote(invoice, selectedMintId);
+      } catch (error) {
+        if (!isMintAmountOutsideLimitError(error)) throw error;
+        if (invoiceAmountMsat === null || mode !== "withdraw") {
+          throw new Error(t("mintLimits.withdrawal.refused"));
+        }
+        recordWithdrawalRefusal(invoiceAmountMsat);
+        return null;
+      }
+    },
+    [mode, recordWithdrawalRefusal, rejectsWithdrawalAmount, selectedMintId, t],
+  );
 
   const onRegenerateInvoice = useCallback(() => {
     void stopActiveMintQuote().finally(() => {
@@ -590,8 +656,8 @@ export function useDepositWithdrawState(
         if (text.toLowerCase().startsWith("lnbc") || text.toLowerCase().startsWith("lntb")) {
           if (walletId === null) throw new Error("The active wallet is unavailable.");
           setIsLoading(true);
-          const quote = await createMeltQuote(text, selectedMintId);
-          if (!isWalletScopeActive(walletId)) return;
+          const quote = await quoteWithdrawalInvoice(text);
+          if (!isWalletScopeActive(walletId) || quote === null) return;
           setMeltQuote(quote);
           setCurrentView("melt-confirm");
           setIsLoading(false);
@@ -603,7 +669,7 @@ export function useDepositWithdrawState(
     } finally {
       setIsLoading(false);
     }
-  }, [currentView, selectedMintId]);
+  }, [currentView, quoteWithdrawalInvoice]);
 
   const onSendEcash = useCallback(async () => {
     if (amountSats <= 0) return;
@@ -720,8 +786,8 @@ export function useDepositWithdrawState(
         setIsLoading(true);
         setError(null);
         try {
-          const quote = await createMeltQuote(value.trim(), selectedMintId);
-          if (!isWalletScopeActive(walletId)) return;
+          const quote = await quoteWithdrawalInvoice(value.trim());
+          if (!isWalletScopeActive(walletId) || quote === null) return;
           setMeltQuote(quote);
           setCurrentView("melt-confirm");
         } catch (e) {
@@ -731,7 +797,7 @@ export function useDepositWithdrawState(
         }
       }
     },
-    [selectedMintId],
+    [quoteWithdrawalInvoice],
   );
 
   const onConfirmMelt = useCallback(async () => {
@@ -821,10 +887,14 @@ export function useDepositWithdrawState(
         }
         setIsLoading(true);
         try {
-          const quote = await createMeltQuote(trimmed, selectedMintId);
+          const quote = await quoteWithdrawalInvoice(trimmed);
           if (!isWalletScopeActive(walletId)) return;
-          setMeltQuote(quote);
           setLightningInput(trimmed);
+          if (quote === null) {
+            setCurrentView(scanReturnViewRef.current);
+            return;
+          }
+          setMeltQuote(quote);
           setCurrentView("melt-confirm");
         } catch (e) {
           if (isWalletScopeActive(walletId)) {
@@ -849,7 +919,7 @@ export function useDepositWithdrawState(
       setError("Unrecognized QR code format");
       setCurrentView(scanReturnViewRef.current);
     },
-    [selectedMintId],
+    [quoteWithdrawalInvoice],
   );
 
   const onRequest = useCallback(async () => {
@@ -894,7 +964,9 @@ export function useDepositWithdrawState(
     selectedMintId,
     amountSats,
     amountLabel,
+    depositAmountError,
     lightningInput,
+    withdrawalInvoiceError: withdrawalLimit.error,
     isLoading,
     error,
     bolt11,
@@ -928,13 +1000,25 @@ export function useDepositWithdrawState(
   };
 }
 
-function parseDisplayAmountSats(value: string): number {
+function parseDisplayAmountMsat(value: string): number {
   if (value === "") return 0;
   try {
-    return parseSatsToMsat(value) / 1_000;
+    return parseSatsToMsat(value);
   } catch {
     // Keep action buttons disabled while the user has entered an incomplete
     // decimal such as "1.". The shared parser remains authoritative at send.
     return 0;
+  }
+}
+
+/** The msat amount of a BOLT11 invoice, or null when the text has no readable amount. */
+function lightningInvoiceAmountMsat(text: string): number | null {
+  const invoice = text.trim();
+  if (!/^ln(bc|tb)/i.test(invoice)) return null;
+  try {
+    return bolt11InvoiceAmountMsat(invoice);
+  } catch {
+    // The mint validates the invoice when it quotes the payment.
+    return null;
   }
 }

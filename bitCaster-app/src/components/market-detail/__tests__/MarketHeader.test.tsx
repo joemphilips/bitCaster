@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { MarketHeader } from "../MarketHeader";
 import { ToastContainer } from "@/components/ui/Toast";
 import { useToastStore } from "@/stores/toast";
 import type { YesNoMarketDetail } from "@/types/market-detail";
+import { fetchPublicNostrProfile } from "@/lib/nostr";
 
 vi.mock("@/lib/nostr", () => ({
   fetchPublicNostrProfile: vi.fn().mockResolvedValue(null),
@@ -218,10 +219,10 @@ describe("MarketHeader", () => {
     renderHeader(makeMarket());
 
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+    await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
 
     expect(writeText).toHaveBeenCalledWith(creatorNpub);
-    expect(await screen.findByRole("status")).toHaveTextContent("Oracle public key copied.");
+    expect(await screen.findByRole("status")).toHaveTextContent("Oracle Nostr ID copied.");
   });
 
   it("reports success only after the oracle clipboard write completes", async () => {
@@ -235,13 +236,13 @@ describe("MarketHeader", () => {
       value: { writeText: vi.fn(() => pending) },
     });
     renderHeader(makeMarket());
-    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+    await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await act(async () => {
       complete();
       await pending;
     });
-    expect(screen.getByRole("status")).toHaveTextContent("Oracle public key copied.");
+    expect(screen.getByRole("status")).toHaveTextContent("Oracle Nostr ID copied.");
   });
 
   it.each(["rejected", "unavailable"])(
@@ -256,14 +257,14 @@ describe("MarketHeader", () => {
             : { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
       });
       renderHeader(makeMarket());
-      await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+      await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
       expect(await screen.findByRole("status")).toHaveTextContent(
-        "Could not copy the oracle public key.",
+        "Could not copy the oracle Nostr ID.",
       );
       expect(useToastStore.getState().toasts).toEqual([
         expect.objectContaining({
           type: "error",
-          message: "Could not copy the oracle public key.",
+          message: "Could not copy the oracle Nostr ID.",
         }),
       ]);
     },
@@ -283,8 +284,10 @@ describe("MarketHeader", () => {
         </MemoryRouter>
       </I18nextProvider>,
     );
-    await user.click(screen.getByRole("button", { name: "オラクル公開鍵をコピー" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("オラクル公開鍵をコピーしました。");
+    await user.click(screen.getByRole("button", { name: "オラクルのNostr IDをコピー" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "オラクルのNostr IDをコピーしました。",
+    );
   });
 
   it("does not render a copy button when the detail has no creator pubkey", () => {
@@ -299,7 +302,109 @@ describe("MarketHeader", () => {
       }),
     );
 
-    expect(screen.getByText("Oracle pubkey unavailable")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy oracle pubkey" })).not.toBeInTheDocument();
+    expect(screen.getByText("Oracle Nostr ID unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy oracle Nostr ID" })).not.toBeInTheDocument();
+  });
+
+  it("labels a missing oracle Nostr ID in Japanese", () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <MemoryRouter>
+          <MarketHeader
+            market={makeMarket({
+              creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
+            })}
+          />
+        </MemoryRouter>
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("オラクルのNostr IDを利用できません")).toBeInTheDocument();
+  });
+
+  it("links the oracle to its profile page and keeps the copy button outside the link", async () => {
+    renderHeader(makeMarket());
+
+    const link = await screen.findByRole("link", {
+      name: new RegExp(shortCreatorNpub.replace(/\./g, "\\.")),
+    });
+    expect(link).toHaveAttribute("href", `/user/${creatorNpub}`);
+    expect(link).toHaveAttribute("title", "Open the oracle's profile");
+    expect(link).not.toContainElement(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
+  });
+
+  it("does not link a market without a valid oracle Nostr ID", () => {
+    renderHeader(
+      makeMarket({
+        creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
+      }),
+    );
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("loads only an https oracle picture on a public host and sends no referrer", async () => {
+    for (const avatar of [
+      "javascript:alert(1)",
+      "http://img.example/oracle.png",
+      "https://127.0x1/oracle.png",
+      "https://printer.local/oracle.png",
+    ]) {
+      vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+        pubkey: creatorPubkey,
+        displayName: "Alice Oracle",
+        avatar,
+      });
+      const unsafe = renderHeader(makeMarket());
+      expect(
+        await screen.findByText("Alice Oracle", { selector: "p:not(.font-mono)" }),
+      ).toBeInTheDocument();
+      expect(unsafe.container.querySelector("img"), avatar).toBeNull();
+      unsafe.unmount();
+    }
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Alice Oracle",
+      avatar: "https://img.example/oracle.png",
+    });
+    const safe = renderHeader(makeMarket());
+    await waitFor(() =>
+      expect(safe.container.querySelector("img")).toHaveAttribute("referrerpolicy", "no-referrer"),
+    );
+  });
+
+  it("shows the oracle name as bounded single-line text without invisible characters", async () => {
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Evil\u202Egnp.exe\u200B\nline",
+      avatar: "",
+    });
+    const hostile = renderHeader(makeMarket());
+    expect(
+      await screen.findByText("Evilgnp.exe line", { selector: "p:not(.font-mono)" }),
+    ).toBeInTheDocument();
+    hostile.unmount();
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "n".repeat(500),
+      avatar: "",
+    });
+    const long = renderHeader(makeMarket());
+    expect(
+      await screen.findByText(`${"n".repeat(100)}…`, { selector: "p:not(.font-mono)" }),
+    ).toBeInTheDocument();
+    long.unmount();
+
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "\u3164\u200B\u2060",
+      avatar: "",
+    });
+    renderHeader(makeMarket());
+    expect(
+      await screen.findByText(shortCreatorNpub, { selector: "p.font-mono" }),
+    ).toBeInTheDocument();
   });
 });

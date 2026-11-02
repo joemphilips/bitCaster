@@ -43,3 +43,50 @@ describe("Nostr profile verification claims", () => {
     expect(useSettingsStore.getState().nostrProfileFetchStatus).toBe("found");
   });
 });
+
+describe("saved relay selection", () => {
+  it("drops a retired default relay on reload and keeps the other saved relays", async () => {
+    localStorage.setItem(
+      "bitcaster-settings",
+      JSON.stringify({
+        version: 0,
+        state: {
+          relays: [
+            { url: "wss://relay.damus.io", connectionStatus: "disconnected" },
+            { url: "wss://relay.nostr.band", connectionStatus: "disconnected" },
+            { url: "wss://custom.example", connectionStatus: "disconnected" },
+          ],
+        },
+      }),
+    );
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().relays.map(({ url }) => url)).toEqual([
+      "wss://relay.damus.io",
+      "wss://custom.example",
+    ]);
+  });
+});
+
+describe("profile indexer setting", () => {
+  afterEach(() => useSettingsStore.getState().setProfileIndexerEnabled(true));
+
+  it("is on by default and saves a change", () => {
+    expect(useSettingsStore.getState().profileIndexerEnabled).toBe(true);
+    useSettingsStore.getState().setProfileIndexerEnabled(false);
+    const saved = JSON.parse(localStorage.getItem("bitcaster-settings")!) as {
+      state: { profileIndexerEnabled?: boolean };
+    };
+    expect(saved.state.profileIndexerEnabled).toBe(false);
+  });
+
+  it("restores a saved off setting on reload", async () => {
+    localStorage.setItem(
+      "bitcaster-settings",
+      JSON.stringify({ version: 0, state: { profileIndexerEnabled: false } }),
+    );
+    await useSettingsStore.persist.rehydrate();
+    expect(useSettingsStore.getState().profileIndexerEnabled).toBe(false);
+  });
+});

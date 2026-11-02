@@ -61,6 +61,20 @@
   }
 }
 
+/* Japanese interface text breaks between phrases, not inside a word. The document
+   language comes from the active app language. Only the root sets the value, and
+   elements inherit it. Typed text and user content keep normal breaking, because
+   phrase analysis can split the user's own words. Mark user text with
+   data-user-content. A browser without auto-phrase keeps its default breaking. */
+@supports (word-break: auto-phrase) {
+  html:lang(ja) {
+    word-break: auto-phrase;
+  }
+  html:lang(ja) :is(input, textarea, [contenteditable], [data-user-content]) {
+    word-break: normal;
+  }
+}
+
 /* Button shine animation used by the "Create Market" CTA in CreatorDashboard
    (via the arbitrary `animate-[shimmer_3s_infinite]` utility). Defined outside
    @layer base so Tailwind's JIT purge does not drop it. */

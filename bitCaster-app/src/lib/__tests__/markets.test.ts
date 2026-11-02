@@ -637,6 +637,12 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
     expect(url).toContain("page_size=50");
   });
 
+  it("forwards the creator filter as ?creator_pubkey=", async () => {
+    await getMarkets({ creatorPubkey: "ab".repeat(32), state: "All" });
+    expect(lastCallUrl()).toContain(`creator_pubkey=${"ab".repeat(32)}`);
+    expect(lastCallUrl()).toContain("state=All");
+  });
+
   it("forwards normalized search text as ?search=", async () => {
     await getMarkets({ search: "  bitcoin oracle  " });
     expect(lastCallUrl()).toContain("search=bitcoin+oracle");

@@ -41,6 +41,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onThumbnailRemove,
     thumbnailPending,
     thumbnailError,
+    thumbnailRejectionNotice,
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
@@ -137,9 +138,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           feeSubunits={registrationFeeTopUp.feeSubunits}
           balanceSubunits={registrationFeeTopUp.balanceSubunits}
           baseAsset={registrationFeeTopUp.baseAsset}
-          minimumDescription={t("marketCreation.registrationFeeTopUpMinimumDescription", {
-            amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
-          })}
           minimumErrorDescription={t("marketCreation.registrationFeeTopUpMinimumError", {
             amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}
@@ -301,6 +299,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onThumbnailRemove={onThumbnailRemove}
             thumbnailPending={thumbnailPending}
             thumbnailError={thumbnailError}
+            thumbnailRejectionNotice={thumbnailRejectionNotice}
             thumbnailLocked={isSubmitting || !!draft.creation}
             onNext={onNext}
           />

@@ -1,4 +1,4 @@
-import { FileText, Tag, Calendar, BarChart3, Loader2 } from "lucide-react";
+import { FileText, Tag, Calendar, BarChart3, Loader2, Image as ImageIcon } from "lucide-react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
@@ -63,6 +63,24 @@ export function ReviewAndCreate({
               <div>
                 <p className="text-xs text-slate-400">{t("marketCreation.titleSummaryLabel")}</p>
                 <p className="text-sm text-white">{basicInfo.title || t("common.untitled")}</p>
+              </div>
+            </div>
+          )}
+
+          {basicInfo && (
+            <div className="flex items-start gap-3">
+              <ImageIcon className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
+              <div>
+                <p className="text-xs text-slate-400">{t("marketCreation.thumbnail")}</p>
+                {basicInfo.imageFile ? (
+                  <img
+                    src={basicInfo.imageFile}
+                    alt={t("marketCreation.thumbnail")}
+                    className="mt-1 h-12 w-12 rounded object-cover"
+                  />
+                ) : (
+                  <p className="text-sm text-white">{t("marketCreation.noImage")}</p>
+                )}
               </div>
             </div>
           )}

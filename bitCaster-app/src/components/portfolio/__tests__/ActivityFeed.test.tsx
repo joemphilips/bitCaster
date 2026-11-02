@@ -202,7 +202,7 @@ describe("ActivityFeed trade details", () => {
 
   it.each([
     ["en", "Market aaaaaaaaaaaa"],
-    ["ja", "市場 aaaaaaaaaaaa"],
+    ["ja", "マーケット aaaaaaaaaaaa"],
   ] as const)(
     "shows a short market reference in %s when the title is absent",
     async (language, label) => {

@@ -106,8 +106,22 @@ describe("CreatedMarketRow", () => {
     expect(screen.getByText("Closed")).toBeVisible();
   });
 
-  it("locks the persisted choice and offers only exact delivery retry", async () => {
-    const publish = vi.fn();
+  it.each([
+    ["publishing", {}, "Sending result…"],
+    [
+      "failed",
+      { publicationFailures: ["engine" as const] },
+      "Couldn't publish. Retrying automatically.",
+    ],
+    [
+      "published",
+      {
+        engineEvidence: { attestationEventId: "verified" } as never,
+        publicationFailures: ["relay" as const],
+      },
+      "Published",
+    ],
+  ])("shows the %s state for a saved choice without a retry control", (_state, delivery, label) => {
     render(
       <CreatedMarketRow
         market={fixture({
@@ -117,18 +131,21 @@ describe("CreatedMarketRow", () => {
             eventId: "event",
             outcomes: ["YES", "NO"],
             chosenOutcome: "NO",
+            attestedOutcome: "NO",
+            attestationHex: "aabb",
             attestationEventJson: "saved exact event",
             relayPublished: true,
+            ...delivery,
           },
         })}
-        onPublishOracleAttestation={publish}
+        onPublishOracleAttestation={vi.fn()}
       />,
     );
+    expect(screen.getByText("Resolved: NO")).toBeVisible();
+    expect(screen.getByText(label)).toBeVisible();
     expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.getByText(/Engine unconfirmed/)).toBeVisible();
-    expect(screen.getByText(/Relay confirmed/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Retry saved resolution" }));
-    expect(publish).toHaveBeenCalledWith("m1");
+    expect(screen.queryByRole("button", { name: /close market|retry|republish/i })).toBeNull();
+    expect(screen.queryByText(/Engine|Relay/)).toBeNull();
   });
 
   it("marks closed market thumbnails as Closed", () => {
@@ -155,7 +172,7 @@ describe("CreatedMarketRow", () => {
     expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
   });
 
-  it("labels retained closed state and volume as last known", () => {
+  it("keeps retained closed state and volume without a per-row engine label", () => {
     render(
       <CreatedMarketRow
         market={fixture({ status: "resolved", engineDataStatus: "stale", volume: 75_000 })}
@@ -163,8 +180,34 @@ describe("CreatedMarketRow", () => {
     );
     expect(screen.getByText("Closed")).toBeInTheDocument();
     expect(screen.getByText("Vol: 75 sats")).toBeInTheDocument();
-    expect(screen.getByText("Last known engine state and volume")).toBeInTheDocument();
+    expect(screen.queryByText(/engine state/i)).toBeNull();
   });
+
+  it.each([
+    ["stale", false],
+    ["current", true],
+  ] as const)(
+    "shows Active for an open market with a published outcome only from %s engine data",
+    (engineDataStatus, active) => {
+      render(
+        <CreatedMarketRow
+          market={fixture({
+            status: "active",
+            engineDataStatus,
+            oracle: {
+              type: "self",
+              eventId: "oracle",
+              outcomes: ["YES", "NO"],
+              chosenOutcome: "NO",
+              engineEvidence: {} as NonNullable<CreatedMarket["oracle"]>["engineEvidence"],
+            },
+          })}
+        />,
+      );
+      if (active) expect(screen.getByText("Active")).toBeInTheDocument();
+      else expect(screen.queryByText("Active")).toBeNull();
+    },
+  );
 });
 
 it("keeps Portfolio rows without publication capability", () => {
@@ -181,5 +224,5 @@ it("keeps Portfolio rows without publication capability", () => {
     />,
   );
   expect(screen.queryByRole("combobox")).toBeNull();
-  expect(screen.queryByRole("button", { name: /close market|retry saved resolution/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
 });

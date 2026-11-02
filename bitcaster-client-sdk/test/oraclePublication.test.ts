@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
+  oraclePublicationDeliveryPending,
+  oraclePublicationState,
+  oraclePublicationTerminal,
   publishOracleOutcome,
   retryOraclePublication,
   snapshotOraclePublicationRecord,
@@ -687,4 +690,74 @@ test('republication failure and foreign acknowledgment retain terminal delivery 
   }
   assert.equal(h.calls.includes('engine'), false)
   assert.equal(h.calls.includes('save-relay'), false)
+})
+
+test('retry signs an interrupted saved choice once with its saved outcome', async () => {
+  const h = harness()
+  h.adapters.prepareAttestation = async () => {
+    throw new Error('Interrupted local signing')
+  }
+  await assert.rejects(publishOracleOutcome(h.adapters, h.binding, 'YES'), /Interrupted/)
+  assert.equal(h.reload()?.attestation, null)
+  const signed: string[] = []
+  h.adapters.prepareAttestation = async (_binding, outcome) => {
+    signed.push(outcome)
+    return h.artifact
+  }
+  const resumed = await retryOraclePublication(h.adapters, h.binding)
+  assert.deepEqual(signed, ['YES'])
+  assert.equal(resumed.record.chosenOutcome, 'YES')
+  assert.equal(resumed.record.attestation?.eventJson, h.artifact.eventJson)
+  assert.deepEqual(resumed.failures, [])
+  const repeated = await retryOraclePublication(h.adapters, h.binding)
+  assert.deepEqual(signed, ['YES'], 'A saved signature must not be prepared again.')
+  assert.equal(repeated.record.attestation?.eventJson, h.artifact.eventJson)
+})
+
+test('retry without a saved choice refuses before signing or delivery', async () => {
+  const h = harness()
+  await assert.rejects(retryOraclePublication(h.adapters, h.binding), /unavailable/)
+  assert.deepEqual(h.calls, [])
+})
+
+test('engine evidence publishes the result while the relay copy stays pending', () => {
+  const h = harness()
+  const unsigned: OraclePublicationRecord = {
+    binding: h.binding,
+    chosenOutcome: 'YES',
+    attestation: null,
+    relayPublished: false,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const signed = { ...unsigned, attestation: h.artifact }
+  const relayed = { ...signed, relayPublished: true }
+  const engine = { ...signed, engineEvidence: h.evidence }
+  const complete = { ...engine, relayPublished: true }
+  const companion = signedExplanation(h.context)
+  assert.equal(oraclePublicationState(unsigned, []), 'publishing')
+  assert.equal(oraclePublicationState(relayed, ['engine']), 'failed')
+  assert.equal(oraclePublicationState(signed, ['relay']), 'publishing')
+  assert.equal(oraclePublicationState(engine, ['relay']), 'published')
+  assert.equal(oraclePublicationState(engine, ['engine']), 'published')
+  for (const pending of [unsigned, signed, relayed, engine])
+    assert.equal(oraclePublicationDeliveryPending(pending), true)
+  assert.equal(oraclePublicationDeliveryPending(complete), false)
+  assert.equal(
+    oraclePublicationDeliveryPending({ ...complete, explanationEventJson: companion }),
+    true,
+  )
+  assert.equal(
+    oraclePublicationDeliveryPending({
+      ...complete,
+      explanationEventJson: companion,
+      explanationRelayPublished: true,
+    }),
+    false,
+  )
+  assert.equal(oraclePublicationTerminal(unsigned), false)
+  assert.equal(oraclePublicationTerminal(signed), false)
+  assert.equal(oraclePublicationTerminal(relayed), true)
+  assert.equal(oraclePublicationTerminal(engine), true)
 })

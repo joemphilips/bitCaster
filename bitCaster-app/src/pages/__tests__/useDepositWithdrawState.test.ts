@@ -15,6 +15,8 @@ import {
   browserWalletIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
+import { MintOperationError } from "@cashu/cashu-ts";
+import type { MintPaymentLimits } from "@bitcaster/client-sdk/mintPaymentLimits";
 
 // Mock cashu.ts — we don't want real mint calls
 vi.mock("@/lib/cashu", () => ({
@@ -69,6 +71,14 @@ vi.mock("@/lib/walletOps", () => ({
   }),
 }));
 
+const readBrowserMintPaymentLimits = vi.fn();
+const forgetBrowserMintPaymentLimits = vi.fn();
+
+vi.mock("@/lib/mintPaymentLimits", () => ({
+  readBrowserMintPaymentLimits: (...args: unknown[]) => readBrowserMintPaymentLimits(...args),
+  forgetBrowserMintPaymentLimits: (...args: unknown[]) => forgetBrowserMintPaymentLimits(...args),
+}));
+
 // Mock proof-db
 vi.mock("@/stores/proof-db", () => ({
   db: {
@@ -105,6 +115,10 @@ vi.mock("@/lib/nip17", () => ({
 }));
 
 beforeEach(() => {
+  // Limits that never load leave the mint to enforce them, as in production.
+  readBrowserMintPaymentLimits.mockReset();
+  readBrowserMintPaymentLimits.mockReturnValue(new Promise(() => undefined));
+  forgetBrowserMintPaymentLimits.mockReset();
   classifyBrowserBearerWithdrawal.mockReset();
   classifyBrowserBearerWithdrawal.mockImplementation(({ transfer }) => Promise.resolve(transfer));
   browserBearerReclaimFeeDisclosure.mockReset();
@@ -847,6 +861,149 @@ describe("useDepositWithdrawState", () => {
         );
         expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
       },
+    );
+  });
+});
+
+describe("useDepositWithdrawState mint payment limits", () => {
+  const DEPOSIT_LIMITS: MintPaymentLimits = { state: "enabled", minSat: 1, maxSat: 200_000 };
+  const WITHDRAWAL_LIMITS: MintPaymentLimits = { state: "enabled", minSat: 1, maxSat: 150_000 };
+
+  function serveLimits(deposit: MintPaymentLimits | null, withdrawal: MintPaymentLimits | null) {
+    readBrowserMintPaymentLimits.mockImplementation(
+      async (_mintUrl: string, selection: { direction: string }) =>
+        selection.direction === "deposit" ? deposit : withdrawal,
+    );
+  }
+
+  function pressAmount(
+    result: { current: ReturnType<typeof useDepositWithdrawState> },
+    digits: string,
+  ) {
+    for (const key of digits) act(() => result.current.onNumpadPress(key));
+  }
+
+  it("disables a deposit above the mint maximum and shows the limit only then", async () => {
+    serveLimits(DEPOSIT_LIMITS, WITHDRAWAL_LIMITS);
+    const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
+    act(() => result.current.onSelectMethod("lightning"));
+    await act(async () => undefined);
+    expect(readBrowserMintPaymentLimits).toHaveBeenCalledWith("http://localhost:8085", {
+      direction: "deposit",
+      method: "bolt11",
+      unit: "msat",
+    });
+    expect(readBrowserMintPaymentLimits).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ direction: "withdrawal" }),
+    );
+
+    pressAmount(result, "200000");
+    expect(result.current.depositAmountError).toBeNull();
+    act(() => result.current.onNumpadPress("1"));
+    expect(result.current.amountSats).toBe(2_000_001);
+    expect(result.current.depositAmountError).toBe(
+      "This mint accepts 1 to 200,000 sats for each deposit. Deposit in parts.",
+    );
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+
+    act(() => result.current.onNumpadPress("backspace"));
+    expect(result.current.depositAmountError).toBeNull();
+  });
+
+  it("maps a mint refusal to the limit message and reads the limits again", async () => {
+    readBrowserMintPaymentLimits
+      .mockResolvedValueOnce(DEPOSIT_LIMITS)
+      .mockResolvedValueOnce({ state: "enabled", minSat: 1, maxSat: 100_000 });
+    createBrowserDurableBolt11MintQuote.mockRejectedValueOnce(
+      new MintOperationError(11006, "Amount must be between `1000` and `100000000` is `150000000`"),
+    );
+    const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
+    act(() => result.current.onSelectMethod("lightning"));
+    await act(async () => undefined);
+    pressAmount(result, "150000");
+    expect(result.current.depositAmountError).toBeNull();
+
+    await act(async () => result.current.onCreateInvoice());
+
+    expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce();
+    expect(forgetBrowserMintPaymentLimits).toHaveBeenCalledWith("http://localhost:8085");
+    expect(readBrowserMintPaymentLimits).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.invoiceStatus).toBe("pending");
+    expect(result.current.currentView).toBe("deposit-lightning");
+    expect(result.current.depositAmountError).toBe(
+      "This mint accepts 1 to 100,000 sats for each deposit. Deposit in parts.",
+    );
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce();
+  });
+
+  it("returns to the amount field when the mint refuses a re-quote", async () => {
+    readBrowserMintPaymentLimits
+      .mockResolvedValueOnce(DEPOSIT_LIMITS)
+      .mockResolvedValueOnce({ state: "enabled", minSat: 1, maxSat: 100_000 });
+    const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
+    act(() => result.current.onSelectMethod("lightning"));
+    await act(async () => undefined);
+    pressAmount(result, "150000");
+    await act(async () => result.current.onCreateInvoice());
+    expect(result.current.currentView).toBe("invoice-display");
+
+    createBrowserDurableBolt11MintQuote.mockRejectedValueOnce(
+      new MintOperationError(11006, "Amount must be between `1000` and `100000000` is `150000000`"),
+    );
+    await act(async () => result.current.onRegenerateInvoice());
+
+    expect(result.current.currentView).toBe("deposit-lightning");
+    expect(result.current.error).toBeNull();
+    expect(result.current.depositAmountError).toBe(
+      "This mint accepts 1 to 100,000 sats for each deposit. Deposit in parts.",
+    );
+  });
+
+  it("checks a withdrawal invoice against the NUT-05 maximum before it asks for a quote", async () => {
+    const cashu = await import("@/lib/cashu");
+    vi.mocked(cashu.createMeltQuote).mockReset();
+    serveLimits(DEPOSIT_LIMITS, WITHDRAWAL_LIMITS);
+    const { result } = renderHook(() => useDepositWithdrawState("withdraw", vi.fn()));
+    act(() => result.current.onSelectMethod("lightning"));
+    await act(async () => undefined);
+
+    await act(async () => result.current.onLightningInputChange("lnbc2m1pfakeinvoice"));
+
+    expect(cashu.createMeltQuote).not.toHaveBeenCalled();
+    expect(result.current.currentView).toBe("pay-lightning");
+    expect(result.current.lightningInput).toBe("lnbc2m1pfakeinvoice");
+    expect(result.current.withdrawalInvoiceError).toBe(
+      "This mint accepts 1 to 150,000 sats for each withdrawal. Withdraw in parts.",
+    );
+    expect(result.current.error).toBeNull();
+  });
+
+  it("maps a melt quote refusal to the withdrawal limit message", async () => {
+    const cashu = await import("@/lib/cashu");
+    vi.mocked(cashu.createMeltQuote).mockReset();
+    vi.mocked(cashu.createMeltQuote).mockRejectedValueOnce(
+      new MintOperationError(11006, "Amount must be between `1000` and `150000000` is `200000000`"),
+    );
+    readBrowserMintPaymentLimits
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(WITHDRAWAL_LIMITS);
+    const { result } = renderHook(() => useDepositWithdrawState("withdraw", vi.fn()));
+    act(() => result.current.onSelectMethod("lightning"));
+    await act(async () => undefined);
+
+    await act(async () => result.current.onLightningInputChange("lnbc2m1pfakeinvoice"));
+
+    expect(cashu.createMeltQuote).toHaveBeenCalledOnce();
+    expect(forgetBrowserMintPaymentLimits).toHaveBeenCalledWith("http://localhost:8085");
+    expect(result.current.currentView).toBe("pay-lightning");
+    expect(result.current.error).toBeNull();
+    expect(result.current.withdrawalInvoiceError).toBe(
+      "This mint accepts 1 to 150,000 sats for each withdrawal. Withdraw in parts.",
     );
   });
 });

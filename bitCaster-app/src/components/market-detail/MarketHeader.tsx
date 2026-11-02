@@ -11,9 +11,15 @@ import {
 import { nip19 } from "nostr-tools";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import {
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  parseNostrPublicKey,
+  safeNostrImageUrl,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { MetricExplanation } from "@/components/shared/MetricExplanation";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
@@ -41,18 +47,6 @@ function formatCreatorNpub(creatorId: string): string | null {
 function formatShortNpub(npub: string): string {
   if (npub.length <= 24) return npub;
   return `${npub.slice(0, 12)}...${npub.slice(-8)}`;
-}
-
-function creatorIdToHex(creatorId: string): string | null {
-  const trimmed = creatorId.trim();
-  if (HexPubkeyPattern.test(trimmed)) return trimmed.toLowerCase();
-  if (!trimmed.startsWith("npub1")) return null;
-  try {
-    const decoded = nip19.decode(trimmed);
-    return decoded.type === "npub" ? decoded.data : null;
-  } catch {
-    return null;
-  }
 }
 
 function formatTimeRemaining(
@@ -122,9 +116,18 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const creatorNpub = formatCreatorNpub(market.creator.id);
   const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
-  const creatorHex = creatorIdToHex(market.creator.id);
+  const creatorHex = parseNostrPublicKey(market.creator.id);
+  // A kind-0 picture names a host that the oracle chose. Load only https without a referrer.
+  const oracleAvatar =
+    safeNostrImageUrl(oracleProfile?.avatar) ?? safeNostrImageUrl(market.creator.avatarUrl);
+  // An empty sanitized name has no visible character, so the label falls back to the key.
+  const oracleName = sanitizeNostrDisplayText(
+    oracleProfile?.displayName,
+    MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+    { singleLine: true },
+  );
   const creatorLabel =
-    oracleProfile?.displayName ??
+    oracleName ||
     (creatorNpub ? formatShortNpub(creatorNpub) : t("market.oraclePubkeyUnavailable"));
   const mintIconUrl = activeMint
     ? getMintIconUrl(activeMint.url, activeMint.info as Record<string, unknown> | undefined)
@@ -159,6 +162,36 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     const intervalId = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(intervalId);
   }, [market.closingDate, isClosed]);
+
+  const oracleIdentity = (
+    <>
+      {oracleAvatar ? (
+        <img
+          src={oracleAvatar}
+          alt={creatorLabel}
+          className="w-10 h-10 rounded-full"
+          referrerPolicy="no-referrer"
+        />
+      ) : (
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
+          {creatorLabel.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p
+          className={`truncate text-sm font-medium ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
+        >
+          {t("market.oracle")}
+        </p>
+        {/* A name is text. Only the Nostr ID fallback is an identifier in monospace. */}
+        <p
+          className={`truncate text-xs ${oracleProfileLoaded && !oracleName ? "font-mono" : ""} ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
+        >
+          {oracleProfileLoaded ? creatorLabel : t("market.searchingNostr")}
+        </p>
+      </div>
+    </>
+  );
 
   const resolvedDate =
     isResolved && market.resolution.resolutionDate !== null
@@ -252,31 +285,18 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           {/* Creator Info */}
           <div
             className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? "bg-white/10" : "bg-slate-100 dark:bg-slate-800"}`}
-            title={t("market.oracleAuditHint")}
           >
-            {oracleProfile?.avatar || market.creator.avatarUrl ? (
-              <img
-                src={oracleProfile?.avatar || market.creator.avatarUrl}
-                alt={creatorLabel}
-                className="w-10 h-10 rounded-full"
-              />
+            {creatorHex ? (
+              <Link
+                to={`/user/${nip19.npubEncode(creatorHex)}`}
+                title={t("market.oracleAuditHint")}
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-lg transition-opacity hover:opacity-80"
+              >
+                {oracleIdentity}
+              </Link>
             ) : (
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
-                {creatorLabel.charAt(0).toUpperCase()}
-              </div>
+              <div className="flex min-w-0 flex-1 items-center gap-3">{oracleIdentity}</div>
             )}
-            <div className="min-w-0 flex-1">
-              <p
-                className={`truncate text-sm font-medium ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
-              >
-                {t("market.oracle")}
-              </p>
-              <p
-                className={`truncate text-xs font-mono ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
-              >
-                {oracleProfileLoaded ? creatorLabel : t("market.searchingNostr")}
-              </p>
-            </div>
             {creatorNpub && (
               <button
                 type="button"

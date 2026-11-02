@@ -9,6 +9,8 @@ import {
 import { TopUpOverlay } from "../TopUpOverlay";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
 import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
+import { MintOperationError } from "@cashu/cashu-ts";
+import type { MintPaymentLimits } from "@bitcaster/client-sdk/mintPaymentLimits";
 
 const createBrowserDurableBolt11MintQuote = vi.fn();
 const subscribeActiveBrowserDurableBolt11MintQuote = vi.fn();
@@ -32,6 +34,14 @@ vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
     subscribeActiveBrowserDurableBolt11MintQuote(...args),
   hideBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
     hideBrowserDurableBolt11MintQuote(...args),
+}));
+
+const readBrowserMintPaymentLimits = vi.fn();
+const forgetBrowserMintPaymentLimits = vi.fn();
+
+vi.mock("@/lib/mintPaymentLimits", () => ({
+  readBrowserMintPaymentLimits: (...args: unknown[]) => readBrowserMintPaymentLimits(...args),
+  forgetBrowserMintPaymentLimits: (...args: unknown[]) => forgetBrowserMintPaymentLimits(...args),
 }));
 
 vi.mock("@/lib/walletOps", () => ({
@@ -98,6 +108,122 @@ describe("TopUpOverlay", () => {
     navigate.mockReset();
     walletSeedReminderAcknowledgedScopeId = null;
     setActiveBrowserWalletProfile(walletMnemonic);
+    // Limits that never load leave the mint to enforce them.
+    readBrowserMintPaymentLimits.mockReset();
+    readBrowserMintPaymentLimits.mockReturnValue(new Promise(() => undefined));
+    forgetBrowserMintPaymentLimits.mockReset();
+  });
+
+  describe("mint deposit limits", () => {
+    const PRODUCTION: MintPaymentLimits = { state: "enabled", minSat: 1, maxSat: 200_000 };
+    const LIMIT_ERROR = "This mint accepts 1 to 200,000 sats for each deposit. Deposit in parts.";
+
+    it("prefills at most the mint maximum and lets a larger shortfall be paid in parts", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue(PRODUCTION);
+      render(
+        <TopUpOverlay
+          deficit={300_000_000}
+          baseAsset="sat"
+          onCancel={vi.fn()}
+          onSuccess={vi.fn()}
+        />,
+      );
+      expect(readBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example", {
+        direction: "deposit",
+        method: "bolt11",
+        unit: "msat",
+      });
+      await waitFor(() => expect(screen.getByTestId("top-up-amount-input")).toHaveValue(200_000));
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      await waitFor(() =>
+        expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+          amount: 200_000_000,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+        }),
+      );
+    });
+
+    it("caps a whole-sat prefill for a sat proof unit", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue({
+        state: "enabled",
+        minSat: null,
+        maxSat: 1_000,
+      });
+      render(
+        <TopUpOverlay
+          deficit={900}
+          baseAsset="sat"
+          proofUnit="sat"
+          onCancel={vi.fn()}
+          onSuccess={vi.fn()}
+        />,
+      );
+      expect(readBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example", {
+        direction: "deposit",
+        method: "bolt11",
+        unit: "sat",
+      });
+      await waitFor(() => expect(screen.getByTestId("top-up-amount-input")).toHaveValue(1_000));
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+    });
+
+    it("shows the limit next to the amount only outside the limits and disables Continue", async () => {
+      readBrowserMintPaymentLimits.mockResolvedValue(PRODUCTION);
+      render(
+        <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+      );
+      await waitFor(() => expect(readBrowserMintPaymentLimits).toHaveBeenCalled());
+      await act(async () => undefined);
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "200001" },
+      });
+      expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(LIMIT_ERROR);
+      // The same invalid border as the market funding field.
+      expect(screen.getByTestId("top-up-amount-input")).toHaveClass("border-red-400");
+      expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "200000" },
+      });
+      expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+      expect(screen.getByTestId("top-up-amount-input")).not.toHaveClass("border-red-400");
+      expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+    });
+
+    it("maps a mint refusal to the limit message and reads the limits again", async () => {
+      readBrowserMintPaymentLimits
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ state: "enabled", minSat: 1, maxSat: 100_000 });
+      createBrowserDurableBolt11MintQuote.mockRejectedValueOnce(
+        new MintOperationError(
+          11006,
+          "Amount must be between `1000` and `100000000` is `150000000`",
+        ),
+      );
+      render(
+        <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+      );
+      fireEvent.change(screen.getByTestId("top-up-amount-input"), {
+        target: { value: "150000" },
+      });
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+
+      expect(await screen.findByTestId("top-up-amount-error")).toHaveTextContent(
+        "This mint accepts 1 to 100,000 sats for each deposit. Deposit in parts.",
+      );
+      expect(forgetBrowserMintPaymentLimits).toHaveBeenCalledWith("https://mint.example");
+      expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+      expect(screen.queryByText(/Amount must be between/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("bolt11-display")).not.toBeInTheDocument();
+    });
   });
 
   it.each(["authentication", "leadership-wait", "retry", "driver-unavailable"] as const)(
@@ -207,7 +333,7 @@ describe("TopUpOverlay", () => {
 
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -218,7 +344,7 @@ describe("TopUpOverlay", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -229,7 +355,20 @@ describe("TopUpOverlay", () => {
     );
     expect(
       screen.getByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("recommends a seed phrase backup in Japanese before a deposit", async () => {
+    await i18n.changeLanguage("ja");
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByText(
+        "入金する前に、ウォレットのシードフレーズのバックアップを取ることをおすすめします。",
       ),
     ).toBeInTheDocument();
   });
@@ -254,7 +393,7 @@ describe("TopUpOverlay", () => {
 
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
@@ -268,7 +407,7 @@ describe("TopUpOverlay", () => {
     await userEvent.click(screen.getByRole("button", { name: "Later" }));
     expect(
       screen.queryByText(
-        "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+        "Before you deposit, we recommend that you back up your wallet seed phrase.",
       ),
     ).not.toBeInTheDocument();
 
@@ -282,7 +421,7 @@ describe("TopUpOverlay", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "View your wallet seed phrase in Settings before adding funds. Viewing it does not confirm an external backup.",
+          "Before you deposit, we recommend that you back up your wallet seed phrase.",
         ),
       ).toBeInTheDocument(),
     );
@@ -295,6 +434,59 @@ describe("TopUpOverlay", () => {
     expect(screen.getByTestId("top-up-continue")).toBeDisabled();
     await userEvent.type(screen.getByTestId("top-up-amount-input"), "0.5");
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+  });
+
+  it("shows the trade minimum only in an error after the user leaves an amount below it", () => {
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+    const input = screen.getByTestId("top-up-amount-input");
+    expect(screen.queryByText(/minimum|at least/i)).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+
+    // A partial amount is not an error while the user still types.
+    fireEvent.change(input, { target: { value: "9" } });
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+
+    fireEvent.blur(input);
+    const message = "Amount must be at least 10 sats to cover the trade.";
+    const error = screen.getByTestId("top-up-amount-error");
+    expect(error).toHaveAttribute("role", "alert");
+    expect(error).toHaveTextContent(message);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(message);
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "10" } });
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(input).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+  });
+
+  it("shows a caller minimum error and no permanent minimum text for a market creation fee", () => {
+    render(
+      <TopUpOverlay
+        deficit={1_500}
+        balanceSubunits={1_000}
+        feeSubunits={2_500}
+        baseAsset="sat"
+        minimumErrorDescription="Amount must be at least 1.5 sats to cover the market creation fee."
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId("top-up-amount-input");
+    expect(screen.queryByText(/at least/)).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Amount must be at least 1.5 sats to cover the market creation fee.",
+    );
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
   });
 
   it("shows the full registration fee separately from the top-up deficit", () => {
@@ -324,7 +516,7 @@ describe("TopUpOverlay", () => {
       <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
     );
 
-    expect(screen.getByText(/Minimum 10 sats to cover the trade/)).toBeInTheDocument();
+    expect(screen.queryByText(/minimum|at least/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toHaveValue(20);
 
     await user.click(screen.getByTestId("top-up-continue"));
@@ -364,16 +556,23 @@ describe("TopUpOverlay", () => {
         deficit={5_000}
         baseAsset="sat"
         proofUnit="msat"
-        minimumDescription="Top up at least 5 sats to cover Engine Score before placing the order."
+        minimumErrorDescription="Amount must be at least 5 sats to cover Engine Score."
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/Top up at least 5 sats/)).toBeInTheDocument();
+    expect(screen.queryByText(/at least/)).not.toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toHaveValue(15);
     await user.clear(screen.getByTestId("top-up-amount-input"));
+    await user.type(screen.getByTestId("top-up-amount-input"), "4");
+    await user.tab();
+    expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(
+      "Amount must be at least 5 sats to cover Engine Score.",
+    );
+    await user.clear(screen.getByTestId("top-up-amount-input"));
     await user.type(screen.getByTestId("top-up-amount-input"), "5");
+    expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("top-up-continue"));
 

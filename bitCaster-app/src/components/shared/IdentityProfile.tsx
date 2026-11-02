@@ -3,6 +3,12 @@ import { Loader2, UserCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { NostrProfileFetchStatus } from "@/types/settings";
+import {
+  MAX_NOSTR_PROFILE_ABOUT_CHARACTERS,
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 
 export interface IdentityProfileData {
   displayName: string;
@@ -22,7 +28,14 @@ export function IdentityProfile({
 }) {
   const { t } = useTranslation();
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
-  const name = profile.displayName.trim() || t("settings.profileAnonymous");
+  // Kind 0 text is untrusted relay text, as on the profile page.
+  const name =
+    sanitizeNostrDisplayText(profile.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
+      singleLine: true,
+    }) || t("settings.profileAnonymous");
+  const bio = sanitizeNostrDisplayText(profile.bio, MAX_NOSTR_PROFILE_ABOUT_CHARACTERS);
+  // This component shows only the user's own profile.
+  const avatarUrl = ownProfileImageUrl(profile.avatarUrl);
   const [dismissedReadError, setDismissedReadError] = useState(false);
   useEffect(() => {
     if (status !== "unavailable") setDismissedReadError(false);
@@ -36,12 +49,12 @@ export function IdentityProfile({
       className="flex min-w-0 items-start gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/30"
     >
       <div className="h-16 w-16 shrink-0 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-        {profile.avatarUrl && profile.avatarUrl !== failedAvatar ? (
+        {avatarUrl && avatarUrl !== failedAvatar ? (
           <img
-            src={profile.avatarUrl}
+            src={avatarUrl}
             alt={name}
             className="h-full w-full object-cover"
-            onError={() => setFailedAvatar(profile.avatarUrl)}
+            onError={() => setFailedAvatar(avatarUrl)}
           />
         ) : (
           <UserCircle
@@ -57,9 +70,12 @@ export function IdentityProfile({
           </h3>
           {action}
         </div>
-        {profile.bio && (
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600 dark:text-slate-300 [overflow-wrap:anywhere]">
-            {profile.bio}
+        {bio && (
+          <p
+            data-user-content
+            className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600 dark:text-slate-300 [overflow-wrap:anywhere]"
+          >
+            {bio}
           </p>
         )}
         {(loading || unavailable || absent) && (

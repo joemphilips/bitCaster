@@ -8,6 +8,8 @@ import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 
 interface PositionRowProps {
   position: Position;
+  /** DOM ID that a Portfolio deep link scrolls to. */
+  anchorId?: string;
   onSell?: (positionId: string) => void;
   onClaim?: (positionId: string) => void;
   onDiscard?: (positionId: string) => void;
@@ -41,6 +43,7 @@ function fallbackPositionLabel(position: Position, sideLabel: string): string {
 
 export function PositionRow({
   position,
+  anchorId,
   onSell,
   onClaim,
   onDiscard,
@@ -95,12 +98,13 @@ export function PositionRow({
 
   return (
     <div
+      id={anchorId}
       role={onView ? "button" : undefined}
       tabIndex={onView ? 0 : undefined}
       onClick={handleView}
       onKeyDown={onView ? handleViewKeyDown : undefined}
       aria-busy={action !== undefined}
-      className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50"
+      className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <div className="flex min-w-0 items-start gap-3 sm:contents">
         {/* Market Image */}

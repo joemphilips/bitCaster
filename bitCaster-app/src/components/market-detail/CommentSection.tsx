@@ -60,7 +60,10 @@ function CommentRow({ comment }: { comment: Comment }) {
       </div>
 
       {/* Content */}
-      <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-2 pl-11">
+      <p
+        data-user-content
+        className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-2 pl-11"
+      >
         {comment.content}
       </p>
     </div>

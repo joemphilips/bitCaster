@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { Upload, X, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo } from "@/types/market-creation";
@@ -14,6 +14,8 @@ interface BasicInfoProps {
   onThumbnailRemove?: () => void;
   thumbnailPending?: boolean;
   thumbnailError?: string | null;
+  /** A rejected file is not the selection. Its neutral notice neither blocks Next nor offers Remove. */
+  thumbnailRejectionNotice?: string | null;
   thumbnailLocked?: boolean;
   onNext?: () => void;
 }
@@ -28,11 +30,15 @@ export function BasicInfo({
   onThumbnailRemove,
   thumbnailPending = false,
   thumbnailError = null,
+  thumbnailRejectionNotice = null,
   thumbnailLocked = false,
   onNext,
 }: BasicInfoProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const thumbnailErrorId = useId();
+  // A selection error blocks Next. A rejected file leaves a valid draft, so it is a notice.
+  const thumbnailMessage = thumbnailError ?? thumbnailRejectionNotice;
   const canProceed =
     !thumbnailPending &&
     !thumbnailError &&
@@ -96,6 +102,7 @@ export function BasicInfo({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={thumbnailLocked}
+                aria-describedby={thumbnailMessage ? thumbnailErrorId : undefined}
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
               >
                 <Upload className="w-4 h-4 inline-block mr-1.5" strokeWidth={1.5} />
@@ -116,10 +123,16 @@ export function BasicInfo({
                   {t("common.loading")}
                 </p>
               )}
-              {thumbnailError && (
-                <p role="alert" className="mt-2 text-sm text-red-400">
+              {thumbnailError ? (
+                <p id={thumbnailErrorId} role="alert" className="mt-2 text-sm text-red-400">
                   {thumbnailError}
                 </p>
+              ) : (
+                thumbnailRejectionNotice && (
+                  <p id={thumbnailErrorId} role="status" className="mt-2 text-sm text-slate-400">
+                    {thumbnailRejectionNotice}
+                  </p>
+                )
               )}
             </div>
           </div>

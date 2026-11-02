@@ -7,6 +7,7 @@ import type { DispatchDependencies } from '../src/server.ts'
 import { dispatch } from '../src/server.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import type { WalletPaymentQuote } from '../src/protocol.ts'
+import { NativeMintPaymentAmountError } from '../src/nativeMintPaymentLimits.ts'
 
 test('malformed wallet payment requests are refused before adapter calls', async () => {
   const calls: string[] = []
@@ -131,6 +132,51 @@ test('wallet payment RPC binds the exact quote debit and permits read-only statu
     })
     assert.doesNotMatch(JSON.stringify(failed), /lnbc-rpc-invoice/)
     assert.equal(recoveryTriggers, 2)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('a payment quote outside the mint limits returns a machine-readable refusal', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-wallet-payment-limit-rpc-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '71'.repeat(64),
+      nostrSecretKeyHex: '72'.repeat(32),
+    })
+    const operations = createOperations([], {
+      quote: async () => {
+        throw new NativeMintPaymentAmountError('withdrawal', 200_000_000, {
+          kind: 'above-maximum',
+          minSat: 1,
+          maxSat: 150_000,
+        })
+      },
+    })
+
+    assert.deepEqual(
+      await dispatch(
+        { method: 'wallet.pay.quote', params: { invoice: 'lnbc2m1pfakeinvoice' } },
+        { nativeWalletPaymentOps: operations, isCustodyReady: () => true },
+      ),
+      {
+        ok: false,
+        code: 'amount-outside-mint-limits',
+        error: 'This mint accepts 1 to 150,000 sats for each withdrawal. Withdraw in parts.',
+        result: {
+          direction: 'withdrawal',
+          amountMsat: 200_000_000,
+          rejection: { kind: 'above-maximum', minSat: 1, maxSat: 150_000 },
+        },
+      },
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

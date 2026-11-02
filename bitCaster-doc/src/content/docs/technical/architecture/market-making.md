@@ -69,7 +69,8 @@ creator preferences, or professional liquidity workflows better.
 After creating a market, the creator can skip funding or enter an amount in
 sats. Any user can make later funding payments from the market detail
 `LIQUIDITY` tab. The bot posts no quotes until an accepted payment activates it.
-Funding is non-refundable. Review the amount and any fee before confirming.
+The funds become market liquidity and are not returned. Review the amount and
+any fee before confirming.
 
 The opening bid/ask spread target is two percentage points when liquidity
 permits it. For example, a binary market can start with a 49% bid and 51% ask.

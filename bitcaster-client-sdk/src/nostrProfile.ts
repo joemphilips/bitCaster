@@ -32,6 +32,13 @@ export const MAX_NOSTR_PROFILE_RELAY_FRAMES = 64
 // Reserve space for an EVENT frame and its maximum 64-character subscription ID.
 export const MAX_NOSTR_PROFILE_EVENT_BYTES = MAX_NOSTR_PROFILE_TRANSPORT_BYTES - 128
 
+/** A relay transport rejects a read with this error when a frame is above its byte bound. */
+export class NostrRelayFrameTooLargeError extends Error {
+  constructor() {
+    super('Nostr relay frame is above the size bound.')
+  }
+}
+
 function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }
@@ -41,6 +48,17 @@ function verifiedProfileEvent(
   publicKeyHex: string,
   contentLimit = MAX_NOSTR_PROFILE_CONTENT_BYTES,
   eventLimit = MAX_NOSTR_PROFILE_EVENT_BYTES,
+): Event | null {
+  return verifyNostrAuthorEvent(value, publicKeyHex, 0, contentLimit, eventLimit)
+}
+
+/** Return an owned copy of a signed event of this author and kind, or null. */
+export function verifyNostrAuthorEvent(
+  value: unknown,
+  publicKeyHex: string,
+  kind: number,
+  contentLimit: number,
+  eventLimit: number,
 ): Event | null {
   try {
     if (value === null || typeof value !== 'object') return null
@@ -64,7 +82,7 @@ function verifiedProfileEvent(
     // envelope so a valid NIP-07 response from another realm can still verify.
     if (
       !validateEvent(signed) ||
-      signed.kind !== 0 ||
+      signed.kind !== kind ||
       signed.pubkey !== publicKeyHex ||
       !Number.isSafeInteger(signed.created_at) ||
       signed.created_at < 0 ||
@@ -156,21 +174,41 @@ async function queryProfileEvents(
   contentLimit: number,
   eventLimit = MAX_NOSTR_PROFILE_EVENT_BYTES,
 ): Promise<{ latest: Event | null; completedRelayCount: number; failedRelayCount: number }> {
+  let latest: Event | null = null
+  const counts = await readNostrAuthorRelays(
+    publicKeyHex,
+    relayUrls,
+    (url, receive) => query(url, { kinds: [0], authors: [publicKeyHex], limit: 1 }, receive),
+    (value) => {
+      const event = verifiedProfileEvent(value, publicKeyHex, contentLimit, eventLimit)
+      if (event && (!latest || compareNostrProfileEvents(event, latest) > 0)) latest = event
+    },
+  )
+  return { latest, ...counts }
+}
+
+/**
+ * Read one author from each selected relay. Events that a relay delivers after
+ * its query settles are ignored. At least one relay must complete.
+ */
+export async function readNostrAuthorRelays(
+  publicKeyHex: string,
+  relayUrls: readonly string[],
+  read: (url: string, receive: (value: Event) => void) => Promise<void>,
+  accept: (value: unknown) => void,
+): Promise<{ completedRelayCount: number; failedRelayCount: number }> {
   if (!/^[0-9a-f]{64}$/.test(publicKeyHex)) throw new Error('Nostr profile public key is invalid.')
   const relays = normalizeNostrRelayUrls(relayUrls)
   if (relays.length === 0)
     throw new Error('Configure a Nostr relay before reading the signer profile.')
-  let latest: Event | null = null
   let completedRelayCount = 0
   let failedRelayCount = 0
   await Promise.all(
     relays.map(async (url) => {
       let active = true
       try {
-        await query(url, { kinds: [0], authors: [publicKeyHex], limit: 1 }, (value) => {
-          if (!active) return
-          const event = verifiedProfileEvent(value, publicKeyHex, contentLimit, eventLimit)
-          if (event && (!latest || compareNostrProfileEvents(event, latest) > 0)) latest = event
+        await read(url, (value) => {
+          if (active) accept(value)
         })
         completedRelayCount += 1
       } catch {
@@ -182,7 +220,7 @@ async function queryProfileEvents(
   )
   if (completedRelayCount === 0)
     throw new Error('Nostr profile read failed. Check the configured relays and retry.')
-  return { latest, completedRelayCount, failedRelayCount }
+  return { completedRelayCount, failedRelayCount }
 }
 
 export interface NostrProfilePatch {

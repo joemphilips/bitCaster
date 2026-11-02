@@ -15,6 +15,7 @@ import type { NativeBolt11MintQuoteView } from '../src/nativeBolt11MintQuoteCoor
 import type { DispatchDependencies } from '../src/server.ts'
 import type { NativeWalletPaymentRecoveryScan } from '../src/nativeWalletPaymentRecovery.ts'
 import { createCustodyReadinessTracker } from '../src/startupRecovery.ts'
+import { NativeMintPaymentAmountError } from '../src/nativeMintPaymentLimits.ts'
 
 test('malformed native invoice params return a redacted refusal without calling the adapter', async () => {
   const calls: string[] = []
@@ -169,6 +170,83 @@ test('native invoice RPC validates readiness and dispatches saved quote operatio
       `hide:${saved.quoteRecordId}`,
       `replace:${saved.quoteRecordId}:3000`,
     ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+  }
+})
+
+test('an invoice amount outside the mint limits returns a machine-readable refusal', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-native-invoice-limit-rpc-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '11'.repeat(64),
+      nostrSecretKeyHex: '22'.repeat(32),
+    })
+    const refusal = new NativeMintPaymentAmountError('deposit', 300_000_000, {
+      kind: 'above-maximum',
+      minSat: 1,
+      maxSat: 200_000,
+    })
+    let recoveryTriggers = 0
+    const ops: NativeLightningOps = {
+      createInvoice: async () => {
+        throw refusal
+      },
+      showInvoice: async () => null,
+      hideInvoice: async () => invoice('a'.repeat(64)),
+      replaceInvoice: async () => {
+        throw refusal
+      },
+      recoverPage: async () => ({
+        recovery: { recovered: [], recoveredCount: 0, pending: [] },
+        hasMore: false,
+        retryPending: false,
+        blockingPending: false,
+      }),
+      restartRecoveryScan: () => undefined,
+    }
+    const deps = {
+      nativeLightningOps: ops,
+      isCustodyReady: () => true,
+      triggerCustodyRecovery: () => {
+        recoveryTriggers += 1
+      },
+    }
+    const expected = {
+      ok: false,
+      code: 'amount-outside-mint-limits',
+      error: 'This mint accepts 1 to 200,000 sats for each deposit. Deposit in parts.',
+      result: {
+        direction: 'deposit',
+        amountMsat: 300_000_000,
+        rejection: { kind: 'above-maximum', minSat: 1, maxSat: 200_000 },
+      },
+    }
+
+    assert.deepEqual(
+      await dispatch(
+        { method: 'wallet.invoice.create', params: { amountMsat: 300_000_000 } },
+        deps,
+      ),
+      expected,
+    )
+    assert.deepEqual(
+      await dispatch(
+        {
+          method: 'wallet.invoice.replace',
+          params: { quoteRecordId: 'a'.repeat(64), amountMsat: 300_000_000 },
+        },
+        deps,
+      ),
+      expected,
+    )
+    assert.equal(recoveryTriggers, 0)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

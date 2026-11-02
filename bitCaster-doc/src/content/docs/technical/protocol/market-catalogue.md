@@ -66,6 +66,14 @@ price. Clients should show `No trades yet` or an em dash. Do not use a
 registration value, funding value, uniform default, or bid/ask midpoint as the
 market price. A midpoint is an order-entry reference only.
 
+During a short read-model catch-up, a catalogue request without `ids` can get
+the last `latestConfirmedTrades` array that the engine read for each market.
+That array can lag the latest confirmed trade. An empty array then means that
+no confirmed trade existed at that read. If a market on the page has no earlier
+value, the request returns HTTP `503` with the problem type
+`/errors/market-latest-trades-unavailable`. A request with `ids` returns that
+response instead of earlier values. Retry the request later.
+
 Price-history points expose `volumeSubunits` and `eventOrder`.
 The opaque `eventOrder` value identifies canonical trade order.
 The history read returns the latest applied history. It takes no source position.

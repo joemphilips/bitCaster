@@ -94,6 +94,8 @@ it("shows authentication preparation without calling it a wallet conflict or off
   );
   expect(screen.getByRole("status")).toHaveTextContent("Preparing wallet backup");
   expect(screen.getByRole("status")).toHaveTextContent("Checking this wallet's backup");
+  // The banner appears on pages without a Continue button.
+  expect(screen.getByRole("status")).not.toHaveTextContent(/Continue/);
   expect(screen.getByRole("status")).not.toHaveTextContent("Another browser");
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });

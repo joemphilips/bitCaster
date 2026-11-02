@@ -220,14 +220,14 @@ vi.mock("@/components/market-detail/TopUpOverlay", () => ({
     deficit,
     baseAsset,
     proofUnit,
-    minimumDescription,
+    minimumErrorDescription,
     onSuccess,
     onCancel,
   }: {
     deficit: number;
     baseAsset: "sat";
     proofUnit?: "sat" | "msat" | null;
-    minimumDescription?: string;
+    minimumErrorDescription?: string;
     onSuccess: () => void;
     onCancel: () => void;
   }) => {
@@ -235,7 +235,7 @@ vi.mock("@/components/market-detail/TopUpOverlay", () => ({
     return (
       <div role="dialog" aria-label="Top Up Wallet">
         <h2>Top Up Wallet</h2>
-        {minimumDescription && <p>{minimumDescription}</p>}
+        {minimumErrorDescription && <p>{minimumErrorDescription}</p>}
         <input data-testid="top-up-amount-input" />
         <button data-testid="top-up-success" onClick={onSuccess}>
           Simulate top-up success
@@ -5133,7 +5133,9 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByText("1.601 sats")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
-    expect(await screen.findByText(/Top up at least 1\.601 sats/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Amount must be at least 1.601 sats to cover Engine Score."),
+    ).toBeInTheDocument();
     expect(mocks.topUpOverlayProps).toEqual({
       deficit: 1_601,
       baseAsset: "sat",

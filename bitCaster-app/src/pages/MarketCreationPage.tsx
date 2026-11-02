@@ -88,6 +88,7 @@ export function MarketCreationPage() {
         onThumbnailRemove={state.onThumbnailRemove}
         thumbnailPending={state.thumbnailPending}
         thumbnailError={state.thumbnailError}
+        thumbnailRejectionNotice={state.thumbnailRejectionNotice}
         onAddOutcome={state.onAddOutcome}
         onRemoveOutcome={state.onRemoveOutcome}
         onOutcomeLabelChange={state.onOutcomeLabelChange}

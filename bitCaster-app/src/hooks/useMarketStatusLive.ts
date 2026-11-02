@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { onMarketStatusChanged, type MarketStatusChanged } from "@/lib/marketHub";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -40,12 +40,17 @@ import { assertNever } from "../lib/enumDiscipline";
  *   `undefined` while loading — the effect is a no-op until it resolves.
  * @param onStatus  Callback invoked when a status push arrives; the caller
  *   should update local state and trigger a background market detail refresh.
+ * @param marketTitle  Title of the viewed market. The bell shows it.
  */
 export function useMarketStatusLive(
   conditionId: string | null | undefined,
   onStatus: (status: MarketStatusChanged) => void,
+  marketTitle?: string,
 ): void {
   const { t } = useTranslation();
+  // A title change must not replace the hub subscription.
+  const marketTitleRef = useRef(marketTitle);
+  marketTitleRef.current = marketTitle;
 
   useEffect(() => {
     if (!conditionId) return;
@@ -69,7 +74,7 @@ export function useMarketStatusLive(
       // and dedup semantics as the boot reconcile.
       const minimalMarket: Market = {
         id: conditionId,
-        title: "",
+        title: marketTitleRef.current ?? "",
         state: "closed",
         type: "yesno",
         // Close reconciliation only needs the lifecycle fields. Keep price
@@ -111,9 +116,9 @@ export function useMarketStatusLive(
         addNotification(notification);
         if (optedIn) {
           showWebNotification(t("notification.marketClosedTitle"), {
-            body: t("notification.marketClosed", {
-              market: notification.marketId,
-            }),
+            body: notification.marketTitle
+              ? t("notification.marketClosed", { market: notification.marketTitle })
+              : t("notification.marketClosedTitle"),
             tag: notification.id,
           });
         }

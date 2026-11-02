@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import i18n from "@/i18n";
 import { describe, expect, it } from "vitest";
 import { PLChart } from "../PLChart";
 import type { PLChartData } from "@/types/portfolio";
@@ -11,6 +12,22 @@ const chartData: PLChartData = {
 };
 
 describe("PLChart", () => {
+  it("names the time ranges in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      render(<PLChart chartData={chartData} selectedTimeRange="ALL" totalValueSats={0} />);
+      for (const name of ["1日", "1週間", "1か月", "全期間"])
+        expect(screen.getByRole("button", { name })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "全期間" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(screen.queryByRole("button", { name: /^(1D|1W|1M|ALL)$/ })).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("suppresses value changes and the chart while valuation is unknown", () => {
     render(
       <PLChart

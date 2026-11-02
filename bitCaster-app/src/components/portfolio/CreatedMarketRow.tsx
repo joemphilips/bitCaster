@@ -10,8 +10,10 @@ import { InlineAmount } from "@/components/shared/InlineAmount";
 import { CheckCircle2, Eye } from "lucide-react";
 import {
   CreatorMarketActions,
+  ORACLE_PUBLICATION_STATE_LABELS,
   type CreatorOraclePublication,
 } from "@/components/creator/CreatorMarketActions";
+import { oraclePublicationState } from "@bitcaster/client-sdk/oraclePublication";
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
   active: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
@@ -26,9 +28,10 @@ const CLOSED_THUMBNAIL: Record<CreatedMarketStatus, boolean> = {
   refunded: true,
   unknown: false,
 };
+// A refresh of known data has one list-level indicator, so a stale row has no own label.
 const ENGINE_DATA_LABELS: Record<CreatorEngineDataStatus, string | null> = {
   current: null,
-  stale: "creator.engineDataStale",
+  stale: null,
   unavailable: "creator.engineDataUnavailable",
 };
 
@@ -60,23 +63,31 @@ export function CreatedMarketRow({
     market.status === "resolved" &&
     market.creatorFeesEarned !== null &&
     market.creatorFeesEarned > 0;
+  const hasOwnerActions =
+    !!onOraclePublication &&
+    (market.oracleOwnerKind === "imported" || !!market.oracle?.destinations);
+  const immutableOutcome = market.oracle?.chosenOutcome ?? market.oracle?.attestedOutcome;
+  // A saved outcome is delivered automatically. Only a first choice needs an action.
   const canPublishOracleAttestation =
-    !(
-      onOraclePublication &&
-      (market.oracleOwnerKind === "imported" || market.oracle?.destinations)
-    ) &&
-    (market.status === "active" ||
-      market.status === "resolved" ||
-      !!market.oracle?.chosenOutcome ||
-      !!market.oracle?.attestationHex) &&
+    !hasOwnerActions &&
+    (market.status === "active" || market.status === "resolved") &&
     market.oracle?.type === "self" &&
-    (!market.oracle.engineEvidence ||
-      !market.oracle.relayPublished ||
-      (!!market.oracle.explanationDraft?.trim() && !market.oracle.explanationEventJson) ||
-      (!!market.oracle.explanationEventJson && !market.oracle.explanationRelayPublished)) &&
+    !immutableOutcome &&
     market.oracle.outcomes.length > 0 &&
     !!onPublishOracleAttestation;
-  const immutableOutcome = market.oracle?.chosenOutcome ?? market.oracle?.attestedOutcome;
+  // A stale open state predates the published result. It is not evidence that trading continues.
+  const hideStaleActive =
+    market.status === "active" &&
+    market.engineDataStatus === "stale" &&
+    !!immutableOutcome &&
+    !!market.oracle?.engineEvidence;
+  const publicationState =
+    !hasOwnerActions && market.oracle && immutableOutcome
+      ? oraclePublicationState(
+          { engineEvidence: market.oracle.engineEvidence ?? null },
+          market.oracle.publicationFailures ?? [],
+        )
+      : null;
 
   const handleRowClick = () => {
     onView?.(market.id);
@@ -136,11 +147,13 @@ export function CreatedMarketRow({
             <p className="text-xs text-slate-500">{t("oracleBackup.owner_imported")}</p>
           )}
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLES[market.status]}`}
-            >
-              {t(`marketStatus.${market.status}`)}
-            </span>
+            {!hideStaleActive && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLES[market.status]}`}
+              >
+                {t(`marketStatus.${market.status}`)}
+              </span>
+            )}
             {market.volume !== null && market.volume > 0 && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
                 {t("portfolio.volLabel", {
@@ -153,32 +166,19 @@ export function CreatedMarketRow({
                 {t(engineDataLabel)}
               </span>
             )}
-            {market.oracle?.attestedOutcome && (
+            {/* Owner actions show the saved outcome and its state on their own line. */}
+            {market.oracle?.attestedOutcome && !hasOwnerActions && (
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 {t("creator.attestedOutcome", {
                   outcome: market.oracle.attestedOutcome,
                 })}
               </span>
             )}
-            {market.oracle?.chosenOutcome && (
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                {t(
-                  market.oracle.engineEvidence
-                    ? "creator.engineConfirmed"
-                    : "creator.enginePending",
-                )}
-                {" · "}
-                {t(
-                  market.oracle.relayPublished ? "creator.relayConfirmed" : "creator.relayPending",
-                )}
+            {publicationState && (
+              <span role="status" className="text-xs text-slate-500 dark:text-slate-400">
+                {t(ORACLE_PUBLICATION_STATE_LABELS[publicationState])}
               </span>
             )}
-            {market.oracle?.explanationDraft?.trim() &&
-              !market.oracle.explanationRelayPublished && (
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  {t("creator.explanationPending")}
-                </span>
-              )}
           </div>
         </div>
 
@@ -221,7 +221,7 @@ export function CreatedMarketRow({
               aria-label={
                 isPublishingOracleAttestation
                   ? t("creator.closingMarket")
-                  : t(immutableOutcome ? "creator.retrySavedResolution" : "creator.closeMarket")
+                  : t("creator.closeMarket")
               }
               onClick={(event) => {
                 event.stopPropagation();
@@ -233,7 +233,7 @@ export function CreatedMarketRow({
               <span className="hidden sm:inline">
                 {isPublishingOracleAttestation
                   ? t("creator.closingMarket")
-                  : t(immutableOutcome ? "creator.retrySavedResolution" : "creator.closeMarket")}
+                  : t("creator.closeMarket")}
               </span>
             </button>
           </div>
@@ -253,15 +253,14 @@ export function CreatedMarketRow({
           </button>
         )}
       </div>
-      {onOraclePublication &&
-        (market.oracleOwnerKind === "imported" || market.oracle?.destinations) && (
-          <CreatorMarketActions
-            conditionId={market.id}
-            title={market.title}
-            onPublish={onOraclePublication}
-            publicationBusy={oraclePublicationBusy}
-          />
-        )}
+      {hasOwnerActions && (
+        <CreatorMarketActions
+          conditionId={market.id}
+          title={market.title}
+          onPublish={onOraclePublication!}
+          publicationBusy={oraclePublicationBusy}
+        />
+      )}
     </div>
   );
 }

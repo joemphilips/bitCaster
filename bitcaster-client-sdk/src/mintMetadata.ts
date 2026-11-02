@@ -36,6 +36,14 @@ export function assertMintSupportsMsat(metadata: Pick<PublicMintMetadata, 'keyse
   }
 }
 
+/** Read only the public mint info, such as the NUT-04 and NUT-05 payment limits. */
+export async function readPublicMintInfo(
+  mintUrl: string,
+  options: ReadPublicMintMetadataOptions = {},
+): Promise<GetInfoResponse> {
+  return new CashuMint(mintUrl).getInfo(options.request)
+}
+
 /** Read the mint info, every public keyset, and every active keyset's public keys. */
 export async function readPublicMintMetadata(
   mintUrl: string,

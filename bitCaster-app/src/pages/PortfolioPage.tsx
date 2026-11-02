@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
 import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWithdrawOverlay";
@@ -22,6 +22,7 @@ import {
 import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
 import type { ClaimCelebration, PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
+import { readPortfolioPositionsRequest } from "@/lib/portfolioRoute";
 
 export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string | null): string {
   const suffix = outcomeId ? `-${outcomeId}` : "";
@@ -76,6 +77,22 @@ export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const state = usePortfolioState();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  // A notification opens /portfolio?tab=closed&position=<marketId>. The
+  // location key changes on each navigation, so the same link works again.
+  const positionsQuery = useMemo(() => readPortfolioPositionsRequest(searchParams), [searchParams]);
+  const positionsRequest = useMemo(
+    () =>
+      positionsQuery.tab === null && positionsQuery.positionMarketId === null
+        ? undefined
+        : { key: location.key, positionMarketId: positionsQuery.positionMarketId },
+    [location.key, positionsQuery],
+  );
+  const { setPositionsTab } = state;
+  useEffect(() => {
+    if (positionsQuery.tab !== null) setPositionsTab(positionsQuery.tab);
+  }, [location.key, positionsQuery.tab, setPositionsTab]);
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null);
   const [positionAction, setPositionAction] = useState<PositionOperation | null>(null);
   const operation = useRef<PositionOperation | null>(null);
@@ -519,6 +536,7 @@ export function PortfolioPage() {
         activity={state.activity}
         createdMarkets={state.createdMarkets}
         positionsTab={state.positionsTab}
+        positionsRequest={positionsRequest}
         monitoring={state.monitoring}
         onGetStarted={handleGetStarted}
         onTimeRangeChange={handleTimeRangeChange}

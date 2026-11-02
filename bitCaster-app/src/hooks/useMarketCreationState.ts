@@ -1,4 +1,8 @@
-import { DraftImageRetentionError, marketDraftImages } from "@/stores/marketDraftImage";
+import {
+  DraftImageRetentionError,
+  assertDraftImageAccepted,
+  marketDraftImages,
+} from "@/stores/marketDraftImage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -236,7 +240,12 @@ function isConfirmedCreationProgress(
   }
 }
 
-function draftImageErrorKey(error: unknown) {
+type DraftImageErrorKey =
+  | "marketCreation.imageRetentionMissing"
+  | "marketCreation.imageRetentionInvalid"
+  | "marketCreation.imageRetentionFailed";
+
+function draftImageErrorKey(error: unknown): DraftImageErrorKey {
   if (error instanceof DraftImageRetentionError) {
     if (error.code === "missing") return "marketCreation.imageRetentionMissing";
     if (error.code === "invalid") return "marketCreation.imageRetentionInvalid";
@@ -288,7 +297,13 @@ export function useMarketCreationState() {
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
   const [thumbnailPending, setThumbnailPending] = useState(false);
-  const [thumbnailError, setThumbnailError] = useState<string | null>(null);
+  // Keep the key, not the text. A language change must not rerun the image read
+  // that replaces the original error.
+  const [thumbnailErrorKey, setThumbnailErrorKey] = useState<DraftImageErrorKey | null>(null);
+  const thumbnailError = thumbnailErrorKey === null ? null : t(thumbnailErrorKey);
+  // A rejected file never becomes the selection. Its error does not block the draft.
+  const [thumbnailRejected, setThumbnailRejected] = useState(false);
+  const thumbnailRejectionNotice = thumbnailRejected ? t("marketCreation.imageNotAdded") : null;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
@@ -491,9 +506,16 @@ export function useMarketCreationState() {
   const onThumbnailUpload = useCallback(
     async (file: File) => {
       if (useMarketDraftStore.getState().draft.creation) return;
+      try {
+        assertDraftImageAccepted(file);
+      } catch {
+        setThumbnailRejected(true);
+        return;
+      }
+      setThumbnailRejected(false);
       const selectionId = crypto.randomUUID();
       setThumbnailPending(true);
-      setThumbnailError(null);
+      setThumbnailErrorKey(null);
       setThumbnailFile(null);
       setThumbnailPreview(null);
       try {
@@ -508,40 +530,41 @@ export function useMarketCreationState() {
         );
       } catch (error) {
         if (useMarketDraftStore.getState().draft.thumbnailId === selectionId) {
-          setThumbnailError(t(draftImageErrorKey(error)));
+          setThumbnailErrorKey(draftImageErrorKey(error));
           setThumbnailPending(false);
         }
       }
     },
-    [setDraft, t],
+    [setDraft],
   );
 
   const onThumbnailRemove = useCallback(async () => {
     const current = useMarketDraftStore.getState().draft;
     if (current.creation) return;
     const selectionId = current.thumbnailId;
+    setThumbnailRejected(false);
     try {
       setDraft((previous) => {
         const remaining = { ...previous, lastModified: new Date().toISOString() };
         delete remaining.thumbnailId;
         return remaining;
       });
-      setThumbnailError(null);
+      setThumbnailErrorKey(null);
     } catch {
-      setThumbnailError(t("marketCreation.imageRetentionFailed"));
+      setThumbnailErrorKey("marketCreation.imageRetentionFailed");
       return;
     }
     // The durable draft no longer selects this image. Cleanup is best effort:
     // a late failure must not block a newer selection or restore removed intent.
     if (selectionId) await marketDraftImages.remove(selectionId).catch(() => {});
-  }, [setDraft, t]);
+  }, [setDraft]);
 
   useEffect(() => {
     let cancelled = false;
     const selectionId = draft.thumbnailId;
     setThumbnailFile(null);
     setThumbnailPreview(null);
-    setThumbnailError(null);
+    setThumbnailErrorKey(null);
     if (thumbnailObjectUrlRef.current) {
       URL.revokeObjectURL(thumbnailObjectUrlRef.current);
       thumbnailObjectUrlRef.current = null;
@@ -564,7 +587,7 @@ export function useMarketCreationState() {
         setThumbnailPreview(url);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setThumbnailError(t(draftImageErrorKey(error)));
+        if (!cancelled) setThumbnailErrorKey(draftImageErrorKey(error));
       })
       .finally(() => {
         if (!cancelled) setThumbnailPending(false);
@@ -572,7 +595,7 @@ export function useMarketCreationState() {
     return () => {
       cancelled = true;
     };
-  }, [draft.thumbnailId, draft.creation, t]);
+  }, [draft.thumbnailId, draft.creation]);
 
   // --- Outcomes (Step 4) ---
   const onAddOutcome = useCallback(() => {
@@ -973,6 +996,7 @@ export function useMarketCreationState() {
     thumbnailFile,
     thumbnailPending,
     thumbnailError,
+    thumbnailRejectionNotice,
     onThumbnailRemove,
     isSubmitting,
     submitError,

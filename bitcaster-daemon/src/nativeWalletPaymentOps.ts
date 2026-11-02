@@ -20,7 +20,13 @@ import {
   isWalletPaymentQuote,
   type WalletPaymentQuote,
 } from '@bitcaster-market/client-sdk/walletPaymentQuote'
+import { bolt11InvoiceAmountMsat } from '@bitcaster-market/client-sdk/mintPaymentLimits'
 import type { DaemonProfile } from './profile.ts'
+import {
+  assertNativeMintPaymentAmount,
+  explainNativeMintAmountRefusal,
+  type ReadMintInfo,
+} from './nativeMintPaymentLimits.ts'
 import { profileDir } from './profile.ts'
 import {
   createWallet,
@@ -108,6 +114,8 @@ export interface NativeWalletPaymentOpsOptions {
     unit: 'msat',
     counterSource?: CounterSource,
   ) => Promise<NativeWalletPaymentWallet> | NativeWalletPaymentWallet
+  /** Read mint info for the NUT-05 limit check. Omit it to let the mint enforce its limits alone. */
+  readonly readMintInfo?: ReadMintInfo
 }
 
 /** Native wallet payment quotes and saved melt operations for the configured mint. */
@@ -121,6 +129,7 @@ export class NativeWalletPaymentOps {
   readonly #walletFor: NonNullable<NativeWalletPaymentOpsOptions['walletFor']> | undefined
   readonly #observePrepared: NativeWalletPaymentOpsOptions['observePrepared']
   readonly #injectPreparationFault: NativeWalletPaymentOpsOptions['injectPreparationFault']
+  readonly #readMintInfo: ReadMintInfo | undefined
   readonly #coordinator: NativeWalletMeltCoordinator
 
   constructor(options: NativeWalletPaymentOpsOptions) {
@@ -136,6 +145,7 @@ export class NativeWalletPaymentOps {
     this.#walletFor = options.walletFor
     this.#observePrepared = options.observePrepared
     this.#injectPreparationFault = options.injectPreparationFault
+    this.#readMintInfo = options.readMintInfo
     this.#coordinator = new NativeWalletMeltCoordinator(
       this.#directory,
       options.getFence,
@@ -147,8 +157,17 @@ export class NativeWalletPaymentOps {
   async quote(input: { readonly invoice: string }): Promise<NativeWalletPaymentQuoteView> {
     requireInvoice(input.invoice)
     const mintUrl = requireConfiguredMint(this.#profile)
+    const limitCheck = {
+      readMintInfo: this.#readMintInfo,
+      mintUrl,
+      direction: 'withdrawal',
+      amountMsat: readableInvoiceAmountMsat(input.invoice),
+    } as const
+    await assertNativeMintPaymentAmount(limitCheck)
     const wallet = await this.#loadedWallet(mintUrl)
-    const quote = await wallet.createMeltQuoteBolt11(input.invoice)
+    const quote = await explainNativeMintAmountRefusal(limitCheck, () =>
+      wallet.createMeltQuoteBolt11(input.invoice),
+    )
     assertFreshQuote(quote, input.invoice, this.#now())
     const selected = await selectCanonicalInputs({
       mintUrl,
@@ -713,4 +732,13 @@ function checkedAdd(left: number, right: number): number {
     throw new Error('native wallet payment amount exceeds the safe integer range')
   }
   return result
+}
+
+/** The invoice amount for the limit check, or null when the mint must read the invoice. */
+function readableInvoiceAmountMsat(invoice: string): number | null {
+  try {
+    return bolt11InvoiceAmountMsat(invoice)
+  } catch {
+    return null
+  }
 }

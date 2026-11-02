@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { getMarkets } from "@/lib/markets";
+import { marketCatalogueIdBatches } from "@bitcaster/client-sdk/marketCatalogueBatches";
 import type { Market } from "@/types/market";
 
 interface UseLikedMarketsResult {
@@ -16,20 +17,13 @@ interface UseLikedMarketsResult {
 }
 
 /**
- * Engine bulk-fetch cap (ADR-009). The user's `useBookmarkStore` is allowed
- * to grow without bound; we batch the ID set into pages of this size to stay
- * under the cap. Mirrors the `?ids=<comma-separated>` cap on the engine.
- */
-const MAX_BULK_IDS = 100;
-
-/**
  * Resolve the user's bookmarked / "liked" markets (P5.1).
  *
  * The user-facing "heart icon" is wired to `useBookmarkStore.toggle` (see
  * `MarketCard.tsx`); the persisted Nostr-mirrored set lives there. This
  * hook joins that set with the engine's market catalogue using the
  * `GET /api/v1/markets/query?ids=` bulk-fetch surface defined in ADR-009 —
- * one round-trip per up-to-100 IDs, intersected client-side, ordered by the
+ * one round-trip per catalogue page of IDs, intersected client-side, ordered by the
  * user's bookmark order so the most recently liked sits at the leading edge
  * of the horizontal list.
  *
@@ -96,16 +90,16 @@ export function useLikedMarkets(): UseLikedMarketsResult {
 }
 
 /**
- * Page through the engine's bulk-fetch surface for the given IDs. Bookmark
- * sets larger than the per-request cap split into multiple requests; a
- * partial failure aborts the whole batch (the caller treats it as a
- * one-shot load).
+ * Read the given IDs from the engine's bulk-fetch surface, one catalogue page
+ * per batch. The user's bookmark set can grow without bound. This read uses
+ * only the first page of each query, so each batch sets `page_size` to its
+ * length. A failed batch fails the whole load: the close reconcile must not
+ * record a partial set of last-seen states.
  */
 async function fetchBookmarkedMarkets(ids: string[]): Promise<Market[]> {
   const collected: Market[] = [];
-  for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
-    const slice = ids.slice(i, i + MAX_BULK_IDS);
-    const result = await getMarkets({ ids: slice, state: "All" });
+  for (const batch of marketCatalogueIdBatches(ids)) {
+    const result = await getMarkets({ ids: batch, state: "All", pageSize: batch.length });
     collected.push(...result.markets);
   }
   return collected;

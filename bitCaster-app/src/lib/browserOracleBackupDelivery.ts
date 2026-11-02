@@ -10,6 +10,7 @@ import {
   type OracleBackupDeliveryState,
 } from "@bitcaster/client-sdk/oracleBackupDelivery";
 import { OracleBackupError } from "@bitcaster/client-sdk";
+import { oraclePublicationTerminal } from "@bitcaster/client-sdk/oraclePublication";
 import { browserOracleOwnerAuthority, useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import {
   browserOracleBackupValidator,
@@ -17,6 +18,7 @@ import {
   type BrowserOracleMutation,
 } from "./kormir";
 import { exportLockedBrowserOracleBackup } from "./browserOracleBackup";
+import { trackOracleBackupDelivery } from "./oracleBackupDeliveryActivity";
 import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 
 export interface BrowserOracleBackupDeliveryOptions {
@@ -51,7 +53,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
             const publication = await locked.read(id);
             return retainedDelivery(
               previous,
-              publication?.attestation != null && publication.relayPublished,
+              publication !== null && oraclePublicationTerminal(publication),
             )
               ? previous
               : null;
@@ -74,7 +76,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
               if (!destinations) throw new OracleBackupDeliveryError("invalid-source");
               const previous = await locked.readBackupDelivery(id);
               const publication = await locked.read(id);
-              const terminalReady = publication?.attestation != null && publication.relayPublished;
+              const terminalReady = publication !== null && oraclePublicationTerminal(publication);
               if (binding.oraclePubkey !== admission.publicKey)
                 throw new OracleBackupDeliveryError("invalid-source");
               if (retainedDelivery(previous, terminalReady)) return previous!;
@@ -133,7 +135,9 @@ export function deliverBrowserOracleBackup(
   conditionId: string,
   options: BrowserOracleBackupDeliveryOptions = {},
 ) {
-  return deliverOracleBackup(createBrowserOracleBackupDeliveryAdapters(options), conditionId);
+  return trackOracleBackupDelivery(conditionId, () =>
+    deliverOracleBackup(createBrowserOracleBackupDeliveryAdapters(options), conditionId),
+  );
 }
 
 /** Primary creation and resolution do not depend on independent backup delivery. */
@@ -148,5 +152,7 @@ export function retryBrowserOracleBackupDelivery(
   conditionId: string,
   options: BrowserOracleBackupDeliveryOptions = {},
 ) {
-  return retryOracleBackupDelivery(createBrowserOracleBackupDeliveryAdapters(options), conditionId);
+  return trackOracleBackupDelivery(conditionId, () =>
+    retryOracleBackupDelivery(createBrowserOracleBackupDeliveryAdapters(options), conditionId),
+  );
 }

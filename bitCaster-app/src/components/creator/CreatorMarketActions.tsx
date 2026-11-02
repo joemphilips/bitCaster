@@ -1,27 +1,93 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
+import type { OraclePublicationState } from "@bitcaster/client-sdk/oraclePublication";
 import { localBrowserOracleBackupStatuses } from "@/lib/browserOracleBackupAccess";
-import { deliverBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
-import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
+import {
+  useOracleBackupDeliveryActivity,
+  type OracleBackupDeliveryActivity,
+} from "@/lib/oracleBackupDeliveryActivity";
+import { assertNever } from "@/lib/enumDiscipline";
+import { resolveNsecIdentity } from "@/lib/identityOps";
+import { subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 
 type OwnerRow = Awaited<ReturnType<typeof localBrowserOracleBackupStatuses>>["rows"][number];
+type ReadyRow = Extract<OwnerRow, { available: true }>;
 export type CreatorOraclePublication = (request: {
   conditionId: string;
   title: string;
   outcomes: string[];
-  chosenOutcome: string | null;
-  republish: boolean;
   relayUrls: string[];
 }) => void;
 const button =
   "rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 disabled:opacity-50";
+export const ORACLE_PUBLICATION_STATE_LABELS: Record<OraclePublicationState, string> = {
+  publishing: "creator.resolutionPublishing",
+  published: "creator.resolutionPublished",
+  failed: "creator.resolutionFailed",
+};
+
+/**
+ * Backup and resolution delivery run automatically. Show a message only when the user must act:
+ * restore or sign with the oracle key, or keep local data that no relay has stored yet.
+ * A running delivery has no settled relay result, so it shows no relay message.
+ */
+function oracleOwnerNotice(
+  row: ReadyRow,
+  keyReady: boolean,
+  delivery: OracleBackupDeliveryActivity,
+): string | null {
+  const status = row.status;
+  if (!status.importComplete) return "oracleBackup.importIncomplete";
+  if (!row.chosenOutcome && row.readiness !== "ready")
+    return row.readiness === "needs-restore"
+      ? "oracleBackup.needsRestore"
+      : "oracleBackup.authorityUnavailable";
+  const unsignedChoice = row.chosenOutcome !== null && !row.signed;
+  if ((status.preparationPending || unsignedChoice) && !keyReady) return "oracleBackup.keyRequired";
+  if (row.chosenOutcome !== null) {
+    // The initial backup was prepared before the choice. It holds the nonce but not the saved
+    // outcome, so a restore from it could sign another outcome. Only the terminal backup counts.
+    switch (row.publicationState) {
+      case "publishing":
+        return null;
+      case "published": {
+        // Publication starts the terminal backup delivery. Until that attempt has a stage
+        // or has failed to prepare one, "no relay has saved it" is not a result.
+        if (delivery.running) return null;
+        const settled = status.terminal.prepared || delivery.preparationFailed;
+        return settled && status.terminal.replacementAcknowledgedRelays === 0
+          ? "oracleBackup.notOnRelay"
+          : null;
+      }
+      case "failed":
+      case null: {
+        const acknowledged = status.terminal.prepared
+          ? status.terminal.replacementAcknowledgedRelays
+          : 0;
+        return acknowledged === 0 ? "oracleBackup.notOnRelay" : null;
+      }
+      default:
+        return assertNever(row.publicationState);
+    }
+  }
+  return !delivery.running && status.initial.prepared && status.initial.acknowledgedRelays === 0
+    ? "oracleBackup.notOnRelay"
+    : null;
+}
 
 const MarketStatuses = createContext<{
   rows: OwnerRow[];
   failed: boolean;
-  refresh: () => void;
 } | null>(null);
 
 /** One bounded status read serves the visible market page. */
@@ -94,7 +160,6 @@ export function CreatorMarketActionsProvider({
       value={{
         rows: result?.pageKey === pageKey ? result.rows : [],
         failed: result?.pageKey === pageKey && result.failed,
-        refresh,
       }}
     >
       {children}
@@ -118,86 +183,28 @@ export function CreatorMarketActions({
   const page = useContext(MarketStatuses);
   if (!page) throw new Error("Market actions require a visible market page.");
   const row = page.rows.find((item) => item.conditionId === conditionId) ?? null;
-  const [busy, setBusy] = useState(false);
+  const signerMode = useSettingsStore((state) => state.nostrSignerMode);
+  const signerKey = useSettingsStore((state) => state.nsecSecret);
+  const signerPublicKey = useMemo(
+    () => (signerMode === "nsec" ? (resolveNsecIdentity(signerKey)?.publicKey ?? null) : null),
+    [signerMode, signerKey],
+  );
   const [error, setError] = useState(false);
-  const generation = useRef(0);
-  const action = useRef<symbol | null>(null);
-  useEffect(() => {
-    const clear = () => {
-      generation.current++;
-      action.current = null;
-      setBusy(false);
-      setError(false);
-    };
-    const unsubscribeSigner = subscribeToNostrSignerRevision(clear);
-    const unsubscribeSettings = useSettingsStore.subscribe((current, previous) => {
-      if (
-        current.nostrSignerMode !== previous.nostrSignerMode ||
-        current.nsecSecret !== previous.nsecSecret ||
-        current.nostrProfile?.pubkey !== previous.nostrProfile?.pubkey
-      )
-        clear();
-    });
-    return () => {
-      generation.current++;
-      action.current = null;
-      unsubscribeSigner();
-      unsubscribeSettings();
-    };
-  }, [conditionId]);
   useEffect(() => {
     if (page.failed) setError(true);
   }, [page.failed]);
-
-  const retryBackup = async () => {
-    if (action.current || publicationBusy) return;
-    const operation = Symbol("backup-delivery");
-    action.current = operation;
-    const captured = generation.current;
-    const signerRevision = getNostrSignerRevision();
-    const isCurrent = () =>
-      action.current === operation &&
-      captured === generation.current &&
-      signerRevision === getNostrSignerRevision();
-    const requireCurrent = () => {
-      if (!isCurrent()) throw new Error("The market delivery action has expired.");
-    };
-    setBusy(true);
-    try {
-      requireCurrent();
-      const result = await deliverBrowserOracleBackup(conditionId, { requireCurrent });
-      if (isCurrent()) setError(result.failures.length > 0);
-    } catch {
-      if (isCurrent()) setError(true);
-    } finally {
-      if (isCurrent()) {
-        action.current = null;
-        setBusy(false);
-        page.refresh();
-      }
-    }
-  };
+  const delivery = useOracleBackupDeliveryActivity(conditionId);
   const ready = row?.available ? row : null;
-  const status = ready?.status;
   const chosen = ready?.chosenOutcome;
-  const disabled = busy || publicationBusy;
-  const pendingBackup =
-    status &&
-    (status.preparationPending ||
-      status.terminal.localCommitPending ||
-      (status.initial.prepared && status.initial.acknowledgedRelays < status.initial.totalRelays) ||
-      (status.terminal.prepared &&
-        status.terminal.replacementAcknowledgedRelays < status.initial.totalRelays) ||
-      (status.terminal.deletionRequired &&
-        status.terminal.deletionAcknowledgedRelays < status.initial.totalRelays));
-  const publish = (republish: boolean) => {
-    if (!ready || disabled) return;
+  const notice =
+    ready &&
+    oracleOwnerNotice(ready, signerPublicKey === ready.status.binding.oraclePubkey, delivery);
+  const publish = () => {
+    if (!ready || publicationBusy) return;
     onPublish({
       conditionId,
       title,
       outcomes: [...ready.outcomes],
-      chosenOutcome: chosen ?? null,
-      republish,
       relayUrls: [...ready.status.destinations.relayUrls],
     });
   };
@@ -214,83 +221,39 @@ export function CreatorMarketActions({
       {row && !row.available && <p>{t("oracleBackup.unavailable")}</p>}
       {ready && (
         <>
-          {!status!.importComplete && <p>{t("oracleBackup.importIncomplete")}</p>}
-          {status!.noRelays && <p>{t("oracleBackup.noRelays")}</p>}
-          {!chosen && ready.readiness !== "ready" && (
-            <p>
-              {t(
-                ready.readiness === "needs-restore"
-                  ? "oracleBackup.needsRestore"
-                  : "oracleBackup.authorityUnavailable",
-              )}
-            </p>
-          )}
-          {chosen && (
-            <p>
+          {chosen && ready.publicationState && (
+            <p role="status">
               {t("oracleBackup.savedOutcome", { outcome: chosen })}
               {" · "}
-              {t(
-                status!.publication.engineSynchronized
-                  ? "creator.engineConfirmed"
-                  : "creator.enginePending",
-              )}
-              {" · "}
-              {t(
-                status!.publication.relayPublished
-                  ? "creator.relayConfirmed"
-                  : "creator.relayPending",
-              )}
+              {t(ORACLE_PUBLICATION_STATE_LABELS[ready.publicationState])}
             </p>
           )}
-          {pendingBackup && <p role="status">{t("oracleBackup.deliveryPending")}</p>}
-          {!status!.noRelays &&
-            !pendingBackup &&
-            (status!.initial.prepared || status!.terminal.prepared) && (
-              <p role="status">{t("oracleBackup.deliveryConfirmed")}</p>
-            )}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={button}
-              data-testid={chosen ? "creator-oracle-retry" : "creator-oracle-publish"}
-              disabled={
-                disabled ||
-                (!chosen &&
-                  (!status!.importComplete ||
-                    ready.readiness !== "ready" ||
-                    !ready.outcomes.length))
-              }
-              onClick={() => publish(false)}
+          {notice && (
+            <p
+              role="status"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-100"
             >
-              {t(chosen ? "creator.retrySavedResolution" : "creator.closeMarket")}
-            </button>
-            {chosen && (
+              {t(notice)}
+            </p>
+          )}
+          {!chosen && (
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className={button}
-                data-testid="creator-oracle-republish"
-                disabled={disabled}
-                onClick={() => publish(true)}
-              >
-                {t("oracleBackup.republishResolution")}
-              </button>
-            )}
-            {pendingBackup && (
-              <button
-                type="button"
-                className={button}
+                data-testid="creator-oracle-publish"
                 disabled={
-                  disabled ||
-                  ((!status!.importComplete || ready.readiness !== "ready") &&
-                    !status!.initial.prepared &&
-                    !status!.terminal.prepared)
+                  publicationBusy ||
+                  !ready.status.importComplete ||
+                  ready.readiness !== "ready" ||
+                  !ready.outcomes.length
                 }
-                onClick={() => void retryBackup()}
+                onClick={publish}
               >
-                {t("oracleBackup.retryBackup")}
+                {t("creator.closeMarket")}
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { finalizeEvent } from "nostr-tools/pure";
 import { BrowserProfileError, type BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
@@ -253,6 +253,44 @@ describe("profile image interaction", () => {
     drop();
     await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
     expect(f.upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows an invalid image only in an error next to the image control", async () => {
+    const receipt = imageReceipt();
+    await imageEditor(
+      vi
+        .fn()
+        .mockRejectedValueOnce(new NostrMediaUploadError("invalid-image"))
+        .mockResolvedValue(receipt),
+    );
+    const dropZone = screen.getByTestId("profile-image-drop");
+    const chooser = screen.getByRole("button", { name: "Choose image" });
+    expect(dropZone).not.toHaveTextContent(/MiB|JPEG/);
+    expect(dropZone).toHaveTextContent("Uploads are public on nostr.build.");
+
+    drop();
+
+    const message = "Choose a valid JPEG, PNG, or WebP image, up to 5 MiB and 16 million pixels.";
+    expect(await within(dropZone).findByRole("alert")).toHaveTextContent(message);
+    expect(chooser).toHaveAccessibleDescription(message);
+    expect(screen.queryByTestId("nostr-profile-result")).not.toBeInTheDocument();
+
+    drop();
+    await waitFor(() => expect(screen.getByLabelText("Picture URL")).toHaveValue(receipt.url));
+    expect(within(dropZone).queryByRole("alert")).not.toBeInTheDocument();
+    expect(chooser).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("shows a multiple-file drop as an invalid image next to the image control", async () => {
+    const f = await imageEditor();
+    const dropZone = screen.getByTestId("profile-image-drop");
+    fireEvent.drop(dropZone, { dataTransfer: { files: [avatar, avatar] } });
+    expect(within(dropZone).getByRole("alert")).toHaveTextContent("Choose a valid JPEG");
+    expect(f.upload).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Picture URL"), {
+      target: { value: "https://example.com/new.png" },
+    });
+    expect(within(dropZone).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("disposes the retained signer subscription when the editor unmounts", async () => {

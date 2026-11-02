@@ -21,6 +21,7 @@ import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
+import { useHeldPositionCloseNotifications } from "@/hooks/useHeldPositionCloseNotifications";
 import { useSettingsStore } from "@/stores/settings";
 import {
   getWalletForMnemonicUnit,
@@ -45,6 +46,11 @@ import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
+import {
+  MAX_NOSTR_PROFILE_NAME_CHARACTERS,
+  sanitizeNostrDisplayText,
+} from "@bitcaster/client-sdk/nostrProfilePage";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
@@ -96,8 +102,13 @@ export function ShellRoutes({
   ];
 
   const user = {
-    name: nostrProfile?.displayName ?? "Anon",
-    avatarUrl: nostrProfile?.avatar ?? undefined,
+    // The own kind 0 name is untrusted relay text, as on the profile page.
+    name:
+      sanitizeNostrDisplayText(nostrProfile?.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
+        singleLine: true,
+      }) || t("settings.profileAnonymous"),
+    // Only the key owner signs the own kind 0, so its picture can use any http or https host.
+    avatarUrl: ownProfileImageUrl(nostrProfile?.avatar),
     balance: totalBalance,
   };
 
@@ -153,6 +164,7 @@ function AppRoutes() {
   useCreatorSync();
   useActivityLogSync();
   useLikedMarketCloseReconcile();
+  useHeldPositionCloseNotifications();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));

@@ -4,6 +4,12 @@ import { useTranslation } from "react-i18next";
 import { LoaderCircle } from "lucide-react";
 
 const TIME_RANGES: PLTimeSelector[] = ["1D", "1W", "1M", "ALL"];
+const TIME_RANGE_LABELS: Record<PLTimeSelector, string> = {
+  "1D": "chartRange.1d",
+  "1W": "chartRange.1w",
+  "1M": "chartRange.1m",
+  ALL: "chartRange.all",
+};
 
 interface PLChartProps {
   chartData: PLChartData;
@@ -130,7 +136,7 @@ export function PLChart({
                 : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
             }`}
           >
-            {range}
+            {t(TIME_RANGE_LABELS[range])}
           </button>
         ))}
       </div>

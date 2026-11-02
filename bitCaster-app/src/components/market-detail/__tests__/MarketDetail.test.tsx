@@ -221,6 +221,41 @@ describe("MarketDetail", () => {
     expect(within(bar).getByRole("button", { name: "Stop waiting" })).toBeDisabled();
   });
 
+  it.each([
+    ["a ready wallet", true],
+    ["no wallet", false],
+  ])("disables mobile Confirm while the trimmed comment is too long with %s", (_, walletReady) => {
+    const onTradeConfirm = vi.fn();
+    const onWalletRequired = vi.fn();
+    const props = {
+      market: makeMarket(),
+      chartTimeframe: "7d" as const,
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 5,
+      tradeSide: "Buy" as const,
+      tradePreview: readyPreview(),
+      tradeFeeFacts: feeFacts(),
+      feeConsentCurrent: true,
+      walletReady,
+      onTradeConfirm,
+      onWalletRequired,
+    };
+    const { rerender } = render(<MarketDetail {...props} tradeComment={` ${"x".repeat(281)} `} />);
+    const bar = screen.getByTestId("mobile-trade-bar");
+    const confirm = within(bar).getByRole("button", {
+      name: walletReady ? "Confirm" : "Start Trading",
+    });
+
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(onTradeConfirm).not.toHaveBeenCalled();
+    expect(onWalletRequired).not.toHaveBeenCalled();
+
+    // Surrounding spaces are not submitted, so they do not count toward the limit.
+    rerender(<MarketDetail {...props} tradeComment={` ${"x".repeat(280)} `} />);
+    expect(confirm).toBeEnabled();
+  });
+
   it("preserves mobile selected controls but requires a current preview after empty updates", () => {
     const props = {
       market: makeMarket(),

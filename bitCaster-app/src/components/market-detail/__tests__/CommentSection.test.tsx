@@ -54,6 +54,7 @@ describe("CommentSection", () => {
 
     expect(screen.getByText("Trader")).toBeVisible();
     expect(screen.getByText("A confirmed comment")).toBeVisible();
+    expect(screen.getByText("A confirmed comment")).toHaveAttribute("data-user-content");
     expect(screen.queryByText("937")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });

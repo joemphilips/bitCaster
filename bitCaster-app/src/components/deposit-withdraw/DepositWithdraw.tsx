@@ -19,7 +19,6 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           statusMessage={statusMessage}
           onSelectMethod={props.onSelectMethod}
           onClose={props.onClose}
-          onToggleFullscreen={props.onToggleFullscreen}
         />
       );
 
@@ -35,7 +34,6 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onScan={props.onScan}
           onRequest={props.onRequest}
           onBack={props.onBack}
-          onToggleFullscreen={props.onToggleFullscreen}
         />
       );
 
@@ -48,6 +46,7 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           statusMessage={statusMessage}
           amountSats={props.amountSats}
           amountLabel={props.amountLabel}
+          amountError={props.depositAmountError ?? null}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
           onCreateInvoice={props.onCreateInvoice}
@@ -78,6 +77,7 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           selectedMintId={props.selectedMintId}
           statusMessage={statusMessage}
           lightningInput={props.lightningInput}
+          invoiceError={props.withdrawalInvoiceError ?? null}
           onMintChange={props.onMintChange}
           onLightningInputChange={props.onLightningInputChange}
           onPaste={props.onPaste}

@@ -260,7 +260,7 @@ test('an explicit empty relay configuration stays empty in a portable record', a
   assert.equal(JSON.parse(encoded).destinations.relayUrls.length, 0)
 })
 
-test('terminal authority requires a durable signed publication with relay confirmation', async () => {
+test('terminal authority requires a durable signed publication with a relay copy or engine evidence', async () => {
   const f = fixture()
   await assert.rejects(
     encodeOracleBackup(
@@ -335,4 +335,68 @@ test('terminal backup keeps exact retry artifacts and rejects inconsistent publi
       assertSafeError(error, 'invalid-record'),
     )
   }
+})
+
+test('terminal backup accepts verified engine evidence without a relay copy', async () => {
+  const f = fixture()
+  const attestation = finalizeEvent(
+    { kind: 89, created_at: 1_800_000_001, tags: [['e', f.announcement.id]], content: 'qrs=' },
+    oracleTestKey,
+  )
+  const publication = {
+    binding: {
+      conditionId: f.record.conditionId,
+      oracleEventId: f.record.oracleEventId,
+      oraclePubkey: f.record.oraclePubkey,
+      outcomes: ['YES', 'NO'],
+      announcementEventJson: f.record.authority.announcementEventJson,
+    },
+    chosenOutcome: 'YES',
+    attestation: { attestationHex: 'aabb', eventJson: JSON.stringify(attestation) },
+    relayPublished: false,
+    engineEvidence: {
+      conditionId: f.record.conditionId,
+      oracleEventId: f.record.oracleEventId,
+      oraclePubkey: f.record.oraclePubkey,
+      outcome: 'YES',
+      announcementEventId: f.announcement.id,
+      attestationEventId: attestation.id,
+    },
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const record = {
+    ...f.record,
+    authority: {
+      ...f.record.authority,
+      nonceScalarHex: null,
+      signedOutcome: 'YES',
+      attestationHex: 'aabb',
+      attestationEventJson: publication.attestation.eventJson,
+      publicationRecordJson: JSON.stringify(publication),
+    },
+  }
+  const event = await createOracleBackupEvent({
+    record,
+    privateKey: oracleTestKey,
+    createdAt: 1_800_000_002,
+    validator: f.validator,
+  })
+  const restored = await decryptOracleBackupEvent({
+    event,
+    privateKey: oracleTestKey,
+    validator: f.validator,
+  })
+  assert.equal(restored.authority.nonceScalarHex, null)
+  assert.equal(restored.authority.publicationRecordJson, record.authority.publicationRecordJson)
+  const unconfirmed = {
+    ...record,
+    authority: {
+      ...record.authority,
+      publicationRecordJson: JSON.stringify({ ...publication, engineEvidence: null }),
+    },
+  }
+  await assert.rejects(encodeOracleBackup(unconfirmed, f.validator), (error) =>
+    assertSafeError(error, 'invalid-record'),
+  )
 })

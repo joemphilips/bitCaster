@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -27,6 +27,9 @@ import {
   walletBackupWriteErrorMessage,
 } from "@/hooks/WalletBackupPresentation";
 import { EncryptedWalletBackupRecoveryStatus } from "@/components/shell/EncryptedWalletBackupRecoveryStatus";
+import { isMintAmountOutsideLimitError } from "@bitcaster/client-sdk/mintPaymentLimits";
+import { useMintPaymentAmountLimit } from "@/hooks/useMintPaymentAmountLimit";
+import { useErrorAfterBlur } from "@/hooks/useErrorAfterBlur";
 
 type View = "amount" | "invoice";
 type InvoiceStatus = "pending" | "paid" | "expired" | "error";
@@ -54,6 +57,36 @@ function inputAmountToSubunits(
   if (!Number.isFinite(displayAmount)) return 0;
   if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
   return proofUnit === "sat" ? Math.round(displayAmount) : Math.round(displayAmount * 1000);
+}
+
+/** The msat amount of one top-up, or null when the input has no safe positive amount. */
+function topUpAmountMsat(amountSubunits: number, proofUnit: CashuProofUnit): number | null {
+  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) return null;
+  switch (proofUnit) {
+    case "sat":
+      return Number.isSafeInteger(amountSubunits * 1_000) ? amountSubunits * 1_000 : null;
+    case "msat":
+      return amountSubunits;
+    default:
+      return assertNeverProofUnit(proofUnit);
+  }
+}
+
+/** The mint maximum in proof subunits. The SDK reports it in whole sats. */
+function maxTopUpSubunits(maxMsat: number | null, proofUnit: CashuProofUnit): number | null {
+  if (maxMsat === null) return null;
+  switch (proofUnit) {
+    case "sat":
+      return Math.floor(maxMsat / 1_000);
+    case "msat":
+      return maxMsat;
+    default:
+      return assertNeverProofUnit(proofUnit);
+  }
+}
+
+function assertNeverProofUnit(unit: never): never {
+  throw new Error(`unsupported proof unit: ${String(unit)}`);
 }
 
 function topUpAmountLabel(baseAsset: "sat", t: (key: string) => string): string {
@@ -110,7 +143,7 @@ interface TopUpOverlayProps {
   balanceSubunits?: number;
   baseAsset: "sat";
   proofUnit?: CashuProofUnit | null;
-  minimumDescription?: string;
+  /** Error for an amount below `deficit`. The default names the trade. */
   minimumErrorDescription?: string;
   /** Called after proofs have landed in the store. */
   onSuccess: () => void;
@@ -130,7 +163,6 @@ export function TopUpOverlay({
   balanceSubunits,
   baseAsset: baseAssetInput,
   proofUnit: proofUnitInput,
-  minimumDescription,
   minimumErrorDescription,
   onSuccess,
   onCancel,
@@ -152,7 +184,6 @@ export function TopUpOverlay({
   const proofUnit = proofUnitInput ?? defaultCollateralUnit(baseAsset);
   const prefill =
     deficit > 0 ? Math.max(deficit + topUpBuffer(baseAsset, deficit, proofUnit), 1) : 0;
-  const displayMin = displayInputAmount(deficit, baseAsset, proofUnit);
   const inputStep = displayInputStep(baseAsset);
   const showFeeSummary = feeSubunits !== undefined && balanceSubunits !== undefined;
 
@@ -168,6 +199,39 @@ export function TopUpOverlay({
   const [backupWarningDismissed, setBackupWarningDismissed] = useState(false);
   const showBackupWarning =
     hasWalletSeed && !walletSeedReminderAcknowledged && !backupWarningDismissed;
+
+  const amountEditedRef = useRef(false);
+  const amountMsat = topUpAmountMsat(amount, proofUnit);
+  const depositLimit = useMintPaymentAmountLimit({
+    mintUrl: activeMintUrl || null,
+    direction: "deposit",
+    unit: proofUnit,
+    amountMsat,
+  });
+  const recordDepositRefusal = depositLimit.recordMintRefusal;
+  const amountLimitError = depositLimit.error;
+  const maxSubunits = maxTopUpSubunits(depositLimit.maxMsat, proofUnit);
+  // A shortfall above the mint maximum is paid in parts. The owner flow computes
+  // the remaining shortfall again after each deposit.
+  const minimumSubunits = maxSubunits !== null && deficit > maxSubunits ? 0 : deficit;
+  const displayMin = displayInputAmount(minimumSubunits, baseAsset, proofUnit);
+  const belowMinimum = amount < minimumSubunits;
+  const minimumError = useErrorAfterBlur(
+    belowMinimum
+      ? (minimumErrorDescription ??
+          t("topUp.minimumError", { amount: formatTopUpAmount(deficit, baseAsset, proofUnit) }))
+      : null,
+  );
+  // One error element serves the field. The mint limits come first: they hold for every flow.
+  const amountError = amountLimitError ?? minimumError.visibleError;
+  const amountFieldId = useId();
+  const amountErrorId = useId();
+
+  // Prefill at most the mint maximum. Keep an amount that the user entered.
+  useEffect(() => {
+    if (maxSubunits === null || amountEditedRef.current) return;
+    setAmount((current) => Math.min(current, maxSubunits));
+  }, [maxSubunits]);
 
   useEffect(() => {
     setBackupWarningDismissed(false);
@@ -258,16 +322,9 @@ export function TopUpOverlay({
   );
 
   const startInvoice = useCallback(async () => {
-    if (inflightRef.current || backupPaused) return;
-    if (amount <= 0 || amount < deficit) {
-      setError(
-        minimumErrorDescription ??
-          (deficit > 0
-            ? `Amount must be at least ${formatTopUpAmount(deficit, baseAsset, proofUnit)} to cover this trade.`
-            : t("topUp.chooseAmount")),
-      );
-      return;
-    }
+    // The field shows the amount error. Continue stays disabled while the amount breaks a rule.
+    if (inflightRef.current || backupPaused || amountLimitError !== null) return;
+    if (amount <= 0 || belowMinimum) return;
     const presentationGeneration = quotePresentationGenerationRef.current;
     inflightRef.current = true;
     setError(null);
@@ -322,8 +379,13 @@ export function TopUpOverlay({
       }
     } catch (e) {
       if (!cancelledRef.current) {
-        setStatus("error");
-        setError(walletBackupWriteErrorMessage(e, t));
+        if (isMintAmountOutsideLimitError(e) && amountMsat !== null) {
+          // The field shows the mint limits read again after this refusal.
+          recordDepositRefusal(amountMsat);
+        } else {
+          setStatus("error");
+          setError(walletBackupWriteErrorMessage(e, t));
+        }
       }
       inflightRef.current = false;
     } finally {
@@ -333,11 +395,12 @@ export function TopUpOverlay({
     backupPaused,
     activeMintUrl,
     amount,
-    baseAsset,
-    deficit,
+    amountLimitError,
+    amountMsat,
+    belowMinimum,
     handleWaitResult,
-    minimumErrorDescription,
     proofUnit,
+    recordDepositRefusal,
     t,
   ]);
 
@@ -424,6 +487,7 @@ export function TopUpOverlay({
                 <button
                   data-testid="top-up-close"
                   onClick={dismiss}
+                  aria-label={t("common.close")}
                   className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
                 >
                   <X className="w-5 h-5" />
@@ -457,12 +521,11 @@ export function TopUpOverlay({
                 </div>
               )}
 
-              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                {minimumDescription ??
-                  (deficit > 0
-                    ? t("topUp.minimumDesc", { sats: formatAmount(deficit, baseAsset) })
-                    : t("topUp.chooseAmount"))}
-              </p>
+              {deficit <= 0 && (
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+                  {t("topUp.chooseAmount")}
+                </p>
+              )}
 
               {showFeeSummary && (
                 <dl className="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-3 text-sm">
@@ -518,10 +581,14 @@ export function TopUpOverlay({
 
               {method === "lightning" ? (
                 <>
-                  <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
+                  <label
+                    className="block text-xs text-slate-400 dark:text-slate-500 mb-1"
+                    htmlFor={amountFieldId}
+                  >
                     {topUpAmountLabel(baseAsset, t)}
                   </label>
                   <input
+                    id={amountFieldId}
                     data-testid="top-up-amount-input"
                     type="number"
                     min={displayMin}
@@ -529,11 +596,30 @@ export function TopUpOverlay({
                     value={amount === 0 ? "" : displayInputAmount(amount, baseAsset, proofUnit)}
                     onChange={(e) => {
                       const next = Number(e.target.value);
-                      if (Number.isFinite(next))
+                      if (Number.isFinite(next)) {
+                        amountEditedRef.current = true;
                         setAmount(inputAmountToSubunits(next, baseAsset, proofUnit));
+                      }
                     }}
-                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
+                    onBlur={minimumError.onBlur}
+                    aria-invalid={amountError !== null ? "true" : "false"}
+                    aria-describedby={amountError !== null ? amountErrorId : undefined}
+                    className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a] ${
+                      amountError !== null
+                        ? "border-red-400"
+                        : "border-slate-200 dark:border-slate-700"
+                    }`}
                   />
+                  {amountError !== null && (
+                    <p
+                      id={amountErrorId}
+                      role="alert"
+                      data-testid="top-up-amount-error"
+                      className="mt-2 text-xs text-red-500 dark:text-red-400"
+                    >
+                      {amountError}
+                    </p>
+                  )}
                 </>
               ) : (
                 <>
@@ -561,7 +647,13 @@ export function TopUpOverlay({
                 <button
                   data-testid="top-up-continue"
                   onClick={startInvoice}
-                  disabled={backupPaused || loading || amount <= 0 || amount < deficit}
+                  disabled={
+                    backupPaused ||
+                    loading ||
+                    amount <= 0 ||
+                    belowMinimum ||
+                    amountLimitError !== null
+                  }
                   className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
                 >
                   {loading ? t("topUp.requesting") : t("common.continue")}

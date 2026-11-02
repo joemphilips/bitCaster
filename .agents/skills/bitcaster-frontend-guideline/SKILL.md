@@ -1,6 +1,6 @@
 ---
 name: bitcaster-frontend-guideline
-description: Apply bitCaster GUI layout, interface copy, browser state, durable error, and recovery UX rules when those behaviors change.
+description: Apply bitCaster GUI layout, interface copy, form limit, browser state, durable error, and recovery UX rules when those behaviors change.
 ---
 
 # bitCaster Frontend Guideline
@@ -13,6 +13,30 @@ description: Apply bitCaster GUI layout, interface copy, browser state, durable 
 - Use precise CLI output that supports diagnosis.
 - Keep required recovery actions and material funds warnings in both interfaces.
 - Do not show relay delivery counts for a routine successful profile save.
+- Japanese UI copy uses マーケット for a market, never 市場.
+- The action that claims a winning position is 換金する / Cash out, the same
+  verb as its notification.
+- Quote a market title in running text (“{market}”, 「{market}」), because
+  most titles end in a question mark.
+- Keep every interface string in the locale files, in English and Japanese.
+
+## Form Limits
+
+- Do not show permanent helper text or a counter that states a limit.
+- Show a limit only in an error next to the field.
+- Show the error only while the input breaks the rule.
+- Do not cut the input at a limit. Keep the input and show the error.
+- Show an error for a value above a maximum immediately.
+- Show an error for a value below a minimum, or for an incomplete value, when the user leaves the field.
+- Do not show an error on an empty field that the user did not change.
+- Remove the error immediately when the input obeys the rule.
+- Disable the submit action while the input breaks a rule.
+- Set `aria-invalid` on the field.
+- Give the error `role="alert"`. Link it to the field with `aria-describedby`.
+- For a file input, link the error to the visible control that opens the file chooser.
+- Show one error for each field. When the input breaks more than one rule, show the most important rule.
+- A field error is not a durable message. It does not need a close button.
+- Use the validation rules and limit constants of the SDK.
 
 ## State And Messages
 

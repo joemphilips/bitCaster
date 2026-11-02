@@ -25,6 +25,31 @@ the result is true or that the question was clear. Choose an oracle whose
 evidence and judgment you trust. bitCaster does not replace that judgment
 with a platform trust score.
 
+### Check the oracle profile
+
+Select the oracle in the market header to open its profile page. The page
+shows what the selected Nostr relays return for this key: the banner, the
+picture, the name, the description, and the follow count. Then it lists the
+markets created by this key, and after them the latest notes. A NIP-05
+address appears only when its domain confirms that the address belongs to
+this key.
+
+An optional profile indexer, the Primal cache service, adds the follower
+count and the date when the indexer first saw activity for this key. The page
+names Primal as the source of these values. This date does not prove the age
+of the key. If the indexer does not answer, the page does not show these
+values. To stop the indexer request, turn off **Profile indexer** in Nostr
+Settings.
+
+The selected relays also receive the key of each profile that you open.
+The bitCaster engine also receives the key to list the markets created by it.
+Primal runs one of the default relays. The setting stops only the indexer
+request, not the relay requests. The browser loads the images and the NIP-05
+check from the hosts that the profile names. The relays, the indexer and
+these hosts see your IP address and the profile that you open. A long
+history and real followers help you judge the identity. They do not prove
+that a result is true.
+
 ## When trading ends
 
 The market closes for new orders and funding when it accepts a valid oracle
@@ -55,27 +80,40 @@ Open Your Markets in the creator page. For a self-oracle market, choose Close
 market. The Close this market dialog shows the market title and its registered
 outcomes. Select the winning outcome inside the dialog. You can add an optional
 public plain-text explanation. Restored oracle records use the same dialog.
-The explanation limit is 4096 UTF-8 bytes. Do not include private information.
+An explanation above 4096 UTF-8 bytes shows an error and blocks Close market with
+this outcome. Do not include private information.
 Select Close market with this outcome to save the choice and start delivery.
 Opening the dialog, changing an unsaved selection, or cancelling does not sign
 or publish a result. Reopening discards unsaved dialog changes.
 Here, closing the market means publishing its oracle result.
 
 Once the choice is saved, the outcome and original explanation draft cannot change.
-The dialog shows that saved outcome without an outcome selector.
 The browser retains the exact signed kind-89 result before delivery.
-Keep browser storage enabled. If delivery is incomplete, choose Retry saved resolution
-and confirm the dialog. Retry delivers the saved result without signing another
-kind-89 event or creating another announcement.
-Retry sends only the saved signed events. If no signed explanation was saved,
-retry does not create one. The original explanation draft stays saved.
-Delivery of the exact saved result does not require the oracle signing key.
+Keep browser storage enabled.
 
-Check engine, relay, and optional explanation progress separately.
-Engine confirmed means that the exact result has verified engine evidence.
-Relay confirmed means that the relay acknowledged the result.
-Neither confirmation guarantees the other or confirms mint redemption.
-An explanation failure does not block resolution delivery.
+If delivery is incomplete, the browser retries it automatically. It retries when
+the app starts, when the connection returns, when you return to the tab, and when
+the signer or the relay settings change. There is no retry button.
+After a failed attempt, returning to the tab retries at most once in 10 minutes.
+A retry sends the same saved signed events. It never signs a different outcome
+and never creates another announcement. Delivery of a saved signed result does not
+require the oracle signing key.
+If signing stopped before the result was signed, the browser signs the saved outcome
+and its original explanation draft once. It does this at the next retry while the
+original oracle's local key (nsec) is selected. It signs only when the matching engine is available and has no
+result for the market. If the result was signed but its explanation was not, a retry
+does not create a signed explanation. The original explanation draft stays saved.
+
+Your Markets shows one state for a saved outcome:
+
+- **Sending result…**: delivery is in progress.
+- **Published**: the matching engine returned verified evidence for the exact result.
+- **Couldn't publish. Retrying automatically.**: the last engine delivery failed.
+  The browser tries again at the next retry event.
+
+After the engine confirms the result, the browser continues to send it to the relays
+in the background. The relay copy is optional. Published does not confirm mint redemption.
+After the choice is saved, an explanation failure does not block resolution delivery.
 Its verified text can appear on the closed market page. It is not a paid trade comment.
 
 A deadline-closed market with no verified result still permits the creator's
@@ -104,8 +142,9 @@ The client saves the chosen outcome and signed events before delivery.
 Keep the original daemon profile. Retry the saved result instead of selecting
 another outcome. `--retry` takes no outcome or explanation.
 It reuses saved signed events. If explanation preparation failed, it can finish
-the original saved draft. A restart does not require another market creation or
-registration fee.
+the original saved draft. If signing stopped before the result was signed, it signs
+the saved outcome once with the profile's oracle key. It never signs another outcome.
+A restart does not require another market creation or registration fee.
 
 `resolution-status` reports the chosen outcome and both public event IDs.
 `attestationPrepared` and `explanationPrepared` report saved signed events.
@@ -131,16 +170,16 @@ The first saved outcome on this device cannot change.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 
-Ordinary retry skips an attestation with a retained relay acknowledgment.
-Choose **Republish exact resolution** in Creator and confirm the action to send
-the saved kind-89 event again. This action uses identical bytes without fresh signing.
-A terminal restore can use this action without the signing key.
-After durable result acknowledgment, the client attempts the terminal backup.
+A restored record with a saved result uses the same automatic retry.
+It sends the identical saved kind-89 event without fresh signing.
+A terminal restore needs no signing key for this delivery.
+After verified engine evidence or a relay acknowledgment, the browser attempts
+the terminal backup. The CLI attempts it after a relay acknowledgment.
 Backup failure does not undo successful result delivery.
-Check backup, relay, and engine progress separately.
 
-The CLI can sign or retry through the original relays without contacting
-the engine:
+The browser shows Published only after the matching engine confirms the result. To publish a result
+while the engine is unavailable, use the CLI. It can sign or retry through the
+original relays without contacting the engine:
 
 ```bash
 bitcaster-cli market close --condition-id <condition-id> --outcome Yes --relay-only
@@ -179,24 +218,32 @@ the tokens were not spent. See [settlement and recovery](/user-guide/core-concep
 
 ### Using the browser
 
-Claim checks evidence from the intended oracle when that evidence is available.
+Cash out checks evidence from the intended oracle when that evidence is available.
 The client can reuse verified evidence for the same reported outcome.
 A changed outcome needs new verification or the unverified warning below.
 If the evidence is missing, unavailable, or invalid, the app shows this warning:
 “The mint reports this outcome, but we have not verified evidence from the intended oracle.”
 You can still claim. The wallet must verify each received proof before it records
 the payout. A mint refusal alone does not prove that a holding lost.
-The same warning applies when Remove checks a position through Claim.
+The same warning applies when Remove checks a position through Cash out.
 The message stays visible until you close it.
 
 A restored refusal record can lack verified losing evidence. The wallet keeps
 these conditional tokens and shows their retained amount. You cannot claim,
 sell, or remove tokens in this retained, unverified state.
 
-Open Portfolio and select Claim for a winning position. A claim can finish
+When a market in which you hold tokens closes with a verified result, the
+Notifications bell shows one entry for that market: "You won your bet on
+“*market*”. Please cash it." or "You lost your bet on “*market*” 😢". The entry
+reports a win when one of the outcomes that you hold won. Select the entry to
+open that position on the Closed tab of Portfolio. A closed market
+without a verified result shows no entry until the result is verified. The
+entry appears only in the app. Clear all does not bring the same entries back.
+
+Open Portfolio and select Cash out for a winning position. A claim can finish
 in parts. Each completed payout stays in your wallet if another part fails.
 
-If the claim is pending, keep the wallet data and retry Claim. The pending
+If the claim is pending, keep the wallet data and select Cash out again. The pending
 status remains visible after a reload. Retrying recovers the unfinished part;
 it does not credit a completed payout again. A lost connection does not mean
 that the mint rejected the payment.

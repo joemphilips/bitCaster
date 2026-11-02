@@ -6,9 +6,9 @@ import {
   type AssetMonitoringReportedHolding,
   type AssetMonitoringReportRequest,
 } from './assetMonitoring.ts'
+import { marketCatalogueIdBatches } from './marketCatalogueBatches.ts'
 
 export const ASSET_MONITORING_CONDITIONS_MAX = 200
-export const ASSET_MONITORING_CATALOGUE_PAGE_IDS_MAX = 50
 export const ASSET_MONITORING_CATALOGUE_RESPONSE_BYTES_MAX = 512 * 1024
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MS = 1_000
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MAX_MS = 30_000
@@ -57,7 +57,7 @@ export async function fetchAssetMonitoringCatalogue(
   }
   if (unique.length === 0) return []
   const pages = await Promise.all(
-    chunks(unique, ASSET_MONITORING_CATALOGUE_PAGE_IDS_MAX).map((ids) =>
+    marketCatalogueIdBatches(unique).map((ids) =>
       fetchCataloguePage(endpoint, ids, options.fetchImpl),
     ),
   )
@@ -298,11 +298,4 @@ function uniqueConditionIds(conditionIds: readonly string[]): string[] {
     unique.add(conditionId)
   }
   return [...unique]
-}
-
-function chunks<T>(values: readonly T[], size: number): T[][] {
-  const result: T[][] = []
-  for (let index = 0; index < values.length; index += size)
-    result.push(values.slice(index, index + size))
-  return result
 }

@@ -151,6 +151,7 @@ export function SettingsPage() {
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
+      profileIndexerEnabled: settingsStore.profileIndexerEnabled,
       profileEditorKey: `${settingsStore.nostrSignerMode}:${signerRevision}:${resolveCreatorPubkey({ nostrSignerMode: settingsStore.nostrSignerMode, nsecSecret: settingsStore.nsecSecret }) ?? ""}`,
     },
   };
@@ -158,9 +159,8 @@ export function SettingsPage() {
   const handleAddMint = useCallback(
     async (url: string) => {
       const status = await walletStore.testMintConnection(url);
-      if (status === "failed") {
-        throw new Error("Failed to connect — mint is unreachable or invalid");
-      }
+      // The add-mint form shows a localized connection message for this failure.
+      if (status === "failed") throw new Error("The mint connection test failed.");
       await userAddAndSelectMint(url);
     },
     [walletStore],
@@ -326,6 +326,7 @@ export function SettingsPage() {
         onCategoryToggle={settingsStore.setActiveCategory}
         onThemeChange={handleThemeChange}
         onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
+        onProfileIndexerChange={settingsStore.setProfileIndexerEnabled}
         onAddMint={handleAddMint}
         onRemoveMint={handleRemoveMint}
         onMintClick={handleMintClick}

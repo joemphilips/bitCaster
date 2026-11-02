@@ -64,9 +64,8 @@ export function reconcileLikedMarketCloses(
 
     if (didMarketTransitionToClosed(previous, market.state)) {
       // `market.id` is the bare conditionId (markets list maps
-      // `id = entry.conditionId`). The winning outcome is NOT encoded in the
-      // id — it comes from the oracle attestation — so we do not try to derive
-      // `finalOutcome` here; the catalogue/portfolio surface shows it on click.
+      // `id = entry.conditionId`). The bell opens the market page from it and
+      // shows the stored title.
       notifications.push({
         id: `${market.id}-market_closed`,
         kind: "market_closed",
@@ -78,6 +77,7 @@ export function reconcileLikedMarketCloses(
         occurredAt: now,
         read: false,
         conditionId: market.id,
+        ...(market.title ? { marketTitle: market.title } : {}),
         closedAt: now,
       });
     }

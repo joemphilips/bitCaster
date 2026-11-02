@@ -1877,7 +1877,7 @@ export interface components {
              * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
              */
             lastSuccessfulRefreshAt: string;
-            /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. */
+            /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. During a short read-model catch-up, a request without `ids` can get the last array that the engine read for this market. That array can lag the latest confirmed trade. An empty array then means that no confirmed trade existed at that read. */
             latestConfirmedTrades: components["schemas"]["LatestConfirmedTrade"][];
         };
         MarketCatalogueResponse: {
@@ -3135,7 +3135,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. */
+            /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. During a short read-model catch-up, a request without `ids` gets the last `latestConfirmedTrades` values that the engine read. This response is still possible when a market on the page has no earlier value. A request with `ids` gets this response instead of earlier values. */
             503: {
                 headers: {
                     [name: string]: unknown;

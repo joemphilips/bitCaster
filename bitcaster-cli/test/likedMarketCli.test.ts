@@ -76,7 +76,7 @@ test('actual selected application signer merges valid remote state and publishes
     const list = JSON.parse((await f.run(['market', 'liked'])).stdout)
     assert.deepEqual(list.conditionIds, ['remote', 'local'])
     assert.deepEqual(
-      list.markets.map((market: { id: string }) => market.id),
+      list.markets.map((market: { conditionId: string }) => market.conditionId),
       ['remote', 'local'],
     )
     assert.equal(list.metadataStatus, 'available')
@@ -128,7 +128,7 @@ test('actual failed unlike persists empty across child-process reopen and retrie
   }
 })
 
-test('actual liked metadata retains 205 IDs with <=100-ID batches and reports unresolved/failure honestly', async () => {
+test('actual liked metadata resolves 205 IDs with one-page batches and reports unresolved/failure honestly', async () => {
   const f = await fixture([])
   try {
     const ids = [...Array.from({ length: 204 }, (_, index) => `condition-${index}`), 'unresolved']
@@ -143,15 +143,19 @@ test('actual liked metadata retains 205 IDs with <=100-ID batches and reports un
     const list = JSON.parse((await f.run(['market', 'liked'])).stdout)
     assert.deepEqual(list.conditionIds, ids)
     assert.deepEqual(
-      list.markets.map((market: { id: string }) => market.id),
+      list.markets.map((market: { conditionId: string }) => market.conditionId),
       ids.slice(0, 204),
     )
     const queries = (await f.log()).filter((entry) => entry.action === 'engine')
     assert.deepEqual(
       queries.map((entry) => entry.ids!.length),
-      [100, 100, 5],
+      [50, 50, 50, 50, 5],
     )
-    assert.ok(queries.every((entry) => entry.state === 'All' && entry.pageSize === '100'))
+    assert.ok(
+      queries.every(
+        (entry) => entry.state === 'All' && entry.pageSize === String(entry.ids!.length),
+      ),
+    )
     const failed = JSON.parse(
       (await f.run(['market', 'liked'], { BITCASTER_TEST_BOOKMARK_FAIL_ENGINE: '1' })).stdout,
     )

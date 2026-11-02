@@ -5,6 +5,7 @@ import { deriveDlcConditionId } from './managedConditionInventory.ts'
 import { normalizeNostrRelayUrls } from './nostrRelays.ts'
 import { readSignedOracleEvent } from './oracleResolutionExplanation.ts'
 import {
+  oraclePublicationTerminal,
   snapshotOraclePublicationRecord,
   type OraclePublicationRecord,
 } from './oraclePublication.ts'
@@ -296,8 +297,7 @@ function validatePublication(record: OracleBackupRecord, outcomes: readonly stri
     publication.chosenOutcome !== authority.signedOutcome ||
     (publication.attestation?.attestationHex ?? null) !== authority.attestationHex ||
     (publication.attestation?.eventJson ?? null) !== authority.attestationEventJson ||
-    (authority.nonceScalarHex === null &&
-      (publication.attestation === null || !publication.relayPublished))
+    (authority.nonceScalarHex === null && !oraclePublicationTerminal(publication))
   )
     throw new Error()
 }

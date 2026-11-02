@@ -105,9 +105,9 @@ export interface Position {
   status: PositionStatus;
   /**
    * Single source-of-truth winner flag for a closed position (P22 Link F),
-   * derived once in usePortfolioState via deriveWinner. A position is a winner
-   * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
-   * member of the keyset's collection). The "Won" badge, Claim button,
+   * derived once in usePortfolioState with the SDK `classifyHeldPosition`. A
+   * position is a winner iff it holds >= 1 proof on a winning keyset (the
+   * attested outcome is a member of the keyset's collection). The "Won" badge, Claim button,
    * and the destructive "Remove" guard all read this same field so
    * they can never disagree. Always false while active.
    */
@@ -252,6 +252,12 @@ export interface PortfolioProps {
 
   /** Currently selected positions sub-tab */
   positionsTab: "active" | "closed";
+
+  /**
+   * A navigation that asks for the Positions tab and one position. A new `key`
+   * repeats the request when the same link opens again.
+   */
+  positionsRequest?: { key: string; positionMarketId: string | null };
 
   /** Called when user clicks "Get Started" (no-wallet state). */
   onGetStarted?: () => void;

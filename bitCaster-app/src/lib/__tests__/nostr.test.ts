@@ -319,6 +319,7 @@ describe("fetchAndStoreNostrProfile", () => {
   let received: NostrEvent | undefined;
   let beforeReply: (() => void) | undefined;
   let failRead = false;
+  let unreachableRelay: string | undefined;
   const cached = {
     pubkey: signed.pubkey,
     displayName: "Cached User",
@@ -333,6 +334,7 @@ describe("fetchAndStoreNostrProfile", () => {
     received = undefined;
     beforeReply = undefined;
     failRead = false;
+    unreachableRelay = undefined;
     mocks.settingsState.nostrSignerMode = "nip07";
     mocks.settingsState.nsecSecret = null;
     mocks.settingsState.relays = [{ url: "wss://relay.example" }];
@@ -345,9 +347,9 @@ describe("fetchAndStoreNostrProfile", () => {
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       onmessage: ((message: MessageEvent) => void) | null = null;
-      constructor() {
+      constructor(url: string) {
         queueMicrotask(() => {
-          if (failRead) {
+          if (failRead || url === unreachableRelay) {
             this.onerror?.();
             return;
           }
@@ -398,6 +400,25 @@ describe("fetchAndStoreNostrProfile", () => {
       );
     },
   );
+
+  it("shows a fresh profile when another selected relay fails", async () => {
+    received = signed;
+    unreachableRelay = "wss://down.example";
+    mocks.settingsState.relays = [{ url: "wss://relay.example" }, { url: unreachableRelay }];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(
+      expect.objectContaining({ displayName: "Signed user" }),
+      "found",
+    );
+  });
+
+  it("does not confirm a cached profile when a selected relay fails", async () => {
+    mocks.settingsState.nostrProfile = cached;
+    unreachableRelay = "wss://down.example";
+    mocks.settingsState.relays = [{ url: "wss://relay.example" }, { url: unreachableRelay }];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(cached, "unavailable");
+  });
 
   it("does not claim an absent profile when no relay is selected", async () => {
     mocks.settingsState.relays = [];

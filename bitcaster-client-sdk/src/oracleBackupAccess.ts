@@ -15,6 +15,7 @@ import {
 } from './oracleBackupDelivery.ts'
 import { normalizeNostrRelayUrls } from './nostrRelays.ts'
 import {
+  oraclePublicationTerminal,
   snapshotOraclePublicationRecord,
   type OraclePublicationBinding,
   type OraclePublicationRecord,
@@ -400,8 +401,7 @@ export function oracleBackupStatus(input: {
       input.delivery === null ? null : snapshotOracleBackupDeliveryState(input.delivery)
     if (delivery !== null)
       assertOracleBackupDeliveryOwner(delivery, { binding, relayUrls, publication })
-    const terminal =
-      publication !== null && publication.relayPublished && publication.attestation !== null
+    const terminal = publication !== null && oraclePublicationTerminal(publication)
     const initialStage = delivery?.current?.mode === 'initial' ? delivery.current : null
     const terminalStage = delivery?.current?.mode === 'terminal' ? delivery.current : null
     return {

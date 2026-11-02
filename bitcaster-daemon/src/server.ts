@@ -118,6 +118,10 @@ import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetC
 import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { NativeLightningOps } from './nativeLightningOps.ts'
+import {
+  NativeMintPaymentAmountError,
+  nativeMintPaymentAmountFailure,
+} from './nativeMintPaymentLimits.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
 import type {
   DaemonCommand,
@@ -2336,7 +2340,8 @@ async function dispatchNativeLightningInvoice(
         return { ok: true, result: replacement }
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeMintPaymentAmountError) return nativeMintPaymentAmountFailure(error)
     return {
       ok: false,
       code: 'invoice-operation-failed',
@@ -2412,7 +2417,10 @@ async function dispatchNativeWalletPayment(
     case 'wallet.pay.quote':
       try {
         return { ok: true, result: await ops.quote({ invoice: params.invoice as string }) }
-      } catch {
+      } catch (error) {
+        if (error instanceof NativeMintPaymentAmountError) {
+          return nativeMintPaymentAmountFailure(error)
+        }
         return {
           ok: false,
           code: 'wallet-payment-quote-unavailable',

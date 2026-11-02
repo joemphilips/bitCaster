@@ -1,5 +1,6 @@
 import type { Notification } from "@/stores/notifications";
 import type { components } from "@/generated/api";
+import { orderTransitionNotificationId } from "@/lib/orderStatus";
 
 interface OrderSubmitNotificationInput {
   add: (notification: Notification) => void;
@@ -40,7 +41,7 @@ export function addOrderSubmitNotifications({
   const fullyFilled = remainingAmountSubunits <= 0;
   if (status === "matched") {
     add({
-      id: `${orderId}-matched-${fillCount}`,
+      id: orderTransitionNotificationId(orderId, "matched", remainingAmountSubunits),
       kind: "Matched",
       orderId,
       marketId,
@@ -54,7 +55,11 @@ export function addOrderSubmitNotifications({
   }
 
   add({
-    id: fullyFilled ? `${orderId}-filled` : `${orderId}-partially_filled-${fillCount}`,
+    id: orderTransitionNotificationId(
+      orderId,
+      fullyFilled ? "filled" : "partially_filled",
+      remainingAmountSubunits,
+    ),
     kind: fullyFilled ? "Filled" : "partially_filled",
     orderId,
     marketId,

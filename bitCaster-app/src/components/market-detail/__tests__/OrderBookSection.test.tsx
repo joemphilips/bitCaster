@@ -18,7 +18,7 @@ describe("OrderBookSection", () => {
         snapshotAvailable={false}
       />,
     );
-    expect(screen.getByRole("status", { name: "Loading..." })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading…" })).toBeInTheDocument();
     expect(screen.queryByText("No asks")).not.toBeInTheDocument();
     expect(screen.queryByText("No bids")).not.toBeInTheDocument();
     expect(screen.queryByTestId("order-book-spread-row")).not.toBeInTheDocument();

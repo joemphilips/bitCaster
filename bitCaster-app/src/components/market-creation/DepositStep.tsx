@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Check, Info, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +16,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore } from "@/stores/wallet";
 import type { MarketBaseAsset } from "@/types/market-creation";
 import { assertNever } from "@/lib/enumDiscipline";
+import { useErrorAfterBlur } from "@/hooks/useErrorAfterBlur";
 import {
   defaultCollateralUnit,
   formatMarketSubunits,
@@ -90,6 +91,10 @@ export function DepositStep({
   onCredited,
 }: DepositStepProps) {
   const { t } = useTranslation();
+  // A language change replaces `t`. It must not restart the funding head read,
+  // because that read resets the payment state and the success screen.
+  const tRef = useRef(t);
+  tRef.current = t;
   const navigate = useNavigate();
   const [fundingAmountSats, setFundingAmountSats] = useState("");
   const [stage, setStage] = useState<"created" | "funding">(
@@ -130,12 +135,30 @@ export function DepositStep({
     () => parseFundingAmount(fundingAmountSats),
     [fundingAmountSats],
   );
-  const fundingAmountInputError = fundingAmountSats.trim() !== "" && fundingAmountMsat === null;
+  const fundingAmountRuleError =
+    fundingAmountSats.trim() === ""
+      ? null
+      : fundingAmountMsat === null
+        ? t("marketCreation.ammFundingAmountError")
+        : fundingAmountMsat < 1
+          ? t("marketCreation.ammFundingAmountPositive")
+          : fundingAmountMsat % divisibility !== 0
+            ? t("marketCreation.ammFundingDivisibilityError", { divisibility })
+            : null;
+  // "1." is a partial entry, so the format error waits until the user leaves the field.
+  const fundingAmountError = useErrorAfterBlur(fundingAmountRuleError);
+  const fundingAmountErrorId = useId();
 
   const applyFundingResult = useCallback(
     (result: BrowserMarketFundingDeliveryResult, showSuccess: boolean) => {
       setHeadTransferId(result.transfer.transferId);
-      setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
+      // A credited payment is complete. Leave the amount empty, so that the same
+      // amount is not offered as a second payment.
+      setFundingAmountSats(
+        result.progress === "credited"
+          ? ""
+          : formatFundingInput(Number(result.transfer.requestedAmount)),
+      );
       setDeliveryProgress(result.progress);
       setShowCreditedNotice(showSuccess && result.progress === "credited");
     },
@@ -183,7 +206,9 @@ export function DepositStep({
         setHeadReady(true);
       } catch (err) {
         if (!cancelled && current === generation.current) {
-          setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
+          setError(
+            err instanceof Error ? err.message : tRef.current("marketCreation.ecashSubmitError"),
+          );
         }
       } finally {
         if (!cancelled && current === generation.current) setFundingBusy(false);
@@ -202,7 +227,6 @@ export function DepositStep({
     divisibility,
     applyFundingResult,
     headReadRevision,
-    t,
   ]);
 
   useEffect(() => {
@@ -248,14 +272,8 @@ export function DepositStep({
   const submitMarketFunding = useCallback(async () => {
     if (fundingBusy || inFlight.current) return;
     const resuming = headTransferId !== null && deliveryProgress !== "credited";
-    if (!resuming && (fundingAmountMsat === null || fundingAmountMsat < 1)) {
-      setError(t("marketCreation.ammFundingAmountError"));
-      return;
-    }
-    if (!resuming && fundingAmountMsat !== null && fundingAmountMsat % divisibility !== 0) {
-      setError(t("marketCreation.ammFundingDivisibilityError", { divisibility }));
-      return;
-    }
+    // The field shows the amount rule. Confirm stays disabled while the amount breaks it.
+    if (!resuming && (fundingAmountMsat === null || fundingAmountRuleError !== null)) return;
     if (!walletMnemonic.trim()) {
       if (onRequireWallet) {
         onRequireWallet();
@@ -321,6 +339,7 @@ export function DepositStep({
     divisibility,
     outcomeCount,
     fundingAmountMsat,
+    fundingAmountRuleError,
     fundingBusy,
     onCredited,
     onRequireWallet,
@@ -347,7 +366,7 @@ export function DepositStep({
     headReady &&
     !fundingBusy &&
     ((headTransferId !== null && deliveryProgress !== "credited") ||
-      (fundingAmountMsat !== null && fundingAmountMsat > 0));
+      (fundingAmountMsat !== null && fundingAmountRuleError === null));
 
   if (stage === "created") {
     return (
@@ -377,7 +396,7 @@ export function DepositStep({
           <Check className="h-10 w-10 text-emerald-400" />
         </div>
         <h2 className="mb-2 text-xl font-bold text-white sm:text-2xl" aria-live="polite">
-          {t("marketCreation.statusPaymentCredited")}
+          {t("marketCreation.ammFundingComplete")}
         </h2>
         <p className="mt-4 text-sm text-slate-400">
           {t("marketCreation.fundingAutoAdvance", {
@@ -408,38 +427,59 @@ export function DepositStep({
         {t("marketCreation.ammFundingTitle")}
       </h2>
 
-      <label className="mb-5 block rounded-lg border border-slate-800 bg-slate-900 p-4">
-        <span className="mb-2 block text-sm font-semibold text-white">
-          {t("marketCreation.ammFundingAmountLabel")}
-        </span>
-        <input
-          data-testid="amm-funding-custom-budget"
-          type="text"
-          inputMode="decimal"
-          aria-invalid={fundingAmountInputError ? "true" : "false"}
-          value={fundingAmountSats}
-          disabled={fundingBusy || (headTransferId !== null && deliveryProgress !== "credited")}
-          onChange={(event) => setFundingAmountSats(event.target.value)}
-          className={`w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400 ${
-            fundingAmountInputError ? "border-red-400" : "border-slate-700"
-          }`}
-        />
-      </label>
+      <div className="mb-5 rounded-lg border border-slate-800 bg-slate-900 p-4">
+        <label className="block">
+          <span className="mb-2 block text-sm font-semibold text-white">
+            {t("marketCreation.ammFundingAmountLabel")}
+          </span>
+          <input
+            data-testid="amm-funding-custom-budget"
+            type="text"
+            inputMode="decimal"
+            aria-invalid={fundingAmountError.visibleError !== null ? "true" : "false"}
+            aria-describedby={
+              fundingAmountError.visibleError !== null ? fundingAmountErrorId : undefined
+            }
+            value={fundingAmountSats}
+            disabled={fundingBusy || (headTransferId !== null && deliveryProgress !== "credited")}
+            onChange={(event) => setFundingAmountSats(event.target.value)}
+            onBlur={fundingAmountError.onBlur}
+            className={`w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400 ${
+              fundingAmountError.visibleError !== null ? "border-red-400" : "border-slate-700"
+            }`}
+          />
+        </label>
+        {fundingAmountError.visibleError !== null && (
+          <p
+            id={fundingAmountErrorId}
+            role="alert"
+            data-testid="amm-funding-amount-error"
+            className="mt-2 text-sm text-red-300"
+          >
+            {fundingAmountError.visibleError}
+          </p>
+        )}
+      </div>
 
       <div className="mb-4 flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-300">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" strokeWidth={1.75} />
         <p>{t("marketCreation.ammFundingDisclosure")}</p>
       </div>
 
-      {deliveryProgress && (deliveryProgress !== "credited" || showCreditedNotice) && (
-        <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-          {deliveryProgress === "credited"
-            ? t("marketCreation.statusPaymentCredited")
-            : deliveryProgress === "received"
-              ? t("marketCreation.statusPaymentReceived")
-              : t("marketCreation.statusAwaitingPayment")}
-        </p>
-      )}
+      {/* A new payment after a credit hides the old completion while it runs. The
+          LIQUIDITY tab stays open to later makers, so it announces only a credit from
+          this visit. The creation wizard shows a restored credit as the funded state. */}
+      {deliveryProgress &&
+        !(deliveryProgress === "credited" && fundingBusy) &&
+        (deliveryProgress !== "credited" || presentation === "creation" || showCreditedNotice) && (
+          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+            {deliveryProgress === "credited"
+              ? t("marketCreation.ammFundingComplete")
+              : deliveryProgress === "received"
+                ? t("marketCreation.statusPaymentReceived")
+                : t("marketCreation.statusAwaitingPayment")}
+          </p>
+        )}
 
       <div className="flex flex-col gap-3 sm:flex-row-reverse">
         <button
@@ -456,7 +496,8 @@ export function DepositStep({
           {fundingBusy ? (
             <span className="inline-flex items-center justify-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {t("marketCreation.payingFromWallet")}
+              {/* Until the head read completes, this step only reads the wallet. */}
+              {headReady ? t("marketCreation.payingFromWallet") : t("common.loading")}
             </span>
           ) : deliveryProgress === "pending" || deliveryProgress === "received" ? (
             t("marketCreation.retryWalletPayment")
@@ -515,12 +556,6 @@ export function DepositStep({
           deficit={Math.max((fundingAmountMsat ?? 0) - balance, 0)}
           baseAsset={baseAsset}
           proofUnit={cashuUnit}
-          minimumDescription={t("marketCreation.depositWalletTopUpMinimumDescription", {
-            amount: formatMarketSubunits(
-              Math.max((fundingAmountMsat ?? 0) - balance, 0),
-              baseAsset,
-            ),
-          })}
           minimumErrorDescription={t("marketCreation.depositWalletTopUpMinimumError", {
             amount: formatMarketSubunits(
               Math.max((fundingAmountMsat ?? 0) - balance, 0),

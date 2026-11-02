@@ -48,6 +48,7 @@ vi.mock("@bitcaster/client-sdk/nut16Qr", () => ({
   Nut16UrDecoderSession: nut16Mock.MockNut16UrDecoderSession,
 }));
 
+import i18n from "@/i18n";
 import { QrScannerView } from "../QrScanner";
 
 function latestScanner() {
@@ -163,6 +164,41 @@ describe("QrScannerView", () => {
 
     unmount();
     expect(scanner.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the camera session, its progress and its error through a language change", async () => {
+    const onClose = vi.fn();
+    render(<QrScannerView onDecode={vi.fn()} onClose={onClose} />);
+    const scanner = latestScanner();
+    latestDecoder()
+      .receive.mockReturnValueOnce({ status: "accepted", progress: 0.5 })
+      .mockReturnValueOnce({ status: "rejected", progress: 0.5, code: "corrupt_fragment" });
+    scan("ur:bytes/1-2/first-frame");
+
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ja");
+      });
+
+      expect(qrScannerMock.instances).toHaveLength(1);
+      expect(nut16Mock.sessions).toHaveLength(1);
+      expect(scanner.destroy).not.toHaveBeenCalled();
+      expect(screen.getByText("50%")).toBeInTheDocument();
+      scan("ur:bytes/2-2/corrupt-frame");
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "アニメーションQRコードが無効か不完全です。",
+      );
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The animated QR code is invalid or incomplete.",
+      );
+      screen.getByRole("button", { name: "Close" }).click();
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("allows only one active camera scanner", () => {

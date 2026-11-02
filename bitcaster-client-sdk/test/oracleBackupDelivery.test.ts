@@ -24,6 +24,7 @@ import {
   type OracleBackupDeliveryStore,
 } from '../src/oracleBackupDelivery.ts'
 import type { OraclePublicationRecord } from '../src/oraclePublication.ts'
+import { oracleBackupStatus } from '../src/oracleBackupAccess.ts'
 import { oracleTestKey } from './fixtures/oraclePublication.ts'
 
 const tlv =
@@ -677,4 +678,85 @@ test('shared relay reader accepts exact backup and deletion and rejects unsuppor
       () => readOracleBackupRelayEvent(JSON.stringify(event)),
       safeError('invalid-source'),
     )
+})
+
+test('terminal backup follows verified engine evidence without a relay copy', async () => {
+  const f = fixture()
+  const attestation = JSON.parse(f.publication.attestation!.eventJson)
+  const engineOnly: OraclePublicationRecord = {
+    ...f.publication,
+    relayPublished: false,
+    engineEvidence: {
+      conditionId: f.record.conditionId,
+      oracleEventId: f.record.oracleEventId,
+      oraclePubkey: f.record.oraclePubkey,
+      outcome: 'YES',
+      announcementEventId: f.announcement.id,
+      attestationEventId: attestation.id,
+    },
+  }
+  const record = buildTerminalOracleBackupRecord({
+    binding: engineOnly.binding,
+    announcementTlvHex: tlv,
+    destinations: f.record.destinations,
+    publication: engineOnly,
+  })
+  assert.equal(record.authority.nonceScalarHex, null)
+  const initial = await prepare(f)
+  const stage = await prepareOracleBackupDelivery({
+    record,
+    previous: initial,
+    privateKey: oracleTestKey,
+    validator: f.validator,
+    nowSeconds: now,
+  })
+  assert.equal(stage.current!.mode, 'terminal')
+  assert.equal(stage.current!.attestationEventId, attestation.id)
+  const restored = await decryptOracleBackupEvent({
+    event: JSON.parse(stage.current!.eventJson),
+    privateKey: oracleTestKey,
+    validator: f.validator,
+  })
+  assert.equal(restored.authority.nonceScalarHex, null)
+  assertOracleBackupDeliveryOwner(stage, {
+    binding: engineOnly.binding,
+    relayUrls: f.record.destinations.relayUrls,
+    publication: engineOnly,
+  })
+  const acknowledged = confirmOracleBackupDelivery(stage, {
+    kind: 'backup',
+    eventId: stage.current!.eventId,
+    relayUrl: f.record.destinations.relayUrls[0],
+  })
+  const committed = commitOracleBackupDelivery(
+    acknowledged,
+    acknowledged.terminalAdmission!,
+    engineOnly,
+  )
+  assert.equal(committed.terminalCommitPending, false)
+  const status = oracleBackupStatus({
+    binding: engineOnly.binding,
+    destinations: f.record.destinations,
+    publication: engineOnly,
+    importComplete: true,
+    delivery: committed,
+  })
+  assert.equal(status.publication.state, 'terminal')
+  assert.equal(status.publication.relayPublished, false)
+  assert.equal(status.publication.engineSynchronized, true)
+  const signedOnly = { ...engineOnly, engineEvidence: null }
+  assert.throws(
+    () =>
+      buildTerminalOracleBackupRecord({
+        binding: signedOnly.binding,
+        announcementTlvHex: tlv,
+        destinations: f.record.destinations,
+        publication: signedOnly,
+      }),
+    safeError('terminal-not-ready'),
+  )
+  assert.throws(
+    () => commitOracleBackupDelivery(acknowledged, acknowledged.terminalAdmission!, signedOnly),
+    safeError('terminal-not-ready'),
+  )
 })

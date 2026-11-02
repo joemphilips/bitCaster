@@ -36,11 +36,11 @@ interface PriceChartProps {
 
 const TIMEFRAMES: ChartTimeframe[] = ["1h", "24h", "7d", "30d", "all"];
 const TIMEFRAME_LABELS: Record<ChartTimeframe, string> = {
-  "1h": "1H",
-  "24h": "24H",
-  "7d": "7D",
-  "30d": "1 Month",
-  all: "ALL",
+  "1h": "chartRange.1h",
+  "24h": "chartRange.24h",
+  "7d": "chartRange.7d",
+  "30d": "chartRange.30d",
+  all: "chartRange.all",
 };
 
 const EMPTY_COMMENTS: Comment[] = [];
@@ -335,7 +335,7 @@ export function PriceChart({
                 : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
             }`}
           >
-            {TIMEFRAME_LABELS[tf]}
+            {t(TIMEFRAME_LABELS[tf])}
           </button>
         ))}
       </div>
