@@ -48,9 +48,9 @@ import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrder
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
-  safeNostrImageUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
@@ -107,8 +107,8 @@ export function ShellRoutes({
       sanitizeNostrDisplayText(nostrProfile?.displayName, MAX_NOSTR_PROFILE_NAME_CHARACTERS, {
         singleLine: true,
       }) || t("settings.profileAnonymous"),
-    // The own kind 0 picture is relay data too. Load only https from a public host.
-    avatarUrl: safeNostrImageUrl(nostrProfile?.avatar) ?? undefined,
+    // Only the key owner signs the own kind 0, so its picture can use any http or https host.
+    avatarUrl: ownProfileImageUrl(nostrProfile?.avatar),
     balance: totalBalance,
   };
 

@@ -6,9 +6,9 @@ import type { NostrProfileFetchStatus } from "@/types/settings";
 import {
   MAX_NOSTR_PROFILE_ABOUT_CHARACTERS,
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
-  safeNostrImageUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 
 export interface IdentityProfileData {
   displayName: string;
@@ -34,7 +34,8 @@ export function IdentityProfile({
       singleLine: true,
     }) || t("settings.profileAnonymous");
   const bio = sanitizeNostrDisplayText(profile.bio, MAX_NOSTR_PROFILE_ABOUT_CHARACTERS);
-  const avatarUrl = safeNostrImageUrl(profile.avatarUrl);
+  // This component shows only the user's own profile.
+  const avatarUrl = ownProfileImageUrl(profile.avatarUrl);
   const [dismissedReadError, setDismissedReadError] = useState(false);
   useEffect(() => {
     if (status !== "unavailable") setDismissedReadError(false);

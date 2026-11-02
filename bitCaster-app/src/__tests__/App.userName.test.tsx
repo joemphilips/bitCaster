@@ -84,18 +84,20 @@ describe("ShellRoutes own profile name", () => {
     }
   });
 
+  // Only the key owner signs the own profile, so any http or https host is allowed.
   it.each([
     ["javascript:alert(1)", false],
-    ["http://img.example/me.png", false],
+    ["data:image/png;base64,AAAA", false],
+    ["http://localhost:5173/me.svg", true],
     ["https://img.example/me.png", true],
-  ])("loads the own avatar %s only from a public https host", (avatar, loaded) => {
+  ])("loads the own avatar %s only from an http or https URL", (avatar, loaded) => {
     settingsState.nostrProfile = { displayName: "Me", avatar };
     const { container } = renderShell();
 
     const images = Array.from(container.querySelectorAll("img")).map((image) =>
       image.getAttribute("src"),
     );
-    if (loaded) expect(images).toContain("https://img.example/me.png");
+    if (loaded) expect(images).toContain(avatar);
     else expect(images).not.toContain(avatar);
   });
 });
