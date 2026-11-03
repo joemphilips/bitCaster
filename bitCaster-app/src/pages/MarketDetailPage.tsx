@@ -129,6 +129,7 @@ import type {
   Trade,
   SellHoldingsState,
   TradeFeasibilityReason,
+  ParticipationScoreOrderCost,
 } from "@/types/market-detail";
 import { useFokOrderPreview } from "@/hooks/useFokOrderPreview";
 import { useFokOrderCapacityPreview } from "@/hooks/useFokOrderCapacityPreview";
@@ -136,22 +137,23 @@ import { useFokOrderCapacityPreview } from "@/hooks/useFokOrderCapacityPreview";
 type TopUpStage = "closed" | "modal" | "overlay";
 
 /**
- * Score that confirming the order buys from ordinary sats, from the same SDK
- * plan as the submission. Null when the balance covers the order, Score is
- * off, or the balance is unknown.
+ * The order's Score charge and the Score that confirming it buys, from the
+ * same SDK plan as the submission. Null when Score is off or the balance is
+ * unknown.
  */
-function participationScorePurchaseFor(
+function participationScoreOrderCostFor(
   score: ParticipationScoreLike | null,
   preview: BrowserCtfRangeOrderScorePreview,
-): number | null {
+): ParticipationScoreOrderCost | null {
   if (score === null) return null;
   const plan = planParticipationScoreTopUp(score, preview.requiredScore, preview.availableScore);
   switch (plan.kind) {
     case "disabled":
-    case "sufficient":
       return null;
+    case "sufficient":
+      return { chargeScore: plan.requiredScore, purchaseScore: null };
     case "needs-top-up":
-      return plan.topUpScore;
+      return { chargeScore: plan.requiredScore, purchaseScore: plan.topUpScore };
     default:
       return assertNever(plan);
   }
@@ -2261,10 +2263,10 @@ export function MarketDetailPage() {
       ? tradeFeasibilityResult
       : null;
   const feeConsentCurrent = displayedTradeFeeFacts !== null;
-  const participationScorePurchase = useMemo(
+  const participationScoreOrderCost = useMemo(
     () =>
       rangeScorePreview !== null && rangeScorePreview.key === rangeFeePreviewKey
-        ? participationScorePurchaseFor(participationScore, rangeScorePreview)
+        ? participationScoreOrderCostFor(participationScore, rangeScorePreview)
         : null,
     [participationScore, rangeFeePreviewKey, rangeScorePreview],
   );
@@ -3228,7 +3230,7 @@ export function MarketDetailPage() {
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
         attemptedTradeFeeFacts={displayedAttemptedTradeFeeFacts}
-        participationScorePurchase={participationScorePurchase}
+        participationScore={participationScoreOrderCost}
         feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}

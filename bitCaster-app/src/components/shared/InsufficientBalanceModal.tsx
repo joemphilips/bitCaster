@@ -21,6 +21,10 @@ interface InsufficientBalanceModalProps {
   onRetry?: () => void;
 }
 
+function markInitialFocus(element: HTMLButtonElement | null): void {
+  element?.setAttribute("autofocus", "");
+}
+
 /**
  * Gate shown when the user presses Confirm but the active mint's balance is
  * below the order's total cost. This is the funded-action gate that appears
@@ -109,6 +113,10 @@ export function InsufficientBalanceModal({
               <button
                 type="button"
                 data-testid="insufficient-balance-cancel"
+                // The dialog's initial focus. Without it, showModal() focuses
+                // the first control, which can be the title help. React's
+                // autoFocus prop does not set the attribute that showModal reads.
+                ref={markInitialFocus}
                 onClick={dismiss}
                 className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
               >

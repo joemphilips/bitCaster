@@ -271,6 +271,17 @@ export interface TradePreview {
   totalCost: number;
 }
 
+/**
+ * Display-only Participation Score facts for one order. `chargeScore` is the
+ * order's tariff, paid from the Score balance. `purchaseScore` is the Score
+ * that confirming the order buys from ordinary sats, or null when the balance
+ * covers the charge. One Score is one sat.
+ */
+export interface ParticipationScoreOrderCost {
+  chargeScore: number;
+  purchaseScore: number | null;
+}
+
 /** Exact wallet preparation and settlement facts shown beside the quote. */
 export type TradeFeeFacts = CtfRangeOrderFeeFacts;
 
@@ -329,8 +340,8 @@ export interface MarketDetailProps {
   /** Display-only reviewed fees for the last cancelled or failed attempt. These do not supply current consent. */
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
 
-  /** Score that the app buys from the wallet when this order is confirmed. Null shows no row. */
-  participationScorePurchase?: number | null;
+  /** The order's Participation Score charge and purchase. Null shows no Score lines. */
+  participationScore?: ParticipationScoreOrderCost | null;
 
   /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
   feeConsentCurrent?: boolean;

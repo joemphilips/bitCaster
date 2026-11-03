@@ -12,6 +12,7 @@ import type {
   CategoricalMarketDetail,
   SellHoldingsState,
   TradeFeasibilityReason,
+  ParticipationScoreOrderCost,
 } from "@/types/market-detail";
 import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
 import { useTranslation } from "react-i18next";
@@ -59,8 +60,11 @@ interface TradingPanelProps {
   tradePreview: FokOrderPreviewState | null;
   tradeFeeFacts?: TradeFeeFacts | null;
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
-  /** Score the app buys from the wallet when this order is confirmed. Null shows no row. */
-  participationScorePurchase?: number | null;
+  /**
+   * The order's Participation Score charge, and the Score that confirming the
+   * order buys from ordinary sats. Null shows no Score lines.
+   */
+  participationScore?: ParticipationScoreOrderCost | null;
   feeConsentCurrent?: boolean;
   tradeSide: TradeSide;
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
@@ -617,7 +621,7 @@ function FokOrderPreviewSection({
   divisibility,
   baseAsset,
   feeFacts,
-  participationScorePurchase,
+  participationScore,
   feeConsentCurrent,
   feeCheckFailed,
   deliveredFaceAmountSubunits,
@@ -630,7 +634,7 @@ function FokOrderPreviewSection({
   divisibility: number;
   baseAsset: MarketBaseAsset;
   feeFacts: TradeFeeFacts | null | undefined;
-  participationScorePurchase: number | null;
+  participationScore: ParticipationScoreOrderCost | null;
   feeConsentCurrent: boolean;
   feeCheckFailed: boolean;
   deliveredFaceAmountSubunits: number;
@@ -876,20 +880,35 @@ function FokOrderPreviewSection({
                 </span>
               </div>
             )}
-            {participationScorePurchase != null && (
-              // Bought from ordinary sats in a separate payment, so the totals above exclude it.
-              <div
-                data-testid="trade-participation-score"
-                className="mt-2 flex items-center justify-between gap-2 text-sm"
-              >
-                <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
-                  {t("participationScore.name")}
-                  <ParticipationScoreHelp testId="trade-participation-score-help" />
-                </span>
-                <span className="shrink-0 whitespace-nowrap text-slate-600 dark:text-slate-300">
-                  {formatMsatSubunits(BigInt(participationScorePurchase) * 1_000n)}
-                </span>
-              </div>
+            {participationScore != null && (
+              // Score is paid apart from the trade, so the totals above exclude both lines.
+              <>
+                <div
+                  data-testid="trade-participation-score"
+                  className="mt-2 flex items-center justify-between gap-2 text-sm"
+                >
+                  <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                    {t("participationScore.name")}
+                    <ParticipationScoreHelp testId="trade-participation-score-help" />
+                  </span>
+                  <span className="shrink-0 whitespace-nowrap text-slate-600 dark:text-slate-300">
+                    {formatMsatSubunits(BigInt(participationScore.chargeScore) * 1_000n)}
+                  </span>
+                </div>
+                {participationScore.purchaseScore != null && (
+                  <div
+                    data-testid="trade-participation-score-purchase"
+                    className="mt-1 flex items-start justify-between gap-2 text-sm"
+                  >
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {t("participationScore.purchaseAtConfirm")}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap font-medium text-amber-700 dark:text-amber-300">
+                      +{formatMsatSubunits(BigInt(participationScore.purchaseScore) * 1_000n)}
+                    </span>
+                  </div>
+                )}
+              </>
             )}
             {!feeConsentCurrent && (
               <p
@@ -922,7 +941,7 @@ export function TradingPanel({
   tradePreview,
   tradeFeeFacts,
   attemptedTradeFeeFacts,
-  participationScorePurchase = null,
+  participationScore = null,
   feeConsentCurrent = false,
   tradeSide,
   tradeCapacityPreview = null,
@@ -1363,7 +1382,7 @@ export function TradingPanel({
               baseAsset={baseAsset}
               deliveredFaceAmountSubunits={tradeAmount * divisibility}
               feeFacts={tradeFeeFacts}
-              participationScorePurchase={participationScorePurchase}
+              participationScore={participationScore}
               feeConsentCurrent={feeConsentCurrent}
               // The cost check needs the Nostr signer. Without it no check runs, and the
               // "Start trading" action sets up the identity first.

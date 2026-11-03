@@ -17,25 +17,25 @@ interface HelpTipProps {
   testId?: string;
 }
 
-// Focus opens the explanation only when the user moves focus with the
-// keyboard. A dialog's automatic initial focus after a click must not open it.
-let keyboardModality = false;
-let modalityTracked = false;
+// Focus opens the explanation only when the user moves focus with Tab. A
+// dialog's automatic initial focus after a click or Enter must not open it.
+let tabNavigation = false;
+let navigationTracked = false;
 
-function trackInputModality(): void {
-  if (modalityTracked) return;
-  modalityTracked = true;
+function trackTabNavigation(): void {
+  if (navigationTracked) return;
+  navigationTracked = true;
   document.addEventListener(
     "keydown",
-    () => {
-      keyboardModality = true;
+    (event) => {
+      tabNavigation = event.key === "Tab";
     },
     true,
   );
   document.addEventListener(
     "pointerdown",
     () => {
-      keyboardModality = false;
+      tabNavigation = false;
     },
     true,
   );
@@ -43,15 +43,15 @@ function trackInputModality(): void {
 
 const TIP_WIDTH_PX = 256;
 const VIEWPORT_MARGIN_PX = 8;
-const TRIGGER_GAP_PX = 4;
 
 /**
- * A "?" button that explains one term. It opens on mouse hover, on keyboard
+ * A "?" button that explains one term. It opens on mouse hover, on Tab
  * focus, and on tap or click. Escape closes it. A tap outside closes a tapped
  * explanation.
  *
- * The explanation uses fixed positioning, so a scrolling panel does not clip
- * it. It stays inside the button's DOM subtree, so it also shows above a modal
+ * The explanation touches the button's 44 px hit area, so the pointer can move
+ * onto it without leaving the control. It uses fixed positioning, so a
+ * scrolling panel does not clip it. It stays inside the button's DOM subtree, so it also shows above a modal
  * dialog in the browser top layer.
  */
 export function HelpTip({ label, content, testId }: HelpTipProps) {
@@ -69,7 +69,7 @@ export function HelpTip({ label, content, testId }: HelpTipProps) {
   const [position, setPosition] = useState<CSSProperties>({});
   const open = hovered || focused || pinned;
 
-  useEffect(trackInputModality, []);
+  useEffect(trackTabNavigation, []);
 
   const close = useCallback(() => {
     setHovered(false);
@@ -140,7 +140,7 @@ export function HelpTip({ label, content, testId }: HelpTipProps) {
         aria-expanded={open}
         className="group -m-3 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full focus:outline-none"
         onFocus={() => {
-          if (!pressRef.current && keyboardModality) setFocused(true);
+          if (!pressRef.current && tabNavigation) setFocused(true);
         }}
         onBlur={() => {
           setFocused(false);
@@ -187,7 +187,8 @@ export function tipPosition(
     Math.max(centered, VIEWPORT_MARGIN_PX),
     Math.max(VIEWPORT_MARGIN_PX, viewportWidth - VIEWPORT_MARGIN_PX - width),
   );
+  // No gap: the button's hit area already extends past its visible "?".
   return trigger.top > viewportHeight / 2
-    ? { left, width, bottom: viewportHeight - trigger.top + TRIGGER_GAP_PX }
-    : { left, width, top: trigger.bottom + TRIGGER_GAP_PX };
+    ? { left, width, bottom: viewportHeight - trigger.top }
+    : { left, width, top: trigger.bottom };
 }

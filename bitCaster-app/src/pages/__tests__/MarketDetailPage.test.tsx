@@ -4045,12 +4045,12 @@ describe("MarketDetailPage live market status", () => {
   });
 
   it.each([
-    { balance: 0, enabled: true, purchase: "5.000 sats" },
-    { balance: 2, enabled: true, purchase: null },
-    { balance: 0, enabled: false, purchase: null },
+    { balance: 0, enabled: true, charge: "2.000 sats", purchase: "+5.000 sats" },
+    { balance: 2, enabled: true, charge: "2.000 sats", purchase: null },
+    { balance: 0, enabled: false, charge: null, purchase: null },
   ])(
-    "shows the Participation Score purchase for Score $balance (enabled: $enabled)",
-    async ({ balance, enabled, purchase }) => {
+    "shows the Participation Score charge and purchase for Score $balance (enabled: $enabled)",
+    async ({ balance, enabled, charge, purchase }) => {
       mocks.walletState.setupComplete = true;
       mocks.walletState.activeMintUrl = "https://mint.example";
       mocks.settingsState.nostrSignerMode = "nsec";
@@ -4084,12 +4084,18 @@ describe("MarketDetailPage live market status", () => {
       expect(mocks.previewBrowserCtfRangeOrderScore).toHaveBeenCalledWith(
         expect.objectContaining({ mintUrl: "https://mint.example" }),
       );
-      if (purchase === null) {
+      if (charge === null) {
         await waitFor(() => expect(mocks.getParticipationScore).toHaveBeenCalled());
         expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
       } else {
         const rows = await screen.findAllByTestId("trade-participation-score");
-        expect(rows[0]).toHaveTextContent(purchase);
+        expect(rows[0]).toHaveTextContent(charge);
+      }
+      if (purchase === null) {
+        expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
+      } else {
+        const lines = await screen.findAllByTestId("trade-participation-score-purchase");
+        expect(lines[0]).toHaveTextContent(purchase);
       }
     },
   );
@@ -4126,7 +4132,7 @@ describe("MarketDetailPage live market status", () => {
     await waitFor(() => expect(mocks.getParticipationScore).toHaveBeenCalledOnce());
   });
 
-  it("shows no Participation Score amount when the Score read fails", async () => {
+  it("shows no Participation Score lines when the Score read fails", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -4151,6 +4157,7 @@ describe("MarketDetailPage live market status", () => {
     await waitFor(() => expect(mocks.previewBrowserCtfRangeOrderScore).toHaveBeenCalled());
 
     expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
   });
 
   it("uses the accepted Sell worst price and minimum proceeds", async () => {

@@ -1046,7 +1046,7 @@ describe("TradingPanel", () => {
   }
 
   it.each(["Buy", "Sell"] as const)(
-    "shows the %s Participation Score purchase as a row with its help",
+    "shows the %s Participation Score charge and a separate purchase at confirm",
     async (tradeSide) => {
       const user = userEvent.setup();
       render(
@@ -1056,7 +1056,7 @@ describe("TradingPanel", () => {
           tradeAmount={5}
           tradePreview={readyPreview()}
           tradeFeeFacts={feeFacts()}
-          participationScorePurchase={5}
+          participationScore={{ chargeScore: 2, purchaseScore: 5 }}
           feeConsentCurrent
           tradeSide={tradeSide}
           sellHoldings={sellHoldings({ Yes: { selectableSubunits: 10_000 } })}
@@ -1064,13 +1064,17 @@ describe("TradingPanel", () => {
         />,
       );
 
-      const row = screen.getByTestId("trade-participation-score");
-      expect(row).toHaveTextContent(/^Participation Score.*5\.000 sats$/);
-      // The purchase is paid separately, so the trade totals do not include it.
+      const charge = screen.getByTestId("trade-participation-score");
+      expect(charge).toHaveTextContent(/^Participation Score.*2\.000 sats$/);
+      const purchase = screen.getByTestId("trade-participation-score-purchase");
+      expect(purchase).toHaveTextContent(
+        /^Score top-up at confirm \(kept as balance\)\+5\.000 sats$/,
+      );
+      // Score is paid apart from the trade, so the trade totals exclude both lines.
       expect(
         screen.getByTestId(tradeSide === "Buy" ? "trade-grand-total" : "trade-net-proceeds"),
       ).toHaveTextContent(tradeSide === "Buy" ? "30.000 sats" : "0.000 sats");
-      const help = within(row).getByRole("button", { name: "About Participation Score" });
+      const help = within(charge).getByRole("button", { name: "About Participation Score" });
       expect(help).toHaveAccessibleDescription(
         "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
       );
@@ -1079,7 +1083,7 @@ describe("TradingPanel", () => {
     },
   );
 
-  it("hides the Participation Score row when the order buys no Score", () => {
+  it("shows the charge without a purchase line when the Score balance covers the order", () => {
     render(
       <TradingPanel
         market={makeMarket()}
@@ -1087,7 +1091,26 @@ describe("TradingPanel", () => {
         tradeAmount={5}
         tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts()}
-        participationScorePurchase={null}
+        participationScore={{ chargeScore: 2, purchaseScore: null }}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-participation-score")).toHaveTextContent("2.000 sats");
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
+  });
+
+  it("shows no Score lines when Score is off or its read failed", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        participationScore={null}
         feeConsentCurrent
         tradeSide="Buy"
         onTradeConfirm={vi.fn()}
@@ -1096,10 +1119,11 @@ describe("TradingPanel", () => {
 
     expect(screen.getByTestId("trade-grand-total")).toBeInTheDocument();
     expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
     expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
   });
 
-  it("does not show a Participation Score amount before the fee check is current", () => {
+  it("does not show Score lines before the fee check is current", () => {
     render(
       <TradingPanel
         market={makeMarket()}
@@ -1107,7 +1131,7 @@ describe("TradingPanel", () => {
         tradeAmount={5}
         tradePreview={readyPreview()}
         tradeFeeFacts={null}
-        participationScorePurchase={5}
+        participationScore={{ chargeScore: 2, purchaseScore: 5 }}
         tradeSide="Buy"
         onTradeConfirm={vi.fn()}
       />,
@@ -1115,6 +1139,7 @@ describe("TradingPanel", () => {
 
     expect(screen.getByTestId("trade-fees-loading")).toBeInTheDocument();
     expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
   });
 
   it("puts the Participation Score help next to a Score status message", () => {

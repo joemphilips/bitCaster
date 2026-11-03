@@ -88,7 +88,7 @@ export function MarketDetail({
   tradePreview,
   tradeFeeFacts,
   attemptedTradeFeeFacts,
-  participationScorePurchase,
+  participationScore,
   feeConsentCurrent,
   tradeSide,
   tradeCapacityPreview,
@@ -200,7 +200,7 @@ export function MarketDetail({
       tradePreview={tradePreview}
       tradeFeeFacts={tradeFeeFacts}
       attemptedTradeFeeFacts={attemptedTradeFeeFacts}
-      participationScorePurchase={participationScorePurchase}
+      participationScore={participationScore}
       feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
       tradeCapacityPreview={tradeCapacityPreview}

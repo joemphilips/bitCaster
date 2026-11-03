@@ -90,6 +90,18 @@ describe("HelpTip", () => {
     expect(tooltip()).toBeNull();
   });
 
+  it("does not open on focus that follows Enter, such as a keyboard-opened dialog's initial focus", async () => {
+    const user = userEvent.setup();
+    renderTip();
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+
+    act(() => elsewhere.focus());
+    await user.keyboard("{Enter}");
+    act(() => screen.getByRole("button", { name: LABEL }).focus());
+
+    expect(tooltip()).toBeNull();
+  });
+
   it("toggles on tap and closes on a tap outside", async () => {
     const user = userEvent.setup();
     renderTip();
@@ -165,14 +177,23 @@ describe("HelpTip", () => {
 
   it("keeps the explanation inside a narrow viewport", () => {
     const nearLeft = { left: 10, width: 20, top: 100, bottom: 120 };
-    expect(tipPosition(nearLeft, 390, 844)).toEqual({ left: 8, width: 256, top: 124 });
+    expect(tipPosition(nearLeft, 390, 844)).toEqual({ left: 8, width: 256, top: 120 });
 
     const nearRight = { left: 360, width: 20, top: 100, bottom: 120 };
-    expect(tipPosition(nearRight, 390, 844)).toEqual({ left: 126, width: 256, top: 124 });
+    expect(tipPosition(nearRight, 390, 844)).toEqual({ left: 126, width: 256, top: 120 });
 
     const lowerHalf = { left: 185, width: 20, top: 600, bottom: 620 };
-    expect(tipPosition(lowerHalf, 390, 844)).toEqual({ left: 67, width: 256, bottom: 248 });
+    expect(tipPosition(lowerHalf, 390, 844)).toEqual({ left: 67, width: 256, bottom: 244 });
 
-    expect(tipPosition(nearLeft, 200, 844)).toEqual({ left: 8, width: 184, top: 124 });
+    expect(tipPosition(nearLeft, 200, 844)).toEqual({ left: 8, width: 184, top: 120 });
+  });
+
+  it("leaves no gap between the button's hover area and the explanation", () => {
+    // The pointer must reach the explanation without leaving the control,
+    // or pointerleave hides it (WCAG 1.4.13, hoverable).
+    const trigger = { left: 100, width: 44, top: 100, bottom: 144 };
+    expect(tipPosition(trigger, 1280, 800)).toMatchObject({ top: trigger.bottom });
+    const lower = { left: 100, width: 44, top: 600, bottom: 644 };
+    expect(tipPosition(lower, 1280, 800)).toMatchObject({ bottom: 800 - lower.top });
   });
 });

@@ -1157,7 +1157,8 @@
   "participationScore": {
     "name": "Participation Score",
     "helpLabel": "About Participation Score",
-    "help": "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable."
+    "help": "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
+    "purchaseAtConfirm": "Score top-up at confirm (kept as balance)"
   },
   "sort": {
     "label": "Sort markets",

@@ -24,6 +24,7 @@ const SCORE_KEYS = [
   "participationScore.name",
   "participationScore.helpLabel",
   "participationScore.help",
+  "participationScore.purchaseAtConfirm",
   "trade.scoreTopUpCancelled",
   "trade.scoreTopUpRequired",
   "trade.scoreRecoveryUnavailable",
@@ -56,7 +57,9 @@ describe("Participation Score copy", () => {
     ["ja", ja],
   ] as const)("%s names the term Participation Score in every Score string", (_locale, cat) => {
     expect(lookup(cat, "participationScore.name")).toBe("Participation Score");
-    for (const key of SCORE_KEYS.filter((key) => key !== "participationScore.help")) {
+    // These follow the full name on screen, so they use the short form Score.
+    const shortForm = ["participationScore.help", "participationScore.purchaseAtConfirm"];
+    for (const key of SCORE_KEYS.filter((key) => !shortForm.includes(key))) {
       expect(lookup(cat, key), key).toMatch(/Participation Score/);
     }
   });

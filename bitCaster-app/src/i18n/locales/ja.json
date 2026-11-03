@@ -1151,7 +1151,8 @@
   "participationScore": {
     "name": "Participation Score",
     "helpLabel": "Participation Score について",
-    "help": "スパム対策の手数料です。注文板を使う注文には、bitCaster が数 sats 分の Score を請求します。返金はできません。"
+    "help": "スパム対策の手数料です。注文板を使う注文には、bitCaster が数 sats 分の Score を請求します。返金はできません。",
+    "purchaseAtConfirm": "確認時の Score チャージ（残高として保持）"
   },
   "sort": {
     "label": "マーケットの並び替え",
