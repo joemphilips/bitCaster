@@ -9,7 +9,7 @@ import {
 import { splitMarketId } from "@/lib/orderStatus";
 import { portfolioClosedPositionHref } from "@/lib/portfolioRoute";
 import { formatTimeAgo } from "@/lib/format";
-import { formatAmount } from "@/lib/formatAmount";
+import { formatNotificationText } from "@/lib/notificationText";
 
 interface NotificationBellProps {
   /** Called when the user picks a notification — parent handles routing. */
@@ -137,7 +137,7 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                         <NotificationIcon kind={n.kind} />
                         <div className="flex-1 min-w-0">
                           <div className="text-sm text-slate-900 dark:text-slate-100">
-                            {formatNotification(n, t)}
+                            {formatNotificationText(n, t)}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                             {formatTimeAgo(n.occurredAt)}
@@ -196,55 +196,4 @@ function notificationHref(n: Notification): string | null {
       return parts ? `/markets/${parts.conditionId}` : null;
     }
   }
-}
-
-function formatNotification(
-  n: Notification,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  const parts = splitMarketId(n.marketId);
-  const marketLabel = parts ? parts.outcomeName : n.marketId;
-  const filled = n.filledAmountSubunits ?? n.filledAmountSats ?? 0;
-  const remaining = n.remainingAmountSubunits ?? n.remainingAmountSats ?? 0;
-  if (n.kind === "accepted") {
-    return t("notification.accepted", { market: marketLabel });
-  }
-  if (n.kind === "Filled") {
-    return t("notification.filled", { amount: formatAmount(filled, n.unit), market: marketLabel });
-  }
-  if (n.kind === "partially_filled") {
-    return t("notification.partiallyFilled", {
-      amount: formatAmount(filled, n.unit),
-      remaining: formatAmount(remaining, n.unit),
-      market: marketLabel,
-    });
-  }
-  if (n.kind === "Matched") {
-    return t("notification.matched", { amount: formatAmount(filled, n.unit), market: marketLabel });
-  }
-  if (n.kind === "market_closed") {
-    // Entries stored before titles were kept hold only the bare condition ID.
-    return n.marketTitle
-      ? t("notification.marketClosed", { market: n.marketTitle })
-      : t("notification.marketClosedTitle");
-  }
-  if (n.kind === "position_won") {
-    return t("notification.positionWon", { market: n.marketTitle ?? marketLabel });
-  }
-  if (n.kind === "position_lost") {
-    return t("notification.positionLost", { market: n.marketTitle ?? marketLabel });
-  }
-  if (n.kind === "cancelled") {
-    return t("notification.cancelled", { market: marketLabel });
-  }
-  if (n.kind === "expired") {
-    return t("notification.expired", { market: marketLabel });
-  }
-  if (n.kind === "evicted_capacity") {
-    return t("notification.evictedCapacity", { market: marketLabel });
-  }
-  if (n.kind === "rejected_capacity") {
-    return t("notification.rejectedCapacity", { market: marketLabel });
-  }
-  return t("notification.failed", { market: marketLabel });
 }

@@ -148,18 +148,71 @@ describe("NotificationBell language", () => {
 describe("NotificationBell order failures", () => {
   it("does not describe a failed order as cancelled", () => {
     useNotificationsStore.getState().add({
-      ...persistedBareMarketClosed(),
+      ...orderNotice("Failed", 0, 1_000),
       id: "order-1-failed",
-      kind: "Failed",
-      orderId: "order-1",
-      marketId: `${COND}-Alice`,
     });
     let navigated: string | null = null;
 
     openBell((href) => (navigated = href));
-    fireEvent.click(screen.getByText(/Order failed on Alice/i));
+    fireEvent.click(screen.getByText(`Order failed on “${TITLE}”`));
 
     expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
     expect(navigated).toBe(`/markets/${COND}`);
+  });
+});
+
+/** An order entry as the order builders store it: share face subunits and D = 1,000. */
+function orderNotice(
+  kind: Notification["kind"],
+  filledAmountSubunits: number,
+  remainingAmountSubunits: number,
+): Notification {
+  return {
+    id: `order-1-${kind}-${remainingAmountSubunits}`,
+    kind,
+    orderId: "order-1",
+    // A No order on a Yes/No market uses the Yes route with the complement token.
+    marketId: `${COND}-Yes`,
+    filledAmountSubunits,
+    remainingAmountSubunits,
+    unit: "sat",
+    divisibility: 1_000,
+    marketTitle: TITLE,
+    occurredAt: Date.now(),
+    read: false,
+  };
+}
+
+describe("NotificationBell order notices", () => {
+  it("counts shares, not sats, and names the market", () => {
+    useNotificationsStore.getState().add(orderNotice("accepted", 0, 1_000_000));
+    useNotificationsStore.getState().add(orderNotice("Matched", 1_000_000, 0));
+    useNotificationsStore.getState().add(orderNotice("partially_filled", 400_000, 600_000));
+    useNotificationsStore.getState().add(orderNotice("Filled", 1_000, 0));
+
+    openBell();
+
+    expect(screen.getByText(`Order accepted on “${TITLE}”`)).toBeInTheDocument();
+    expect(
+      screen.getByText(`Order matched: 1,000 shares reserved on “${TITLE}”`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`Partial fill: 400 shares filled on “${TITLE}”, 600 shares remaining`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(`Order filled: 1 share on “${TITLE}”`)).toBeInTheDocument();
+    expect(screen.queryByText(/sats|on Yes/)).not.toBeInTheDocument();
+  });
+
+  it("shows the Japanese order text with the market title and share count", async () => {
+    await i18n.changeLanguage("ja");
+    useNotificationsStore.getState().add(orderNotice("Matched", 1_000_000, 0));
+    useNotificationsStore.getState().add(orderNotice("cancelled", 0, 1_000));
+
+    openBell();
+
+    expect(
+      screen.getByText(`注文がマッチしました: 「${TITLE}」で 1,000 枚 予約済み`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(`「${TITLE}」の注文がキャンセルされました`)).toBeInTheDocument();
   });
 });

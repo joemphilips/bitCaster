@@ -15,6 +15,7 @@ describe("one bell entry for each order transition", () => {
     baseAsset: "sat" as const,
     divisibility: 1_000 as const,
     amountSubunits: 10_000,
+    marketTitle: "Will it rain?",
   };
 
   beforeEach(() => {
@@ -34,6 +35,8 @@ describe("one bell entry for each order transition", () => {
         add,
         orderId,
         marketId: trade.marketId,
+        marketTitle: trade.marketTitle,
+        divisibility: trade.divisibility,
         requestedAmountSubunits: trade.amountSubunits,
         remainingAmountSubunits,
         fillCount: 1,
@@ -63,6 +66,44 @@ describe("one bell entry for each order transition", () => {
       expect(items.filter((item) => item.kind === "accepted")).toHaveLength(1);
     },
   );
+
+  // The bell counts shares with the denominator and quotes the market title.
+  it("keeps the market title and share denominator on every order entry", () => {
+    const add = useNotificationsStore.getState().add;
+    addOrderSubmitNotifications({
+      add,
+      orderId,
+      marketId: trade.marketId,
+      marketTitle: trade.marketTitle,
+      divisibility: trade.divisibility,
+      requestedAmountSubunits: trade.amountSubunits,
+      remainingAmountSubunits: 0,
+      fillCount: 1,
+      status: "matched",
+      now: 1,
+    });
+    for (const notification of [
+      ...buildOrderLifecycleNotifications("filled", 0, trade, 2),
+      ...buildOrderStatusNotifications(
+        {
+          status: "partially_filled",
+          remainingAmountSubunits: 4_000,
+          filledAmountSubunits: 6_000,
+        } as OrderStatusResponse,
+        trade,
+        3,
+      ),
+    ])
+      add(notification);
+
+    const items = useNotificationsStore.getState().items;
+    expect(items.map((item) => item.kind).sort()).toEqual(
+      ["Filled", "Matched", "accepted", "partially_filled"].sort(),
+    );
+    for (const item of items) {
+      expect(item).toMatchObject({ marketTitle: "Will it rain?", divisibility: 1_000 });
+    }
+  });
 });
 
 describe("addOrderSubmitNotifications", () => {
@@ -73,6 +114,8 @@ describe("addOrderSubmitNotifications", () => {
       add,
       orderId: "order-1",
       marketId: "cond-YES",
+      marketTitle: "Will it rain?",
+      divisibility: 1_000,
       requestedAmountSubunits: 100,
       remainingAmountSubunits: 0,
       fillCount: 1,
@@ -97,6 +140,8 @@ describe("addOrderSubmitNotifications", () => {
       add,
       orderId: "order-1",
       marketId: "cond-YES",
+      marketTitle: "Will it rain?",
+      divisibility: 1_000,
       requestedAmountSubunits: 200,
       remainingAmountSubunits: 100,
       fillCount: 1,
@@ -121,6 +166,8 @@ describe("addOrderSubmitNotifications", () => {
       add,
       orderId: "order-1",
       marketId: "cond-YES",
+      marketTitle: "Will it rain?",
+      divisibility: 1_000,
       requestedAmountSubunits: 100,
       remainingAmountSubunits: 0,
       fillCount: 1,
@@ -146,6 +193,8 @@ describe("addOrderSubmitNotifications", () => {
       add,
       orderId: "order-1",
       marketId: "cond-YES",
+      marketTitle: "Will it rain?",
+      divisibility: 1_000,
       requestedAmountSubunits: 200,
       remainingAmountSubunits: 200,
       fillCount: 0,

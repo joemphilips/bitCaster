@@ -2,8 +2,10 @@ import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import i18n from "@/i18n";
 import { useNotificationsStore } from "@/stores/notifications";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useToastStore } from "@/stores/toast";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 import type { OrderStatusResponse } from "@/lib/orderStatus";
@@ -661,6 +663,49 @@ describe("useOrderSettlementLifecycle", () => {
       expect(mockRecover).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["en", "Order filled: 10 shares on “Will it rain?”"],
+    ["ja", "注文が約定しました: 「Will it rain?」で 10 枚"],
+  ])("announces a filled order in %s with its market and share count", async (language, text) => {
+    await i18n.changeLanguage(language);
+    useToastStore.setState({ toasts: [] });
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    usePendingTradesStore.getState().add({
+      orderId,
+      walletId,
+      clientOrderId: "client-order-1",
+      marketId: "condition-Yes",
+      marketTitle: "Will it rain?",
+      baseAsset: "sat",
+      divisibility: 1_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+    try {
+      renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+      act(() =>
+        callbacks.onOrderLifecycleChanged({
+          orderId,
+          marketId: "condition-Yes",
+          status: "filled",
+          remainingAmountSubunits: 0,
+          baseAsset: "sat",
+          collateralUnit: "msat",
+          divisibility: 1_000,
+          activeSettlementGroup: null,
+        }),
+      );
+
+      expect(useToastStore.getState().toasts.map(({ type, message }) => [type, message])).toEqual([
+        ["success", text],
+      ]);
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
 
   it("does not join or mutate a pending order owned by another wallet", async () => {
     const orderId = "other-wallet-order";
