@@ -13,13 +13,16 @@ import {
   MAX_NOSTR_RECENT_NOTES,
   parseNostrPublicKey,
   readNostrProfilePage,
+  safeNostrDataImageUrl,
   safeNostrHttpUrl,
   safeNostrImageUrl,
+  safeNostrProfilePictureUrl,
   sanitizeNostrDisplayText,
   selectPublicNostrProfileRelays,
   type NostrBoundedRelayQuery,
 } from '../src/nostrProfilePage.ts'
 import {
+  MAX_NOSTR_PROFILE_CONTENT_BYTES,
   MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
   NostrRelayFrameTooLargeError,
 } from '../src/nostrProfile.ts'
@@ -148,6 +151,124 @@ test('profile image URLs accept only https', () => {
     assert.equal(safeNostrImageUrl(value), null, value)
 })
 
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+const SVG_ENCODED =
+  '%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%201%201%22%2F%3E'
+
+test('profile picture data URIs accept the five image types in base64 or URL-encoded form', () => {
+  for (const value of [
+    `data:image/png;base64,${PNG_BASE64}`,
+    'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+    'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+    'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==',
+    'data:image/svg+xml;base64,PHN2Zy8+',
+    `data:image/svg+xml,${SVG_ENCODED}`,
+    "data:image/svg+xml,%3Csvg%20fill='red'%2F%3E;-_.!~*()/?:@&=+$,",
+  ]) {
+    assert.equal(safeNostrDataImageUrl(value), value, value.slice(0, 40))
+    assert.equal(safeNostrProfilePictureUrl(value), value, value.slice(0, 40))
+  }
+})
+
+test('profile picture data URIs normalize case and surrounding whitespace once', () => {
+  assert.equal(
+    safeNostrDataImageUrl(`DATA:IMAGE/PNG;BASE64,${PNG_BASE64}`),
+    `data:image/png;base64,${PNG_BASE64}`,
+  )
+  assert.equal(
+    safeNostrDataImageUrl(`Data:Image/SVG+XML,${SVG_ENCODED}`),
+    `data:image/svg+xml,${SVG_ENCODED}`,
+  )
+  assert.equal(
+    safeNostrDataImageUrl(' \tdata:image/gif;Base64,R0lGODlhAQABAAAAACw=\n '),
+    'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+  )
+  // The data is case-sensitive, so it stays as the profile wrote it.
+  assert.equal(safeNostrDataImageUrl('data:image/png;base64,AbCd'), 'data:image/png;base64,AbCd')
+  const canonical = safeNostrDataImageUrl(`DATA:IMAGE/WEBP;BASE64,${PNG_BASE64}`)
+  assert.equal(canonical, `data:image/webp;base64,${PNG_BASE64}`)
+  assert.equal(safeNostrDataImageUrl(canonical), canonical)
+})
+
+test('profile picture data URIs refuse other types, parameters and malformed data', () => {
+  for (const value of [
+    'data:text/html,%3Cscript%3Ealert(1)%3C%2Fscript%3E',
+    'data:text/html;base64,PHNjcmlwdD4=',
+    'DATA:TEXT/HTML;BASE64,PHNjcmlwdD4=',
+    'data:application/xhtml+xml;base64,PHN2Zy8+',
+    'data:image/bmp;base64,Qk0=',
+    'data:image/svg;base64,PHN2Zy8+',
+    'data:image/x-icon;base64,AAAA',
+    'data:image/avif;base64,AAAA',
+    'data:image/pngx;base64,AAAA',
+    'data:image/png+xml;base64,AAAA',
+    'data:,AAAA',
+    'data:;base64,AAAA',
+    'data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E',
+    'data:image/svg+xml;utf8,%3Csvg%2F%3E',
+    'data:image/png;base64',
+    'data:image/png',
+    'data:image/png;base64,',
+    'data:image/png,',
+    'data:image/png;base64,AAA',
+    'data:image/png;base64,AA=A',
+    'data:image/png;base64,A===',
+    'data:image/png;base64,AA%3D',
+    'data:image/png;base64,AA AA',
+    'data:image/png;base64,AA\nAA',
+    'data:image/svg+xml,<svg onload=alert(1)>',
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+    'data:image/svg+xml,%3Csvg%2F%3E#fragment',
+    'data:image/svg+xml,%3Csvg"%2F%3E',
+    'data:image/svg+xml,%zz',
+    'data:image/svg+xml,%3',
+    'data:image/svg+xml,%3Csvg%2F%3E‮',
+    'data: image/png;base64,AAAA',
+    'data:image/png ;base64,AAAA',
+    'data:image/png;base64 ,AAAA',
+    'data:image/png; base64,AAAA',
+    'data :image/png;base64,AAAA',
+    'javascript:alert(1)',
+    'JaVaScRiPt:alert(1)',
+    'vbscript:msgbox',
+    'blob:https://img.example/0b1d',
+    'file:///etc/passwd',
+    'http://img.example/a.png',
+    42,
+    null,
+    undefined,
+    {},
+  ]) {
+    assert.equal(safeNostrDataImageUrl(value), null, String(value).slice(0, 40))
+    assert.equal(safeNostrProfilePictureUrl(value), null, String(value).slice(0, 40))
+  }
+})
+
+test('profile picture data URIs are bounded by the profile content bound', () => {
+  const prefix = 'data:image/svg+xml,'
+  const atBound = `${prefix}${'a'.repeat(MAX_NOSTR_PROFILE_CONTENT_BYTES - prefix.length)}`
+  assert.equal(atBound.length, 65_536)
+  assert.equal(safeNostrDataImageUrl(atBound), atBound)
+  assert.equal(safeNostrDataImageUrl(`${atBound}a`), null)
+  assert.equal(safeNostrProfilePictureUrl(`${atBound}a`), null)
+})
+
+test('profile pictures keep the https image rule for URLs', () => {
+  assert.equal(
+    safeNostrProfilePictureUrl(' https://IMG.example/a.png '),
+    'https://img.example/a.png',
+  )
+  for (const value of [
+    'http://img.example/a.png',
+    'https://localhost/a.png',
+    'https://10.0.0.1/a.png',
+    'https://user:pass@img.example/a.png',
+    `https://img.example/${'a'.repeat(2_048)}`,
+  ])
+    assert.equal(safeNostrProfilePictureUrl(value), null, value.slice(0, 40))
+})
+
 test('public profile reads use at most the first three normalized relays', () => {
   assert.deepEqual(
     selectPublicNostrProfileRelays([
@@ -232,6 +353,25 @@ test('profile page images load only over https and the website link can use http
   assert.equal(result.metadata.picture, 'https://img.example/fallback.png')
   assert.equal(result.metadata.banner, null)
   assert.equal(result.metadata.website, 'http://alice.example/')
+})
+
+test('profile page pictures can be data image URIs, but banners cannot', async () => {
+  const picture = `DATA:IMAGE/SVG+XML,${SVG_ENCODED}`
+  const read = async (metadata: Record<string, unknown>) => {
+    const { query } = relayQuery({ [relays[0]!]: [signed(0, JSON.stringify(metadata), 10)] })
+    const { metadata: result } = await readPage(query, [relays[0]!])
+    assert.ok(result.status === 'found')
+    return result.metadata
+  }
+  const page = await read({ display_name: 'alice', picture, banner: picture })
+  assert.equal(page.displayName, 'alice')
+  assert.equal(page.picture, `data:image/svg+xml,${SVG_ENCODED}`)
+  assert.equal(page.banner, null)
+  const fallback = await read({
+    picture: 'data:text/html;base64,PHNjcmlwdD4=',
+    image: `data:image/png;base64,${PNG_BASE64}`,
+  })
+  assert.equal(fallback.picture, `data:image/png;base64,${PNG_BASE64}`)
 })
 
 test('profile page names that hold only invisible characters fall back or stay empty', async () => {

@@ -17,7 +17,7 @@ import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
   parseNostrPublicKey,
-  safeNostrImageUrl,
+  safeNostrProfilePictureUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import { InlineAmount } from "@/components/shared/InlineAmount";
@@ -117,9 +117,11 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
   const creatorHex = parseNostrPublicKey(market.creator.id);
-  // A kind-0 picture names a host that the oracle chose. Load only https without a referrer.
+  // A kind-0 picture names a host that the oracle chose. Load only https without a
+  // referrer, or an embedded data image.
   const oracleAvatar =
-    safeNostrImageUrl(oracleProfile?.avatar) ?? safeNostrImageUrl(market.creator.avatarUrl);
+    safeNostrProfilePictureUrl(oracleProfile?.avatar) ??
+    safeNostrProfilePictureUrl(market.creator.avatarUrl);
   // An empty sanitized name has no visible character, so the label falls back to the key.
   const oracleName = sanitizeNostrDisplayText(
     oracleProfile?.displayName,

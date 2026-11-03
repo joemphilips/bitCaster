@@ -13,6 +13,7 @@ import {
   type BrowserProfileImageReceipt,
 } from "@/lib/browserNostrProfileMedia";
 import { assertNever } from "@/lib/enumDiscipline";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 
 export interface NostrProfileEditorProps {
   readonly upload?: typeof uploadBrowserNostrProfileImage;
@@ -201,6 +202,7 @@ export function NostrProfileEditor({
       }
     }
   };
+  const picturePreview = ownProfileImageUrl(draft.picture);
 
   return (
     <>
@@ -251,9 +253,10 @@ export function NostrProfileEditor({
                       void uploadImage(event.dataTransfer.files[0]!);
                     }}
                   >
-                    {draft.picture.startsWith("https://") && (
+                    {/* The preview follows the rule of the own profile card. */}
+                    {picturePreview && (
                       <img
-                        src={draft.picture}
+                        src={picturePreview}
                         alt={t("settings.profileImagePreview")}
                         referrerPolicy="no-referrer"
                         className="mb-2 h-16 w-16 rounded-full object-cover"

@@ -111,6 +111,51 @@ it("resolves only visible authors and renders public names as text", async () =>
   expect(document.querySelector("script,img")).toBeNull();
 });
 
+it.each([
+  ["data:image/gif;base64,R0lGODlhAQABAAAAACw=", true],
+  ["https://img.example/alice.png", true],
+  ["data:text/html;base64,PHNjcmlwdD4=", false],
+  ["https://printer.local/alice.png", false],
+])(
+  "loads the public comment avatar %s only by the profile picture rule",
+  async (avatar, loaded) => {
+    let enter!: IntersectionObserverCallback;
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          enter = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    fetchProfile.mockResolvedValue({ pubkey: "a".repeat(64), displayName: "Alice", avatar });
+    render(
+      <CommentSection
+        comments={[
+          {
+            id: "comment",
+            userId: "a".repeat(64),
+            userDisplayName: "aaaaaaaa…aaaaaaaa",
+            timestamp: "2026-05-25T10:00:00Z",
+            content: "Body",
+            trade: null,
+            likeCount: 0,
+            isLiked: false,
+          },
+        ]}
+      />,
+    );
+    await act(async () =>
+      enter([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver),
+    );
+    expect(await screen.findByText("Alice")).toBeVisible();
+    if (loaded) expect(screen.getByRole("img", { name: "Alice" })).toHaveAttribute("src", avatar);
+    else expect(document.querySelector("img")).toBeNull();
+  },
+);
+
 it("constrains long names while keeping their accessible text and replaces failed avatars", () => {
   const name = "A".repeat(65536);
   render(

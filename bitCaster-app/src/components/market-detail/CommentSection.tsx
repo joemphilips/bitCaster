@@ -4,6 +4,7 @@ import { ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Comment } from "@/types/market-detail";
 import { formatTimeAgo } from "@/lib/format";
+import { safeNostrProfilePictureUrl } from "@bitcaster/client-sdk/nostrProfilePage";
 
 interface CommentSectionProps {
   comments: Comment[];
@@ -23,8 +24,8 @@ function CommentRow({ comment }: { comment: Comment }) {
   }, []);
   const profile = usePublicCommentProfiles(visible ? [comment.userId] : []).get(comment.userId);
   const name = profile?.displayName.trim() || comment.userDisplayName;
-  const avatar = profile?.avatar || comment.userAvatarUrl;
-  const safeAvatar = avatar?.startsWith("https://") ? avatar : undefined;
+  const safeAvatar =
+    safeNostrProfilePictureUrl(profile?.avatar || comment.userAvatarUrl) ?? undefined;
   const [failedAvatar, setFailedAvatar] = useState<string>();
   return (
     <div

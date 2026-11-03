@@ -312,6 +312,24 @@ describe("UserPage", () => {
     );
   });
 
+  it("shows a data image picture as an image source and no data banner", async () => {
+    const picture =
+      "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
+    serve(relays[0]!, [
+      profileEvent({
+        display_name: "alice",
+        picture: ` DATA:IMAGE/SVG+XML,${picture.slice(19)}`,
+        banner: picture,
+      }),
+    ]);
+    const { container } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "alice" })).toBeInTheDocument();
+    expect(screen.getByTestId("profile-picture")).toHaveAttribute("src", picture);
+    expect(screen.queryByTestId("profile-banner")).not.toBeInTheDocument();
+    expect(container.querySelector("object, iframe, embed")).toBeNull();
+  });
+
   it("clamps a long description on a narrow screen until the user opens it", async () => {
     const user = userEvent.setup();
     const about = Array.from({ length: 12 }, (_, line) => `Line ${line + 1} of the policy.`).join(

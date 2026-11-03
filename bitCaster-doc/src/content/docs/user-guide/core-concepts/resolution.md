@@ -45,7 +45,9 @@ The selected relays also receive the key of each profile that you open.
 The bitCaster engine also receives the key to list the markets created by it.
 Primal runs one of the default relays. The setting stops only the indexer
 request, not the relay requests. The browser loads the images and the NIP-05
-check from the hosts that the profile names. The relays, the indexer and
+check from the hosts that the profile names. It contacts no host for a PNG,
+JPEG, GIF, WebP, or SVG picture that the profile embeds as a `data:` URI. The
+page does not show other `data:` content. The relays, the indexer and
 these hosts see your IP address and the profile that you open. A long
 history and real followers help you judge the identity. They do not prove
 that a result is true.

@@ -215,6 +215,8 @@ side to at most 1024 pixels and re-encodes the image without its original metada
 The upload goes to the public nostr.build service with your Nostr signer.
 Uploading does not publish the profile. Choose **Save profile** to publish its URL.
 You can still enter an existing HTTPS image URL instead.
+The card also shows a PNG, JPEG, GIF, WebP, or SVG picture that the profile
+embeds as a `data:` URI. Other `data:` content does not appear.
 
 Keep this editor open to retry a failed profile publication without uploading the
 image again. Cancel an upload or choose another image if needed. A signer change

@@ -184,6 +184,28 @@ describe("profile image interaction", () => {
     drop();
     await waitFor(() => expect(f.upload).toHaveBeenCalledTimes(2));
   });
+  it("previews a loaded data image picture only as an image source", async () => {
+    const picture =
+      "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
+    const { container } = render(
+      <NostrProfileEditor
+        load={vi.fn().mockResolvedValue({
+          ...baseline,
+          fields: { name: "joemphilips", about: "", picture },
+        })}
+        save={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("joemphilips"));
+    expect(screen.getByLabelText("Picture URL")).toHaveValue(picture);
+    expect(screen.getByAltText("Profile image preview")).toHaveAttribute("src", picture);
+    expect(container.querySelector("object, iframe, embed")).toBeNull();
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    for (const refused of ["data:text/html;base64,PHNjcmlwdD4=", "javascript:alert(1)"]) {
+      fireEvent.change(screen.getByLabelText("Picture URL"), { target: { value: refused } });
+      expect(screen.queryByAltText("Profile image preview")).toBeNull();
+    }
+  });
   it("retains uploaded receipt for publication retry without uploading twice", async () => {
     const receipt = imageReceipt();
     const save = vi

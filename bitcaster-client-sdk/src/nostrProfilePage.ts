@@ -170,6 +170,35 @@ export function safeNostrImageUrl(value: unknown): string | null {
   return safeNostrUrl(value, ['https:'])
 }
 
+// RFC 2397 without media type parameters, for the five accepted image types.
+const DATA_IMAGE_URL = /^data:(image\/(?:png|jpeg|gif|webp|svg\+xml))(;base64)?,(.+)$/i
+// RFC 2045 base64 with padding.
+const BASE64_DATA = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+// RFC 2396 URL characters and percent escapes. Space, quotes, `<`, `>` and `#` are refused.
+const URL_ENCODED_DATA = /^(?:[A-Za-z0-9\-_.!~*'();/?:@&=+$,]|%[0-9A-Fa-f]{2})+$/
+
+/**
+ * A `data:` URI of a PNG, JPEG, GIF, WebP or SVG image, or null. The URI is at
+ * most the profile content bound. The scheme, the media type and `;base64` are
+ * returned in lowercase. Render the result only as an `<img>` source: an image
+ * document cannot run script or load another resource. Never insert SVG markup.
+ */
+export function safeNostrDataImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const input = value.trim()
+  if (input.length > MAX_NOSTR_PROFILE_CONTENT_BYTES) return null
+  const match = DATA_IMAGE_URL.exec(input)
+  if (!match) return null
+  const [, type, base64, data] = match
+  if (!(base64 ? BASE64_DATA : URL_ENCODED_DATA).test(data!)) return null
+  return `data:${type!.toLowerCase()}${base64 ? ';base64' : ''},${data}`
+}
+
+/** A profile picture by the https image rule, or an accepted `data:` image URI. */
+export function safeNostrProfilePictureUrl(value: unknown): string | null {
+  return safeNostrImageUrl(value) ?? safeNostrDataImageUrl(value)
+}
+
 export interface NostrProfilePageMetadata {
   readonly name: string
   readonly displayName: string
@@ -202,7 +231,7 @@ function projectProfilePageMetadata(event: Event): NostrProfilePageMetadata | nu
     name: shortName,
     displayName: name('display_name') || name('displayName') || shortName,
     about: sanitizeNostrDisplayText(record.about, MAX_NOSTR_PROFILE_ABOUT_CHARACTERS),
-    picture: safeNostrImageUrl(record.picture) ?? safeNostrImageUrl(record.image),
+    picture: safeNostrProfilePictureUrl(record.picture) ?? safeNostrProfilePictureUrl(record.image),
     banner: safeNostrImageUrl(record.banner),
     website: safeNostrHttpUrl(record.website),
     nip05: sanitizeNostrDisplayText(record.nip05, MAX_NOSTR_PROFILE_NIP05_CHARACTERS, {
