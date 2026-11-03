@@ -41,10 +41,10 @@ bitcaster-cli --help
 Windows ではまだ注文を送信できません。
 
 CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
-利用するサービスのエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
+bitCaster のエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
 
 ```bash
-bitcaster-cli config set --engine-url <engine-url> --mint-url <mint-url>
+bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```

@@ -39,11 +39,11 @@ bitcaster-cli --help
 `npm ci` installs the dependencies and builds the CLI. `npm link` puts `bitcaster-cli` in the global
 bin directory of npm. Order submission does not work on Windows yet.
 
-The CLI defaults to a local development engine and mint. Set the engine URL and mint URL of the
-service that you use. Then create the wallet profile:
+The CLI defaults to a local development engine and mint. Set the bitCaster engine URL and mint
+URL. Then create the wallet profile:
 
 ```bash
-bitcaster-cli config set --engine-url <engine-url> --mint-url <mint-url>
+bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```
