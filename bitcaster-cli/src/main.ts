@@ -56,11 +56,24 @@ import {
   daemonLogPath,
   DaemonNotReachableError,
   isNetworkFailure,
+  preventDaemonAutoStart,
   restartDaemon,
   stopDaemon,
   watchDaemonToOutput,
 } from './rpc.ts'
-import { configFilePath, readConfig, updateConfig } from './config.ts'
+import {
+  applyDryRunModes,
+  commandPath,
+  DRY_RUN_PROGRAM_HELP,
+  dryRunRefusal,
+} from './dryRunPolicy.ts'
+import {
+  configFilePath,
+  previewConfigUpdate,
+  readConfig,
+  updateConfig,
+  type CliConfig,
+} from './config.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
 import {
@@ -129,9 +142,10 @@ async function main(): Promise<void> {
     .description('Command-line client for bitCaster markets.')
     .version(packageJson.version ?? '0.0.0', '-V, --version')
     .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
-    .option('--dry-run', 'Validate and print the intended operation without executing it')
+    .option('--dry-run', 'Check a command without acting; see "Dry run" below')
     .option('--json', 'Print JSON output (currently the default)')
     .addHelpText('after', '\nLong-running wallet operations are delegated to bitcaster-daemon.')
+    .addHelpText('after', DRY_RUN_PROGRAM_HELP)
     .exitOverride()
     .configureOutput({
       writeOut: (str) => process.stdout.write(str),
@@ -146,8 +160,16 @@ async function main(): Promise<void> {
       json?: boolean
     }>()
     configureDataDir(opts.datadir)
-    globalDryRun = opts.dryRun === true
+    // The program option normally consumes every --dry-run. Also honor a
+    // subcommand copy, so that the guard does not depend on parse position.
+    globalDryRun =
+      opts.dryRun === true || actionCommand.opts<{ dryRun?: boolean }>().dryRun === true
     globalJson = opts.json === true
+    if (globalDryRun) {
+      const refusal = dryRunRefusal(actionCommand)
+      if (refusal !== null) throwUsage(refusal)
+      preventDaemonAutoStart()
+    }
     if (
       globalDryRun &&
       actionCommand.name() === 'profile' &&
@@ -166,6 +188,7 @@ async function main(): Promise<void> {
   registerCommands(program)
 
   try {
+    applyDryRunModes(program)
     await program.parseAsync(process.argv)
   } catch (err) {
     if (err instanceof CommanderError) {
@@ -186,11 +209,7 @@ async function main(): Promise<void> {
 }
 
 function commandAllowsMissingConfig(command: Command): boolean {
-  const names: string[] = []
-  for (let current: Command | null = command; current?.parent; current = current.parent) {
-    names.unshift(current.name())
-  }
-  const path = names.join(' ')
+  const path = commandPath(command)
   return (
     path === 'completion' ||
     path === 'config path' ||
@@ -514,6 +533,18 @@ function registerMarketCommand(program: Command): Command {
       '\nIf the result is uncertain, use the reported attempt id with `market fund resume` before starting another payment.',
     )
     .action(async (conditionId: string, options: MarketFundingBeginOptions) => {
+      if (globalDryRun) {
+        // The real run creates the attempt ID and reads the funding head first.
+        printDryRun({
+          method: 'market.fund',
+          params: {
+            conditionId,
+            attempt: { kind: 'begin', requestedAmount: String(options.amountMsat) },
+            maxWalletDebitMsat: options.maxWalletDebitMsat,
+          },
+        })
+        return
+      }
       await beginMarketFunding(conditionId, options)
     })
 
@@ -521,6 +552,13 @@ function registerMarketCommand(program: Command): Command {
     .command('resume <conditionId> <transferId>')
     .description('Resume the exact persisted funding transfer without creating a new payment.')
     .action(async (conditionId: string, transferId: string) => {
+      if (globalDryRun) {
+        printDryRun({
+          method: 'market.fund',
+          params: { conditionId, attempt: { kind: 'resume', transferId } },
+        })
+        return
+      }
       await resumeMarketFunding(conditionId, transferId)
     })
 
@@ -616,7 +654,7 @@ function registerMarketCommand(program: Command): Command {
         throwUsage('Native creation options require --creation-id.')
       }
 
-      // Keep the existing condition-ID path and its trust/dry-run behavior unchanged.
+      // Keep the existing condition-ID path: check trust before the dry-run result.
       await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
       const params: MarketCreateParams = {
         conditionId: options.conditionId,
@@ -726,12 +764,15 @@ function registerMarketCommand(program: Command): Command {
     .requiredOption('--event-id <id>', 'Exact encrypted backup event ID')
     .requiredOption('--relay <url>', 'Source relay URL')
     .action(async (options: { eventId: string; relay: string }) => {
-      await printDaemonResult(
-        callDaemon({
-          method: 'market.oracle-backup-restore',
-          params: { eventId: options.eventId, relay: options.relay },
-        }),
-      )
+      const command = {
+        method: 'market.oracle-backup-restore' as const,
+        params: { eventId: options.eventId, relay: options.relay },
+      }
+      if (globalDryRun) {
+        printDryRun(command)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
     })
   market
     .command('oracle-backup-status [conditionId]')
@@ -780,17 +821,23 @@ function registerMarketCommand(program: Command): Command {
       'Retry saved backup bytes, or prepare a pending backup with its matching local key.',
     )
     .action(async (conditionId: string) => {
-      await printDaemonResult(
-        callDaemon({ method: 'market.oracle-backup-retry', params: { conditionId } }),
-      )
+      const command = { method: 'market.oracle-backup-retry' as const, params: { conditionId } }
+      if (globalDryRun) {
+        printDryRun(command)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
     })
   market
     .command('announcement-republish <conditionId>')
     .description('Republish the exact saved public oracle announcement to its original relays.')
     .action(async (conditionId: string) => {
-      await printDaemonResult(
-        callDaemon({ method: 'market.announcement-republish', params: { conditionId } }),
-      )
+      const command = { method: 'market.announcement-republish' as const, params: { conditionId } }
+      if (globalDryRun) {
+        printDryRun(command)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
     })
 
   market
@@ -1595,19 +1642,22 @@ function registerWalletCommand(program: Command): void {
         throwUsage('wallet receive requires --token-file')
       }
       const importedToken = await readPrivateTokenFile(options.tokenFile)
-      const params: {
-        token: string
-        conditionId?: string
-        outcomeSetId?: string
-      } = { token: importedToken }
-      if (options.conditionId !== undefined) params.conditionId = options.conditionId
-      if (options.outcomeSet !== undefined) params.outcomeSetId = options.outcomeSet
-      if (!!params.conditionId !== !!params.outcomeSetId) {
+      const outcome: { conditionId?: string; outcomeSetId?: string } = {}
+      if (options.conditionId !== undefined) outcome.conditionId = options.conditionId
+      if (options.outcomeSet !== undefined) outcome.outcomeSetId = options.outcomeSet
+      if (!!outcome.conditionId !== !!outcome.outcomeSetId) {
         throwUsage(
           'wallet receive outcome-token imports require both --condition-id and --outcome-set',
         )
       }
-      await printDaemonResult(callDaemon({ method: 'wallet.receive', params }))
+      if (globalDryRun) {
+        // The token is a bearer value. Print only its validated file path.
+        printDryRun({ method: 'wallet.receive', tokenFile: options.tokenFile, params: outcome })
+        return
+      }
+      await printDaemonResult(
+        callDaemon({ method: 'wallet.receive', params: { token: importedToken, ...outcome } }),
+      )
     })
 
   wallet
@@ -1891,6 +1941,10 @@ function registerWalletCommand(program: Command): void {
     .description('Resume or recover incomplete wallet operations.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli wallet recover')
     .action(async () => {
+      if (globalDryRun) {
+        printDryRun({ method: 'wallet.recover' })
+        return
+      }
       await printDaemonResult(callDaemon({ method: 'wallet.recover' }))
     })
 }
@@ -2632,7 +2686,12 @@ function registerOrderCommand(program: Command): void {
     .description('Cancel an open order.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli order cancel <market-id> <order-id>')
     .action(async (marketId: string, orderId: string) => {
-      await printDaemonResult(callDaemon({ method: 'order.cancel', params: { marketId, orderId } }))
+      const command = { method: 'order.cancel' as const, params: { marketId, orderId } }
+      if (globalDryRun) {
+        printDryRun(command)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
     })
 
   order
@@ -3070,12 +3129,17 @@ async function setCliConfig(options: {
 }): Promise<void> {
   const params = daemonConfigParams(options)
   const assetMonitoringEnabled = parseAssetMonitoringOption(options.assetMonitoring)
-  const config = updateConfig((current) => ({
+  const update = (current: CliConfig): CliConfig => ({
     ...current,
     ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
     ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
     ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
-  }))
+  })
+  if (globalDryRun) {
+    printDryRun({ dryRun: true, method: 'config.set', config: previewConfigUpdate(update) })
+    return
+  }
+  const config = updateConfig(update)
   await applySavedSettings()
   process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
 }
@@ -3849,6 +3913,8 @@ async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<vo
       throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
     }
   }
+  // A dry run checks trust like the real run but does not save it.
+  if (globalDryRun) return
   updateConfig((current) => ({
     ...current,
     trustedEngineUrls: Array.from(new Set([...current.trustedEngineUrls, normalizedEngineUrl])),

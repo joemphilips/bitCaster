@@ -51,6 +51,8 @@ const rpcSource = `
   import { join } from 'node:path'
   const record = (value) => appendFileSync(process.env.BITCASTER_TEST_SETTINGS_LOG, JSON.stringify(value) + '\\n')
   export class DaemonNotReachableError extends Error {}
+  // A dry run only sets this flag. It does no daemon I/O.
+  export function preventDaemonAutoStart() {}
   export async function isCliSpawnedDaemonRunning() {
     record({ action: 'running-check' })
     return process.env.BITCASTER_TEST_SETTINGS_RUNNING === '1'

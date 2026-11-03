@@ -1523,7 +1523,8 @@ test('bitcaster-cli config set --engine-url records URL without trusting it', as
   }
 })
 
-test('bitcaster-cli market create --trust-engine-url records URL in trusted engine list', async () => {
+// The real create records trust; see the canonical trusted engine URL test.
+test('bitcaster-cli market create --dry-run --trust-engine-url does not save trust', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-create-trust-list-'))
   const configPath = join(home, 'config.json')
   try {
@@ -1552,9 +1553,7 @@ test('bitcaster-cli market create --trust-engine-url records URL in trusted engi
 
     assert.deepEqual(
       JSON.parse(await readFile(configPath, 'utf8')),
-      nativeConfigFixture('https://engine.example', 'http://localhost:8085', [
-        'https://engine.example',
-      ]),
+      nativeConfigFixture('https://engine.example', 'http://localhost:8085'),
     )
   } finally {
     await rm(home, { recursive: true, force: true })
