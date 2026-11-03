@@ -26,10 +26,13 @@ import {
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import {
   COLLATERAL_UNIT_REGISTRY,
+  cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
+import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCustody";
+import { useActivityLogStore } from "@/stores/activity-log";
 import { getWalletForMnemonicUnit, createUncachedWalletForMnemonicUnit } from "@/stores/wallet";
 import {
   getProofOperation,
@@ -54,13 +57,21 @@ import {
 
 export const BROWSER_BOLT11_MINT_RECOVERY_LIMIT = 64;
 
-/** A visible invoice checks NUT-04 at this interval while NUT-17 is silent. */
+/** A visible invoice checks NUT-04 at this interval, also while NUT-17 works. */
 const VISIBLE_QUOTE_POLL_INTERVAL_MS = 2_000;
 /**
- * A quote without a visible invoice keeps this slower NUT-04 fallback until
- * the quote expires. NUT-17 stays the primary payment signal.
+ * A quote without a visible invoice checks NUT-04 at this interval only while
+ * its NUT-17 subscription is unacknowledged or failed. NUT-17 is the payment
+ * signal. The first check and the final check at expiry always run.
  */
 const BACKGROUND_QUOTE_POLL_INTERVAL_MS = 15_000;
+/** A watch that cannot start, for example while the mint is unreachable, starts again after these delays. */
+const QUOTE_WATCH_START_RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const;
+/**
+ * An expired quote that the mint still reports UNPAID after this grace ends.
+ * The grace covers a payment that the mint accepted just before expiry.
+ */
+const EXPIRED_UNPAID_QUOTE_GRACE_MS = 60_000;
 
 export interface CreateBrowserDurableBolt11MintQuoteInput {
   readonly amount: number;
@@ -91,6 +102,7 @@ interface QuoteWatch {
   readonly listeners: Set<QuoteWatchListener>;
   started: Promise<void>;
   stopWaiter: (() => void) | null;
+  wakePolling: (() => void) | null;
   settling: boolean;
 }
 
@@ -265,6 +277,10 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
   const watched = new Map<string, Promise<() => void>>();
   // Quotes that expired or failed. A new connection retries the failed ones.
   const ended = new Set<string>();
+  const startRetries = new Map<
+    string,
+    { attempt: number; timer: ReturnType<typeof setTimeout> | null }
+  >();
   let rows: readonly BrowserMintQuoteRow[] = [];
   let stopped = false;
   const leave = (quoteRecordId: string) => {
@@ -272,6 +288,24 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
     if (joined === undefined) return;
     watched.delete(quoteRecordId);
     void joined.then((stop) => stop());
+  };
+  const clearStartRetry = (quoteRecordId: string) => {
+    const retry = startRetries.get(quoteRecordId);
+    if (retry?.timer) clearTimeout(retry.timer);
+    startRetries.delete(quoteRecordId);
+  };
+  const scheduleStartRetry = (quoteRecordId: string) => {
+    if (stopped) return;
+    const retry = startRetries.get(quoteRecordId) ?? { attempt: 0, timer: null };
+    const delayMs =
+      QUOTE_WATCH_START_RETRY_DELAYS_MS[retry.attempt] ??
+      QUOTE_WATCH_START_RETRY_DELAYS_MS[QUOTE_WATCH_START_RETRY_DELAYS_MS.length - 1];
+    retry.attempt += 1;
+    retry.timer = setTimeout(() => {
+      retry.timer = null;
+      reconcile();
+    }, delayMs);
+    startRetries.set(quoteRecordId, retry);
   };
   const watch = (quote: DurableBolt11MintQuote) => {
     const quoteRecordId = quote.quoteRecordId;
@@ -282,11 +316,18 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
         // A paid quote leaves the pending rows. It is not watched again.
         if (result.status !== "PAID") ended.add(quoteRecordId);
       },
-    }).catch(() => {
-      if (watched.get(quoteRecordId) === joined) watched.delete(quoteRecordId);
-      ended.add(quoteRecordId);
-      return () => {};
-    });
+    }).then(
+      (leave) => {
+        clearStartRetry(quoteRecordId);
+        return leave;
+      },
+      () => {
+        if (watched.get(quoteRecordId) === joined) watched.delete(quoteRecordId);
+        // The mint can be briefly unreachable. Start again until the quote expires.
+        scheduleStartRetry(quoteRecordId);
+        return () => {};
+      },
+    );
     watched.set(quoteRecordId, joined);
   };
   const reconcile = () => {
@@ -302,10 +343,14 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
       }
       if (ended.has(quote.quoteRecordId) || isExpiredQuote(quote, nowMs)) continue;
       pending.add(quote.quoteRecordId);
-      if (!watched.has(quote.quoteRecordId)) watch(quote);
+      const retryWaiting = startRetries.get(quote.quoteRecordId)?.timer != null;
+      if (!watched.has(quote.quoteRecordId) && !retryWaiting) watch(quote);
     }
     for (const quoteRecordId of [...watched.keys()]) {
       if (!pending.has(quoteRecordId)) leave(quoteRecordId);
+    }
+    for (const quoteRecordId of [...startRetries.keys()]) {
+      if (!pending.has(quoteRecordId)) clearStartRetry(quoteRecordId);
     }
   };
   const subscription = liveQuery(() => watchablePendingQuoteRows(database, scopeId)).subscribe({
@@ -318,6 +363,7 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
   });
   const onOnline = () => {
     ended.clear();
+    for (const quoteRecordId of [...startRetries.keys()]) clearStartRetry(quoteRecordId);
     reconcile();
   };
   if (typeof window !== "undefined") window.addEventListener("online", onOnline);
@@ -326,6 +372,7 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
     subscription.unsubscribe();
     if (typeof window !== "undefined") window.removeEventListener("online", onOnline);
     for (const quoteRecordId of [...watched.keys()]) leave(quoteRecordId);
+    for (const quoteRecordId of [...startRetries.keys()]) clearStartRetry(quoteRecordId);
   };
 }
 
@@ -336,8 +383,13 @@ async function joinQuoteWatch(
 ): Promise<() => void> {
   const key = `${scopeId}\u0000${quote.quoteRecordId}`;
   let watch = quoteWatches.get(key);
-  if (watch === undefined) watch = startQuoteWatch(key, scopeId, quote, listener);
-  else watch.listeners.add(listener);
+  if (watch === undefined) {
+    watch = startQuoteWatch(key, scopeId, quote, listener);
+  } else {
+    watch.listeners.add(listener);
+    // A visible invoice checks NUT-04 also while NUT-17 works.
+    if (listener.visible) watch.wakePolling?.();
+  }
   const joined = watch;
   const leave = () => leaveQuoteWatch(key, joined, listener);
   try {
@@ -360,17 +412,21 @@ function startQuoteWatch(
     listeners: new Set([first]),
     started: Promise.resolve(),
     stopWaiter: null,
+    wakePolling: null,
     settling: false,
   };
+  const visible = () => [...watch.listeners].some((listener) => listener.visible);
   quoteWatches.set(key, watch);
   watch.started = waitForMintQuotePaidForUnit(
     toMintQuoteResponse(quote),
     (result) => settleQuoteWatch(key, watch, scopeId, quote, result),
     {
       pollIntervalMs: () =>
-        [...watch.listeners].some(({ visible }) => visible)
-          ? VISIBLE_QUOTE_POLL_INTERVAL_MS
-          : BACKGROUND_QUOTE_POLL_INTERVAL_MS,
+        visible() ? VISIBLE_QUOTE_POLL_INTERVAL_MS : BACKGROUND_QUOTE_POLL_INTERVAL_MS,
+      pollWhileSubscribed: visible,
+      bindPollingWake: (wake) => {
+        watch.wakePolling = wake;
+      },
       onTransientError: (error) => {
         for (const listener of [...watch.listeners]) listener.onTransientError?.(error);
       },
@@ -410,6 +466,8 @@ async function settleQuoteWatch(
   const final = await recoverQuoteWaitResult(scopeId, quote.quoteRecordId, result);
   if (quoteWatches.get(key) === watch) quoteWatches.delete(key);
   for (const listener of [...watch.listeners]) listener.onResult(final);
+  // The result is terminal. Release the NUT-17 subscription and the expiry timer.
+  watch.stopWaiter?.();
 }
 
 /** PAID is reported only after the exact bound operation is admitted. */
@@ -689,10 +747,13 @@ async function recoverQuoteRow(
     const unit = requireUnit(quote.unit);
     const wallet = await getWalletForMnemonicUnit(quote.mintUrl, unit, context.mnemonic);
     context.requireCapturedProfile();
+    const checkedAtMs = Date.now();
     const observed = asNut04State((await wallet.checkMintQuote(quote.quoteId)).state);
     if (observed === null || observed === "UNPAID") {
       await markQuoteRecoveryAttempt(context, quote.quoteRecordId, passCutoffMs, observed);
-      return false;
+      if (observed !== "UNPAID" || !isPastExpiryGrace(quote, checkedAtMs)) return false;
+      await endExpiredUnpaidQuote(context, quote.quoteRecordId);
+      return true;
     }
     await recoverQuoteOnce(context, quote.quoteRecordId, observed, passCutoffMs);
     return true;
@@ -720,12 +781,59 @@ async function recoverQuoteOnce(
     context.requireCapturedProfile();
     if (!row) throw new Error("BOLT11 mint quote is absent");
     const quote = readQuoteRow(context.scopeId, row);
-    if (row.recoveryState === "completed") return;
+    // A row that ended as expired and unpaid recovers when new evidence shows a payment.
+    if (row.recoveryState === "completed" && quote.observedState !== "UNPAID") return;
     // A stale PAID notice must not regress an observed ISSUED state.
     const evidence = quote.observedState === "ISSUED" ? "ISSUED" : observed;
     const current = await markQuoteRecoveryAttempt(context, quoteRecordId, attemptAtMs, evidence);
     await recoverExactBoundQuote(context, current);
+    recordCompletedDepositActivity(context.scopeId, current);
   });
+}
+
+/** End an expired quote that the mint still reports UNPAID. A paid or issued quote never ends here. */
+async function endExpiredUnpaidQuote(
+  context: CoordinatorContext,
+  quoteRecordId: string,
+): Promise<void> {
+  await withQuoteRecoveryLock(context, quoteRecordId, async () => {
+    context.requireCapturedProfile();
+    await context.database.transaction("rw", context.database.mintQuotes, async () => {
+      const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
+      if (!row) throw new Error("BOLT11 mint quote disappeared during recovery");
+      const quote = readQuoteRow(context.scopeId, row);
+      if (row.recoveryState !== "pending" || quote.observedState !== "UNPAID") return;
+      context.requireCapturedProfile();
+      await context.database.mintQuotes.put(
+        toQuoteRow(context.scopeId, quote, "completed", row.lastRecoveryAttemptAtMs),
+      );
+    });
+  });
+}
+
+function isPastExpiryGrace(quote: DurableBolt11MintQuote, checkedAtMs: number): boolean {
+  return (
+    quote.expiryUnixSeconds !== null &&
+    checkedAtMs >= quote.expiryUnixSeconds * 1_000 + EXPIRED_UNPAID_QUOTE_GRACE_MS
+  );
+}
+
+/** The durable completion writes the deposit activity. It is keyed by the quote record. */
+function recordCompletedDepositActivity(scopeId: string, quote: DurableBolt11MintQuote): void {
+  try {
+    const scope = decodeDurableCustodyScopeInput(scopeId);
+    if (scope.scopeKind !== "wallet") return;
+    const unit = requireUnit(quote.unit);
+    useActivityLogStore.getState().recordCompletedDeposit({
+      walletId: scope.walletId,
+      quoteRecordId: quote.quoteRecordId,
+      amountSubunits: cashuAmountToMarketSubunits(Number(quote.requestedAmount), unit),
+      baseAsset: normalizeMarketBaseAsset(COLLATERAL_UNIT_REGISTRY[unit].baseAsset),
+      lightningInvoice: quote.invoiceRequest,
+    });
+  } catch {
+    // The activity row is display data. The stored proofs are the deposit.
+  }
 }
 
 async function withQuoteRecoveryLock(
@@ -823,12 +931,16 @@ async function currentScopeQuoteRows(database: BitcasterDB, scopeId: string, pas
   };
 }
 
-/** Every pending quote of one profile, without the recovery pass cutoff. */
-function watchablePendingQuoteRows(
+/**
+ * The most recent pending quotes of one profile, latest expiry first, so a
+ * new quote is always inside the window. Expired unpaid quotes end, so the
+ * pending rows hold only live or paid quotes.
+ */
+async function watchablePendingQuoteRows(
   database: BitcasterDB,
   scopeId: string,
 ): Promise<BrowserMintQuoteRow[]> {
-  return database.mintQuotes
+  const rows = await database.mintQuotes
     .where("[scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]")
     .between(
       [scopeId, "bolt11", "pending", Dexie.minKey, Dexie.minKey],
@@ -836,8 +948,16 @@ function watchablePendingQuoteRows(
       true,
       true,
     )
-    .limit(BROWSER_BOLT11_MINT_RECOVERY_LIMIT)
     .toArray();
+  return rows
+    .sort((left, right) => watchExpiryOrder(right) - watchExpiryOrder(left))
+    .slice(0, BROWSER_BOLT11_MINT_RECOVERY_LIMIT);
+}
+
+/** A quote without an expiry sorts last. */
+function watchExpiryOrder(row: BrowserMintQuoteRow): number {
+  const expiry = (row.quote as { expiryUnixSeconds?: unknown } | undefined)?.expiryUnixSeconds;
+  return typeof expiry === "number" && Number.isSafeInteger(expiry) ? expiry : -1;
 }
 
 function isExpiredQuote(quote: DurableBolt11MintQuote, nowMs: number): boolean {

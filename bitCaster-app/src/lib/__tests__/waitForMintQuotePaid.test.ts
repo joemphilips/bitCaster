@@ -17,11 +17,11 @@ import type { MintQuoteResponse, PartialMintQuoteResponse } from "@cashu/cashu-t
 // hit the network in jsdom). cashu.ts:48-52 — when the store carries a
 // mnemonic it delegates to `store.getWallet(mintUrl)`.
 const mockCheckMintQuote = vi.fn<(id: string) => Promise<PartialMintQuoteResponse>>();
-const mockMintQuotePaidOn =
+const mockMintQuoteUpdates =
   vi.fn<
     (
-      id: string,
-      paid: (q: PartialMintQuoteResponse) => void,
+      ids: string[],
+      update: (q: PartialMintQuoteResponse) => void,
       err: (e: Error) => void,
     ) => Promise<() => void>
   >();
@@ -29,11 +29,11 @@ const mockMintQuotePaidOn =
 const fakeWallet = {
   checkMintQuote: (id: string) => mockCheckMintQuote(id),
   on: {
-    mintQuotePaid: (
-      id: string,
-      p: (q: PartialMintQuoteResponse) => void,
+    mintQuoteUpdates: (
+      ids: string[],
+      update: (q: PartialMintQuoteResponse) => void,
       e: (err: Error) => void,
-    ) => mockMintQuotePaidOn(id, p, e),
+    ) => mockMintQuoteUpdates(ids, update, e),
   },
 };
 
@@ -92,9 +92,9 @@ describe("waitForMintQuotePaid", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW_SEC * 1000);
     mockCheckMintQuote.mockReset();
-    mockMintQuotePaidOn.mockReset();
+    mockMintQuoteUpdates.mockReset();
     // Default: WS subscribe pends forever — polling carries the suite.
-    mockMintQuotePaidOn.mockReturnValue(new Promise(() => {}));
+    mockMintQuoteUpdates.mockReturnValue(new Promise(() => {}));
   });
   afterEach(() => vi.useRealTimers());
 
@@ -220,6 +220,104 @@ describe("waitForMintQuotePaid", () => {
     expect(checkedAtMs).toEqual([0, POLL_MS, POLL_MS * 2, POLL_MS * 6]);
   });
 
+  it("pauses checks while an acknowledged NUT-17 subscription watches the quote", async () => {
+    const nut17 = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+
+    await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: POLL_MS,
+      pollWhileSubscribed: () => false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    nut17.update(partialQuote("UNPAID"));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 20);
+
+    expect(checkedAtMs).toEqual([0]);
+  });
+
+  it("checks again after a WebSocket error and stops when a new subscription is acknowledged", async () => {
+    const first = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+
+    await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: POLL_MS,
+      pollWhileSubscribed: () => false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    first.update(partialQuote("UNPAID"));
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    const second = acknowledgingSubscription();
+    first.error(new Error("WebSocket closed (code 1006)"));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 2);
+    expect(checkedAtMs).toEqual([0, POLL_MS * 2, POLL_MS * 3]);
+    expect(mockMintQuoteUpdates).toHaveBeenCalledTimes(2);
+
+    second.update(partialQuote("UNPAID"));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 10);
+    expect(checkedAtMs).toEqual([0, POLL_MS * 2, POLL_MS * 3]);
+  });
+
+  it("restarts paused checks when the caller wakes them", async () => {
+    const nut17 = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+    let visible = false;
+    let wake!: () => void;
+
+    await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: POLL_MS,
+      pollWhileSubscribed: () => visible,
+      bindPollingWake: (resume) => {
+        wake = resume;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    nut17.update(partialQuote("UNPAID"));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 4);
+    visible = true;
+    wake();
+    await vi.advanceTimersByTimeAsync(POLL_MS * 2);
+
+    expect(checkedAtMs).toEqual([0, POLL_MS * 5, POLL_MS * 6]);
+  });
+
+  it("checks once at expiry and reports a payment made in the last seconds", async () => {
+    const nut17 = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+    const onResult = vi.fn<(r: MintQuoteWaitResult) => void>();
+
+    await waitForMintQuotePaid(makeQuote({ expiry: NOW_SEC + 5 }), onResult, {
+      pollIntervalMs: POLL_MS,
+      pollWhileSubscribed: () => false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    nut17.update(partialQuote("UNPAID"));
+    mockCheckMintQuote.mockImplementation(async () => {
+      checkedAtMs.push(Date.now() - NOW_SEC * 1000);
+      return partialQuote("PAID");
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(checkedAtMs).toEqual([0, 5_000]);
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "PAID" }));
+  });
+
+  it("cancels its NUT-17 subscription and timers after a terminal result", async () => {
+    const nut17 = acknowledgingSubscription();
+    mockCheckMintQuote.mockResolvedValue(partialQuote("UNPAID"));
+    const onResult = vi.fn<(r: MintQuoteWaitResult) => void>();
+
+    await waitForMintQuotePaid(makeQuote({ expiry: NOW_SEC + 5 }), onResult, {
+      pollIntervalMs: POLL_MS,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    nut17.update(partialQuote("PAID"));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(nut17.cancel).toHaveBeenCalledOnce();
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "PAID" }));
+    expect(mockCheckMintQuote).toHaveBeenCalledOnce();
+  });
+
   it("ignores UNPAID and continues polling until PAID", async () => {
     mockCheckMintQuote
       .mockResolvedValueOnce(partialQuote("UNPAID"))
@@ -234,3 +332,29 @@ describe("waitForMintQuotePaid", () => {
     expect(onResult.mock.calls[0][0].status).toBe("PAID");
   });
 });
+
+function recordChecks(state: "UNPAID" | "PAID"): number[] {
+  const checkedAtMs: number[] = [];
+  mockCheckMintQuote.mockImplementation(async () => {
+    checkedAtMs.push(Date.now() - NOW_SEC * 1000);
+    return partialQuote(state);
+  });
+  return checkedAtMs;
+}
+
+/** The next NUT-17 subscription. Its first update is the mint's acknowledgement. */
+function acknowledgingSubscription() {
+  const cancel = vi.fn();
+  let update!: (q: PartialMintQuoteResponse) => void;
+  let error!: (e: Error) => void;
+  mockMintQuoteUpdates.mockImplementationOnce(async (_ids, onUpdate, onError) => {
+    update = onUpdate;
+    error = onError;
+    return cancel;
+  });
+  return {
+    cancel,
+    update: (q: PartialMintQuoteResponse) => update(q),
+    error: (e: Error) => error(e),
+  };
+}
