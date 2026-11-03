@@ -4045,7 +4045,7 @@ describe("MarketDetailPage live market status", () => {
   });
 
   it.each([
-    { balance: 0, enabled: true, charge: "2.000 sats", purchase: "+5.000 sats" },
+    { balance: 0, enabled: true, charge: "2.000 sats", purchase: "+20.000 sats" },
     { balance: 2, enabled: true, charge: "2.000 sats", purchase: null },
     { balance: 0, enabled: false, charge: null, purchase: null },
   ])(
@@ -4062,7 +4062,7 @@ describe("MarketDetailPage live market status", () => {
         enabled,
       });
       // The order charges 2 Score. The wallet keeps 500 Score spare, so a
-      // purchase buys the 5 Score buffer.
+      // purchase buys the 20 Score buffer.
       mocks.previewBrowserCtfRangeOrderScore
         .mockReset()
         .mockResolvedValue({ requiredScore: 2, availableScore: 500 });

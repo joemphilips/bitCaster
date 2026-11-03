@@ -1056,7 +1056,7 @@ describe("TradingPanel", () => {
           tradeAmount={5}
           tradePreview={readyPreview()}
           tradeFeeFacts={feeFacts()}
-          participationScore={{ chargeScore: 2, purchaseScore: 5 }}
+          participationScore={{ chargeScore: 2, purchaseScore: 20 }}
           feeConsentCurrent
           tradeSide={tradeSide}
           sellHoldings={sellHoldings({ Yes: { selectableSubunits: 10_000 } })}
@@ -1068,7 +1068,7 @@ describe("TradingPanel", () => {
       expect(charge).toHaveTextContent(/^Participation Score.*2\.000 sats$/);
       const purchase = screen.getByTestId("trade-participation-score-purchase");
       expect(purchase).toHaveTextContent(
-        /^Score top-up at confirm \(kept as balance\)\+5\.000 sats$/,
+        /^Score top-up at confirm \(kept as balance\)\+20\.000 sats$/,
       );
       // Score is paid apart from the trade, so the trade totals exclude both lines.
       expect(
@@ -1131,7 +1131,7 @@ describe("TradingPanel", () => {
         tradeAmount={5}
         tradePreview={readyPreview()}
         tradeFeeFacts={null}
-        participationScore={{ chargeScore: 2, purchaseScore: 5 }}
+        participationScore={{ chargeScore: 2, purchaseScore: 20 }}
         tradeSide="Buy"
         onTradeConfirm={vi.fn()}
       />,

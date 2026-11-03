@@ -125,8 +125,8 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(mocks.readBrowserParticipationScorePayableScore).not.toHaveBeenCalled();
   });
 
-  it("buys the 5 Score buffer and reports sats and Score separately", async () => {
-    // The shortfall is 2 Score, so a 5 Score purchase can only come from the buffer.
+  it("buys the 20 Score buffer and reports sats and Score separately", async () => {
+    // The shortfall is 2 Score, so a 20 Score purchase can only come from the buffer.
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
@@ -141,7 +141,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(result).toMatchObject({
       kind: "paid",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
-      payment: { amountSats: 5, creditedScore: 5 },
+      payment: { amountSats: 20, creditedScore: 20 },
     });
     expect(mocks.readBrowserParticipationScorePayableScore).toHaveBeenCalledWith(
       "https://mint.example",
@@ -150,7 +150,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
       accountSubject: "subject-1",
       mintUrl: "https://mint.example",
-      requestedAmount: "5000",
+      requestedAmount: "20000",
     });
   });
 
@@ -199,7 +199,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedAmount: "5000" }),
+      expect.objectContaining({ requestedAmount: "20000" }),
     );
     expect(result).toMatchObject({
       kind: "needs-regular-top-up",

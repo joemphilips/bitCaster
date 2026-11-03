@@ -1566,11 +1566,11 @@ describe("previewBrowserCtfRangeOrderScore", () => {
       coordinatorPubkey: "11".repeat(32),
     });
     mocks.loadMintMetadata.mockResolvedValue({ maxOutputs: 256, observation: {} });
-    // v1 = 1 + 2 + ceil(12/16) + ceil(5251/4096) = 6, so v2 = ceil(6/4) = 2.
+    // v1 = 1 + 7 + ceil(12/16) + ceil(12000/4096) = 12, so v2 = ceil(12/10) = 2.
     mocks.previewWorkFacts.mockReturnValue({
-      inputCount: 2,
+      inputCount: 7,
       manifestCount: 12,
-      artifactByteCount: 5_251,
+      artifactByteCount: 12_000,
     });
     mocks.readPayableScore.mockResolvedValue(1_000);
   });

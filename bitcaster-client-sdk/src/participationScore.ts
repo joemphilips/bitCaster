@@ -21,13 +21,13 @@ export const CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID: SettlementCapabilityT
  * The v2 tariff is the v1 work sum divided by this value, rounded up. The
  * operator owns this value. Change it here, then the test values.
  */
-export const SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR = 4
+export const SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR = 10
 
 /**
  * Score units that one top-up buys, so later trades can skip a delivery. One
  * Score unit costs 1 sat. The operator owns this value.
  */
-export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 5
+export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 20
 
 /**
  * The buffer applies only when the wallet keeps at least this much Score after

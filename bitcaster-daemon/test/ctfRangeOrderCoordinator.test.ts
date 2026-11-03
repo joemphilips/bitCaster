@@ -1025,13 +1025,13 @@ test('daemon retries the exact capability request after its acknowledgement is l
       assert.equal(requiredScores.length, 1)
       const artifactBytes = Buffer.from(posted[0]!.artifact, 'base64')
       const artifact = decodeSettlementCapabilityArtifactBytes(artifactBytes)
-      // settlement-capability-v2: a quarter of the v1 work sum, rounded up.
+      // settlement-capability-v2: a tenth of the v1 work sum, rounded up.
       const v1WorkSum =
         1 +
         artifact.inputs.length +
         Math.ceil(artifact.manifest.entries.length / 16) +
         Math.ceil(artifactBytes.byteLength / 4_096)
-      assert.equal(requiredScores[0], Math.max(1, Math.ceil(v1WorkSum / 4)))
+      assert.equal(requiredScores[0], Math.max(1, Math.ceil(v1WorkSum / 10)))
       assert.ok(
         isDeepStrictEqual(posted[1], posted[0]),
         'restart changed capability admission bytes',
