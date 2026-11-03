@@ -22,9 +22,14 @@ Preparation can cost a fee even if no trade completes.
 
 The trade summary can also show a Participation Score row. Participation Score
 is an anti-spam fee. bitCaster charges a few sats of Score when your order uses
-the order book. If your Score balance does not cover the order, the app buys
-Score with ordinary sats from your wallet. The row shows that amount. Score is
-not refundable.
+the order book. The row shows the Score charge for this order. If your Score
+balance does not cover the charge, a **Score top-up at confirm (kept as
+balance)** row also appears. It shows the Score that the app buys with ordinary
+sats from your wallet when you confirm. This purchase can be larger than the
+shortfall. Score that the order does not use stays in your Score balance for
+later orders. The trade totals do not include these rows. Score is not
+refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
+for the charge and top-up rules.
 
 To sell all your shares, keep some ordinary sats available for preparation
 fees. The wallet can pay those fees with sats instead of reducing the shares
@@ -93,6 +98,12 @@ not your completed-trade history.
 
 While the wallet finishes the trade that you just submitted, the trading panel
 shows **Updating your wallet…**. This includes the refund of a failed trade.
+
+When bitCaster reports that the settlement of your order is confirmed, the
+wallet applies the result at once. Your balance, your positions, and the
+Portfolio Funds tab then update. You do not need to reload the page. If the
+result is not ready yet, the wallet checks again after short delays, then at
+a longer interval.
 
 Wallet preparation is separate from order acceptance. The progress list shows
 which stage is confirmed. A prepared payment does not prove that the engine

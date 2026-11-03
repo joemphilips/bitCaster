@@ -95,11 +95,20 @@ can include cash flows. They do not measure profit or investment return.
 Its secondary purpose is to help the web app identify an exact missing asset.
 The app can then make one bounded recovery attempt.
 
-The portfolio's Funds tab groups regular funds by mint and asset. It shows
-money in sats. Different mints remain separate. The portfolio refreshes after
-the service accepts a wallet update. An updating or unavailable value does
-not mean that funds are lost. Positions without a known price remain visible.
-Use the wallet's payment or trade flow to check which funds it can spend.
+The portfolio's Funds tab reads regular funds from the wallet in this browser,
+not from asset monitoring. It groups them by mint and asset and shows money in
+sats. Different mints remain separate. Funds that an unfinished trade or
+payment reserves do not appear. The tab updates as soon as a deposit, trade,
+or payment changes the wallet. If the app cannot read the local wallet yet,
+the tab can show the funds that asset monitoring reports.
+
+**Positions Value** and **Total Value** come from asset monitoring. The app
+reads them again at once after the service accepts a wallet update or a trade
+settles. While the service still builds the values, the app reads them again a
+few times after short delays. **Total Value** can therefore update a short
+time after the Funds tab. An updating or unavailable value does not mean that funds are
+lost. Positions without a known price remain visible. Use the wallet's payment
+or trade flow to check which funds it can spend.
 
 During portfolio updates or an unfinished claim, the app can keep the last
 successful value estimate on screen. It marks that estimate as out of date.

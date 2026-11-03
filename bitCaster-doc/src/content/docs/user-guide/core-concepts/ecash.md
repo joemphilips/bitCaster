@@ -45,6 +45,24 @@ remaining amount. The CLI refuses the same amounts with the error code
 The success screen appears after a confirmed receipt or Lightning payment.
 A pending or failed payment is not a success.
 
+A paid Lightning deposit completes even after you close the deposit screen.
+You do not need to reload the page. While the app is open, it watches the
+unpaid invoices of the open wallet. The mint's NUT-17 payment notice is the
+first signal. The app also asks the mint for the invoice state when it starts
+to watch the invoice, every 2 seconds while the invoice is on screen, and once
+when the invoice expires. It also asks when the browser goes back online or
+when you return to the page. For an invoice that is not on screen, it asks at
+regular intervals only while the notice connection to the mint is down. If you
+pay while the app is closed, the app checks the invoice the next time you open
+it. A completed deposit adds to your balance and appears once in Activity.
+
+The app keeps an expired invoice for 24 hours after its expiry. This covers a
+payment that the mint accepted shortly before the expiry. During this time,
+the app checks the invoice each time the app starts or the browser goes back
+online. If the mint reports a payment, the deposit completes. After the 24
+hours, the app checks the mint one more time. It closes the invoice only if
+the mint still reports it as unpaid.
+
 When you import a conditional token, the wallet asks the mint to replace it
 with tokens for the same market position. Mint fees can reduce the amount
 received. Pasting the token alone does not complete receipt. Keep browser
