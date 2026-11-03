@@ -31,7 +31,8 @@ export default defineConfig({
         },
       },
       logo: {
-        src: './public/logo.svg',
+        dark: './public/logo.svg',
+        light: './public/logo-light.svg',
       },
       social: [
         {
