@@ -1,0 +1,13 @@
+---
+// Lays out landing link blocks side by side, and stacks them on a narrow screen.
+---
+
+<div class="landing-actions"><slot /></div>
+
+<style>
+  .landing-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.75rem;
+  }
+</style>

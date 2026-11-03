@@ -1,0 +1,88 @@
+---
+interface Props {
+  label: string
+  items: { title: string; text: string }[]
+}
+
+const { label, items } = Astro.props
+---
+
+<section class="landing-mottos not-content" aria-labelledby="landing-mottos">
+  <h2 id="landing-mottos">{label}</h2>
+  <ol>
+    {
+      items.map((item, index) => (
+        <li>
+          {/* The ordered list already announces the position. */}
+          <span class="number" aria-hidden="true">
+            {String(index + 1).padStart(2, '0')}
+          </span>
+          <h3>{item.title}</h3>
+          <p>{item.text}</p>
+        </li>
+      ))
+    }
+  </ol>
+</section>
+
+<style>
+  .landing-mottos {
+    margin-top: clamp(4rem, 9vw, 7rem);
+  }
+
+  h2 {
+    margin: 0 0 1.5rem;
+    color: var(--bc-amber);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    line-height: 1.4;
+    text-transform: uppercase;
+  }
+
+  ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-bottom: 1px solid var(--bc-rule);
+  }
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem 2.5rem;
+    padding-block: clamp(1.75rem, 4vw, 2.5rem);
+    border-top: 1px solid var(--bc-rule);
+  }
+
+  .number {
+    flex: 0 0 3rem;
+    padding-top: 0.5rem;
+    color: var(--bc-muted);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+  }
+
+  h3 {
+    flex: 1 1 22rem;
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: clamp(1.75rem, 3.4vw, 2.5rem);
+    font-weight: 700;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    word-break: auto-phrase;
+  }
+
+  p {
+    flex: 1 1 20rem;
+    margin: 0;
+    color: var(--bc-muted);
+    font-size: 1.0625rem;
+    line-height: 1.65;
+    word-break: auto-phrase;
+  }
+</style>

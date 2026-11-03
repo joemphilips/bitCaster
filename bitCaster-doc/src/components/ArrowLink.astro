@@ -1,0 +1,42 @@
+---
+interface Props {
+  href: string
+}
+
+const { href } = Astro.props
+---
+
+<a class="arrow-link" href={href}
+  ><slot /><svg
+    aria-hidden="true"
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg
+  ></a
+>
+
+<style>
+  .arrow-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    /* The dark text accent is almost white, so use the accent itself to mark a link. */
+    color: var(--sl-color-accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .arrow-link:hover {
+    text-decoration: underline;
+  }
+
+  svg {
+    flex: none;
+  }
+</style>

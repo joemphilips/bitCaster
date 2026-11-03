@@ -7,8 +7,7 @@ sidebar:
 
 ## What is bitCaster?
 
-bitCaster is in development. There is no production deployment.
-Do not use real funds with development or test instances.
+bitCaster is in a limited beta. The service uses real funds and has limited capacity.
 
 bitCaster lets you buy and sell shares in the possible outcomes of an event.
 For example, a market can ask whether Alpha, Beta, or Gamma will win an election.
