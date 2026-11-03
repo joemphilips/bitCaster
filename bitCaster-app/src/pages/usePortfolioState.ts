@@ -72,6 +72,8 @@ type PortfolioPositionSnapshot = {
   scopeId: string;
   positions: Position[];
   marketCatalogue: Map<string, MarketCatalogueEntry>;
+  /** Conditions whose catalogue read completed. A missing market is still read. */
+  catalogueConditionIds: ReadonlySet<string>;
 };
 const EMPTY_MARKET_CATALOGUE = new Map<string, MarketCatalogueEntry>();
 
@@ -1040,13 +1042,16 @@ export function usePortfolioState(): PortfolioState & {
       const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
         ? visibleMonitoringConditionIdsKey.split(",")
         : [];
-      const catalogue =
-        monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue([
-              ...entries.map((entry) => entry.conditionId),
-              ...visibleMonitoringConditionIds,
-            ])
-          : new Map<string, MarketCatalogueEntry>();
+      // The catalogue read waits for the monitor so that one read covers its rows.
+      const catalogueRead = monitoringUnavailable || monitoringReady;
+      const catalogueConditionIds = new Set(
+        catalogueRead
+          ? [...entries.map((entry) => entry.conditionId), ...visibleMonitoringConditionIds]
+          : [],
+      );
+      const catalogue = catalogueRead
+        ? await loadMarketCatalogue([...catalogueConditionIds])
+        : new Map<string, MarketCatalogueEntry>();
       if (activeBrowserWalletScopeId() !== scopeId) return undefined;
       const positions = entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
@@ -1070,6 +1075,7 @@ export function usePortfolioState(): PortfolioState & {
           ]),
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
+          marketLoading: !catalogueRead,
           marketImageUrl: market?.thumbnailUrl ?? "",
           side: "Outcome",
           outcomeId: entry.outcomeCollection,
@@ -1101,7 +1107,7 @@ export function usePortfolioState(): PortfolioState & {
         };
         return enrichPositionWithCatalogue(position, market);
       });
-      return { scopeId, positions, marketCatalogue: catalogue };
+      return { scopeId, positions, marketCatalogue: catalogue, catalogueConditionIds };
     },
     [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
     undefined as PortfolioPositionSnapshot | undefined,
@@ -1172,14 +1178,15 @@ export function usePortfolioState(): PortfolioState & {
   };
   const visiblePositions = displayMonitoring
     ? mergeMonitoringPositions(
-        displayMonitoring.positions.map((position) =>
-          enrichPositionWithCatalogue(
+        displayMonitoring.positions.map((position) => ({
+          ...enrichPositionWithCatalogue(
             position,
             (currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(
               position.marketId,
             ),
           ),
-        ),
+          marketLoading: !currentLocalPositions?.catalogueConditionIds.has(position.marketId),
+        })),
         positions,
       )
     : positions;

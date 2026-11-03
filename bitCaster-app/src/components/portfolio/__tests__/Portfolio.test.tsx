@@ -252,6 +252,56 @@ describe("PositionRow", () => {
     expect(screen.getByLabelText(/cash out .*ethereum/i)).toBeInTheDocument();
   });
 
+  it("counts shares in the interface language", () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <PositionRow position={{ ...mockPositions[0], shares: 100 }} />
+        <PositionRow position={{ ...mockPositions[0], id: "one", shares: 1 }} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("100 枚")).toBeInTheDocument();
+    expect(screen.getByText("1 枚")).toBeInTheDocument();
+    expect(screen.queryByText(/shares?$/)).not.toBeInTheDocument();
+  });
+
+  it("shows placeholders, not the condition ID or a missing price, while the market loads", () => {
+    const { container } = render(
+      <PositionRow
+        position={{
+          ...mockPositions[0],
+          marketTitle: "Condition e7e7e7e7e7e7",
+          side: "Outcome",
+          outcomeLabel: "Yes",
+          shares: undefined,
+          valueKnown: false,
+          marketLoading: true,
+        }}
+        onSell={vi.fn()}
+        onView={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/Condition e7e7/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Price estimate unavailable")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toHaveClass("sr-only");
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: /^sell /i })).toBeInTheDocument();
+  });
+
+  it("shows the missing price once the market read has finished", () => {
+    const { container } = render(
+      <PositionRow
+        position={{ ...mockPositions[0], valueKnown: false, marketLoading: false }}
+        onView={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Will Bitcoin reach $100K?")).toBeInTheDocument();
+    expect(screen.getByText("Price estimate unavailable")).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "false");
+  });
+
   it("shows a winning payout value and Claim action without reporting profit", () => {
     const { container } = render(<PositionRow position={mockPositions[1]} onClaim={vi.fn()} />);
 

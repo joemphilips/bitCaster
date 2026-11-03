@@ -21,6 +21,9 @@ interface PositionRowProps {
   onCancelDiscard?: () => void;
 }
 
+const PLACEHOLDER_CLASSES =
+  "block h-4 max-w-full rounded bg-slate-200 dark:bg-slate-700 motion-safe:animate-pulse";
+
 const activeSideColors: Record<Position["side"], string> = {
   yes: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
   no: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
@@ -68,6 +71,7 @@ export function PositionRow({
   // once in usePortfolioState. They can never disagree, so the Remove button
   // can never be offered on a position the badge calls "Won".
   const { isWinner, isLoser, isPending } = position;
+  const marketLoading = position.marketLoading === true;
   const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
   const canClaim = position.canClaimPayout ?? (position.status === "closed" && isWinner);
   const canDiscard =
@@ -103,7 +107,7 @@ export function PositionRow({
       tabIndex={onView ? 0 : undefined}
       onClick={handleView}
       onKeyDown={onView ? handleViewKeyDown : undefined}
-      aria-busy={action !== undefined}
+      aria-busy={action !== undefined || marketLoading}
       className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <div className="flex min-w-0 items-start gap-3 sm:contents">
@@ -122,7 +126,14 @@ export function PositionRow({
         {/* Market Info */}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-900 dark:text-white break-words sm:truncate">
-            {position.marketTitle}
+            {marketLoading ? (
+              <>
+                <span aria-hidden="true" className={`my-0.5 w-48 ${PLACEHOLDER_CLASSES}`} />
+                <span className="sr-only">{t("common.loading")}</span>
+              </>
+            ) : (
+              position.marketTitle
+            )}
           </p>
           <div className="flex flex-wrap items-center gap-2 mt-0.5">
             {isWinner ? (
@@ -163,7 +174,10 @@ export function PositionRow({
               ))}
             {position.shares !== undefined && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
-                {position.shares.toLocaleString()} shares
+                {t("trade.shareCount", {
+                  count: position.shares,
+                  formattedCount: position.shares.toLocaleString(),
+                })}
               </span>
             )}
           </div>
@@ -201,7 +215,9 @@ export function PositionRow({
         className={`flex w-full gap-3 sm:contents ${confirmingRemoval ? "flex-col items-stretch" : "items-center justify-between"}`}
       >
         <div className="shrink-0 text-left sm:text-right">
-          {position.valueKnown === false ? (
+          {position.valueKnown === false && marketLoading ? (
+            <span aria-hidden="true" className={`w-16 ${PLACEHOLDER_CLASSES}`} />
+          ) : position.valueKnown === false ? (
             <div className="max-w-48 text-slate-500 dark:text-slate-400">
               <div className="text-sm font-medium">{t("portfolio.unvalued")}</div>
               <p className="text-xs">{t("portfolio.unvaluedReason")}</p>
