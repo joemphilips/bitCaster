@@ -1951,14 +1951,23 @@ export interface WaitForMintQuoteOptions {
    * The first check and the final check at expiry always run. Default: true.
    */
   pollWhileSubscribed?: () => boolean;
-  /** Receives a function that restarts paused checks, for example when an invoice becomes visible. */
-  bindPollingWake?: (wake: () => void) => void;
+  /**
+   * Receives the polling controls. `resume` restarts paused checks, for
+   * example when an invoice becomes visible. `checkNow` runs one check at
+   * once, also while an acknowledged subscription pauses checks.
+   */
+  bindPollingControls?: (controls: { resume: () => void; checkNow: () => void }) => void;
   /** Fired on each non-terminal poll error so the UI can surface diagnostics
    *  without tearing the wait down. */
   onTransientError?: (error: Error) => void;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+/**
+ * A subscription without a first notification in this time counts as failed.
+ * cashu-ts gives no callback for a clean close before the acknowledgement.
+ */
+const NUT17_ACKNOWLEDGEMENT_TIMEOUT_MS = 10_000;
 
 /**
  * Subscribe to mint quote payment updates. Runs NUT-17 WS and polling
@@ -2013,14 +2022,23 @@ function waitForMintQuotePaidWithWallet(
   const pollWhileSubscribed = options.pollWhileSubscribed ?? (() => true);
   let done = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let acknowledgementTimer: ReturnType<typeof setTimeout> | null = null;
   let subscription: (() => void) | null = null;
+  // Each subscription attempt has a number. A failed attempt is abandoned,
+  // so its late callbacks cannot change the state of a newer attempt.
+  let attempt = 0;
   let subscribing = false;
   let acknowledged = false;
   const shouldPoll = () => !acknowledged || pollWhileSubscribed();
+  const clearAcknowledgementTimer = () => {
+    if (acknowledgementTimer) clearTimeout(acknowledgementTimer);
+    acknowledgementTimer = null;
+  };
   const stop = () => {
     done = true;
     if (pollTimer) clearTimeout(pollTimer);
     pollTimer = null;
+    clearAcknowledgementTimer();
     if (expiryTimer) clearTimeout(expiryTimer);
     subscription?.();
     subscription = null;
@@ -2036,11 +2054,11 @@ function waitForMintQuotePaidWithWallet(
   };
   const checkOnce = async (): Promise<MintQuoteWaitResult | null> =>
     classifyPollState(await wallet.checkMintQuote(quote.quote));
-  const poll = async (first: boolean) => {
+  const poll = async (always: boolean) => {
     pollTimer = null;
     if (done) return;
     if (!acknowledged && !subscribing) subscribe();
-    if (!first && !shouldPoll()) return;
+    if (!always && !shouldPoll()) return;
     try {
       const terminal = await checkOnce();
       if (terminal) return fire(terminal);
@@ -2049,11 +2067,13 @@ function waitForMintQuotePaidWithWallet(
     }
     if (shouldPoll()) schedulePoll(intervalMs());
   };
-  const onSubscriptionError = (error: unknown) => {
+  const subscriptionFailed = (failedAttempt: number, error: unknown) => {
+    if (done || failedAttempt !== attempt) return;
     console.warn("[cashu] mint quote WS subscription failed, polling until it resubscribes", error);
-    if (done) return;
+    attempt += 1;
     acknowledged = false;
     subscribing = false;
+    clearAcknowledgementTimer();
     const stale = subscription;
     subscription = null;
     stale?.();
@@ -2062,30 +2082,38 @@ function waitForMintQuotePaidWithWallet(
     schedulePoll(intervalMs());
   };
   const subscribe = () => {
+    attempt += 1;
+    const current = attempt;
     subscribing = true;
+    acknowledgementTimer = setTimeout(() => {
+      acknowledgementTimer = null;
+      subscriptionFailed(current, new Error("NUT-17 subscription was not acknowledged"));
+    }, NUT17_ACKNOWLEDGEMENT_TIMEOUT_MS);
     wallet.on
       .mintQuoteUpdates(
         [quote.quote],
         (update) => {
           if (done) return;
-          if (!acknowledged) {
+          if (current === attempt && !acknowledged) {
             acknowledged = true;
             subscribing = false;
+            clearAcknowledgementTimer();
             if (!shouldPoll() && pollTimer) {
               clearTimeout(pollTimer);
               pollTimer = null;
             }
           }
+          // A payment notice is evidence from any attempt.
           const terminal = classifyPollState(update as PartialMintQuoteResponse);
           if (terminal) fire(terminal);
         },
-        onSubscriptionError,
+        (error) => subscriptionFailed(current, error),
       )
       .then((cancel) => {
-        if (done) cancel();
-        else subscription = cancel;
+        if (!done && current === attempt) subscription = cancel;
+        else cancel();
       })
-      .catch(onSubscriptionError);
+      .catch((error: unknown) => subscriptionFailed(current, error));
   };
   // A paid quote can still be minted. One check at expiry keeps a payment in
   // the last seconds from showing as expired.
@@ -2106,8 +2134,16 @@ function waitForMintQuotePaidWithWallet(
   subscribe();
   // A payment can arrive before the invoice is shown, or while no waiter runs.
   pollTimer = setTimeout(() => void poll(true), 0);
-  options.bindPollingWake?.(() => {
-    if (shouldPoll()) schedulePoll(intervalMs());
+  options.bindPollingControls?.({
+    resume: () => {
+      if (shouldPoll()) schedulePoll(intervalMs());
+    },
+    checkNow: () => {
+      if (done) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+      void poll(true);
+    },
   });
   return stop;
 }

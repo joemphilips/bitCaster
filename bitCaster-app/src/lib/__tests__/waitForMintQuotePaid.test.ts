@@ -266,7 +266,7 @@ describe("waitForMintQuotePaid", () => {
     await waitForMintQuotePaid(makeQuote(), vi.fn(), {
       pollIntervalMs: POLL_MS,
       pollWhileSubscribed: () => visible,
-      bindPollingWake: (resume) => {
+      bindPollingControls: ({ resume }) => {
         wake = resume;
       },
     });
@@ -278,6 +278,52 @@ describe("waitForMintQuotePaid", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS * 2);
 
     expect(checkedAtMs).toEqual([0, POLL_MS * 5, POLL_MS * 6]);
+  });
+
+  it("checks now on request while an acknowledged subscription pauses checks", async () => {
+    const nut17 = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+    let checkNow!: () => void;
+
+    await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: POLL_MS,
+      pollWhileSubscribed: () => false,
+      bindPollingControls: (controls) => {
+        checkNow = controls.checkNow;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    nut17.update(partialQuote("UNPAID"));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 4);
+    // A half-open socket can keep an acknowledged subscription silent.
+    checkNow();
+    await vi.advanceTimersByTimeAsync(POLL_MS * 4);
+
+    expect(checkedAtMs).toEqual([0, POLL_MS * 4]);
+  });
+
+  it("subscribes again when no notification arrives within 10 s, also after a clean close", async () => {
+    // A clean close before the acknowledgement gives the subscription no callback.
+    const silent = vi.fn();
+    mockMintQuoteUpdates.mockImplementationOnce(async () => silent);
+    const second = acknowledgingSubscription();
+    const checkedAtMs = recordChecks("UNPAID");
+
+    await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: 1_000,
+      pollWhileSubscribed: () => false,
+    });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(mockMintQuoteUpdates).toHaveBeenCalledOnce();
+    expect(silent).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(silent).toHaveBeenCalledOnce();
+    expect(mockMintQuoteUpdates).toHaveBeenCalledTimes(2);
+
+    second.update(partialQuote("UNPAID"));
+    const checksAtAcknowledgement = checkedAtMs.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(checkedAtMs).toHaveLength(checksAtAcknowledgement);
   });
 
   it("checks once at expiry and reports a payment made in the last seconds", async () => {

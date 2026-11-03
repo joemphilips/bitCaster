@@ -68,10 +68,12 @@ const BACKGROUND_QUOTE_POLL_INTERVAL_MS = 15_000;
 /** A watch that cannot start, for example while the mint is unreachable, starts again after these delays. */
 const QUOTE_WATCH_START_RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const;
 /**
- * An expired quote that the mint still reports UNPAID after this grace ends.
- * The grace covers a payment that the mint accepted just before expiry.
+ * An expired quote can end only after this grace, measured on the browser
+ * clock. An ended quote is never checked again, so the grace must also cover
+ * a browser clock that runs ahead of the mint. The end needs one more UNPAID
+ * check under the quote lock.
  */
-const EXPIRED_UNPAID_QUOTE_GRACE_MS = 60_000;
+const EXPIRED_UNPAID_QUOTE_GRACE_MS = 24 * 60 * 60 * 1_000;
 
 export interface CreateBrowserDurableBolt11MintQuoteInput {
   readonly amount: number;
@@ -103,6 +105,7 @@ interface QuoteWatch {
   started: Promise<void>;
   stopWaiter: (() => void) | null;
   wakePolling: (() => void) | null;
+  checkNow: (() => void) | null;
   settling: boolean;
 }
 
@@ -361,19 +364,38 @@ export function watchPendingBrowserDurableBolt11MintQuotes(): () => void {
     // The startup and reconnection recovery passes still check these quotes.
     error: () => {},
   });
+  // A WebSocket can stay half-open after a network change or a sleeping tab.
+  // Its subscription then looks acknowledged but stays silent.
   const onOnline = () => {
     ended.clear();
     for (const quoteRecordId of [...startRetries.keys()]) clearStartRetry(quoteRecordId);
     reconcile();
+    checkWatchedQuotesNow(scopeId);
+  };
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") checkWatchedQuotesNow(scopeId);
   };
   if (typeof window !== "undefined") window.addEventListener("online", onOnline);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
   return () => {
     stopped = true;
     subscription.unsubscribe();
     if (typeof window !== "undefined") window.removeEventListener("online", onOnline);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
     for (const quoteRecordId of [...watched.keys()]) leave(quoteRecordId);
     for (const quoteRecordId of [...startRetries.keys()]) clearStartRetry(quoteRecordId);
   };
+}
+
+/** Run one NUT-04 check now for each watched quote of one profile. */
+function checkWatchedQuotesNow(scopeId: string): void {
+  for (const [key, watch] of quoteWatches) {
+    if (key.startsWith(`${scopeId}\u0000`)) watch.checkNow?.();
+  }
 }
 
 async function joinQuoteWatch(
@@ -413,6 +435,7 @@ function startQuoteWatch(
     started: Promise.resolve(),
     stopWaiter: null,
     wakePolling: null,
+    checkNow: null,
     settling: false,
   };
   const visible = () => [...watch.listeners].some((listener) => listener.visible);
@@ -424,8 +447,9 @@ function startQuoteWatch(
       pollIntervalMs: () =>
         visible() ? VISIBLE_QUOTE_POLL_INTERVAL_MS : BACKGROUND_QUOTE_POLL_INTERVAL_MS,
       pollWhileSubscribed: visible,
-      bindPollingWake: (wake) => {
-        watch.wakePolling = wake;
+      bindPollingControls: ({ resume, checkNow }) => {
+        watch.wakePolling = resume;
+        watch.checkNow = checkNow;
       },
       onTransientError: (error) => {
         for (const listener of [...watch.listeners]) listener.onTransientError?.(error);
@@ -752,8 +776,7 @@ async function recoverQuoteRow(
     if (observed === null || observed === "UNPAID") {
       await markQuoteRecoveryAttempt(context, quote.quoteRecordId, passCutoffMs, observed);
       if (observed !== "UNPAID" || !isPastExpiryGrace(quote, checkedAtMs)) return false;
-      await endExpiredUnpaidQuote(context, quote.quoteRecordId);
-      return true;
+      return endOrRecoverExpiredQuote(context, wallet, quote.quoteRecordId, passCutoffMs);
     }
     await recoverQuoteOnce(context, quote.quoteRecordId, observed, passCutoffMs);
     return true;
@@ -775,40 +798,96 @@ async function recoverQuoteOnce(
   observed: "PAID" | "ISSUED",
   attemptAtMs: number,
 ): Promise<void> {
+  await withQuoteRecoveryLock(context, quoteRecordId, () =>
+    recoverQuoteWithHeldLock(context, quoteRecordId, observed, attemptAtMs),
+  );
+}
+
+/** Call only while this context holds the exact quote lock. */
+async function recoverQuoteWithHeldLock(
+  context: CoordinatorContext,
+  quoteRecordId: string,
+  observed: "PAID" | "ISSUED",
+  attemptAtMs: number,
+): Promise<void> {
+  context.requireCapturedProfile();
+  const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
+  context.requireCapturedProfile();
+  if (!row) throw new Error("BOLT11 mint quote is absent");
+  const quote = readQuoteRow(context.scopeId, row);
+  // A completed row that still records UNPAID ended as expired. No flow reads
+  // ended rows again. Payment evidence that reaches this lock anyway, for
+  // example from another tab, still mints the exact outputs.
+  if (row.recoveryState === "completed" && quote.observedState !== "UNPAID") return;
+  // A stale PAID notice must not regress an observed ISSUED state.
+  const evidence = quote.observedState === "ISSUED" ? "ISSUED" : observed;
+  const current = await markQuoteRecoveryAttempt(context, quoteRecordId, attemptAtMs, evidence);
+  await recoverExactBoundQuote(context, current);
+  recordCompletedDepositActivity(context.scopeId, current);
+}
+
+/**
+ * Decide an expired quote after its grace. The deciding NUT-04 check runs
+ * under the quote lock, just before the end write. Only an UNPAID result ends
+ * the quote. PAID or ISSUED mints it. Any other result keeps it pending.
+ * Returns true when the quote is no longer pending.
+ */
+async function endOrRecoverExpiredQuote(
+  context: CoordinatorContext,
+  wallet: Pick<CashuWallet, "checkMintQuote">,
+  quoteRecordId: string,
+  attemptAtMs: number,
+): Promise<boolean> {
+  let decided = false;
   await withQuoteRecoveryLock(context, quoteRecordId, async () => {
     context.requireCapturedProfile();
     const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
-    context.requireCapturedProfile();
-    if (!row) throw new Error("BOLT11 mint quote is absent");
+    if (!row) throw new Error("BOLT11 mint quote disappeared during recovery");
     const quote = readQuoteRow(context.scopeId, row);
-    // A row that ended as expired and unpaid recovers when new evidence shows a payment.
-    if (row.recoveryState === "completed" && quote.observedState !== "UNPAID") return;
-    // A stale PAID notice must not regress an observed ISSUED state.
-    const evidence = quote.observedState === "ISSUED" ? "ISSUED" : observed;
-    const current = await markQuoteRecoveryAttempt(context, quoteRecordId, attemptAtMs, evidence);
-    await recoverExactBoundQuote(context, current);
-    recordCompletedDepositActivity(context.scopeId, current);
+    if (row.recoveryState !== "pending") {
+      decided = true;
+      return;
+    }
+    const observed = asNut04State((await wallet.checkMintQuote(quote.quoteId)).state);
+    context.requireCapturedProfile();
+    switch (observed) {
+      case "UNPAID":
+        decided = await endUnpaidQuoteRow(context, quoteRecordId);
+        return;
+      case "PAID":
+      case "ISSUED":
+        await recoverQuoteWithHeldLock(context, quoteRecordId, observed, attemptAtMs);
+        decided = true;
+        return;
+      case null:
+        return;
+      default:
+        return assertNeverNut04State(observed);
+    }
+  });
+  return decided;
+}
+
+/** Call only while this context holds the exact quote lock. */
+async function endUnpaidQuoteRow(
+  context: CoordinatorContext,
+  quoteRecordId: string,
+): Promise<boolean> {
+  return context.database.transaction("rw", context.database.mintQuotes, async () => {
+    const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
+    if (!row) throw new Error("BOLT11 mint quote disappeared during recovery");
+    const quote = readQuoteRow(context.scopeId, row);
+    if (row.recoveryState !== "pending" || quote.observedState !== "UNPAID") return false;
+    context.requireCapturedProfile();
+    await context.database.mintQuotes.put(
+      toQuoteRow(context.scopeId, quote, "completed", row.lastRecoveryAttemptAtMs),
+    );
+    return true;
   });
 }
 
-/** End an expired quote that the mint still reports UNPAID. A paid or issued quote never ends here. */
-async function endExpiredUnpaidQuote(
-  context: CoordinatorContext,
-  quoteRecordId: string,
-): Promise<void> {
-  await withQuoteRecoveryLock(context, quoteRecordId, async () => {
-    context.requireCapturedProfile();
-    await context.database.transaction("rw", context.database.mintQuotes, async () => {
-      const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
-      if (!row) throw new Error("BOLT11 mint quote disappeared during recovery");
-      const quote = readQuoteRow(context.scopeId, row);
-      if (row.recoveryState !== "pending" || quote.observedState !== "UNPAID") return;
-      context.requireCapturedProfile();
-      await context.database.mintQuotes.put(
-        toQuoteRow(context.scopeId, quote, "completed", row.lastRecoveryAttemptAtMs),
-      );
-    });
-  });
+function assertNeverNut04State(value: never): never {
+  throw new Error(`Unhandled NUT-04 mint quote state: ${String(value)}`);
 }
 
 function isPastExpiryGrace(quote: DurableBolt11MintQuote, checkedAtMs: number): boolean {

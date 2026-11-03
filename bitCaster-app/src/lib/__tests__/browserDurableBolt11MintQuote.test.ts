@@ -656,12 +656,28 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
   });
 
-  it("ends an expired UNPAID quote after its first check after the expiry grace", async () => {
-    // The default fixture quote expired at Unix time 50.
+  it("ends an expired quote only after the grace and an UNPAID check under its lock", async () => {
+    // The default fixture quote expired at Unix time 50, long before the 24 h grace.
     const created = await createBrowserDurableBolt11MintQuote({
       amount: 100,
       mintUrl: MINT_URL,
       unit: UNIT,
+    });
+    const lockedChecks: boolean[] = [];
+    let locked = false;
+    mocks.context().lockManager = {
+      request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) => {
+        locked = true;
+        try {
+          return await action();
+        } finally {
+          locked = false;
+        }
+      },
+    };
+    mocks.wallet.checkMintQuote.mockImplementation(async () => {
+      lockedChecks.push(locked);
+      return { state: "UNPAID" };
     });
 
     expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 10 })).toEqual({
@@ -678,16 +694,46 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
       .database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
     expect(row?.recoveryState).toBe("completed");
     expect(row?.quote.observedState).toBe("UNPAID");
-    expect(mocks.wallet.checkMintQuote).toHaveBeenCalledOnce();
+    // The deciding check runs under the quote lock, just before the end write.
+    expect(lockedChecks.at(-1)).toBe(true);
     expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
     expect(useActivityLogStore.getState().items).toEqual([]);
   });
 
-  it("keeps an UNPAID quote pending while its expiry grace runs", async () => {
+  it("mints an expired quote whose check under the lock reports PAID", async () => {
+    const created = await createBrowserDurableBolt11MintQuote({
+      amount: 100,
+      mintUrl: MINT_URL,
+      unit: UNIT,
+    });
+    // The pass check sees UNPAID. The payment lands before the deciding check.
+    mocks.wallet.checkMintQuote
+      .mockResolvedValueOnce({ state: "UNPAID" })
+      .mockResolvedValue({ state: "PAID" });
+
+    expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 10 })).toEqual({
+      pending: 0,
+      hasMore: false,
+    });
+
+    const row = await mocks
+      .context()
+      .database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+    expect(row?.recoveryState).toBe("completed");
+    expect(row?.quote.observedState).toBe("PAID");
+    expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
+    expect(
+      (await getProofOperation(created.quote.walletMintOperationId, mocks.context().database))
+        ?.state,
+    ).toBe("completed");
+  });
+
+  it("still mints a quote that the mint reports PAID after its browser-time expiry, within the grace", async () => {
+    // The browser clock can run ahead of the mint. The quote looks expired here.
     mocks.wallet.createMintQuote.mockResolvedValueOnce({
       quote: "quote-1",
       request: "lnbc1invoice",
-      expiry: Math.floor(Date.now() / 1000) - 10,
+      expiry: Math.floor(Date.now() / 1000) - 23 * 60 * 60,
     });
     const created = await createBrowserDurableBolt11MintQuote({
       amount: 100,
@@ -697,6 +743,11 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
 
     expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 1, hasMore: false });
     expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("pending");
+    mocks.wallet.checkMintQuote.mockResolvedValue({ state: "PAID" });
+    expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 0, hasMore: false });
+
+    expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("completed");
+    expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
   });
 
   it("retains UNPAID quotes after recording the current recovery pass", async () => {
@@ -891,7 +942,7 @@ describe("browser BOLT11 mint quote watch", () => {
     try {
       const { options } = await waiter.started;
       const wake = vi.fn();
-      options.bindPollingWake(wake);
+      options.bindPollingControls({ resume: wake, checkNow: vi.fn() });
       expect(options.pollIntervalMs()).toBe(15_000);
       expect(options.pollWhileSubscribed()).toBe(false);
 
@@ -913,6 +964,35 @@ describe("browser BOLT11 mint quote watch", () => {
       await stopped;
     }
     expect(waiter.stop).toHaveBeenCalledOnce();
+  });
+
+  it("checks every watched quote now when the browser comes online or the page becomes visible", async () => {
+    const fakeWindow = new EventTarget();
+    const fakeDocument = Object.assign(new EventTarget(), {
+      visibilityState: "hidden" as DocumentVisibilityState,
+    });
+    vi.stubGlobal("window", fakeWindow);
+    vi.stubGlobal("document", fakeDocument);
+    let stopWatching = () => {};
+    try {
+      await createUnexpiredQuote();
+      const waiter = waiterStarted();
+      stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+      const { options } = await waiter.started;
+      const checkNow = vi.fn();
+      options.bindPollingControls({ resume: vi.fn(), checkNow });
+
+      fakeWindow.dispatchEvent(new Event("online"));
+      expect(checkNow).toHaveBeenCalledOnce();
+      fakeDocument.dispatchEvent(new Event("visibilitychange"));
+      expect(checkNow).toHaveBeenCalledOnce();
+      fakeDocument.visibilityState = "visible";
+      fakeDocument.dispatchEvent(new Event("visibilitychange"));
+      expect(checkNow).toHaveBeenCalledTimes(2);
+    } finally {
+      stopWatching();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("stops the shared waiter after the quote watch settles", async () => {
@@ -1126,7 +1206,7 @@ function waiterStarted() {
     options: {
       pollIntervalMs: () => number;
       pollWhileSubscribed: () => boolean;
-      bindPollingWake: (wake: () => void) => void;
+      bindPollingControls: (controls: { resume: () => void; checkNow: () => void }) => void;
     };
   }>((resolve) => {
     mocks.waitForMintQuotePaidForUnit.mockImplementation(async (quote, onResult, options) => {
