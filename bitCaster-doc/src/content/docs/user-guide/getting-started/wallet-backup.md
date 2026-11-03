@@ -9,6 +9,14 @@ Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
 data while a trade, payment, or refund is unresolved. Encrypted backup helps
 you recover wallet assets. It does not replace the phrase or every local record.
 
+:::caution
+The limited beta at bitcaster.market does not run the encrypted backup service
+yet. Your wallet's ecash is stored only in the browser that you use. Do not
+clear that browser's site data. A new browser with the same recovery phrase
+starts with an empty wallet. The CLI `wallet recover-seed` command can recover
+regular funds from the phrase, as described below.
+:::
+
 ## Seed reminder for deposits
 
 Top-up and deposit screens show a non-blocking reminder until you view the
