@@ -29,12 +29,10 @@ export function updateConfig(update: (current: CliConfig) => CliConfig): CliConf
   return toCliConfig(snapshot.config)
 }
 
-/** Validate an update like `updateConfig` and return the result without writing it. */
-export function previewConfigUpdate(update: (current: CliConfig) => CliConfig): CliConfig {
+/** Validate an update like `updateConfig` without writing it. */
+export function validateConfigUpdate(update: (current: CliConfig) => CliConfig): void {
   const current = readNativeConfig(true).config
-  return toCliConfig(
-    parseNativeConfig(JSON.stringify(toNativeConfig(current, update(toCliConfig(current))))),
-  )
+  parseNativeConfig(JSON.stringify(toNativeConfig(current, update(toCliConfig(current)))))
 }
 
 function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig {

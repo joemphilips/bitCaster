@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { Command } from 'commander'
-import { applyDryRunModes, dryRunRefusal } from '../src/dryRunPolicy.ts'
+import { applyDryRunModes, dryRunRefusal, unreadDryRunRefusal } from '../src/dryRunPolicy.ts'
 
 const execFileAsync = promisify(execFile)
 const MAIN = join(import.meta.dirname, '..', 'src', 'main.ts')
@@ -136,4 +136,27 @@ test('the declared mode decides whether --dry-run may reach the command action',
     dryRunRefusal(undeclared),
     'bitcaster-cli stray has no --dry-run declaration, so --dry-run is refused. Nothing was changed.',
   )
+})
+
+test('an executable subcommand fails CLI startup because it bypasses the guard', () => {
+  const program = new Command('bitcaster-cli')
+  program.command('health').action(() => {})
+  // A description argument makes Commander run a separate executable.
+  program.command('plugin', 'Run bitcaster-cli-plugin')
+  assert.throws(() => applyDryRunModes(program, { health: 'read-only' }), {
+    message: 'Executable subcommand bypasses the --dry-run guard: plugin',
+  })
+})
+
+test('a --dry-run token that the option parser did not read is refused', () => {
+  const refusal =
+    'bitcaster-cli did not read --dry-run as an option. Put --dry-run before any "--" and give it no value. Nothing was changed.'
+  assert.equal(
+    unreadDryRunRefusal(['order', 'cancel', 'm', 'o', '--', '--dry-run'], false),
+    refusal,
+  )
+  assert.equal(unreadDryRunRefusal(['wallet', 'send', '25', '--', '--dry-run=1'], false), refusal)
+  assert.equal(unreadDryRunRefusal(['--dry-run', 'wallet', 'send', '25'], true), null)
+  assert.equal(unreadDryRunRefusal(['wallet', 'send', '25', '--dry-runner'], false), null)
+  assert.equal(unreadDryRunRefusal(['wallet', 'send', '25'], false), null)
 })

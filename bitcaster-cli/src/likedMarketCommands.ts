@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import { BitcasterEngineClient } from '@bitcaster-market/client-sdk/engineClient'
 import { marketCatalogueIdBatches } from '@bitcaster-market/client-sdk/marketCatalogueBatches'
+import { printDryRun } from './dryRunPolicy.ts'
 
 interface LikedMarketCommandContext {
   readonly isDryRun: () => boolean
@@ -16,7 +17,8 @@ export function registerLikedMarketCommands(
     .description('List all saved liked condition IDs and available market metadata.')
     .option('--local', 'Read saved condition IDs without relay or engine requests')
     .action(async (options: { local?: boolean }) => {
-      if (context.isDryRun()) return print({ action: 'liked', dryRun: true })
+      if (context.isDryRun())
+        return printDryRun('market.liked', options.local ? { local: true } : {})
       const { readLocalNativeBookmarks, listNativeBookmarks } =
         await import('@bitcaster-market/daemon/nativeBookmarks')
       if (options.local)
@@ -41,7 +43,7 @@ export function registerLikedMarketCommands(
       )
       .action(async (conditionId: string) => {
         if (!conditionId.length) throw new Error('Condition ID must not be empty.')
-        if (context.isDryRun()) return print({ action, conditionId, dryRun: true })
+        if (context.isDryRun()) return printDryRun(`market.${action}`, { conditionId })
         const { setNativeMarketBookmark } = await import('@bitcaster-market/daemon/nativeBookmarks')
         const result = await setNativeMarketBookmark(conditionId, action === 'like')
         print({

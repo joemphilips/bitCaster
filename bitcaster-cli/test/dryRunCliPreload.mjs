@@ -24,7 +24,7 @@ const daemonResults = {
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input))
   if (url.pathname !== '/rpc') {
-    log({ url: url.href })
+    log({ url: url.href, httpMethod: init?.method ?? 'GET' })
     throw new TypeError('fetch failed')
   }
   const command = JSON.parse(String(init?.body ?? 'null'))
@@ -36,4 +36,12 @@ globalThis.fetch = async (input, init) => {
     status: 200,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+// Relay traffic uses the global WebSocket. Record and refuse every connection.
+globalThis.WebSocket = class {
+  constructor(url) {
+    log({ websocket: String(url) })
+    throw new Error('Unexpected WebSocket connection in the dry-run fixture')
+  }
 }

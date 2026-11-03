@@ -2,6 +2,7 @@ import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { Command } from 'commander'
 import type { NostrProfilePatch } from '@bitcaster-market/client-sdk/nostrProfile'
+import { printDryRun } from './dryRunPolicy.ts'
 
 interface SignerCommandContext {
   readonly isDryRun: () => boolean
@@ -24,7 +25,7 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
         Object.entries(options).filter(([, value]) => value !== undefined),
       )
       if (Object.keys(patch).length === 0) {
-        if (context.isDryRun()) return print({ action: 'profile', dryRun: true })
+        if (context.isDryRun()) return printDryRun('signer.profile')
         const { readNativeSignerProfile } =
           await import('@bitcaster-market/daemon/nativeSignerProfile')
         return print(await readNativeSignerProfile())
@@ -32,8 +33,7 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
       const { validateNostrProfilePatch } =
         await import('@bitcaster-market/client-sdk/nostrProfile')
       const validated = validateNostrProfilePatch(patch)
-      if (context.isDryRun())
-        return print({ action: 'profile-edit', patch: validated, dryRun: true })
+      if (context.isDryRun()) return printDryRun('signer.profile.edit', validated)
       const { editNativeSignerProfile } =
         await import('@bitcaster-market/daemon/nativeSignerProfile')
       const result = await editNativeSignerProfile(validated)
@@ -64,7 +64,8 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
       .requiredOption('--expected-revision <revision>', 'Revision returned by signer show')
       .action(async (options: { expectedRevision: string }) => {
         const revision = parseRevision(options.expectedRevision)
-        if (context.isDryRun()) return print({ action, expectedRevision: revision, dryRun: true })
+        if (context.isDryRun())
+          return printDryRun(`signer.${action}`, { expectedRevision: revision })
         const { reconnectDaemonSigner, disconnectDaemonSigner } =
           await import('@bitcaster-market/daemon/secrets')
         print(
@@ -101,12 +102,7 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
           await import('@bitcaster-market/client-sdk/nostrSignerKey')
         const key = decodePrivateNostrSignerKey(keyText, passphrase)
         if (context.isDryRun())
-          return print({
-            action: 'import',
-            expectedRevision,
-            publicKeyHex: key.publicKeyHex,
-            dryRun: true,
-          })
+          return printDryRun('signer.import', { expectedRevision, publicKeyHex: key.publicKeyHex })
         const { replaceDaemonSigner } = await import('@bitcaster-market/daemon/secrets')
         print(await replaceDaemonSigner({ expectedRevision, nostrSecretKeyHex: key.secretKeyHex }))
       },
@@ -119,7 +115,7 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
     .requiredOption('--expected-revision <revision>', 'Revision returned by signer show')
     .action(async (options: { expectedRevision: string }) => {
       const expectedRevision = parseRevision(options.expectedRevision)
-      if (context.isDryRun()) return print({ action: 'generate', expectedRevision, dryRun: true })
+      if (context.isDryRun()) return printDryRun('signer.generate', { expectedRevision })
       const { replaceDaemonSigner } = await import('@bitcaster-market/daemon/secrets')
       const { generatePrivateNostrSignerKey } =
         await import('@bitcaster-market/client-sdk/nostrSignerKey')
@@ -138,7 +134,8 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
       'New private file; existing files are never overwritten',
     )
     .action(async (options: { outputFile: string }) => {
-      if (context.isDryRun()) return print({ action: 'export', dryRun: true })
+      if (context.isDryRun())
+        return printDryRun('signer.export', { outputFile: options.outputFile })
       const { readSecrets } = await import('@bitcaster-market/daemon/secrets')
       const { decodePrivateNostrSignerKey } =
         await import('@bitcaster-market/client-sdk/nostrSignerKey')

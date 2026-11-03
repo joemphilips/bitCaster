@@ -167,7 +167,11 @@ test('actual profile help states fresh relay reads, and dry run makes no network
       /selected relays[\s\S]*No stored\s+cache/,
     )
     const result = await f.run(['--dry-run', 'signer', 'profile'], 'forbidden')
-    assert.deepEqual(JSON.parse(result.stdout), { action: 'profile', dryRun: true })
+    assert.deepEqual(JSON.parse(result.stdout), {
+      dryRun: true,
+      method: 'signer.profile',
+      params: {},
+    })
     redacted(result.stdout + result.stderr)
   } finally {
     await f.close()
@@ -265,9 +269,9 @@ test('actual CLI edit dry-run validates supplied strings with no network or secr
       'forbidden',
     )
     assert.deepEqual(JSON.parse(result.stdout), {
-      action: 'profile-edit',
-      patch: { name: '', about: 'Draft' },
       dryRun: true,
+      method: 'signer.profile.edit',
+      params: { name: '', about: 'Draft' },
     })
     await assert.rejects(
       f.run(['--dry-run', 'signer', 'profile', '--about', 'a'.repeat(65_536)], 'forbidden'),

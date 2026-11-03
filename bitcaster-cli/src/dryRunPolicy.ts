@@ -120,9 +120,9 @@ export const DRY_RUN_MODES: Readonly<Record<string, DryRunMode>> = {
 
 const MODE_HELP: Readonly<Record<DryRunMode, string>> = {
   'read-only':
-    'Dry run: read-only. This command does not change funds, orders, markets, keys, or settings. It runs normally with --dry-run.',
+    'Dry run: read-only. This command does not change funds, orders, markets, keys, or settings. It runs normally with --dry-run. The daemon must already run, because a dry run never starts it.',
   supported:
-    'Dry run: supported. With --dry-run, this command prints the intended operation. It does not change funds, orders, markets, keys, or settings.',
+    'Dry run: supported. With --dry-run, this command prints {"dryRun": true, "method", "params"} for the intended operation. It does not change funds, orders, markets, keys, or settings.',
   refused:
     'Dry run: refused. With --dry-run, this command stops with exit code 2 before it does anything.',
 }
@@ -130,10 +130,22 @@ const MODE_HELP: Readonly<Record<DryRunMode, string>> = {
 export const DRY_RUN_PROGRAM_HELP = `
 Dry run:
   Each command help states how the command handles --dry-run.
-  supported  prints the intended operation and changes nothing
-  read-only  runs normally because it changes nothing
+  supported  prints {"dryRun": true, "method", "params"} and changes nothing
+  read-only  runs normally; it changes no funds, orders, markets, keys, or settings
   refused    stops with exit code 2 before it acts
-  With --dry-run, the CLI does not start bitcaster-daemon.`
+  With --dry-run, the CLI does not start bitcaster-daemon.
+  Put --dry-run before any "--" and give it no value.`
+
+// Never print bearer tokens, seeds, private keys, or authorization values.
+const REDACTED_KEYS = new Set([
+  'authorization',
+  'nostrSecretKeyHex',
+  'nsec',
+  'secretKeyHex',
+  'sig',
+  'token',
+  'walletSeedHex',
+])
 
 const declaredModes = new WeakMap<Command, DryRunMode>()
 
@@ -148,7 +160,8 @@ export function commandPath(command: Command): string {
 
 /**
  * Attach each declared mode and its help line. Throw when a command with an
- * action has no declaration, or when a declaration names no such command.
+ * action has no declaration, when a declaration names no such command, or when
+ * an executable subcommand exists, because it bypasses the preAction guard.
  */
 export function applyDryRunModes(
   program: Command,
@@ -156,7 +169,12 @@ export function applyDryRunModes(
 ): void {
   const unmatched = new Set(Object.keys(declarations))
   const undeclared: string[] = []
+  const executables: string[] = []
   for (const command of descendants(program)) {
+    if (isExecutable(command)) {
+      executables.push(commandPath(command))
+      continue
+    }
     if (!hasAction(command)) continue
     const path = commandPath(command)
     if (!Object.hasOwn(declarations, path)) {
@@ -168,9 +186,10 @@ export function applyDryRunModes(
     declaredModes.set(command, mode)
     command.addHelpText('after', `\n${MODE_HELP[mode]}`)
   }
-  if (undeclared.length > 0 || unmatched.size > 0) {
+  if (undeclared.length > 0 || unmatched.size > 0 || executables.length > 0) {
     throw new Error(
       [
+        ...executables.map((path) => `Executable subcommand bypasses the --dry-run guard: ${path}`),
         ...undeclared.map((path) => `Command has no --dry-run declaration: ${path}`),
         ...[...unmatched].map((path) => `--dry-run declaration names no command: ${path}`),
       ].join('\n'),
@@ -198,6 +217,34 @@ export function dryRunRefusal(command: Command): string | null {
   }
 }
 
+/**
+ * Refuse a literal --dry-run token that the option parser did not read, for
+ * example one after "--". Commander passes such a token to the action as an
+ * operand, so the command would act for real.
+ */
+export function unreadDryRunRefusal(argv: readonly string[], dryRun: boolean): string | null {
+  if (dryRun) return null
+  if (!argv.some((arg) => arg === '--dry-run' || arg.startsWith('--dry-run='))) return null
+  return 'bitcaster-cli did not read --dry-run as an option. Put --dry-run before any "--" and give it no value. Nothing was changed.'
+}
+
+/** Print one dry-run preview shape. Remove secret fields at every depth. */
+export function printDryRun(method: string, params: unknown = {}): void {
+  process.stdout.write(
+    `${JSON.stringify({ dryRun: true, method, params: redact(params) }, null, 2)}\n`,
+  )
+}
+
+function redact(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redact)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !REDACTED_KEYS.has(key))
+      .map(([key, child]) => [key, redact(child)]),
+  )
+}
+
 function descendants(command: Command): Command[] {
   return command.commands.flatMap((child) => [child, ...descendants(child)])
 }
@@ -208,4 +255,10 @@ function hasAction(command: Command): boolean {
   // declaration, so the CLI fails at startup instead of skipping a command.
   const handler = (command as unknown as { _actionHandler?: unknown })._actionHandler
   return handler !== null
+}
+
+function isExecutable(command: Command): boolean {
+  // `.command(name, description)` sets this private Commander 12 field. Such a
+  // subcommand runs as a separate process without the preAction hooks.
+  return (command as unknown as { _executableHandler?: unknown })._executableHandler === true
 }

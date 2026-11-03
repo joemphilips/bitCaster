@@ -74,12 +74,16 @@ bitcaster-cli --dry-run market fund begin <condition-id> --amount-msat 8000 --ma
 ```
 
 Each command's `--help` states its dry-run mode.
-A supported command prints the intended operation as JSON.
+A supported command prints `{"dryRun": true, "method": ..., "params": ...}`.
+`method` names the intended operation. `params` holds its request without secret values.
 It does not move funds or change orders, markets, keys, or settings.
-A read-only command runs normally because it changes nothing.
+A read-only command runs normally.
+It does not change funds, orders, markets, keys, or settings.
+With `--dry-run`, the daemon must already run, because a dry run never starts it.
 A refused command stops with exit code 2 before it acts.
 `daemon init`, `daemon stop`, and `daemon restart` refuse `--dry-run`.
-With `--dry-run`, the CLI does not start the daemon.
+Put `--dry-run` before any `--` and give it no value.
+Otherwise, the CLI stops with exit code 2.
 A dry run does not prove that the operation can succeed.
 
 Use `bitcaster-cli --help` and each command's `--help` to check current support.

@@ -4587,20 +4587,24 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
       env,
     )
     assert.deepEqual(JSON.parse(created.stdout), {
-      creationId: 'dry-create-001',
-      eventId: 'dry-create-001',
-      market: {
-        title: 'Will it rain?',
-        description: 'Weather market',
-        outcomeType: 'yesno',
-        outcomeDetails: [{ name: 'Yes' }, { name: 'No' }],
-        maturityEpoch: 1_893_456_000,
-        categoryTags: [],
-        baseAsset: 'sat',
+      dryRun: true,
+      method: 'market.create-native',
+      params: {
+        creationId: 'dry-create-001',
+        eventId: 'dry-create-001',
+        market: {
+          title: 'Will it rain?',
+          description: 'Weather market',
+          outcomeType: 'yesno',
+          outcomeDetails: [{ name: 'Yes' }, { name: 'No' }],
+          maturityEpoch: 1_893_456_000,
+          categoryTags: [],
+          baseAsset: 'sat',
+        },
+        relayUrls: ['wss://relay.example'],
+        thumbnailPath: '/tmp/thumbnail.png',
+        maxWalletDebitMsat: 1_000_000,
       },
-      relayUrls: ['wss://relay.example'],
-      thumbnailPath: '/tmp/thumbnail.png',
-      maxWalletDebitMsat: 1_000_000,
     })
     let config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
       cli: { trustedEngineUrls: string[] }
@@ -4619,8 +4623,9 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
       env,
     )
     assert.deepEqual(JSON.parse(resumed.stdout), {
-      creationId: 'dry-create-001',
-      thumbnailPath: '/tmp/thumbnail.png',
+      dryRun: true,
+      method: 'market.creation-resume',
+      params: { creationId: 'dry-create-001', thumbnailPath: '/tmp/thumbnail.png' },
     })
     config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
       cli: { trustedEngineUrls: string[] }
@@ -5279,16 +5284,20 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     '--dry-run',
   ])
   assert.deepEqual(JSON.parse(result.stdout), {
-    marketId: 'cond-YES',
-    outcomeId: 'YES',
-    tokenSide: 'Complement',
-    side: 'Buy',
-    price: 42,
-    amountSubunits: 100,
-    minimumFillAmountSubunits: 50,
-    consolidateProofs: false,
-    timeInForce: 'FOK',
-    expiresAt: null,
+    dryRun: true,
+    method: 'order.submit',
+    params: {
+      marketId: 'cond-YES',
+      outcomeId: 'YES',
+      tokenSide: 'Complement',
+      side: 'Buy',
+      price: 42,
+      amountSubunits: 100,
+      minimumFillAmountSubunits: 50,
+      consolidateProofs: false,
+      timeInForce: 'FOK',
+      expiresAt: null,
+    },
   })
   assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
 })
@@ -5318,7 +5327,7 @@ test('order submit maps exact aggregate consent flags for Buy and Sell', async (
         '4000',
         '--dry-run',
       ])
-      const request = JSON.parse(result.stdout)
+      const request = JSON.parse(result.stdout).params
       assert.equal(request.side, side)
       assert.equal(request.tokenSide, tokenSide)
       assert.equal(request.price, 500)
@@ -5406,17 +5415,20 @@ test('market creation rejects the removed --liquidity-sats option', async () => 
 
 test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daemon and redact sensitive fields', async () => {
   const attestation = kind89Event()
-  const cases: Array<{ args: string[]; expected: unknown }> = [
+  const cases: Array<{ args: string[]; method: string; expected: unknown }> = [
     {
       args: ['wallet', 'send', '25', '--mint', 'mint-a', '--operation-id', 'op-1', '--dry-run'],
+      method: 'wallet.send',
       expected: { amountMsat: 25_000, mintUrl: 'mint-a', operationId: 'op-1' },
     },
     {
       args: ['wallet', 'split', 'cond-1', '1.001', '--mint', 'mint-a', '--dry-run'],
+      method: 'wallet.splitCompleteSet',
       expected: { conditionId: 'cond-1', amountMsat: 1_001, mintUrl: 'mint-a' },
     },
     {
       args: ['wallet', 'consolidate', 'cond-A', '--strategy', 'merge', '--dry-run'],
+      method: 'wallet.consolidateMarket',
       expected: { marketId: 'cond-A', type: 't1' },
     },
     {
@@ -5434,6 +5446,7 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         '--trust-engine-url',
         '--dry-run',
       ],
+      method: 'market.create',
       expected: {
         conditionId: 'cond-1',
         title: 'Market',
@@ -5452,6 +5465,7 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         '--trust-engine-url',
         '--dry-run',
       ],
+      method: 'market.close',
       expected: {
         conditionId: 'cond-1',
         attestationTemplate: {
@@ -5466,7 +5480,11 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
 
   for (const testCase of cases) {
     const result = await runCliWithOutput('http://127.0.0.1:1', testCase.args)
-    assert.deepEqual(JSON.parse(result.stdout), testCase.expected)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      dryRun: true,
+      method: testCase.method,
+      params: testCase.expected,
+    })
     assert.doesNotMatch(
       result.stdout,
       /secret|witness|mnemonic|nwc|authorization|sig|nostrSecretKeyHex/i,
