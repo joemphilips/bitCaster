@@ -27,9 +27,14 @@ import {
   createCtfRangePreparationIntent,
   decodeCtfRangeOrderPreparationFromRecord,
   planPersistedCtfRangeOrderAuthorization,
+  previewCtfRangeSettlementCapabilityWorkFacts,
   reconstructCtfRangePreparation,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import {
+  CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+  calculateSettlementCapabilityTariff,
+} from "@bitcaster/client-sdk/participationScore";
 import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type { DurableCtfRangeAsset } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
@@ -64,7 +69,10 @@ import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import { ensureWalletKeysetCounterReady } from "./cashu";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
-import type { BrowserParticipationScoreRecoveryStatus } from "./browserParticipationScoreDelivery";
+import {
+  readBrowserParticipationScorePayableScore,
+  type BrowserParticipationScoreRecoveryStatus,
+} from "./browserParticipationScoreDelivery";
 import {
   beginBrowserCtfRangeOrderAttempt,
   endBrowserCtfRangeOrderAttempt,
@@ -170,6 +178,44 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     default:
       return assertNever(selection);
   }
+}
+
+/** Display-only facts for the Participation Score purchase that an order can cause. */
+export interface BrowserCtfRangeOrderScorePreview {
+  /** Score that the order's capability admission charges under the current tariff rule. */
+  readonly requiredScore: number;
+  /** Whole Score that the wallet can pay after the order sets its own sats aside. */
+  readonly availableScore: number;
+}
+
+/**
+ * Preview the Score facts for a new order, without reserving funds or
+ * counters. The submission computes the tariff again from its real artifact
+ * and reads the spare Score again after it reserves the order's funds.
+ */
+export async function previewBrowserCtfRangeOrderScore(input: {
+  readonly market: MarketDetail;
+  readonly ticket: TradeTicket;
+  readonly mintUrl: string;
+}): Promise<BrowserCtfRangeOrderScorePreview> {
+  const { preparation } = await loadBrowserRangePreparation({
+    ...input,
+    clientOrderId: crypto.randomUUID(),
+  });
+  if (preparation.version !== 2) throw new Error("new browser preparation must be version 2");
+  const requiredScore = calculateSettlementCapabilityTariff(
+    CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+    previewCtfRangeSettlementCapabilityWorkFacts(preparation),
+  );
+  // A Buy offers ordinary sats, so its authorization stays out of the Score
+  // purchase. A Sell offers shares. Its small preparation fees are not set
+  // aside here.
+  const reservedScore =
+    preparation.side === "Buy"
+      ? Math.ceil(Number(planPersistedCtfRangeOrderAuthorization(preparation).inputAmount) / 1_000)
+      : 0;
+  const payableScore = await readBrowserParticipationScorePayableScore(input.mintUrl);
+  return { requiredScore, availableScore: Math.max(0, payableScore - reservedScore) };
 }
 
 export async function submitBrowserCtfRangeOrder(
@@ -732,11 +778,9 @@ export class BrowserCtfRangeScoreTopUpRequiredError extends Error {
     balanceSats: number | null;
     recoveryStatus?: BrowserParticipationScoreRecoveryStatus;
   }) {
-    super(
-      input.recoveryStatus === "unavailable"
-        ? "Participation Score asset recovery is unavailable. Retry recovery or add funds."
-        : "Participation Score balance is insufficient for this capability. Top up and retry to recover the prepared capability.",
-    );
+    // The GUI shows the localized `trade.scoreTopUpRequired` or
+    // `trade.scoreRecoveryUnavailable` text. This message is for diagnosis.
+    super(`Participation Score top-up is required (${input.recoveryStatus ?? "insufficient"}).`);
     this.name = "BrowserCtfRangeScoreTopUpRequiredError";
     this.requiredSats = input.requiredSats;
     this.balanceSats = input.balanceSats;

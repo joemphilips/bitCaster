@@ -2,6 +2,8 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
+import type { BrowserCtfRangeOrderErrorCode } from "@/lib/browserCtfRangeOrderCoordinator";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { useWalletStore } from "@/stores/wallet";
 import {
@@ -11,6 +13,13 @@ import {
 } from "@/stores/ctf-range-order-messages";
 
 const VISIBLE_MESSAGE_LIMIT = 8;
+
+/** Alerts whose text names Participation Score, so the term's help goes next to them. */
+const PARTICIPATION_SCORE_MESSAGE_CODES: ReadonlySet<BrowserCtfRangeOrderErrorCode> = new Set([
+  "score-top-up-required",
+  "score-top-up-cancelled",
+  "settlement-capability-score-required",
+] as const);
 
 export function DurableWalletErrors() {
   const mnemonic = useWalletStore((state) => state.mnemonic);
@@ -47,7 +56,10 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
                 ? t("walletRecovery.orderFailure")
                 : t("walletRecovery.fundsRecovery")}
             </p>
-            <p>{t(`walletRecovery.errors.${message.code}`)}</p>
+            <div className="flex items-center gap-2">
+              <p>{t(`walletRecovery.errors.${message.code}`)}</p>
+              {PARTICIPATION_SCORE_MESSAGE_CODES.has(message.code) && <ParticipationScoreHelp />}
+            </div>
             <p className="mt-1 truncate font-mono text-xs opacity-75" title={message.operationId}>
               {t("walletRecovery.operation", { operationId: message.operationId })}
             </p>

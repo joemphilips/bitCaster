@@ -29,6 +29,7 @@ import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredMod
 import { NostrAccountChooserModal } from "@/components/shared/NostrAccountChooserModal";
 import { BackupSecretsReminderModal } from "@/components/shared/BackupSecretsReminderModal";
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
+import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { db } from "@/stores/proof-db";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
@@ -38,6 +39,7 @@ import {
   MarketDetailUnavailableError,
   fetchOrderBook,
   createAuthenticatedBrowserEngineClient,
+  getParticipationScore,
   mapSnapshotToOrderBook,
   deriveCategoricalOdds,
   deriveYesNoOdds,
@@ -105,8 +107,14 @@ import {
   BrowserCtfRangeScoreTopUpCancelledError,
   BrowserCtfRangeScoreTopUpRequiredError,
   previewBrowserCtfRangeOrderFees,
+  previewBrowserCtfRangeOrderScore,
   submitBrowserCtfRangeOrder,
+  type BrowserCtfRangeOrderScorePreview,
 } from "@/lib/browserCtfRangeOrderSubmission";
+import {
+  planParticipationScoreTopUp,
+  type ParticipationScoreLike,
+} from "@bitcaster/client-sdk/participationScore";
 import { BrowserCtfRangeOrderError } from "@/lib/browserCtfRangeOrderCoordinator";
 import type { BrowserCtfRangeOrderFeePreview } from "@/lib/browserCtfRangeOrderSubmission";
 import type {
@@ -126,6 +134,42 @@ import { useFokOrderPreview } from "@/hooks/useFokOrderPreview";
 import { useFokOrderCapacityPreview } from "@/hooks/useFokOrderCapacityPreview";
 
 type TopUpStage = "closed" | "modal" | "overlay";
+
+/**
+ * Score that confirming the order buys from ordinary sats, from the same SDK
+ * plan as the submission. Null when the balance covers the order, Score is
+ * off, or the balance is unknown.
+ */
+function participationScorePurchaseFor(
+  score: ParticipationScoreLike | null,
+  preview: BrowserCtfRangeOrderScorePreview,
+): number | null {
+  if (score === null) return null;
+  const plan = planParticipationScoreTopUp(score, preview.requiredScore, preview.availableScore);
+  switch (plan.kind) {
+    case "disabled":
+    case "sufficient":
+      return null;
+    case "needs-top-up":
+      return plan.topUpScore;
+    default:
+      return assertNever(plan);
+  }
+}
+
+function scoreTopUpRequiredMessageKey(
+  status: BrowserCtfRangeScoreTopUpRequiredError["recoveryStatus"],
+): string {
+  switch (status) {
+    case "insufficient":
+      return "trade.scoreTopUpRequired";
+    case "unavailable":
+      return "trade.scoreRecoveryUnavailable";
+    default:
+      return assertNever(status);
+  }
+}
+
 type TopUpReason =
   | { kind: "collateral"; required: number; baseAsset: string }
   | {
@@ -1367,6 +1411,8 @@ export function MarketDetailPage() {
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
+    /** The message names Participation Score, so the term's help goes next to it. */
+    participationScoreHelp?: boolean;
     reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
     reviewedFeeIdentityKey?: string;
     /** A matched order that waits for its authoritative final status. */
@@ -1423,6 +1469,12 @@ export function MarketDetailPage() {
     feeFacts: BrowserCtfRangeOrderFeePreview;
   } | null>(null);
   const [feeFactsRefreshGeneration, setFeeFactsRefreshGeneration] = useState(0);
+  const [rangeScorePreview, setRangeScorePreview] = useState<
+    ({ key: string } & BrowserCtfRangeOrderScorePreview) | null
+  >(null);
+  const [participationScore, setParticipationScore] = useState<ParticipationScoreLike | null>(null);
+  // Each order attempt can buy or consume Score, so it starts a new Score read.
+  const [participationScoreGeneration, setParticipationScoreGeneration] = useState(0);
   const tradeSubmitInFlightRef = useRef(false);
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
@@ -1442,6 +1494,32 @@ export function MarketDetailPage() {
     null,
   );
   const walletReady = setupComplete && nostrSignerMode !== "none";
+
+  // Read Score only while the user drafts a trade, as the signed fee preview
+  // does. Display only: the submission reads Score again before it buys any.
+  const tradeDraftActive = tradeSelection !== null && tradeAmount > 0;
+  useEffect(() => {
+    setParticipationScore(null);
+    if (!walletReady || !tradeDraftActive) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const score = await getParticipationScore();
+        if (!cancelled) setParticipationScore({ enabled: score.enabled, balance: score.balance });
+      } catch {
+        // Without a current balance the trade panel shows no Score amount.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    walletReady,
+    tradeDraftActive,
+    nostrSignerMode,
+    nostrProfilePubkey,
+    participationScoreGeneration,
+  ]);
 
   const activeScopeId = activeBrowserWalletScopeId();
   const mnemonicScopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -2183,6 +2261,13 @@ export function MarketDetailPage() {
       ? tradeFeasibilityResult
       : null;
   const feeConsentCurrent = displayedTradeFeeFacts !== null;
+  const participationScorePurchase = useMemo(
+    () =>
+      rangeScorePreview !== null && rangeScorePreview.key === rangeFeePreviewKey
+        ? participationScorePurchaseFor(participationScore, rangeScorePreview)
+        : null,
+    [participationScore, rangeFeePreviewKey, rangeScorePreview],
+  );
   const feeInputsRef = useRef({ market, protectedTradeTicket });
   feeInputsRef.current = { market, protectedTradeTicket };
   const hasTradeSelection = tradeSelection !== null;
@@ -2228,6 +2313,7 @@ export function MarketDetailPage() {
     let cancelled = false;
     setTradeFeasibility(null);
     setRangeFeePreview(null);
+    setRangeScorePreview(null);
     const evaluate = async () => {
       try {
         const feePreview = await previewBrowserCtfRangeOrderFees({
@@ -2238,6 +2324,21 @@ export function MarketDetailPage() {
         if (cancelled || !isCurrentRoute(routeId, generation)) return;
         setRangeFeePreview({ key: rangeFeePreviewKey, feeFacts: feePreview });
         setTradeFeasibility({ key: rangeFeePreviewKey, canBack: true });
+        try {
+          const scorePreview = await previewBrowserCtfRangeOrderScore({
+            market,
+            ticket: protectedTradeTicket,
+            mintUrl: activeMintUrl,
+          });
+          if (cancelled || !isCurrentRoute(routeId, generation)) return;
+          setRangeScorePreview({
+            key: rangeFeePreviewKey,
+            requiredScore: scorePreview.requiredScore,
+            availableScore: scorePreview.availableScore,
+          });
+        } catch {
+          // The Score row is display only. A failed read shows no Score amount.
+        }
       } catch (error) {
         if (cancelled || !isCurrentRoute(routeId, generation)) return;
         // The panel shows a coarse reason. Log the code for diagnosis, not the proof details.
@@ -2616,6 +2717,7 @@ export function MarketDetailPage() {
           setTradeSubmitStatus({
             kind: "info",
             message: t("trade.scoreTopUpCancelled"),
+            participationScoreHelp: true,
             reviewedFeeFacts,
             reviewedFeeIdentityKey: capturedPreviewIdentityKey,
           });
@@ -2624,7 +2726,8 @@ export function MarketDetailPage() {
         if (e instanceof BrowserCtfRangeScoreTopUpRequiredError) {
           setTradeSubmitStatus({
             kind: "error",
-            message: e.message,
+            message: t(scoreTopUpRequiredMessageKey(e.recoveryStatus)),
+            participationScoreHelp: true,
             reviewedFeeFacts,
             reviewedFeeIdentityKey: capturedPreviewIdentityKey,
           });
@@ -2658,6 +2761,7 @@ export function MarketDetailPage() {
           setQuoteRefreshWait(null);
           tradeSubmitInFlightRef.current = false;
           setIsTradeSubmitting(false);
+          setParticipationScoreGeneration((current) => current + 1);
         }
       }
     },
@@ -3124,6 +3228,7 @@ export function MarketDetailPage() {
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
         attemptedTradeFeeFacts={displayedAttemptedTradeFeeFacts}
+        participationScorePurchase={participationScorePurchase}
         feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}
@@ -3186,6 +3291,7 @@ export function MarketDetailPage() {
           balance={balanceAtCheck}
           required={topUpReason?.required ?? tradeAmount}
           title={topUpReason?.kind === "score" ? t("insufficientBalance.scoreTitle") : undefined}
+          titleHelp={topUpReason?.kind === "score" ? <ParticipationScoreHelp /> : undefined}
           requiredDescription={
             topUpReason?.kind === "score" ? t("insufficientBalance.scoreNeeds") : undefined
           }
@@ -3225,6 +3331,7 @@ export function MarketDetailPage() {
                 })
               : undefined
           }
+          minimumErrorHelp={topUpReason?.kind === "score" ? <ParticipationScoreHelp /> : undefined}
           onSuccess={handleTopUpSuccess}
           onCancel={handleTopUpCancel}
         />

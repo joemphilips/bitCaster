@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
 
@@ -59,6 +59,34 @@ describe("DurableWalletErrors", () => {
       code: "mint-source-uncertain",
       acknowledgedAtMs: expect.any(Number),
     });
+  });
+
+  it.each([
+    "score-top-up-required",
+    "score-top-up-cancelled",
+    "settlement-capability-score-required",
+  ])("puts the Participation Score help next to the %s alert", (code) => {
+    const original = mocks.page;
+    mocks.page = { ...original, messages: [{ ...original.messages[0]!, code, kind: "order" }] };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Participation Score");
+      expect(
+        within(alert).getByRole("button", { name: "About Participation Score" }),
+      ).toHaveAccessibleDescription(
+        "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
+      );
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("shows no Participation Score help on another alert", () => {
+    render(<DurableWalletErrors />);
+
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
   });
 
   it("can read later alerts without dismissing an unresolved alert", () => {

@@ -51,7 +51,7 @@ export async function ensureParticipationScoreForNextMatch(input: {
   requiredScore: number;
 }): Promise<ParticipationScorePreflightResult> {
   if (!input.mintUrl) {
-    throw new Error("Select an active mint before paying engine Score.");
+    throw new Error("Select an active mint before paying Participation Score.");
   }
   const settings = useSettingsStore.getState();
   const accountSubject = resolveCreatorPubkey({

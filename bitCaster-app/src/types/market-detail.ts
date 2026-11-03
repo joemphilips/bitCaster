@@ -252,7 +252,6 @@ export interface LimitOrderPreview {
   quoteSubunits: number;
   creatorFee: number;
   mintFee: number;
-  engineScoreFeeSats: number | null;
   potentialPayout: number;
   totalCost: number;
 }
@@ -269,7 +268,6 @@ export interface TradePreview {
   mintFee: number;
   potentialPayout: number;
   creatorFee: number;
-  engineScoreFeeSats: number | null;
   totalCost: number;
 }
 
@@ -331,6 +329,9 @@ export interface MarketDetailProps {
   /** Display-only reviewed fees for the last cancelled or failed attempt. These do not supply current consent. */
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
 
+  /** Score that the app buys from the wallet when this order is confirmed. Null shows no row. */
+  participationScorePurchase?: number | null;
+
   /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
   feeConsentCurrent?: boolean;
 
@@ -353,6 +354,8 @@ export interface MarketDetailProps {
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
     message: string;
+    /** The message names Participation Score, so the term's help goes next to it. */
+    participationScoreHelp?: boolean;
   } | null;
 
   /** Explicitly dismiss the latest order-submit status. */

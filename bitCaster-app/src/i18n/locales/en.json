@@ -315,9 +315,6 @@
     "creatorFeeTooltip": "Paid to the market creator as a reward for creating this market",
     "mintFee": "Mint fee",
     "mintFeeTooltip": "Charged by the Cashu mint for processing the transaction",
-    "engineScoreFee": "Engine Score fee",
-    "engineScoreFeeTooltip": "Charged by the matching engine for order execution",
-    "engineScoreFeeShownAtConfirmation": "Shown at confirmation",
     "totalCost": "Total cost",
     "totalExpectedCost": "Total expected cost",
     "quotePayment": "Quote payment",
@@ -421,6 +418,8 @@
     "quoteWaitRecovery": "We will retry your unchanged order for up to a minute. Stopping may still require wallet recovery.",
     "topUpIntentChanged": "Order details changed during top-up. Review the order and confirm again.",
     "scoreTopUpCancelled": "Participation Score top-up was cancelled. The order was not submitted.",
+    "scoreTopUpRequired": "Participation Score balance is insufficient for this order. Top up and retry to resume the prepared order.",
+    "scoreRecoveryUnavailable": "Participation Score asset recovery is unavailable. Retry recovery or add funds.",
     "orderSettling": "Order matched. Settlement is pending.",
     "selectActiveMintBeforeSubmit": "Select an active mint before submitting the order.",
     "topUpStillInsufficient": "Top-up completed, but the wallet balance is still below the order requirement.",
@@ -1101,7 +1100,7 @@
     "title": "Top Up Wallet",
     "minimumError": "Amount must be at least {{amount}} to cover the trade.",
     "chooseAmount": "Choose an amount to add. After the funds arrive, review the updated trade cost before confirming. The required amount depends on wallet fees.",
-    "scoreMinimumError": "Amount must be at least {{amount}} to cover Engine Score.",
+    "scoreMinimumError": "Amount must be at least {{amount}} to cover Participation Score.",
     "registrationFee": "Registration fee",
     "yourBalance": "Your balance",
     "topUpNeeded": "Top-up needed",
@@ -1144,9 +1143,9 @@
   },
   "insufficientBalance": {
     "title": "Insufficient Balance",
-    "scoreTitle": "Top Up Engine Score",
+    "scoreTitle": "Top Up Participation Score",
     "tradeNeeds": "This trade needs",
-    "scoreNeeds": "Engine Score needs",
+    "scoreNeeds": "Participation Score needs",
     "youHave": "You have",
     "shortBy": "short by",
     "localBalanceUnavailable": "The balance in this browser is unavailable.",
@@ -1154,6 +1153,11 @@
     "recoveryUnavailableUnknownBalance": "Wallet recovery is currently unavailable.",
     "sats": "{{count}} sats",
     "topUp": "Top Up"
+  },
+  "participationScore": {
+    "name": "Participation Score",
+    "helpLabel": "About Participation Score",
+    "help": "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable."
   },
   "sort": {
     "label": "Sort markets",

@@ -1045,6 +1045,116 @@ describe("TradingPanel", () => {
     );
   }
 
+  it.each(["Buy", "Sell"] as const)(
+    "shows the %s Participation Score purchase as a row with its help",
+    async (tradeSide) => {
+      const user = userEvent.setup();
+      render(
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={5}
+          tradePreview={readyPreview()}
+          tradeFeeFacts={feeFacts()}
+          participationScorePurchase={5}
+          feeConsentCurrent
+          tradeSide={tradeSide}
+          sellHoldings={sellHoldings({ Yes: { selectableSubunits: 10_000 } })}
+          onTradeConfirm={vi.fn()}
+        />,
+      );
+
+      const row = screen.getByTestId("trade-participation-score");
+      expect(row).toHaveTextContent(/^Participation Score.*5\.000 sats$/);
+      // The purchase is paid separately, so the trade totals do not include it.
+      expect(
+        screen.getByTestId(tradeSide === "Buy" ? "trade-grand-total" : "trade-net-proceeds"),
+      ).toHaveTextContent(tradeSide === "Buy" ? "30.000 sats" : "0.000 sats");
+      const help = within(row).getByRole("button", { name: "About Participation Score" });
+      expect(help).toHaveAccessibleDescription(
+        "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
+      );
+      await user.pointer({ keys: "[TouchA]", target: help });
+      expect(screen.getByRole("tooltip")).toHaveTextContent("An anti-spam fee.");
+    },
+  );
+
+  it("hides the Participation Score row when the order buys no Score", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        participationScorePurchase={null}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-grand-total")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
+  });
+
+  it("does not show a Participation Score amount before the fee check is current", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={null}
+        participationScorePurchase={5}
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-fees-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+  });
+
+  it("puts the Participation Score help next to a Score status message", () => {
+    const { rerender } = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Buy"
+        tradeSubmitStatus={{
+          kind: "info",
+          message: "Participation Score top-up was cancelled. The order was not submitted.",
+          participationScoreHelp: true,
+        }}
+      />,
+    );
+
+    const status = screen.getByTestId("trade-submit-status");
+    expect(
+      within(status).getByRole("button", { name: "About Participation Score" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Buy"
+        tradeSubmitStatus={{ kind: "error", message: "Order failed." }}
+      />,
+    );
+    expect(
+      within(screen.getByTestId("trade-submit-status")).queryByRole("button", {
+        name: "About Participation Score",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses a share input and shows the authoritative Buy quote and exact fees", () => {
     render(
       <TradingPanel
@@ -1075,7 +1185,7 @@ describe("TradingPanel", () => {
     expect(screen.getByRole("button", { name: "Buy YES for 50 shares" })).toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
     expect(screen.queryByText("Mint fee")).not.toBeInTheDocument();
-    expect(screen.queryByText("Engine Score fee")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();
@@ -1424,7 +1534,7 @@ describe("TradingPanel", () => {
     expect(screen.queryByText("Shares you receive if order fills")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
     expect(screen.queryByText("Mint fee")).not.toBeInTheDocument();
-    expect(screen.queryByText("Engine Score fee")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();

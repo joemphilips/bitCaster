@@ -6,6 +6,7 @@ import {
   BrowserCtfRangeScoreTopUpCancelledError,
   BrowserCtfRangeScoreTopUpRequiredError,
   previewBrowserCtfRangeOrderFees,
+  previewBrowserCtfRangeOrderScore,
   recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
@@ -52,6 +53,8 @@ const mocks = vi.hoisted(() => ({
   recordMessage: vi.fn(),
   resolveMessages: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
+  previewWorkFacts: vi.fn(),
+  readPayableScore: vi.fn(),
   counterReady: vi.fn(),
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
@@ -74,6 +77,8 @@ vi.mock("@bitcaster/client-sdk/ctfRangeOrderProtocol", async (importOriginal) =>
     ...actual,
     decodeCtfRangeOrderPreparationFromRecord: (record: unknown) => record,
     reconstructCtfRangePreparation: () => ({}),
+    // The SDK tests own the shape model. These tests own its use.
+    previewCtfRangeSettlementCapabilityWorkFacts: mocks.previewWorkFacts,
   };
 });
 
@@ -120,6 +125,10 @@ vi.mock("../markets", () => ({
 
 vi.mock("../participationScorePayment", () => ({
   ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
+}));
+
+vi.mock("../browserParticipationScoreDelivery", () => ({
+  readBrowserParticipationScorePayableScore: mocks.readPayableScore,
 }));
 
 vi.mock("../cashu", () => ({ ensureWalletKeysetCounterReady: mocks.counterReady }));
@@ -1546,6 +1555,87 @@ describe("submitBrowserCtfRangeOrder", () => {
         code: "recovery-pending",
       }),
     );
+  });
+});
+
+describe("previewBrowserCtfRangeOrderScore", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.buildPreparation.mockImplementation(({ request }) => preparationFor(request));
+    mocks.engine.getSettlementCapabilityAdmissionPolicy.mockResolvedValue({
+      coordinatorPubkey: "11".repeat(32),
+    });
+    mocks.loadMintMetadata.mockResolvedValue({ maxOutputs: 256, observation: {} });
+    // v1 = 1 + 2 + ceil(12/16) + ceil(5251/4096) = 6, so v2 = ceil(6/4) = 2.
+    mocks.previewWorkFacts.mockReturnValue({
+      inputCount: 2,
+      manifestCount: 12,
+      artifactByteCount: 5_251,
+    });
+    mocks.readPayableScore.mockResolvedValue(1_000);
+  });
+
+  it("charges the v2 tariff and sets the Buy authorization aside from the spare Score", async () => {
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score"),
+      ticket: {
+        marketId: "condition-score-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    });
+
+    // The one-share Buy authorizes 401 msat, so 1 whole Score stays with the order.
+    expect(preview).toEqual({ requiredScore: 2, availableScore: 999 });
+    expect(mocks.previewWorkFacts).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 2, side: "Buy", amountSubunits: 1_000 }),
+    );
+    expect(mocks.readPayableScore).toHaveBeenCalledWith("https://mint.example");
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.counterReady).not.toHaveBeenCalled();
+  });
+
+  it("keeps all ordinary sats spare for a Sell, which offers shares", async () => {
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score-sell"),
+      ticket: sellTicket("condition-score-sell"),
+      mintUrl: "https://mint.example",
+    });
+
+    expect(preview).toEqual({ requiredScore: 2, availableScore: 1_000 });
+  });
+
+  it("never reports a negative spare Score", async () => {
+    mocks.readPayableScore.mockResolvedValue(0);
+
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score-empty"),
+      ticket: {
+        marketId: "condition-score-empty-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    });
+
+    expect(preview.availableScore).toBe(0);
   });
 });
 

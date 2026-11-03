@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { NativeDialog } from "./NativeDialog";
@@ -8,6 +9,8 @@ interface InsufficientBalanceModalProps {
   /** What the pending trade will cost in base-asset subunits, all-in. */
   required: number;
   title?: string;
+  /** A help control shown beside the title, outside the heading's accessible name. */
+  titleHelp?: ReactNode;
   requiredDescription?: string;
   formatAmount?: (amount: number) => string;
   onCancel: () => void;
@@ -28,6 +31,7 @@ export function InsufficientBalanceModal({
   balance,
   required,
   title,
+  titleHelp,
   requiredDescription,
   formatAmount,
   onCancel,
@@ -55,9 +59,12 @@ export function InsufficientBalanceModal({
               <Zap className="w-8 h-8 text-[#f7931a]" />
             </div>
 
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-              {title ?? t("insufficientBalance.title")}
-            </h2>
+            <div className="mb-2 flex items-center justify-center gap-2">
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+                {title ?? t("insufficientBalance.title")}
+              </h2>
+              {titleHelp}
+            </div>
 
             <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
               {requiredDescription ?? t("insufficientBalance.tradeNeeds")}{" "}

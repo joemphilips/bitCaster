@@ -85,6 +85,8 @@ const mocks = vi.hoisted(() => ({
   previewFokOrder: vi.fn(),
   previewFokOrderCapacity: vi.fn(),
   previewBrowserCtfRangeOrderFees: vi.fn(),
+  previewBrowserCtfRangeOrderScore: vi.fn(),
+  getParticipationScore: vi.fn(),
   getSettlementCapabilityAdmissionPolicy: vi.fn(),
   loadRangeMintMetadata: vi.fn(),
   readRangeProofs: vi.fn(),
@@ -221,6 +223,7 @@ vi.mock("@/components/market-detail/TopUpOverlay", () => ({
     baseAsset,
     proofUnit,
     minimumErrorDescription,
+    minimumErrorHelp,
     onSuccess,
     onCancel,
   }: {
@@ -228,6 +231,7 @@ vi.mock("@/components/market-detail/TopUpOverlay", () => ({
     baseAsset: "sat";
     proofUnit?: "sat" | "msat" | null;
     minimumErrorDescription?: string;
+    minimumErrorHelp?: import("react").ReactNode;
     onSuccess: () => void;
     onCancel: () => void;
   }) => {
@@ -236,6 +240,7 @@ vi.mock("@/components/market-detail/TopUpOverlay", () => ({
       <div role="dialog" aria-label="Top Up Wallet">
         <h2>Top Up Wallet</h2>
         {minimumErrorDescription && <p>{minimumErrorDescription}</p>}
+        {minimumErrorHelp}
         <input data-testid="top-up-amount-input" />
         <button data-testid="top-up-success" onClick={onSuccess}>
           Simulate top-up success
@@ -331,6 +336,8 @@ vi.mock("@/lib/markets", async () => {
       timeframe: "7d",
     }),
     fetchOrderBook: vi.fn(),
+    // Network reads are mocked. The Score row tests set a balance.
+    getParticipationScore: mocks.getParticipationScore,
     generateNip98Header: vi.fn(),
     mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
       bids: snapshot.bids.map((level) => ({
@@ -356,6 +363,7 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   BrowserCtfRangeScoreTopUpCancelledError: class extends Error {},
   BrowserCtfRangeScoreTopUpRequiredError: class extends Error {},
   previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
+  previewBrowserCtfRangeOrderScore: mocks.previewBrowserCtfRangeOrderScore,
   submitBrowserCtfRangeOrder: vi.fn(),
 }));
 
@@ -4036,6 +4044,115 @@ describe("MarketDetailPage live market status", () => {
     );
   });
 
+  it.each([
+    { balance: 0, enabled: true, purchase: "5.000 sats" },
+    { balance: 2, enabled: true, purchase: null },
+    { balance: 0, enabled: false, purchase: null },
+  ])(
+    "shows the Participation Score purchase for Score $balance (enabled: $enabled)",
+    async ({ balance, enabled, purchase }) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      mocks.getParticipationScore.mockReset().mockResolvedValue({
+        pubkey: "a".repeat(64),
+        balance,
+        purchasedTotal: 0,
+        consumedTotal: 0,
+        enabled,
+      });
+      // The order charges 2 Score. The wallet keeps 500 Score spare, so a
+      // purchase buys the 5 Score buffer.
+      mocks.previewBrowserCtfRangeOrderScore
+        .mockReset()
+        .mockResolvedValue({ requiredScore: 2, availableScore: 500 });
+      const market = fundedSatYesNoMarket({ state: "open" });
+      vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+
+      render(<MarketDetailPage />);
+
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await screen.findAllByTestId("trade-grand-total");
+      await waitFor(() => expect(mocks.previewBrowserCtfRangeOrderScore).toHaveBeenCalled());
+      expect(mocks.previewBrowserCtfRangeOrderScore).toHaveBeenCalledWith(
+        expect.objectContaining({ mintUrl: "https://mint.example" }),
+      );
+      if (purchase === null) {
+        await waitFor(() => expect(mocks.getParticipationScore).toHaveBeenCalled());
+        expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+      } else {
+        const rows = await screen.findAllByTestId("trade-participation-score");
+        expect(rows[0]).toHaveTextContent(purchase);
+      }
+    },
+  );
+
+  it("reads Participation Score only after the user drafts a trade", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.getParticipationScore.mockReset().mockResolvedValue({
+      pubkey: "a".repeat(64),
+      balance: 0,
+      purchasedTotal: 0,
+      consumedTotal: 0,
+      enabled: true,
+    });
+    mocks.previewBrowserCtfRangeOrderScore
+      .mockReset()
+      .mockResolvedValue({ requiredScore: 2, availableScore: 500 });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    // The Score effect has committed with no draft. It starts no read then.
+    expect(mocks.getParticipationScore).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await waitFor(() => expect(mocks.getParticipationScore).toHaveBeenCalledOnce());
+  });
+
+  it("shows no Participation Score amount when the Score read fails", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.getParticipationScore.mockReset().mockRejectedValue(new Error("offline"));
+    mocks.previewBrowserCtfRangeOrderScore
+      .mockReset()
+      .mockResolvedValue({ requiredScore: 2, availableScore: 500 });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await screen.findAllByTestId("trade-grand-total");
+    await waitFor(() => expect(mocks.getParticipationScore).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.previewBrowserCtfRangeOrderScore).toHaveBeenCalled());
+
+    expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+  });
+
   it("uses the accepted Sell worst price and minimum proceeds", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
@@ -5128,13 +5245,25 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
 
     await screen.findByTestId("insufficient-balance-top-up");
+    const scoreDialog = screen.getByRole("dialog", { name: "Top Up Participation Score" });
+    expect(
+      within(scoreDialog).getByRole("heading", { name: "Top Up Participation Score" }),
+    ).toBeInTheDocument();
+    expect(
+      within(scoreDialog).getByRole("button", { name: "About Participation Score" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("3.201 sats")).toBeInTheDocument();
     expect(screen.getByText("1.6 sats")).toBeInTheDocument();
     expect(screen.getByText("1.601 sats")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
     expect(
-      await screen.findByText("Amount must be at least 1.601 sats to cover Engine Score."),
+      await screen.findByText("Amount must be at least 1.601 sats to cover Participation Score."),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog", { name: "Top Up Wallet" })).getByRole("button", {
+        name: "About Participation Score",
+      }),
     ).toBeInTheDocument();
     expect(mocks.topUpOverlayProps).toEqual({
       deficit: 1_601,
@@ -5321,6 +5450,11 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
       "Participation Score top-up was cancelled. The order was not submitted.",
     );
+    expect(
+      within(screen.getByTestId("trade-submit-status")).getByRole("button", {
+        name: "About Participation Score",
+      }),
+    ).toBeInTheDocument();
     const retainedFees = await screen.findByTestId("trade-attempt-fees");
     expect(retainedFees).toHaveTextContent("These amounts do not show which fees were paid");
     expect(screen.getByTestId("trade-attempt-fee-breakdown")).not.toHaveAttribute("open");

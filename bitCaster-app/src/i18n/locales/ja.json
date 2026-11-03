@@ -314,9 +314,6 @@
     "creatorFeeTooltip": "このマーケットを作成した報酬として、マーケット作成者に支払われます",
     "mintFee": "ミント手数料",
     "mintFeeTooltip": "取引処理のために Cashu ミントが請求します",
-    "engineScoreFee": "Engine Score 手数料",
-    "engineScoreFeeTooltip": "注文実行のためにマッチングエンジンが請求します",
-    "engineScoreFeeShownAtConfirmation": "確認時に表示",
     "totalCost": "合計金額",
     "totalExpectedCost": "予想合計金額",
     "quotePayment": "見積支払い額",
@@ -418,6 +415,8 @@
     "quoteWaitRecovery": "注文内容を変えずに最大1分間再試行します。待機を終了しても、ウォレットの復旧が必要な場合があります。",
     "topUpIntentChanged": "チャージ中に注文内容が変更されました。注文内容を確認して、もう一度確定してください。",
     "scoreTopUpCancelled": "Participation Score のチャージをキャンセルしました。注文は送信されていません。",
+    "scoreTopUpRequired": "この注文に使う Participation Score が不足しています。チャージしてから再試行すると、準備済みの注文を再開します。",
+    "scoreRecoveryUnavailable": "Participation Score の資産を回復できません。回復を再試行するか、資金を追加してください。",
     "orderSettling": "注文がマッチしました。決済は処理中です。",
     "selectActiveMintBeforeSubmit": "注文を送信する前にアクティブなミントを選択してください。",
     "topUpStillInsufficient": "チャージは完了しましたが、ウォレット残高が注文に必要な金額にまだ不足しています。",
@@ -1095,7 +1094,7 @@
     "title": "ウォレットをチャージ",
     "minimumError": "このトレードの費用を支払うには、金額を {{amount}} 以上にしてください。",
     "chooseAmount": "入金する金額を入力してください。入金後、更新された取引費用を確認してから注文を確定してください。必要な金額はウォレットの手数料によって変わります。",
-    "scoreMinimumError": "Engine Score を補充するには、金額を {{amount}} 以上にしてください。",
+    "scoreMinimumError": "Participation Score を補充するには、金額を {{amount}} 以上にしてください。",
     "registrationFee": "登録手数料",
     "yourBalance": "現在の残高",
     "topUpNeeded": "必要なチャージ額",
@@ -1138,9 +1137,9 @@
   },
   "insufficientBalance": {
     "title": "残高不足",
-    "scoreTitle": "Engine Score をチャージ",
+    "scoreTitle": "Participation Score をチャージ",
     "tradeNeeds": "このトレードには",
-    "scoreNeeds": "Engine Score には",
+    "scoreNeeds": "Participation Score には",
     "youHave": "現在の残高は",
     "shortBy": "不足額",
     "localBalanceUnavailable": "このブラウザー内の残高を取得できません。",
@@ -1148,6 +1147,11 @@
     "recoveryUnavailableUnknownBalance": "現在、ウォレットの復元を利用できません。",
     "sats": "{{count}} sats",
     "topUp": "チャージ"
+  },
+  "participationScore": {
+    "name": "Participation Score",
+    "helpLabel": "Participation Score について",
+    "help": "スパム対策の手数料です。注文板を使う注文には、bitCaster が数 sats 分の Score を請求します。返金はできません。"
   },
   "sort": {
     "label": "マーケットの並び替え",

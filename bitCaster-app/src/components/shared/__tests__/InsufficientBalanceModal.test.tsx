@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import i18n from "@/i18n";
 import { InsufficientBalanceModal } from "../InsufficientBalanceModal";
+import { ParticipationScoreHelp } from "../ParticipationScoreHelp";
 
 function renderModal(overrides: Partial<ComponentProps<typeof InsufficientBalanceModal>> = {}) {
   const onCancel = vi.fn();
@@ -62,6 +63,32 @@ describe("InsufficientBalanceModal", () => {
     expect(handlers.onRetry).toHaveBeenCalledOnce();
     expect(handlers.onTopUp).toHaveBeenCalledOnce();
     expect(handlers.onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("puts the title help beside the heading without changing the heading name", async () => {
+    const user = userEvent.setup();
+    const handlers = renderModal({
+      title: i18n.t("insufficientBalance.scoreTitle"),
+      requiredDescription: i18n.t("insufficientBalance.scoreNeeds"),
+      titleHelp: <ParticipationScoreHelp />,
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Top Up Participation Score", level: 2 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Participation Score needs/)).toBeInTheDocument();
+    const help = screen.getByRole("button", { name: "About Participation Score" });
+    await user.click(help);
+
+    expect(screen.getByRole("tooltip")).toHaveTextContent("An anti-spam fee.");
+    expect(handlers.onCancel).not.toHaveBeenCalled();
+    expect(handlers.onTopUp).not.toHaveBeenCalled();
+  });
+
+  it("shows no title help by default", () => {
+    renderModal();
+
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
   });
 
   it("does not present an unknown local balance as zero", () => {

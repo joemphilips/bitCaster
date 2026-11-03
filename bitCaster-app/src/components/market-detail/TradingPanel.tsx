@@ -32,6 +32,7 @@ import {
 import { TRADE_COMMENT_MAX_LENGTH } from "@bitcaster/client-sdk/tradeComment";
 import { DepositStep } from "@/components/market-creation/DepositStep";
 import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
+import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
 
@@ -58,6 +59,8 @@ interface TradingPanelProps {
   tradePreview: FokOrderPreviewState | null;
   tradeFeeFacts?: TradeFeeFacts | null;
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
+  /** Score the app buys from the wallet when this order is confirmed. Null shows no row. */
+  participationScorePurchase?: number | null;
   feeConsentCurrent?: boolean;
   tradeSide: TradeSide;
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
@@ -68,6 +71,8 @@ interface TradingPanelProps {
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
     message: string;
+    /** The message names Participation Score, so the term's help goes next to it. */
+    participationScoreHelp?: boolean;
   } | null;
   onTradeSubmitStatusDismiss?: () => void;
   tradeFeasibility?: {
@@ -612,6 +617,7 @@ function FokOrderPreviewSection({
   divisibility,
   baseAsset,
   feeFacts,
+  participationScorePurchase,
   feeConsentCurrent,
   feeCheckFailed,
   deliveredFaceAmountSubunits,
@@ -624,6 +630,7 @@ function FokOrderPreviewSection({
   divisibility: number;
   baseAsset: MarketBaseAsset;
   feeFacts: TradeFeeFacts | null | undefined;
+  participationScorePurchase: number | null;
   feeConsentCurrent: boolean;
   feeCheckFailed: boolean;
   deliveredFaceAmountSubunits: number;
@@ -869,6 +876,21 @@ function FokOrderPreviewSection({
                 </span>
               </div>
             )}
+            {participationScorePurchase != null && (
+              // Bought from ordinary sats in a separate payment, so the totals above exclude it.
+              <div
+                data-testid="trade-participation-score"
+                className="mt-2 flex items-center justify-between gap-2 text-sm"
+              >
+                <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                  {t("participationScore.name")}
+                  <ParticipationScoreHelp testId="trade-participation-score-help" />
+                </span>
+                <span className="shrink-0 whitespace-nowrap text-slate-600 dark:text-slate-300">
+                  {formatMsatSubunits(BigInt(participationScorePurchase) * 1_000n)}
+                </span>
+              </div>
+            )}
             {!feeConsentCurrent && (
               <p
                 data-testid="trade-fee-consent-required"
@@ -900,6 +922,7 @@ export function TradingPanel({
   tradePreview,
   tradeFeeFacts,
   attemptedTradeFeeFacts,
+  participationScorePurchase = null,
   feeConsentCurrent = false,
   tradeSide,
   tradeCapacityPreview = null,
@@ -1340,6 +1363,7 @@ export function TradingPanel({
               baseAsset={baseAsset}
               deliveredFaceAmountSubunits={tradeAmount * divisibility}
               feeFacts={tradeFeeFacts}
+              participationScorePurchase={participationScorePurchase}
               feeConsentCurrent={feeConsentCurrent}
               // The cost check needs the Nostr signer. Without it no check runs, and the
               // "Start trading" action sets up the identity first.
@@ -1393,6 +1417,7 @@ export function TradingPanel({
             >
               <div className="flex items-start gap-2">
                 <span className="min-w-0 flex-1">{tradeSubmitStatus.message}</span>
+                {tradeSubmitStatus.participationScoreHelp === true && <ParticipationScoreHelp />}
                 {onTradeSubmitStatusDismiss && (
                   <button
                     type="button"
