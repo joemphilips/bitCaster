@@ -206,13 +206,40 @@ describe("NotificationBell order notices", () => {
   it("shows the Japanese order text with the market title and share count", async () => {
     await i18n.changeLanguage("ja");
     useNotificationsStore.getState().add(orderNotice("Matched", 1_000_000, 0));
+    useNotificationsStore.getState().add(orderNotice("partially_filled", 400_000, 600_000));
     useNotificationsStore.getState().add(orderNotice("cancelled", 0, 1_000));
 
     openBell();
 
     expect(
-      screen.getByText(`注文がマッチしました: 「${TITLE}」で 1,000 枚 予約済み`),
+      screen.getByText(`注文がマッチしました: 「${TITLE}」で 1,000 枚を予約済み`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`一部約定: 「${TITLE}」で 400 枚が約定、残り 600 枚`),
     ).toBeInTheDocument();
     expect(screen.getByText(`「${TITLE}」の注文がキャンセルされました`)).toBeInTheDocument();
+  });
+
+  // ADR-049: entries persisted before release 4 have no title and no denominator.
+  it.each([
+    ["en", "Order filled: 250 shares on “Yes”"],
+    ["ja", "注文が約定しました: 「Yes」で 250 枚"],
+  ])("reads an order entry stored before titles were kept in %s", async (language, text) => {
+    await i18n.changeLanguage(language);
+    useNotificationsStore.getState().add({
+      id: "o-filled",
+      kind: "Filled",
+      orderId: "o",
+      marketId: `${COND}-Yes`,
+      filledAmountSubunits: 250_000,
+      remainingAmountSubunits: 0,
+      unit: "sat",
+      occurredAt: Date.now(),
+      read: false,
+    });
+
+    openBell();
+
+    expect(screen.getByText(text)).toBeInTheDocument();
   });
 });

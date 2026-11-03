@@ -664,10 +664,12 @@ describe("useOrderSettlementLifecycle", () => {
     },
   );
 
+  // ADR-049: a pending trade stored before release 4 has no market title.
   it.each([
-    ["en", "Order filled: 10 shares on “Will it rain?”"],
-    ["ja", "注文が約定しました: 「Will it rain?」で 10 枚"],
-  ])("announces a filled order in %s with its market and share count", async (language, text) => {
+    ["en", "Will it rain?", "Order filled: 10 shares on “Will it rain?”"],
+    ["ja", "Will it rain?", "注文が約定しました: 「Will it rain?」で 10 枚"],
+    ["en", undefined, "Order filled: 10 shares on “Yes”"],
+  ])("announces a filled order in %s for title %s", async (language, marketTitle, text) => {
     await i18n.changeLanguage(language);
     useToastStore.setState({ toasts: [] });
     const orderId = "11111111-1111-4111-8111-111111111111";
@@ -676,7 +678,7 @@ describe("useOrderSettlementLifecycle", () => {
       walletId,
       clientOrderId: "client-order-1",
       marketId: "condition-Yes",
-      marketTitle: "Will it rain?",
+      ...(marketTitle === undefined ? {} : { marketTitle }),
       baseAsset: "sat",
       divisibility: 1_000,
       amountSubunits: 10_000,
