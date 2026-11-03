@@ -18,8 +18,14 @@ export const CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID: SettlementCapabilityT
   SETTLEMENT_CAPABILITY_V2_TARIFF_RULE_ID
 
 /**
+ * The v2 tariff is the v1 work sum divided by this value, rounded up. The
+ * operator owns this value. Change it here, then the test values.
+ */
+export const SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR = 4
+
+/**
  * Score units that one top-up buys, so later trades can skip a delivery. One
- * Score unit costs 1 sat.
+ * Score unit costs 1 sat. The operator owns this value.
  */
 export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 5
 
@@ -131,11 +137,16 @@ export function calculateSettlementCapabilityV1Tariff(
   )
 }
 
-/** A quarter of the v1 tariff, rounded up, and never less than 1. */
+/** The v1 tariff divided by the v2 divisor, rounded up, and never less than 1. */
 export function calculateSettlementCapabilityV2Tariff(
   facts: SettlementCapabilityScoreWorkFacts,
 ): number {
-  return Math.max(1, Math.ceil(calculateSettlementCapabilityV1Tariff(facts) / 4))
+  return Math.max(
+    1,
+    Math.ceil(
+      calculateSettlementCapabilityV1Tariff(facts) / SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR,
+    ),
+  )
 }
 
 function assertNever(value: never): never {

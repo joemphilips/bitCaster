@@ -6,6 +6,7 @@ import {
   calculateSettlementCapabilityV2Tariff,
   CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
   PARTICIPATION_SCORE_TOP_UP_BUFFER,
+  SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR,
   PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE,
   planParticipationScoreTopUp,
   planParticipationScoreTopUpFromWallet,
@@ -157,6 +158,8 @@ test('calculateSettlementCapabilityV1Tariff applies the immutable formula', () =
 
 test('new capability admissions use the settlement-capability-v2 tariff', () => {
   assert.equal(CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID, 'settlement-capability-v2')
+  // The operator may change the divisor. The cases below assume a divisor of 4.
+  assert.equal(SETTLEMENT_CAPABILITY_V2_TARIFF_DIVISOR, 4)
 })
 
 test('calculateSettlementCapabilityV2Tariff charges a quarter of v1, rounded up', () => {
