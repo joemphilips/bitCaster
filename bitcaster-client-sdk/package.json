@@ -555,7 +555,6 @@
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },
   "files": [
