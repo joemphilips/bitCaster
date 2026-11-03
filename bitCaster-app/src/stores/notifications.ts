@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import type { ProductMarketDivisibility } from "@/types/market";
 
 /**
  * Cap on how many notifications we keep in memory / localStorage. Once the
@@ -69,15 +70,25 @@ export interface Notification {
   remainingAmountSats?: number;
   /** Explicit product base asset used to format amount fields. */
   unit: MarketBaseAsset;
+  /**
+   * Registered market denominator of an order entry. The amount fields are
+   * share face subunits, so the bell divides by it to count shares. Order
+   * entries stored before it was kept lack it.
+   */
+  divisibility?: ProductMarketDivisibility;
   /** Unix ms. */
   occurredAt: number;
   read: boolean;
 
+  /**
+   * Market title when the entry was created. Order and closed-market entries
+   * created before titles were stored lack it.
+   */
+  marketTitle?: string;
+
   // ── market_closed, position_won and position_lost ────────────────────────
   /** Condition the closed market belongs to. */
   conditionId?: string;
-  /** Market title when the entry was created. Entries created before titles were stored lack it. */
-  marketTitle?: string;
   /** Unix ms the market was observed closed. */
   closedAt?: number;
 }

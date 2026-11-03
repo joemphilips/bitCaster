@@ -72,6 +72,8 @@ type PortfolioPositionSnapshot = {
   scopeId: string;
   positions: Position[];
   marketCatalogue: Map<string, MarketCatalogueEntry>;
+  /** Conditions whose catalogue read completed. A missing market is still read. */
+  catalogueConditionIds: ReadonlySet<string>;
 };
 const EMPTY_MARKET_CATALOGUE = new Map<string, MarketCatalogueEntry>();
 
@@ -949,12 +951,18 @@ export function usePortfolioState(): PortfolioState & {
   }, [firstPageConditionIds]);
 
   const visibleAssets = monitoringAssets?.key === monitoringKey ? monitoringAssets : null;
-  const visibleMonitoringConditionIdsKey = useMemo(() => {
-    const ids = visibleAssets?.assets.flatMap((asset) =>
+  // Monitored conditions that a row can show: the current asset pages and the
+  // last complete display, which stays on screen when a later read fails.
+  const displayMonitoringConditionIdsKey = useMemo(() => {
+    const retainedAssets =
+      lastCompleteDisplay?.scopeKey === displayScopeKey
+        ? lastCompleteDisplay.value.assets.assets
+        : [];
+    const ids = [...(visibleAssets?.assets ?? []), ...retainedAssets].flatMap((asset) =>
       asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
     );
-    return [...new Set(ids ?? [])].sort().join(",");
-  }, [visibleAssets]);
+    return [...new Set(ids)].sort().join(",");
+  }, [visibleAssets, lastCompleteDisplay, displayScopeKey]);
   const visibleAssetPageError =
     assetPageError?.key === monitoringKey &&
     assetPageError.generation === activeMonitoringRequest.current;
@@ -1037,16 +1045,19 @@ export function usePortfolioState(): PortfolioState & {
       const proofs = await readCanonicalPortfolioCustody(scopeId);
       if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
       const entries = summarizeHeldPositions(proofs);
-      const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
-        ? visibleMonitoringConditionIdsKey.split(",")
+      const displayMonitoringConditionIds = displayMonitoringConditionIdsKey
+        ? displayMonitoringConditionIdsKey.split(",")
         : [];
-      const catalogue =
-        monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue([
-              ...entries.map((entry) => entry.conditionId),
-              ...visibleMonitoringConditionIds,
-            ])
-          : new Map<string, MarketCatalogueEntry>();
+      // The catalogue read waits for the monitor so that one read covers its rows.
+      const catalogueRead = monitoringUnavailable || monitoringReady;
+      const catalogueConditionIds = new Set(
+        catalogueRead
+          ? [...entries.map((entry) => entry.conditionId), ...displayMonitoringConditionIds]
+          : [],
+      );
+      const catalogue = catalogueRead
+        ? await loadMarketCatalogue([...catalogueConditionIds])
+        : new Map<string, MarketCatalogueEntry>();
       if (activeBrowserWalletScopeId() !== scopeId) return undefined;
       const positions = entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
@@ -1070,6 +1081,7 @@ export function usePortfolioState(): PortfolioState & {
           ]),
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
+          marketLoading: !catalogueRead,
           marketImageUrl: market?.thumbnailUrl ?? "",
           side: "Outcome",
           outcomeId: entry.outcomeCollection,
@@ -1101,9 +1113,9 @@ export function usePortfolioState(): PortfolioState & {
         };
         return enrichPositionWithCatalogue(position, market);
       });
-      return { scopeId, positions, marketCatalogue: catalogue };
+      return { scopeId, positions, marketCatalogue: catalogue, catalogueConditionIds };
     },
-    [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
+    [monitoringReady, monitoringUnavailable, displayMonitoringConditionIdsKey, walletMnemonic],
     undefined as PortfolioPositionSnapshot | undefined,
   );
   const currentLocalPositions =
@@ -1172,14 +1184,15 @@ export function usePortfolioState(): PortfolioState & {
   };
   const visiblePositions = displayMonitoring
     ? mergeMonitoringPositions(
-        displayMonitoring.positions.map((position) =>
-          enrichPositionWithCatalogue(
+        displayMonitoring.positions.map((position) => ({
+          ...enrichPositionWithCatalogue(
             position,
             (currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(
               position.marketId,
             ),
           ),
-        ),
+          marketLoading: !currentLocalPositions?.catalogueConditionIds.has(position.marketId),
+        })),
         positions,
       )
     : positions;

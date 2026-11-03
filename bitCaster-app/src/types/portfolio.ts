@@ -78,6 +78,11 @@ export interface Position {
   id: string;
   marketId: string;
   marketTitle: string;
+  /**
+   * True until the market catalogue read for this row completes. The row then
+   * shows placeholders instead of the fallback title and the missing price.
+   */
+  marketLoading?: boolean;
   marketImageUrl: string;
   side: PositionSide;
   outcomeId?: string;

@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   positionSnapshot: null as null | {
     positions: Position[];
     marketCatalogue: Map<string, unknown>;
+    catalogueConditionIds: ReadonlySet<string>;
   },
   activityItems: [] as ActivityItem[],
   liveQueryCalls: 0,
@@ -74,7 +75,11 @@ vi.mock("dexie-react-hooks", () => ({
     return mocks.liveQueryCalls % 2 === 1
       ? {
           scopeId: "custody:wallet:" + "a".repeat(64),
-          ...(mocks.positionSnapshot ?? { positions: [localPosition], marketCatalogue: new Map() }),
+          ...(mocks.positionSnapshot ?? {
+            positions: [localPosition],
+            marketCatalogue: new Map(),
+            catalogueConditionIds: new Set(),
+          }),
         }
       : mocks.localFundsState === "null"
         ? null
@@ -398,6 +403,7 @@ function stubCatalogue({
 interface PortfolioPositionSnapshot {
   positions: Position[];
   marketCatalogue: Map<string, MarketCatalogueEntry>;
+  catalogueConditionIds: ReadonlySet<string>;
 }
 
 async function localPositionSnapshotAfterMonitoringFailure(): Promise<PortfolioPositionSnapshot> {
@@ -551,13 +557,18 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.positionSnapshot = {
       positions: [{ ...localPosition, claimRecoveryPending: true, canClaimPayout: true }],
       marketCatalogue: new Map(),
+      catalogueConditionIds: new Set(),
     };
     mocks.localFundsState = "undefined";
     rerender();
     expect(result.current.stats.totalValueSats).toBe(15_000);
     expect(result.current.stats.totalValueLoading).toBe(true);
     expect(result.current.monitoring.stale).toBe(true);
-    mocks.positionSnapshot = { positions: [], marketCatalogue: new Map() };
+    mocks.positionSnapshot = {
+      positions: [],
+      marketCatalogue: new Map(),
+      catalogueConditionIds: new Set(),
+    };
     rerender();
     expect(result.current.positions.every((position) => position.canClaimPayout !== true)).toBe(
       true,
@@ -1118,6 +1129,79 @@ describe("usePortfolioState monitoring facade", () => {
       canClaimPayout: false,
       canDiscard: false,
     });
+  });
+
+  it("marks a local row as loading until the catalogue read starts", async () => {
+    const conditionId = conditionIdFor(805);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    mocks.getPortfolio.mockReturnValue(new Promise(() => {}));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => usePortfolioState());
+
+    const snapshot = (await mocks.localQueries[0]!()) as PortfolioPositionSnapshot;
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(snapshot.positions[0]).toMatchObject({
+      marketId: `${conditionId}-YES`,
+      marketLoading: true,
+    });
+    expect(snapshot.catalogueConditionIds.size).toBe(0);
+  });
+
+  it("ends the loading state after the catalogue read, also when the market is missing", async () => {
+    const conditionId = conditionIdFor(806);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 503 })),
+    );
+
+    const snapshot = await localPositionSnapshotAfterMonitoringFailure();
+
+    expect(snapshot.positions[0]).toMatchObject({
+      marketTitle: `Condition ${conditionId.slice(0, 12)}`,
+      marketLoading: false,
+    });
+    expect([...snapshot.catalogueConditionIds]).toEqual([conditionId]);
+  });
+
+  it("marks a monitored row as loading until the catalogue read covers its condition", async () => {
+    const conditionId = conditionIdFor(807);
+    mocks.readCustody.mockResolvedValue([]);
+    stubCatalogue({ closedConditionId: conditionIdFor(808) });
+    mocks.getPortfolio.mockResolvedValue(portfolioWithConditionalConditions([conditionId], null));
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    const monitored = () =>
+      result.current.positions.find((position) => position.marketId === conditionId);
+
+    await waitFor(() => expect(monitored()).toMatchObject({ marketLoading: true }));
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    expect(monitored()).toMatchObject({ marketLoading: false });
+  });
+
+  it("ends the loading state of a retained monitored row after a later read fails", async () => {
+    const conditionId = conditionIdFor(809);
+    mocks.readCustody.mockResolvedValue([]);
+    stubCatalogue({ closedConditionId: conditionIdFor(810) });
+    mocks.getPortfolio
+      .mockResolvedValueOnce(portfolioWithConditionalConditions([conditionId], null))
+      .mockRejectedValue(new Error("engine unavailable"));
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.stats.totalValueKnown).toBe(true));
+
+    // The read for the new range fails, so the last complete display stays.
+    act(() => result.current.setSelectedTimeRange("1D"));
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    expect(result.current.monitoring.retainingDisplay).toBe(true);
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    expect(
+      result.current.positions.find((position) => position.marketId === conditionId),
+    ).toMatchObject({ marketLoading: false });
   });
 
   it("keeps monitored rows visible while display catalogue enrichment is delayed or fails", async () => {

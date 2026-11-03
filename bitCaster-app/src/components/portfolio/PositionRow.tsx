@@ -21,6 +21,9 @@ interface PositionRowProps {
   onCancelDiscard?: () => void;
 }
 
+const PLACEHOLDER_CLASSES =
+  "block h-4 max-w-full rounded bg-slate-200 dark:bg-slate-700 motion-safe:animate-pulse";
+
 const activeSideColors: Record<Position["side"], string> = {
   yes: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
   no: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
@@ -68,6 +71,7 @@ export function PositionRow({
   // once in usePortfolioState. They can never disagree, so the Remove button
   // can never be offered on a position the badge calls "Won".
   const { isWinner, isLoser, isPending } = position;
+  const marketLoading = position.marketLoading === true;
   const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
   const canClaim = position.canClaimPayout ?? (position.status === "closed" && isWinner);
   const canDiscard =
@@ -75,7 +79,12 @@ export function PositionRow({
   const sideLabel = position.side.toUpperCase();
   const positionLabel = fallbackPositionLabel(position, sideLabel);
   const hasOutcomeLabel = Boolean(position.outcomeLabel?.trim());
-  const categoricalOutcomeLabel = (
+  // The outcome color comes from the market read, so a loading row shows no swatch.
+  const categoricalOutcomeLabel = marketLoading ? (
+    <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+      {positionLabel}
+    </span>
+  ) : (
     <OutcomeLabel
       outcome={{ label: positionLabel, color: position.outcomeColor }}
       className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700"
@@ -83,6 +92,10 @@ export function PositionRow({
       swatchClassName="h-2.5 w-2.5"
     />
   );
+  // A loading row holds only the fallback title, so action names omit it.
+  const discardLabel = marketLoading
+    ? t("portfolio.discardLostPositionUntitled")
+    : t("portfolio.discardLostPosition", { title: position.marketTitle });
   const handleView = () => onView?.(position.id);
   const handleViewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -103,7 +116,7 @@ export function PositionRow({
       tabIndex={onView ? 0 : undefined}
       onClick={handleView}
       onKeyDown={onView ? handleViewKeyDown : undefined}
-      aria-busy={action !== undefined}
+      aria-busy={action !== undefined || marketLoading}
       className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <div className="flex min-w-0 items-start gap-3 sm:contents">
@@ -122,7 +135,14 @@ export function PositionRow({
         {/* Market Info */}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-900 dark:text-white break-words sm:truncate">
-            {position.marketTitle}
+            {marketLoading ? (
+              <>
+                <span aria-hidden="true" className={`my-0.5 w-48 ${PLACEHOLDER_CLASSES}`} />
+                <span className="sr-only">{t("common.loading")}</span>
+              </>
+            ) : (
+              position.marketTitle
+            )}
           </p>
           <div className="flex flex-wrap items-center gap-2 mt-0.5">
             {isWinner ? (
@@ -163,7 +183,10 @@ export function PositionRow({
               ))}
             {position.shares !== undefined && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
-                {position.shares.toLocaleString()} shares
+                {t("trade.shareCount", {
+                  count: position.shares,
+                  formattedCount: position.shares.toLocaleString(),
+                })}
               </span>
             )}
           </div>
@@ -201,7 +224,9 @@ export function PositionRow({
         className={`flex w-full gap-3 sm:contents ${confirmingRemoval ? "flex-col items-stretch" : "items-center justify-between"}`}
       >
         <div className="shrink-0 text-left sm:text-right">
-          {position.valueKnown === false ? (
+          {position.valueKnown === false && marketLoading ? (
+            <span aria-hidden="true" className={`w-16 ${PLACEHOLDER_CLASSES}`} />
+          ) : position.valueKnown === false ? (
             <div className="max-w-48 text-slate-500 dark:text-slate-400">
               <div className="text-sm font-medium">{t("portfolio.unvalued")}</div>
               <p className="text-xs">{t("portfolio.unvaluedReason")}</p>
@@ -223,7 +248,9 @@ export function PositionRow({
                 e.stopPropagation();
                 onSell(position.id);
               }}
-              aria-label={t("portfolio.sellAria", { title: position.marketTitle })}
+              aria-label={
+                marketLoading ? undefined : t("portfolio.sellAria", { title: position.marketTitle })
+              }
               className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
             >
               {t("common.sell")}
@@ -236,7 +263,11 @@ export function PositionRow({
                 e.stopPropagation();
                 onClaim(position.id);
               }}
-              aria-label={t("portfolio.claimAria", { title: position.marketTitle })}
+              aria-label={
+                marketLoading
+                  ? undefined
+                  : t("portfolio.claimAria", { title: position.marketTitle })
+              }
               className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-800/40 transition-colors"
             >
               {t("common.claim")}
@@ -254,7 +285,7 @@ export function PositionRow({
             <div
               data-testid="position-removal-confirmation"
               role="group"
-              aria-label={t("portfolio.discardLostPosition", { title: position.marketTitle })}
+              aria-label={discardLabel}
               className="min-w-0 w-full max-w-64 space-y-2 text-left [overflow-wrap:anywhere]"
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
@@ -294,12 +325,8 @@ export function PositionRow({
                 ref={discardRef}
                 disabled={actionsDisabled}
                 onClick={handleDiscard}
-                aria-label={t("portfolio.discardLostPosition", {
-                  title: position.marketTitle,
-                })}
-                title={t("portfolio.discardLostPosition", {
-                  title: position.marketTitle,
-                })}
+                aria-label={discardLabel}
+                title={discardLabel}
                 className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
               >
                 <Trash2 className="h-4 w-4" aria-hidden="true" />

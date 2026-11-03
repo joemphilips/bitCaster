@@ -44,6 +44,7 @@ type PendingTradeForPromotion = {
   orderId: string;
   clientOrderId?: string;
   marketId: string;
+  marketTitle?: string;
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   side?: "Buy" | "Sell";
@@ -143,6 +144,8 @@ function buildOrderNotifications(
           filledAmountSubunits: state.filledAmountSubunits,
           remainingAmountSubunits: state.remainingAmountSubunits,
           unit,
+          divisibility: trade.divisibility,
+          marketTitle: trade.marketTitle,
           occurredAt: now,
           read: false,
         },
@@ -162,6 +165,8 @@ function buildOrderNotifications(
           filledAmountSubunits: state.filledAmountSubunits,
           remainingAmountSubunits: state.remainingAmountSubunits,
           unit,
+          divisibility: trade.divisibility,
+          marketTitle: trade.marketTitle,
           occurredAt: now,
           read: false,
         },

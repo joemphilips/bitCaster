@@ -41,9 +41,16 @@ export const useToastStore = create<ToastState>()((set) => ({
   toasts: [],
   addToast: (toast) => {
     const id = `toast-${Date.now()}-${nextId++}`;
-    set((s) => ({
-      toasts: [...removeOverflowingTransientToasts(s.toasts, toast.type), { ...toast, id }],
-    }));
+    set((s) => {
+      // A repeated message replaces its visible copy. The new ID restarts the
+      // display time, so repeated actions do not stack identical toasts.
+      const others = s.toasts.filter(
+        (shown) => shown.type !== toast.type || shown.message !== toast.message,
+      );
+      return {
+        toasts: [...removeOverflowingTransientToasts(others, toast.type), { ...toast, id }],
+      };
+    });
   },
   removeToast: (id) => {
     set((s) => {

@@ -15,6 +15,8 @@ import {
   mapConfirmedTradeActivities,
   type OrderStatusResponse,
 } from "@/lib/orderStatus";
+import i18n from "@/i18n";
+import { formatNotificationText } from "@/lib/notificationText";
 import { useOrderHub } from "@/hooks/useOrderHub";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { usePendingTradesStore, type PendingTrade } from "@/stores/pendingTrades";
@@ -210,7 +212,7 @@ export function useOrderSettlementLifecycle(
         if (delta.status === "filled" && notifications.length > 0) {
           useToastStore.getState().addToast({
             type: "success",
-            message: `All your amount for order ${shortOrderId(delta.orderId)} has been filled.`,
+            message: formatNotificationText(notifications[0], i18n.t.bind(i18n)),
           });
         }
       },
@@ -471,10 +473,6 @@ function isSafelyResolvedUnscopedOrder(
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled order lifecycle status: ${value}`);
-}
-
-function shortOrderId(orderId: string): string {
-  return orderId.length > 12 ? `${orderId.slice(0, 8)}...` : orderId;
 }
 
 function recoverConfirmedOrder(
