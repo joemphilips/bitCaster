@@ -352,7 +352,7 @@ export interface paths {
     }
     /**
      * Read the authenticated user's participation Score
-     * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. The server applies the immutable capability-admission tariff from verified capability work facts. The tariff is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
+     * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
      */
     get: operations['getParticipationScore']
     put?: never
