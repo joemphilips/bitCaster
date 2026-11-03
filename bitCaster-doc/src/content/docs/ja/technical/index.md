@@ -65,6 +65,21 @@ bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
 bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
+コマンドの前にグローバルオプション `--dry-run` を付けると、実行せずに確認できます。
+
+```bash
+bitcaster-cli --dry-run market fund begin <condition-id> --amount-msat 8000 --max-wallet-debit-msat 8002
+```
+
+各コマンドの `--help` に、dry-run での動作を示します。
+対応するコマンドは、予定する操作を JSON で表示します。
+資金の移動や、注文、マーケット、鍵、設定の変更は行いません。
+読み取り専用のコマンドは何も変更しないため、通常どおり実行します。
+拒否するコマンドは、何も実行せずに終了コード 2 で終了します。
+`daemon init`、`daemon stop`、`daemon restart` は `--dry-run` を拒否します。
+`--dry-run` を指定すると、CLI はデーモンを起動しません。
+dry-run が成功しても、操作の成功は保証されません。
+
 現在の対応状況は `bitcaster-cli --help` と各コマンドの `--help` で確認してください。
 CLI は、まだ Web アプリのすべての操作には対応していません。
 アプリケーションの全機能を同等に利用できる設計を目指しています。
