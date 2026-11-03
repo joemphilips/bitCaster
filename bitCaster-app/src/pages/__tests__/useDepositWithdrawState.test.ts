@@ -487,7 +487,7 @@ describe("useDepositWithdrawState", () => {
       expect(subscribeActiveBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce();
     });
 
-    it("shows deposit success and activity only after the coordinator reports admitted PAID", async () => {
+    it("shows deposit success after the coordinator reports admitted PAID and writes no second activity", async () => {
       const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
       act(() => result.current.onSelectMethod("lightning"));
       act(() => result.current.onNumpadPress("1"));
@@ -495,14 +495,11 @@ describe("useDepositWithdrawState", () => {
       await act(async () => result.current.onCreateInvoice());
       const onResult = subscribeActiveBrowserDurableBolt11MintQuote.mock.calls[0][0].onResult;
 
-      expect(useActivityLogStore.getState().items).toHaveLength(0);
+      expect(result.current.currentView).not.toBe("success");
       act(() => onResult({ status: "PAID" }));
       expect(result.current.currentView).toBe("success");
-      expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        type: "deposit",
-        amountSubunits: 10_000,
-        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
-      });
+      // The durable completion in the coordinator records the deposit activity.
+      expect(useActivityLogStore.getState().items).toHaveLength(0);
     });
 
     it("hides the prior durable quote before one-click re-quote", async () => {

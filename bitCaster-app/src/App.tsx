@@ -31,7 +31,10 @@ import {
 } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
-import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
+import {
+  recoverBrowserDurableBolt11MintQuotesInPass,
+  watchPendingBrowserDurableBolt11MintQuotes,
+} from "@/lib/browserDurableBolt11MintQuote";
 import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
 import { startNip17Listener, stopNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
@@ -201,6 +204,8 @@ function AppRoutes() {
 
   // BOLT11 quote recovery is independent from CTF range recovery. One pass
   // checks each pending quote at most once. An online event starts a new pass.
+  // The app also watches each unexpired pending quote, so a deposit completes
+  // after its sheet closes.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -236,9 +241,11 @@ function AppRoutes() {
     const onOnline = () => void runPass();
     window.addEventListener("online", onOnline);
     void runPass();
+    const stopWatchingQuotes = watchPendingBrowserDurableBolt11MintQuotes();
     return () => {
       cancelled = true;
       window.removeEventListener("online", onOnline);
+      stopWatchingQuotes();
     };
   }, [nostrSignerReady, walletMnemonic]);
 

@@ -27,6 +27,9 @@ import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/no
 import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 
 const JOIN_RETRY_MS = 1_000;
+/** A settlement result that is not ready is read again after these delays. */
+const SETTLEMENT_RESULT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+/** Later reads use this interval until the result is applied or work ends. */
 const RECOVERY_RETRY_MS = 15_000;
 
 export interface OrderSettlementRecoveryInput {
@@ -36,6 +39,22 @@ export interface OrderSettlementRecoveryInput {
 
 interface RecoverySession {
   cancelled: boolean;
+}
+
+interface ConfirmedOrderRecovery {
+  readonly input: RefObject<OrderSettlementRecoveryInput>;
+  readonly recovering: RefObject<Set<string>>;
+  readonly retryTimers: RefObject<Map<string, ReturnType<typeof setTimeout>>>;
+  readonly retryAttempts: RefObject<Map<string, number>>;
+  readonly rerun: RefObject<Set<string>>;
+  readonly session: RefObject<RecoverySession>;
+}
+
+interface QueuedOrderStatusRead {
+  readonly walletId: string;
+  readonly trade: PendingTrade;
+  /** False when a Confirmed notice already started the settlement apply. */
+  readonly recoverCommittedFill: boolean;
 }
 
 function isConfirmed(status: SettlementGroupStatus): boolean {
@@ -72,17 +91,26 @@ export function useOrderSettlementLifecycle(
   const recoveryRerunOrderIdsRef = useRef(new Set<string>());
   const recoverySessionRef = useRef<RecoverySession>({ cancelled: false });
   const recoveryRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const recoveryRetryAttemptsRef = useRef(new Map<string, number>());
   const invalidationQueuedRef = useRef(new Set<string>());
   const joinRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const legacyReconciliationRunningRef = useRef(false);
   const legacyReadRevisionByTradeRef = useRef(new WeakMap<PendingTrade, number>());
-  const orderStatusQueueRef = useRef(new Map<string, { walletId: string; trade: PendingTrade }>());
+  const orderStatusQueueRef = useRef(new Map<string, QueuedOrderStatusRead>());
   const orderStatusQueueRunningRef = useRef(false);
   const orderStatusReadRevisionByTradeRef = useRef(new WeakMap<PendingTrade, number>());
   const displayRepairRef = useRef<ReturnType<typeof createDisplayResyncRepair> | null>(null);
   const [connectionRevision, setConnectionRevision] = useState(0);
   const [legacyReconciliationRevision, setLegacyReconciliationRevision] = useState(0);
   recoveryInputRef.current = recoveryInput;
+  const confirmedRecovery: ConfirmedOrderRecovery = {
+    input: recoveryInputRef,
+    recovering: recoveringOrderIdsRef,
+    retryTimers: recoveryRetryTimersRef,
+    retryAttempts: recoveryRetryAttemptsRef,
+    rerun: recoveryRerunOrderIdsRef,
+    session: recoverySessionRef,
+  };
 
   useEffect(() => {
     useOrderSettlementObservations.getState().retain(activeWalletId, pendingOrdersById);
@@ -101,18 +129,11 @@ export function useOrderSettlementLifecycle(
         const response = await reconcileOrderStatus(next.trade, next.walletId, session);
         if (
           !session.cancelled &&
+          next.recoverCommittedFill &&
           response &&
           hasCommittedFillForOrder(response, next.trade.orderId)
         ) {
-          recoverConfirmedOrder(
-            next.trade.orderId,
-            next.walletId,
-            recoveryInputRef,
-            recoveringOrderIdsRef,
-            recoveryRetryTimersRef,
-            recoveryRerunOrderIdsRef,
-            recoverySessionRef,
-          );
+          recoverConfirmedOrder(next.trade.orderId, next.walletId, confirmedRecovery, false);
         }
       }
     })()
@@ -123,7 +144,11 @@ export function useOrderSettlementLifecycle(
       });
   };
 
-  const enqueueOrderStatusRead = (trade: PendingTrade, walletId: string): boolean => {
+  const enqueueOrderStatusRead = (
+    trade: PendingTrade,
+    walletId: string,
+    recoverCommittedFill = true,
+  ): boolean => {
     if (
       recoverySessionRef.current.cancelled ||
       !canAuthenticateOrderHub ||
@@ -133,7 +158,12 @@ export function useOrderSettlementLifecycle(
       return false;
     }
     const key = `${walletId}:${trade.orderId}`;
-    orderStatusQueueRef.current.set(key, { walletId, trade });
+    const queued = orderStatusQueueRef.current.get(key);
+    orderStatusQueueRef.current.set(key, {
+      walletId,
+      trade,
+      recoverCommittedFill: recoverCommittedFill || queued?.recoverCommittedFill === true,
+    });
     drainOrderStatusQueue();
     return true;
   };
@@ -162,15 +192,7 @@ export function useOrderSettlementLifecycle(
           const status = await reconcileOrderStatus(trade, activeWalletId, session, true, signal);
           if (session.cancelled || !status) throw new Error("Order display repair is unavailable.");
           if (hasCommittedFillForOrder(status, trade.orderId)) {
-            recoverConfirmedOrder(
-              trade.orderId,
-              activeWalletId,
-              recoveryInputRef,
-              recoveringOrderIdsRef,
-              recoveryRetryTimersRef,
-              recoveryRerunOrderIdsRef,
-              recoverySessionRef,
-            );
+            recoverConfirmedOrder(trade.orderId, activeWalletId, confirmedRecovery, false);
           }
         }
       },
@@ -227,10 +249,16 @@ export function useOrderSettlementLifecycle(
           return;
         }
         publishSettlementProgressHint({ orderId: delta.orderId, marketId: delta.marketId });
-        if (requiresStatusReconciliation(delta.settlementGroup.status)) {
-          enqueueOrderStatusRead(order, activeWalletId);
+        const confirmed = isConfirmed(delta.settlementGroup.status);
+        if (confirmed) {
+          // A Confirmed group proves this order's committed fill. Apply the
+          // settlement result now. The status read below records the activity.
+          recoverConfirmedOrder(delta.orderId, activeWalletId, confirmedRecovery, true);
         }
-        if (isConfirmed(delta.settlementGroup.status)) {
+        if (requiresStatusReconciliation(delta.settlementGroup.status)) {
+          enqueueOrderStatusRead(order, activeWalletId, !confirmed);
+        }
+        if (confirmed) {
           queuePortfolioInvalidation(activeWalletId, invalidationQueuedRef);
         }
       },
@@ -247,6 +275,7 @@ export function useOrderSettlementLifecycle(
       orderStatusQueueRef.current.clear();
       for (const timer of recoveryRetryTimersRef.current.values()) clearTimeout(timer);
       recoveryRetryTimersRef.current.clear();
+      recoveryRetryAttemptsRef.current.clear();
     };
   }, [activeWalletId]);
 
@@ -478,15 +507,12 @@ function assertNever(value: never): never {
 function recoverConfirmedOrder(
   orderId: string,
   walletId: string,
-  recoveryInputRef: RefObject<OrderSettlementRecoveryInput>,
-  recoveringOrderIdsRef: RefObject<Set<string>>,
-  recoveryRetryTimersRef: RefObject<Map<string, ReturnType<typeof setTimeout>>>,
-  recoveryRerunOrderIdsRef: RefObject<Set<string>>,
-  recoverySessionRef: RefObject<RecoverySession>,
+  refs: ConfirmedOrderRecovery,
+  newNotice: boolean,
 ): void {
   const order = usePendingTradesStore.getState().byOrderId[orderId];
-  const recoveryInput = recoveryInputRef.current;
-  const session = recoverySessionRef.current;
+  const recoveryInput = refs.input.current;
+  const session = refs.session.current;
   if (
     session.cancelled ||
     !order?.clientOrderId ||
@@ -499,18 +525,20 @@ function recoverConfirmedOrder(
     return;
   }
   const recoveryKey = `${walletId}:${orderId}`;
-  const priorRetry = recoveryRetryTimersRef.current.get(recoveryKey);
+  // A new notice is new evidence. It restarts the short retry delays.
+  if (newNotice) refs.retryAttempts.current.delete(recoveryKey);
+  const priorRetry = refs.retryTimers.current.get(recoveryKey);
   if (priorRetry !== undefined) {
     clearTimeout(priorRetry);
-    recoveryRetryTimersRef.current.delete(recoveryKey);
+    refs.retryTimers.current.delete(recoveryKey);
   }
 
-  if (recoveringOrderIdsRef.current.has(recoveryKey)) {
-    recoveryRerunOrderIdsRef.current.add(recoveryKey);
+  if (refs.recovering.current.has(recoveryKey)) {
+    refs.rerun.current.add(recoveryKey);
     return;
   }
 
-  recoveringOrderIdsRef.current.add(recoveryKey);
+  refs.recovering.current.add(recoveryKey);
   let retryRequired = false;
   void recoverBrowserCtfRangeOrder({
     mnemonic: recoveryInput.mnemonic,
@@ -534,38 +562,32 @@ function recoverConfirmedOrder(
       retryRequired = true;
     })
     .finally(() => {
-      recoveringOrderIdsRef.current.delete(recoveryKey);
+      refs.recovering.current.delete(recoveryKey);
       const latest = usePendingTradesStore.getState().byOrderId[orderId];
-      const rerunRequested = recoveryRerunOrderIdsRef.current.delete(recoveryKey);
+      const rerunRequested = refs.rerun.current.delete(recoveryKey);
+      if (!retryRequired) refs.retryAttempts.current.delete(recoveryKey);
       if (
         !retryRequired ||
-        recoverySessionRef.current.cancelled ||
+        refs.session.current.cancelled ||
         latest?.walletId !== walletId ||
-        currentWalletId(recoveryInputRef.current) !== walletId ||
+        currentWalletId(refs.input.current) !== walletId ||
         currentActiveWalletId() !== walletId
       ) {
         return;
       }
-      const retry = () =>
-        recoverConfirmedOrder(
-          orderId,
-          walletId,
-          recoveryInputRef,
-          recoveringOrderIdsRef,
-          recoveryRetryTimersRef,
-          recoveryRerunOrderIdsRef,
-          recoverySessionRef,
-        );
+      const retry = () => recoverConfirmedOrder(orderId, walletId, refs, false);
       if (rerunRequested) {
         retry();
         return;
       }
       if (session.cancelled) return;
+      const attempt = refs.retryAttempts.current.get(recoveryKey) ?? 0;
+      refs.retryAttempts.current.set(recoveryKey, attempt + 1);
       const timer = setTimeout(() => {
-        recoveryRetryTimersRef.current.delete(recoveryKey);
+        refs.retryTimers.current.delete(recoveryKey);
         retry();
-      }, RECOVERY_RETRY_MS);
-      recoveryRetryTimersRef.current.set(recoveryKey, timer);
+      }, SETTLEMENT_RESULT_RETRY_DELAYS_MS[attempt] ?? RECOVERY_RETRY_MS);
+      refs.retryTimers.current.set(recoveryKey, timer);
     });
 }
 

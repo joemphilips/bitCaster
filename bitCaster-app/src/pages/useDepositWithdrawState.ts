@@ -415,20 +415,8 @@ export function useDepositWithdrawState(
   }, []);
 
   const handlePaidInvoice = useCallback(
-    (
-      quote: DurableBolt11MintQuote,
-      requestedMsat: number,
-      baseAsset: MarketBaseAsset,
-      walletId: string,
-    ) => {
-      useActivityLogStore.getState().addActivity({
-        walletId,
-        type: "deposit",
-        baseAsset,
-        amountSubunits: requestedMsat,
-        status: "completed",
-        lightningInvoice: quote.invoiceRequest,
-      });
+    (requestedMsat: number, baseAsset: MarketBaseAsset, walletId: string) => {
+      // The durable completion records the deposit activity once.
       if (!isWalletScopeActive(walletId)) return;
       setInvoiceStatus("paid");
       setSuccessAmountMsat(requestedMsat);
@@ -449,7 +437,7 @@ export function useDepositWithdrawState(
       if (mintQuoteRef.current?.quoteRecordId !== quote.quoteRecordId) return;
       switch (r.status) {
         case "PAID":
-          handlePaidInvoice(quote, requestedMsat, baseAsset, walletId);
+          handlePaidInvoice(requestedMsat, baseAsset, walletId);
           return;
         case "EXPIRED":
           if (!isWalletScopeActive(walletId)) return;

@@ -15,6 +15,14 @@ interface ActivityLogState {
     marketId?: string;
     marketTitle?: string;
   }) => void;
+  /** Record a completed Lightning deposit once. A repeated record keeps the first entry. */
+  recordCompletedDeposit: (entry: {
+    walletId: string;
+    quoteRecordId: string;
+    amountSubunits: number;
+    baseAsset: ActivityItem["baseAsset"];
+    lightningInvoice: string;
+  }) => void;
   upsertConfirmedTrade: (item: ActivityItem) => void;
   replace: (items: ActivityItem[]) => void;
   clear: () => void;
@@ -55,6 +63,31 @@ export const useActivityLogStore = create<ActivityLogState>()(
           marketTitle: entry.marketTitle,
         };
         set((s) => ({ items: [item, ...s.items].slice(0, 500) }));
+      },
+      recordCompletedDeposit: (entry) => {
+        if (!isCanonicalActivityWalletId(entry.walletId)) {
+          throw new Error("Activity wallet id is invalid.");
+        }
+        if (!/^[0-9a-f]{64}$/.test(entry.quoteRecordId)) {
+          throw new Error("Deposit quote record id is invalid.");
+        }
+        const item: ActivityItem = {
+          id: `deposit:${entry.quoteRecordId}`,
+          walletId: entry.walletId,
+          type: "deposit",
+          amountSubunits: entry.amountSubunits,
+          baseAsset: entry.baseAsset,
+          date: new Date().toISOString(),
+          status: "completed",
+          txId: null,
+          lightningInvoice: entry.lightningInvoice,
+        };
+        const identity = activityItemIdentityKey(item);
+        set((s) =>
+          s.items.some((current) => activityItemIdentityKey(current) === identity)
+            ? s
+            : { items: [item, ...s.items].slice(0, 500) },
+        );
       },
       upsertConfirmedTrade: (item) => {
         const decoded = decodeActivityItem(item);
