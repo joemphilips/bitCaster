@@ -33,7 +33,7 @@ export type NostrBoundedRelayQuery = (
   bounds: NostrRelayReadBounds,
 ) => Promise<void>
 
-/** Public profile reads open at most this many relay sockets for each author. */
+/** The public profile cache opens at most this many relay sockets for each author. */
 export const MAX_NOSTR_PUBLIC_PROFILE_RELAYS = 3
 export const MAX_NOSTR_PROFILE_NAME_CHARACTERS = 100
 export const MAX_NOSTR_PROFILE_ABOUT_CHARACTERS = 2_000

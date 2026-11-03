@@ -215,6 +215,22 @@ describe("UserPage", () => {
     ).toEqual(relays.map((url) => [url, [[0], [3], [1]]]));
   });
 
+  it("reads every selected relay, not only the first three", async () => {
+    const selected = [...relays, "wss://three.example", "wss://four.example"];
+    useSettingsStore.setState({
+      relays: selected.map((url) => ({ url, connectionStatus: "disconnected" as const })),
+    });
+    serve(relays[0]!, [profileEvent({ name: "alice" })]);
+    serve(selected[3]!, [followList, ...notes]);
+    renderPage();
+
+    expect(await screen.findByText("2 following")).toBeInTheDocument();
+    expect(await screen.findAllByTestId("profile-note")).toHaveLength(3);
+    expect(relayTransport.queryBrowserProfileRelayFilters.mock.calls.map(([url]) => url)).toEqual(
+      selected,
+    );
+  });
+
   it("drops a note dated after the Date range and still shows the page", async () => {
     serve(relays[0]!, [
       profileEvent({ name: "alice" }),
