@@ -951,12 +951,18 @@ export function usePortfolioState(): PortfolioState & {
   }, [firstPageConditionIds]);
 
   const visibleAssets = monitoringAssets?.key === monitoringKey ? monitoringAssets : null;
-  const visibleMonitoringConditionIdsKey = useMemo(() => {
-    const ids = visibleAssets?.assets.flatMap((asset) =>
+  // Monitored conditions that a row can show: the current asset pages and the
+  // last complete display, which stays on screen when a later read fails.
+  const displayMonitoringConditionIdsKey = useMemo(() => {
+    const retainedAssets =
+      lastCompleteDisplay?.scopeKey === displayScopeKey
+        ? lastCompleteDisplay.value.assets.assets
+        : [];
+    const ids = [...(visibleAssets?.assets ?? []), ...retainedAssets].flatMap((asset) =>
       asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
     );
-    return [...new Set(ids ?? [])].sort().join(",");
-  }, [visibleAssets]);
+    return [...new Set(ids)].sort().join(",");
+  }, [visibleAssets, lastCompleteDisplay, displayScopeKey]);
   const visibleAssetPageError =
     assetPageError?.key === monitoringKey &&
     assetPageError.generation === activeMonitoringRequest.current;
@@ -1039,14 +1045,14 @@ export function usePortfolioState(): PortfolioState & {
       const proofs = await readCanonicalPortfolioCustody(scopeId);
       if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
       const entries = summarizeHeldPositions(proofs);
-      const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
-        ? visibleMonitoringConditionIdsKey.split(",")
+      const displayMonitoringConditionIds = displayMonitoringConditionIdsKey
+        ? displayMonitoringConditionIdsKey.split(",")
         : [];
       // The catalogue read waits for the monitor so that one read covers its rows.
       const catalogueRead = monitoringUnavailable || monitoringReady;
       const catalogueConditionIds = new Set(
         catalogueRead
-          ? [...entries.map((entry) => entry.conditionId), ...visibleMonitoringConditionIds]
+          ? [...entries.map((entry) => entry.conditionId), ...displayMonitoringConditionIds]
           : [],
       );
       const catalogue = catalogueRead
@@ -1109,7 +1115,7 @@ export function usePortfolioState(): PortfolioState & {
       });
       return { scopeId, positions, marketCatalogue: catalogue, catalogueConditionIds };
     },
-    [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
+    [monitoringReady, monitoringUnavailable, displayMonitoringConditionIdsKey, walletMnemonic],
     undefined as PortfolioPositionSnapshot | undefined,
   );
   const currentLocalPositions =

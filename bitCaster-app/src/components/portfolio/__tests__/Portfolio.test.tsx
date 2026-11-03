@@ -286,7 +286,45 @@ describe("PositionRow", () => {
     expect(screen.queryByText("Price estimate unavailable")).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toHaveClass("sr-only");
     expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: /^sell /i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sell" })).toBeInTheDocument();
+    expect(screen.queryByTestId("outcome-color-swatch")).not.toBeInTheDocument();
+    expect(screen.getByText("Yes")).toHaveClass("bg-slate-100");
+  });
+
+  it("keeps the fallback title out of action names while the market loads", () => {
+    const loading = {
+      marketTitle: "Condition e7e7e7e7e7e7",
+      side: "Outcome" as const,
+      outcomeLabel: "Yes",
+      marketLoading: true,
+    };
+    render(
+      <>
+        <PositionRow
+          position={{ ...mockPositions[1], ...loading, id: "won", canClaimPayout: true }}
+          onClaim={vi.fn()}
+        />
+        <PositionRow
+          position={{ ...mockPositions[2], ...loading, id: "lost", canDiscard: true }}
+          onDiscard={vi.fn()}
+        />
+        <PositionRow
+          position={{ ...mockPositions[2], ...loading, id: "confirm", canDiscard: true }}
+          onDiscard={vi.fn()}
+          confirmingRemoval
+        />
+      </>,
+    );
+
+    expect(screen.getByRole("button", { name: "Cash out" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove losing position" })).toHaveAttribute(
+      "title",
+      "Remove losing position",
+    );
+    expect(screen.getByRole("group", { name: "Remove losing position" })).toBeInTheDocument();
+    for (const element of [...screen.getAllByRole("button"), ...screen.getAllByRole("group")]) {
+      expect(element).not.toHaveAccessibleName(/Condition/);
+    }
   });
 
   it("shows the missing price once the market read has finished", () => {

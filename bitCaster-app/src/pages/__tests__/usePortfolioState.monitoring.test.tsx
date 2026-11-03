@@ -1182,6 +1182,28 @@ describe("usePortfolioState monitoring facade", () => {
     expect(monitored()).toMatchObject({ marketLoading: false });
   });
 
+  it("ends the loading state of a retained monitored row after a later read fails", async () => {
+    const conditionId = conditionIdFor(809);
+    mocks.readCustody.mockResolvedValue([]);
+    stubCatalogue({ closedConditionId: conditionIdFor(810) });
+    mocks.getPortfolio
+      .mockResolvedValueOnce(portfolioWithConditionalConditions([conditionId], null))
+      .mockRejectedValue(new Error("engine unavailable"));
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.stats.totalValueKnown).toBe(true));
+
+    // The read for the new range fails, so the last complete display stays.
+    act(() => result.current.setSelectedTimeRange("1D"));
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    expect(result.current.monitoring.retainingDisplay).toBe(true);
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    expect(
+      result.current.positions.find((position) => position.marketId === conditionId),
+    ).toMatchObject({ marketLoading: false });
+  });
+
   it("keeps monitored rows visible while display catalogue enrichment is delayed or fails", async () => {
     const conditionId = conditionIdFor(803);
     mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);

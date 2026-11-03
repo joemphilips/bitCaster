@@ -79,7 +79,12 @@ export function PositionRow({
   const sideLabel = position.side.toUpperCase();
   const positionLabel = fallbackPositionLabel(position, sideLabel);
   const hasOutcomeLabel = Boolean(position.outcomeLabel?.trim());
-  const categoricalOutcomeLabel = (
+  // The outcome color comes from the market read, so a loading row shows no swatch.
+  const categoricalOutcomeLabel = marketLoading ? (
+    <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+      {positionLabel}
+    </span>
+  ) : (
     <OutcomeLabel
       outcome={{ label: positionLabel, color: position.outcomeColor }}
       className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700"
@@ -87,6 +92,10 @@ export function PositionRow({
       swatchClassName="h-2.5 w-2.5"
     />
   );
+  // A loading row holds only the fallback title, so action names omit it.
+  const discardLabel = marketLoading
+    ? t("portfolio.discardLostPositionUntitled")
+    : t("portfolio.discardLostPosition", { title: position.marketTitle });
   const handleView = () => onView?.(position.id);
   const handleViewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -239,7 +248,9 @@ export function PositionRow({
                 e.stopPropagation();
                 onSell(position.id);
               }}
-              aria-label={t("portfolio.sellAria", { title: position.marketTitle })}
+              aria-label={
+                marketLoading ? undefined : t("portfolio.sellAria", { title: position.marketTitle })
+              }
               className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
             >
               {t("common.sell")}
@@ -252,7 +263,11 @@ export function PositionRow({
                 e.stopPropagation();
                 onClaim(position.id);
               }}
-              aria-label={t("portfolio.claimAria", { title: position.marketTitle })}
+              aria-label={
+                marketLoading
+                  ? undefined
+                  : t("portfolio.claimAria", { title: position.marketTitle })
+              }
               className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-800/40 transition-colors"
             >
               {t("common.claim")}
@@ -270,7 +285,7 @@ export function PositionRow({
             <div
               data-testid="position-removal-confirmation"
               role="group"
-              aria-label={t("portfolio.discardLostPosition", { title: position.marketTitle })}
+              aria-label={discardLabel}
               className="min-w-0 w-full max-w-64 space-y-2 text-left [overflow-wrap:anywhere]"
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
@@ -310,12 +325,8 @@ export function PositionRow({
                 ref={discardRef}
                 disabled={actionsDisabled}
                 onClick={handleDiscard}
-                aria-label={t("portfolio.discardLostPosition", {
-                  title: position.marketTitle,
-                })}
-                title={t("portfolio.discardLostPosition", {
-                  title: position.marketTitle,
-                })}
+                aria-label={discardLabel}
+                title={discardLabel}
                 className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
               >
                 <Trash2 className="h-4 w-4" aria-hidden="true" />

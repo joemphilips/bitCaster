@@ -508,6 +508,7 @@
     "removeAttemptReference": "Removal reference: {{reference}}",
     "removePayout": "This position had a payout. The payment is in your wallet. Removal stopped. Please review your updated positions.",
     "discardLostPosition": "Remove losing position for {{title}}",
+    "discardLostPositionUntitled": "Remove losing position",
     "discardLostPositionConfirm": "Remove this losing position from your wallet? This deletes the local CTF proofs and cannot be undone.",
     "viewMarket": "View {{title}}",
     "volLabel": "Vol: {{value}}",

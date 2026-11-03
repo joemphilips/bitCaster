@@ -504,6 +504,7 @@
     "removeAttemptReference": "削除参照: {{reference}}",
     "removePayout": "このポジションには支払いがありました。受け取った分はウォレットにあります。削除を停止しました。更新後のポジションを確認してください。",
     "discardLostPosition": "{{title}} のハズレのポジションを削除",
+    "discardLostPositionUntitled": "ハズレのポジションを削除",
     "discardLostPositionConfirm": "このハズレのポジションをウォレットから削除しますか？ローカルの CTF プルーフは削除され、元に戻せません。",
     "viewMarket": "{{title}} を表示",
     "volLabel": "出来高: {{value}}",
