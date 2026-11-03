@@ -1,5 +1,5 @@
 import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
-import { useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Comment } from "@/types/market-detail";
@@ -24,8 +24,9 @@ function CommentRow({ comment }: { comment: Comment }) {
   }, []);
   const profile = usePublicCommentProfiles(visible ? [comment.userId] : []).get(comment.userId);
   const name = profile?.displayName.trim() || comment.userDisplayName;
-  const safeAvatar =
-    safeNostrProfilePictureUrl(profile?.avatar || comment.userAvatarUrl) ?? undefined;
+  const rawAvatar = profile?.avatar || comment.userAvatarUrl;
+  // A data image can be 64 KiB, so check it only when the raw value changes.
+  const safeAvatar = useMemo(() => safeNostrProfilePictureUrl(rawAvatar) ?? undefined, [rawAvatar]);
   const [failedAvatar, setFailedAvatar] = useState<string>();
   return (
     <div

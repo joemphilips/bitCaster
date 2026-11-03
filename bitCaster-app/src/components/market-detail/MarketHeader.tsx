@@ -9,7 +9,7 @@ import {
   Copy,
 } from "lucide-react";
 import { nip19 } from "nostr-tools";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
@@ -118,10 +118,15 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
   const creatorHex = parseNostrPublicKey(market.creator.id);
   // A kind-0 picture names a host that the oracle chose. Load only https without a
-  // referrer, or an embedded data image.
-  const oracleAvatar =
-    safeNostrProfilePictureUrl(oracleProfile?.avatar) ??
-    safeNostrProfilePictureUrl(market.creator.avatarUrl);
+  // referrer, or an embedded data image. A data image can be 64 KiB, so check it
+  // only when the raw value changes.
+  const rawOracleAvatar = oracleProfile?.avatar;
+  const rawCreatorAvatar = market.creator.avatarUrl;
+  const oracleAvatar = useMemo(
+    () =>
+      safeNostrProfilePictureUrl(rawOracleAvatar) ?? safeNostrProfilePictureUrl(rawCreatorAvatar),
+    [rawOracleAvatar, rawCreatorAvatar],
+  );
   // An empty sanitized name has no visible character, so the label falls back to the key.
   const oracleName = sanitizeNostrDisplayText(
     oracleProfile?.displayName,
