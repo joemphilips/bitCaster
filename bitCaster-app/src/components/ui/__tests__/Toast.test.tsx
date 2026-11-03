@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastContainer } from "../Toast";
 import { useToastStore, type Toast } from "@/stores/toast";
+import i18n from "@/i18n";
 
 function addToast(toast: Toast): void {
   useToastStore.setState({ toasts: [toast] });
@@ -29,6 +30,29 @@ describe("ToastContainer", () => {
     expect(screen.getByText("Could not save")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("Could not save")).not.toBeInTheDocument();
+  });
+
+  it("names the close control in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      addToast({ id: "error-toast", message: "保存できませんでした", type: "error" });
+      render(<ToastContainer />);
+
+      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      expect(screen.queryByText("保存できませんでした")).not.toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  // A long market title must not push the toast over the page heading on mobile.
+  it("shows at most two lines and keeps the whole text for assistive technology", () => {
+    const message = `Order filled: 1,000 shares on “${"Will the long market title wrap ".repeat(4)}?”`;
+    addToast({ id: "long", message, type: "success" });
+    render(<ToastContainer />);
+
+    expect(screen.getByText(message)).toHaveClass("line-clamp-2");
+    expect(screen.getByRole("status")).toHaveTextContent(message);
   });
 
   it.each([
