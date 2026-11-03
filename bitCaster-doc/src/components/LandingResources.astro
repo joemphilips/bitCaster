@@ -1,0 +1,109 @@
+---
+interface Props {
+  title: string
+  intro: string
+  groups: { title: string; links: { label: string; href: string }[] }[]
+}
+
+const { title, intro, groups } = Astro.props
+---
+
+<section class="landing-resources not-content" aria-labelledby="landing-resources">
+  <div class="intro">
+    <h2 id="landing-resources">{title}</h2>
+    <p>{intro}</p>
+  </div>
+  <div class="groups">
+    {
+      groups.map((group) => (
+        <div class="group">
+          <h3>{group.title}</h3>
+          <ul>
+            {group.links.map((link) => (
+              <li>
+                <a href={link.href}>
+                  <span class="branch" aria-hidden="true">
+                    └─
+                  </span>
+                  {link.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+  </div>
+</section>
+
+<style>
+  .landing-resources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2.5rem 4rem;
+    margin-top: clamp(3rem, 7vw, 5rem);
+    padding-block: clamp(3rem, 6vw, 4.5rem);
+    border-block: 1px dotted var(--bc-rule-strong);
+  }
+
+  .intro {
+    flex: 1 1 15rem;
+  }
+
+  h2 {
+    margin: 0 0 0.75rem;
+    color: var(--sl-color-white);
+    font-size: clamp(1.75rem, 3.4vw, 2.5rem);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+  }
+
+  .intro p {
+    max-width: 22rem;
+    margin: 0;
+    color: var(--bc-muted);
+    line-height: 1.6;
+  }
+
+  .groups {
+    display: grid;
+    flex: 2 1 34rem;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 2rem;
+  }
+
+  h3 {
+    margin: 0 0 0.25rem;
+    color: var(--bc-muted);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+  }
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  a {
+    display: flex;
+    align-items: center;
+    min-height: 2.75rem;
+    color: var(--sl-color-gray-1);
+    text-decoration: none;
+    word-break: auto-phrase;
+  }
+
+  a:hover {
+    color: var(--sl-color-text-accent);
+  }
+
+  .branch {
+    flex: none;
+    margin-inline-end: 0.5rem;
+    color: var(--bc-faint);
+    font-family: var(--sl-font-mono);
+  }
+</style>

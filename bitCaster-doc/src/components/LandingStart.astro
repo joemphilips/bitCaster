@@ -1,0 +1,49 @@
+---
+// Card around Starlight's <Tabs>. Starlight keeps the tab semantics and keyboard support;
+// this component only restyles the tabs and their panels.
+---
+
+<div class="landing-start not-content"><slot /></div>
+
+<style>
+  .landing-start {
+    width: 100%;
+    max-width: 42.5rem;
+    margin: 0.5rem auto 0;
+    border: 1px solid var(--bc-rule);
+    border-radius: 0.875rem;
+    background: var(--bc-surface);
+    overflow: hidden;
+    text-align: start;
+  }
+
+  .landing-start :global([role='tablist']) {
+    margin: 0;
+    padding: 0 0.5rem;
+    border-bottom: 1px solid var(--bc-rule);
+  }
+
+  .landing-start :global(.tab > [role='tab']) {
+    --sl-tab-color-border: transparent;
+    min-height: 3.25rem;
+    padding: 0 1.125rem;
+    box-shadow: inset 0 -2px 0 var(--sl-tab-color-border);
+    color: var(--bc-muted);
+    font-size: var(--sl-text-base);
+    font-weight: 600;
+  }
+
+  .landing-start :global(.tab > [role='tab'][aria-selected='true']) {
+    --sl-tab-color-border: var(--sl-color-accent);
+    color: var(--sl-color-white);
+  }
+
+  .landing-start :global([role='tabpanel']) {
+    margin: 0;
+    padding: 1.25rem;
+  }
+
+  .landing-start :global([role='tabpanel'] > * + *) {
+    margin-top: 1rem;
+  }
+</style>

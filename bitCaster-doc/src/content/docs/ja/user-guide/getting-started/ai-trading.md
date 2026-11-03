@@ -1,0 +1,127 @@
+---
+title: 'AI エージェントで取引する'
+description: 'bitcaster-cli を AI エージェントに渡し、マーケットの確認、取引、マーケット作成を任せます。'
+sidebar:
+  order: 4
+---
+
+シェルコマンドを実行できる AI エージェントは、あなたの代わりに `bitcaster-cli` を使えます。
+マーケットの確認、手数料の確認、注文の送信、マーケットの作成ができます。
+CLI は JSON を出力するため、エージェントは各結果を読み取れます。エージェントは CLI ウォレットの資金を使います。
+資金を入れる前に、[資金を安全に保つ](#資金を安全に保つ)を読んでください。
+
+## エージェントにできること
+
+CLI は、スクリプトや取引用 AI エージェントのためのアプリケーションインターフェースです。
+Web アプリのすべての操作を CLI から利用できる設計を目指しています。まだ対応していない操作があります。
+利用できるコマンドとオプションは、エージェントに `bitcaster-cli --help` と `bitcaster-cli <command> --help` を実行させて確認してください。
+コマンドグループには `market`、`order`、`wallet`、`score`、`mint`、`relay`、`signer`、`config`、`daemon` があります。
+
+CLI は、時間のかかるウォレット処理を `bitcaster-daemon` に任せます。
+daemon は、ウォレットと保存された処理を保持するローカルプロセスです。
+コマンドが daemon を必要とするとき、CLI が daemon を起動します。
+注文、支払い、マーケット作成が進行中の間は、daemon を動かしたままにしてください。
+
+## CLI を準備する
+
+CLI は npm で公開していません。公開リポジトリのクローンからビルドします。
+Git と Node.js 22 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
+
+```bash
+git clone https://github.com/joemphilips/bitCaster.git
+cd bitCaster
+git submodule update --init cashu-ts
+npm ci
+npm link --workspace bitcaster-cli
+bitcaster-cli --help
+```
+
+`npm ci` は依存関係をインストールし、CLI をビルドします。
+`npm link` は `bitcaster-cli` を npm のグローバル bin ディレクトリに置きます。
+Windows ではまだ注文を送信できません。
+
+CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
+利用するサービスのエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
+
+```bash
+bitcaster-cli config set --engine-url <engine-url> --mint-url <mint-url>
+bitcaster-cli daemon init
+bitcaster-cli wallet invoice create --amount-msat 25000
+```
+
+`daemon init` は、新しいウォレットシードと Nostr 鍵を `~/.bitcaster` に作成します。
+エージェントのウォレットを他の CLI ウォレットと分けるには、すべてのコマンドに `--datadir <path>` を付けてください。
+Lightning インボイスは別のウォレットから支払います。
+その後、`bitcaster-cli wallet invoice show <quote-record-id>` と `bitcaster-cli wallet balance` で確認します。
+金額の単位は msat です。1,000 msat が 1 sat です。
+
+## セッションの例
+
+エージェントに、やることと守る上限を伝えます。例えば次のように指示します。
+
+> bitcaster-cli を使って、天気に関するマーケットを探し、その注文板を見せてください。
+> 価格上限 420 で Yes のシェアを 1 枚買ってください。
+> 注文を送信する前に手数料を見せて、私の承認を待ってください。
+
+エージェントは、例えば次のコマンドを実行します。
+
+```bash
+bitcaster-cli market list --search weather --limit 5
+bitcaster-cli order book <condition-id>-Yes
+bitcaster-cli order fee-preview --market <condition-id>-Yes --outcome Yes \
+  --side Buy --price 420 --amount-msat 1000 > fees.json
+bitcaster-cli order submit --market <condition-id>-Yes --outcome Yes \
+  --side Buy --price 420 --amount-msat 1000 --fee-consent-file fees.json
+bitcaster-cli order wait <condition-id>-Yes <order-id>
+bitcaster-cli wallet positions
+```
+
+マーケット ID の形式は `<condition-id>-<outcome>` です。
+通常のマーケットでは、`--amount-msat 1000` がシェア 1 枚です。
+`--price` は上限価格を指定します。省略すると、サーバーの Auto 上限を使います。
+`fee-preview` の出力は変更せずに保存し、`order submit` には同じ注文内容を指定してください。
+公開注文は FOK(fill-or-kill)です。注文は全量が約定するか、まったく約定しません。
+`order wait` はタイムアウトで待機を終えます。注文はキャンセルしません。
+
+マーケットを作成するときは、先に手数料を確認します。その後、そのウォレット引き落とし額を承認します。
+
+```bash
+bitcaster-cli market creation-quote --outcomes Yes,No
+bitcaster-cli market create --creation-id <id> \
+  --title "<質問>" --description "<結果判定基準>" \
+  --outcomes Yes,No --maturity-epoch <unix-time> \
+  --relay <relay-url> --max-wallet-debit-msat <msat>
+```
+
+作成 ID は保管してください。
+`market creation-status` と `market creation-resume` で使います。
+新しいエンジン URL で初めてマーケットを作成するとき、CLI は URL の確認を求めます。
+ターミナルの確認プロンプトがない場合、CLI は作成を拒否します。
+最初の作成は自分で実行するか、URL を確認してから `--trust-engine-url` を付けてください。
+
+## JSON 出力を読む
+
+出力は初期設定で JSON です。`--json` で明示的に指定することもできます。
+daemon の結果は `{ "ok": true, "result": ... }` の形式です。
+失敗した結果は `"ok": false` と `error` のテキストを持ち、終了コードは 1 です。
+使い方の誤りは終了コード 2、検証エラーは終了コード 3 で終了します。警告と進捗メッセージは標準エラー出力に出ます。
+`market watch` と `wallet watch` は、1 行に 1 つの JSON オブジェクトを出力します。
+`daemon init` など一部の準備用コマンドは、プレーンテキストを出力します。
+
+## 資金を安全に保つ
+
+エージェントは CLI ウォレットのすべての資金を操作できます。
+取引、手数料、Participation Score に資金を使えます。Score は返金できません。
+エージェントに取引させてよい金額だけを入れてください。
+
+エージェントは CLI のデータディレクトリにあるファイルを読めます。そこにウォレットがあります。
+エージェントには新しいウォレットを使ってください。メインウォレットの復元フレーズをインポートしないでください。
+エージェントに復元フレーズを渡さないでください。復元フレーズを持つ人は、そのウォレットの資金を使えます。
+
+送信する前に、`order fee-preview` と `market creation-quote` の結果を見せるようエージェントに指示してください。
+`--dry-run` を使うと、コマンドを検証し、送信せずにリクエストを表示します。
+`order submit`、`market create`、`wallet invoice create` が対応しています。
+すべてのコマンドが対応しているわけではありません。
+対応していないコマンドは `--dry-run` を無視して通常どおり実行します。
+そのコマンドの `--help` に `--dry-run` がある場合だけ、`--dry-run` に頼ってください。
+すべての処理の最終結果が出るまで、データディレクトリを保持してください。

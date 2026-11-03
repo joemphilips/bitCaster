@@ -4,10 +4,10 @@
   --sl-font: 'Inter', sans-serif;
   --sl-font-mono: 'JetBrains Mono', monospace;
 
-  /* Accent color ramp — bitcoin orange #f7931a */
-  --sl-color-accent-low: #3d2506;
-  --sl-color-accent: #f7931a;
-  --sl-color-accent-high: #fcd9a8;
+  /* Accent color ramp — product blue */
+  --sl-color-accent-low: #172554;
+  --sl-color-accent: #60a5fa;
+  --sl-color-accent-high: #dbeafe;
 
   /* Gray ramp — slate scale (dark theme) */
   --sl-color-gray-1: #e2e8f0;
@@ -19,13 +19,34 @@
   --sl-color-gray-7: #0a0a0a;
 
   --sl-color-black: #0a0a0a;
+
+  /* Landing page tokens. Amber is the secondary product color; use it sparingly. */
+  --bc-amber: #fbbf24;
+  --bc-notice-bg: #1c1305;
+  --bc-notice-border: #78350f;
+  --bc-notice-text: #fcd34d;
+  --bc-surface: #0b1120;
+  --bc-rule: #1e293b;
+  --bc-rule-strong: #334155;
+  --bc-muted: #94a3b8;
+  --bc-faint: #475569;
+  /* blue-700 keeps the light description text above 4.5:1 contrast. */
+  --bc-primary-bg: #1d4ed8;
+  --bc-primary-bg-hover: #1e40af;
+}
+
+/* Show code as typed. JetBrains Mono ligatures join pairs such as `>-` into one glyph. */
+code,
+kbd,
+pre {
+  font-variant-ligatures: none;
 }
 
 /* Light theme overrides — inverted slate scale */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #fef3e2;
-  --sl-color-accent: #d97706;
-  --sl-color-accent-high: #6b3a0a;
+  --sl-color-accent-low: #dbeafe;
+  --sl-color-accent: #2563eb;
+  --sl-color-accent-high: #1e3a8a;
 
   --sl-color-gray-1: #1e293b;
   --sl-color-gray-2: #334155;
@@ -36,4 +57,14 @@
   --sl-color-gray-7: #f8fafc;
 
   --sl-color-black: #f8fafc;
+
+  --bc-amber: #b45309;
+  --bc-notice-bg: #fffbeb;
+  --bc-notice-border: #fcd34d;
+  --bc-notice-text: #92400e;
+  --bc-surface: #ffffff;
+  --bc-rule: #e2e8f0;
+  --bc-rule-strong: #cbd5e1;
+  --bc-muted: #475569;
+  --bc-faint: #94a3b8;
 }

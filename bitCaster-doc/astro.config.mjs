@@ -41,6 +41,9 @@ export default defineConfig({
         },
       ],
       customCss: ['./src/styles/fonts.css', './src/styles/custom.css'],
+      components: {
+        Hero: './src/components/LandingHero.astro',
+      },
       sidebar: [
         {
           label: 'User Guide',

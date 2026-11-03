@@ -1,36 +1,114 @@
 ---
-title: bitCaster Docs
-description: Documentation for bitCaster — a prediction market powered by Cashu CTF tokens and DLC oracles.
+title: bitCaster
+description: bitCaster is a prediction market on Bitcoin and Cashu.
 template: splash
+heroNotice: Limited beta · real funds, limited capacity
 hero:
-  tagline: A prediction market powered by Cashu CTF tokens and DLC oracles on Nostr.
-  image:
-    file: ../../assets/hero-logo.svg
-  actions:
-    - text: Get Started
-      link: ./user-guide/getting-started/overview/
-      icon: right-arrow
-    - text: Technical Reference
-      link: ./technical/
-      icon: open-book
-      variant: minimal
+  title: 'Finance wants to be free. <br /><span>Fake must be expensive.</span>'
+  tagline: bitCaster is a prediction market on Bitcoin and Cashu. Every share, your position in a market, is a Cashu ecash token that you hold in your own wallet.
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import ArrowLink from '../../components/ArrowLink.astro';
+import CommandBlock from '../../components/CommandBlock.astro';
+import LandingActions from '../../components/LandingActions.astro';
+import LandingFooter from '../../components/LandingFooter.astro';
+import LandingLink from '../../components/LandingLink.astro';
+import LandingMottos from '../../components/LandingMottos.astro';
+import LandingResources from '../../components/LandingResources.astro';
+import LandingStart from '../../components/LandingStart.astro';
 
-## Explore
+<LandingStart>
+<Tabs>
+<TabItem label="Browser" icon="laptop">
+<LandingActions>
+<LandingLink primary href="https://bitcaster.market/markets" title="Start trading" description="Pick a market and pay with Lightning." />
+<LandingLink href="https://bitcaster.market/creator" title="Create a market" description="Ask a question and name the outcomes." />
+</LandingActions>
+</TabItem>
+<TabItem label="CLI · AI agent" icon="seti:shell">
+<CommandBlock label="Start trading">
 
-<CardGrid stagger>
-	<Card title="User Guide" icon="open-book">
-		Learn how to set up your wallet, browse markets, and trade positions.
-	</Card>
-	<Card title="NUT-CTF Protocol" icon="document">
-		Understand the Conditional Timed Fungible token protocol that powers bitCaster.
-	</Card>
-	<Card title="API Reference" icon="setting">
-		Mint endpoints and integration details for developers.
-	</Card>
-	<Card title="DLC Oracle" icon="star">
-		How Nostr kind-88 oracle announcements drive market resolution.
-	</Card>
-</CardGrid>
+```sh frame="code"
+bitcaster-cli order book <market-id>
+bitcaster-cli order fee-preview --market <market-id> \
+  --outcome Yes --side Buy --price 420 --amount-msat 1000 > fees.json
+bitcaster-cli order submit --market <market-id> \
+  --outcome Yes --side Buy --price 420 --amount-msat 1000 \
+  --fee-consent-file fees.json
+```
+
+</CommandBlock>
+<CommandBlock label="Create a market">
+
+```sh frame="code"
+bitcaster-cli market creation-quote --outcomes Yes,No
+bitcaster-cli market create --creation-id <id> \
+  --title "<question>" --description "<how it resolves>" \
+  --outcomes Yes,No --maturity-epoch <unix-time> \
+  --relay <relay-url> --max-wallet-debit-msat <msat>
+```
+
+</CommandBlock>
+<ArrowLink href="/user-guide/getting-started/ai-trading/">Give these commands to your AI agent: read the CLI guide</ArrowLink>
+</TabItem>
+</Tabs>
+</LandingStart>
+
+<LandingMottos
+  label="What bitCaster stands for"
+  items={[
+    {
+      title: 'DEX without blockchain',
+      text: 'Orders match on a public order book and settle as atomic swaps of ecash. No chain transaction, no gas, no wait for the next block.',
+    },
+    {
+      title: 'Your positions are always SAFU',
+      text: 'Your position is an ecash token, and ecash is private. No one can single out your funds to freeze or steal them. You can always spend or exchange it without asking permission.',
+    },
+    {
+      title: 'Prediction market without surveillance',
+      text: 'No email and no KYC. The mint signs your ecash blind, so it cannot link your deposits, trades and payouts. Your ID is a Nostr key you hold.',
+    },
+  ]}
+/>
+
+<LandingResources
+  title="Technical resources"
+  intro="The protocol, the trading model and the public contracts behind the app."
+  groups={[
+    {
+      title: 'Protocol',
+      links: [
+        { label: 'Conditional tokens', href: '/user-guide/core-concepts/conditional-tokens/' },
+        { label: 'Atomic swap', href: '/technical/protocol/atomic-swap/' },
+        { label: 'Authentication', href: '/technical/protocol/authentication/' },
+        { label: 'Market catalogue', href: '/technical/protocol/market-catalogue/' },
+      ],
+    },
+    {
+      title: 'Architecture',
+      links: [
+        { label: 'Architectural overview', href: '/user-guide/getting-started/architectural-overview/' },
+        { label: 'Trading model', href: '/technical/architecture/trading-model/' },
+        { label: 'Market making', href: '/technical/architecture/market-making/' },
+        { label: 'Comparison', href: '/comparison/' },
+      ],
+    },
+    {
+      title: 'Wallet',
+      links: [
+        { label: 'Ecash', href: '/user-guide/core-concepts/ecash/' },
+        { label: 'Encrypted wallet backup', href: '/user-guide/getting-started/wallet-backup/' },
+        { label: 'Resolution', href: '/user-guide/core-concepts/resolution/' },
+        { label: 'FAQ', href: '/faq/' },
+      ],
+    },
+  ]}
+/>
+
+<LandingFooter
+  text="The bitCaster app and protocol specifications are open source."
+  href="https://github.com/joemphilips/bitCaster"
+  linkLabel="github.com/joemphilips/bitCaster"
+/>

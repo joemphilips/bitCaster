@@ -1,36 +1,114 @@
 ---
-title: bitCaster ドキュメント
-description: bitCaster のドキュメント — Cashu CTFトークンとDLCオラクルによる予測市場。
+title: bitCaster
+description: bitCaster は Bitcoin と Cashu の上で動く予測市場です。
 template: splash
+heroNotice: 限定ベータ · 実際の資金を使用、容量に制限あり
 hero:
-  tagline: Cashu CTFトークンとDLCオラクルを使用した、Nostr上の予測市場。
-  image:
-    file: ../../../assets/hero-logo.svg
-  actions:
-    - text: はじめに
-      link: ./user-guide/getting-started/overview/
-      icon: right-arrow
-    - text: 技術リファレンス
-      link: ./technical/
-      icon: open-book
-      variant: minimal
+  title: '金融は自由であるべきだ。 <br /><span>フェイクには高い代償を。</span>'
+  tagline: bitCaster は Bitcoin と Cashu の上で動く予測市場です。すべてのシェア(マーケットでのポジション)は、あなた自身のウォレットで保有する Cashu ecash トークンです。
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import ArrowLink from '../../../components/ArrowLink.astro';
+import CommandBlock from '../../../components/CommandBlock.astro';
+import LandingActions from '../../../components/LandingActions.astro';
+import LandingFooter from '../../../components/LandingFooter.astro';
+import LandingLink from '../../../components/LandingLink.astro';
+import LandingMottos from '../../../components/LandingMottos.astro';
+import LandingResources from '../../../components/LandingResources.astro';
+import LandingStart from '../../../components/LandingStart.astro';
 
-## 探索する
+<LandingStart>
+<Tabs>
+<TabItem label="ブラウザ" icon="laptop">
+<LandingActions>
+<LandingLink primary href="https://bitcaster.market/markets" title="取引を始める" description="マーケットを選び、Lightning で支払います。" />
+<LandingLink href="https://bitcaster.market/creator" title="マーケットを作成する" description="質問を書き、結果の候補を決めます。" />
+</LandingActions>
+</TabItem>
+<TabItem label="CLI · AI エージェント" icon="seti:shell">
+<CommandBlock label="取引を始める">
 
-<CardGrid stagger>
-	<Card title="ユーザーガイド" icon="open-book">
-		ウォレットの設定、マーケットの閲覧、ポジションの取引方法を学びます。
-	</Card>
-	<Card title="NUT-CTFプロトコル" icon="document">
-		bitCasterを支えるConditional Timed Fungibleトークンプロトコルを理解します。
-	</Card>
-	<Card title="APIリファレンス" icon="setting">
-		開発者向けのミントエンドポイントと統合の詳細。
-	</Card>
-	<Card title="DLCオラクル" icon="star">
-		Nostr kind-88オラクルアナウンスメントがマーケット決済をどのように駆動するか。
-	</Card>
-</CardGrid>
+```sh frame="code"
+bitcaster-cli order book <market-id>
+bitcaster-cli order fee-preview --market <market-id> \
+  --outcome Yes --side Buy --price 420 --amount-msat 1000 > fees.json
+bitcaster-cli order submit --market <market-id> \
+  --outcome Yes --side Buy --price 420 --amount-msat 1000 \
+  --fee-consent-file fees.json
+```
+
+</CommandBlock>
+<CommandBlock label="マーケットを作成する">
+
+```sh frame="code"
+bitcaster-cli market creation-quote --outcomes Yes,No
+bitcaster-cli market create --creation-id <id> \
+  --title "<質問>" --description "<結果判定基準>" \
+  --outcomes Yes,No --maturity-epoch <unix-time> \
+  --relay <relay-url> --max-wallet-debit-msat <msat>
+```
+
+</CommandBlock>
+<ArrowLink href="/ja/user-guide/getting-started/ai-trading/">これらのコマンドを AI エージェントに渡す: CLI ガイドを読む</ArrowLink>
+</TabItem>
+</Tabs>
+</LandingStart>
+
+<LandingMottos
+  label="bitCaster が大切にすること"
+  items={[
+    {
+      title: 'ブロックチェーンのない DEX',
+      text: '注文は公開注文板でマッチし、ecash のアトミックスワップで決済されます。チェーン上のトランザクションも、ガス代も、ブロック待ちもありません。',
+    },
+    {
+      title: 'あなたのポジションは常に SAFU',
+      text: 'ポジションは ecash トークンで、ecash はプライベートです。誰もあなたの資金だけを狙って凍結したり奪ったりできません。許可を求めずに、いつでも使ったり交換したりできます。',
+    },
+    {
+      title: '監視のない予測市場',
+      text: 'メールアドレスも KYC も不要です。ミントはブラインド署名で ecash を発行するため、入金・取引・払い出しを結び付けられません。あなたの ID は、あなたが持つ Nostr 鍵です。',
+    },
+  ]}
+/>
+
+<LandingResources
+  title="技術リソース"
+  intro="アプリを支えるプロトコル、取引モデル、公開コントラクト。"
+  groups={[
+    {
+      title: 'プロトコル',
+      links: [
+        { label: '条件付きトークン', href: '/ja/user-guide/core-concepts/conditional-tokens/' },
+        { label: 'アトミックスワップ', href: '/ja/technical/protocol/atomic-swap/' },
+        { label: '認証', href: '/ja/technical/protocol/authentication/' },
+        { label: 'マーケットカタログAPI', href: '/ja/technical/protocol/market-catalogue/' },
+      ],
+    },
+    {
+      title: 'アーキテクチャ',
+      links: [
+        { label: 'アーキテクチャの概要', href: '/ja/user-guide/getting-started/architectural-overview/' },
+        { label: '取引モデル', href: '/ja/technical/architecture/trading-model/' },
+        { label: 'マーケットメイク', href: '/ja/technical/architecture/market-making/' },
+        { label: '類似プラットフォームとの比較', href: '/ja/comparison/' },
+      ],
+    },
+    {
+      title: 'ウォレット',
+      links: [
+        { label: 'Ecash', href: '/ja/user-guide/core-concepts/ecash/' },
+        { label: 'ウォレットの暗号化バックアップ', href: '/ja/user-guide/getting-started/wallet-backup/' },
+        { label: '市場の結果判定', href: '/ja/user-guide/core-concepts/resolution/' },
+        { label: 'よくある質問', href: '/ja/faq/' },
+      ],
+    },
+  ]}
+/>
+
+<LandingFooter
+  text="bitCaster のアプリとプロトコル仕様はオープンソースです。"
+  href="https://github.com/joemphilips/bitCaster"
+  linkLabel="github.com/joemphilips/bitCaster"
+/>
