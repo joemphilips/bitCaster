@@ -326,6 +326,26 @@ describe("waitForMintQuotePaid", () => {
     expect(checkedAtMs).toHaveLength(checksAtAcknowledgement);
   });
 
+  it("completes the wait on a PAID notice from a subscription attempt that timed out", async () => {
+    const abandoned = acknowledgingSubscription();
+    acknowledgingSubscription();
+    mockCheckMintQuote.mockResolvedValue(partialQuote("UNPAID"));
+    const onResult = vi.fn<(r: MintQuoteWaitResult) => void>();
+
+    await waitForMintQuotePaid(makeQuote(), onResult, {
+      pollIntervalMs: 1_000,
+      pollWhileSubscribed: () => false,
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(abandoned.cancel).toHaveBeenCalledOnce();
+    expect(mockMintQuoteUpdates).toHaveBeenCalledTimes(2);
+
+    abandoned.update(partialQuote("PAID"));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "PAID" }));
+  });
+
   it("checks once at expiry and reports a payment made in the last seconds", async () => {
     const nut17 = acknowledgingSubscription();
     const checkedAtMs = recordChecks("UNPAID");
