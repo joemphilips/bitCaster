@@ -65,4 +65,47 @@ describe("ToastContainer", () => {
 
     expect(screen.queryByText("Could not save")).not.toBeInTheDocument();
   });
+
+  it("shows a repeated message once and restarts its display time", () => {
+    const addToast = useToastStore.getState().addToast;
+    render(<ToastContainer />);
+
+    act(() => {
+      addToast({ message: "Oracle Nostr ID copied.", type: "success" });
+      addToast({ message: "Oracle Nostr ID copied.", type: "success" });
+    });
+    expect(screen.getAllByText("Oracle Nostr ID copied.")).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    act(() => {
+      addToast({ message: "Oracle Nostr ID copied.", type: "success" });
+    });
+    expect(screen.getAllByText("Oracle Nostr ID copied.")).toHaveLength(1);
+
+    // The last copy shows for the full 4 s, past the time of the first copy.
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(screen.getAllByText("Oracle Nostr ID copied.")).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.queryByText("Oracle Nostr ID copied.")).not.toBeInTheDocument();
+  });
+
+  it("keeps different messages and one copy of a repeated error", () => {
+    const addToast = useToastStore.getState().addToast;
+    addToast({ message: "Could not save", type: "error" });
+    addToast({ message: "Link copied to clipboard", type: "success" });
+    addToast({ message: "Could not save", type: "error" });
+    addToast({ message: "Could not save", type: "info" });
+    render(<ToastContainer />);
+
+    expect(useToastStore.getState().toasts.map(({ message, type }) => [message, type])).toEqual([
+      ["Link copied to clipboard", "success"],
+      ["Could not save", "error"],
+      ["Could not save", "info"],
+    ]);
+  });
 });
