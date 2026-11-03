@@ -184,6 +184,42 @@ describe("waitForMintQuotePaid", () => {
     expect(onResult).not.toHaveBeenCalled();
   });
 
+  it("checks the quote at once and then at each poll interval", async () => {
+    const checkedAtMs: number[] = [];
+    mockCheckMintQuote.mockImplementation(async () => {
+      checkedAtMs.push(Date.now() - NOW_SEC * 1000);
+      return partialQuote("UNPAID");
+    });
+
+    const unsub = await waitForMintQuotePaid(makeQuote(), vi.fn(), { pollIntervalMs: POLL_MS });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checkedAtMs).toEqual([0]);
+    await vi.advanceTimersByTimeAsync(POLL_MS * 2);
+    unsub();
+
+    expect(checkedAtMs).toEqual([0, POLL_MS, POLL_MS * 2]);
+  });
+
+  it("reads the current poll interval before it schedules each later check", async () => {
+    const checkedAtMs: number[] = [];
+    mockCheckMintQuote.mockImplementation(async () => {
+      checkedAtMs.push(Date.now() - NOW_SEC * 1000);
+      return partialQuote("UNPAID");
+    });
+    let intervalMs = POLL_MS;
+
+    const unsub = await waitForMintQuotePaid(makeQuote(), vi.fn(), {
+      pollIntervalMs: () => intervalMs,
+    });
+    // The checks at 0 and 50 ms both schedule their next check 50 ms later.
+    await vi.advanceTimersByTimeAsync(POLL_MS + POLL_MS / 2);
+    intervalMs = POLL_MS * 4;
+    await vi.advanceTimersByTimeAsync(POLL_MS * 8);
+    unsub();
+
+    expect(checkedAtMs).toEqual([0, POLL_MS, POLL_MS * 2, POLL_MS * 6]);
+  });
+
   it("ignores UNPAID and continues polling until PAID", async () => {
     mockCheckMintQuote
       .mockResolvedValueOnce(partialQuote("UNPAID"))

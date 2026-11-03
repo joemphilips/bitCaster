@@ -66,8 +66,11 @@ import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/no
 import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
 import { loadMarketCatalogue } from "@/lib/marketCatalogueBatches";
 
-const automaticPortfolioRefreshDelayMs = 10_000;
-const maximumBuildingPortfolioExtraReads = 3;
+/** Price and closure notices for held markets share one read after this delay. */
+const valuationRefreshDelayMs = 10_000;
+/** A projection that is still building is read again after these delays. */
+const buildingPortfolioRetryDelaysMs = [1_000, 2_000, 4_000, 8_000] as const;
+const maximumBuildingPortfolioExtraReads = buildingPortfolioRetryDelaysMs.length;
 type PortfolioPositionSnapshot = {
   scopeId: string;
   positions: Position[];
@@ -471,6 +474,23 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   };
 }
 
+function automaticRefreshDelayMs(
+  kind: "notification" | "building",
+  buildingExtraReadsStarted: number,
+): number {
+  switch (kind) {
+    case "notification":
+      return valuationRefreshDelayMs;
+    case "building":
+      return (
+        buildingPortfolioRetryDelaysMs[buildingExtraReadsStarted] ??
+        buildingPortfolioRetryDelaysMs[maximumBuildingPortfolioExtraReads - 1]
+      );
+    default:
+      throw new Error(`Unhandled Portfolio refresh kind: ${String(kind satisfies never)}`);
+  }
+}
+
 export function usePortfolioState(): PortfolioState & {
   setSelectedTimeRange: (range: PLTimeSelector) => void;
   setPositionsTab: (tab: "active" | "closed") => void;
@@ -625,6 +645,10 @@ export function usePortfolioState(): PortfolioState & {
       }
 
       automaticRefreshTimerKind.current = kind;
+      const delayMs = automaticRefreshDelayMs(
+        kind,
+        buildingRefreshCycle.current?.extraReadsStarted ?? 0,
+      );
       automaticRefreshTimer.current = setTimeout(() => {
         automaticRefreshTimer.current = null;
         const wakeKind = automaticRefreshTimerKind.current;
@@ -649,10 +673,25 @@ export function usePortfolioState(): PortfolioState & {
           return;
         }
         setPortfolioRefreshEpoch((current) => current + 1);
-      }, automaticPortfolioRefreshDelayMs);
+      }, delayMs);
     },
     [monitoringKey, walletId],
   );
+
+  // A change of this wallet's holdings is read at once. A pending timed wake
+  // joins this read. A read in flight can predate the change, so one more
+  // read follows it.
+  const refreshPortfolioNow = useCallback(() => {
+    if (monitoringKey === null || walletId === null) return;
+    clearAutomaticRefreshTimer();
+    buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+    if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+      automaticRefreshScheduled.current = true;
+      automaticRefreshScheduledKind.current = "notification";
+      return;
+    }
+    setPortfolioRefreshEpoch((current) => current + 1);
+  }, [clearAutomaticRefreshTimer, monitoringKey, walletId]);
 
   portfolioObserverRefresh.current = () => scheduleAutomaticPortfolioRefresh("notification");
 
@@ -745,9 +784,9 @@ export function usePortfolioState(): PortfolioState & {
       } catch {
         return;
       }
-      scheduleAutomaticPortfolioRefresh("notification");
+      refreshPortfolioNow();
     },
-    [monitoringKey, scheduleAutomaticPortfolioRefresh, walletId],
+    [monitoringKey, refreshPortfolioNow, walletId],
   );
 
   useEffect(() => {
@@ -1154,7 +1193,9 @@ export function usePortfolioState(): PortfolioState & {
   const displayMonitoring = retainingDisplay
     ? mapMonitoringPortfolio(cachedDisplay.value)
     : visibleMonitoring;
-  const funds = displayMonitoring?.funds ?? localFunds;
+  // Funds are wallet-local custody. The projection is a fallback only while
+  // the local custody read is loading or unavailable.
+  const funds = currentLocalFunds ?? displayMonitoring?.funds ?? [];
   const currentStats = displayMonitoring?.stats
     ? displayMonitoring.stats
     : localFundsUnavailable || localPositionsUnavailable

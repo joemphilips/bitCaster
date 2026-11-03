@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   stopListener: vi.fn(),
   rehydrateIdentity: vi.fn(),
   recoverBolt11: vi.fn(),
+  watchBolt11: vi.fn(),
+  stopWatchingBolt11: vi.fn(),
   recoverMelts: vi.fn(),
   backup: { recoveryStatus: { kind: "failed" }, retryRecovery: vi.fn() },
 }));
@@ -108,6 +110,7 @@ vi.mock("@/lib/browserWalletProfile", () => ({
 }));
 vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
   recoverBrowserDurableBolt11MintQuotesInPass: mocks.recoverBolt11,
+  watchPendingBrowserDurableBolt11MintQuotes: mocks.watchBolt11,
 }));
 vi.mock("@/lib/browserDurableWalletMelt", () => ({
   recoverBrowserDurableWalletMeltsInPass: mocks.recoverMelts,
@@ -124,6 +127,8 @@ beforeEach(() => {
   mocks.stopListener.mockReset();
   mocks.rehydrateIdentity.mockReset().mockResolvedValue(undefined);
   mocks.recoverBolt11.mockReset().mockResolvedValue({ hasMore: false });
+  mocks.stopWatchingBolt11.mockReset();
+  mocks.watchBolt11.mockReset().mockReturnValue(mocks.stopWatchingBolt11);
   mocks.recoverMelts
     .mockReset()
     .mockResolvedValue({ pending: 0, nextCursor: null, hasMore: false });
@@ -197,5 +202,18 @@ describe("App NIP-17 listener lifecycle", () => {
 
     view.unmount();
     expect(mocks.stopListener).toHaveBeenCalledTimes(2);
+  });
+
+  it("watches pending mint quotes for the wallet profile independent of any deposit sheet", async () => {
+    const view = render(<App />);
+    await waitFor(() => expect(mocks.watchBolt11).toHaveBeenCalledOnce());
+
+    mocks.wallet.mnemonic = "wallet-b";
+    view.rerender(<App />);
+    await waitFor(() => expect(mocks.watchBolt11).toHaveBeenCalledTimes(2));
+    expect(mocks.stopWatchingBolt11).toHaveBeenCalledOnce();
+
+    view.unmount();
+    expect(mocks.stopWatchingBolt11).toHaveBeenCalledTimes(2);
   });
 });

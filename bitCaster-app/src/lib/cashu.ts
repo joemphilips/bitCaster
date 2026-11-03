@@ -1939,8 +1939,12 @@ export type MintQuoteWaitResult =
 export interface WaitForMintQuoteOptions {
   /** Bolt11 expiry as unix-seconds. Defaults to the quote's own `expiry`. */
   expiresAtSec?: number;
-  /** Poll interval. Default 2s — short enough to mask <3s fakewallet latency. */
-  pollIntervalMs?: number;
+  /**
+   * Delay between NUT-04 checks after the first check, which runs at once.
+   * A function is read again before each later check. Default 2s — short
+   * enough to mask <3s fakewallet latency.
+   */
+  pollIntervalMs?: number | (() => number);
   /** Fired on each non-terminal poll error so the UI can surface diagnostics
    *  without tearing the wait down. */
   onTransientError?: (error: Error) => void;
@@ -1992,7 +1996,9 @@ function waitForMintQuotePaidWithWallet(
   options: WaitForMintQuoteOptions = {},
 ): () => void {
   const expiresAtSec = options.expiresAtSec ?? quote.expiry ?? undefined;
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const configuredInterval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const pollIntervalMs =
+    typeof configuredInterval === "function" ? configuredInterval : () => configuredInterval;
 
   let done = false;
   const isDone = () => done;
@@ -2046,7 +2052,7 @@ function classifyPollState(q: PartialMintQuoteResponse): MintQuoteWaitResult | n
 function startMintQuotePoll(
   wallet: CashuWallet,
   quoteId: string,
-  intervalMs: number,
+  intervalMs: () => number,
   fire: (r: MintQuoteWaitResult) => void,
   isDone: () => boolean,
   onTransientError?: (e: Error) => void,
@@ -2064,9 +2070,10 @@ function startMintQuotePoll(
     } catch (e) {
       onTransientError?.(e as Error);
     }
-    if (!isDone()) timer = setTimeout(tick, intervalMs);
+    if (!isDone()) timer = setTimeout(tick, intervalMs());
   };
-  timer = setTimeout(tick, intervalMs);
+  // A payment can arrive before the invoice is shown, or while no waiter runs.
+  timer = setTimeout(tick, 0);
   return {
     cancel: () => {
       if (timer) clearTimeout(timer);
