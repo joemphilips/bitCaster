@@ -2,6 +2,7 @@ import { defineBrowserCommand, playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
+import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
 export default mergeConfig(
   viteConfig,
@@ -29,6 +30,7 @@ export default mergeConfig(
           name: `chart-geometry-dpr${deviceScaleFactor}`,
           browser: "chromium",
           provider: playwright({
+            launchOptions: chromiumLaunchOptions(),
             contextOptions: { deviceScaleFactor, locale: "en-US", timezoneId: "UTC" },
           }),
         })),

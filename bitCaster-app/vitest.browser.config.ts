@@ -2,6 +2,7 @@ import { playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
+import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
 export default mergeConfig(
   viteConfig,
@@ -12,7 +13,7 @@ export default mergeConfig(
         enabled: true,
         // Parallel test processes must not inherit the app server's fixed port.
         api: { host: "127.0.0.1", strictPort: false },
-        provider: playwright(),
+        provider: playwright({ launchOptions: chromiumLaunchOptions() }),
         headless: true,
         instances: [{ browser: "chromium" }],
       },

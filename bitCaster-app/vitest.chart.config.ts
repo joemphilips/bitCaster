@@ -9,6 +9,7 @@ import { defineBrowserCommand, playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
+import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
 function boundedInteger(name: string, fallback: number, maximum: number) {
   const value = process.env[name] ?? String(fallback);
@@ -66,6 +67,7 @@ const sourceFiles = [
 ];
 const harnessFiles = [
   "vitest.chart.config.ts",
+  "../scripts/playwright-launch.mjs",
   "src/components/market-detail/__tests__/PriceChart.benchmark.ts",
   "src/components/market-detail/__tests__/priceChartBenchmarkFixtures.ts",
   "src/components/market-detail/__tests__/priceChartCanvasObserver.ts",
@@ -185,6 +187,7 @@ export default mergeConfig(
         enabled: true,
         headless: true,
         provider: playwright({
+          launchOptions: chromiumLaunchOptions(),
           contextOptions: { locale: "en-US", timezoneId: "UTC", deviceScaleFactor: dpr },
         }),
         instances: [{ browser: "chromium" }],

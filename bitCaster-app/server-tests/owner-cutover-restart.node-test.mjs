@@ -6,6 +6,7 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import test from 'node:test'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { chromiumLaunchOptions } from '../../scripts/playwright-launch.mjs'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sdkDist = resolve(appRoot, '../bitcaster-client-sdk/dist')
@@ -79,7 +80,7 @@ test(
       const address = vite.httpServer.address()
       assert.ok(address && typeof address !== 'string')
       const origin = `http://127.0.0.1:${address.port}`
-      browser = await chromium.launch({ headless: true })
+      browser = await chromium.launch(chromiumLaunchOptions({ headless: true }))
       context = await browser.newContext()
       const firstPage = await context.newPage()
       firstPage.on('pageerror', (error) => console.error('restart fixture page error', error))

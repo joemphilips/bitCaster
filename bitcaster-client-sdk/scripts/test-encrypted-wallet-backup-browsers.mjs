@@ -1,5 +1,6 @@
 import { build } from 'esbuild'
 import { chromium, firefox, webkit } from 'playwright'
+import { chromiumLaunchOptions } from '../../scripts/playwright-launch.mjs'
 
 const bundle = await build({
   entryPoints: [
@@ -22,7 +23,7 @@ for (const [name, engine] of [
   ['firefox', firefox],
   ['webkit', webkit],
 ]) {
-  const browser = await engine.launch({ headless: true })
+  const browser = await engine.launch(chromiumLaunchOptions({ headless: true }))
   try {
     const context = await browser.newContext({ serviceWorkers: 'block' })
     await context.route(vectorUrl, (route) =>
