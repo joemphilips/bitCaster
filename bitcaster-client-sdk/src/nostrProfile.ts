@@ -224,6 +224,7 @@ export async function readNostrAuthorRelays(
 }
 
 export interface NostrProfilePatch {
+  /** The shown name. The edit changes a non-blank `display_name`, or else `name`. */
   readonly name?: string
   readonly about?: string
   readonly picture?: string
@@ -299,6 +300,29 @@ export function selectNostrProfileEditBase(
 
 const editableFields = ['name', 'about', 'picture'] as const
 
+/**
+ * The metadata key that a `name` edit changes. A non-blank `display_name` is the
+ * name that the profile shows, so the edit changes it. Otherwise it changes `name`.
+ */
+function nameKey(metadata: Readonly<Record<string, unknown>>): 'display_name' | 'name' {
+  const value = metadata.display_name
+  return typeof value === 'string' && value.trim() ? 'display_name' : 'name'
+}
+
+export interface NostrProfileEditFields {
+  readonly name: string
+  readonly about: string
+  readonly picture: string
+}
+
+/** The editable text of a usable edit base. A field that is not text is empty. */
+export function nostrProfileEditFields(base: Event | null): NostrProfileEditFields {
+  const metadata = base === null ? {} : objectMetadata(base)
+  if (!metadata) throw new Error('Nostr profile edit base is invalid.')
+  const text = (key: string) => (typeof metadata[key] === 'string' ? (metadata[key] as string) : '')
+  return { name: text(nameKey(metadata)), about: text('about'), picture: text('picture') }
+}
+
 /** Validate CLI dry-run input without loading a signer or contacting relays. */
 export function validateNostrProfilePatch(value: unknown): NostrProfilePatch {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
@@ -337,6 +361,11 @@ function jsonValueEnd(content: string, start: number): number {
 }
 
 function patchMetadataContent(content: string, patch: NostrProfilePatch): string {
+  const metadata = JSON.parse(content) as Record<string, unknown>
+  const values = new Map<string, string>()
+  for (const field of editableFields)
+    if (Object.hasOwn(patch, field))
+      values.set(field === 'name' ? nameKey(metadata) : field, patch[field]!)
   const edits: { start: number; end: number; value: string }[] = []
   const seen = new Set<string>()
   let cursor = content.indexOf('{') + 1
@@ -352,24 +381,21 @@ function patchMetadataContent(content: string, patch: NostrProfilePatch): string
     while (content[cursor] !== ':') cursor += 1
     const start = ++cursor
     cursor = jsonValueEnd(content, start)
-    if (Object.hasOwn(patch, key)) {
-      edits.push({
-        start,
-        end: cursor,
-        value: JSON.stringify(patch[key as keyof NostrProfilePatch]),
-      })
+    const value = values.get(key)
+    if (value !== undefined) {
+      edits.push({ start, end: cursor, value: JSON.stringify(value) })
       seen.add(key)
     }
     if (content[cursor] === ',') cursor += 1
     else break
   }
-  const missing = editableFields.filter((key) => Object.hasOwn(patch, key) && !seen.has(key))
+  const missing = [...values].filter(([key]) => !seen.has(key))
   if (missing.length) {
-    const hasFields = Object.keys(JSON.parse(content) as object).length > 0
+    const hasFields = Object.keys(metadata).length > 0
     edits.push({
       start: cursor,
       end: cursor,
-      value: `${hasFields ? ',' : ''}${missing.map((key) => `${JSON.stringify(key)}:${JSON.stringify(patch[key])}`).join(',')}`,
+      value: `${hasFields ? ',' : ''}${missing.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(',')}`,
     })
   }
   for (const edit of edits.reverse())

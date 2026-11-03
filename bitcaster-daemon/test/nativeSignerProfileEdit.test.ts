@@ -150,10 +150,11 @@ test('ACK, durable reload, and older relay replies preserve previous canonical a
     assert.equal(result.status, 'saved')
     const sent = next.published[0]!.event
     assert.equal(sent.created_at, 21)
+    // The profile shows its display_name, so the name edit changes it and keeps name.
     assert.deepEqual(JSON.parse(sent.content), {
-      name: 'Next',
+      name: 'Old',
       custom: { keep: true },
-      display_name: 'Alias',
+      display_name: 'Next',
       about: 'Retained bio',
       picture: '',
     })

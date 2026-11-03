@@ -8,6 +8,7 @@ import {
   MAX_NOSTR_PROFILE_CONTENT_BYTES,
   MAX_NOSTR_PROFILE_EVENT_BYTES,
   MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
+  nostrProfileEditFields,
   prepareNostrProfileEdit,
   readNostrProfileEditSnapshot,
   selectNostrProfileEditBase,
@@ -41,21 +42,23 @@ test('edit snapshot distinguishes absent and newest signed unusable metadata', a
   }
 })
 
-test('patch preserves arbitrary unrelated JSON and changes only supplied canonical fields', () => {
+test('patch preserves arbitrary unrelated JSON and changes only the supplied shown fields', () => {
   const content =
     '{"name":"Old","display_name":"Alias","displayName":"Legacy","bio":"Alias bio","image":"alias.png","nip05":"claim","nested":{"__proto__":{"a":1},"array":[null,false,1e400,9007199254740993]},"__proto__":{"safe":true},"constructor":"value","about":"Old bio"}'
   const base = signed(content)
   const prepared = prepareNostrProfileEdit(base.pubkey, base, { name: 'New', about: '' }, 5)
   assert.equal(
     prepared.content,
-    content.replace('"name":"Old"', '"name":"New"').replace('"about":"Old bio"', '"about":""'),
+    content
+      .replace('"display_name":"Alias"', '"display_name":"New"')
+      .replace('"about":"Old bio"', '"about":""'),
   )
   assert.equal(prepared.created_at, 11)
   assert.deepEqual(prepared.tags, [])
   assert.equal(({} as Record<string, unknown>).safe, undefined)
 })
 
-test('new profile and omitted canonical fields do not import display aliases', () => {
+test('a name edit changes a shown display_name and never removes or adds a name field', () => {
   const prepared = prepareNostrProfileEdit(
     profile.pubkey,
     null,
@@ -64,13 +67,54 @@ test('new profile and omitted canonical fields do not import display aliases', (
   )
   assert.equal(prepared.content, '{"picture":"https://image.example/a"}')
   const base = signed('{ "display_name":"Alias", "bio":"Legacy", "nested":[{},[]] }')
-  const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'Canonical' }, 20)
+  const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'Shown' }, 20)
   assert.deepEqual(JSON.parse(edited.content), {
-    display_name: 'Alias',
+    display_name: 'Shown',
     bio: 'Legacy',
     nested: [{}, []],
-    name: 'Canonical',
   })
+  // A cleared display_name stays as an empty field. The next edit then changes name.
+  const cleared = prepareNostrProfileEdit(base.pubkey, base, { name: '' }, 20)
+  assert.deepEqual(JSON.parse(cleared.content), {
+    display_name: '',
+    bio: 'Legacy',
+    nested: [{}, []],
+  })
+})
+
+test('a name edit changes name when display_name is absent, blank or not text', () => {
+  for (const [content, expected] of [
+    ['{"name":"Old"}', { name: 'New' }],
+    ['{"displayName":"Legacy"}', { displayName: 'Legacy', name: 'New' }],
+    ['{"display_name":" \\t","name":"Old"}', { display_name: ' \t', name: 'New' }],
+    ['{"display_name":7}', { display_name: 7, name: 'New' }],
+    ['{"display_name":"Alias","display_name":""}', { display_name: '', name: 'New' }],
+  ] as const) {
+    const base = signed(content)
+    const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'New' }, 20)
+    assert.deepEqual(JSON.parse(edited.content), expected, content)
+  }
+})
+
+test('edit fields show display_name when it is not blank, and otherwise name', () => {
+  assert.deepEqual(nostrProfileEditFields(null), { name: '', about: '', picture: '' })
+  for (const [content, expected] of [
+    [
+      '{"display_name":"joemphilips","picture":"data:image/svg+xml,%3Csvg%2F%3E"}',
+      { name: 'joemphilips', about: '', picture: 'data:image/svg+xml,%3Csvg%2F%3E' },
+    ],
+    [
+      '{"name":"Old","display_name":"Alias","about":"Bio","bio":"Other"}',
+      { name: 'Alias', about: 'Bio', picture: '' },
+    ],
+    ['{"name":"Old","display_name":"  "}', { name: 'Old', about: '', picture: '' }],
+    ['{"name":"Old","displayName":"Legacy"}', { name: 'Old', about: '', picture: '' }],
+    [
+      '{"name":7,"display_name":null,"about":[],"picture":{}}',
+      { name: '', about: '', picture: '' },
+    ],
+  ] as const)
+    assert.deepEqual(nostrProfileEditFields(signed(content)), expected, content)
 })
 
 test('selected relay failures refuse edit even with a retained newer event', async () => {

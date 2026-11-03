@@ -142,9 +142,10 @@ afterEach(() => {
 });
 
 describe("verified browser profile editing", () => {
-  it("loads canonical raw fields and preserves retained edits after reload and stale relay replies", async () => {
+  it("loads the shown raw fields and preserves retained edits after reload and stale relay replies", async () => {
+    // The profile shows display_name, so the name field edits display_name.
     expect((await loadBrowserNostrProfileEdit(undefined, transport())).fields).toEqual({
-      name: "Old",
+      name: "Alias",
       about: "Bio",
       picture: "",
     });
@@ -159,7 +160,7 @@ describe("verified browser profile editing", () => {
     expect(first.publications.every(({ event }) => verifyEvent(event))).toBe(true);
     const reloaded = await loadBrowserNostrProfileEdit(undefined, transport());
     expect(reloaded.fields).toEqual({
-      name: "Old",
+      name: "Alias",
       about: "New bio",
       picture: "https://image.example/a",
     });
@@ -168,12 +169,38 @@ describe("verified browser profile editing", () => {
     expect(saved.event.created_at).toBe(21);
     expect(JSON.parse(saved.event.content)).toEqual({
       ...JSON.parse(base.content),
-      name: "Next",
+      name: "Old",
+      display_name: "Next",
       about: "New bio",
       picture: "https://image.example/a",
     });
+    expect(useSettingsStore.getState().nostrProfile?.displayName).toBe("Next");
     expect(useSettingsStore.getState().nostrProfile?.nip05verified).toBe(false);
     expect(JSON.stringify(saved).includes(nsec)).toBe(false);
+  });
+
+  it("shows a display_name-only profile with a data picture in the editor", async () => {
+    const picture =
+      "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
+    const imported = finalizeEvent(
+      {
+        kind: 0,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ display_name: "joemphilips", picture }),
+      },
+      key,
+    );
+    expect(
+      (await loadBrowserNostrProfileEdit(undefined, transport({ event: imported }))).fields,
+    ).toEqual({ name: "joemphilips", about: "", picture });
+    const saved = await saveBrowserNostrProfileEdit(
+      { name: "joe" },
+      undefined,
+      transport({ event: imported }),
+    );
+    expect(saved.status).toBe("saved");
+    expect(saved.event.content).toBe(JSON.stringify({ display_name: "joe", picture }));
   });
 
   it("keeps the save lock through ACK and retention before the next edit reads its base", async () => {

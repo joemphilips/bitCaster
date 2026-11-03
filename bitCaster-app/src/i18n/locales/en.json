@@ -664,7 +664,7 @@
       "network-error": "Could not reach the image host. Check your connection and try again."
     },
     "profileEditTitle": "Edit public profile",
-    "profileEditHint": "Edit your name, description, and picture URL. Other metadata stays unchanged. Another Nostr client can use a separate display name.",
+    "profileEditHint": "Edit your name, description, and picture URL. Other metadata stays unchanged.",
     "profileEditFields": {
       "name": "Name",
       "about": "Description",

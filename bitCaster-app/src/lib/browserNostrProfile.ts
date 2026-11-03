@@ -3,12 +3,14 @@ import type { NDKSigner } from "@nostr-dev-kit/ndk";
 import { getEventHash, type Event, type EventTemplate } from "nostr-tools/pure";
 import {
   decodeNostrProfileEvent,
+  nostrProfileEditFields,
   prepareNostrProfileEdit,
   readNostrProfile,
   readNostrProfileEditSnapshot,
   selectNostrProfileEditBase,
   signNostrProfileEdit,
   validateNostrProfilePatch,
+  type NostrProfileEditFields,
   type NostrProfilePatch,
 } from "@bitcaster/client-sdk/nostrProfile";
 import { useSettingsStore } from "@/stores/settings";
@@ -172,7 +174,7 @@ async function editBase(
 
 export interface BrowserProfileEditView {
   readonly publicKey: string;
-  readonly fields: { readonly name: string; readonly about: string; readonly picture: string };
+  readonly fields: NostrProfileEditFields;
 }
 
 export async function loadBrowserNostrProfileEdit(
@@ -186,13 +188,7 @@ export async function loadBrowserNostrProfileEdit(
       async (session) => {
         selection.requireCurrent();
         const base = await editBase(selection, session.read(), options);
-        const metadata = JSON.parse(base?.content ?? "{}") as Record<string, unknown>;
-        const text = (key: string) =>
-          typeof metadata[key] === "string" ? (metadata[key] as string) : "";
-        return {
-          publicKey: selection.publicKey,
-          fields: { name: text("name"), about: text("about"), picture: text("picture") },
-        };
+        return { publicKey: selection.publicKey, fields: nostrProfileEditFields(base) };
       },
       selection.signal,
     );

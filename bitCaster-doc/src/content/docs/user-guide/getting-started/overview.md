@@ -223,8 +223,8 @@ The service can be unavailable or change its retention policy. bitCaster does no
 pay upload fees or guarantee image retention. Replacing a picture does not delete
 the old image from the host or other Nostr clients.
 
-Other metadata stays unchanged. A separate display name set in another client
-can still take priority over the name you edit here.
+When your profile has a display name, the name field edits that display name.
+Otherwise it edits the name. Other metadata stays unchanged.
 
 Save first reads all selected relays. If a read or signature request fails,
 your draft stays available. A relay rejection and a missing acknowledgement

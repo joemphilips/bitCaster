@@ -659,7 +659,7 @@
       "network-error": "画像ホストに接続できませんでした。接続を確認して再試行してください。"
     },
     "profileEditTitle": "公開プロフィールを編集",
-    "profileEditHint": "名前、自己紹介、画像URLを編集します。その他のメタデータは保持されます。他のNostrクライアントでは別の表示名が使われる場合があります。",
+    "profileEditHint": "名前、自己紹介、画像URLを編集します。その他のメタデータは保持されます。",
     "profileEditFields": {
       "name": "名前",
       "about": "自己紹介",

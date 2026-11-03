@@ -140,8 +140,9 @@ bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "htt
 bitcaster-cli signer profile --about ""
 ```
 
-Only supplied fields change. An empty string clears a field. Unrelated metadata,
-including a separate `display_name`, stays unchanged. Profile edits do not require
+Only supplied fields change. An empty string clears a field. When the latest
+profile has a non-blank `display_name`, `--name` edits `display_name`.
+Otherwise it edits `name`. Other metadata stays unchanged. Profile edits do not require
 the daemon to stop. All selected relay reads must complete before signing.
 An unusable latest profile or an incomplete read refuses the edit.
 Output distinguishes relay acceptance, rejection, and missing acknowledgement.

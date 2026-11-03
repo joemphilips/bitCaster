@@ -16,7 +16,10 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
     .description(
       'Read public profile metadata from selected relays. No stored cache for reads. Edit supplied fields and retain acknowledged edits.',
     )
-    .option('--name <text>', 'Set the canonical name; an empty string clears it')
+    .option(
+      '--name <text>',
+      'Set the shown name: a non-blank display_name, otherwise name; an empty string clears it',
+    )
     .option('--about <text>', 'Set the description; an empty string clears it')
     .option('--picture <url>', 'Set the picture URL; an empty string clears it')
     .action(async (options: NostrProfilePatch) => {

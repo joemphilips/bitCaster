@@ -232,12 +232,12 @@ test('actual CLI edit ACK and reload preserve earlier fields despite older relay
       (session) => session.read(),
       { directory: f.directory },
     )
+    // The profile shows its display_name, so --name changes it and adds no name field.
     assert.deepEqual(JSON.parse(retained!.content), {
-      display_name: 'Public display',
+      display_name: 'Edited',
       about: '',
       nip05: 'name@example.test',
       privateKey: 'ignored',
-      name: 'Edited',
       picture: 'https://image.example/a',
     })
     assert.ok(retained!.created_at > previous!.created_at)
