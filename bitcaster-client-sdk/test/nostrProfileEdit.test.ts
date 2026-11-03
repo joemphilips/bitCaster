@@ -5,14 +5,17 @@ import { finalizeEvent } from 'nostr-tools/pure'
 import {
   decodeNostrProfileEditEvent,
   decodeNostrProfileAcknowledgment,
+  decodeNostrProfileEvent,
   MAX_NOSTR_PROFILE_CONTENT_BYTES,
   MAX_NOSTR_PROFILE_EVENT_BYTES,
   MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
   nostrProfileEditFields,
+  nostrProfileEditorPatch,
   prepareNostrProfileEdit,
   readNostrProfileEditSnapshot,
   selectNostrProfileEditBase,
   signNostrProfileEdit,
+  validateNostrProfileEditorPatch,
   validateNostrProfilePatch,
 } from '../src/nostrProfile.ts'
 
@@ -42,23 +45,21 @@ test('edit snapshot distinguishes absent and newest signed unusable metadata', a
   }
 })
 
-test('patch preserves arbitrary unrelated JSON and changes only the supplied shown fields', () => {
+test('patch preserves arbitrary unrelated JSON and changes only supplied canonical fields', () => {
   const content =
     '{"name":"Old","display_name":"Alias","displayName":"Legacy","bio":"Alias bio","image":"alias.png","nip05":"claim","nested":{"__proto__":{"a":1},"array":[null,false,1e400,9007199254740993]},"__proto__":{"safe":true},"constructor":"value","about":"Old bio"}'
   const base = signed(content)
   const prepared = prepareNostrProfileEdit(base.pubkey, base, { name: 'New', about: '' }, 5)
   assert.equal(
     prepared.content,
-    content
-      .replace('"display_name":"Alias"', '"display_name":"New"')
-      .replace('"about":"Old bio"', '"about":""'),
+    content.replace('"name":"Old"', '"name":"New"').replace('"about":"Old bio"', '"about":""'),
   )
   assert.equal(prepared.created_at, 11)
   assert.deepEqual(prepared.tags, [])
   assert.equal(({} as Record<string, unknown>).safe, undefined)
 })
 
-test('a name edit changes a shown display_name and never removes or adds a name field', () => {
+test('new profile and omitted canonical fields do not import display aliases', () => {
   const prepared = prepareNostrProfileEdit(
     profile.pubkey,
     null,
@@ -67,36 +68,29 @@ test('a name edit changes a shown display_name and never removes or adds a name 
   )
   assert.equal(prepared.content, '{"picture":"https://image.example/a"}')
   const base = signed('{ "display_name":"Alias", "bio":"Legacy", "nested":[{},[]] }')
-  const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'Shown' }, 20)
+  const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'Canonical' }, 20)
   assert.deepEqual(JSON.parse(edited.content), {
-    display_name: 'Shown',
+    display_name: 'Alias',
     bio: 'Legacy',
     nested: [{}, []],
-  })
-  // A cleared display_name stays as an empty field. The next edit then changes name.
-  const cleared = prepareNostrProfileEdit(base.pubkey, base, { name: '' }, 20)
-  assert.deepEqual(JSON.parse(cleared.content), {
-    display_name: '',
-    bio: 'Legacy',
-    nested: [{}, []],
+    name: 'Canonical',
   })
 })
 
-test('a name edit changes name when display_name is absent, blank or not text', () => {
-  for (const [content, expected] of [
-    ['{"name":"Old"}', { name: 'New' }],
-    ['{"displayName":"Legacy"}', { displayName: 'Legacy', name: 'New' }],
-    ['{"display_name":" \\t","name":"Old"}', { display_name: ' \t', name: 'New' }],
-    ['{"display_name":7}', { display_name: 7, name: 'New' }],
-    ['{"display_name":"Alias","display_name":""}', { display_name: '', name: 'New' }],
-  ] as const) {
-    const base = signed(content)
-    const edited = prepareNostrProfileEdit(base.pubkey, base, { name: 'New' }, 20)
-    assert.deepEqual(JSON.parse(edited.content), expected, content)
-  }
+test('a display_name patch writes only display_name', () => {
+  const base = signed('{"name":"bob","display_name":"Bob B"}')
+  const edited = prepareNostrProfileEdit(base.pubkey, base, { display_name: 'Bobby' }, 20)
+  assert.equal(edited.content, '{"name":"bob","display_name":"Bobby"}')
+  const added = prepareNostrProfileEdit(
+    base.pubkey,
+    signed('{"name":"bob"}'),
+    { display_name: 'Bob B' },
+    20,
+  )
+  assert.equal(added.content, '{"name":"bob","display_name":"Bob B"}')
 })
 
-test('edit fields show display_name when it is not blank, and otherwise name', () => {
+test('edit fields show what the card shows', () => {
   assert.deepEqual(nostrProfileEditFields(null), { name: '', about: '', picture: '' })
   for (const [content, expected] of [
     [
@@ -104,17 +98,102 @@ test('edit fields show display_name when it is not blank, and otherwise name', (
       { name: 'joemphilips', about: '', picture: 'data:image/svg+xml,%3Csvg%2F%3E' },
     ],
     [
-      '{"name":"Old","display_name":"Alias","about":"Bio","bio":"Other"}',
-      { name: 'Alias', about: 'Bio', picture: '' },
+      '{"name":"Old","display_name":"Alias","about":"About","bio":"Other"}',
+      { name: 'Alias', about: 'About', picture: '' },
     ],
     ['{"name":"Old","display_name":"  "}', { name: 'Old', about: '', picture: '' }],
-    ['{"name":"Old","displayName":"Legacy"}', { name: 'Old', about: '', picture: '' }],
+    ['{"name":"Old","displayName":"Legacy"}', { name: 'Legacy', about: '', picture: '' }],
+    [
+      '{"name":"Old","display_name":" ","displayName":"Legacy"}',
+      { name: 'Legacy', about: '', picture: '' },
+    ],
+    ['{"about":" ","bio":"Legacy bio"}', { name: '', about: 'Legacy bio', picture: '' }],
     [
       '{"name":7,"display_name":null,"about":[],"picture":{}}',
       { name: '', about: '', picture: '' },
     ],
   ] as const)
     assert.deepEqual(nostrProfileEditFields(signed(content)), expected, content)
+})
+
+test('an editor name edit writes display_name when the card shows a display name', () => {
+  for (const [content, expected] of [
+    ['{"name":"Old","display_name":"Alias"}', '{"name":"Old","display_name":"New"}'],
+    [
+      '{"name":"Old","displayName":"Legacy"}',
+      '{"name":"Old","displayName":"Legacy","display_name":"New"}',
+    ],
+    ['{"name":"Old","display_name":" "}', '{"name":"New","display_name":" "}'],
+    ['{"name":"Old"}', '{"name":"New"}'],
+    ['{"about":"","bio":"Legacy bio"}', '{"about":"","bio":"Legacy bio","name":"New"}'],
+  ] as const) {
+    const base = signed(content)
+    const edited = prepareNostrProfileEdit(
+      base.pubkey,
+      base,
+      nostrProfileEditorPatch(base, { name: 'New' }),
+      20,
+    )
+    assert.equal(edited.content, expected, content)
+  }
+  const bio = signed('{"bio":"Legacy bio"}')
+  assert.equal(
+    prepareNostrProfileEdit(bio.pubkey, bio, nostrProfileEditorPatch(bio, { about: 'New' }), 20)
+      .content,
+    '{"bio":"Legacy bio","about":"New"}',
+  )
+})
+
+test('editor patches accept only the editor fields', () => {
+  assert.deepEqual(validateNostrProfileEditorPatch({ name: 'a', about: '', picture: 'p' }), {
+    name: 'a',
+    about: '',
+    picture: 'p',
+  })
+  for (const patch of [{}, { display_name: 'a' }, { displayName: 'a' }, { name: 1 }, null, []])
+    assert.throws(() => validateNostrProfileEditorPatch(patch), /patch/)
+})
+
+test('an editor edit always shows the edited name and description and removes no field', () => {
+  const values = {
+    name: [undefined, '', '  ', 'Name'],
+    display_name: [undefined, '', ' ', 'Display', 7],
+    displayName: [undefined, '', 'Legacy'],
+    about: [undefined, '', 'About'],
+    bio: [undefined, '', 'Bio'],
+  } as const
+  const shapes: Record<string, unknown>[] = [{}]
+  for (const [key, options] of Object.entries(values))
+    shapes.splice(
+      0,
+      shapes.length,
+      ...shapes.flatMap((shape) =>
+        options.map((option) => (option === undefined ? shape : { ...shape, [key]: option })),
+      ),
+    )
+  assert.equal(shapes.length, 540)
+  for (const shape of shapes) {
+    const base = signed(JSON.stringify(shape))
+    for (const [name, about] of [
+      ['New name', 'New about'],
+      ['  padded  ', 'line one\nline two'],
+    ]) {
+      const template = prepareNostrProfileEdit(
+        base.pubkey,
+        base,
+        nostrProfileEditorPatch(base, { name, about }),
+        20,
+      )
+      const edited = finalizeEvent(template, key)
+      const card = decodeNostrProfileEvent(edited, base.pubkey)!
+      const label = `${JSON.stringify(shape)} ${name}`
+      assert.equal(card.displayName, name.trim(), label)
+      assert.equal(card.bio, about, label)
+      assert.deepEqual(nostrProfileEditFields(edited), { name, about, picture: '' }, label)
+      const metadata = JSON.parse(edited.content) as Record<string, unknown>
+      for (const key of Object.keys(shape)) assert.ok(Object.hasOwn(metadata, key), label)
+    }
+  }
 })
 
 test('selected relay failures refuse edit even with a retained newer event', async () => {
@@ -159,9 +238,15 @@ test('patch and timestamp bounds fail before signing', () => {
     { name: undefined },
     { name: 1 },
     { extra: 'value' },
+    { displayName: 'value' },
+    { display_name: 1 },
     { about: 'a'.repeat(65_536) },
   ])
     assert.throws(() => validateNostrProfilePatch(patch), /patch|size/)
+  assert.deepEqual(validateNostrProfilePatch({ name: 'a', display_name: 'b' }), {
+    name: 'a',
+    display_name: 'b',
+  })
   for (const now of [-1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(
       () => prepareNostrProfileEdit(profile.pubkey, null, { name: 'ok' }, now),

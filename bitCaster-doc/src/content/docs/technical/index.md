@@ -137,12 +137,13 @@ Use optional profile flags to edit public kind-0 metadata:
 
 ```bash
 bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --display-name "Alice A."
 bitcaster-cli signer profile --about ""
 ```
 
-Only supplied fields change. An empty string clears a field. When the latest
-profile has a non-blank `display_name`, `--name` edits `display_name`.
-Otherwise it edits `name`. Other metadata stays unchanged. Profile edits do not require
+Only supplied fields change. An empty string clears a field. `--name` sets the
+canonical `name`, and `--display-name` sets `display_name`. Unrelated metadata,
+including the other name field, stays unchanged. Profile edits do not require
 the daemon to stop. All selected relay reads must complete before signing.
 An unusable latest profile or an incomplete read refuses the edit.
 Output distinguishes relay acceptance, rejection, and missing acknowledgement.

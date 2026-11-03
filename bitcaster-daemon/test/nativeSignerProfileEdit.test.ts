@@ -150,15 +150,29 @@ test('ACK, durable reload, and older relay replies preserve previous canonical a
     assert.equal(result.status, 'saved')
     const sent = next.published[0]!.event
     assert.equal(sent.created_at, 21)
-    // The profile shows its display_name, so the name edit changes it and keeps name.
     assert.deepEqual(JSON.parse(sent.content), {
-      name: 'Old',
+      name: 'Next',
       custom: { keep: true },
-      display_name: 'Next',
+      display_name: 'Alias',
       about: 'Retained bio',
       picture: '',
     })
     assert.equal(JSON.stringify(result).includes('01'.repeat(32)), false)
+  } finally {
+    await close()
+  }
+})
+
+test('a display_name edit writes only display_name and keeps the canonical name', async () => {
+  const close = await fixture()
+  try {
+    const io = transport()
+    const result = await editNativeSignerProfile({ display_name: 'Shown' }, io)
+    assert.equal(result.status, 'saved')
+    assert.equal(
+      io.published[0]!.event.content,
+      '{"name":"Old","custom":{"keep":true},"display_name":"Shown"}',
+    )
   } finally {
     await close()
   }

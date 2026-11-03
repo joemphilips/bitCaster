@@ -1,10 +1,16 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { Command } from 'commander'
-import type { NostrProfilePatch } from '@bitcaster-market/client-sdk/nostrProfile'
 
 interface SignerCommandContext {
   readonly isDryRun: () => boolean
+}
+
+interface ProfileOptions {
+  readonly name?: string
+  readonly displayName?: string
+  readonly about?: string
+  readonly picture?: string
 }
 
 export function registerSignerCommands(program: Command, context: SignerCommandContext): void {
@@ -16,15 +22,19 @@ export function registerSignerCommands(program: Command, context: SignerCommandC
     .description(
       'Read public profile metadata from selected relays. No stored cache for reads. Edit supplied fields and retain acknowledged edits.',
     )
-    .option(
-      '--name <text>',
-      'Set the shown name: a non-blank display_name, otherwise name; an empty string clears it',
-    )
+    .option('--name <text>', 'Set the canonical name; an empty string clears it')
+    .option('--display-name <text>', 'Set display_name; an empty string clears it')
     .option('--about <text>', 'Set the description; an empty string clears it')
     .option('--picture <url>', 'Set the picture URL; an empty string clears it')
-    .action(async (options: NostrProfilePatch) => {
+    .action(async (options: ProfileOptions) => {
+      // Each flag writes the kind-0 key that it names.
       const patch = Object.fromEntries(
-        Object.entries(options).filter(([, value]) => value !== undefined),
+        Object.entries({
+          name: options.name,
+          display_name: options.displayName,
+          about: options.about,
+          picture: options.picture,
+        }).filter(([, value]) => value !== undefined),
       )
       if (Object.keys(patch).length === 0) {
         if (context.isDryRun()) return print({ action: 'profile', dryRun: true })

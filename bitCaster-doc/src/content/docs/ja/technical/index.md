@@ -137,12 +137,13 @@ bitcaster-cli signer profile
 
 ```bash
 bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --display-name "Alice A."
 bitcaster-cli signer profile --about ""
 ```
 
 指定したフィールドだけを変更します。空文字列を指定すると、そのフィールドを空にします。
-最新のプロフィールに空白以外の `display_name` がある場合、`--name` は `display_name` を編集します。
-それ以外の場合は `name` を編集します。他のメタデータは変更しません。
+`--name` は正規の `name` を、`--display-name` は `display_name` を設定します。
+もう一方の名前フィールドを含む、他のメタデータは変更しません。
 プロフィールの編集時は、デーモンを停止する必要はありません。
 署名前に、選択したすべてのリレーからの取得を完了する必要があります。
 最新のプロフィールを解釈できない場合や取得が未完了の場合、編集を拒否します。

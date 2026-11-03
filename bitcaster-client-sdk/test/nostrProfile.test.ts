@@ -47,6 +47,22 @@ test('missing and wrong-type fields use safe GUI-equivalent display defaults', (
   assert.equal(decoded.bio, '')
 })
 
+test('the card shows display_name, displayName, then name, and about before bio', () => {
+  for (const [metadata, displayName, bio] of [
+    [{ name: 'Name', display_name: 'Display', displayName: 'Legacy' }, 'Display', ''],
+    [{ name: 'Name', display_name: ' ', displayName: 'Legacy' }, 'Legacy', ''],
+    [{ name: ' Name ', display_name: '', displayName: '' }, 'Name', ''],
+    [{ about: 'About', bio: 'Bio' }, null, 'About'],
+    [{ about: ' ', bio: 'Bio' }, null, 'Bio'],
+    [{ about: '', bio: '' }, null, ''],
+  ] as const) {
+    const input = event(metadata)
+    const decoded = decodeNostrProfileEvent(input, input.pubkey)!
+    assert.equal(decoded.displayName, displayName ?? input.pubkey.slice(0, 8))
+    assert.equal(decoded.bio, bio)
+  }
+})
+
 test('decoder rejects mismatched owner, kind, invalid signature, cached-verification tampering and malformed content', () => {
   const cases = [
     { ...profile, content: '{}' },

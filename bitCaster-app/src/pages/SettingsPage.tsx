@@ -15,7 +15,7 @@ import {
   userConnectNsecIdentity,
   resolveCreatorPubkey,
 } from "@/lib/identityOps";
-import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import {
@@ -36,7 +36,7 @@ async function loadBrowserNostrProfileEdit(signal: AbortSignal) {
   const adapter = await import("@/lib/browserNostrProfile");
   return adapter.loadBrowserNostrProfileEdit(signal);
 }
-async function saveBrowserNostrProfileEdit(patch: NostrProfilePatch, signal: AbortSignal) {
+async function saveBrowserNostrProfileEdit(patch: NostrProfileEditorPatch, signal: AbortSignal) {
   const adapter = await import("@/lib/browserNostrProfile");
   return adapter.saveBrowserNostrProfileEdit(patch, signal);
 }

@@ -4,14 +4,15 @@ import { getEventHash, type Event, type EventTemplate } from "nostr-tools/pure";
 import {
   decodeNostrProfileEvent,
   nostrProfileEditFields,
+  nostrProfileEditorPatch,
   prepareNostrProfileEdit,
   readNostrProfile,
   readNostrProfileEditSnapshot,
   selectNostrProfileEditBase,
   signNostrProfileEdit,
-  validateNostrProfilePatch,
+  validateNostrProfileEditorPatch,
   type NostrProfileEditFields,
-  type NostrProfilePatch,
+  type NostrProfileEditorPatch,
 } from "@bitcaster/client-sdk/nostrProfile";
 import { useSettingsStore } from "@/stores/settings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrSignerRevision";
@@ -272,13 +273,13 @@ async function deliverProfile(
 }
 
 export async function saveBrowserNostrProfileEdit(
-  value: NostrProfilePatch,
+  value: NostrProfileEditorPatch,
   signal?: AbortSignal,
   options: BrowserNostrProfileOptions = {},
 ): Promise<BrowserProfileSaveResult> {
-  let patch: NostrProfilePatch;
+  let patch: NostrProfileEditorPatch;
   try {
-    patch = validateNostrProfilePatch(value);
+    patch = validateNostrProfileEditorPatch(value);
   } catch {
     throw new BrowserProfileError("invalid-input");
   }
@@ -307,7 +308,7 @@ type ProfileDelivery = Pick<
 
 async function saveInSession(
   selection: BrowserProfileSelection,
-  patch: NostrProfilePatch,
+  patch: NostrProfileEditorPatch,
   options: BrowserNostrProfileOptions,
   session: ProfileEditSession,
 ): Promise<BrowserProfileSaveResult> {
@@ -315,10 +316,11 @@ async function saveInSession(
   const base = await editBase(selection, session.read(), options);
   let template: EventTemplate;
   try {
+    // The editor name goes to the key that the card shows on this fresh base.
     template = prepareNostrProfileEdit(
       selection.publicKey,
       base,
-      patch,
+      nostrProfileEditorPatch(base, patch),
       (options.nowSeconds ?? (() => Math.floor(Date.now() / 1000)))(),
     );
   } catch {

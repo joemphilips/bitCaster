@@ -26,7 +26,7 @@ const profile = finalizeEvent(
 )
 const selectedRelays = ['wss://selected.example/Exact?Case=Yes']
 
-async function fixture(relays = selectedRelays) {
+async function fixture(relays = selectedRelays, served = profile) {
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-profile-cli-'))
   const directory = join(root, 'profile')
   await bootstrapFreshDaemonProfile({
@@ -58,7 +58,7 @@ async function fixture(relays = selectedRelays) {
       const {verifyEvent}=await import(${JSON.stringify(import.meta.resolve('nostr-tools/pure'))});
       const filesystem=await import('node:fs/promises');
       const directory=${JSON.stringify(directory)};
-      const profile=${JSON.stringify(profile)};
+      const profile=${JSON.stringify(served)};
       const selected=${JSON.stringify(relays)};
       const mode=${JSON.stringify(mode)};
       globalThis.fetch=()=>{throw Error('Profile command attempted HTTP I/O')};
@@ -232,18 +232,42 @@ test('actual CLI edit ACK and reload preserve earlier fields despite older relay
       (session) => session.read(),
       { directory: f.directory },
     )
-    // The profile shows its display_name, so --name changes it and adds no name field.
     assert.deepEqual(JSON.parse(retained!.content), {
-      display_name: 'Edited',
+      display_name: 'Public display',
       about: '',
       nip05: 'name@example.test',
       privateKey: 'ignored',
+      name: 'Edited',
       picture: 'https://image.example/a',
     })
     assert.ok(retained!.created_at > previous!.created_at)
     redacted(first.stdout + first.stderr + next.stdout + next.stderr)
   } finally {
     await f.close()
+  }
+})
+
+test('actual CLI --name keeps display_name and --display-name keeps name', async () => {
+  const bob = finalizeEvent(
+    { kind: 0, created_at: 10, tags: [], content: '{"name":"bob","display_name":"Bob B"}' },
+    new Uint8Array(32).fill(1),
+  )
+  for (const [flag, expected] of [
+    ['--name', { name: 'robert', display_name: 'Bob B' }],
+    ['--display-name', { name: 'bob', display_name: 'robert' }],
+  ] as const) {
+    const f = await fixture(selectedRelays, bob)
+    try {
+      const run = await f.run(['signer', 'profile', flag, 'robert'], 'found', true)
+      assert.equal(JSON.parse(run.stdout).status, 'saved')
+      const retained = await withNativeProfileEditSession(bob.pubkey, (session) => session.read(), {
+        directory: f.directory,
+      })
+      assert.deepEqual(JSON.parse(retained!.content), expected, flag)
+      redacted(run.stdout + run.stderr)
+    } finally {
+      await f.close()
+    }
   }
 })
 
@@ -259,6 +283,8 @@ test('actual CLI edit dry-run validates supplied strings with no network or secr
         'profile',
         '--name',
         '',
+        '--display-name',
+        'Shown',
         '--about',
         'Draft',
       ],
@@ -266,7 +292,7 @@ test('actual CLI edit dry-run validates supplied strings with no network or secr
     )
     assert.deepEqual(JSON.parse(result.stdout), {
       action: 'profile-edit',
-      patch: { name: '', about: 'Draft' },
+      patch: { name: '', display_name: 'Shown', about: 'Draft' },
       dryRun: true,
     })
     await assert.rejects(

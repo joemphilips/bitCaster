@@ -119,6 +119,29 @@ function objectMetadata(event: Event | null): Record<string, unknown> | null {
   }
 }
 
+function metadataText(metadata: Readonly<Record<string, unknown>>, key: string): string {
+  const value = metadata[key]
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * The name and the description that a profile shows, and the key that an edit
+ * of the name writes. The name is the first non-blank of `display_name`, the
+ * legacy `displayName` and `name`. Both display names are edited as
+ * `display_name`. The description is the first non-blank of `about` and the
+ * legacy `bio`, and is edited as `about`. The card and the editor use this one
+ * rule, so an edit always changes the shown value.
+ */
+function shownProfileText(metadata: Readonly<Record<string, unknown>>) {
+  const shown = (keys: readonly string[]) => keys.find((key) => metadataText(metadata, key).trim())
+  const display = shown(['display_name', 'displayName'])
+  return {
+    name: metadataText(metadata, display ?? 'name'),
+    nameKey: display ? ('display_name' as const) : ('name' as const),
+    about: metadataText(metadata, shown(['about', 'bio']) ?? 'about'),
+  }
+}
+
 export function decodeNostrProfileEvent(
   value: unknown,
   publicKeyHex: string,
@@ -131,18 +154,15 @@ export function decodeNostrProfileEvent(
     const text = (key: string): string | undefined =>
       typeof fields[key] === 'string' ? (fields[key] as string) : undefined
     const displayText = (key: string) => text(key)?.trim() || undefined
+    const shown = shownProfileText(fields)
     return {
       pubkey: publicKeyHex,
-      displayName:
-        displayText('display_name') ??
-        displayText('displayName') ??
-        displayText('name') ??
-        publicKeyHex.slice(0, 8),
+      displayName: shown.name.trim() || publicKeyHex.slice(0, 8),
       avatar: displayText('picture') ?? displayText('image') ?? '',
       nip05: text('nip05') ?? '',
       // A kind-0 claim is not proof of control of the NIP-05 address.
       nip05verified: false,
-      bio: text('bio') ?? text('about') ?? '',
+      bio: shown.about,
       eventId: event.id,
       createdAt: event.created_at,
     }
@@ -223,9 +243,10 @@ export async function readNostrAuthorRelays(
   return { completedRelayCount, failedRelayCount }
 }
 
+/** Each key is the kind-0 metadata key that the edit writes. */
 export interface NostrProfilePatch {
-  /** The shown name. The edit changes a non-blank `display_name`, or else `name`. */
   readonly name?: string
+  readonly display_name?: string
   readonly about?: string
   readonly picture?: string
 }
@@ -298,30 +319,8 @@ export function selectNostrProfileEditBase(
   return selected
 }
 
-const editableFields = ['name', 'about', 'picture'] as const
-
-/**
- * The metadata key that a `name` edit changes. A non-blank `display_name` is the
- * name that the profile shows, so the edit changes it. Otherwise it changes `name`.
- */
-function nameKey(metadata: Readonly<Record<string, unknown>>): 'display_name' | 'name' {
-  const value = metadata.display_name
-  return typeof value === 'string' && value.trim() ? 'display_name' : 'name'
-}
-
-export interface NostrProfileEditFields {
-  readonly name: string
-  readonly about: string
-  readonly picture: string
-}
-
-/** The editable text of a usable edit base. A field that is not text is empty. */
-export function nostrProfileEditFields(base: Event | null): NostrProfileEditFields {
-  const metadata = base === null ? {} : objectMetadata(base)
-  if (!metadata) throw new Error('Nostr profile edit base is invalid.')
-  const text = (key: string) => (typeof metadata[key] === 'string' ? (metadata[key] as string) : '')
-  return { name: text(nameKey(metadata)), about: text('about'), picture: text('picture') }
-}
+const editableFields = ['name', 'display_name', 'about', 'picture'] as const
+const editorFields = ['name', 'about', 'picture'] as const
 
 /** Validate CLI dry-run input without loading a signer or contacting relays. */
 export function validateNostrProfilePatch(value: unknown): NostrProfilePatch {
@@ -330,14 +329,66 @@ export function validateNostrProfilePatch(value: unknown): NostrProfilePatch {
   const patch = value as Record<string, unknown>
   const keys = Object.keys(patch)
   if (keys.length === 0 || keys.some((key) => !editableFields.some((field) => field === key)))
-    throw new Error('Nostr profile patch must supply name, about, or picture strings.')
+    throw new Error(
+      'Nostr profile patch must supply name, display_name, about, or picture strings.',
+    )
   for (const key of keys)
     if (typeof patch[key] !== 'string')
-      throw new Error('Nostr profile patch must supply name, about, or picture strings.')
+      throw new Error(
+        'Nostr profile patch must supply name, display_name, about, or picture strings.',
+      )
   const copy = Object.fromEntries(keys.map((key) => [key, patch[key]])) as NostrProfilePatch
   if (new TextEncoder().encode(JSON.stringify(copy)).byteLength > MAX_NOSTR_PROFILE_CONTENT_BYTES)
     throw new Error('Nostr profile patch exceeds the content size limit.')
   return copy
+}
+
+/** The editor fields: the shown name, the shown description and the picture. */
+export interface NostrProfileEditFields {
+  readonly name: string
+  readonly about: string
+  readonly picture: string
+}
+
+export type NostrProfileEditorPatch = Partial<NostrProfileEditFields>
+
+function editMetadata(base: Event | null): Record<string, unknown> {
+  const metadata = base === null ? {} : objectMetadata(base)
+  if (!metadata) throw new Error('Nostr profile edit base is invalid.')
+  return metadata
+}
+
+/** The editor text of a usable edit base. The card shows the same name and description. */
+export function nostrProfileEditFields(base: Event | null): NostrProfileEditFields {
+  const metadata = editMetadata(base)
+  const shown = shownProfileText(metadata)
+  return { name: shown.name, about: shown.about, picture: metadataText(metadata, 'picture') }
+}
+
+/** Validate editor input before a signer or a relay is used. */
+export function validateNostrProfileEditorPatch(value: unknown): NostrProfileEditorPatch {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.keys(value).some((key) => !editorFields.some((field) => field === key))
+  )
+    throw new Error('Nostr profile patch must supply name, about, or picture strings.')
+  return validateNostrProfilePatch(value) as NostrProfileEditorPatch
+}
+
+/**
+ * The metadata patch for an editor patch on the edit base. The name goes to
+ * the key of the name that the card shows. Call it with the fresh base.
+ */
+export function nostrProfileEditorPatch(
+  base: Event | null,
+  value: NostrProfileEditorPatch,
+): NostrProfilePatch {
+  const patch = validateNostrProfileEditorPatch(value)
+  const { nameKey } = shownProfileText(editMetadata(base))
+  return Object.fromEntries(
+    Object.entries(patch).map(([key, text]) => [key === 'name' ? nameKey : key, text]),
+  ) as NostrProfilePatch
 }
 
 function jsonValueEnd(content: string, start: number): number {
@@ -361,11 +412,6 @@ function jsonValueEnd(content: string, start: number): number {
 }
 
 function patchMetadataContent(content: string, patch: NostrProfilePatch): string {
-  const metadata = JSON.parse(content) as Record<string, unknown>
-  const values = new Map<string, string>()
-  for (const field of editableFields)
-    if (Object.hasOwn(patch, field))
-      values.set(field === 'name' ? nameKey(metadata) : field, patch[field]!)
   const edits: { start: number; end: number; value: string }[] = []
   const seen = new Set<string>()
   let cursor = content.indexOf('{') + 1
@@ -381,21 +427,24 @@ function patchMetadataContent(content: string, patch: NostrProfilePatch): string
     while (content[cursor] !== ':') cursor += 1
     const start = ++cursor
     cursor = jsonValueEnd(content, start)
-    const value = values.get(key)
-    if (value !== undefined) {
-      edits.push({ start, end: cursor, value: JSON.stringify(value) })
+    if (Object.hasOwn(patch, key)) {
+      edits.push({
+        start,
+        end: cursor,
+        value: JSON.stringify(patch[key as keyof NostrProfilePatch]),
+      })
       seen.add(key)
     }
     if (content[cursor] === ',') cursor += 1
     else break
   }
-  const missing = [...values].filter(([key]) => !seen.has(key))
+  const missing = editableFields.filter((key) => Object.hasOwn(patch, key) && !seen.has(key))
   if (missing.length) {
-    const hasFields = Object.keys(metadata).length > 0
+    const hasFields = Object.keys(JSON.parse(content) as object).length > 0
     edits.push({
       start: cursor,
       end: cursor,
-      value: `${hasFields ? ',' : ''}${missing.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(',')}`,
+      value: `${hasFields ? ',' : ''}${missing.map((key) => `${JSON.stringify(key)}:${JSON.stringify(patch[key])}`).join(',')}`,
     })
   }
   for (const edit of edits.reverse())

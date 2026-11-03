@@ -203,6 +203,40 @@ describe("verified browser profile editing", () => {
     expect(saved.event.content).toBe(JSON.stringify({ display_name: "joe", picture }));
   });
 
+  it("edits the legacy displayName and bio that the card shows, and refuses metadata keys", async () => {
+    const legacy = finalizeEvent(
+      {
+        kind: 0,
+        created_at: 10,
+        tags: [],
+        content: '{"name":"old","displayName":"Legacy","about":" ","bio":"Legacy bio"}',
+      },
+      key,
+    );
+    expect(
+      (await loadBrowserNostrProfileEdit(undefined, transport({ event: legacy }))).fields,
+    ).toEqual({ name: "Legacy", about: "Legacy bio", picture: "" });
+    const saved = await saveBrowserNostrProfileEdit(
+      { name: "New", about: "New bio" },
+      undefined,
+      transport({ event: legacy }),
+    );
+    expect(saved.event.content).toBe(
+      '{"name":"old","displayName":"Legacy","about":"New bio","bio":"Legacy bio","display_name":"New"}',
+    );
+    expect(useSettingsStore.getState().nostrProfile).toMatchObject({
+      displayName: "New",
+      bio: "New bio",
+    });
+    await expect(
+      saveBrowserNostrProfileEdit(
+        { display_name: "x" } as unknown as { name: string },
+        undefined,
+        transport({ event: legacy }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid-input" });
+  });
+
   it("keeps the save lock through ACK and retention before the next edit reads its base", async () => {
     let acknowledge!: () => void;
     const gate = new Promise<void>((resolve) => {

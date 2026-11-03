@@ -6,7 +6,7 @@ import {
   type BrowserProfileEditView,
   type BrowserProfileSaveResult,
 } from "@/lib/browserNostrProfile";
-import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 import { NostrMediaUploadError } from "@bitcaster/client-sdk/nostrMediaUpload";
 import {
   uploadBrowserNostrProfileImage,
@@ -21,7 +21,7 @@ export interface NostrProfileEditorProps {
   readonly onEditEnd?: () => void;
   readonly load: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
   readonly save: (
-    patch: NostrProfilePatch,
+    patch: NostrProfileEditorPatch,
     signal: AbortSignal,
   ) => Promise<BrowserProfileSaveResult>;
 }

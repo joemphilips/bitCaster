@@ -225,8 +225,9 @@ The service can be unavailable or change its retention policy. bitCaster does no
 pay upload fees or guarantee image retention. Replacing a picture does not delete
 the old image from the host or other Nostr clients.
 
-When your profile has a display name, the name field edits that display name.
-Otherwise it edits the name. Other metadata stays unchanged.
+The name and description fields start with the values that your profile card
+shows. A changed name is saved as your display name, or as your name when your
+profile has no display name. Other metadata stays unchanged.
 
 Save first reads all selected relays. If a read or signature request fails,
 your draft stays available. A relay rejection and a missing acknowledgement
