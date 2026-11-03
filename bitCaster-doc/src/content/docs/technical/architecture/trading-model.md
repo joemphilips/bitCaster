@@ -202,13 +202,14 @@ alone does not make funds spendable. Recovery does not submit a new order.
 ## Participation Score
 
 Participation Score protects public order admission. A successful public
-one-shot capability binding charges once under `settlement-capability-v1`. The
-tariff is `1 + InputCount + ceil(ManifestCount/16) +
-ceil(ArtifactByteCount/4096)`. Each authenticated invalid proof or DLEQ
-validation attempt uses the same tariff. There is no separate order, fill, or
-settlement-failure tariff. Fills, cancellation, settlement failure, refund,
-and recovery do not debit Score. This tariff applies to public client
-capabilities.
+one-shot capability binding charges once under `settlement-capability-v2`. The
+tariff is `max(1, ceil(v1 / 4))`, where `v1 = 1 + InputCount +
+ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)`. A charge recorded
+earlier under `settlement-capability-v1` keeps its `v1` amount. Each
+authenticated invalid proof or DLEQ validation attempt uses the same tariff.
+There is no separate order, fill, or settlement-failure tariff. Fills,
+cancellation, settlement failure, refund, and recovery do not debit Score. This
+tariff applies to public client capabilities.
 
 If Score is insufficient, the daemon submits a payment and waits for its
 delivery state to become `credited` before it prepares the order capability.
@@ -217,7 +218,7 @@ receives the payment. If the bounded wait ends, the payment remains available
 for recovery. A pending delivery does not prove that the payment failed.
 
 When at least 200 sats remain spendable after the order's own funds, a Score
-top-up buys 50 sats of Score, or the full shortfall if it is larger. Later
+top-up buys 5 sats of Score, or the full shortfall if it is larger. Later
 trades use the remaining Score, so they often need no top-up. Otherwise, and
 while another order of the same client is prepared, the top-up buys only the
 shortfall, so a small wallet keeps its funds for trades.

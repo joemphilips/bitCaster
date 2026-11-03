@@ -125,7 +125,7 @@ web app shows a persistent error. Unavailability does not prove that an asset
 is absent and does not authorize automatic mint recovery. Broad recovery
 remains available through the CLI.
 
-If a trade needs Engine Score and locally available funds are insufficient,
+If a trade needs Participation Score and locally available funds are insufficient,
 the app checks wallet recovery. If recovery is unavailable, it offers Retry
 or Add funds. This message does not mean that other wallet funds are lost.
 Retry checks recovery again within the existing recovery limits.

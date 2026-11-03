@@ -20,6 +20,12 @@ you accepted. It also checks the accepted worst execution price.
 These limits do not remove wallet preparation or refund fees.
 Preparation can cost a fee even if no trade completes.
 
+The trade summary can also show a Participation Score row. Participation Score
+is an anti-spam fee. bitCaster charges a few sats of Score when your order uses
+the order book. If your Score balance does not cover the order, the app buys
+Score with ordinary sats from your wallet. The row shows that amount. Score is
+not refundable.
+
 To sell all your shares, keep some ordinary sats available for preparation
 fees. The wallet can pay those fees with sats instead of reducing the shares
 you sell. The sale proceeds cannot pay this fee because preparation comes first.

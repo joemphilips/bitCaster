@@ -13,8 +13,12 @@ identifiers unchanged. Choose the term for the action being described.
 | Winning portfolio position | Won | 当たり😋 |
 | Losing portfolio position | Lost | ハズレ😭 |
 | Unit for a count of shares | shares | 枚 |
+| Prepaid anti-spam fee for order admission | Participation Score | Participation Score |
 
 Do not replace settlement terms with resolution terms. Keep the result text
 available to assistive technology. Do not use an emoji as the only result cue.
 When changing a losing-position label, retain the warning that token deletion
 is irreversible.
+
+Keep the name Participation Score in English and Japanese text. Use Score as its
+short form after the first use. Do not use Engine Score.
