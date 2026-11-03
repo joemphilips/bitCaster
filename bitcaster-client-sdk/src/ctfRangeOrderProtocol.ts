@@ -1,3 +1,4 @@
+import { createCtfPayToUnlockSecret } from '@cashu/cashu-ts'
 import {
   assertCounterPreparationRecordBinding,
   decodeCounterCtfRangePreparation,
@@ -8,6 +9,8 @@ import {
   type VerifiedCtfConditionRegistration,
 } from './ctfConditionRegistration.ts'
 import {
+  SETTLEMENT_CAPABILITY_ARTIFACT_BYTES_MAX,
+  SETTLEMENT_CAPABILITY_ARTIFACT_SCHEMA_VERSION,
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
@@ -26,7 +29,7 @@ import {
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
 import { decodeOrderQuotePaymentBounds } from './tradeTicket.ts'
-import { decodeCanonicalMintOrigin } from './durableCustody.ts'
+import { decodeCanonicalMintOrigin, encodeBoundedDurableArtifact } from './durableCustody.ts'
 import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 import type {
   DurableCtfRangeExpiryObservation,
@@ -392,7 +395,8 @@ export function createCtfRangeSettlementCapabilityRequest(
   }
 }
 
-export function settlementCapabilityV1WorkFacts(
+/** Work facts of the capability artifact. Every tariff rule reads the same facts. */
+export function settlementCapabilityWorkFacts(
   operation: DurableCtfRangeOperation,
 ): SettlementCapabilityScoreWorkFacts {
   const artifact = createPoolSettlementCapabilityArtifact(operation)
@@ -402,6 +406,99 @@ export function settlementCapabilityV1WorkFacts(
     manifestCount: artifact.manifest.entries.length,
     artifactByteCount: canonicalBytes.byteLength,
   }
+}
+
+const PREVIEW_POINT = `02${'00'.repeat(32)}`
+const PREVIEW_HASH = '00'.repeat(32)
+const PREVIEW_UUID = '00000000-0000-4000-8000-000000000000'
+
+/**
+ * Work facts of the capability that a new submission of this preparation
+ * creates, before the wallet reserves counters or the mint signs.
+ *
+ * The counts come from the authorization plan. Every point, hash, nonce,
+ * signature, and UUID in the artifact has a fixed length, so placeholders of
+ * that length give the exact canonical byte count without curve operations.
+ * Tests compare this shape with the artifact of a real counter submission.
+ * Use the result only for display. The submission computes the tariff again
+ * from its real artifact.
+ */
+export function previewCtfRangeSettlementCapabilityWorkFacts(
+  value: PersistedCtfRangeOrderPreparationV2,
+): SettlementCapabilityScoreWorkFacts {
+  const preparation = decodePersistedCtfRangeOrderPreparationV2(value)
+  const plan = planPersistedCtfRangeOrderAuthorization(preparation)
+  const secret = createCtfPayToUnlockSecret({
+    nonce: PREVIEW_HASH,
+    data: PREVIEW_HASH,
+    offerKeyset: preparation.offerKeyset.id,
+    expiry: preparation.expiry,
+    // The refund key is an x-only key of the same length.
+    refund: preparation.coordinatorPublicKey,
+    coordinatorPublicKey: preparation.coordinatorPublicKey,
+    poolPolicy: plan.policy,
+  })
+  const entries = [
+    ...rangeEntryAmounts(plan.manifest.maxReceive).map((amount) => ({
+      amount,
+      id: preparation.receiveKeyset.id,
+      role: 'receive',
+    })),
+    ...rangeEntryAmounts(plan.manifest.maxChange).map((amount) => ({
+      amount,
+      id: preparation.offerKeyset.id,
+      role: 'change',
+    })),
+  ].map((entry, index) => ({ B_: PREVIEW_POINT, ...entry, index: String(index) }))
+  if (entries.length !== plan.manifest.entryCount) {
+    throw new Error('range capability preview manifest does not match its plan')
+  }
+  const artifact = {
+    schemaVersion: SETTLEMENT_CAPABILITY_ARTIFACT_SCHEMA_VERSION,
+    authorizationMode: 'pool',
+    operationId: PREVIEW_UUID,
+    authorizationId: PREVIEW_UUID,
+    mintUrl: preparation.mintUrl,
+    unit: 'msat',
+    conditionId: preparation.conditionId,
+    parentCollectionId: '0'.repeat(64),
+    offerKeysetId: preparation.offerKeyset.id,
+    receiveKeysetId: preparation.receiveKeyset.id,
+    expiry: preparation.expiry,
+    policy: plan.policy,
+    inputFeePpkByKeyset: { [preparation.offerKeyset.id]: preparation.offerKeyset.inputFeePpk },
+    inputProofYs: plan.authorizationAmounts.map(() => PREVIEW_POINT),
+    inputs: plan.authorizationAmounts.map((amount) => ({
+      id: preparation.offerKeyset.id,
+      amount,
+      secret,
+      C: PREVIEW_POINT,
+      dleq: { e: PREVIEW_HASH, s: PREVIEW_HASH, r: PREVIEW_HASH },
+      p2pkE: null,
+      witness: null,
+    })),
+    manifest: { commitment: PREVIEW_HASH, entries },
+  }
+  return {
+    inputCount: plan.authorizationAmounts.length,
+    manifestCount: entries.length,
+    artifactByteCount: encodeBoundedDurableArtifact(
+      artifact,
+      SETTLEMENT_CAPABILITY_ARTIFACT_BYTES_MAX,
+    ).byteLength,
+  }
+}
+
+/** The powers-of-two entry amounts that cover `maximum`, as the range manifest uses. */
+function rangeEntryAmounts(maximum: string): string[] {
+  const max = BigInt(maximum)
+  const amounts: string[] = []
+  let capacity = 0n
+  for (let amount = 1n; capacity < max; amount <<= 1n) {
+    amounts.push(amount.toString())
+    capacity += amount
+  }
+  return amounts
 }
 
 export function validateAndProjectCtfRangeSettlementCapabilityResponse(input: {

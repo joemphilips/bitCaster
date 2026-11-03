@@ -125,7 +125,8 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(mocks.readBrowserParticipationScorePayableScore).not.toHaveBeenCalled();
   });
 
-  it("buys the 50 Score buffer and reports sats and Score separately", async () => {
+  it("buys the 5 Score buffer and reports sats and Score separately", async () => {
+    // The shortfall is 2 Score, so a 5 Score purchase can only come from the buffer.
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
@@ -134,13 +135,13 @@ describe("ensureParticipationScoreForNextMatch", () => {
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
-      requiredScore: 4,
+      requiredScore: 1,
     });
 
     expect(result).toMatchObject({
       kind: "paid",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
-      payment: { amountSats: 50, creditedScore: 50 },
+      payment: { amountSats: 5, creditedScore: 5 },
     });
     expect(mocks.readBrowserParticipationScorePayableScore).toHaveBeenCalledWith(
       "https://mint.example",
@@ -149,7 +150,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
       accountSubject: "subject-1",
       mintUrl: "https://mint.example",
-      requestedAmount: "50000",
+      requestedAmount: "5000",
     });
   });
 
@@ -158,10 +159,10 @@ describe("ensureParticipationScoreForNextMatch", () => {
     mocks.readBrowserParticipationScorePayableScore.mockResolvedValue(20);
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
-    ).resolves.toMatchObject({ kind: "paid", payment: { amountSats: 5 } });
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 2 }),
+    ).resolves.toMatchObject({ kind: "paid", payment: { amountSats: 3 } });
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedAmount: "5000" }),
+      expect.objectContaining({ requestedAmount: "3000" }),
     );
   });
 
@@ -173,17 +174,17 @@ describe("ensureParticipationScoreForNextMatch", () => {
     );
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 3 }),
     ).resolves.toMatchObject({
       kind: "needs-regular-top-up",
-      requiredSats: 5,
+      requiredSats: 4,
       balanceSats: 2,
-      deficitSats: 3,
+      deficitSats: 2,
       recoveryStatus: "insufficient",
     });
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledOnce();
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedAmount: "5000" }),
+      expect.objectContaining({ requestedAmount: "4000" }),
     );
   });
 
@@ -194,17 +195,17 @@ describe("ensureParticipationScoreForNextMatch", () => {
 
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
-      requiredScore: 4,
+      requiredScore: 2,
     });
 
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedAmount: "50000" }),
+      expect.objectContaining({ requestedAmount: "5000" }),
     );
     expect(result).toMatchObject({
       kind: "needs-regular-top-up",
-      requiredSats: 4,
+      requiredSats: 2,
       balanceSats: 1.5,
-      deficitSats: 2.5,
+      deficitSats: 0.5,
       recoveryStatus: "insufficient",
     });
   });

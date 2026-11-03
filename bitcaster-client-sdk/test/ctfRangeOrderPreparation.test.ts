@@ -36,7 +36,8 @@ import {
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
   planPersistedCtfRangeOrderAuthorization,
-  settlementCapabilityV1WorkFacts,
+  previewCtfRangeSettlementCapabilityWorkFacts,
+  settlementCapabilityWorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -49,6 +50,7 @@ import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperatio
 import {
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
+  encodeSettlementCapabilityArtifact,
 } from '../src/settlementCapabilityArtifact.ts'
 import {
   ctfRangeSourceMode,
@@ -478,7 +480,7 @@ test('builds one capability request and validates its exact engine projection', 
   assert.equal(capabilityRequest.orderIntent.timeInForce, 'FOK')
   const artifact = createPoolSettlementCapabilityArtifact(operation)
   const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
-  const workFacts = settlementCapabilityV1WorkFacts(operation)
+  const workFacts = settlementCapabilityWorkFacts(operation)
   const capability = {
     reference: {
       artifactId: '11111111-1111-4111-8111-111111111111',
@@ -1598,6 +1600,90 @@ test('v3 receipt roundtrip reconstructs exact outputs and per-keyset counter all
     assert.equal(receive, receipt.receiveCounterCount)
     assert.equal(change + first.authorizationOutputs.length * 2, receipt.offerCounterCount)
   }
+})
+
+function scorePreviewPreparation(side: 'Buy' | 'Sell', amountSubunits: number, price: number) {
+  const quote = (amountSubunits * price) / 1_000
+  return buildPersistedCtfRangeOrderPreparation({
+    request: {
+      ...rangeOrderRequest(),
+      side,
+      price,
+      amountSubunits,
+      minimumFillAmountSubunits: amountSubunits,
+      maxQuotePaymentSubunits: side === 'Buy' ? quote : null,
+      minQuotePaymentSubunits: side === 'Sell' ? quote : null,
+    },
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+    mintFacts: reviewedMintFacts(),
+    market: {
+      outcomes: [
+        { id: 'yes-id', label: 'YES' },
+        { id: 'no-id', label: 'NO' },
+      ],
+    },
+    nowUnixSeconds: 20,
+    // The browser preview builds its preparation with random UUIDs.
+    randomId: () => crypto.randomUUID(),
+  })
+}
+
+test('the capability work-facts preview equals the facts of the submitted capability', () => {
+  const seed = new Uint8Array(64).fill(7)
+  for (const side of ['Buy', 'Sell'] as const) {
+    for (const [amountSubunits, price] of [
+      [1_000, 2],
+      [5_000, 400],
+      [100_000, 600],
+      [1_000_000, 999],
+    ] as const) {
+      const preparation = scorePreviewPreparation(side, amountSubunits, price)
+      // The submission reserves counters and derives a new identity from the wallet seed.
+      const { intent } = createCtfRangePreparationIntent({
+        scopeId: testCounterScope(seed),
+        request: preparation.request,
+        feeConsentBytes: null,
+        consolidateProofs: true,
+      })
+      const receipt = createCounterCtfRangePreparation({
+        preparation,
+        intent,
+        seed,
+        offerCounterStart: 1_234_567,
+        receiveCounterStart: 89,
+      })
+      const prepared = reconstructCtfRangePreparation(receipt, seed)
+      const submitted = completeCtfRangeOrderAuthorization({
+        preparation: prepared,
+        inputs: prepared.authorizationOutputs.map(signOutput),
+        keysetLookup: ctfRangeOrderPreparationKeysetLookup(receipt),
+        expiryObservation: receipt.expiryObservation,
+        allowInsecureLoopbackHttp: false,
+      })
+      const artifact = createPoolSettlementCapabilityArtifact(submitted)
+      const expected = {
+        inputCount: artifact.inputs.length,
+        manifestCount: artifact.manifest.entries.length,
+        artifactByteCount: encodeSettlementCapabilityArtifact(artifact).byteLength,
+      }
+
+      assert.deepEqual(
+        previewCtfRangeSettlementCapabilityWorkFacts(preparation),
+        expected,
+        `${side} ${amountSubunits} at ${price}`,
+      )
+    }
+  }
+})
+
+test('the capability work-facts preview refuses a foreign or malformed preparation', () => {
+  const preparation = scorePreviewPreparation('Buy', 1_000, 2)
+  assert.throws(() =>
+    previewCtfRangeSettlementCapabilityWorkFacts({ ...preparation, amountSubunits: 0 }),
+  )
+  assert.throws(() =>
+    previewCtfRangeSettlementCapabilityWorkFacts({ ...preparation, version: 3 } as never),
+  )
 })
 
 test('v3 rejects modified intent, ranges, IDs, unknown fields and wrong reconstruction seed', () => {

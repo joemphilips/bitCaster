@@ -95,7 +95,6 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
-import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import {
   decodeSettlementCapabilityArtifactBytes,
   deriveSettlementCapabilityArtifactDigest,
@@ -1230,11 +1229,13 @@ describe("browser CTF range order coordinator", () => {
       onCreate: async (request) => {
         const artifact = decodeSettlementCapabilityArtifactBytes(base64Bytes(request.artifact));
         if (artifact.authorizationMode !== "pool") throw new Error("expected pool artifact");
-        expectedScore = calculateSettlementCapabilityV1Tariff({
-          inputCount: artifact.inputs.length,
-          manifestCount: artifact.manifest.entries.length,
-          artifactByteCount: encodeSettlementCapabilityArtifact(artifact).byteLength,
-        });
+        // settlement-capability-v2: a quarter of the v1 work sum, rounded up.
+        const v1 =
+          1 +
+          artifact.inputs.length +
+          Math.ceil(artifact.manifest.entries.length / 16) +
+          Math.ceil(encodeSettlementCapabilityArtifact(artifact).byteLength / 4_096);
+        expectedScore = Math.max(1, Math.ceil(v1 / 4));
         calls.push("capability");
       },
     });

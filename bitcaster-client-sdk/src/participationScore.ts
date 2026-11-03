@@ -4,19 +4,31 @@ export interface ParticipationScoreLike {
 }
 
 export const SETTLEMENT_CAPABILITY_V1_TARIFF_RULE_ID = 'settlement-capability-v1'
+export const SETTLEMENT_CAPABILITY_V2_TARIFF_RULE_ID = 'settlement-capability-v2'
+
+export type SettlementCapabilityTariffRuleId =
+  | typeof SETTLEMENT_CAPABILITY_V1_TARIFF_RULE_ID
+  | typeof SETTLEMENT_CAPABILITY_V2_TARIFF_RULE_ID
+
+/**
+ * The rule that the engine applies to a new capability admission. The engine
+ * keeps each earlier rule for the charges that it recorded under that rule.
+ */
+export const CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID: SettlementCapabilityTariffRuleId =
+  SETTLEMENT_CAPABILITY_V2_TARIFF_RULE_ID
 
 /**
  * Score units that one top-up buys, so later trades can skip a delivery. One
  * Score unit costs 1 sat.
  */
-export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 50
+export const PARTICIPATION_SCORE_TOP_UP_BUFFER = 5
 
 /**
  * The buffer applies only when the wallet keeps at least this much Score after
- * the order's own funds, so the buffer is at most a quarter of the spare funds.
- * A smaller wallet buys only the shortfall and keeps its funds for trades.
+ * the order's own funds. A smaller wallet buys only the shortfall and keeps its
+ * funds for trades.
  */
-export const PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE = 4 * PARTICIPATION_SCORE_TOP_UP_BUFFER
+export const PARTICIPATION_SCORE_TOP_UP_BUFFER_MINIMUM_SPARE = 200
 
 export interface SettlementCapabilityScoreWorkFacts {
   inputCount: number
@@ -90,6 +102,21 @@ export async function planParticipationScoreTopUpFromWallet(
   }
 }
 
+/** Mirror the engine tariff of one rule. Use the rule ID that the charge recorded. */
+export function calculateSettlementCapabilityTariff(
+  ruleId: SettlementCapabilityTariffRuleId,
+  facts: SettlementCapabilityScoreWorkFacts,
+): number {
+  switch (ruleId) {
+    case SETTLEMENT_CAPABILITY_V1_TARIFF_RULE_ID:
+      return calculateSettlementCapabilityV1Tariff(facts)
+    case SETTLEMENT_CAPABILITY_V2_TARIFF_RULE_ID:
+      return calculateSettlementCapabilityV2Tariff(facts)
+    default:
+      throw new Error(`Settlement capability tariff rule is unsupported: ${String(ruleId)}`)
+  }
+}
+
 export function calculateSettlementCapabilityV1Tariff(
   facts: SettlementCapabilityScoreWorkFacts,
 ): number {
@@ -102,6 +129,13 @@ export function calculateSettlementCapabilityV1Tariff(
     Math.ceil(facts.manifestCount / 16) +
     Math.ceil(facts.artifactByteCount / 4_096)
   )
+}
+
+/** A quarter of the v1 tariff, rounded up, and never less than 1. */
+export function calculateSettlementCapabilityV2Tariff(
+  facts: SettlementCapabilityScoreWorkFacts,
+): number {
+  return Math.max(1, Math.ceil(calculateSettlementCapabilityV1Tariff(facts) / 4))
 }
 
 function assertNever(value: never): never {

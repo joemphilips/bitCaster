@@ -88,7 +88,7 @@ import {
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
   planPersistedCtfRangeOrderAuthorization,
-  settlementCapabilityV1WorkFacts,
+  settlementCapabilityWorkFacts,
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
   exactCtfRangeOrderPreparationMintKeysets,
@@ -106,7 +106,10 @@ import {
   composeCtfRangeOrderFeeFacts,
   type CtfRangeOrderFeeFacts,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
-import { calculateSettlementCapabilityV1Tariff } from '@bitcaster-market/client-sdk/participationScore'
+import {
+  CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+  calculateSettlementCapabilityTariff,
+} from '@bitcaster-market/client-sdk/participationScore'
 import {
   loadCtfRangeMintKeys as loadMintKeys,
   loadCtfRangeMintMetadata,
@@ -459,7 +462,10 @@ export class DaemonCtfRangeOrderCoordinator {
         identity,
         async () =>
           beforeCreateCapability?.(
-            calculateSettlementCapabilityV1Tariff(settlementCapabilityV1WorkFacts(operation)),
+            calculateSettlementCapabilityTariff(
+              CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+              settlementCapabilityWorkFacts(operation),
+            ),
           ),
         beforeCreateCapability === undefined ? 'unverified' : 'success',
       )

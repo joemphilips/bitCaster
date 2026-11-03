@@ -118,14 +118,17 @@ import {
   decodeSettlementCoordinatorPublicKey,
   decodeCtfRangeOrderPreparationFromRecord,
   planPersistedCtfRangeOrderAuthorization,
-  settlementCapabilityV1WorkFacts,
+  settlementCapabilityWorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
   type CtfRangeReviewedMintFacts,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
-import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
+import {
+  CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+  calculateSettlementCapabilityTariff,
+} from "@bitcaster/client-sdk/participationScore";
 import {
   EngineClientError,
   type CreateSettlementCapabilityRequest,
@@ -611,8 +614,9 @@ export class BrowserCtfRangeOrderCoordinator {
     }
     await this.#beforeCreateCapability({
       mintUrl: input.preparation.mintUrl,
-      requiredScore: calculateSettlementCapabilityV1Tariff(
-        settlementCapabilityV1WorkFacts(completed.operation),
+      requiredScore: calculateSettlementCapabilityTariff(
+        CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+        settlementCapabilityWorkFacts(completed.operation),
       ),
     });
     return withWalletProfileLock(
