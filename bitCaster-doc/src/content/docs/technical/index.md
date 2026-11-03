@@ -67,6 +67,25 @@ bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
 bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
+Put the global `--dry-run` option before a command to check it without acting:
+
+```bash
+bitcaster-cli --dry-run market fund begin <condition-id> --amount-msat 8000 --max-wallet-debit-msat 8002
+```
+
+Each command's `--help` states its dry-run mode.
+A supported command prints `{"dryRun": true, "method": ..., "params": ...}`.
+`method` names the intended operation. `params` holds its request without secret values.
+It does not move funds or change orders, markets, keys, or settings.
+A read-only command runs normally.
+It does not change funds, orders, markets, keys, or settings.
+With `--dry-run`, the daemon must already run, because a dry run never starts it.
+A refused command stops with exit code 2 before it acts.
+`daemon init`, `daemon stop`, and `daemon restart` refuse `--dry-run`.
+Put `--dry-run` before any `--` and give it no value.
+Otherwise, the CLI stops with exit code 2.
+A dry run does not prove that the operation can succeed.
+
 Use `bitcaster-cli --help` and each command's `--help` to check current support.
 CLI coverage does not yet include every web-app operation.
 Full application capability parity is the design goal.

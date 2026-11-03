@@ -100,7 +100,7 @@ test('actual global dry-run wallet watch prints only the validated envelope with
       `dry-run CLI exited ${(error as { code: number }).code} instead of returning before I/O`,
     )
   })
-  assert.deepEqual(JSON.parse(result.stdout), { method: 'wallet.watch' })
+  assert.deepEqual(JSON.parse(result.stdout), { dryRun: true, method: 'wallet.watch', params: {} })
   assert.equal(result.stderr, '')
   assert.equal(await profileDigest(), before)
 })

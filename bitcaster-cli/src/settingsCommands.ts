@@ -3,9 +3,18 @@ import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk/engineUrlSecu
 import { normalizeNostrRelayUrl } from '@bitcaster-market/client-sdk/nostrRelays'
 import type { NativeSettingsOptions } from '@bitcaster-market/daemon/nativeSettings'
 import type { NativeConfigSnapshot } from '@bitcaster-market/daemon/nativeConfig'
+import { printDryRun } from './dryRunPolicy.ts'
 import { isCliSpawnedDaemonRunning, restartDaemon } from './rpc.ts'
 
-export function registerSettingsCommands(program: Command, mint: Command): void {
+interface SettingsCommandContext {
+  readonly isDryRun: () => boolean
+}
+
+export function registerSettingsCommands(
+  program: Command,
+  mint: Command,
+  context: SettingsCommandContext,
+): void {
   mint
     .command('list')
     .description('List saved mints and the selected mint without network access.')
@@ -22,6 +31,7 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
     mintUrl,
     async (options) =>
       (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
+    context,
   )
   registerMutation(
     mint,
@@ -32,6 +42,7 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
     mintUrl,
     async (options) =>
       (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
+    context,
   )
   registerMutation(
     mint,
@@ -42,6 +53,7 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
     mintUrl,
     async (options) =>
       (await import('@bitcaster-market/daemon/nativeSettings')).listNativeMints(options),
+    context,
   )
 
   const relay = program.command('relay').description('Manage saved Nostr relay destinations.')
@@ -60,6 +72,7 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
     normalizeNostrRelayUrl,
     async (options) =>
       (await import('@bitcaster-market/daemon/nativeSettings')).listNativeRelays(options),
+    context,
   )
   registerMutation(
     relay,
@@ -70,6 +83,7 @@ export function registerSettingsCommands(program: Command, mint: Command): void 
     normalizeNostrRelayUrl,
     async (options) =>
       (await import('@bitcaster-market/daemon/nativeSettings')).listNativeRelays(options),
+    context,
   )
 }
 
@@ -85,6 +99,7 @@ function registerMutation(
   operation: SettingsMutation,
   normalizeUrl: (url: string) => string,
   readSettings: (options: NativeSettingsOptions) => unknown,
+  context: SettingsCommandContext,
 ): void {
   parent
     .command(`${name} <url>`)
@@ -98,7 +113,7 @@ function registerMutation(
       'after',
       '\nSaved settings apply through daemon restart. Stored funds and recovery destinations remain unchanged.',
     )
-    .action(async (value: string, options: { expectedRevision?: string }, command: Command) => {
+    .action(async (value: string, options: { expectedRevision?: string }) => {
       const url = normalizeUrl(value)
       const settingsOptions: NativeSettingsOptions =
         options.expectedRevision === undefined
@@ -107,13 +122,9 @@ function registerMutation(
               expectedRevision:
                 options.expectedRevision === 'missing' ? null : options.expectedRevision,
             }
-      if (command.optsWithGlobals<{ dryRun?: boolean }>().dryRun === true) {
+      if (context.isDryRun()) {
         await readSettings(settingsOptions)
-        printJson({
-          dryRun: true,
-          method: `${parent.name()}.${name}`,
-          params: { url, ...settingsOptions },
-        })
+        printDryRun(`${parent.name()}.${name}`, { url, ...settingsOptions })
         return
       }
       const snapshot = await operation(url, settingsOptions)
