@@ -155,8 +155,8 @@ the same check five times, the daemon stops the automatic checks. The entry then
 `"halted": true`, the mint code, and a `retryCommand`, for example
 `bitcaster-cli order retry <operation-id>`. Run that command to send the check one more time. A
 daemon restart also starts the automatic checks again. `order retry` supports `--dry-run`. While
-an earlier sell in a market keeps reserved funds, `order submit` refuses a new sell in that market
-with the code `order-sell-preparation-pending` and reserves no funds.
+an earlier sell in a market still prepares its funds, `order submit` refuses a new sell in that
+market with the code `order-sell-preparation-pending` and reserves no funds.
 
 ## Keep your funds safe
 

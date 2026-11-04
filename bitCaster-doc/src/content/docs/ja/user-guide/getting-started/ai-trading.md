@@ -158,7 +158,7 @@ daemon は注文を送信する前に、ミントで注文の資金を準備し�
 その項目には `"halted": true`、ミントのコード、`retryCommand`(例: `bitcaster-cli order retry <operation-id>`)が表示されます。
 そのコマンドを実行すると、確認をもう一度だけ送信します。daemon を再起動しても、自動の確認が再開します。
 `order retry` は `--dry-run` に対応しています。
-同じ市場の前の売り注文が資金を予約している間、`order submit` はその市場の新しい売り注文をコード `order-sell-preparation-pending` で拒否し、資金を予約しません。
+同じ市場の前の売り注文が資金を準備している間、`order submit` はその市場の新しい売り注文をコード `order-sell-preparation-pending` で拒否し、資金を予約しません。
 
 ## 資金を安全に保つ
 
