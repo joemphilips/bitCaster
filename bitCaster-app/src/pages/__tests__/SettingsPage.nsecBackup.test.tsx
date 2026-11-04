@@ -335,6 +335,85 @@ describe("SettingsPage local Nostr-key backup", () => {
     expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
     expectNoSecretText();
   });
+
+  it("asks before Disconnect deletes a local key that has no backup", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    const secret = makeNsec();
+    useSettingsStore.setState({
+      nostrSignerMode: "nsec",
+      signerConnectionStatus: "connected",
+      signerSource: "implicit-generated",
+      signerBackupState: "needs_backup",
+      nostrProfile: null,
+      nostrProfileFetchStatus: "not-found",
+      nsecSecret: secret,
+    });
+    await renderSettingsPage();
+    const dialogName = "Your Nostr key is not backed up";
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = screen.getByRole("dialog", { name: dialogName });
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+
+    // Back up keeps the key and leaves its backup control in view.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back up key" }));
+    expect(screen.queryByRole("dialog", { name: dialogName })).not.toBeInTheDocument();
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+    expect(useSettingsStore.getState().signerBackupState).toBe("needs_backup");
+    expect(screen.getByRole("button", { name: /view nsec/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: dialogName })).getByRole("button", {
+        name: "Log out",
+      }),
+    );
+    expect(screen.queryByRole("dialog", { name: dialogName })).not.toBeInTheDocument();
+    expect(useSettingsStore.getState()).toMatchObject({
+      nostrSignerMode: "none",
+      signerSource: "none",
+      signerBackupState: "none",
+    });
+    expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
+    expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { name: "an imported key", mode: "nsec", signerSource: "user-nsec", local: true },
+    {
+      name: "a backed-up local key",
+      mode: "nsec",
+      signerSource: "implicit-generated",
+      local: true,
+    },
+    { name: "an extension signer", mode: "nip07", signerSource: "nip07", local: false },
+  ] as const)("disconnects $name at once", async ({ mode, signerSource, local }) => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    useSettingsStore.setState({
+      nostrSignerMode: mode,
+      signerConnectionStatus: "connected",
+      signerSource,
+      signerBackupState: "confirmed",
+      nostrProfile: null,
+      nostrProfileFetchStatus: "not-found",
+      nsecSecret: local ? makeNsec() : null,
+    });
+    await renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(useSettingsStore.getState()).toMatchObject({
+      nostrSignerMode: "none",
+      signerSource: "none",
+      signerBackupState: "none",
+    });
+    expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
+    expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+  });
 });
 
 describe("SettingsPage wallet replacement", () => {

@@ -57,6 +57,8 @@ import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
+import { NOSTR_SETTINGS_PATH, useNostrLogout } from "@/hooks/useNostrLogout";
+import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -94,6 +96,8 @@ export function ShellRoutes({
   const { t } = useTranslation();
   const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
+  const isLoggedIn = useSettingsStore((s) => s.nostrSignerMode !== "none");
+  const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
   const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
   const navigationItems = [
@@ -119,8 +123,11 @@ export function ShellRoutes({
     <AppShell
       navigationItems={navigationItems}
       user={user}
+      isLoggedIn={isLoggedIn}
       searchQuery={searchQuery}
       onNavigate={(href) => navigate(href)}
+      onLogin={() => navigate(NOSTR_SETTINGS_PATH)}
+      onLogout={requestLogout}
       onSearchChange={(query) => {
         navigate(
           {
@@ -145,6 +152,7 @@ export function ShellRoutes({
         <Route path="/mint-details" element={<MintDetailPage />} />
         <Route path="/user/:pubkey" element={<UserPage />} />
       </Routes>
+      {logoutConfirmation && <NostrLogoutConfirmModal {...logoutConfirmation} />}
     </AppShell>
   );
 }

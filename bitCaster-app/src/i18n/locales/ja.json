@@ -54,6 +54,7 @@
     "portfolio": "ポートフォリオ",
     "settings": "設定",
     "docs": "ドキュメント",
+    "login": "ログイン",
     "logout": "ログアウト",
     "creator": "クリエイター",
     "notifications": "通知",
@@ -136,7 +137,10 @@
   "auth": {
     "nostrRequiredTitle": "認証が必要です",
     "nostrRequiredDesc": "実際にトレードする前に認証が必要です。現在はNostrのみ対応しています。注文を送信する前に設定してください。",
-    "configureNostr": "Nostrを設定"
+    "configureNostr": "Nostrを設定",
+    "unbackedKeyLogoutTitle": "Nostr鍵のバックアップがありません",
+    "unbackedKeyLogoutDesc": "この鍵はこのブラウザーにしかありません。ログアウトすると鍵が削除され、このNostr IDは使えなくなります。",
+    "backUpKey": "鍵をバックアップ"
   },
   "welcome": {
     "title": "bitCasterへようこそ",

@@ -54,7 +54,8 @@
     "portfolio": "Portfolio",
     "settings": "Settings",
     "docs": "Docs",
-    "logout": "Logout",
+    "login": "Log in",
+    "logout": "Log out",
     "creator": "Creator",
     "notifications": "Notifications",
     "search": "Search",
@@ -136,7 +137,10 @@
   "auth": {
     "nostrRequiredTitle": "Authentication required",
     "nostrRequiredDesc": "You must authenticate before actual trading. Right now Nostr is the only way we offer. Please configure it before submitting an order.",
-    "configureNostr": "Configure Nostr"
+    "configureNostr": "Configure Nostr",
+    "unbackedKeyLogoutTitle": "Your Nostr key is not backed up",
+    "unbackedKeyLogoutDesc": "Only this browser has this key. If you log out, you delete the key and lose this Nostr identity.",
+    "backUpKey": "Back up key"
   },
   "welcome": {
     "title": "Welcome to bitCaster",

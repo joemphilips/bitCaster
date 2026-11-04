@@ -32,6 +32,7 @@ function openMenus() {
     <AppShell
       navigationItems={[]}
       user={{ name: "Alice", balance: 0 }}
+      isLoggedIn
       onNavigate={onNavigate}
       onLogout={onLogout}
     >

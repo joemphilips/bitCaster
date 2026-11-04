@@ -7,7 +7,7 @@ describe("UserMenu balance display", () => {
     [7_000, "7 sats"],
     [7_001, "7.001 sats"],
   ])("shows %s msat as the exact sats balance", (balance, expected) => {
-    render(<UserMenu user={{ name: "Anon", balance }} />);
+    render(<UserMenu user={{ name: "Anon", balance }} isLoggedIn={false} />);
 
     expect(screen.getByRole("group", { name: expected })).toHaveTextContent(expected);
     expect(screen.queryByText("₿7.0K")).not.toBeInTheDocument();

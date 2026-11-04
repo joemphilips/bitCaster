@@ -3,13 +3,14 @@ import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { DeferredSettings } from "@/components/settings/DeferredSettings";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
+import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
+import { useNostrLogout } from "@/hooks/useNostrLogout";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useToastStore } from "@/stores/toast";
 import { detectMintCapabilities, getMintIconUrl } from "@/lib/mints";
 import { requestNotificationPermission } from "@/lib/webNotifications";
 import {
-  disconnectNostrIdentity,
   refreshNostrProfile,
   userConnectNostrSignerMode,
   userConnectNsecIdentity,
@@ -173,9 +174,9 @@ export function SettingsPage() {
     [navigate],
   );
 
-  const handleDisconnectNostr = useCallback(() => {
-    disconnectNostrIdentity();
-  }, []);
+  // The app bar logout uses the same guard for a local key without a backup.
+  const { requestLogout: handleDisconnectNostr, confirmation: logoutConfirmation } =
+    useNostrLogout();
 
   const handleRemoveMint = useCallback((url: string) => {
     userRemoveMint(url);
@@ -355,6 +356,7 @@ export function SettingsPage() {
           onImportSeed={(words) => handleWalletAction(words)}
         />
       )}
+      {logoutConfirmation && <NostrLogoutConfirmModal {...logoutConfirmation} />}
     </>
   );
 }

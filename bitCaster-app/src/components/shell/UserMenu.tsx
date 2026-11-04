@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   User,
+  LogIn,
   LogOut,
   ChevronDown,
   Wallet,
@@ -18,12 +19,22 @@ import { EnvironmentLink } from "./EnvironmentLink";
 
 interface UserMenuProps {
   user: { name: string; avatarUrl?: string; balance?: number };
+  /** A Nostr identity is set. */
+  isLoggedIn: boolean;
+  onLogin?: () => void;
   onLogout?: () => void;
   onNavigate?: (href: string) => void;
   onCreateClick?: () => void;
 }
 
-export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenuProps) {
+export function UserMenu({
+  user,
+  isLoggedIn,
+  onLogin,
+  onLogout,
+  onNavigate,
+  onCreateClick,
+}: UserMenuProps) {
   const { t, i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
@@ -160,12 +171,13 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
             <button
               onClick={() => {
                 setIsOpen(false);
-                onLogout?.();
+                if (isLoggedIn) onLogout?.();
+                else onLogin?.();
               }}
               className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
             >
-              <LogOut className="w-4 h-4" />
-              <span>{t("nav.logout")}</span>
+              {isLoggedIn ? <LogOut className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              <span>{isLoggedIn ? t("nav.logout") : t("nav.login")}</span>
             </button>
           </div>
         </>

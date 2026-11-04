@@ -13,7 +13,10 @@ export interface AppShellProps {
   children: React.ReactNode;
   navigationItems: Array<{ label: string; href: string; isActive?: boolean }>;
   user?: { name: string; avatarUrl?: string; balance?: number };
+  /** A Nostr identity is set. The account item offers log out, not log in. */
+  isLoggedIn: boolean;
   onNavigate?: (href: string) => void;
+  onLogin?: () => void;
   onLogout?: () => void;
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
@@ -24,7 +27,9 @@ export function AppShell({
   children,
   navigationItems,
   user,
+  isLoggedIn,
   onNavigate,
+  onLogin,
   onLogout,
   searchQuery = "",
   onSearchChange,
@@ -77,6 +82,8 @@ export function AppShell({
             {user && (
               <UserMenu
                 user={user}
+                isLoggedIn={isLoggedIn}
+                onLogin={onLogin}
                 onLogout={onLogout}
                 onNavigate={onNavigate}
                 onCreateClick={onCreateClick}
@@ -263,11 +270,12 @@ export function AppShell({
             <button
               onClick={() => {
                 setMobileUserMenuOpen(false);
-                onLogout?.();
+                if (isLoggedIn) onLogout?.();
+                else onLogin?.();
               }}
               className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3"
             >
-              {t("nav.logout")}
+              {isLoggedIn ? t("nav.logout") : t("nav.login")}
             </button>
           </div>
         </div>

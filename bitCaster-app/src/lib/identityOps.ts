@@ -118,6 +118,16 @@ export function rehydratePersistedNostrIdentity(): Promise<void> {
   return rehydratePromise;
 }
 
+/**
+ * A browser-local key without a backup has no other copy. Removing the
+ * identity deletes it, so the user must confirm first.
+ */
+export function nostrLogoutNeedsBackupConfirmation(
+  identity: Pick<NostrIdentityState, "nostrSignerMode" | "signerBackupState">,
+): boolean {
+  return identity.nostrSignerMode === "nsec" && identity.signerBackupState === "needs_backup";
+}
+
 export function disconnectNostrIdentity(): void {
   disconnectNostrSigner();
   useSettingsStore.getState().commitNostrIdentity({
