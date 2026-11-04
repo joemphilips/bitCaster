@@ -39,14 +39,14 @@ const KEYSETS = [
   keyset(`01${'c1'.repeat(32)}`, FOREIGN, 'YES', 'sat'),
 ]
 
-function fakeMint(signed: Set<string>) {
+function fakeMint(signed: Set<string>, keysets = KEYSETS) {
   const requests: { path: string; body?: unknown }[] = []
   return {
     requests,
     async getConditionalKeysets(query: { condition_id?: string; limit: number; cursor?: string }) {
       requests.push({ path: '/v1/conditional_keysets', body: query })
       return {
-        keysets: KEYSETS.filter(
+        keysets: keysets.filter(
           ({ condition_id }) =>
             query.condition_id === undefined || condition_id === query.condition_id,
         ),
@@ -64,6 +64,22 @@ function fakeMint(signed: Set<string>) {
       }
     },
   }
+}
+
+function catalogueFetch(conditionIds: readonly string[]): typeof fetch {
+  return (async () =>
+    new Response(
+      JSON.stringify({
+        markets: conditionIds.map((conditionId) => ({ conditionId, outcomes: ['YES', 'NO'] })),
+        nextCursor: null,
+        lastSuccessfulRefreshAt: '2026-11-04T00:00:00Z',
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch
+}
+
+function signedAt(keysetId: string, counter: number): string {
+  return OutputData.createSingleDeterministicData(0, SEED, counter, keysetId).blindedMessage.B_
 }
 
 async function seedFile(): Promise<{ path: string; cleanup: () => Promise<void> }> {
@@ -173,6 +189,117 @@ test('uses the strict mint listing when the catalogue is not available', async (
     // The sat keyset is foreign; the two binary markets remain.
     assert.equal(result.marketsChecked, 2)
     assert.deepEqual(result.conditions, [])
+  } finally {
+    await file.cleanup()
+  }
+})
+
+test('reports a market whose listing fails and continues with the next market', async () => {
+  const file = await seedFile()
+  try {
+    const mint = fakeMint(new Set([signedAt(KEYSETS[1]!.id, 3)]))
+    const listing = mint.getConditionalKeysets.bind(mint)
+    mint.getConditionalKeysets = async (query) => {
+      if (query.condition_id === UNTOUCHED) throw new Error('listing unavailable')
+      return listing(query)
+    }
+    const recovered: string[] = []
+
+    const result = await runOfflineDaemonSeedRecoveryAllConditions(
+      {
+        recoveryId: 'restore-3',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHexFile: file.path,
+        disclosureAcknowledged: true,
+      },
+      {
+        engineBaseUrl: 'https://engine.example',
+        fetchImpl: catalogueFetch([UNTOUCHED, HELD]),
+        mint,
+        recover: async (input) => {
+          recovered.push(input.recoveryId)
+          return { recoveryId: input.recoveryId } as never
+        },
+      },
+    )
+
+    assert.deepEqual(recovered, ['restore-3', conditionRecoveryId('restore-3', HELD)])
+    assert.equal(result.failed, 1)
+    assert.deepEqual(result.conditions, [
+      {
+        conditionId: UNTOUCHED,
+        recoveryId: conditionRecoveryId('restore-3', UNTOUCHED),
+        status: 'failed',
+        stage: 'listing',
+        error: 'listing unavailable',
+      },
+      {
+        conditionId: HELD,
+        recoveryId: conditionRecoveryId('restore-3', HELD),
+        status: 'recovered',
+        // The probe result stays with the recovery id of its condition.
+        probe: { [KEYSETS[0]!.id]: null, [KEYSETS[1]!.id]: 3 },
+        result: { recoveryId: conditionRecoveryId('restore-3', HELD) },
+      },
+    ])
+  } finally {
+    await file.cleanup()
+  }
+})
+
+test('reports a failed market recovery with its probe result and continues', async () => {
+  const file = await seedFile()
+  const second = '44'.repeat(32)
+  const keysets = [
+    ...KEYSETS,
+    keyset(`01${'d1'.repeat(32)}`, second, 'YES'),
+    keyset(`01${'d2'.repeat(32)}`, second, 'NO'),
+  ]
+  try {
+    const mint = fakeMint(
+      new Set([signedAt(KEYSETS[0]!.id, 7), signedAt(keysets[6]!.id, 1)]),
+      keysets,
+    )
+    const result = await runOfflineDaemonSeedRecoveryAllConditions(
+      {
+        recoveryId: 'restore-4',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHexFile: file.path,
+        disclosureAcknowledged: true,
+      },
+      {
+        engineBaseUrl: 'https://engine.example',
+        fetchImpl: catalogueFetch([HELD, second]),
+        mint,
+        recover: async (input) => {
+          if (input.recoveryId === conditionRecoveryId('restore-4', HELD)) {
+            throw new Error('mint unavailable')
+          }
+          return { recoveryId: input.recoveryId } as never
+        },
+      },
+    )
+
+    assert.equal(result.failed, 1)
+    assert.deepEqual(result.conditions, [
+      {
+        conditionId: HELD,
+        recoveryId: conditionRecoveryId('restore-4', HELD),
+        status: 'failed',
+        stage: 'recovery',
+        error: 'mint unavailable',
+        probe: { [KEYSETS[0]!.id]: 7, [KEYSETS[1]!.id]: null },
+      },
+      {
+        conditionId: second,
+        recoveryId: conditionRecoveryId('restore-4', second),
+        status: 'recovered',
+        probe: { [keysets[5]!.id]: null, [keysets[6]!.id]: 1 },
+        result: { recoveryId: conditionRecoveryId('restore-4', second) },
+      },
+    ])
   } finally {
     await file.cleanup()
   }

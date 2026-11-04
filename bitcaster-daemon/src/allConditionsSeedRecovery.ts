@@ -25,16 +25,36 @@ import { readProfile } from './profile.ts'
 const CATALOGUE_PAGES_MAX = 400
 const MINT_LISTING_PAGES_MAX = 400
 
+/** The highest signed counter of each probed keyset, or null without a signature. */
+export type AllConditionsProbeResult = Readonly<Record<string, number | null>>
+
+export type AllConditionsConditionOutcome =
+  | {
+      readonly conditionId: string
+      readonly recoveryId: string
+      readonly status: 'recovered'
+      readonly probe: AllConditionsProbeResult
+      readonly result: WalletSeedRecoveryResult
+    }
+  | {
+      readonly conditionId: string
+      readonly recoveryId: string
+      readonly status: 'failed'
+      readonly stage: 'listing' | 'probe' | 'recovery'
+      readonly error: string
+      /** Kept when the probe found a signature, so the next run with this recovery id is clear. */
+      readonly probe?: AllConditionsProbeResult
+    }
+
 export interface AllConditionsSeedRecoveryResult {
   readonly regular: WalletSeedRecoveryResult
   readonly catalogueSource: 'engine' | 'mint'
   readonly marketsChecked: number
   readonly foreignSkipped: number
-  readonly conditions: readonly {
-    readonly conditionId: string
-    readonly recoveryId: string
-    readonly result: WalletSeedRecoveryResult
-  }[]
+  /** Markets with a signature in the probe window, and markets that failed. */
+  readonly conditions: readonly AllConditionsConditionOutcome[]
+  /** Failed markets. Run the command again with the same recovery id to retry them. */
+  readonly failed: number
 }
 
 export interface AllConditionsSeedRecoveryPorts {
@@ -54,7 +74,8 @@ export function conditionRecoveryId(recoveryId: string, conditionId: string): st
 /**
  * Recovers the regular msat keysets, then every bitCaster market of the
  * catalogue on which the seed has a signature in the probe window. A hinted
- * or known market beyond the window needs `--condition-id`.
+ * or known market beyond the window needs `--condition-id`. A failure of one
+ * market is reported with its recovery id, and the command continues.
  */
 export async function runOfflineDaemonSeedRecoveryAllConditions(
   input: OfflineDaemonSeedRecoveryInput,
@@ -75,52 +96,90 @@ export async function runOfflineDaemonSeedRecoveryAllConditions(
     mint,
   })
   const seed = Uint8Array.from(Buffer.from(await readRecoverySeedInput(input), 'hex'))
-  const touched: string[] = []
+  const touched: { conditionId: string; probe: AllConditionsProbeResult }[] = []
+  const conditions: AllConditionsConditionOutcome[] = []
   let foreignSkipped = foreign
   try {
     for (const market of markets) {
-      const listing = await listSeedRestoreConditionKeysets({
-        conditionId: market.conditionId,
-        outcomes: market.outcomes,
-        mint,
-      })
+      const recoveryId = conditionRecoveryId(input.recoveryId, market.conditionId)
+      let listing: Awaited<ReturnType<typeof listSeedRestoreConditionKeysets>>
+      try {
+        listing = await listSeedRestoreConditionKeysets({
+          conditionId: market.conditionId,
+          outcomes: market.outcomes,
+          mint,
+        })
+      } catch (error) {
+        conditions.push(failedCondition(market.conditionId, recoveryId, 'listing', error))
+        continue
+      }
       foreignSkipped += listing.foreign
       if (listing.keysets.length === 0) continue
-      const highest = await probeSeedRestoreKeysets({
-        seed,
-        targets: listing.keysets.map(({ id }) => ({
-          keysetId: id,
-          start: 0,
-          count: SEED_POSITION_PROBE_COUNTERS,
-        })),
-        restore: (outputs) => mint.restore({ outputs }),
-      })
+      let highest: ReadonlyMap<string, number | null>
+      try {
+        highest = await probeSeedRestoreKeysets({
+          seed,
+          targets: listing.keysets.map(({ id }) => ({
+            keysetId: id,
+            start: 0,
+            count: SEED_POSITION_PROBE_COUNTERS,
+          })),
+          restore: (outputs) => mint.restore({ outputs }),
+        })
+      } catch (error) {
+        conditions.push(failedCondition(market.conditionId, recoveryId, 'probe', error))
+        continue
+      }
       if ([...highest.values()].some((counter) => counter !== null)) {
-        touched.push(market.conditionId)
+        touched.push({ conditionId: market.conditionId, probe: Object.fromEntries(highest) })
       }
     }
   } finally {
     seed.fill(0)
   }
-  const conditions = []
-  for (const conditionId of touched) {
+  for (const { conditionId, probe } of touched) {
     const recoveryId = conditionRecoveryId(input.recoveryId, conditionId)
-    const result = await recover({
-      ...input,
-      recoveryId,
-      scanPolicy: createSeedRecoveryScanPolicy({
-        conditionId,
-        ...(gapLimit === undefined ? {} : { gapLimit }),
-      }),
-    })
-    conditions.push({ conditionId, recoveryId, result })
+    try {
+      const result = await recover({
+        ...input,
+        recoveryId,
+        scanPolicy: createSeedRecoveryScanPolicy({
+          conditionId,
+          ...(gapLimit === undefined ? {} : { gapLimit }),
+        }),
+      })
+      conditions.push({ conditionId, recoveryId, status: 'recovered', probe, result })
+    } catch (error) {
+      conditions.push({ ...failedCondition(conditionId, recoveryId, 'recovery', error), probe })
+    }
   }
+  const order = new Map(markets.map(({ conditionId }, index) => [conditionId, index]))
+  conditions.sort((left, right) => order.get(left.conditionId)! - order.get(right.conditionId)!)
   return {
     regular,
     catalogueSource: source,
     marketsChecked: markets.length,
     foreignSkipped,
     conditions,
+    failed: conditions.filter(({ status }) => status === 'failed').length,
+  }
+}
+
+const ERROR_TEXT_MAX = 200
+
+function failedCondition(
+  conditionId: string,
+  recoveryId: string,
+  stage: 'listing' | 'probe' | 'recovery',
+  error: unknown,
+): Extract<AllConditionsConditionOutcome, { status: 'failed' }> {
+  const message = error instanceof Error ? error.message : String(error)
+  return {
+    conditionId,
+    recoveryId,
+    status: 'failed',
+    stage,
+    error: message.slice(0, ERROR_TEXT_MAX),
   }
 }
 
