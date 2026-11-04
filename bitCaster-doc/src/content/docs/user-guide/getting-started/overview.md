@@ -347,6 +347,9 @@ the same font size and allow scrolling for long text. Likes increase opacity.
 A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
+In the comment list, select an author's avatar or name to open the author's
+profile page. Select **Copy Nostr ID** next to the name to copy the author's
+npub, for example to mention the author.
 
 Each expanded chart comment shows its public author and text. When the linked
 trade facts are available, it also shows the author's buy or sell action, exact
