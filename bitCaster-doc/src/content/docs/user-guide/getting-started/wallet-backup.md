@@ -9,6 +9,15 @@ Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
 data while a trade, payment, or refund is unresolved. Encrypted backup helps
 you recover wallet assets. It does not replace the phrase or every local record.
 
+:::caution
+The limited beta at bitcaster.market does not run the encrypted backup service
+yet. Your recovery phrase is the only backup of your wallet. A new browser
+with the phrase restores funds and positions from the mint, as
+[Open your wallet in a new browser](#open-your-wallet-in-a-new-browser)
+describes. Do not clear the site data of a browser while one of its trades,
+payments, or refunds is unresolved.
+:::
+
 ## Seed reminder for deposits
 
 Top-up and deposit screens show a non-blocking reminder until you view the
