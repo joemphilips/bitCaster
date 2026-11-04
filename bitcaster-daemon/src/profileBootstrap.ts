@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { link, lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { pathToFileURL } from 'node:url'
@@ -39,6 +40,7 @@ import {
 } from './nativeConfig.ts'
 
 export type ProfileBootstrapFaultPhase =
+  | 'staging-reserved'
   | 'database-reserved'
   | 'before-database-open'
   | 'schema-created'
@@ -46,6 +48,8 @@ export type ProfileBootstrapFaultPhase =
   | 'during-initialization'
   | 'before-commit'
   | 'after-commit'
+  | 'before-publication'
+  | 'after-publication'
 
 export interface FreshDaemonProfileBootstrapInput {
   readonly directory: string
@@ -104,26 +108,85 @@ export async function bootstrapFreshDaemonProfile(
     createdDirectory = true
   }
 
-  const databasePath = join(input.directory, DAEMON_PROFILE_DATABASE)
-  let reservedIdentity: { readonly dev: bigint; readonly ino: bigint } | undefined
-  let ownedSidecarIdentities:
-    | ReadonlyMap<string, { readonly dev: bigint; readonly ino: bigint }>
-    | undefined
+  const stagingPath = join(input.directory, '.bootstrap')
+  const databasePath = join(stagingPath, DAEMON_PROFILE_DATABASE)
+  const finalDatabasePath = join(input.directory, DAEMON_PROFILE_DATABASE)
+  let directoryHandle: Awaited<ReturnType<typeof open>> | undefined
+  let stagingHandle: Awaited<ReturnType<typeof open>> | undefined
+  let directoryIdentity: BootstrapIdentity | undefined
+  let stagingIdentity: BootstrapIdentity | undefined
+  let reservedIdentity: BootstrapIdentity | undefined
+  let ownedSidecarIdentities: ReadonlyMap<string, BootstrapIdentity> | undefined
   let reservation: Awaited<ReturnType<typeof open>> | undefined
   let database: DatabaseSync | undefined
-  let committed = false
+  let published = false
   let createdConfigRevision: string | null = null
   try {
+    directoryHandle = await openBootstrapDirectory(input.directory)
+    directoryIdentity = await directoryHandle.stat({ bigint: true })
+    await assertDirectoryHasIdentity(input.directory, directoryIdentity)
+    if (
+      initialInventory.directoryIdentity !== undefined &&
+      (initialInventory.directoryIdentity.device !== directoryIdentity.dev ||
+        initialInventory.directoryIdentity.inode !== directoryIdentity.ino)
+    ) {
+      throw new Error('daemon profile bootstrap directory identity changed')
+    }
+    // The fixed, exclusive directory serializes init and makes a crash fail closed.
+    await mkdir(stagingPath, { mode: 0o700 })
+    stagingHandle = await openBootstrapDirectory(stagingPath)
+    stagingIdentity = await stagingHandle.stat({ bigint: true })
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
+    const inventory = await inventoryDaemonProfile(input.directory)
+    const marker = inventory.artifacts.find(({ name }) => name === '.bootstrap')
+    if (
+      marker?.kind !== 'directory' ||
+      marker.identity.device !== stagingIdentity.dev ||
+      marker.identity.inode !== stagingIdentity.ino
+    ) {
+      throw new Error('daemon profile bootstrap inode identity changed')
+    }
+    // Exclude only this invocation's verified marker from the fresh-profile check.
+    assertFreshDaemonProfileInventory({
+      ...inventory,
+      artifacts: inventory.artifacts.filter((artifact) => artifact !== marker),
+      unknownArtifacts: inventory.unknownArtifacts.filter((artifact) => artifact !== marker),
+    })
+    // Persist the crash marker before any config or authority can be written.
+    await directoryHandle.sync()
+    input.injectFault?.('staging-reserved')
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
     createdConfigRevision = prepareBootstrapConfig(input.directory, engineBaseUrl, mintUrl)
-    // Darwin cannot reopen /dev/fd with read access when this descriptor is write-only.
     reservation = await open(databasePath, 'wx+', 0o600)
-    const stat = await reservation.stat({ bigint: true })
-    reservedIdentity = { dev: stat.dev, ino: stat.ino }
+    reservedIdentity = await reservation.stat({ bigint: true })
     input.injectFault?.('database-reserved')
 
     input.injectFault?.('before-database-open')
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
     await assertPathHasIdentity(databasePath, reservedIdentity)
-    database = new DatabaseSync(`/dev/fd/${reservation.fd}`)
+    // A private unpublished pathname gives SQLite portable WAL/SHM paths.
+    database = new DatabaseSync(databasePath, { allowExtension: false })
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
     await assertPathHasIdentity(databasePath, reservedIdentity)
     configureWritableProfileConnection(database)
     database.exec('BEGIN IMMEDIATE')
@@ -135,6 +198,12 @@ export async function bootstrapFreshDaemonProfile(
       `)
       ownedSidecarIdentities = await captureSidecarIdentities(databasePath)
       input.injectFault?.('schema-created')
+      await assertBootstrapDirectories(
+        input.directory,
+        directoryIdentity,
+        stagingPath,
+        stagingIdentity,
+      )
       await assertPathHasIdentity(databasePath, reservedIdentity)
       writeAuthorityRows(database, {
         walletScopeId: walletIdentity.walletScopeId,
@@ -147,11 +216,16 @@ export async function bootstrapFreshDaemonProfile(
       })
       input.injectFault?.('authority-written')
       input.injectFault?.('during-initialization')
+      await assertBootstrapDirectories(
+        input.directory,
+        directoryIdentity,
+        stagingPath,
+        stagingIdentity,
+      )
       await assertPathHasIdentity(databasePath, reservedIdentity)
       input.injectFault?.('before-commit')
       await assertPathHasIdentity(databasePath, reservedIdentity)
       database.exec('COMMIT')
-      committed = true
     } catch (error) {
       try {
         database.exec('ROLLBACK')
@@ -161,14 +235,48 @@ export async function bootstrapFreshDaemonProfile(
       throw error
     }
     input.injectFault?.('after-commit')
-    database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    const checkpoint = database.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as
+      | { busy: number; log: number; checkpointed: number }
+      | undefined
+    if (checkpoint?.busy !== 0 || checkpoint.log !== 0 || checkpoint.checkpointed !== 0) {
+      throw new Error('daemon profile bootstrap checkpoint did not complete')
+    }
     database.close()
     database = undefined
-
+    await reservation.sync()
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
     await assertPathHasIdentity(databasePath, reservedIdentity)
-    await reservation.close()
-    reservation = undefined
-
+    await assertBootstrapSidecarsEmpty(databasePath)
+    await validateDaemonProfileSchema(stagingPath, getFinalProfileSchemaManifest())
+    input.injectFault?.('before-publication')
+    await assertBootstrapDirectories(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+    )
+    await assertPathHasIdentity(databasePath, reservedIdentity)
+    // link is exclusive: an existing final file or symlink is never overwritten.
+    await link(databasePath, finalDatabasePath)
+    published = true
+    input.injectFault?.('after-publication')
+    await assertPathHasIdentity(finalDatabasePath, reservedIdentity)
+    await directoryHandle.sync()
+    await removeBootstrapStaging(
+      input.directory,
+      directoryIdentity,
+      stagingPath,
+      stagingIdentity,
+      databasePath,
+      reservedIdentity,
+      ownedSidecarIdentities,
+    )
+    await directoryHandle.sync()
     await validateDaemonProfileSchema(input.directory, getFinalProfileSchemaManifest())
     return {
       walletScopeId: walletIdentity.walletScopeId,
@@ -177,46 +285,120 @@ export async function bootstrapFreshDaemonProfile(
     }
   } catch (error) {
     try {
-      if (database !== undefined) {
-        if (committed) {
-          database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-        }
-        database.close()
-      }
+      database?.close()
     } catch {
       // Preserve the initiating failure; cleanup below remains identity-bound.
     }
-    try {
-      await reservation?.close()
-    } catch {
-      // Preserve the initiating failure.
-    }
-    if (reservedIdentity !== undefined) {
-      await removeOwnedPath(databasePath, reservedIdentity)
-      if (ownedSidecarIdentities !== undefined) {
-        for (const [path, identity] of ownedSidecarIdentities) {
-          await removeOwnedPath(path, identity)
-        }
-      }
-    }
-    if (createdConfigRevision !== null) {
+    if (directoryIdentity !== undefined && stagingIdentity !== undefined) {
       try {
-        removeNativeConfigIfRevisionMatches(createdConfigRevision, input.directory)
+        await assertBootstrapDirectories(
+          input.directory,
+          directoryIdentity,
+          stagingPath,
+          stagingIdentity,
+        )
+        if (published) {
+          await assertPathHasIdentity(finalDatabasePath, reservedIdentity!)
+          await directoryHandle?.sync()
+        } else if (createdConfigRevision !== null) {
+          // Keep the exclusive marker until our config cleanup has completed.
+          removeNativeConfigIfRevisionMatches(createdConfigRevision, input.directory)
+        }
+        await removeBootstrapStaging(
+          input.directory,
+          directoryIdentity,
+          stagingPath,
+          stagingIdentity,
+          databasePath,
+          reservedIdentity,
+          ownedSidecarIdentities,
+        )
+        await directoryHandle?.sync()
       } catch {
-        // Preserve the initiating failure. A retained non-secret config is safe.
+        // A changed path or retained staging artifact remains a fail-closed marker.
       }
     }
-    if (createdDirectory) {
+    // After publication the complete profile and its config belong to the user.
+    if (!published && createdDirectory && directoryIdentity !== undefined) {
       try {
-        if ((await readdir(input.directory)).length === 0) {
-          await rmdir(input.directory)
-        }
+        await assertDirectoryHasIdentity(input.directory, directoryIdentity)
+        if ((await readdir(input.directory)).length === 0) await rmdir(input.directory)
       } catch {
         // Never broaden cleanup beyond the directory created by this call.
       }
     }
     throw error
+  } finally {
+    await reservation?.close().catch(() => undefined)
+    await stagingHandle?.close().catch(() => undefined)
+    await directoryHandle?.close().catch(() => undefined)
   }
+}
+
+interface BootstrapIdentity {
+  readonly dev: bigint
+  readonly ino: bigint
+}
+
+async function openBootstrapDirectory(path: string) {
+  return open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+}
+
+async function assertDirectoryHasIdentity(
+  path: string,
+  identity: BootstrapIdentity,
+): Promise<void> {
+  const current = await lstat(path, { bigint: true })
+  if (
+    !current.isDirectory() ||
+    current.dev !== identity.dev ||
+    current.ino !== identity.ino ||
+    current.uid !== BigInt(process.getuid!()) ||
+    (current.mode & 0o777n) !== 0o700n
+  ) {
+    throw new Error('daemon profile bootstrap directory identity changed')
+  }
+}
+
+async function assertBootstrapDirectories(
+  directory: string,
+  directoryIdentity: BootstrapIdentity,
+  staging: string,
+  stagingIdentity: BootstrapIdentity,
+): Promise<void> {
+  await assertDirectoryHasIdentity(directory, directoryIdentity)
+  await assertDirectoryHasIdentity(staging, stagingIdentity)
+}
+
+async function assertBootstrapSidecarsEmpty(databasePath: string): Promise<void> {
+  for (const path of [`${databasePath}-wal`, `${databasePath}-shm`]) {
+    try {
+      const current = await lstat(path)
+      if (!current.isFile() || current.size !== 0) {
+        throw new Error('daemon profile bootstrap sidecar remains after checkpoint')
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error
+    }
+  }
+}
+
+async function removeBootstrapStaging(
+  directory: string,
+  directoryIdentity: BootstrapIdentity,
+  staging: string,
+  stagingIdentity: BootstrapIdentity,
+  databasePath: string,
+  databaseIdentity: BootstrapIdentity | undefined,
+  sidecars: ReadonlyMap<string, BootstrapIdentity> | undefined,
+): Promise<void> {
+  await assertBootstrapDirectories(directory, directoryIdentity, staging, stagingIdentity)
+  if (databaseIdentity !== undefined) await removeOwnedPath(databasePath, databaseIdentity)
+  if (sidecars !== undefined) {
+    for (const [path, identity] of sidecars) await removeOwnedPath(path, identity)
+  }
+  await assertBootstrapDirectories(directory, directoryIdentity, staging, stagingIdentity)
+  await rmdir(staging)
 }
 
 function prepareBootstrapConfig(

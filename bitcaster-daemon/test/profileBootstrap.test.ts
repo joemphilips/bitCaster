@@ -13,7 +13,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises'
-import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -1236,6 +1236,7 @@ test('strict versioned secrets refuse missing or malformed native oracle nonce s
 
 test('every injected bootstrap fault removes only this invocation artifacts', async () => {
   const phases: ProfileBootstrapFaultPhase[] = [
+    'staging-reserved',
     'database-reserved',
     'before-database-open',
     'schema-created',
@@ -1243,6 +1244,7 @@ test('every injected bootstrap fault removes only this invocation artifacts', as
     'during-initialization',
     'before-commit',
     'after-commit',
+    'before-publication',
   ]
   for (const phase of phases) {
     const root = await freshRoot(`fault-${phase}`)
@@ -1330,30 +1332,185 @@ test('unlock rederives and compares every persisted public and wallet binding', 
   }
 })
 
-test('reserved final inode rejects pre-open and mid-init pathname replacement', async () => {
+test('reserved staged inode rejects pre-open and mid-init pathname replacement', async () => {
   for (const replacementPhase of ['before-database-open', 'during-initialization'] as const) {
     const directory = await freshProfileDirectory(`inode-race-${replacementPhase}`)
+    const stagedDatabase = join(directory, '.bootstrap', DAEMON_PROFILE_DATABASE)
     const attackerBytes = Buffer.from(`attacker-owned:${replacementPhase}`)
     await assert.rejects(
       bootstrapFreshDaemonProfile({
         ...bootstrapInput(directory),
         injectFault(phase) {
           if (phase === replacementPhase) {
-            unlinkSync(join(directory, DAEMON_PROFILE_DATABASE))
-            writeFileSync(join(directory, DAEMON_PROFILE_DATABASE), attackerBytes, {
-              mode: 0o600,
-              flag: 'wx',
-            })
+            unlinkSync(stagedDatabase)
+            writeFileSync(stagedDatabase, attackerBytes, { mode: 0o600, flag: 'wx' })
           }
         },
       }),
       /inode identity changed/,
     )
-    const persisted = await readFile(join(directory, DAEMON_PROFILE_DATABASE))
-    assert.deepEqual(persisted, attackerBytes)
-    assert.equal(persisted.includes(Buffer.from(seed)), false)
-    assert.equal(persisted.includes(Buffer.from(nostrSecret)), false)
+    assert.deepEqual(await readFile(stagedDatabase), attackerBytes)
+    await assert.rejects(stat(join(directory, DAEMON_PROFILE_DATABASE)), missingFile)
+    await assert.rejects(bootstrap(directory), schemaError('profile-not-fresh'))
+  }
+})
+
+test('concurrent initializers publish one consistent profile without removing its config', async () => {
+  const directory = await freshProfileDirectory('concurrent-init')
+  const inputs = [
+    bootstrapInput(directory),
+    { ...bootstrapInput(directory), walletSeedHex: '33'.repeat(64) },
+  ]
+  const results = await Promise.allSettled(inputs.map(bootstrapFreshDaemonProfile))
+  assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1)
+  const winner = results.findIndex(({ status }) => status === 'fulfilled')
+  await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
+  assert.equal(
+    (await readBootstrappedProfileSecrets(directory)).walletSeedHex ===
+      inputs[winner].walletSeedHex,
+    true,
+  )
+  assert.deepEqual(
+    (await readdir(directory)).sort(),
+    ['config.json', DAEMON_PROFILE_DATABASE].sort(),
+  )
+})
+
+test('exclusive publication preserves existing final files and symlinks', async () => {
+  for (const kind of ['file', 'symlink'] as const) {
+    const directory = await freshProfileDirectory(`publication-${kind}`)
+    const finalDatabase = join(directory, DAEMON_PROFILE_DATABASE)
+    const target = join(await freshRoot('publication-target'), 'untouched')
+    const bytes = Buffer.from('preexisting destination')
+    await writeFile(target, bytes, { mode: 0o600 })
+    await assert.rejects(
+      bootstrapFreshDaemonProfile({
+        ...bootstrapInput(directory),
+        injectFault(phase) {
+          if (phase !== 'before-publication') return
+          if (kind === 'file') writeFileSync(finalDatabase, bytes, { mode: 0o600, flag: 'wx' })
+          else symlinkSync(target, finalDatabase)
+        },
+      }),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === 'EEXIST',
+    )
+    assert.deepEqual(await readFile(finalDatabase), bytes)
+    assert.deepEqual(await readFile(target), bytes)
     assert.deepEqual(await readdir(directory), [DAEMON_PROFILE_DATABASE])
+  }
+})
+
+test('replaced staging directory remains untouched and prevents profile admission', async () => {
+  const directory = await freshProfileDirectory('staging-replacement')
+  const staging = join(directory, '.bootstrap')
+  const displaced = join(directory, '.bootstrap-displaced')
+  await assert.rejects(
+    bootstrapFreshDaemonProfile({
+      ...bootstrapInput(directory),
+      injectFault(phase) {
+        if (phase !== 'during-initialization') return
+        renameSync(staging, displaced)
+        mkdirSync(staging, { mode: 0o700 })
+        writeFileSync(join(staging, 'sentinel'), 'untouched', { mode: 0o600 })
+      },
+    }),
+    /directory identity changed/,
+  )
+  assert.equal(await readFile(join(staging, 'sentinel'), 'utf8'), 'untouched')
+  await assert.rejects(stat(join(directory, DAEMON_PROFILE_DATABASE)), missingFile)
+  await assert.rejects(bootstrap(directory), schemaError('profile-not-fresh'))
+})
+
+test('replaced parent directory remains untouched during bootstrap cleanup', async () => {
+  const root = await freshRoot('parent-replacement')
+  const directory = join(root, 'profile')
+  await mkdir(directory, { mode: 0o700 })
+  const displaced = join(root, 'displaced')
+  await assert.rejects(
+    bootstrapFreshDaemonProfile({
+      ...bootstrapInput(directory),
+      injectFault(phase) {
+        if (phase !== 'during-initialization') return
+        renameSync(directory, displaced)
+        mkdirSync(directory, { mode: 0o700 })
+        writeFileSync(join(directory, 'sentinel'), 'untouched', { mode: 0o600 })
+      },
+    }),
+    /directory identity changed/,
+  )
+  assert.deepEqual(await readdir(directory), ['sentinel'])
+  assert.equal(await readFile(join(directory, 'sentinel'), 'utf8'), 'untouched')
+  assert.equal((await stat(join(displaced, '.bootstrap'))).isDirectory(), true)
+  await assert.rejects(bootstrap(displaced), schemaError('profile-not-fresh'))
+})
+
+test('a caught failure after publication preserves the complete profile and config', async () => {
+  const directory = await freshProfileDirectory('published-fault')
+  await assert.rejects(
+    bootstrapFreshDaemonProfile({
+      ...bootstrapInput(directory),
+      injectFault(phase) {
+        if (phase === 'after-publication') throw new Error('published-fault')
+      },
+    }),
+    /published-fault/,
+  )
+  await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
+  assert.equal(await readBootstrappedRpcToken(directory), rpcToken)
+  assert.deepEqual(
+    (await readdir(directory)).sort(),
+    ['config.json', DAEMON_PROFILE_DATABASE].sort(),
+  )
+})
+
+test('process death after commit or publication leaves a fail-closed bootstrap marker', async () => {
+  for (const phase of ['after-commit', 'after-publication'] as const) {
+    const directory = await freshProfileDirectory(`killed-${phase}`)
+    const source = new URL('../src/profileBootstrap.ts', import.meta.url).href
+    const child = spawn(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--input-type=module',
+        '-e',
+        `
+      import { bootstrapFreshDaemonProfile } from ${JSON.stringify(source)};
+      await bootstrapFreshDaemonProfile({ ...JSON.parse(process.argv[1]), injectFault(phase) {
+        if (phase === process.argv[2]) process.kill(process.pid, 'SIGKILL');
+      }});
+    `,
+        JSON.stringify(bootstrapInput(directory)),
+        phase,
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    )
+    let diagnostics = ''
+    child.stderr.on('data', (chunk) => {
+      diagnostics += chunk
+    })
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (code, signal) => resolve({ code, signal }))
+      },
+    )
+    assert.equal(exit.signal, 'SIGKILL', diagnostics)
+    assert.equal((await stat(join(directory, '.bootstrap'))).isDirectory(), true)
+    if (phase === 'after-publication') {
+      const final = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE), { readOnly: true })
+      try {
+        assert.equal(final.prepare('PRAGMA journal_mode').get()?.journal_mode, 'wal')
+        assert.equal(final.prepare('SELECT count(*) AS count FROM daemon_profile').get()?.count, 1)
+      } finally {
+        final.close()
+      }
+    } else {
+      await assert.rejects(stat(join(directory, DAEMON_PROFILE_DATABASE)), missingFile)
+    }
+    const before = await snapshotDirectory(directory)
+    await assert.rejects(bootstrap(directory), schemaError('profile-not-fresh'))
+    await assert.rejects(validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()))
+    assert.deepEqual(await snapshotDirectory(directory), before)
   }
 })
 
