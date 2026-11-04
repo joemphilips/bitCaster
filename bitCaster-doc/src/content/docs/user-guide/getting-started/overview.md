@@ -195,14 +195,14 @@ Other supported features can use the extension. Select OK to request the
 extension identity, or Cancel to keep the current state. Connection stays
 pending until the extension returns a valid identity. A saved identity after
 reload does not mean that the extension has authorized the connection.
-Disconnect cancels pending connection work. Disconnect before switching from
-an extension to a local private key.
+**Log out** cancels pending connection work. Log out before you switch from an
+extension to a local private key.
 
-The user menu shows **Log in** when no Nostr identity is set. It opens the
-Nostr section of Settings. When an identity is set, the menu shows **Log out**.
-**Log out** and **Disconnect** remove only the Nostr identity. The wallet does
-not change. If you did not back up a generated key, this browser has the only
-copy. Then the app asks you first. Select **Back up key** to open the Nostr
+The user menu shows **Log in** when no Nostr signer is connected. It opens the
+Nostr section of Settings. When a signer is connected, the menu shows **Log out**.
+**Log out** in the user menu and in Settings removes only the Nostr identity.
+The wallet does not change. If you did not back up a generated key, this browser
+has the only copy. Then the app asks you first. Select **Back up key** to open the Nostr
 settings, or **Log out** to delete the key. While an order is in progress, the
 app shows only **Back up key**, because the order needs this key to finish.
 A backed-up key or a NIP-07 signer logs out at once. Log in again with the
