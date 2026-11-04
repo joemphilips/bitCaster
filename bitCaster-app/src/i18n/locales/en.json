@@ -1050,6 +1050,7 @@
     "operation": "Operation: {{operationId}}",
     "mintCode": "Mint code: {{code}}",
     "retry": "Retry",
+    "fundsReleased": "The mint refused this order. No order was submitted. The reserved funds are available again.",
     "dismiss": "Dismiss this wallet alert",
     "morePending": "More wallet alerts are waiting. Select Next to see them.",
     "firstAlerts": "First alerts",

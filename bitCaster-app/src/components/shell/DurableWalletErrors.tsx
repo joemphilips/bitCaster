@@ -58,7 +58,11 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
                 : t("walletRecovery.fundsRecovery")}
             </p>
             <div className="flex items-center gap-2">
-              <p>{t(`walletRecovery.errors.${message.code}`)}</p>
+              <p>
+                {message.code === "order-attempt-ended" && message.fundsReleased === true
+                  ? t("walletRecovery.fundsReleased")
+                  : t(`walletRecovery.errors.${message.code}`)}
+              </p>
               {PARTICIPATION_SCORE_MESSAGE_CODES.has(message.code) && <ParticipationScoreHelp />}
             </div>
             {message.mintError !== undefined && (

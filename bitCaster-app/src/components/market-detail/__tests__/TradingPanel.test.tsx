@@ -1142,6 +1142,30 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
   });
 
+  it("offers the halted earlier sell's retry next to the refusal of a second sell", () => {
+    const onRetry = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Sell"
+        tradeSubmitStatus={{
+          kind: "error",
+          message: "An earlier sell in this market is still preparing its funds.",
+          onRetry,
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId("trade-submit-status")).getByRole("button", { name: "Retry" }),
+    );
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
   it("puts the Participation Score help next to a Score status message", () => {
     const { rerender } = render(
       <TradingPanel

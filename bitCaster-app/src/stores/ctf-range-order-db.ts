@@ -53,33 +53,34 @@ export async function hasActiveCtfRangePreparation(
 const PREPARED_SELL_SCAN_LIMIT = 256;
 
 /**
- * Whether a sell of this market still waits for its source preparation. A new
- * sell would lock more of the same position before the earlier one resolves.
+ * Read the prepared sell journals of one market. `overflow` reports more than
+ * the bounded page; a caller that guards a position then fails closed.
  */
-export async function hasPreparedCtfRangeSell(
+export async function readPreparedCtfRangeSells(
   scopeId: string,
   conditionId: string,
   database: BitcasterDB = db,
-): Promise<boolean> {
+): Promise<{ records: CtfRangeOrderPreparationRecord[]; overflow: boolean }> {
   const rows = await database.ctfRangePreparations
     .where("[scopeId+lifecycleState+createdAtMs+rangeOperationId]")
     .between([scopeId, "prepared"], [scopeId, "prepared", []], true, true)
     .limit(PREPARED_SELL_SCAN_LIMIT + 1)
     .toArray();
-  // Fail closed: too much unresolved work is itself a reason to wait.
-  if (rows.length > PREPARED_SELL_SCAN_LIMIT) return true;
   const wanted = conditionId.toLowerCase();
-  return rows.some((row) => {
-    const record = decodeCtfRangeOrderPreparationRecord(row);
-    switch (record.side) {
-      case "Sell":
-        return record.conditionId.toLowerCase() === wanted;
-      case "Buy":
-        return false;
-      default:
-        throw new Error("browser CTF range preparation side is invalid");
-    }
-  });
+  const records = rows
+    .slice(0, PREPARED_SELL_SCAN_LIMIT)
+    .map(decodeCtfRangeOrderPreparationRecord)
+    .filter((record) => {
+      switch (record.side) {
+        case "Sell":
+          return record.conditionId.toLowerCase() === wanted;
+        case "Buy":
+          return false;
+        default:
+          throw new Error("browser CTF range preparation side is invalid");
+      }
+    });
+  return { records, overflow: rows.length > PREPARED_SELL_SCAN_LIMIT };
 }
 
 export async function insertCtfRangePreparation(

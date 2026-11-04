@@ -65,6 +65,7 @@ import type {
 } from "@bitcaster/client-sdk/fokOrderPreview";
 
 const mocks = vi.hoisted(() => ({
+  retryRangeRecovery: vi.fn(),
   tradeRecovery: {
     stages: [] as Array<
       "order-pending" | "settlement-pending" | "wallet-recovery" | "result-saved" | "unavailable"
@@ -361,6 +362,10 @@ vi.mock("@/lib/markets", async () => {
     windowPriceHistory: mocks.windowPriceHistory,
   };
 });
+
+vi.mock("@/lib/browserCtfRangeRecoveryRetry", () => ({
+  retryBrowserCtfRangeOrderRecovery: mocks.retryRangeRecovery,
+}));
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   BrowserCtfRangeScoreTopUpCancelledError: class extends Error {},
@@ -4509,6 +4514,46 @@ describe("MarketDetailPage live market status", () => {
     );
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+  });
+
+  it("offers the halted earlier sell's retry when a second sell is refused", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue(rangeFeeFacts("0"));
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+    mockAcceptedOrder();
+    vi.mocked(submitBrowserCtfRangeOrder).mockRejectedValueOnce(
+      new BrowserCtfRangeOrderError(
+        "source-preparation-pending",
+        "An earlier sell in this market is still preparing its funds. Wait until it finishes.",
+        null,
+        { retry: { scopeId: "scope-earlier", operationId: "range-earlier" } },
+      ),
+    );
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+    const status = await screen.findByTestId("trade-submit-status");
+    await waitFor(() =>
+      expect(status).toHaveTextContent("An earlier sell in this market is still preparing"),
+    );
+    fireEvent.click(within(status).getByRole("button", { name: "Retry" }));
+
+    expect(mocks.retryRangeRecovery).toHaveBeenCalledWith({
+      scopeId: "scope-earlier",
+      operationId: "range-earlier",
+    });
   });
 
   it("refreshes fee facts after a stale-fee submission refusal before requiring confirmation", async () => {

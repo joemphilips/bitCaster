@@ -36,6 +36,7 @@ import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
+import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
 
 function formatNullablePrice(
   price: number | null,
@@ -77,6 +78,8 @@ interface TradingPanelProps {
     message: string;
     /** The message names Participation Score, so the term's help goes next to it. */
     participationScoreHelp?: boolean;
+    /** A halted earlier operation blocks this order. The user can retry it here. */
+    onRetry?: () => void;
   } | null;
   onTradeSubmitStatusDismiss?: () => void;
   tradeFeasibility?: {
@@ -1236,6 +1239,7 @@ export function TradingPanel({
         </div>
       ) : (
         <>
+          {activeTradeSide === "Sell" && <SeedPositionRestoreNotice className="mb-3" />}
           {/* Outcomes based on market type */}
           {market.type === "yesno" && (
             <YesNoOutcomes
@@ -1437,6 +1441,15 @@ export function TradingPanel({
               <div className="flex items-start gap-2">
                 <span className="min-w-0 flex-1">{tradeSubmitStatus.message}</span>
                 {tradeSubmitStatus.participationScoreHelp === true && <ParticipationScoreHelp />}
+                {tradeSubmitStatus.onRetry && (
+                  <button
+                    type="button"
+                    onClick={tradeSubmitStatus.onRetry}
+                    className="shrink-0 text-sm underline"
+                  >
+                    {t("walletRecovery.retry")}
+                  </button>
+                )}
                 {onTradeSubmitStatusDismiss && (
                   <button
                     type="button"

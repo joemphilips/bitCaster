@@ -8,41 +8,90 @@ import {
 } from '@cashu/cashu-ts'
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
-  UNCOMMITTED_FINAL_MINT_REFUSAL_CODES,
   classifyCashuMintFailure,
+  decideCtfRangeRequestSettlement,
+  settlingMintRefusal,
 } from '../src/mintRefusal.ts'
 
-// cdk 0.18.2 returns each of these codes before its commit, and the same request bytes can never
-// succeed later. The list is the reviewed refusal table, so the test spells it out.
-const FINAL_CODES = [
-  10001, 11003, 11005, 11007, 11008, 11009, 11010, 12003, 13016, 13017, 13041, 13042,
-] as const
-
-test('classifies every reviewed cdk refusal code as an uncommitted final refusal', () => {
-  assert.deepEqual([...UNCOMMITTED_FINAL_MINT_REFUSAL_CODES].sort(), [...FINAL_CODES].sort())
-  for (const code of FINAL_CODES) {
+test('classifies every coded mint answer as a refusal', () => {
+  for (const code of [10001, 11001, 11002, 11003, 11008, 12002, 13041, 50000]) {
     assert.deepEqual(classifyCashuMintFailure(new MintOperationError(code, 'refused')), {
-      kind: 'final-refusal',
+      kind: 'refusal',
       code,
       detail: 'refused',
     })
   }
 })
 
-test('keeps codes that can follow a commit or can succeed later outside the final set', () => {
-  // 11001 can follow this request's own lost commit, 11002 an in-flight copy, and the rest
-  // depend on mutable mint configuration or time.
-  for (const code of [11001, 11002, 11014, 11015, 12001, 12002, 13021, 15001, 15006, 50000]) {
-    assert.deepEqual(classifyCashuMintFailure(new MintOperationError(code, 'other')), {
-      kind: 'refusal',
-      code,
-      detail: 'other',
-    })
+test('names only the outputs-signed and inputs-spent refusals as settling', () => {
+  assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11003, detail: '' }), 'outputs-signed')
+  assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11008, detail: '' }), 'outputs-signed')
+  assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11001, detail: '' }), 'inputs-spent')
+  for (const code of [10001, 11002, 11005, 11007, 12001, 12002, 13041, 13042, 50000]) {
+    assert.equal(settlingMintRefusal({ kind: 'refusal', code, detail: '' }), null)
   }
+  assert.equal(settlingMintRefusal({ kind: 'transient', retryAfterMs: null }), null)
+  assert.deepEqual([...MINT_OUTPUT_REUSE_REFUSAL_CODES].sort(), [11003, 11008])
 })
 
-test('marks only output reuse codes for counter recovery', () => {
-  assert.deepEqual([...MINT_OUTPUT_REUSE_REFUSAL_CODES].sort(), [11003, 11008])
+test('releases unspent inputs after outputs-signed refusals', () => {
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'outputs-signed',
+      inputStates: ['UNSPENT', 'UNSPENT'],
+    }),
+    { kind: 'release', spentInputIndexes: [] },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'outputs-signed', inputStates: ['SPENT', 'SPENT'] }),
+    { kind: 'restore' },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'outputs-signed',
+      inputStates: ['UNSPENT', 'PENDING'],
+    }),
+    { kind: 'wait' },
+  )
+})
+
+test('retires spent inputs and releases the rest after an inputs-spent refusal', () => {
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['UNSPENT', 'SPENT'] }),
+    { kind: 'release', spentInputIndexes: [1] },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['SPENT', 'SPENT'] }),
+    { kind: 'restore' },
+  )
+  // The mint said a spent input, but none reads spent: keep waiting.
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['UNSPENT'] }),
+    { kind: 'wait' },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['SPENT', 'unknown'] }),
+    { kind: 'wait' },
+  )
+})
+
+test('replays without a refusal unless every input is spent or one is pending', () => {
+  assert.deepEqual(decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['UNSPENT'] }), {
+    kind: 'replay',
+  })
+  // A mixed reading replays to obtain the mint's spent-input answer.
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['SPENT', 'UNSPENT'] }),
+    { kind: 'replay' },
+  )
+  assert.deepEqual(decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['SPENT'] }), {
+    kind: 'restore',
+  })
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['PENDING', 'SPENT'] }),
+    { kind: 'wait' },
+  )
+  assert.throws(() => decideCtfRangeRequestSettlement({ refusal: null, inputStates: [] }))
 })
 
 test('treats network failures, timeouts, 5xx, and rate limits as transient', () => {
@@ -75,7 +124,7 @@ test('finds a wrapped mint refusal in the cause chain', () => {
     cause: new MintOperationError(11008, 'Duplicate outputs'),
   })
   assert.deepEqual(classifyCashuMintFailure(wrapped), {
-    kind: 'final-refusal',
+    kind: 'refusal',
     code: 11008,
     detail: 'Duplicate outputs',
   })

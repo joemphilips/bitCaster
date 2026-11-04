@@ -1044,6 +1044,7 @@
     "operation": "操作: {{operationId}}",
     "mintCode": "ミントのコード: {{code}}",
     "retry": "再試行",
+    "fundsReleased": "ミントがこの注文を拒否しました。注文は送信していません。予約した資金は再び利用できます。",
     "dismiss": "このウォレットアラートを閉じる",
     "morePending": "ほかのウォレットアラートがあります。「次へ」で表示できます。",
     "firstAlerts": "最初のアラート",

@@ -15,7 +15,7 @@ import {
   bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
   hasActiveCtfRangePreparation,
-  hasPreparedCtfRangeSell,
+  readPreparedCtfRangeSells,
   insertCtfRangePreparation,
   insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
@@ -67,17 +67,25 @@ describe("browser CTF range order journal", () => {
     ).toBeNull();
   });
 
-  it("finds a sell of one market whose source is still unresolved", async () => {
+  it("reads the prepared sells of one market", async () => {
     const database = createDatabase();
     const sell = { ...identity("range-sell", "client-sell", 1), side: "Sell" as const };
     await insertCtfRangePreparation(identity("range-buy", "client-buy", 2), database);
-    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(false);
+    expect(await readPreparedCtfRangeSells(sell.scopeId, "condition-a", database)).toEqual({
+      records: [],
+      overflow: false,
+    });
 
     await insertCtfRangePreparation(sell, database);
-    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(true);
-    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-b", database)).toBe(false);
+    expect(
+      (await readPreparedCtfRangeSells(sell.scopeId, "condition-a", database)).records.map(
+        ({ rangeOperationId }) => rangeOperationId,
+      ),
+    ).toEqual(["range-sell"]);
+    expect(
+      (await readPreparedCtfRangeSells(sell.scopeId, "condition-b", database)).records,
+    ).toEqual([]);
 
-    // Once the source is applied, the sell moves past preparation and no longer blocks.
     await transitionCtfRangePreparation(
       {
         scopeId: sell.scopeId,
@@ -89,7 +97,9 @@ describe("browser CTF range order journal", () => {
       },
       database,
     );
-    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(false);
+    expect(
+      (await readPreparedCtfRangeSells(sell.scopeId, "condition-a", database)).records,
+    ).toEqual([]);
   });
 
   it("persists an exact identity idempotently and rejects substitution", async () => {

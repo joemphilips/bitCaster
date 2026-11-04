@@ -813,7 +813,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
       registerCounterRecoveryConditionalKeyset(wallet, selected.conditionalKeyset);
     }
     const start = (await counters.readSnapshotInContext(context, input.keyset.id)).nextCounter ?? 0;
-    // The reused outputs lie at or above the local cursor, so scan from there.
+    // The refused outputs lie below the cursor, which already moved past them.
+    // Any outputs that the other client signed beyond them start at or after
+    // the cursor, so the scan starts there.
     const { lastCounterWithSignature } = await wallet.batchRestore(
       300,
       100,

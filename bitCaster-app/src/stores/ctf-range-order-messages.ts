@@ -36,21 +36,55 @@ export async function recordBrowserCtfRangeMessage(
       await database.ctfRangeMessages.add(message);
       return message;
     }
-    const current = decodeMessage(existing);
-    const merged = decodeMessage({
-      ...current,
-      ...(message.mintError === undefined ? {} : { mintError: message.mintError }),
-      ...(message.retryable === undefined ? {} : { retryable: message.retryable }),
-    });
-    if (
-      sameMintError(merged.mintError, current.mintError) &&
-      merged.retryable === current.retryable
-    ) {
-      return current;
-    }
-    await database.ctfRangeMessages.put(merged);
-    return merged;
+    return mergeExisting(database, decodeMessage(existing), message, false);
   });
+}
+
+/**
+ * Record a halted recovery alert and make it active again, also after the user
+ * dismissed it. The wallet cannot finish the operation without the user.
+ */
+export async function raiseBrowserCtfRangeAttentionMessage(
+  input: Omit<BrowserCtfRangeMessage, "status" | "acknowledgedAtMs">,
+  database: BitcasterDB = db,
+): Promise<BrowserCtfRangeMessage> {
+  const message = decodeMessage({ ...input, status: "active", acknowledgedAtMs: null });
+  if (message.retryable !== true) {
+    throw new Error("Browser range attention message needs a retry mark");
+  }
+  return database.transaction("rw", database.ctfRangeMessages, async () => {
+    const existing = await database.ctfRangeMessages.get(messageKey(message));
+    if (!existing) {
+      await database.ctfRangeMessages.add(message);
+      return message;
+    }
+    return mergeExisting(database, decodeMessage(existing), message, true);
+  });
+}
+
+async function mergeExisting(
+  database: BitcasterDB,
+  current: BrowserCtfRangeMessage,
+  message: BrowserCtfRangeMessage,
+  reactivate: boolean,
+): Promise<BrowserCtfRangeMessage> {
+  const merged = decodeMessage({
+    ...current,
+    ...(reactivate ? { status: "active" as const, acknowledgedAtMs: null } : {}),
+    ...(message.mintError === undefined ? {} : { mintError: message.mintError }),
+    ...(message.retryable === undefined ? {} : { retryable: message.retryable }),
+    ...(message.fundsReleased === undefined ? {} : { fundsReleased: message.fundsReleased }),
+  });
+  if (
+    merged.status === current.status &&
+    sameMintError(merged.mintError, current.mintError) &&
+    merged.retryable === current.retryable &&
+    merged.fundsReleased === current.fundsReleased
+  ) {
+    return current;
+  }
+  await database.ctfRangeMessages.put(merged);
+  return merged;
 }
 
 /** Remove the manual-retry mark after the user asks for the retry. */
@@ -241,6 +275,9 @@ function decodeMessage(value: BrowserCtfRangeMessageRow): BrowserCtfRangeMessage
   if (value.retryable !== undefined && value.retryable !== true) {
     throw new Error("Browser range message retry mark is invalid");
   }
+  if (value.fundsReleased !== undefined && value.fundsReleased !== true) {
+    throw new Error("Browser range message release mark is invalid");
+  }
   return {
     scopeId: nonempty(value.scopeId, "scope id"),
     operationId: nonempty(value.operationId, "operation id"),
@@ -252,6 +289,7 @@ function decodeMessage(value: BrowserCtfRangeMessageRow): BrowserCtfRangeMessage
     acknowledgedAtMs,
     ...(value.mintError === undefined ? {} : { mintError: decodeMintError(value.mintError) }),
     ...(value.retryable === undefined ? {} : { retryable: true as const }),
+    ...(value.fundsReleased === undefined ? {} : { fundsReleased: true as const }),
   };
 }
 

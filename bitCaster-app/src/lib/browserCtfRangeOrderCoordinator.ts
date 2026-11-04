@@ -111,8 +111,11 @@ import {
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
   classifyCashuMintFailure,
+  decideCtfRangeRequestSettlement,
+  settlingMintRefusal,
   type CashuMintRefusal,
 } from "@bitcaster/client-sdk/mintRefusal";
+import { decodeDurableSeedDerivedOutputPlan } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
   restoreOutputGroups,
   serializeOutputDataArray,
@@ -159,6 +162,7 @@ import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import type { BrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
+import type { BrowserSignedOutputProbe } from "./browserCtfRangeCounterProbe";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import { decodeBrowserProofBackupAuthorityTableRow } from "../stores/browser-proof-backup-authority";
 import {
@@ -194,6 +198,7 @@ import {
 import {
   bindCtfRangePreparationCapability,
   appendCtfRangePreparationConsolidationInTransaction,
+  readPreparedCtfRangeSells,
   insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
   readActiveCtfRangePreparationByClientOrderId,
@@ -304,6 +309,11 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
   }) => Promise<void>;
   /** Spaces recovery mint requests per operation. Absent, every pass retries. */
   readonly recoverySchedule?: BrowserCtfRangeRecoverySchedule;
+  /**
+   * Ask the mint which planned seed-derived outputs it already signed, before
+   * the wallet reserves their counters. Absent, the wallet does not probe.
+   */
+  readonly probeSignedOutputs?: BrowserSignedOutputProbe;
   readonly isCurrentRefundProfile?: (scopeId: string) => boolean;
   readonly observeRefundPrepared?: (
     draft: Readonly<{
@@ -465,26 +475,34 @@ export class BrowserCtfRangeOrderError extends Error {
   readonly retryAfterMs: number | null;
   /** True when the wallet released the inputs and ended the order attempt. */
   readonly released: boolean;
+  /** A halted earlier operation that the user can retry from this refusal. */
+  readonly retry: { readonly scopeId: string; readonly operationId: string } | null;
 
   constructor(
     code: BrowserCtfRangeOrderErrorCode,
     message: string,
     shortfall: CtfRangeSourceShortfall | null = null,
-    mint: {
+    details: {
       readonly mintError?: BrowserCtfRangeMintError | null;
       readonly retryAfterMs?: number | null;
       readonly released?: boolean;
+      readonly retry?: { readonly scopeId: string; readonly operationId: string } | null;
     } = {},
   ) {
     super(message);
     this.name = "BrowserCtfRangeOrderError";
     this.code = code;
     this.shortfall = shortfall;
-    this.mintError = mint.mintError ?? null;
-    this.retryAfterMs = mint.retryAfterMs ?? null;
-    this.released = mint.released === true;
+    this.mintError = details.mintError ?? null;
+    this.retryAfterMs = details.retryAfterMs ?? null;
+    this.released = details.released === true;
+    this.retry = details.retry ?? null;
   }
 }
+
+const SIGNED_OUTPUT_ADVANCES_MAX = 8;
+/** Metadata keys of the seed-derived output plans of a source or consolidation. */
+const SEED_DERIVED_PLAN_KEYS = ["keepPlan", "offeredPlan", "collateralPlan", "outputPlan"] as const;
 
 const REFUSED_SOURCE_RELEASED_MESSAGE =
   "The mint refused this order. No order was submitted. The reserved funds are available again.";
@@ -548,6 +566,7 @@ export class BrowserCtfRangeOrderCoordinator {
   >;
   readonly #recoverOutputCounters: BrowserCtfRangeOrderCoordinatorDependencies["recoverOutputCounters"];
   readonly #recoverySchedule: BrowserCtfRangeRecoverySchedule | undefined;
+  readonly #probeSignedOutputs: BrowserSignedOutputProbe | undefined;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
     const wallet = input.wallet;
@@ -566,6 +585,7 @@ export class BrowserCtfRangeOrderCoordinator {
       });
     this.#recoverOutputCounters = input.recoverOutputCounters;
     this.#recoverySchedule = input.recoverySchedule;
+    this.#probeSignedOutputs = input.probeSignedOutputs;
     this.#beforeCreateCapability = input.beforeCreateCapability ?? (async () => {});
     this.#database = input.database ?? db;
     this.#isCurrentRefundProfile =
@@ -656,6 +676,7 @@ export class BrowserCtfRangeOrderCoordinator {
               owner,
             );
             if (resumed !== null) return resumed;
+            await this.#requireNoUnresolvedSell(scope, input.preparation);
             const source = await this.#prepareAndPersistSource(
               { ...input, ...sourceInputs },
               scope,
@@ -731,6 +752,7 @@ export class BrowserCtfRangeOrderCoordinator {
             database: this.#database,
             scopeId: scope.scopeId,
           });
+          await this.#requireNoUnresolvedSell(scope, input.preparation);
           const selected = await this.#prepareAndPersistConsolidation(input, scope, owner);
           const binding = selected.binding;
           if (selected.saved) {
@@ -830,7 +852,9 @@ export class BrowserCtfRangeOrderCoordinator {
             pending.push({ operationId, revision: record.revision, code: "awaiting-mint-retry" });
             continue;
           case "halted":
-            // The halted alert is already stored. Only a manual retry resumes it.
+            // Only a manual retry resumes it. Report it on every pass, so its
+            // alert returns even after the user dismissed it.
+            attention.push({ operationId, revision: record.revision, mintError: state.mintError });
             continue;
           default:
             return assertNever(state);
@@ -1221,6 +1245,7 @@ export class BrowserCtfRangeOrderCoordinator {
       const binding = createBrowserRangeConsolidationBinding(scope, input.preparation, operation);
       return { binding, saved: true };
     };
+    let probedAdvances = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const saved = await readSaved();
       if (saved !== null) return saved;
@@ -1246,6 +1271,13 @@ export class BrowserCtfRangeOrderCoordinator {
           });
         } catch (error) {
           throw rangeError("source-preparation-failed", error);
+        }
+        if (await this.#advancePastSignedOutputs(scope, input.preparation.mintUrl, operation)) {
+          // Another client signed a planned output. Plan again from the new cursor.
+          if (++probedAdvances > SIGNED_OUTPUT_ADVANCES_MAX)
+            throw rangeError("source-preparation-failed");
+          attempt -= 1;
+          continue;
         }
         const binding = createBrowserRangeConsolidationBinding(scope, input.preparation, operation);
         await this.#observeSourcePrepared?.({
@@ -1396,12 +1428,11 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     let proofs: readonly Proof[];
     try {
-      proofs = await completeCtfRangeConsolidationOperation(
-        operation,
-        await this.#walletForMint(preparation.mintUrl),
+      proofs = await this.#withWalletRetryAfter(preparation.mintUrl, (wallet) =>
+        completeCtfRangeConsolidationOperation(operation, wallet),
       );
     } catch (error) {
-      await this.#settleFinalRefusal({
+      await this.#settleMintRefusal({
         refusal: error,
         uncertainCode: "mint-source-uncertain",
         preparation,
@@ -1623,6 +1654,7 @@ export class BrowserCtfRangeOrderCoordinator {
       await createBrowserRangeSourceBinding(scope, input.preparation, input.seed, operation);
       return { operation, custodyOperationId, saved: true };
     };
+    let probedAdvances = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const saved = await readSaved();
       if (saved !== null) return saved;
@@ -1703,6 +1735,14 @@ export class BrowserCtfRangeOrderCoordinator {
           });
         } catch (error) {
           throw rangeError("source-preparation-failed", error);
+        }
+        if (await this.#advancePastSignedOutputs(scope, input.preparation.mintUrl, operation)) {
+          // Another client signed a planned output. Plan again from the new
+          // cursor; this does not count as a snapshot conflict.
+          if (++probedAdvances > SIGNED_OUTPUT_ADVANCES_MAX)
+            throw rangeError("source-preparation-failed");
+          attempt -= 1;
+          continue;
         }
         const binding = await createBrowserRangeSourceBinding(
           scope,
@@ -1879,16 +1919,12 @@ export class BrowserCtfRangeOrderCoordinator {
                 postConvert: (request) => this.#executeSourceConvert(preparation.mintUrl, request),
               },
             })
-          : await completeValidatedCtfRangeSourceOperation(
-              validatedSource,
-              await this.#walletForMint(preparation.mintUrl),
+          : await this.#withWalletRetryAfter(preparation.mintUrl, (wallet) =>
+              completeValidatedCtfRangeSourceOperation(validatedSource, wallet),
             );
     } catch (error) {
-      if (classifyCashuMintFailure(error).kind !== "final-refusal") {
-        throw rangeError("mint-source-uncertain", error);
-      }
-      // Every input is spent: an earlier copy of this request committed.
-      await this.#settleFinalRefusal({
+      // Returns only when every input is spent: an earlier copy can have committed.
+      await this.#settleMintRefusal({
         refusal: error,
         uncertainCode: "mint-source-uncertain",
         preparation,
@@ -2034,15 +2070,17 @@ export class BrowserCtfRangeOrderCoordinator {
             );
           }
           case "remain-pending":
-            if (decision.reason === "mixed-input-states") {
-              await this.#releaseMixedInputs({
+            // A mixed reading replays, so that the mint answers with its
+            // spent-input code. That answer settles the request.
+            if (replaysMixedReading(states)) {
+              return this.#completeAndBindSource(
                 preparation,
+                seed,
+                source,
+                sourceCustodyOperationId,
                 scope,
                 owner,
-                custodyOperationId: sourceCustodyOperationId,
-                operation: source,
-                states,
-              });
+              );
             }
             throw rangeError("recovery-pending");
           case "reuse-completed":
@@ -2160,16 +2198,21 @@ export class BrowserCtfRangeOrderCoordinator {
     if (snapshot.record.operation.result.state !== "none") throw rangeError("recovery-pending");
     const { decision, states } = await this.#classifyUncertainConsolidation(preparation, operation);
     let proofs: readonly Proof[];
-    switch (decision.kind) {
+    // A mixed reading replays, so that the mint answers with its spent-input
+    // code. That answer settles the request.
+    const kind =
+      decision.kind === "remain-pending" && replaysMixedReading(states)
+        ? "replay-exact-persisted-operation"
+        : decision.kind;
+    switch (kind) {
       case "replay-exact-persisted-operation":
         await this.#markConsolidationAttemptedForRecovery(scope, owner, operationId);
         try {
-          proofs = await completeCtfRangeConsolidationOperation(
-            operation,
-            await this.#walletForMint(preparation.mintUrl),
+          proofs = await this.#withWalletRetryAfter(preparation.mintUrl, (wallet) =>
+            completeCtfRangeConsolidationOperation(operation, wallet),
           );
         } catch (error) {
-          await this.#settleFinalRefusal({
+          await this.#settleMintRefusal({
             refusal: error,
             uncertainCode: "recovery-pending",
             preparation,
@@ -2189,16 +2232,6 @@ export class BrowserCtfRangeOrderCoordinator {
         proofs = await this.#restoreConsolidationProofs(preparation, operation, "recovery-pending");
         break;
       case "remain-pending":
-        if (decision.reason === "mixed-input-states") {
-          await this.#releaseMixedInputs({
-            preparation,
-            scope,
-            owner,
-            custodyOperationId: operationId,
-            operation,
-            states,
-          });
-        }
         throw rangeError("recovery-pending");
       default:
         throw new Error("Range consolidation recovery state is invalid");
@@ -2325,15 +2358,18 @@ export class BrowserCtfRangeOrderCoordinator {
         return false;
       }
       case "remain-pending":
-        if (decision.reason === "mixed-input-states") {
-          await this.#releaseMixedInputs({
-            preparation: input.preparation,
-            scope: input.scope,
-            owner: input.owner,
-            custodyOperationId: input.sourceCustodyOperationId,
-            operation: input.source,
-            states,
-          });
+        // A mixed reading replays, so that the mint answers with its
+        // spent-input code. That answer settles the request.
+        if (replaysMixedReading(states)) {
+          await this.#completeAndBindSource(
+            input.preparation,
+            input.seed,
+            input.source,
+            input.sourceCustodyOperationId,
+            input.scope,
+            input.owner,
+          );
+          return false;
         }
         throw rangeError("recovery-pending");
       case "reuse-completed":
@@ -2383,13 +2419,14 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   /**
-   * Settle a final mint refusal under the wallet profile lock. The refusal
-   * proves that this request did not commit, and its bytes can never commit.
-   * The inputs are checked again. A pending or unknown input keeps waiting.
-   * All spent inputs return to the caller for the exact NUT-09 restore. Any
-   * other state releases the request, which throws a released error.
+   * Settle a mint refusal under the wallet profile lock, as an ordinary Cashu
+   * wallet does. Only "outputs already signed" (11003, 11008) and "token
+   * already spent" (11001) settle; every other failure stays uncertain. The
+   * inputs are checked again first. A pending or unknown input waits. All
+   * spent inputs return to the caller for the exact NUT-09 restore. Otherwise
+   * the request is released, which throws a released error.
    */
-  async #settleFinalRefusal(input: {
+  async #settleMintRefusal(input: {
     readonly refusal: unknown;
     readonly uncertainCode: "mint-source-uncertain" | "recovery-pending";
     readonly preparation: PersistedCtfRangeOrderPreparation;
@@ -2398,19 +2435,27 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly custodyOperationId: string;
     readonly operation: DurableCustodyProofOperationInput;
   }): Promise<void> {
-    const failure = classifyCashuMintFailure(input.refusal);
-    if (failure.kind !== "final-refusal") throw rangeError(input.uncertainCode, input.refusal);
+    const refusal = settlingMintRefusal(classifyCashuMintFailure(input.refusal));
+    if (refusal === null) throw rangeError(input.uncertainCode, input.refusal);
     let states: readonly unknown[];
     try {
       states = await this.#observeInputStates(input.preparation, input.operation);
     } catch {
       throw rangeError(input.uncertainCode, input.refusal);
     }
-    if (states.every((state) => state === "SPENT")) return;
-    if (states.some((state) => state !== "SPENT" && state !== "UNSPENT")) {
-      throw rangeError(input.uncertainCode, input.refusal);
+    const settlement = decideCtfRangeRequestSettlement({ refusal, inputStates: states });
+    switch (settlement.kind) {
+      case "restore":
+        return;
+      case "wait":
+      case "replay":
+        throw rangeError(input.uncertainCode, input.refusal);
+      case "release":
+        break;
+      default:
+        return assertNever(settlement);
     }
-    if (MINT_OUTPUT_REUSE_REFUSAL_CODES.has(failure.code)) {
+    if (refusal === "outputs-signed") {
       // Another client signed outputs from these counters. Advance the local
       // cursors before the attempt ends, so the next attempt uses fresh outputs.
       try {
@@ -2424,26 +2469,6 @@ export class BrowserCtfRangeOrderCoordinator {
     }
     await this.#releaseReservation({ ...input, states });
     throw rangeError("order-attempt-ended", input.refusal, {
-      released: true,
-      message: REFUSED_SOURCE_RELEASED_MESSAGE,
-    });
-  }
-
-  /**
-   * Some inputs are spent and the rest are unspent, with none pending. The
-   * mint commits every input of one request together, so this request did not
-   * commit and can never commit.
-   */
-  async #releaseMixedInputs(input: {
-    readonly preparation: PersistedCtfRangeOrderPreparation;
-    readonly scope: DurableCustodyScope;
-    readonly owner: DurableCustodyOwnerAuthorization;
-    readonly custodyOperationId: string;
-    readonly operation: DurableCustodyProofOperationInput;
-    readonly states: readonly unknown[];
-  }): Promise<never> {
-    await this.#releaseReservation(input);
-    throw rangeError("order-attempt-ended", undefined, {
       released: true,
       message: REFUSED_SOURCE_RELEASED_MESSAGE,
     });
@@ -3076,26 +3101,42 @@ export class BrowserCtfRangeOrderCoordinator {
     operation: DurableCtfRangeOperation,
   ): Promise<void> {
     await this.#requireSubmittedFokRefundSafe(journalRecord);
+    const operationId = deriveDurableCtfRangeRefundOperationId(operation.operationId);
+    const existing = await this.#database.proofOperations.get(operationId);
+    const refund =
+      existing ??
+      (await this.#persistRefundPlan(journalRecord, seed, scope, owner, record, operation, null));
+    await this.#resumeOuterRefund(
+      journalRecord,
+      seed,
+      scope,
+      owner,
+      record,
+      operation,
+      refund,
+      true,
+    );
+  }
+
+  /**
+   * Plan seed-derived refund outputs and save them with their counters. With
+   * `replaced`, swap a refused plan for new outputs; the refund inputs stay.
+   */
+  async #persistRefundPlan(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    replaced: ProofOperationRecord | null,
+  ): Promise<ProofOperationRecord> {
     const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
     const refundAmount =
       operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
       deriveDurableCtfRangeFeeBounds(operation).maximumFee;
     if (refundAmount <= 0n) throw new Error("browser range refund is fee-dominated");
     const operationId = deriveDurableCtfRangeRefundOperationId(operation.operationId);
-    const existing = await this.#database.proofOperations.get(operationId);
-    if (existing !== undefined) {
-      await this.#resumeOuterRefund(
-        journalRecord,
-        seed,
-        scope,
-        owner,
-        record,
-        operation,
-        existing,
-        true,
-      );
-      return;
-    }
     const preparationContext = { mintUrl: operation.mintUrl, unit: "msat" };
     const counters = new BrowserWalletCounterDexieStore({
       database: this.#database,
@@ -3104,6 +3145,7 @@ export class BrowserCtfRangeOrderCoordinator {
         ? {}
         : { isCurrentProfile: () => this.#isCurrentRefundProfile!(scope.scopeId) }),
     });
+    let probedAdvances = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const transcript = createSpeculativeCounterTranscript([
         await counters.readSnapshotInContext(preparationContext, preparation.offerKeyset.id),
@@ -3116,6 +3158,19 @@ export class BrowserCtfRangeOrderCoordinator {
         amount: refundAmount,
         keyset: preparation.offerKeyset,
       });
+      if (
+        await this.#advancePastSignedPlans(
+          scope,
+          operation.mintUrl,
+          [prepared.plan],
+          "recovery-pending",
+        )
+      ) {
+        // Another client signed a planned refund output. Plan again from the new cursor.
+        if (++probedAdvances > SIGNED_OUTPUT_ADVANCES_MAX) throw rangeError("recovery-pending");
+        attempt -= 1;
+        continue;
+      }
       const now = this.#now();
       const refund: ProofOperationRecord = {
         operationId,
@@ -3132,13 +3187,12 @@ export class BrowserCtfRangeOrderCoordinator {
           refundOutputPlan: prepared.plan,
         },
         lastError: null,
-        createdAt: now,
-        updatedAt: now,
+        createdAt: replaced?.createdAt ?? now,
+        updatedAt: Math.max(now, replaced?.updatedAt ?? now),
       };
       await this.#observeRefundPrepared?.(structuredClone({ operationId, plan: prepared.plan }));
-      let selected: ProofOperationRecord;
       try {
-        selected = await this.#database.transaction(
+        const selected = await this.#database.transaction(
           "rw",
           [
             ...this.#transactionTables(true),
@@ -3157,7 +3211,15 @@ export class BrowserCtfRangeOrderCoordinator {
               () => undefined,
             );
             const saved = await this.#database.proofOperations.get(operationId);
-            if (saved !== undefined) return saved;
+            if (replaced === null) {
+              if (saved !== undefined) return saved;
+            } else if (
+              saved === undefined ||
+              saved.state !== "prepared" ||
+              refundAuthorityFingerprint(saved) !== refundAuthorityFingerprint(replaced)
+            ) {
+              throw new Error("browser refund saved authority changed before a new plan");
+            }
             const current = await readCtfRangePreparation(
               scope.scopeId,
               journalRecord.rangeOperationId,
@@ -3178,44 +3240,64 @@ export class BrowserCtfRangeOrderCoordinator {
               changes[0]!,
             );
             this.#injectRefundPreparationFault?.("counter-written");
-            await this.#database.proofOperations.add(refund);
+            await this.#database.proofOperations.put(refund);
             this.#injectRefundPreparationFault?.("journal-bound");
             return refund;
           },
         );
         this.#injectRefundPreparationFault?.("after-commit");
+        return selected;
       } catch (error) {
         const saved = await this.#database.proofOperations.get(operationId);
-        if (saved !== undefined) {
-          await this.#resumeOuterRefund(
-            journalRecord,
-            seed,
-            scope,
-            owner,
-            record,
-            operation,
-            saved,
-            true,
-          );
-          return;
+        if (saved !== undefined && (replaced === null || saved.updatedAt !== replaced.updatedAt)) {
+          return saved;
         }
         if (!(error instanceof BrowserWalletCounterSnapshotConflictError) || attempt === 2)
           throw error;
-        continue;
       }
-      await this.#resumeOuterRefund(
-        journalRecord,
-        seed,
-        scope,
-        owner,
-        record,
-        operation,
-        selected,
-        true,
-      );
-      return;
     }
     throw new Error("browser refund counter attempts exhausted");
+  }
+
+  /**
+   * After 11003 or 11008 on a refund swap, the planned refund outputs are
+   * already signed elsewhere. Check the inputs again; when every input is
+   * unspent, advance the counters, plan new outputs, and return the new plan.
+   */
+  async #replanRefundAfterOutputReuse(
+    error: unknown,
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    refund: ProofOperationRecord,
+  ): Promise<ProofOperationRecord | null> {
+    const failure = classifyCashuMintFailure(error);
+    if (failure.kind !== "refusal" || !MINT_OUTPUT_REUSE_REFUSAL_CODES.has(failure.code)) {
+      return null;
+    }
+    // Legacy refund outputs come from their own derivation, not NUT-13 counters.
+    if (!Object.hasOwn(refund.metadata, "refundOutputPlan")) return null;
+    let states: ProofState[];
+    try {
+      states = await (await this.#walletForMint(refund.mintUrl)).checkProofsStates(refund.inputs);
+    } catch {
+      return null;
+    }
+    if (states.length !== refund.inputs.length || states.some(({ state }) => state !== "UNSPENT")) {
+      return null;
+    }
+    try {
+      await this.#recoverOutputCounters?.({
+        mintUrl: operation.mintUrl,
+        keysets: [decodeCtfRangeOrderPreparationFromRecord(journalRecord).offerKeyset],
+      });
+    } catch {
+      return null;
+    }
+    return this.#persistRefundPlan(journalRecord, seed, scope, owner, record, operation, refund);
   }
 
   async #resumeOuterRefund(
@@ -3227,6 +3309,7 @@ export class BrowserCtfRangeOrderCoordinator {
     operation: DurableCtfRangeOperation,
     refund: ProofOperationRecord,
     orderStatusChecked = false,
+    replanned = false,
   ): Promise<void> {
     await this.#requireRefundOwner(scope, owner, record);
     if (!orderStatusChecked) await this.#requireSubmittedFokRefundSafe(journalRecord);
@@ -3256,7 +3339,31 @@ export class BrowserCtfRangeOrderCoordinator {
             outputs: outputs.map(({ blindedMessage }) => blindedMessage),
           });
         } catch (error) {
-          throw rangeError("recovery-pending", error);
+          const next = replanned
+            ? null
+            : await this.#replanRefundAfterOutputReuse(
+                error,
+                journalRecord,
+                seed,
+                scope,
+                owner,
+                record,
+                operation,
+                refund,
+              );
+          if (next === null) throw rangeError("recovery-pending", error);
+          // Retry once now with the same inputs and the new outputs.
+          return this.#resumeOuterRefund(
+            journalRecord,
+            seed,
+            scope,
+            owner,
+            record,
+            operation,
+            next,
+            true,
+            true,
+          );
         }
         const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
         proofs = verifyDurableCtfRangeRefundSignatures({
@@ -3402,24 +3509,10 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
       const currentRefund = await this.#database.proofOperations.get(refund.operationId);
-      const authority = (row: ProofOperationRecord) =>
-        prepareDurableCustodyExactArtifact({
-          operationId: row.operationId,
-          kind: row.kind,
-          mintUrl: row.mintUrl,
-          inputs: row.inputs.map((proof) => ({
-            id: proof.id,
-            amount: amountToNumber(proof.amount),
-            secret: proof.secret,
-            C: proof.C,
-            dleq: proof.dleq ?? null,
-            p2pkE: proof.p2pk_e ?? null,
-            witness: proof.witness ?? null,
-          })),
-          outputs: row.outputs,
-          metadata: row.metadata,
-        }).fingerprint;
-      if (currentRefund === undefined || authority(currentRefund) !== authority(refund))
+      if (
+        currentRefund === undefined ||
+        refundAuthorityFingerprint(currentRefund) !== refundAuthorityFingerprint(refund)
+      )
         throw new Error("browser refund saved authority changed before completion");
       await this.#database.proofOperations.put({
         ...refund,
@@ -3712,6 +3805,167 @@ export class BrowserCtfRangeOrderCoordinator {
     }
   }
 
+  /** Attach the mint's Retry-After of a failed wallet swap, such as a 503. */
+  async #withWalletRetryAfter<T>(
+    mintUrl: string,
+    action: (wallet: BrowserCtfRangeWallet) => Promise<T>,
+  ): Promise<T> {
+    const wallet = await this.#walletForMint(mintUrl);
+    try {
+      return await action(wallet);
+    } catch (error) {
+      const metadata = (wallet as { mint?: { lastResponseMetadata?: { retryAfterMs?: number } } })
+        .mint?.lastResponseMetadata;
+      throw withRetryAfter(error, metadata?.retryAfterMs);
+    }
+  }
+
+  async #advancePastSignedOutputs(
+    scope: DurableCustodyScope,
+    mintUrl: string,
+    operation: DurableCustodyProofOperationInput,
+  ): Promise<boolean> {
+    const plans = SEED_DERIVED_PLAN_KEYS.flatMap((key) => {
+      const value = operation.metadata?.[key];
+      return value === undefined || value === null
+        ? []
+        : [decodeDurableSeedDerivedOutputPlan(value)];
+    });
+    return this.#advancePastSignedPlans(scope, mintUrl, plans, "source-preparation-failed");
+  }
+
+  /**
+   * Ask the mint whether planned seed-derived outputs are already signed. For
+   * each touched plan, move the counter past the plan and return true, so the
+   * caller plans again. Authorization outputs have contextual secrets and
+   * cannot collide, so the caller probes only seed-derived plans.
+   */
+  async #advancePastSignedPlans(
+    scope: DurableCustodyScope,
+    mintUrl: string,
+    plans: readonly ReturnType<typeof decodeDurableSeedDerivedOutputPlan>[],
+    failureCode: "source-preparation-failed" | "recovery-pending",
+  ): Promise<boolean> {
+    if (this.#probeSignedOutputs === undefined) return false;
+    const outputs = plans.flatMap((plan) =>
+      plan.outputs.map(({ blindedMessage }) => blindedMessage),
+    );
+    if (outputs.length === 0) return false;
+    let signed: ReadonlySet<string>;
+    try {
+      signed = await this.#probeSignedOutputs(mintUrl, outputs);
+    } catch (error) {
+      throw rangeError(failureCode, error);
+    }
+    const touched = plans.filter((plan) =>
+      plan.outputs.some(({ blindedMessage }) => signed.has(blindedMessage.B_)),
+    );
+    if (touched.length === 0) return false;
+    const counters = this.#sourceCounters(scope);
+    for (const plan of touched) {
+      await counters.advanceToAtLeastInContext(
+        { mintUrl, unit: "msat" },
+        plan.keysetId,
+        plan.counterStart + plan.counterCount,
+        true,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Refuse a sell that would lock more of a position while an earlier sell of
+   * the same market still holds reserved source funds. Callers hold the wallet
+   * profile lock, so the check and the new source commit cannot interleave.
+   */
+  async #requireNoUnresolvedSell(
+    scope: DurableCustodyScope,
+    preparation: PersistedCtfRangeOrderPreparation,
+  ): Promise<void> {
+    if (preparation.side !== "Sell") return;
+    const prepared = await readPreparedCtfRangeSells(
+      scope.scopeId,
+      preparation.conditionId,
+      this.#database,
+    );
+    let blocking: string | null = null;
+    for (const record of prepared.records) {
+      if (record.rangeOperationId === preparation.operationId) continue;
+      if (await this.#holdsReservedFunds(scope, record)) {
+        blocking = record.rangeOperationId;
+        break;
+      }
+    }
+    if (blocking === null && !prepared.overflow) return;
+    await this.#endUnfundedPreparation(scope, preparation);
+    const halted =
+      blocking !== null &&
+      this.#recoverySchedule?.state(scope.scopeId, blocking, this.#now()).kind === "halted";
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-pending",
+      browserCtfRangeOrderErrorMessage("source-preparation-pending"),
+      null,
+      { retry: halted ? { scopeId: scope.scopeId, operationId: blocking! } : null },
+    );
+  }
+
+  async #holdsReservedFunds(
+    scope: DurableCustodyScope,
+    record: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+  ): Promise<boolean> {
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
+    const source = await this.#custody.readOperation(
+      scope,
+      browserSourceCustodyOperationId(scope, preparation.sourceOperationId),
+    );
+    // An applied source passes its funds to the order authorization.
+    if (source !== null) return source.operation.state !== "aborted";
+    for (const link of await readCtfRangePreparationConsolidations(
+      scope.scopeId,
+      record.rangeOperationId,
+      this.#database,
+    )) {
+      const state = (await this.#custody.readOperation(scope, link.operationId))?.operation.state;
+      switch (state) {
+        case "dispatch-intent":
+        case "transport-attempted":
+          return true;
+        case "reconciled":
+        case "aborted":
+        case undefined:
+          break;
+        default:
+          return assertNever(state);
+      }
+    }
+    return false;
+  }
+
+  /** End this attempt's journal when it holds no funds, so it leaves no recovery work. */
+  async #endUnfundedPreparation(
+    scope: DurableCustodyScope,
+    preparation: PersistedCtfRangeOrderPreparation,
+  ): Promise<void> {
+    const journal = await readCtfRangePreparation(
+      scope.scopeId,
+      preparation.operationId,
+      this.#database,
+    );
+    if (journal === null || journal.lifecycleState !== "prepared") return;
+    if (await this.#holdsReservedFunds(scope, journal)) return;
+    await transitionCtfRangePreparation(
+      {
+        scopeId: journal.scopeId,
+        rangeOperationId: journal.rangeOperationId,
+        expectedRevision: journal.revision,
+        from: "prepared",
+        to: "terminal",
+        updatedAtMs: Math.max(this.#now(), journal.updatedAtMs),
+      },
+      this.#database,
+    );
+  }
+
   async #withScopeOwner<T>(
     scope: DurableCustodyScope,
     action: (owner: DurableCustodyOwnerAuthorization) => Promise<T>,
@@ -3913,6 +4167,30 @@ function withRetryAfter(error: unknown, retryAfterMs: number | undefined): unkno
     Object.defineProperty(error, "retryAfterMs", { value: retryAfterMs });
   }
   return error;
+}
+
+/** A mixed spent-and-unspent reading replays to obtain the mint's answer. */
+function replaysMixedReading(states: readonly unknown[]): boolean {
+  return decideCtfRangeRequestSettlement({ refusal: null, inputStates: states }).kind === "replay";
+}
+
+function refundAuthorityFingerprint(row: ProofOperationRecord): string {
+  return prepareDurableCustodyExactArtifact({
+    operationId: row.operationId,
+    kind: row.kind,
+    mintUrl: row.mintUrl,
+    inputs: row.inputs.map((proof) => ({
+      id: proof.id,
+      amount: amountToNumber(proof.amount),
+      secret: proof.secret,
+      C: proof.C,
+      dleq: proof.dleq ?? null,
+      p2pkE: proof.p2pk_e ?? null,
+      witness: proof.witness ?? null,
+    })),
+    outputs: row.outputs,
+    metadata: row.metadata,
+  }).fingerprint;
 }
 
 /** Every keyset that one persisted operation asks the mint to sign. */

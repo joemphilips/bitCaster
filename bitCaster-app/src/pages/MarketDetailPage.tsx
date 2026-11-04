@@ -116,6 +116,7 @@ import {
   type ParticipationScoreLike,
 } from "@bitcaster/client-sdk/participationScore";
 import { BrowserCtfRangeOrderError } from "@/lib/browserCtfRangeOrderCoordinator";
+import { retryBrowserCtfRangeOrderRecovery } from "@/lib/browserCtfRangeRecoveryRetry";
 import type { BrowserCtfRangeOrderFeePreview } from "@/lib/browserCtfRangeOrderSubmission";
 import type {
   MarketDetail as MarketDetailType,
@@ -1415,6 +1416,8 @@ export function MarketDetailPage() {
     message: string;
     /** The message names Participation Score, so the term's help goes next to it. */
     participationScoreHelp?: boolean;
+    /** A halted earlier operation blocks this order. The user can retry it here. */
+    onRetry?: () => void;
     reviewedFeeFacts?: BrowserCtfRangeOrderFeePreview | null;
     reviewedFeeIdentityKey?: string;
     /** A matched order that waits for its authoritative final status. */
@@ -2744,6 +2747,19 @@ export function MarketDetailPage() {
           setTradeSubmitStatus({
             kind: "error",
             message: e.message,
+            reviewedFeeFacts,
+            reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+          });
+          return;
+        }
+        if (e instanceof BrowserCtfRangeOrderError && e.code === "source-preparation-pending") {
+          const retry = e.retry;
+          setTradeSubmitStatus({
+            kind: "error",
+            message: e.message,
+            ...(retry === null
+              ? {}
+              : { onRetry: () => void retryBrowserCtfRangeOrderRecovery(retry) }),
             reviewedFeeFacts,
             reviewedFeeIdentityKey: capturedPreviewIdentityKey,
           });

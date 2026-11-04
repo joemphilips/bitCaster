@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
       acknowledgedAtMs: null;
       mintError?: { code: number; detail: string };
       retryable?: true;
+      fundsReleased?: true;
     }>,
     nextCursor: null,
   },
@@ -116,6 +117,34 @@ describe("DurableWalletErrors", () => {
       expect(alert).toHaveTextContent("Mint code: 11008");
       expect(alert).not.toHaveTextContent("Duplicate outputs");
       expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull();
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("says that the funds are available again after the mint refused an order", () => {
+    const original = mocks.page;
+    mocks.page = {
+      ...original,
+      messages: [
+        {
+          ...original.messages[0]!,
+          code: "order-attempt-ended",
+          kind: "order",
+          mintError: { code: 11008, detail: "Duplicate outputs" },
+          fundsReleased: true as const,
+        },
+      ],
+    };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Order was not completed");
+      expect(alert).toHaveTextContent(
+        "The mint refused this order. No order was submitted. The reserved funds are available again.",
+      );
+      expect(alert).toHaveTextContent("Mint code: 11008");
     } finally {
       mocks.page = original;
     }

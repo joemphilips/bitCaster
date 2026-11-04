@@ -341,6 +341,8 @@ export interface BrowserCtfRangeMessageRow {
   mintError?: { code: number; detail: string };
   /** The automatic replay stopped. The alert offers a manual retry. */
   retryable?: true;
+  /** The wallet released the reserved funds of this ended order attempt. */
+  fundsReleased?: true;
 }
 
 /**

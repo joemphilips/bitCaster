@@ -5,6 +5,7 @@ import {
   acknowledgeBrowserCtfRangeMessage,
   clearBrowserCtfRangeMessageRetry,
   pageActiveBrowserCtfRangeMessages,
+  raiseBrowserCtfRangeAttentionMessage,
   recordBrowserCtfRangeMessage,
   resolveTerminalBrowserCtfRangeMessages,
 } from "../ctf-range-order-messages";
@@ -163,6 +164,42 @@ describe("durable browser range messages", () => {
 
     await recordBrowserCtfRangeMessage({ ...halted, observedAtMs: 30 }, database);
     expect((await page(database)).messages).toMatchObject([{ retryable: true, observedAtMs: 10 }]);
+  });
+
+  it("raises a halted alert again after the user dismissed it", async () => {
+    const database = createDatabase();
+    const halted = {
+      ...message(0, "recovery-pending", 10),
+      mintError: { code: 11002, detail: "Token pending" },
+      retryable: true as const,
+    };
+    await raiseBrowserCtfRangeAttentionMessage(halted, database);
+    await acknowledgeBrowserCtfRangeMessage({ ...halted, acknowledgedAtMs: 11 }, database);
+    expect((await page(database)).messages).toEqual([]);
+
+    await raiseBrowserCtfRangeAttentionMessage({ ...halted, observedAtMs: 20 }, database);
+
+    expect((await page(database)).messages).toMatchObject([
+      { status: "active", acknowledgedAtMs: null, retryable: true, observedAtMs: 10 },
+    ]);
+  });
+
+  it("keeps the released-funds mark of a refused order alert", async () => {
+    const database = createDatabase();
+    await recordBrowserCtfRangeMessage(
+      {
+        ...message(1, "recovery-pending", 10),
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError: { code: 11008, detail: "Duplicate outputs" },
+        fundsReleased: true,
+      },
+      database,
+    );
+
+    expect((await page(database)).messages).toMatchObject([
+      { code: "order-attempt-ended", fundsReleased: true, mintError: { code: 11008 } },
+    ]);
   });
 
   it("refuses an invalid mint error before it stores an alert", async () => {
