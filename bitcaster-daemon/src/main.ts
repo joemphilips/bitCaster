@@ -41,10 +41,23 @@ switch (command) {
       passphrase: process.env.BITCASTER_DAEMON_PASSPHRASE || undefined,
     })
     process.stdout.write('bitcaster-daemon profile initialized\n')
+    if (initOptions.walletSeedHexFile !== undefined) {
+      // An imported seed can hold funds and positions at the mint already.
+      const { importedSeedRestoreHint } = await import('./allConditionsSeedRecovery.ts')
+      process.stdout.write(importedSeedRestoreHint(config.daemon.mintUrl))
+    }
     break
   }
   case 'recover-seed': {
     const options = parseRecoverSeedOptions(args)
+    if (options.allConditions) {
+      const { runOfflineDaemonSeedRecoveryAllConditions } = await import(
+        './allConditionsSeedRecovery.ts'
+      )
+      const result = await runOfflineDaemonSeedRecoveryAllConditions(options)
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+      break
+    }
     const { runOfflineDaemonSeedRecovery } = await import('./emergencySeedRecovery.ts')
     const result = await runOfflineDaemonSeedRecovery(options)
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
@@ -63,6 +76,7 @@ switch (command) {
   bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
                          OR --recovery-phrase-file <path>
                          --recovery-id <id> --mint <url> [--unit msat] [--gap-limit 300]
+                         [--condition-id <id> | --all-conditions]
                          --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
 `)
@@ -77,7 +91,9 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   recoveryPhraseFile?: string
   disclosureAcknowledged: true
   scanPolicy: SeedRecoveryScanPolicy
+  allConditions: boolean
 } {
+  let allConditions = false
   let recoveryId: string | undefined
   let mintUrl: string | undefined
   let unit: 'sat' | 'msat' = 'msat'
@@ -90,6 +106,10 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     const option = args[index]
     if (option === '--acknowledge-seed-disclosure') {
       disclosureAcknowledged = true
+      continue
+    }
+    if (option === '--all-conditions') {
+      allConditions = true
       continue
     }
     const value = requiredArg(args[++index], option ?? 'recover-seed option')
@@ -113,6 +133,9 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   }
   if (!/^[1-9][0-9]*$/.test(gapLimitText))
     throw new Error('recover-seed gap limit must be a positive integer')
+  if (allConditions && conditionId !== undefined) {
+    throw new Error('recover-seed accepts --condition-id or --all-conditions, not both')
+  }
   const scanPolicy = createSeedRecoveryScanPolicy({ conditionId, gapLimit: Number(gapLimitText) })
   return {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
@@ -123,6 +146,7 @@ function parseRecoverSeedOptions(args: readonly string[]): {
       : { recoveryPhraseFile: requiredArg(recoveryPhraseFile, '--recovery-phrase-file') }),
     disclosureAcknowledged: true,
     scanPolicy,
+    allConditions,
   }
 }
 

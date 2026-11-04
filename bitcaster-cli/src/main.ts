@@ -1636,7 +1636,7 @@ function registerWalletCommand(program: Command): void {
   wallet
     .command('recover-seed')
     .description(
-      'Recover regular msat proofs with an explicit gap limit. Supply exactly one owner-only seed or phrase file.',
+      'Recover regular msat proofs with an explicit gap limit, and market positions with --all-conditions or --condition-id. Supply exactly one owner-only seed or phrase file.',
     )
     .option(
       '--wallet-seed-hex-file <path>',
@@ -1650,6 +1650,10 @@ function registerWalletCommand(program: Command): void {
     .requiredOption('--mint <url>', 'Canonical mint origin')
     .option('--unit <unit>', 'Product mint unit: msat', 'msat')
     .option('--condition-id <id>', 'Selected condition (requires approved mint discovery support)')
+    .option(
+      '--all-conditions',
+      'Also restore market positions: probe every catalogue market at the mint (discloses outputs of this seed to the mint)',
+    )
     .option('--gap-limit <count>', 'Consecutive unsigned positions before stopping', '300')
     .option(
       '--acknowledge-seed-disclosure',
@@ -1664,6 +1668,7 @@ function registerWalletCommand(program: Command): void {
         mint: string
         unit: string
         conditionId?: string
+        allConditions?: boolean
         gapLimit: string
         acknowledgeSeedDisclosure?: boolean
       }) => {
@@ -1683,6 +1688,8 @@ function registerWalletCommand(program: Command): void {
         }
         if (!/^[1-9][0-9]*$/.test(options.gapLimit))
           throwUsage('recover-seed gap limit must be a positive integer')
+        if (options.allConditions === true && options.conditionId !== undefined)
+          throwUsage('wallet recover-seed accepts --condition-id or --all-conditions, not both')
         const scanPolicy = createSeedRecoveryScanPolicy({
           conditionId: options.conditionId,
           gapLimit: Number(options.gapLimit),
@@ -1701,6 +1708,7 @@ function registerWalletCommand(program: Command): void {
             unit: options.unit,
             disclosureAcknowledged: true,
             scanPolicy,
+            allConditions: options.allConditions === true,
           })
           return
         }
@@ -1719,6 +1727,7 @@ function registerWalletCommand(program: Command): void {
           '--gap-limit',
           String(scanPolicy.gapLimit),
           ...(scanPolicy.scope === 'condition' ? ['--condition-id', scanPolicy.conditionId] : []),
+          ...(options.allConditions === true ? ['--all-conditions'] : []),
         ])
       },
     )

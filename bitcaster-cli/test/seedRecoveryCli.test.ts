@@ -137,6 +137,21 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     assert.match(condition.stdout, /"conditionId": "abababab/)
     assert.doesNotMatch(condition.stdout, new RegExp(seed))
 
+    // Market positions: every catalogue market at the mint (ADR-039 seed restore scope).
+    const allConditions = await runCli(home, [...defaults, '--all-conditions'])
+    assert.equal(allConditions.code, 0)
+    assert.match(allConditions.stdout, /"allConditions": true/)
+    assert.match(allConditions.stdout, /"scope": "regular-msat"/)
+    assert.doesNotMatch(allConditions.stdout, new RegExp(seed))
+    const both = await runCli(home, [
+      ...defaults,
+      '--all-conditions',
+      '--condition-id',
+      'ab'.repeat(32),
+    ])
+    assert.notEqual(both.code, 0)
+    assert.match(both.stderr, /--condition-id or --all-conditions, not both/)
+
     const offline = await recoveryCli(home, seedPath, false)
     assert.notEqual(offline.code, 0)
     assert.doesNotMatch(`${offline.stdout}\n${offline.stderr}`, /daemon not reachable/i)
