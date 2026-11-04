@@ -302,11 +302,15 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
   /**
    * Recover the NUT-13 counters of each output keyset from the mint. The
    * coordinator calls it under the wallet profile lock after an output reuse
-   * refusal, before it releases the refused request.
+   * refusal, before it releases the refused request. `fromCounters` holds
+   * the first counter of each seed-derived output plan of the request. The
+   * mint signed those outputs for another client below the advanced cursor,
+   * so a later pass scans from there (ADR-033).
    */
   readonly recoverOutputCounters?: (input: {
     readonly mintUrl: string;
     readonly keysets: readonly PersistedCtfRangeOrderPreparation["offerKeyset"][];
+    readonly fromCounters: Readonly<Record<string, number>>;
   }) => Promise<void>;
   /** Spaces recovery mint requests per operation. Absent, every pass retries. */
   readonly recoverySchedule?: BrowserCtfRangeRecoverySchedule;
@@ -2440,6 +2444,7 @@ export class BrowserCtfRangeOrderCoordinator {
         await this.#recoverOutputCounters?.({
           mintUrl: input.preparation.mintUrl,
           keysets: outputKeysets(input.preparation, input.operation),
+          fromCounters: plannedOutputCounterStarts(input.operation.metadata),
         });
       } catch {
         throw rangeError(input.uncertainCode, input.refusal);
@@ -3269,6 +3274,7 @@ export class BrowserCtfRangeOrderCoordinator {
       await this.#recoverOutputCounters?.({
         mintUrl: operation.mintUrl,
         keysets: [decodeCtfRangeOrderPreparationFromRecord(journalRecord).offerKeyset],
+        fromCounters: plannedOutputCounterStarts(refund.metadata),
       });
     } catch {
       return null;
@@ -4189,6 +4195,30 @@ function refundPlanOfProofs(
 }
 
 /** Every keyset that one persisted operation asks the mint to sign. */
+// The metadata fields that hold a seed-derived NUT-13 output plan: source
+// change, consolidation outputs, mixed-source change, and refund outputs.
+const SEED_OUTPUT_PLAN_METADATA_KEYS = [
+  "keepPlan",
+  "outputPlan",
+  "offeredPlan",
+  "collateralPlan",
+  "refundOutputPlan",
+] as const;
+
+/** The first planned NUT-13 counter of each output keyset of one request. */
+function plannedOutputCounterStarts(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): Record<string, number> {
+  const starts: Record<string, number> = {};
+  for (const key of SEED_OUTPUT_PLAN_METADATA_KEYS) {
+    const value = metadata?.[key];
+    if (value === undefined || value === null) continue;
+    const plan = decodeDurableSeedDerivedOutputPlan(value);
+    starts[plan.keysetId] = Math.min(starts[plan.keysetId] ?? plan.counterStart, plan.counterStart);
+  }
+  return starts;
+}
+
 function outputKeysets(
   preparation: PersistedCtfRangeOrderPreparation,
   operation: DurableCustodyProofOperationInput,

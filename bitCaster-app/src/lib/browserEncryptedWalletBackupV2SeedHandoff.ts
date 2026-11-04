@@ -38,6 +38,7 @@ import type {
   EncryptedWalletBackupOwnerBackupReceiptSnapshot,
   EncryptedWalletBackupOwnerDexieAuthorityStore,
 } from "../stores/encrypted-wallet-backup-owner-db";
+import { deleteSeedRestoreDatabase } from "../stores/seed-restore-db";
 
 const DESIRED_ASSET_MAX = 256;
 const PROOFS_PER_ASSET_MAX = 512;
@@ -712,6 +713,10 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
         // Persisting the new seed is the commit point. If cache cleanup then
         // fails, keep the new profile active and leave the old cache recoverable.
         try {
+          // Delete the seed restore record first. A "generated" origin without
+          // the wallet data would skip the restore of a later import of this
+          // seed. A record without wallet data only repeats the mint scan.
+          await deleteSeedRestoreDatabase(input.scopeId);
           input.database.close();
           await input.database.delete();
         } catch {

@@ -32,6 +32,7 @@ import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypt
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { recordGeneratedBrowserSeed, seedRestoreDatabaseName } from "../../stores/seed-restore-db";
 import {
   BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
   handoffBrowserEncryptedWalletBackupV2Seed,
@@ -1055,6 +1056,19 @@ it("does not hand off when the captured profile becomes stale during head collec
   ).rejects.toThrow(/profile is stale/);
   expect(invalidateOldProfile).not.toHaveBeenCalled();
   expect(covered.database.isOpen()).toBe(true);
+});
+
+it("deletes the seed restore record of the old seed with its wallet database", async () => {
+  const { database, scopeId } = fixture();
+  // This profile generated the old seed. A later import of that seed in this
+  // profile has no wallet database, so it must run the seed restore again.
+  await recordGeneratedBrowserSeed(scopeId);
+  expect(await Dexie.exists(seedRestoreDatabaseName(scopeId))).toBe(true);
+
+  await handoff({ database, scopeId });
+
+  expect(await Dexie.exists(browserWalletDatabaseName(scopeId))).toBe(false);
+  expect(await Dexie.exists(seedRestoreDatabaseName(scopeId))).toBe(false);
 });
 
 it("keeps the committed new activation when old-cache deletion fails", async () => {

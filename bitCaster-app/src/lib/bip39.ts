@@ -18,6 +18,14 @@ export function validateWord(word: string): boolean {
   return wordlist.includes(word.toLowerCase());
 }
 
+// PBKDF2 with 2,048 rounds takes tens of milliseconds. Recovery passes derive
+// the seed of the active wallet many times, so keep the last result. The
+// phrase is already in memory, so the cached seed adds no exposure.
+let lastSeed: { readonly phrase: string; readonly seed: Uint8Array } | null = null;
+
 export function toSeed(words: string[]): Uint8Array {
-  return mnemonicToSeedSync(words.join(" "));
+  const phrase = words.join(" ");
+  if (lastSeed?.phrase !== phrase) lastSeed = { phrase, seed: mnemonicToSeedSync(phrase) };
+  // A caller can change its copy.
+  return lastSeed.seed.slice();
 }

@@ -3657,15 +3657,20 @@ describe("browser CTF range final mint refusal", () => {
     async (code, detail) => {
       const fixture = partialSellFixture(`refused-partial-sell-${code}`);
       const bodies: string[] = [];
-      const counterRecoveries: Array<{ keysetIds: string[]; journal: string | undefined }> = [];
+      const counterRecoveries: Array<{
+        keysetIds: string[];
+        fromCounters: Readonly<Record<string, number>>;
+        journal: string | undefined;
+      }> = [];
       const coordinator = createCoordinator(fixture.database, sourceWallet(), fixture.engine, {
         executeSourceConvert: async (_mintUrl, request) => {
           bodies.push(JSON.stringify(request));
           throw new MintOperationError(code, detail);
         },
-        recoverOutputCounters: async ({ keysets }) => {
+        recoverOutputCounters: async ({ keysets, fromCounters }) => {
           counterRecoveries.push({
             keysetIds: keysets.map(({ id }) => id).sort(),
+            fromCounters,
             journal: (
               await readCtfRangePreparation(
                 walletScopeId(),
@@ -3695,6 +3700,13 @@ describe("browser CTF range final mint refusal", () => {
             fixture.preparation.offerKeyset.id,
             fixture.preparation.receiveKeyset.id,
           ].sort(),
+          // A fresh wallet planned both change outputs from counter 0. The
+          // refused outputs lie below the advanced cursors, so a later pass
+          // scans from these counters (ADR-033).
+          fromCounters: {
+            [fixture.preparation.offerKeyset.id]: 0,
+            [fixture.preparation.receiveKeyset.id]: 0,
+          },
           journal: "prepared",
         },
       ]);
@@ -4051,7 +4063,10 @@ describe("browser CTF range final mint refusal", () => {
     const preparation = persistedPreparation("refused-consolidation");
     const inputs = ["a", "b", "c"].map((id) => sourceProof(preparation.offerKeyset.id, 2, id));
     const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
-    const counterRecoveries: string[][] = [];
+    const counterRecoveries: Array<{
+      keysetIds: string[];
+      fromCounters: Readonly<Record<string, number>>;
+    }> = [];
     const coordinator = createCoordinator(
       database,
       sourceWallet({
@@ -4061,8 +4076,8 @@ describe("browser CTF range final mint refusal", () => {
       }),
       engineMock(),
       {
-        recoverOutputCounters: async ({ keysets }) => {
-          counterRecoveries.push(keysets.map(({ id }) => id));
+        recoverOutputCounters: async ({ keysets, fromCounters }) => {
+          counterRecoveries.push({ keysetIds: keysets.map(({ id }) => id), fromCounters });
         },
       },
     );
@@ -4083,7 +4098,13 @@ describe("browser CTF range final mint refusal", () => {
       released: true,
       mintError: { code: 11008 },
     });
-    expect(counterRecoveries).toEqual([[preparation.offerKeyset.id]]);
+    // A fresh wallet planned the consolidation outputs from counter 0.
+    expect(counterRecoveries).toEqual([
+      {
+        keysetIds: [preparation.offerKeyset.id],
+        fromCounters: { [preparation.offerKeyset.id]: 0 },
+      },
+    ]);
     expect(
       (
         await new BrowserDurableCustodyAdapter(database).readOperation(
@@ -4158,7 +4179,10 @@ describe("browser CTF range output reuse and second sells", () => {
     let now = 20_000;
     let refused = true;
     const swapOutputs: string[][] = [];
-    const counterRecoveries: string[][] = [];
+    const counterRecoveries: Array<{
+      keysetIds: string[];
+      fromCounters: Readonly<Record<string, number>>;
+    }> = [];
     const coordinator = createCoordinator(
       database,
       sourceWallet(),
@@ -4166,8 +4190,8 @@ describe("browser CTF range output reuse and second sells", () => {
       {
         now: () => now,
         createMintRecovery: refundableRecovery(preparation),
-        recoverOutputCounters: async ({ keysets }) => {
-          counterRecoveries.push(keysets.map(({ id }) => id));
+        recoverOutputCounters: async ({ keysets, fromCounters }) => {
+          counterRecoveries.push({ keysetIds: keysets.map(({ id }) => id), fromCounters });
         },
         executeRefundSwap: async (_mintUrl, request) => {
           swapOutputs.push(request.outputs.map(({ B_ }) => B_));
@@ -4190,7 +4214,9 @@ describe("browser CTF range output reuse and second sells", () => {
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
-    expect(counterRecoveries).toEqual([[preparation.offerKeyset.id]]);
+    expect(counterRecoveries.map(({ keysetIds }) => keysetIds)).toEqual([
+      [preparation.offerKeyset.id],
+    ]);
     expect(swapOutputs).toHaveLength(2);
     expect(swapOutputs[1]!.some((output) => swapOutputs[0]!.includes(output))).toBe(false);
     const refund = await database.proofOperations.get(refundId);
@@ -4203,6 +4229,13 @@ describe("browser CTF range output reuse and second sells", () => {
         }>
       ).map(({ outputs }) => outputs.map(({ blindedMessage }) => blindedMessage.B_)),
     ).toEqual([swapOutputs[0]]);
+    // A later pass scans from the first counter of the refused refund plan.
+    const [replaced] = refund?.metadata.replacedRefundOutputPlans as Array<{
+      counterStart: number;
+    }>;
+    expect(counterRecoveries[0]!.fromCounters).toEqual({
+      [preparation.offerKeyset.id]: replaced!.counterStart,
+    });
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
@@ -4340,8 +4373,10 @@ describe("browser CTF range output reuse and second sells", () => {
     });
     const context = { mintUrl: preparation.mintUrl, unit: "msat" } as const;
     const receive = preparation.receiveKeyset.id;
+    const probedFrom =
+      (await counterStore.readSnapshotInContext(context, receive)).nextCounter ?? 0;
     const probes: string[][] = [];
-    const scans: string[] = [];
+    const scans: Array<{ keysetId: string; fromCounter: number }> = [];
     const cache = createBuyReceiveProbeCache();
     const probeOnce = () =>
       probeBuyReceiveRange({
@@ -4355,8 +4390,8 @@ describe("browser CTF range output reuse and second sells", () => {
           // Another client already signed the first planned receive output.
           return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
         },
-        scanPastSignedOutputs: async (keyset) => {
-          scans.push(keyset.id);
+        scanPastSignedOutputs: async (keyset, fromCounter) => {
+          scans.push({ keysetId: keyset.id, fromCounter });
           // The gap scan finds that the other client signed up to counter 40.
           await counterStore.advanceToAtLeastInContext(context, keyset.id, 41, true);
         },
@@ -4364,7 +4399,8 @@ describe("browser CTF range output reuse and second sells", () => {
 
     await probeOnce();
     expect(probes).toHaveLength(2);
-    expect(scans).toEqual([receive]);
+    // The scan keeps the probed start, so a later pass admits the signed outputs.
+    expect(scans).toEqual([{ keysetId: receive, fromCounter: probedFrom }]);
     expect((await counterStore.readSnapshotInContext(context, receive)).nextCounter).toBe(41);
     expect(probes[1]!.includes(probes[0]![0]!)).toBe(false);
 

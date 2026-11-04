@@ -13,7 +13,12 @@ export default mergeConfig(
         enabled: true,
         // Parallel test processes must not inherit the app server's fixed port.
         api: { host: "127.0.0.1", strictPort: false },
-        provider: playwright({ launchOptions: chromiumLaunchOptions() }),
+        // A large tester window keeps the test frame at scale 1, so a page
+        // screenshot has no empty band below a scaled frame.
+        provider: playwright({
+          launchOptions: chromiumLaunchOptions(),
+          contextOptions: { viewport: { width: 1600, height: 2600 } },
+        }),
         headless: true,
         instances: [{ browser: "chromium" }],
       },

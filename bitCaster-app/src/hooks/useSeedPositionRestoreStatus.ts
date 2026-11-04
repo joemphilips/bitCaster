@@ -20,7 +20,7 @@ export function useSeedPositionRestoreStatus(): SeedPositionRestoreStatus {
   const status = useLiveQuery(async (): Promise<SeedPositionRestoreStatus> => {
     if (scopeId === null || mintKey === "") return { kind: "idle" };
     try {
-      return await readStatus(scopeId);
+      return await readSeedPositionRestoreStatus(scopeId);
     } catch {
       // A display read failure must not hide the page. The restore still runs.
       return { kind: "idle" };
@@ -29,14 +29,46 @@ export function useSeedPositionRestoreStatus(): SeedPositionRestoreStatus {
   return status ?? { kind: "idle" };
 }
 
-async function readStatus(scopeId: string): Promise<SeedPositionRestoreStatus> {
+/**
+ * Reads the restore state of one wallet scope. A failed restore pass, a
+ * condition listing or keyset scan that keeps failing, or a deferral that
+ * cannot be admitted shows the persistent error. A deferral can hold funds or
+ * positions of a seed that this profile generated too.
+ */
+export async function readSeedPositionRestoreStatus(
+  scopeId: string,
+): Promise<SeedPositionRestoreStatus> {
   const database = seedRestoreDatabase(scopeId);
+  const ofScope = [
+    [scopeId, ""],
+    [scopeId, "\uffff"],
+  ] as const;
+  const deferrals = await database.resync
+    .where("[scopeId+mintUrl]")
+    .between(...ofScope, true, true)
+    .toArray();
+  if (
+    deferrals.some(
+      (row) =>
+        row.pendingFromCounter !== null &&
+        row.waitReason === "admission-failed" &&
+        row.failures >= SEED_RESTORE_PERSISTENT_FAILURES,
+    )
+  ) {
+    return { kind: "failed", scopeId };
+  }
   if ((await database.origins.get(scopeId))?.origin === "generated") return { kind: "idle" };
   const states = await database.states
     .where("[scopeId+mintUrl]")
-    .between([scopeId, ""], [scopeId, "\uffff"], true, true)
+    .between(...ofScope, true, true)
     .toArray();
-  if (states.some((state) => state.failures >= SEED_RESTORE_PERSISTENT_FAILURES)) {
+  if (
+    states.some(
+      (state) =>
+        state.failures >= SEED_RESTORE_PERSISTENT_FAILURES ||
+        state.itemFailures >= SEED_RESTORE_PERSISTENT_FAILURES,
+    )
+  ) {
     return { kind: "failed", scopeId };
   }
   // Before the first pass writes its state, the restore has not finished.

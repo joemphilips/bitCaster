@@ -75,7 +75,13 @@ import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ct
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
-import { advanceWalletKeysetCounterPastMint, ensureWalletKeysetCounterReady } from "./cashu";
+import {
+  WalletKeysetCounterPendingError,
+  advanceWalletKeysetCounterPastMint,
+  ensureWalletKeysetCounterReady,
+} from "./cashu";
+import { requestBrowserKeysetResync } from "@/stores/seed-restore-db";
+import i18n from "@/i18n";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import {
   readBrowserParticipationScorePayableScore,
@@ -271,11 +277,8 @@ export async function submitBrowserCtfRangeOrder(
           ...conditionalCounterAsset(keyset),
         });
       }
-    } catch {
-      throw new BrowserCtfRangeOrderError(
-        "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-      );
+    } catch (error) {
+      throw counterReadinessError(error);
     }
     const counterStore = new BrowserWalletCounterDexieStore({
       database: db,
@@ -332,11 +335,8 @@ export async function submitBrowserCtfRangeOrder(
               });
             }
             sourceCountersReady = true;
-          } catch {
-            throw new BrowserCtfRangeOrderError(
-              "source-preparation-failed",
-              "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-            );
+          } catch (error) {
+            throw counterReadinessError(error);
           }
         }
         const consolidated = await consolidateBrowserRangeSource({
@@ -357,6 +357,12 @@ export async function submitBrowserCtfRangeOrder(
     });
   } catch (error) {
     failed = true;
+    if (seedUsedElsewhere(error instanceof BrowserCtfRangeOrderError ? error.mintError : null)) {
+      // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+      await requestBrowserKeysetResync({ scopeId, mintUrl: preparation.mintUrl }).catch(
+        () => undefined,
+      );
+    }
     const durableCode =
       error instanceof BrowserCtfRangeOrderError
         ? error.code
@@ -1256,6 +1262,10 @@ async function persistRecoveryResults(
       retryable: true,
     });
   }
+  if (page.refused.some(({ mintError }) => seedUsedElsewhere(mintError))) {
+    // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+    await requestBrowserKeysetResync({ scopeId }).catch(() => undefined);
+  }
   // A released order is a definitive outcome. No funds recovery is left.
   for (const released of page.refused) {
     await persistRangeMessages({
@@ -1293,6 +1303,23 @@ async function persistRecoveryPending(
         ...mintErrorField(pending.mintError ?? null),
       });
   }
+}
+
+// The mint refused reused outputs or spent inputs: another client used the seed.
+const SEED_USED_ELSEWHERE_MINT_CODES: ReadonlySet<number> = new Set([11001, 11003, 11008]);
+
+function seedUsedElsewhere(mintError: BrowserCtfRangeMintError | null | undefined): boolean {
+  return mintError != null && SEED_USED_ELSEWHERE_MINT_CODES.has(mintError.code);
+}
+
+/** The order was not submitted. A PENDING restored proof has its own message. */
+function counterReadinessError(error: unknown): BrowserCtfRangeOrderError {
+  return new BrowserCtfRangeOrderError(
+    "source-preparation-failed",
+    error instanceof WalletKeysetCounterPendingError
+      ? i18n.t("trade.walletFundsPendingAtMint")
+      : "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+  );
 }
 
 function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
@@ -1341,16 +1368,18 @@ function createBrowserCtfRangeCoordinator(
     recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
     // The coordinator holds the profile lock and the custody scope here. The
     // advance admits no proof, so it needs neither again.
-    recoverOutputCounters: async ({ mintUrl, keysets }) => {
+    recoverOutputCounters: async ({ mintUrl, keysets, fromCounters }) => {
       const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
       if (scopeId === null) throw new Error("The wallet profile is unavailable.");
       for (const keyset of keysets) {
+        const plannedFromCounter = fromCounters[keyset.id];
         await advanceWalletKeysetCounterPastMint({
           scopeId,
           mintUrl,
           unit: "msat",
           keyset,
           ...conditionalCounterAsset(keyset),
+          ...(plannedFromCounter === undefined ? {} : { plannedFromCounter }),
         });
       }
     },
@@ -1407,13 +1436,14 @@ async function probeBuyReceiveCounters(
     seed,
     probe: probeSignedBlindedOutputs,
     cache: buyReceiveProbeCache,
-    scanPastSignedOutputs: (keyset) =>
+    scanPastSignedOutputs: (keyset, fromCounter) =>
       advanceWalletKeysetCounterPastMint({
         scopeId,
         mintUrl: preparation.mintUrl,
         unit: "msat",
         keyset,
         ...conditionalCounterAsset(keyset),
+        plannedFromCounter: fromCounter,
       }),
   });
 }

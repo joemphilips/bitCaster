@@ -1,13 +1,27 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import {
+  useSeedPositionRestoreStatus,
+  type SeedPositionRestoreStatus,
+} from "@/hooks/useSeedPositionRestoreStatus";
 import { retryBrowserSeedPositionRestore } from "@/lib/browserSeedPositionRestore";
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 
-/** Shows the automatic seed restore while it runs, and a retry after a failure. */
-export function SeedPositionRestoreNotice({ className = "" }: { className?: string }) {
+/**
+ * Shows the automatic seed restore while it runs, and a retry after a
+ * failure. A parent that hides empty states passes its own status, so both
+ * use one read.
+ */
+export function SeedPositionRestoreNotice({
+  className = "",
+  status: parentStatus,
+}: {
+  className?: string;
+  status?: SeedPositionRestoreStatus;
+}) {
   const { t } = useTranslation();
-  const status = useSeedPositionRestoreStatus();
+  const ownStatus = useSeedPositionRestoreStatus();
+  const status = parentStatus ?? ownStatus;
   const [retrying, setRetrying] = useState(false);
   if (status.kind === "idle") return null;
   if (status.kind === "restoring") {

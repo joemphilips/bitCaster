@@ -59,6 +59,7 @@ const mocks = vi.hoisted(() => ({
   readPayableScore: vi.fn(),
   counterReady: vi.fn(),
   advanceCounterPastMint: vi.fn(),
+  requestResync: vi.fn(),
   probePreparation: vi.fn(),
   probeOutputs: vi.fn(),
   probeCache: { kind: "test-probe-cache" },
@@ -147,6 +148,11 @@ vi.mock("../browserParticipationScoreDelivery", () => ({
 vi.mock("../cashu", () => ({
   ensureWalletKeysetCounterReady: mocks.counterReady,
   advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
+  WalletKeysetCounterPendingError: class extends Error {},
+}));
+
+vi.mock("@/stores/seed-restore-db", () => ({
+  requestBrowserKeysetResync: mocks.requestResync,
 }));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
@@ -229,6 +235,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.readPreparation.mockResolvedValue(null);
     mocks.readPreparation.mockClear();
     mocks.advanceCounterPastMint.mockResolvedValue(undefined);
+    mocks.requestResync.mockResolvedValue(undefined);
     mocks.probePreparation.mockResolvedValue(undefined);
     mocks.recordMessage.mockResolvedValue(undefined);
     mocks.raiseMessage.mockResolvedValue(undefined);
@@ -1105,6 +1112,18 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it("says that wallet funds are pending at the mint when they block the order", async () => {
+    const { WalletKeysetCounterPendingError } = await import("../cashu");
+    mocks.counterReady.mockRejectedValue(new WalletKeysetCounterPendingError());
+
+    await expect(submitRangeOrder("client-pending-keyset")).rejects.toMatchObject({
+      code: "source-preparation-failed",
+      message:
+        "Some funds of this wallet are still pending at the mint. No order was submitted. Try again later.",
+    });
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+  });
+
   it("previews the exact proof consolidation fee for the trade pane", async () => {
     mocks.candidates = fragmentedRegularCandidatesWithRoundInputs();
     mocks.planConsolidation.mockReturnValueOnce({
@@ -1704,10 +1723,43 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
     await mocks.probePreparation.mock.calls[1]![0].scanPastSignedOutputs(
       preparationFor(sellRequest()).receiveKeyset,
+      7,
     );
+    // The probed range starts the deferral, so a later pass admits its outputs.
     expect(mocks.advanceCounterPastMint).toHaveBeenCalledWith(
-      expect.objectContaining({ scopeId: mocks.scopeId, unit: "msat" }),
+      expect.objectContaining({ scopeId: mocks.scopeId, unit: "msat", plannedFromCounter: 7 }),
     );
+  });
+
+  it.each([11001, 11003, 11008])(
+    "asks for a re-sync of keysets in use after the mint refuses with %s",
+    async (code) => {
+      const refused = Object.assign(
+        new BrowserCtfRangeOrderError("order-attempt-ended", "The mint refused this order."),
+        { mintError: { code, detail: "refused" }, released: true },
+      );
+      mocks.prepareAndSubmit.mockRejectedValueOnce(refused);
+
+      await expect(submitRangeOrder(`client-refused-${code}`)).rejects.toBe(refused);
+
+      // Another client used the seed, so the re-sync must not wait a day.
+      expect(mocks.requestResync).toHaveBeenCalledWith({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+      });
+    },
+  );
+
+  it("does not ask for a re-sync after another mint refusal", async () => {
+    const refused = Object.assign(
+      new BrowserCtfRangeOrderError("order-attempt-ended", "The mint refused this order."),
+      { mintError: { code: 12002, detail: "Keyset is inactive" }, released: true },
+    );
+    mocks.prepareAndSubmit.mockRejectedValueOnce(refused);
+
+    await expect(submitRangeOrder("client-refused-inactive")).rejects.toBe(refused);
+
+    expect(mocks.requestResync).not.toHaveBeenCalled();
   });
 
   it("records no alert when an earlier sell of the market blocks a second sell", async () => {
@@ -1730,14 +1782,17 @@ describe("submitBrowserCtfRangeOrder", () => {
       recoverOutputCounters: (input: {
         mintUrl: string;
         keysets: readonly unknown[];
+        fromCounters: Readonly<Record<string, number>>;
       }) => Promise<void>;
       recoverySchedule: unknown;
     };
     const preparation = preparationFor(sellRequest());
 
+    // Only the offered keyset had a seed-derived output plan.
     await input.recoverOutputCounters({
       mintUrl: "https://mint.example",
       keysets: [preparation.offerKeyset, preparation.receiveKeyset],
+      fromCounters: { [preparation.offerKeyset.id]: 3 },
     });
 
     expect(mocks.advanceCounterPastMint.mock.calls).toEqual([
@@ -1748,6 +1803,7 @@ describe("submitBrowserCtfRangeOrder", () => {
           unit: "msat",
           keyset: preparation.offerKeyset,
           conditionalAsset: { conditionId: "11".repeat(32), outcomeCollection: "YES" },
+          plannedFromCounter: 3,
         },
       ],
       [

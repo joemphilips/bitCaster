@@ -295,6 +295,7 @@
     "noAsks": "No asks"
   },
   "trade": {
+    "walletFundsPendingAtMint": "Some funds of this wallet are still pending at the mint. No order was submitted. Try again later.",
     "title": "Trade",
     "buy": "Buy",
     "sell": "Sell",

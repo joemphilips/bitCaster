@@ -7,6 +7,8 @@ import { LoaderCircle } from "lucide-react";
 
 interface StatsRowProps {
   stats: PortfolioStats;
+  /** A seed restore runs or failed, so a zero total is not known to be zero. */
+  positionsRestoring?: boolean;
 }
 
 function StatCard({
@@ -56,14 +58,22 @@ function formatTotals(
   );
 }
 
-export function StatsRow({ stats }: StatsRowProps) {
+export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
   const { t } = useTranslation();
+  // While a seed restore runs or failed, show a zero as unknown. A value above
+  // zero is already restored, so it stays.
+  const known = (value: number, valueKnown: boolean | undefined) =>
+    positionsRestoring && value === 0 ? false : valueKnown;
   return (
     <div className="flex items-stretch divide-x divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
       <StatCard
         label={t("portfolio.totalValue")}
         loading={stats.totalValueLoading}
-        value={formatTotals(stats.totalValueByUnit, stats.totalValueSats, stats.totalValueKnown)}
+        value={formatTotals(
+          stats.totalValueByUnit,
+          stats.totalValueSats,
+          known(stats.totalValueSats, stats.totalValueKnown),
+        )}
       />
       <StatCard
         label={t("portfolio.positionsValue")}
@@ -71,10 +81,17 @@ export function StatsRow({ stats }: StatsRowProps) {
         value={formatTotals(
           stats.positionsValueByUnit,
           stats.positionsValueSats,
-          stats.positionsValueKnown,
+          known(stats.positionsValueSats, stats.positionsValueKnown),
         )}
       />
-      <StatCard label={t("portfolio.predictions")} value={stats.predictionsCount.toString()} />
+      <StatCard
+        label={t("portfolio.predictions")}
+        value={
+          positionsRestoring && stats.predictionsCount === 0
+            ? "—"
+            : stats.predictionsCount.toString()
+        }
+      />
     </div>
   );
 }

@@ -1389,9 +1389,11 @@ export async function restoreProofsAndAdvanceCounter(
     readonly keysetId: string;
     readonly restoredNext: number;
     /**
-     * `complete` only after a full scan with no `PENDING` proof. A backup or
-     * hint restore and a scan with a `PENDING` proof leave it `incomplete`, so
-     * the next use of the keyset scans the mint again (ADR-033).
+     * `complete` after a scan that covers every lower counter and finds no
+     * `PENDING` proof, and after a backup or hint restore: the encrypted
+     * backup needs a complete keyset as its counter authority, and the keyset
+     * re-sync covers a mark that lags the mint. A scan with a `PENDING` proof
+     * leaves it `incomplete`, so a later scan admits the proof (ADR-033).
      */
     readonly recovery: "complete" | "incomplete";
     readonly isCurrentProfile: () => boolean;

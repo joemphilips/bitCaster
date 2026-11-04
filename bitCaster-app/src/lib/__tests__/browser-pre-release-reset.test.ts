@@ -11,17 +11,23 @@ import {
 } from "../browserPreReleaseReset";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { activateBrowserWalletDatabase, db } from "../../stores/proof-db";
+import { seedRestoreDatabaseName } from "../../stores/seed-restore-db";
 
 const scopeId = deriveDurableCustodyScopeId({
   scopeKind: "wallet",
   walletId: "11".repeat(32),
 });
 const databaseName = browserWalletDatabaseName(scopeId);
+const seedRestoreName = seedRestoreDatabaseName(scopeId);
 
 afterEach(async () => {
   db.close();
   localStorage.clear();
-  await Promise.all([Dexie.delete(databaseName), Dexie.delete("kormir")]);
+  await Promise.all([
+    Dexie.delete(databaseName),
+    Dexie.delete("kormir"),
+    Dexie.delete(seedRestoreName),
+  ]);
 });
 
 describe("pre-release browser reset", () => {
@@ -65,6 +71,11 @@ describe("pre-release browser reset", () => {
       JSON.stringify({ state: { nsecSecret: "legacy-nsec" } }),
     );
     localStorage.setItem("bitcaster.pendingLocalWalletPayments.v1", "legacy-journal");
+    const seedRestore = new Dexie(seedRestoreName);
+    seedRestore.version(1).stores({ origins: "&scopeId" });
+    await seedRestore.open();
+    await seedRestore.table("origins").put({ scopeId, origin: "generated", recordedAtMs: 1 });
+    seedRestore.close();
     expect(await resetPreReleaseBrowserState()).toBe(true);
 
     expect(localStorage.getItem("bitcaster-wallet")).toBeNull();
@@ -73,6 +84,8 @@ describe("pre-release browser reset", () => {
     expect(localStorage.getItem(PRE_RELEASE_BROWSER_RESET_EPOCH_KEY)).not.toBeNull();
     expect(await Dexie.getDatabaseNames()).not.toContain(databaseName);
     expect(await Dexie.getDatabaseNames()).not.toContain("kormir");
+    // A kept "generated" origin would skip the restore of a later imported seed.
+    expect(await Dexie.getDatabaseNames()).not.toContain(seedRestoreName);
 
     activateBrowserWalletDatabase(scopeId);
     await db.open();

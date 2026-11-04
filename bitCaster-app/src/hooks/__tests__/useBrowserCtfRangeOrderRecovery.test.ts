@@ -34,7 +34,7 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
 
 // The seed restore stages have their own tests (useBrowserCtfRangeOrderRecovery.seedPositions).
 vi.mock("@/lib/browserSeedPositionRestore", () => ({
-  endBrowserSeedPositionRestoreFirstPass: vi.fn(),
+  releaseBrowserSeedPositionRestoreGate: vi.fn(),
   resyncBrowserKeysetsInUse: mocks.resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));
@@ -66,8 +66,12 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     });
     mocks.recoverKeysetCountersForMint.mockResolvedValue({ complete: true });
     mocks.recoverBrowserCtfRangeOrders.mockResolvedValue({ recovered: 0, pending: [] });
-    mocks.resyncBrowserKeysetsInUse.mockResolvedValue({ usedElsewhere: false, complete: true });
-    mocks.runBrowserSeedPositionRestorePass.mockResolvedValue({ status: "complete" });
+    mocks.resyncBrowserKeysetsInUse.mockResolvedValue({ usedElsewhere: false, retryAtMs: null });
+    mocks.runBrowserSeedPositionRestorePass.mockResolvedValue({
+      status: "complete",
+      retryAtMs: null,
+      hintsSettled: true,
+    });
   });
 
   afterEach(() => {

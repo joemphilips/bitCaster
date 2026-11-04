@@ -16,7 +16,7 @@ import {
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import {
-  endBrowserSeedPositionRestoreFirstPass,
+  releaseBrowserSeedPositionRestoreGate,
   resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass,
 } from "@/lib/browserSeedPositionRestore";
@@ -26,6 +26,12 @@ import i18n from "@/i18n";
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 /** A seed restore pass that ran out of budget continues soon. */
 const SEED_RESTORE_CONTINUE_MS = 1_000;
+
+function earliest(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
+}
 
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -37,8 +43,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
   const { nostrSignerReady, walletMnemonic, walletMintUrls } = input;
 
   // Another device can advance the shared seed's cursor. Recover default msat
-  // keysets before reuse, probe each keyset in use above its cursor, and run
-  // the budgeted seed restore of conditional keysets (ADR-039).
+  // keysets before reuse, re-sync the keysets in use (ADR-033), and run the
+  // budgeted seed restore of conditional keysets (ADR-039).
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -52,7 +58,6 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     let receiveRecoveryAfterOperationId: string | null = null;
     let mintsRecovered = false;
     let countersRecovered = false;
-    let keysetsResynced = false;
     let usedElsewhereShown = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -78,6 +83,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
       running = true;
       let retryRequired = false;
       let restoreMore = false;
+      // The re-sync and the restore keep their own durable backoffs.
+      let retryAtMs: number | null = null;
       try {
         if (!receivesRecovered) {
           try {
@@ -134,7 +141,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             for (const mintUrl of mintUrls) {
               const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
               if (!isCurrent()) return;
-              complete &&= result.complete;
+              // A PENDING proof waits in its deferral marker, which the
+              // re-sync retries with a backoff. Only a failure retries here.
+              complete &&= result.complete || result.failed === false;
             }
             countersRecovered = complete;
             retryRequired ||= !complete;
@@ -144,35 +153,32 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         }
         if (!isCurrent()) return;
         // Another client with this seed can sign outputs above the local
-        // cursors. Probe each keyset in use once at startup (ADR-033).
-        if (!keysetsResynced) {
-          try {
-            let complete = true;
-            for (const mintUrl of mintUrls) {
-              const result = await resyncBrowserKeysetsInUse({
-                scopeId,
-                mnemonic: walletMnemonic,
-                mintUrl,
-                yieldControl: yieldToBrowser,
+        // cursors. The re-sync probes at most daily, at once after evidence,
+        // and admits deferred outputs when their backoff ends (ADR-033).
+        try {
+          for (const mintUrl of mintUrls) {
+            const result = await resyncBrowserKeysetsInUse({
+              scopeId,
+              mnemonic: walletMnemonic,
+              mintUrl,
+              yieldControl: yieldToBrowser,
+            });
+            if (!isCurrent()) return;
+            retryAtMs = earliest(retryAtMs, result.retryAtMs);
+            if (result.usedElsewhere && !usedElsewhereShown) {
+              usedElsewhereShown = true;
+              useToastStore.getState().addToast({
+                type: "info",
+                message: i18n.t("wallet.usedInAnotherBrowser"),
               });
-              if (!isCurrent()) return;
-              complete &&= result.complete;
-              if (result.usedElsewhere && !usedElsewhereShown) {
-                usedElsewhereShown = true;
-                useToastStore.getState().addToast({
-                  type: "info",
-                  message: i18n.t("wallet.usedInAnotherBrowser"),
-                });
-              }
             }
-            keysetsResynced = complete;
-            retryRequired ||= !complete;
-          } catch {
-            retryRequired = true;
           }
+        } catch {
+          retryRequired = true;
         }
         if (!isCurrent()) return;
         // The automatic seed restore event (ADR-039, amendment 2026-11-04).
+        let hintsSettled = true;
         try {
           for (const mintUrl of mintUrls) {
             const result = await runBrowserSeedPositionRestorePass({
@@ -183,16 +189,15 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             });
             if (!isCurrent()) return;
             restoreMore ||= result.status === "more";
-            retryRequired ||=
-              result.status === "waiting" ||
-              result.status === "failed" ||
-              result.retryLater === true;
+            retryAtMs = earliest(retryAtMs, result.retryAtMs);
+            hintsSettled &&= result.hintsSettled;
           }
         } catch {
+          hintsSettled = false;
           retryRequired = true;
-        } finally {
-          endBrowserSeedPositionRestoreFirstPass(scopeId);
         }
+        // The first asset-monitoring report waits for the earlier report's hints.
+        if (hintsSettled) releaseBrowserSeedPositionRestoreGate(scopeId);
       } finally {
         running = false;
         if (!isCurrent()) return;
@@ -204,6 +209,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
           schedule(SEED_RESTORE_CONTINUE_MS);
         } else if (retryRequired) {
           schedule();
+        } else if (retryAtMs !== null) {
+          schedule(Math.max(SEED_RESTORE_CONTINUE_MS, retryAtMs - Date.now()));
         }
       }
     };

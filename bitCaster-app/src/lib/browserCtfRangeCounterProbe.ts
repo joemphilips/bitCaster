@@ -91,8 +91,13 @@ export async function probeBuyReceiveRange(input: {
   readonly seed: Uint8Array;
   readonly probe: BrowserSignedOutputProbe;
   readonly cache: BuyReceiveProbeCache;
+  /**
+   * Advances the cursor past the mint's signed outputs. `fromCounter` is the
+   * start of the probed range, so a later pass admits the signed outputs.
+   */
   readonly scanPastSignedOutputs: (
     keyset: PersistedCtfRangeOrderPreparationV2["receiveKeyset"],
+    fromCounter: number,
   ) => Promise<void>;
 }): Promise<void> {
   if (input.preparation.side !== "Buy") return;
@@ -116,7 +121,7 @@ export async function probeBuyReceiveRange(input: {
       input.cache.markClean(key, start, count);
       return;
     }
-    await input.scanPastSignedOutputs(keyset);
+    await input.scanPastSignedOutputs(keyset, start);
   }
   throw new Error("browser CTF buy receive counters stay signed after repeated scans");
 }

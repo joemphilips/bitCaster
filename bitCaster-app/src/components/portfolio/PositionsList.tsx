@@ -5,6 +5,7 @@ import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
 import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
+import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
 
 interface PositionsListProps {
   positions: Position[];
@@ -42,6 +43,9 @@ export function PositionsList({
   onPositionsRequestHandled,
 }: PositionsListProps) {
   const { t } = useTranslation();
+  // While a seed restore runs or failed, an empty list is not known to be empty.
+  const restoreStatus = useSeedPositionRestoreStatus();
+  const restoring = restoreStatus.kind !== "idle";
   const filtered = positions.filter((p) => p.status === positionsTab);
   // One row for each market ID owns the anchor. The same collection can be
   // held at more than one mint, and a DOM ID must be unique.
@@ -77,24 +81,27 @@ export function PositionsList({
                   : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
               }`}
             >
-              {t(`common.${tab}`)} ({count})
+              {t(`common.${tab}`)}
+              {restoring && count === 0 ? null : ` (${count})`}
             </button>
           );
         })}
       </div>
 
-      <SeedPositionRestoreNotice className="mb-3" />
+      <SeedPositionRestoreNotice className="mb-3" status={restoreStatus} />
 
       {/* Position List */}
       {claimCelebrations.map((celebration) => (
         <ClaimCelebrationRow key={celebration.id} celebration={celebration} />
       ))}
       {filtered.length === 0 && claimCelebrations.length === 0 ? (
-        <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-          {positionsTab === "active"
-            ? t("portfolio.noActivePositions")
-            : t("portfolio.noClosedPositions")}
-        </div>
+        restoring ? null : (
+          <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
+            {positionsTab === "active"
+              ? t("portfolio.noActivePositions")
+              : t("portfolio.noClosedPositions")}
+          </div>
+        )
       ) : (
         <div className="space-y-1">
           {filtered.map((position) => {
