@@ -345,10 +345,18 @@ function byKeysetAndAmount(
   return left.keysetId.localeCompare(right.keysetId) || left.amount - right.amount;
 }
 
-/** Resolves when the hook finishes its next recovery pass. The timeout only detects a hang. */
+// The pass derives and verifies real NUT-13 outputs. Under CPU load it can
+// exceed the 5 s default test timeout. These bounds only detect a hang.
+const PASS_TIMEOUT_MS = 50_000;
+vi.setConfig({ testTimeout: 60_000 });
+
+/** Resolves when the hook finishes its next recovery pass. */
 function nextPassCompleted(): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("recovery pass did not complete")), 20_000);
+    const timeout = setTimeout(
+      () => reject(new Error("recovery pass did not complete")),
+      PASS_TIMEOUT_MS,
+    );
     mocks.passCompleted.push(() => {
       clearTimeout(timeout);
       resolve();
