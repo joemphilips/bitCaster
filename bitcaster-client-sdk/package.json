@@ -411,6 +411,10 @@
       "types": "./dist/conditionalKeysetSeedRecovery.d.ts",
       "import": "./dist/conditionalKeysetSeedRecovery.js"
     },
+    "./seedPositionRestore": {
+      "types": "./dist/seedPositionRestore.d.ts",
+      "import": "./dist/seedPositionRestore.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
