@@ -515,7 +515,10 @@
       "types": "./dist/tradeComment.d.ts",
       "import": "./dist/tradeComment.js"
     },
-    "./tradingClient": "./src/tradingClient.ts",
+    "./tradingClient": {
+      "types": "./dist/tradingClient.d.ts",
+      "import": "./dist/tradingClient.js"
+    },
     "./nut16Qr": {
       "types": "./dist/nut16Qr.d.ts",
       "import": "./dist/nut16Qr.js"
