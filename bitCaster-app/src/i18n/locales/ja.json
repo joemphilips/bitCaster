@@ -140,6 +140,7 @@
     "configureNostr": "Nostrを設定",
     "unbackedKeyLogoutTitle": "Nostr鍵のバックアップがありません",
     "unbackedKeyLogoutDesc": "この鍵はこのブラウザーにしかありません。ログアウトすると鍵が削除され、このNostr IDは使えなくなります。",
+    "unbackedKeyOrdersInProgressDesc": "進行中の注文があります。注文の完了にはこの鍵が必要です。ログアウトする前に鍵をバックアップしてください。",
     "backUpKey": "鍵をバックアップ"
   },
   "welcome": {

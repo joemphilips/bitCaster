@@ -1,10 +1,12 @@
 import "fake-indexeddb/auto";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey } from "nostr-tools/pure";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
+import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useSettingsStore, type NostrIdentityState } from "@/stores/settings";
 import { useWalletStore } from "@/stores/wallet";
 import { ShellRoutes } from "../App";
@@ -41,6 +43,9 @@ const LOGGED_OUT: NostrIdentityState = {
   signerBackupState: "none",
   nsecSecret: null,
 };
+
+const DIALOG = "Your Nostr key is not backed up";
+const ORDERS_IN_PROGRESS = /orders are in progress/i;
 
 type Layout = "desktop" | "mobile";
 
@@ -93,11 +98,60 @@ const unbackedLocalKey = (): NostrIdentityState => ({
   nsecSecret: nip19.nsecEncode(generateSecretKey()),
 });
 
+const BACKED_UP_IDENTITIES: [string, () => NostrIdentityState][] = [
+  [
+    "an extension signer",
+    () => ({
+      nostrSignerMode: "nip07",
+      signerSource: "nip07",
+      signerBackupState: "confirmed",
+      nsecSecret: null,
+    }),
+  ],
+  [
+    "an imported private key",
+    () => ({
+      nostrSignerMode: "nsec",
+      signerSource: "user-nsec",
+      signerBackupState: "confirmed",
+      nsecSecret: nip19.nsecEncode(generateSecretKey()),
+    }),
+  ],
+  [
+    "a backed-up local key",
+    () => ({
+      nostrSignerMode: "nsec",
+      signerSource: "implicit-generated",
+      signerBackupState: "confirmed",
+      nsecSecret: nip19.nsecEncode(generateSecretKey()),
+    }),
+  ],
+];
+
+// The settlement lifecycle keeps a submitted order here until it is terminal.
+function addPendingOrder() {
+  act(() =>
+    usePendingTradesStore.getState().add({
+      orderId: "order-1",
+      walletId: browserWalletIdFromMnemonic(WALLET_MNEMONIC)!,
+      marketId: "condition-a-YES",
+      submittedAt: 1,
+      baseAsset: "sat",
+      divisibility: 1_000,
+    }),
+  );
+}
+
+function finishPendingOrders() {
+  act(() => usePendingTradesStore.setState({ byOrderId: {} }));
+}
+
 beforeEach(async () => {
   window.localStorage.clear();
   await i18n.changeLanguage("en");
   setIdentity(LOGGED_OUT);
   useWalletStore.setState({ mnemonic: WALLET_MNEMONIC, walletBackupState: "confirmed" });
+  usePendingTradesStore.setState({ byOrderId: {} });
 });
 
 afterEach(() => {
@@ -105,6 +159,7 @@ afterEach(() => {
   act(() => {
     setIdentity(LOGGED_OUT);
     useWalletStore.setState({ mnemonic: "", walletBackupState: "none" });
+    usePendingTradesStore.setState({ byOrderId: {} });
   });
   window.localStorage.clear();
 });
@@ -119,36 +174,8 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account item", (la
     expectIdentity(LOGGED_OUT);
   });
 
-  it.each<[string, NostrIdentityState]>([
-    [
-      "an extension signer",
-      {
-        nostrSignerMode: "nip07",
-        signerSource: "nip07",
-        signerBackupState: "confirmed",
-        nsecSecret: null,
-      },
-    ],
-    [
-      "an imported private key",
-      {
-        nostrSignerMode: "nsec",
-        signerSource: "user-nsec",
-        signerBackupState: "confirmed",
-        nsecSecret: nip19.nsecEncode(generateSecretKey()),
-      },
-    ],
-    [
-      "a backed-up local key",
-      {
-        nostrSignerMode: "nsec",
-        signerSource: "implicit-generated",
-        signerBackupState: "confirmed",
-        nsecSecret: nip19.nsecEncode(generateSecretKey()),
-      },
-    ],
-  ])("logs out of %s at once and keeps the wallet", (_name, identity) => {
-    setIdentity(identity);
+  it.each(BACKED_UP_IDENTITIES)("logs out of %s at once and keeps the wallet", (_name, make) => {
+    setIdentity(make());
     renderShell();
 
     clickAccountItem(layout, "Log out");
@@ -162,13 +189,14 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account item", (la
     expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
   });
 
-  it("asks before it deletes a local key that has no backup", () => {
+  it("asks before it deletes a local key that has no backup", async () => {
     const identity = unbackedLocalKey();
     setIdentity(identity);
     renderShell();
 
     clickAccountItem(layout, "Log out");
-    const dialog = screen.getByRole("dialog", { name: "Your Nostr key is not backed up" });
+    const dialog = await screen.findByRole("dialog", { name: DIALOG });
+    expect(within(dialog).queryByText(ORDERS_IN_PROGRESS)).not.toBeInTheDocument();
     expectIdentity(identity);
 
     // Close keeps the key.
@@ -179,10 +207,9 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account item", (la
     // Back up opens the Nostr settings section and keeps the key.
     clickAccountItem(layout, "Log out");
     fireEvent.click(
-      within(screen.getByRole("dialog", { name: "Your Nostr key is not backed up" })).getByRole(
-        "button",
-        { name: "Back up key" },
-      ),
+      within(await screen.findByRole("dialog", { name: DIALOG })).getByRole("button", {
+        name: "Back up key",
+      }),
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByTestId("settings-route")).toHaveTextContent(/^\/settings\?category=nostr$/);
@@ -191,14 +218,77 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account item", (la
     // Log out in the dialog deletes the key and keeps the wallet.
     clickAccountItem(layout, "Log out");
     fireEvent.click(
-      within(screen.getByRole("dialog", { name: "Your Nostr key is not backed up" })).getByRole(
-        "button",
-        { name: "Log out" },
-      ),
+      within(await screen.findByRole("dialog", { name: DIALOG })).getByRole("button", {
+        name: "Log out",
+      }),
     );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expectIdentity(LOGGED_OUT);
     expect(useWalletStore.getState().mnemonic).toBe(WALLET_MNEMONIC);
+  });
+
+  it("keeps a local key without a backup while an order is in progress", async () => {
+    const identity = unbackedLocalKey();
+    setIdentity(identity);
+    addPendingOrder();
+    renderShell();
+
+    clickAccountItem(layout, "Log out");
+    const dialog = await screen.findByRole("dialog", { name: DIALOG });
+
+    expect(within(dialog).getByText(ORDERS_IN_PROGRESS)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+    expectIdentity(identity);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back up key" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-route")).toHaveTextContent(/^\/settings\?category=nostr$/);
+    expectIdentity(identity);
+  });
+
+  it.each(BACKED_UP_IDENTITIES)(
+    "logs out of %s at once while an order is in progress",
+    (_name, make) => {
+      setIdentity(make());
+      addPendingOrder();
+      renderShell();
+
+      clickAccountItem(layout, "Log out");
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expectIdentity(LOGGED_OUT);
+      expect(Object.keys(usePendingTradesStore.getState().byOrderId)).toEqual(["order-1"]);
+    },
+  );
+
+  it("checks orders again when the user confirms the logout", async () => {
+    const identity = unbackedLocalKey();
+    setIdentity(identity);
+    renderShell();
+
+    clickAccountItem(layout, "Log out");
+    const dialog = await screen.findByRole("dialog", { name: DIALOG });
+    // An order starts while the dialog is open.
+    addPendingOrder();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Log out" }));
+
+    expect(await screen.findByText(ORDERS_IN_PROGRESS)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog", { name: DIALOG })).queryByRole("button", {
+        name: "Log out",
+      }),
+    ).not.toBeInTheDocument();
+    expectIdentity(identity);
+
+    // After the order is terminal, the usual confirmation applies.
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: DIALOG })).getByRole("button", { name: "Close" }),
+    );
+    finishPendingOrders();
+    clickAccountItem(layout, "Log out");
+    const nextDialog = await screen.findByRole("dialog", { name: DIALOG });
+    expect(within(nextDialog).queryByText(ORDERS_IN_PROGRESS)).not.toBeInTheDocument();
+    fireEvent.click(within(nextDialog).getByRole("button", { name: "Log out" }));
+    await waitFor(() => expectIdentity(LOGGED_OUT));
   });
 });
 
@@ -238,8 +328,23 @@ describe("ShellRoutes account item in Japanese", () => {
     fireEvent.click(screen.getByRole("button", { name: "ユーザー" }));
     fireEvent.click(screen.getByRole("button", { name: "ログアウト" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Nostr鍵のバックアップがありません" });
+    const dialog = await screen.findByRole("dialog", { name: "Nostr鍵のバックアップがありません" });
     expect(within(dialog).getByRole("button", { name: "鍵をバックアップ" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "ログアウト" })).toBeInTheDocument();
+  });
+
+  it("states the orders in progress in Japanese", async () => {
+    await i18n.changeLanguage("ja");
+    setIdentity(unbackedLocalKey());
+    addPendingOrder();
+    renderShell();
+
+    fireEvent.click(screen.getByRole("button", { name: "ユーザー" }));
+    fireEvent.click(screen.getByRole("button", { name: "ログアウト" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Nostr鍵のバックアップがありません" });
+    expect(within(dialog).getByText(/進行中の注文があります/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "鍵をバックアップ" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "ログアウト" })).not.toBeInTheDocument();
   });
 });

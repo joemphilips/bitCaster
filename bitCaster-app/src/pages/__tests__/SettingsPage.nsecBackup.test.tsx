@@ -8,6 +8,7 @@ import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import * as bip39 from "@/lib/bip39";
 import {
   activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
@@ -71,6 +72,37 @@ async function renderSettingsPage(category = "nostr") {
 
 function makeNsec(): string {
   return nip19.nsecEncode(generateSecretKey());
+}
+
+const LOGOUT_DIALOG = "Your Nostr key is not backed up";
+const ORDERS_IN_PROGRESS = /orders are in progress/i;
+
+function setUnbackedLocalKey(): string {
+  const secret = makeNsec();
+  useSettingsStore.setState({
+    nostrSignerMode: "nsec",
+    signerConnectionStatus: "connected",
+    signerSource: "implicit-generated",
+    signerBackupState: "needs_backup",
+    nostrProfile: null,
+    nostrProfileFetchStatus: "not-found",
+    nsecSecret: secret,
+  });
+  return secret;
+}
+
+// The settlement lifecycle keeps a submitted order here until it is terminal.
+function addPendingOrder(mnemonic: string) {
+  act(() =>
+    usePendingTradesStore.getState().add({
+      orderId: "order-1",
+      walletId: browserWalletIdFromMnemonic(mnemonic)!,
+      marketId: "condition-a-YES",
+      submittedAt: 1,
+      baseAsset: "sat",
+      divisibility: 1_000,
+    }),
+  );
 }
 
 function expectNoSecretText() {
@@ -339,37 +371,30 @@ describe("SettingsPage local Nostr-key backup", () => {
   it("asks before Disconnect deletes a local key that has no backup", async () => {
     const mnemonic = bip39.generate().join(" ");
     useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
-    const secret = makeNsec();
-    useSettingsStore.setState({
-      nostrSignerMode: "nsec",
-      signerConnectionStatus: "connected",
-      signerSource: "implicit-generated",
-      signerBackupState: "needs_backup",
-      nostrProfile: null,
-      nostrProfileFetchStatus: "not-found",
-      nsecSecret: secret,
-    });
+    const secret = setUnbackedLocalKey();
     await renderSettingsPage();
-    const dialogName = "Your Nostr key is not backed up";
 
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
-    const dialog = screen.getByRole("dialog", { name: dialogName });
+    const dialog = await screen.findByRole("dialog", { name: LOGOUT_DIALOG });
+    expect(within(dialog).queryByText(ORDERS_IN_PROGRESS)).not.toBeInTheDocument();
     expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
 
     // Back up keeps the key and leaves its backup control in view.
     fireEvent.click(within(dialog).getByRole("button", { name: "Back up key" }));
-    expect(screen.queryByRole("dialog", { name: dialogName })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: LOGOUT_DIALOG })).not.toBeInTheDocument();
     expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
     expect(useSettingsStore.getState().signerBackupState).toBe("needs_backup");
     expect(screen.getByRole("button", { name: /view nsec/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
     fireEvent.click(
-      within(screen.getByRole("dialog", { name: dialogName })).getByRole("button", {
+      within(await screen.findByRole("dialog", { name: LOGOUT_DIALOG })).getByRole("button", {
         name: "Log out",
       }),
     );
-    expect(screen.queryByRole("dialog", { name: dialogName })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: LOGOUT_DIALOG })).not.toBeInTheDocument(),
+    );
     expect(useSettingsStore.getState()).toMatchObject({
       nostrSignerMode: "none",
       signerSource: "none",
@@ -378,6 +403,47 @@ describe("SettingsPage local Nostr-key backup", () => {
     expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
     expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
     expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a local key without a backup while an order is in progress", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    const secret = setUnbackedLocalKey();
+    addPendingOrder(mnemonic);
+    await renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog", { name: LOGOUT_DIALOG });
+
+    expect(within(dialog).getByText(ORDERS_IN_PROGRESS)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back up key" }));
+    expect(screen.queryByRole("dialog", { name: LOGOUT_DIALOG })).not.toBeInTheDocument();
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+    expect(screen.getByRole("button", { name: /view nsec/i })).toBeInTheDocument();
+  });
+
+  it("checks orders again when the user confirms Disconnect", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    const secret = setUnbackedLocalKey();
+    await renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog", { name: LOGOUT_DIALOG });
+    // An order starts while the dialog is open.
+    addPendingOrder(mnemonic);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Log out" }));
+
+    expect(await screen.findByText(ORDERS_IN_PROGRESS)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog", { name: LOGOUT_DIALOG })).queryByRole("button", {
+        name: "Log out",
+      }),
+    ).not.toBeInTheDocument();
+    expect(useSettingsStore.getState().nostrSignerMode).toBe("nsec");
+    expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
   });
 
   it.each([
@@ -390,29 +456,37 @@ describe("SettingsPage local Nostr-key backup", () => {
     },
     { name: "an extension signer", mode: "nip07", signerSource: "nip07", local: false },
   ] as const)("disconnects $name at once", async ({ mode, signerSource, local }) => {
-    const mnemonic = bip39.generate().join(" ");
-    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
-    useSettingsStore.setState({
-      nostrSignerMode: mode,
-      signerConnectionStatus: "connected",
-      signerSource,
-      signerBackupState: "confirmed",
-      nostrProfile: null,
-      nostrProfileFetchStatus: "not-found",
-      nsecSecret: local ? makeNsec() : null,
-    });
-    await renderSettingsPage();
+    for (const orderInProgress of [false, true]) {
+      const mnemonic = bip39.generate().join(" ");
+      act(() => {
+        useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+        usePendingTradesStore.setState({ byOrderId: {} });
+        useSettingsStore.setState({
+          nostrSignerMode: mode,
+          signerConnectionStatus: "connected",
+          signerSource,
+          signerBackupState: "confirmed",
+          nostrProfile: null,
+          nostrProfileFetchStatus: "not-found",
+          nsecSecret: local ? makeNsec() : null,
+        });
+      });
+      // A re-login resumes the order, so it does not block this logout.
+      if (orderInProgress) addPendingOrder(mnemonic);
+      const view = await renderSettingsPage();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(useSettingsStore.getState()).toMatchObject({
-      nostrSignerMode: "none",
-      signerSource: "none",
-      signerBackupState: "none",
-    });
-    expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
-    expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(useSettingsStore.getState()).toMatchObject({
+        nostrSignerMode: "none",
+        signerSource: "none",
+        signerBackupState: "none",
+      });
+      expect(useSettingsStore.getState().nsecSecret === null).toBe(true);
+      expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
+      view.unmount();
+    }
   });
 });
 

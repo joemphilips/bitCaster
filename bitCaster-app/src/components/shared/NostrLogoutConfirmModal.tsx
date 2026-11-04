@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { NativeDialog } from "./NativeDialog";
 
 interface NostrLogoutConfirmModalProps {
+  /** Orders need this key to finish. Offer only the backup. */
+  ordersInProgress: boolean;
   onBackUp: () => void;
   onLogout: () => void;
   onDismiss: () => void;
@@ -10,6 +12,7 @@ interface NostrLogoutConfirmModalProps {
 
 /** Confirm a logout that deletes the only copy of a local Nostr key. */
 export function NostrLogoutConfirmModal({
+  ordersInProgress,
   onBackUp,
   onLogout,
   onDismiss,
@@ -37,7 +40,11 @@ export function NostrLogoutConfirmModal({
                     {t("auth.unbackedKeyLogoutTitle")}
                   </h2>
                   <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                    {t("auth.unbackedKeyLogoutDesc")}
+                    {t(
+                      ordersInProgress
+                        ? "auth.unbackedKeyOrdersInProgressDesc"
+                        : "auth.unbackedKeyLogoutDesc",
+                    )}
                   </p>
                 </div>
               </div>
@@ -52,13 +59,15 @@ export function NostrLogoutConfirmModal({
             </div>
 
             <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={onLogout}
-                className="flex-1 rounded-xl border border-red-200 px-4 py-2.5 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-900/20"
-              >
-                {t("nav.logout")}
-              </button>
+              {!ordersInProgress && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="flex-1 rounded-xl border border-red-200 px-4 py-2.5 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-900/20"
+                >
+                  {t("nav.logout")}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onBackUp}

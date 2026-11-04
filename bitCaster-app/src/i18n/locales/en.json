@@ -140,6 +140,7 @@
     "configureNostr": "Configure Nostr",
     "unbackedKeyLogoutTitle": "Your Nostr key is not backed up",
     "unbackedKeyLogoutDesc": "Only this browser has this key. If you log out, you delete the key and lose this Nostr identity.",
+    "unbackedKeyOrdersInProgressDesc": "Orders are in progress. They need this key to finish. Back up the key before you log out.",
     "backUpKey": "Back up key"
   },
   "welcome": {
