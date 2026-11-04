@@ -1,6 +1,8 @@
 name: Release CLI
 
-# Each push to main (a merged PR) publishes one bitcaster-cli release.
+# Each push to main (a merged PR) publishes one bitcaster-cli release. Push
+# runs do not cancel or replace each other. Only a run for the current head of
+# main marks its release as latest, so a re-run of an older run cannot.
 # A pull request that changes the CLI build runs the build jobs only, so the
 # archives are checked before the merge. Only the attest job can sign, and
 # only the publish job can write repository contents.
@@ -11,7 +13,9 @@ on:
     paths:
       - .github/workflows/release-cli.yml
       - scripts/package-cli-release.mjs
+      - scripts/tests/package-cli-release.test.mjs
       - scripts/build-native-oracle-helper.mjs
+      - scripts/rewrite-dts-imports.mjs
       - bitcaster-cli/**
       - bitcaster-daemon/**
       - bitcaster-client-sdk/**
@@ -24,9 +28,13 @@ on:
 
 permissions: {}
 
+# A newer pull request run cancels the older run of the same pull request.
+# Every other run has its own group, so GitHub never cancels a pending main run.
 concurrency:
-  group: release-cli-${{ github.ref }}
-  # Do not cancel a release in progress. A newer pull request run replaces an older one.
+  group: >-
+    ${{ github.event_name == 'pull_request'
+    && format('release-cli-pr-{0}', github.ref)
+    || format('release-cli-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -65,6 +73,14 @@ jobs:
           package-manager-cache: false
       - name: Install the Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # The Linux oracle helper is a static musl binary, so it runs with any
+      # glibc version that Node.js supports.
+      - name: Install the musl target and C compiler
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl
       - run: npm ci --ignore-scripts
       - run: npm run patch:dependencies
       - name: Test the packaging rules
@@ -182,27 +198,31 @@ jobs:
           ## Install on Linux (x64)
 
           ```sh
-          curl -fLO @BASE@/bitcaster-cli-linux-x64.tar.gz
-          curl -fLO @BASE@/SHA256SUMS
-          grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
-          tar -xzf bitcaster-cli-linux-x64.tar.gz
-          ./bitcaster-cli-linux-x64/bin/bitcaster-cli --help
+          curl -fLO @BASE@/bitcaster-cli-linux-x64.tar.gz &&
+            curl -fLO @BASE@/SHA256SUMS &&
+            grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c - &&
+            tar -xzf bitcaster-cli-linux-x64.tar.gz &&
+            ./bitcaster-cli-linux-x64/bin/bitcaster-cli --help
           ```
 
           ## Install on macOS (Apple silicon)
 
           ```sh
-          curl -fLO @BASE@/bitcaster-cli-darwin-arm64.tar.gz
-          curl -fLO @BASE@/SHA256SUMS
-          grep ' bitcaster-cli-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
-          tar -xzf bitcaster-cli-darwin-arm64.tar.gz
-          ./bitcaster-cli-darwin-arm64/bin/bitcaster-cli --help
+          curl -fLO @BASE@/bitcaster-cli-darwin-arm64.tar.gz &&
+            curl -fLO @BASE@/SHA256SUMS &&
+            grep ' bitcaster-cli-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c - &&
+            tar -xzf bitcaster-cli-darwin-arm64.tar.gz &&
+            ./bitcaster-cli-darwin-arm64/bin/bitcaster-cli --help
           ```
 
-          Optionally, check with the GitHub CLI that GitHub Actions built the archive from this repository. Use the name of the archive that you downloaded:
+          The commands stop at the first failed step. If the checksum check fails, download both files again.
+
+          Optionally, check with the GitHub CLI that the release workflow on the main branch built the archive. Use the name of the archive that you downloaded:
 
           ```sh
-          gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+          gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster \
+            --cert-identity https://github.com/joemphilips/bitCaster/.github/workflows/release-cli.yml@refs/heads/main \
+            --deny-self-hosted-runners
           ```
 
           `bitcaster-cli --version` prints `@VERSION@+@SHORT@`.
@@ -212,9 +232,21 @@ jobs:
           # The values are a checked version, a tag made from it, and the commit SHA.
           sed -i -e "s|@VERSION@|${VERSION}|g" -e "s|@COMMIT@|${GITHUB_SHA}|g" \
             -e "s|@SHORT@|${GITHUB_SHA:0:12}|g" -e "s|@BASE@|${base}|g" notes.md
+          # Only a release of the current head of main becomes latest. A re-run of
+          # an older run, or a run that a newer merge overtook, keeps the newer release.
+          head="$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)"
+          if [[ ! "$head" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "could not read the head of main" >&2
+            exit 1
+          fi
+          latest=false
+          if [[ "$head" == "$GITHUB_SHA" ]]; then
+            latest=true
+          fi
+          echo "head of main: $head; latest: $latest"
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --title "bitcaster-cli ${VERSION} (${GITHUB_SHA:0:12})" \
             --notes-file notes.md \
-            --latest \
+            --latest="$latest" \
             release/bitcaster-cli-*.tar.gz release/SHA256SUMS

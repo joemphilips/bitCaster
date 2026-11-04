@@ -31,24 +31,29 @@ There is an archive for Linux on x64 and an archive for macOS on Apple silicon. 
 On Linux, download the archive and the checksum file. Check the archive, then extract it:
 
 ```bash
-curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz
-curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS
-grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
-tar -xzf bitcaster-cli-linux-x64.tar.gz
-export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH"
-bitcaster-cli --help
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz &&
+  curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS &&
+  grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c - &&
+  tar -xzf bitcaster-cli-linux-x64.tar.gz &&
+  export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH" &&
+  bitcaster-cli --help
 ```
+
+The commands stop at the first failed step. If the checksum check fails, download both files
+again. A new release can appear between the two downloads.
 
 On macOS, use `bitcaster-cli-darwin-arm64` instead of `bitcaster-cli-linux-x64`, and
 `shasum -a 256 -c -` instead of `sha256sum -c -`. The archive contains the CLI, the daemon, and the
 oracle helper that market creation uses. To keep `bitcaster-cli` available in a new shell, add the
 `bin` directory to `PATH` in your shell profile.
 
-Optionally, check that GitHub Actions built the archive from this repository. This step needs the
-GitHub CLI:
+Optionally, check that the release workflow on the main branch of this repository built the
+archive. This step needs the GitHub CLI:
 
 ```bash
-gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster \
+  --cert-identity https://github.com/joemphilips/bitCaster/.github/workflows/release-cli.yml@refs/heads/main \
+  --deny-self-hosted-runners
 ```
 
 `bitcaster-cli --version` prints the version and the source commit of the release, for example

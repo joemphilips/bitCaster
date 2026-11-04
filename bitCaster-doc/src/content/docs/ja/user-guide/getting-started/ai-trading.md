@@ -31,23 +31,28 @@ Windows ではまだ注文を送信できないため、Windows 用のアーカ�
 Linux では、アーカイブとチェックサムファイルをダウンロードします。アーカイブを検証してから展開します。
 
 ```bash
-curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz
-curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS
-grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
-tar -xzf bitcaster-cli-linux-x64.tar.gz
-export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH"
-bitcaster-cli --help
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz &&
+  curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS &&
+  grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c - &&
+  tar -xzf bitcaster-cli-linux-x64.tar.gz &&
+  export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH" &&
+  bitcaster-cli --help
 ```
+
+コマンドは、失敗した手順で止まります。チェックサムの検証に失敗した場合は、2 つのファイルをもう一度ダウンロードしてください。
+2 回のダウンロードの間に、新しいリリースが公開されることがあります。
 
 macOS では、`bitcaster-cli-linux-x64` の代わりに `bitcaster-cli-darwin-arm64` を、`sha256sum -c -` の代わりに `shasum -a 256 -c -` を使います。
 アーカイブには、CLI、daemon、マーケット作成に使うオラクルヘルパーが入っています。
 新しいシェルでも `bitcaster-cli` を使えるようにするには、シェルのプロファイルで `bin` ディレクトリを `PATH` に追加してください。
 
-必要に応じて、GitHub Actions がこのリポジトリからアーカイブをビルドしたことを確認できます。
+必要に応じて、このリポジトリの main ブランチのリリースワークフローがアーカイブをビルドしたことを確認できます。
 この手順には GitHub CLI が必要です。
 
 ```bash
-gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster \
+  --cert-identity https://github.com/joemphilips/bitCaster/.github/workflows/release-cli.yml@refs/heads/main \
+  --deny-self-hosted-runners
 ```
 
 `bitcaster-cli --version` は、リリースのバージョンとソースのコミットを表示します。例: `0.1.0+0123456789ab`
