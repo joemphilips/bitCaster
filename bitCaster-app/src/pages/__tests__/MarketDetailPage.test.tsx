@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import type { ComponentProps } from "react";
 import i18n from "@/i18n";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -178,6 +179,8 @@ vi.mock("react-router", () => ({
   useNavigate: () => mocks.navigate,
   useLocation: () => mocks.routeLocation,
   useParams: () => mocks.routeParams,
+  // The page renders no router. A comment author with a valid key renders a profile link.
+  Link: ({ to, ...props }: { to: string } & ComponentProps<"a">) => <a href={to} {...props} />,
 }));
 
 vi.mock("@/components/market-detail/PriceChart", () => ({
