@@ -374,7 +374,10 @@ export interface BrowserCtfRangeRecoveryPage {
   readonly nextCursor: CtfRangeOrderPreparationPageCursor | null;
 }
 
-type BrowserCtfRangeRecordRecoveryOutcome = "recovered" | "awaiting-authorization-expiry";
+type BrowserCtfRangeRecordRecoveryOutcome =
+  | "recovered"
+  | "awaiting-authorization-expiry"
+  | "awaiting-mint-retry";
 
 export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
   "invalid-order-type",
@@ -841,15 +844,18 @@ export class BrowserCtfRangeOrderCoordinator {
     const schedule = this.#recoverySchedule;
     for (const record of records) {
       const operationId = record.rangeOperationId;
+      // The schedule spaces the mint requests of this operation. It does not
+      // hold an engine result read, apply, or acknowledgement, which send no
+      // mint request. A settlement notice wakes those at once.
+      let mintDue = true;
       if (schedule !== undefined) {
-        // Check the schedule before any mint request of this operation.
         const state = schedule.state(scope.scopeId, operationId, this.#now());
         switch (state.kind) {
           case "due":
             break;
           case "waiting":
-            pending.push({ operationId, revision: record.revision, code: "awaiting-mint-retry" });
-            continue;
+            mintDue = false;
+            break;
           case "halted":
             // Only a manual retry resumes it. Report it on every pass, so its
             // alert returns even after the user dismissed it.
@@ -860,11 +866,14 @@ export class BrowserCtfRangeOrderCoordinator {
         }
       }
       try {
-        const outcome = await this.#recoverRecord(record, seed, scope, owner);
+        const outcome = await this.#recoverRecord(record, seed, scope, owner, mintDue);
         switch (outcome) {
           case "recovered":
             schedule?.recordProgress(scope.scopeId, operationId);
             recoveredOperationIds.push(operationId);
+            break;
+          case "awaiting-mint-retry":
+            pending.push({ operationId, revision: record.revision, code: outcome });
             break;
           case "awaiting-authorization-expiry": {
             const current = await this.#currentPreparation(record);
@@ -942,8 +951,17 @@ export class BrowserCtfRangeOrderCoordinator {
     seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
+    mintDue: boolean,
   ): Promise<BrowserCtfRangeRecordRecoveryOutcome> {
     requireFokRequest(decodeCtfRangeOrderPreparationFromRecord(record).request);
+    // Only a submitted order can finish from its engine result alone.
+    if (
+      !mintDue &&
+      record.lifecycleState !== "order-submitted" &&
+      record.lifecycleState !== "submission-rejected"
+    ) {
+      return "awaiting-mint-retry";
+    }
     switch (record.lifecycleState) {
       case "prepared": {
         const sourceReleased = await this.#resumePreparedSource(record, seed, scope, owner);
@@ -985,7 +1003,7 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database,
     );
     if (current === null) throw new Error("browser range journal disappeared during recovery");
-    return this.#recoverOuterRange(current, seed, scope, owner);
+    return this.#recoverOuterRange(current, seed, scope, owner, mintDue);
   }
 
   async #recoverOuterRange(
@@ -993,6 +1011,7 @@ export class BrowserCtfRangeOrderCoordinator {
     seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
+    mintDue: boolean,
   ): Promise<BrowserCtfRangeRecordRecoveryOutcome> {
     const snapshot = await this.#custody.readOperationSnapshot(
       scope,
@@ -1018,6 +1037,7 @@ export class BrowserCtfRangeOrderCoordinator {
       deriveDurableCtfRangeRefundOperationId(operation.operationId),
     );
     if (existingRefund !== undefined) {
+      if (!mintDue) return "awaiting-mint-retry";
       await this.#resumeOuterRefund(
         journalRecord,
         seed,
@@ -1063,6 +1083,7 @@ export class BrowserCtfRangeOrderCoordinator {
       }
     }
     if (engineResult === null) {
+      if (!mintDue) return "awaiting-mint-retry";
       const observed = await this.#pendingOnRecoveryTransport(() =>
         recovery.loadUncertainRecoveryObservation({
           record: snapshot.record,

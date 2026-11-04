@@ -4761,6 +4761,135 @@ describe("browser CTF range recovery backoff", () => {
     ]);
     await expectStuckPartialSell(fixture);
   });
+  it("retries a retained result acknowledgement at once after the acknowledgement fails", async () => {
+    const now = 20_000;
+    const database = createDatabase();
+    const preparation = persistedPreparation("retained-result-acknowledgement-retry");
+    let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+    let mintRecoveryCalls = 0;
+    const engine = engineMock({
+      acknowledgeFailureOnce: true,
+      result: () => {
+        if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+        return confirmedEngineResult(
+          confirmed.operation,
+          confirmed.selection,
+          confirmed.signatures,
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      recoverySchedule: new BrowserCtfRangeRecoverySchedule({ random: () => 1 }),
+      createMintRecovery: (operation) => {
+        confirmed = confirmedRangeRecovery(operation, preparation);
+        return {
+          async loadUncertainRecoveryObservation() {
+            mintRecoveryCalls += 1;
+            throw new Error("unexpected uncertain recovery");
+          },
+        };
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    const clientOrder = { seed: SEED, clientOrderId: preparation.request.clientOrderId };
+
+    // The wallet applies the engine result, but the acknowledgement fails.
+    expect(await coordinator.recoverClientOrder(clientOrder)).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    });
+    // A settlement notice asks again at the same time. The retained result
+    // needs no mint request, so the mint backoff must not hold it.
+    expect(await coordinator.recoverClientOrder(clientOrder)).toEqual({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+      attention: [],
+      refused: [],
+    });
+    expect(engine.acknowledgeCalls).toBe(2);
+    expect(mintRecoveryCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+  });
+
+  it("applies a confirmed engine result while the mint backoff waits, without a mint request", async () => {
+    let now = 20_000;
+    const database = createDatabase();
+    const preparation = persistedPreparation("engine-result-during-mint-backoff");
+    const unspentAtMint = refundableRecovery(preparation);
+    let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+    let settled = false;
+    let mintRecoveryCalls = 0;
+    const engine = engineMock({
+      result: () => {
+        if (!settled) return null;
+        if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+        return confirmedEngineResult(
+          confirmed.operation,
+          confirmed.selection,
+          confirmed.signatures,
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      recoverySchedule: new BrowserCtfRangeRecoverySchedule({ random: () => 1 }),
+      createMintRecovery: (operation) => {
+        confirmed = confirmedRangeRecovery(operation, preparation);
+        const mint = unspentAtMint(operation);
+        return {
+          async loadUncertainRecoveryObservation(input) {
+            mintRecoveryCalls += 1;
+            return mint.loadUncertainRecoveryObservation(input);
+          },
+        };
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+
+    // Before the settlement, the engine has no result and the mint reads every input UNSPENT.
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      pending: [{ operationId: preparation.operationId, code: "awaiting-authorization-expiry" }],
+    });
+    expect(mintRecoveryCalls).toBe(1);
+    // The backoff still spaces the mint check while the engine has no result.
+    now += 1;
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      pending: [{ operationId: preparation.operationId, code: "awaiting-mint-retry" }],
+    });
+    expect(mintRecoveryCalls).toBe(1);
+
+    // The settlement confirms. Its notice reads the engine result at once.
+    settled = true;
+    expect(
+      await coordinator.recoverClientOrder({
+        seed: SEED,
+        clientOrderId: preparation.request.clientOrderId,
+      }),
+    ).toEqual({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+      attention: [],
+      refused: [],
+    });
+    expect(mintRecoveryCalls).toBe(1);
+    expect(engine.acknowledgeCalls).toBe(1);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+  });
 });
 
 function partialSellFixture(name: string) {
