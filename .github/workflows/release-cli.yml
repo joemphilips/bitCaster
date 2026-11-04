@@ -234,7 +234,7 @@ jobs:
             -e "s|@SHORT@|${GITHUB_SHA:0:12}|g" -e "s|@BASE@|${base}|g" notes.md
           # Only a release of the current head of main becomes latest. A re-run of
           # an older run, or a run that a newer merge overtook, keeps the newer release.
-          head="$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)"
+          head="$(gh api "repos/${GH_REPO}/git/ref/heads/main" --jq .object.sha)"
           if [[ ! "$head" =~ ^[0-9a-f]{40}$ ]]; then
             echo "could not read the head of main" >&2
             exit 1
