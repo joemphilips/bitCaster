@@ -483,6 +483,14 @@
       "types": "./dist/ctfRangeSourceRecovery.d.ts",
       "import": "./dist/ctfRangeSourceRecovery.js"
     },
+    "./mintRefusal": {
+      "types": "./dist/mintRefusal.d.ts",
+      "import": "./dist/mintRefusal.js"
+    },
+    "./seedCounterGapScan": {
+      "types": "./dist/seedCounterGapScan.d.ts",
+      "import": "./dist/seedCounterGapScan.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"

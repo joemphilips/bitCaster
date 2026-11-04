@@ -2,6 +2,7 @@ import { readRangePreparation, toSdkRangePreparationRecord } from './ctfRangeOrd
 import { decodeCtfRangeOrderPreparationFromRecord } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  decodeDurableSeedDerivedOutputPlan,
   matchDurableSeedDerivedProofsToPlan,
 } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import { isDeepStrictEqual } from 'node:util'
@@ -45,7 +46,7 @@ import {
   checkCtfRangeInputProofStates,
   type CtfRangeProofStateClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
-import type { MintKeys, Proof } from '@cashu/cashu-ts'
+import { OutputData, type MintKeys, type Proof } from '@cashu/cashu-ts'
 import {
   createCustodyProofSqliteRow,
   createCustodyProofSqliteRowFromMaterial,
@@ -892,21 +893,12 @@ function verifiedRefundSuccessors(
       ),
     },
   })
-  if (Object.hasOwn(refund.metadata, 'refundOutputPlan')) {
-    const plan = assertDurableSeedDerivedOutputPlanMatchesOutputs({
-      plan: refund.metadata.refundOutputPlan,
-      keysetId: keyset.id,
-      outputs: deserializeOutputGroups(refund.outputs).refund ?? [],
-    })
-    matchDurableSeedDerivedProofsToPlan({ plan, proofs: input.refundProofs as Proof[] })
-  }
   verifyDurableCustodyExactMintProofResult({
-    outputs: Object.fromEntries(
-      Object.entries(deserializeOutputGroups(refund.outputs)).map(([group, outputs]) => [
-        group,
-        outputs.map(serializeDurableCustodyOutput),
-      ]),
-    ),
+    outputs: {
+      refund: refundOutputsOfProofs(refund, keyset.id, input.refundProofs as Proof[]).map(
+        serializeDurableCustodyOutput,
+      ),
+    },
     result: { refund: input.refundProofs as Proof[] },
     keysets: [
       {
@@ -934,6 +926,47 @@ function verifiedRefundSuccessors(
   return input.refundProofs.map((proof) =>
     sourceProofRow(record, operation, proof as Proof, input.observedAtMs),
   )
+}
+
+/**
+ * The saved refund outputs, current or replaced, that produced these proofs.
+ * A delayed copy of a refund that the mint refused with reused outputs can
+ * carry a replaced plan (ADR-037 mint refusal settlement), so the current plan
+ * is tried first and then each replaced plan, newest first.
+ */
+function refundOutputsOfProofs(
+  refund: NonNullable<ReturnType<typeof readDaemonProofOperationFromDatabase>>,
+  keysetId: string,
+  proofs: readonly Proof[],
+): OutputData[] {
+  const current = deserializeOutputGroups(refund.outputs).refund ?? []
+  if (!Object.hasOwn(refund.metadata, 'refundOutputPlan')) return current
+  const plans = [
+    assertDurableSeedDerivedOutputPlanMatchesOutputs({
+      plan: refund.metadata.refundOutputPlan,
+      keysetId,
+      outputs: current,
+    }),
+  ]
+  if (Object.hasOwn(refund.metadata, 'replacedRefundOutputPlans')) {
+    const replaced: unknown = refund.metadata.replacedRefundOutputPlans
+    if (!Array.isArray(replaced) || replaced.length === 0) {
+      throw new Error('daemon CTF range refund replaced output plans are invalid')
+    }
+    plans.push(...replaced.map(decodeDurableSeedDerivedOutputPlan).reverse())
+  }
+  for (const plan of plans) {
+    if (plan.keysetId !== keysetId) continue
+    try {
+      matchDurableSeedDerivedProofsToPlan({ plan, proofs })
+    } catch {
+      continue
+    }
+    return plan === plans[0]
+      ? current
+      : plan.outputs.map((output) => OutputData.deserialize(output))
+  }
+  throw new Error('durable seed-derived proof is foreign')
 }
 
 function missingRefundSuccessors(

@@ -142,6 +142,23 @@ daemon の結果は `{ "ok": true, "result": ... }` の形式です。
 `market watch` と `wallet watch` は、1 行に 1 つの JSON オブジェクトを出力します。
 `daemon init` など一部の準備用コマンドは、プレーンテキストを出力します。
 
+## ミントが注文を拒否したとき
+
+daemon は注文を送信する前に、ミントで注文の資金を準備します。
+ミントの拒否の中には、準備が完了しておらず、今後も完了しないことを証明するものがあります。
+このような拒否の後、daemon は予約した資金をもう一度確認し、注文の試行を終了します。
+このとき `order submit` はコード `order-attempt-released` で失敗し、`mintError` にミントのコードを含めます。
+`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.」です。
+別の操作が資金の一部を使っていた場合、daemon は残りの資金だけを解放します。新しい注文を送信できます。
+
+その他の失敗では資金は予約されたままで、daemon は結果をもう一度確認します。
+確認に失敗するたびに間隔が長くなり、最大 15 分になります。
+`order recovery` は、daemon がまだ回復している注文の操作と、ミントの拒否で終了した注文の試行を表示します。
+ミントが同じ確認を 5 回拒否すると、daemon は自動の確認を停止します。
+その項目には `"halted": true`、ミントのコード、`retryCommand`(例: `bitcaster-cli order retry <operation-id>`)が表示されます。
+そのコマンドを実行すると、確認をもう一度だけ送信します。daemon を再起動しても、自動の確認が再開します。
+`order retry` は `--dry-run` に対応しています。
+
 ## 資金を安全に保つ
 
 エージェントは CLI ウォレットのすべての資金を操作できます。

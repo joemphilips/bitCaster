@@ -1192,6 +1192,157 @@ export function releaseCtfConsolidationProofReservationFromDatabase(
   }
 }
 
+/**
+ * Settle a refused range source or consolidation in the legacy wallet mirror
+ * (ADR-037 mint refusal settlement). Delete the inputs that a fresh NUT-07
+ * reading reports SPENT, release the others, and fail the operation. The
+ * caller releases canonical custody and ends the order journal in the same
+ * transaction.
+ */
+export function releaseRefusedCtfRangeProofReservationFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+    readonly spentInputIndexes: readonly number[]
+    readonly reason: string
+    readonly observedAtMs: number
+  },
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (
+    operation === null ||
+    operation.metadata.reservationId !== input.reservationId ||
+    input.reason.length < 1 ||
+    input.reason.length > 1_024 ||
+    input.reason !== input.reason.trim()
+  ) {
+    throw new Error('refused range reservation authority is invalid')
+  }
+  const spent = new Set(input.spentInputIndexes)
+  if (
+    spent.size !== input.spentInputIndexes.length ||
+    input.spentInputIndexes.some(
+      (index) => !Number.isSafeInteger(index) || index < 0 || index >= operation.inputs.length,
+    )
+  ) {
+    throw new Error('refused range spent input authority is invalid')
+  }
+  if (operation.state !== 'prepared') {
+    throw new Error('only a prepared range request can be released after a refusal')
+  }
+  assertCtfExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, input.reservationId),
+    {
+      operationId: operation.operationId,
+      kind: operation.kind,
+      mintUrl: operation.mintUrl,
+      inputs: operation.inputs,
+      outputs: operation.outputs,
+      metadata: operation.metadata,
+      reservationId: input.reservationId,
+      inputAssets: input.inputAssets,
+    },
+  )
+  const scopeId = readScopeId(database)
+  const remove = database.prepare(
+    `DELETE FROM target_wallet_proofs
+     WHERE scope_id = ? AND normalized_mint = ? AND secret = ?
+       AND state = 'reserved' AND reserved_by = ?`,
+  )
+  const release = database.prepare(
+    `UPDATE target_wallet_proofs
+     SET state = 'available', reserved_by = NULL,
+         updated_at_ms = MAX(created_at_ms, ?)
+     WHERE scope_id = ? AND normalized_mint = ? AND secret = ?
+       AND state = 'reserved' AND reserved_by = ?`,
+  )
+  operation.inputs.forEach((proof, index) => {
+    const changed = spent.has(index)
+      ? remove.run(scopeId, operation.mintUrl, proof.secret, input.reservationId)
+      : release.run(
+          input.observedAtMs,
+          scopeId,
+          operation.mintUrl,
+          proof.secret,
+          input.reservationId,
+        )
+    if (changed.changes !== 1) throw new Error('refused range reservation changed before release')
+  })
+  const failed = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET state = 'failed', last_error = ?,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+    )
+    .run(input.reason, input.observedAtMs, scopeId, input.operationId)
+  if (failed.changes !== 1) throw new Error('refused range release CAS lost')
+  return {
+    ...operation,
+    state: 'Failed',
+    lastError: input.reason,
+    updatedAt: Math.max(operation.createdAt, input.observedAtMs),
+  }
+}
+
+/**
+ * Replace the outputs of a prepared range refund after the mint reports
+ * them as already signed (ADR-037 mint refusal settlement). The inputs stay;
+ * the caller keeps each replaced output plan in the new metadata.
+ */
+export function replanCtfRangeRefundProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly expected: ProofOperationRecord
+    readonly replacement: PrepareProofOperationInput
+    readonly observedAtMs: number
+  },
+): ProofOperationRecord {
+  assertCtfRangeRefundProofOperationInput(input.replacement)
+  const { expected, replacement } = input
+  const current = readDaemonProofOperationFromDatabase(database, expected.operationId)
+  if (
+    current === null ||
+    current.state !== 'prepared' ||
+    replacement.operationId !== current.operationId ||
+    replacement.kind !== current.kind ||
+    replacement.mintUrl !== current.mintUrl ||
+    !isDeepStrictEqual(current.inputs, expected.inputs) ||
+    !isDeepStrictEqual(current.outputs, expected.outputs) ||
+    !isDeepStrictEqual(current.metadata, expected.metadata)
+  ) {
+    throw new Error('range refund changed before a new output plan')
+  }
+  const scopeId = readScopeId(database)
+  const requestId = putArtifact(database, scopeId, 'exact-request', {
+    inputs: replacement.inputs.map(normalizeCashuProofRecord),
+    metadata: replacement.metadata,
+  })
+  const outputId = putArtifact(database, scopeId, 'output-plan', replacement.outputs)
+  const replanned = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET request_artifact_id = ?, output_artifact_id = ?,
+           input_count = ?, input_amount = ?, updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+    )
+    .run(
+      requestId,
+      outputId,
+      replacement.inputs.length,
+      replacement.inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
+      input.observedAtMs,
+      scopeId,
+      current.operationId,
+    )
+  if (replanned.changes !== 1) throw new Error('range refund output plan CAS lost')
+  const updated = readDaemonProofOperationFromDatabase(database, current.operationId)
+  if (updated === null) throw new Error('range refund disappeared during a new output plan')
+  return updated
+}
+
 export async function readAvailableWalletProofsFenced(input: {
   readonly mintUrl: string
   readonly asset: StoredProofAsset

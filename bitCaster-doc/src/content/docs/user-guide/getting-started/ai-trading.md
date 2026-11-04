@@ -138,6 +138,24 @@ code is 1. A usage error exits with code 2. A validation error exits with code 3
 progress messages go to standard error. `market watch` and `wallet watch` print one JSON object on
 each line. A few setup commands, such as `daemon init`, print plain text.
 
+## If the mint refuses an order
+
+Before the daemon submits an order, it prepares the order funds at the mint. Some mint refusals
+prove that the preparation did not complete and cannot complete later. After such a refusal, the
+daemon checks the reserved funds again and ends the order attempt. Then `order submit` fails with
+the code `order-attempt-released` and the mint code in `mintError`. The `error` text is, for
+example, "The mint refused the order (mint code 11008). No order was submitted. The reserved funds
+are available again." If another operation spent part of the funds, the daemon releases only the
+remaining funds. You can submit a new order.
+
+After other failures, the funds stay reserved, and the daemon checks the result again. The interval
+increases after each failed check, up to 15 minutes. `order recovery` shows the order operations
+that the daemon still recovers, and the order attempts that a mint refusal ended. If the mint refuses
+the same check five times, the daemon stops the automatic checks. The entry then shows
+`"halted": true`, the mint code, and a `retryCommand`, for example
+`bitcaster-cli order retry <operation-id>`. Run that command to send the check one more time. A
+daemon restart also starts the automatic checks again. `order retry` supports `--dry-run`.
+
 ## Keep your funds safe
 
 The agent controls all funds in the CLI wallet. It can spend them on trades, fees, and Participation

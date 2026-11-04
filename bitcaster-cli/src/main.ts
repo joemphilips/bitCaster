@@ -2630,6 +2630,37 @@ function registerOrderCommand(program: Command): void {
     })
 
   order
+    .command('recovery')
+    .description(
+      'Show order operations that the daemon still recovers, and order attempts that a mint refusal ended.',
+    )
+    .addHelpText(
+      'after',
+      '\nAn entry with "halted": true stopped its automatic retries after repeated identical mint refusals. Its "retryCommand" sends one more check.\n\nExample:\n  bitcaster-cli order recovery',
+    )
+    .action(async () => {
+      await printDaemonResult(callDaemon({ method: 'order.recovery' }))
+    })
+
+  order
+    .command('retry <operationId>')
+    .description(
+      'Send one more recovery check for an order operation whose automatic retries stopped.',
+    )
+    .addHelpText(
+      'after',
+      '\nThe reserved funds stay reserved until the mint answers. Get the operation id from order recovery.\n\nExample:\n  bitcaster-cli order retry <operation-id>',
+    )
+    .action(async (operationId: string) => {
+      const command = { method: 'order.retry' as const, params: { operationId } }
+      if (globalDryRun) {
+        printDryRun(command.method, command.params)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
+    })
+
+  order
     .command('book <marketId>')
     .description('Show the order book for one market.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli order book <market-id>')

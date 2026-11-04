@@ -285,14 +285,24 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     })
     const logRangeRecovery = (result: {
       readonly recovered: readonly string[]
-      readonly pending: ReadonlyArray<{ readonly operationId: string; readonly error: string }>
+      readonly pending: ReadonlyArray<{
+        readonly operationId: string
+        readonly error: string
+        readonly halted?: true
+      }>
+      readonly released?: ReadonlyArray<{ readonly operationId: string; readonly message: string }>
     }) => {
       if (result.recovered.length > 0) {
         process.stderr.write(`Recovered range operations: ${result.recovered.join(', ')}\n`)
       }
+      for (const released of result.released ?? []) {
+        process.stderr.write(`Range operation ${released.operationId} ended: ${released.message}\n`)
+      }
       for (const pending of result.pending) {
         process.stderr.write(
-          `Range operation ${pending.operationId} remains pending: ${pending.error}\n`,
+          pending.halted === true
+            ? `Range operation ${pending.operationId} stopped: ${pending.error}\n`
+            : `Range operation ${pending.operationId} remains pending: ${pending.error}\n`,
         )
       }
     }
@@ -664,6 +674,9 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       previewSettlementCapabilityFees: (input, client) =>
         rangeOrderCoordinator.previewFeeFacts(input, client),
       triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
+      readSettlementRecovery: () => rangeOrderCoordinator.recoveryStatus(),
+      retrySettlementRecovery: (operationId) =>
+        rangeRecoveryLoop !== undefined && rangeOrderCoordinator.retryHaltedRecovery(operationId),
       triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
       getCustodyFence: currentFence,
       isCustodyReady: () => readiness.isReady(),

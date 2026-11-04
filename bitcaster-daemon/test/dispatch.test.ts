@@ -73,6 +73,7 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
+import { CtfRangeOrderReleasedError } from '../src/ctfRangeOrderRelease.ts'
 import type { OrderDraftParams, ScorePurchaseConsent, SubmitOrderParams } from '../src/protocol.ts'
 import { retainNativeOrderLink } from './support/nativeOrderOwnership.ts'
 
@@ -2382,6 +2383,118 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       assert.equal(markedRejected, true)
       assert.deepEqual((await readState())?.orders, {})
       if (priorState) await writeState(priorState)
+    })
+
+    await t.test(
+      'order.submit reports a mint refusal that released the reserved funds',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let recoveryTriggers = 0
+        let submits = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Sell',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => ({
+              ...testOrderEngine(),
+              submitOrder: async () => {
+                submits += 1
+                throw new Error('a released attempt must not submit an order')
+              },
+            }),
+            prepareSettlementCapability: async () => {
+              throw new CtfRangeOrderReleasedError({ code: 11008, detail: 'Duplicate outputs' })
+            },
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.equal(response.ok, false)
+        assert.equal(response.code, 'order-attempt-released')
+        assert.equal(
+          response.error,
+          'The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.',
+        )
+        assert.deepEqual(response.mintError, { code: 11008, detail: 'Duplicate outputs' })
+        assert.ok(response.clientOrderId)
+        assert.equal(response.orderId, undefined)
+        assert.equal(submits, 0)
+        assert.equal(recoveryTriggers, 0)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
+
+    await t.test('order.recovery reports halted and released range operations', async () => {
+      const status = {
+        pending: [
+          {
+            operationId: 'range-1:source',
+            error: 'stopped',
+            mintError: { code: 12002, detail: 'Keyset is inactive' },
+            halted: true as const,
+            retryCommand: 'bitcaster-cli order retry range-1:source',
+          },
+        ],
+        released: [
+          {
+            operationId: 'range-2:source',
+            mintError: { code: 11008, detail: 'Duplicate outputs' },
+            message: 'released',
+          },
+        ],
+      }
+      assert.deepEqual(
+        await dispatch({ method: 'order.recovery' }, { readSettlementRecovery: () => status }),
+        { ok: true, result: status },
+      )
+      assert.deepEqual(await dispatch({ method: 'order.recovery' }, {}), {
+        ok: false,
+        error: 'daemon order recovery is unavailable',
+      })
+    })
+
+    await t.test('order.retry resumes only a halted range operation', async () => {
+      const halted = new Set(['range-1:source'])
+      let recoveryTriggers = 0
+      const deps = {
+        retrySettlementRecovery: (operationId: string) => halted.delete(operationId),
+        triggerSettlementRecovery: () => {
+          recoveryTriggers += 1
+        },
+      }
+      assert.deepEqual(
+        await dispatch({ method: 'order.retry', params: { operationId: 'range-1:source' } }, deps),
+        { ok: true, result: { operationId: 'range-1:source', retrying: true } },
+      )
+      assert.equal(recoveryTriggers, 1)
+      assert.deepEqual(
+        await dispatch({ method: 'order.retry', params: { operationId: 'range-1:source' } }, deps),
+        {
+          ok: false,
+          code: 'order-recovery-not-halted',
+          error:
+            'No stopped order recovery has this operation id. Run bitcaster-cli order recovery to see the pending operations.',
+          operationId: 'range-1:source',
+        },
+      )
+      assert.deepEqual(
+        await dispatch({ method: 'order.retry', params: { operationId: ' ' } } as never, deps),
+        { ok: false, error: 'order retry operation id is invalid' },
+      )
+      assert.equal(recoveryTriggers, 1)
     })
 
     for (const failure of [

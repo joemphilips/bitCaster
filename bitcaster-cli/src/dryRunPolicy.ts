@@ -97,6 +97,8 @@ export const DRY_RUN_MODES: Readonly<Record<string, DryRunMode>> = {
   'order wait': 'read-only',
   'order list': 'read-only',
   'order cancel': 'supported',
+  'order recovery': 'read-only',
+  'order retry': 'supported',
   'order book': 'read-only',
   'daemon status': 'read-only',
   'daemon config': 'supported',

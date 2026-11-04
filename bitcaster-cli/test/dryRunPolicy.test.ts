@@ -42,6 +42,7 @@ const READ_ONLY_COMMANDS = [
   'order fee-preview',
   'order list',
   'order preview',
+  'order recovery',
   'order status',
   'order wait',
   'relay list',
@@ -81,7 +82,13 @@ test('every CLI command declares its dry-run mode', async () => {
       .sort()
   assert.deepEqual(withMode('refused'), ['daemon init', 'daemon restart', 'daemon stop'])
   assert.deepEqual(withMode('read-only'), READ_ONLY_COMMANDS)
-  for (const path of ['market fund begin', 'market fund resume', 'wallet receive', 'order cancel'])
+  for (const path of [
+    'market fund begin',
+    'market fund resume',
+    'wallet receive',
+    'order cancel',
+    'order retry',
+  ])
     assert.ok(withMode('supported').includes(path), path)
 })
 

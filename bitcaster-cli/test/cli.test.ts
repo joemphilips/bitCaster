@@ -367,6 +367,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     await runCli(daemonUrl, ['order', 'list', '--market', 'cond-YES', '--status', 'resting'])
     await runCli(daemonUrl, ['order', 'cancel', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, ['order', 'book', 'cond-YES'])
+    await runCli(daemonUrl, ['order', 'recovery'])
+    await runCli(daemonUrl, ['order', 'retry', 'range-1:source'])
 
     assert.deepEqual(received, [
       { method: 'health' },
@@ -483,6 +485,11 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       {
         method: 'order.book',
         params: { marketId: 'cond-YES' },
+      },
+      { method: 'order.recovery' },
+      {
+        method: 'order.retry',
+        params: { operationId: 'range-1:source' },
       },
     ])
     assert.deepEqual(

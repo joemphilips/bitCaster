@@ -43,6 +43,7 @@ const READ_DAEMON_METHODS = new Set([
   'wallet.invoice.show',
   'wallet.pay.status',
   'wallet.operations',
+  'order.recovery',
   'score.show',
   'score.status',
   'order.fee-preview',
@@ -453,6 +454,7 @@ const SUPPORTED: Record<string, { args: Args; method: string }> = {
     method: 'order.submit',
   },
   'order cancel': { args: () => ['order', 'cancel', MARKET, 'order-1'], method: 'order.cancel' },
+  'order retry': { args: () => ['order', 'retry', 'range-1:source'], method: 'order.retry' },
   'daemon config': {
     args: () => ['daemon', 'config', '--engine-url', 'https://engine2.example'],
     method: 'config.set',
@@ -547,6 +549,7 @@ const READ_ONLY: Record<string, Args> = {
   'order wait': () => ['order', 'wait', MARKET, 'order-1', '--timeout-ms', '1000'],
   'order list': () => ['order', 'list'],
   'order book': () => ['order', 'book', MARKET],
+  'order recovery': () => ['order', 'recovery'],
   'daemon status': () => ['daemon', 'status'],
   'daemon logs': () => ['daemon', 'logs'],
   'config get': () => ['config', 'get'],
