@@ -468,7 +468,7 @@ function buildConnection(): HubConnection {
       _desiredPortfolioValuationSet = {
         ...desired,
         revision: ++_portfolioValuationSetRevision,
-        notifyOnSuccess: true,
+        notifyOnSuccess: desired.conditionIds.length > 0,
       };
       void enqueuePortfolioValuationReplacement().catch((err) => {
         console.warn("[marketHub] portfolio valuation subscription after reconnect failed:", err);
@@ -762,11 +762,13 @@ export function observePortfolioValuations(
         desired.observer !== observer ||
         !haveSamePortfolioConditionIds(desired.conditionIds, normalizedConditionIds)
       ) {
+        // A read after the replacement catches a notice that the earlier read
+        // missed. A set with no condition receives no notice.
         _desiredPortfolioValuationSet = {
           observer,
           conditionIds: normalizedConditionIds,
           revision: ++_portfolioValuationSetRevision,
-          notifyOnSuccess: true,
+          notifyOnSuccess: normalizedConditionIds.length > 0,
         };
       }
       return enqueuePortfolioValuationReplacement();

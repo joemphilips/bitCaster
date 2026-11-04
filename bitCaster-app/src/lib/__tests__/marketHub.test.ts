@@ -444,6 +444,18 @@ describe("Portfolio valuation subscriptions", () => {
     expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
   });
 
+  it("refreshes after a replacement only when the set has a condition", async () => {
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+
+    await observer.replaceConditionIds([]);
+    expect(onRefresh).not.toHaveBeenCalled();
+
+    await observer.replaceConditionIds(["ab"]);
+    expect(onRefresh).toHaveBeenCalledOnce();
+    observer.dispose();
+  });
+
   it("serializes replacements and coalesces pending changes to the latest set", async () => {
     let finishFirstInvoke: (() => void) | undefined;
     let firstInvokeStarted!: () => void;
