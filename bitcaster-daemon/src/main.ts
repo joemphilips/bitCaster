@@ -55,6 +55,8 @@ switch (command) {
         await import('./allConditionsSeedRecovery.ts')
       const result = await runOfflineDaemonSeedRecoveryAllConditions(options)
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+      // The report lists each failed market; run the command again for them.
+      if (result.failed > 0) process.exitCode = 1
       break
     }
     const { runOfflineDaemonSeedRecovery } = await import('./emergencySeedRecovery.ts')

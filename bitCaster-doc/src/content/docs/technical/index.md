@@ -122,8 +122,8 @@ For seed recovery, supply exactly one of `--recovery-phrase-file` or
 Add `--all-conditions` to restore market positions too. The command then
 checks each market of the public catalogue at the mint. A market that fails
 does not stop the command: the output lists it with its recovery ID and the
-failed step, and `failed` counts such markets. Run the command again with the
-same recovery ID. `daemon init` with an imported seed prints this command.
+failed step, and `failed` counts such markets. The command then exits with a
+nonzero status. Run the command again with the same recovery ID. `daemon init` with an imported seed prints this command.
 
 Use the profile's configured mint and the same recovery ID for later invocations.
 The acknowledgment permits disclosure of deterministic proof candidates to the mint.

@@ -393,6 +393,65 @@ test('real CLI forwards condition and gap to the daemon capability-gated transpo
   }
 })
 
+test('real CLI all-conditions recovery reports a failed market and exits nonzero', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'bitcaster-cli-all-conditions-'))
+  const conditionId = 'cd'.repeat(32)
+  try {
+    const seedPath = join(root, 'seed.hex')
+    await writeFile(seedPath, '07'.repeat(64), { mode: 0o600 })
+    const home = join(root, 'home')
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '07'.repeat(64),
+      nostrSecretKeyHex: 'aa'.repeat(32),
+      initializedAtMs: 1,
+    })
+    const loader = join(root, 'fetch.mjs')
+    await writeFile(
+      loader,
+      `
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.origin === 'https://engine.example' && url.pathname === '/api/v1/markets/query') {
+          return Response.json({ markets: [{ conditionId: '${conditionId}', outcomes: ['Yes', 'No'] }], nextCursor: null });
+        }
+        if (url.origin !== 'https://mint.example') throw new Error('unexpected origin');
+        if (url.pathname === '/v1/info') return Response.json({ nuts: { CTF: { condition_keyset_filter: true } } });
+        if (url.pathname === '/v1/keysets' || url.pathname === '/v1/keys') return Response.json({ keysets: [] });
+        if (url.pathname === '/v1/conditional_keysets') throw new Error('mint listing unavailable');
+        throw new Error('unexpected mint path ' + url.pathname);
+      };
+    `,
+      { mode: 0o600 },
+    )
+    const result = await runCli(
+      home,
+      [
+        'wallet',
+        'recover-seed',
+        '--wallet-seed-hex-file',
+        seedPath,
+        '--recovery-id',
+        'all-conditions-failure',
+        '--mint',
+        'https://mint.example',
+        '--acknowledge-seed-disclosure',
+        '--all-conditions',
+      ],
+      { NODE_OPTIONS: `--import=${pathToFileURL(loader).href}` },
+      root,
+    )
+    assert.notEqual(result.code, 0, result.stderr)
+    assert.match(result.stdout, /"failed":\s*1/, result.stderr)
+    assert.match(result.stdout, /"stage":\s*"listing"/)
+    assert.doesNotMatch(result.stdout + result.stderr, /0707070707070707/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 async function recoveryCli(home: string, seedPath: string, dryRun = true) {
   return runCli(home, [
     ...(dryRun ? ['--dry-run'] : []),

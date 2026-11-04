@@ -4041,11 +4041,19 @@ function pushOption(args: string[], flag: string, value: string | undefined): vo
 
 async function runDaemonCommand(args: string[]): Promise<void> {
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
-  const result = await execFileAsync(
-    process.execPath,
-    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, ...args],
-    { env: process.env },
-  )
+  let result: { stdout: string; stderr: string }
+  try {
+    result = await execFileAsync(
+      process.execPath,
+      ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, ...args],
+      { env: process.env },
+    )
+  } catch (error) {
+    // A failed command can still print its report, such as the failed markets of a recovery.
+    const stdout = (error as { stdout?: unknown }).stdout
+    if (typeof stdout === 'string') process.stdout.write(stdout)
+    throw error
+  }
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
 }
