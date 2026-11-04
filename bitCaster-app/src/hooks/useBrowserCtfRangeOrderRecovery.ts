@@ -20,12 +20,17 @@ import {
   resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass,
 } from "@/lib/browserSeedPositionRestore";
-import { useToastStore } from "@/stores/toast";
+import { useToastStore, type Toast } from "@/stores/toast";
 import i18n from "@/i18n";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 /** A seed restore pass that ran out of budget continues soon. */
 const SEED_RESTORE_CONTINUE_MS = 1_000;
+
+/** The notice after the re-sync found outputs of another client. Its action needs a third line. */
+export function usedInAnotherBrowserToast(): Omit<Toast, "id"> {
+  return { type: "info", message: i18n.t("wallet.usedInAnotherBrowser"), lines: 3 };
+}
 
 function earliest(left: number | null, right: number | null): number | null {
   if (left === null) return right;
@@ -167,10 +172,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryAtMs = earliest(retryAtMs, result.retryAtMs);
             if (result.usedElsewhere && !usedElsewhereShown) {
               usedElsewhereShown = true;
-              useToastStore.getState().addToast({
-                type: "info",
-                message: i18n.t("wallet.usedInAnotherBrowser"),
-              });
+              useToastStore.getState().addToast(usedInAnotherBrowserToast());
             }
           }
         } catch {

@@ -59,9 +59,10 @@ const mocks = vi.hoisted(() => ({
   readPayableScore: vi.fn(),
   counterReady: vi.fn(),
   advanceCounterPastMint: vi.fn(),
+  advanceCounterPastSignedOutputs: vi.fn(),
   requestResync: vi.fn(),
   probePreparation: vi.fn(),
-  probeOutputs: vi.fn(),
+  probeMint: { kind: "test-probe-mint" },
   probeCache: { kind: "test-probe-cache" },
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
@@ -148,6 +149,7 @@ vi.mock("../browserParticipationScoreDelivery", () => ({
 vi.mock("../cashu", () => ({
   ensureWalletKeysetCounterReady: mocks.counterReady,
   advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
+  advanceWalletKeysetCounterPastSignedOutputs: mocks.advanceCounterPastSignedOutputs,
   WalletKeysetCounterPendingError: class extends Error {},
 }));
 
@@ -182,7 +184,7 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
 vi.mock("../browserCtfRangeCounterProbe", () => ({
   createBuyReceiveProbeCache: () => mocks.probeCache,
   probeBuyReceiveRange: mocks.probePreparation,
-  probeSignedBlindedOutputs: mocks.probeOutputs,
+  browserSeedCounterRestoreClient: () => mocks.probeMint,
 }));
 
 vi.mock("../browserFundedAssetRecovery", () => ({
@@ -235,6 +237,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.readPreparation.mockResolvedValue(null);
     mocks.readPreparation.mockClear();
     mocks.advanceCounterPastMint.mockResolvedValue(undefined);
+    mocks.advanceCounterPastSignedOutputs.mockResolvedValue(undefined);
     mocks.requestResync.mockResolvedValue(undefined);
     mocks.probePreparation.mockResolvedValue(undefined);
     mocks.recordMessage.mockResolvedValue(undefined);
@@ -1714,20 +1717,24 @@ describe("submitBrowserCtfRangeOrder", () => {
       expect(input).toMatchObject({
         scopeId: mocks.scopeId,
         cache: mocks.probeCache,
-        probe: mocks.probeOutputs,
+        mint: mocks.probeMint,
         preparation: expect.objectContaining({ operationId: "range-operation" }),
       });
     }
     expect(mocks.probePreparation.mock.invocationCallOrder[1]!).toBeLessThan(
       mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
     );
-    await mocks.probePreparation.mock.calls[1]![0].scanPastSignedOutputs(
-      preparationFor(sellRequest()).receiveKeyset,
-      7,
-    );
+    const receiveKeyset = preparationFor(sellRequest()).receiveKeyset;
+    await mocks.probePreparation.mock.calls[1]![0].advancePastSignedOutputs(receiveKeyset, 7, 12);
     // The probed range starts the deferral, so a later pass admits its outputs.
-    expect(mocks.advanceCounterPastMint).toHaveBeenCalledWith(
-      expect.objectContaining({ scopeId: mocks.scopeId, unit: "msat", plannedFromCounter: 7 }),
+    expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeId: mocks.scopeId,
+        unit: "msat",
+        keyset: receiveKeyset,
+        fromCounter: 7,
+        nextCounter: 12,
+      }),
     );
   });
 

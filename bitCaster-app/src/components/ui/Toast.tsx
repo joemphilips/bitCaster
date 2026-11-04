@@ -70,7 +70,12 @@ function ToastItem({ toast }: { toast: Toast }) {
       </div>
       {/* Two lines keep a toast with a long market title off the page heading.
           The clamp is visual only; assistive technology reads the whole text. */}
-      <p className="text-sm text-slate-200 flex-1 min-w-0 break-words leading-snug pt-0.5 line-clamp-2">
+      <p
+        className={[
+          "text-sm text-slate-200 flex-1 min-w-0 break-words leading-snug pt-0.5",
+          toast.lines === 3 ? "line-clamp-3" : "line-clamp-2",
+        ].join(" ")}
+      >
         {toast.message}
       </p>
       <button

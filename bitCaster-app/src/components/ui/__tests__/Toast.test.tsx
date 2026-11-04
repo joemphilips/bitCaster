@@ -55,6 +55,18 @@ describe("ToastContainer", () => {
     expect(screen.getByRole("status")).toHaveTextContent(message);
   });
 
+  it("shows a third line for a short notice that names an action", () => {
+    addToast({
+      id: "used-elsewhere",
+      message: "Use one browser at a time.",
+      type: "info",
+      lines: 3,
+    });
+    render(<ToastContainer />);
+
+    expect(screen.getByText("Use one browser at a time.")).toHaveClass("line-clamp-3");
+  });
+
   it.each([
     ["success", "Saved"],
     ["info", "Syncing"],

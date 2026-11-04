@@ -11,6 +11,7 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { initialSeedRestoreState, seedRestoreDatabase } from "@/stores/seed-restore-db";
 import { useToastStore } from "@/stores/toast";
+import { usedInAnotherBrowserToast } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { useWalletStore } from "@/stores/wallet";
 import type { YesNoMarketDetail } from "@/types/market-detail";
 import type { PortfolioProps } from "@/types/portfolio";
@@ -230,16 +231,41 @@ for (const locale of ["en", "ja"] as const) {
       await capture("sell-restoring", locale, layout);
     });
 
+    it(`shows the Sell tab after a failed restore in ${locale} on ${layout.name}`, async () => {
+      await page.viewport(layout.width, layout.height);
+      await i18n.changeLanguage(locale);
+      await restoreState("failed");
+
+      renderInShell(
+        createElement(
+          "div",
+          { className: "mx-auto max-w-md p-4" },
+          createElement(TradingPanel, {
+            market,
+            tradeSide: "Sell",
+            tradeSelection: { side: "yes" },
+            tradeAmount: 2,
+            tradePreview: null,
+            sellHoldings: { status: "ready", byOutcomeSetId: new Map() },
+          }),
+        ),
+      );
+
+      expect(await noticeText("seed-restore-error")).toContain(
+        i18n.t("portfolio.restorePositionsFailed"),
+      );
+      const confirm = host!.querySelector('[data-testid="trade-confirm"]')!;
+      expect(confirm.textContent).toBe(i18n.t("trade.sellHoldingsUnavailable"));
+      await capture("sell-failed", locale, layout);
+    });
+
     it(`shows the used-in-another-browser toast in ${locale} on ${layout.name}`, async () => {
       await page.viewport(layout.width, layout.height);
       await i18n.changeLanguage(locale);
       await restoreState("idle");
 
       renderInShell(createElement(Portfolio, portfolio));
-      useToastStore.getState().addToast({
-        type: "info",
-        message: i18n.t("wallet.usedInAnotherBrowser"),
-      });
+      useToastStore.getState().addToast(usedInAnotherBrowserToast());
 
       await expect
         .poll(
@@ -247,6 +273,11 @@ for (const locale of ["en", "ja"] as const) {
           POLL,
         )
         .toBe(true);
+      // The toast shows its whole text, including the action.
+      const message = [...document.querySelectorAll("p")].find(
+        (element) => element.textContent === i18n.t("wallet.usedInAnotherBrowser"),
+      )!;
+      expect(message.scrollHeight).toBeLessThanOrEqual(message.clientHeight + 1);
       await capture("used-in-another-browser", locale, layout);
     });
 

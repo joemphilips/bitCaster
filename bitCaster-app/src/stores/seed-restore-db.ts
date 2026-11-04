@@ -35,6 +35,9 @@ export interface SeedRestoreStateRow {
   readonly catalogueDone: boolean;
   /** When the last catalogue walk ended. A later walk looks for new markets. */
   readonly catalogueWalkedAtMs: number | null;
+  /** Failed page reads of a later walk in a row. The walk keeps its cursor. */
+  readonly catalogueFailures: number;
+  readonly catalogueNextAttemptAtMs: number;
   /** Insertion order of the next condition or keyset row. */
   readonly nextOrder: number;
   readonly failures: number;
@@ -263,6 +266,29 @@ export async function recordSeedRestoreDeferral(input: {
   });
 }
 
+/** Keeps the condition of a conditional keyset that this browser uses. */
+export async function recordSeedRestoreCondition(input: {
+  readonly scopeId: string;
+  readonly mintUrl: string;
+  readonly keysetId: string;
+  readonly condition: SeedRestoreCondition;
+}): Promise<void> {
+  const database = seedRestoreDatabase(input.scopeId);
+  await database.transaction("rw", database.resync, async () => {
+    const key: [string, string, string] = [input.scopeId, input.mintUrl, input.keysetId];
+    const existing =
+      (await database.resync.get(key)) ??
+      initialSeedRestoreResyncRow(input.scopeId, input.mintUrl, input.keysetId);
+    if (
+      existing.condition?.conditionId === input.condition.conditionId &&
+      existing.condition.outcomeCollection === input.condition.outcomeCollection
+    ) {
+      return;
+    }
+    await database.resync.put({ ...existing, condition: { ...input.condition } });
+  });
+}
+
 /**
  * Settles the deferral of one keyset after a scan from `scannedFrom`
  * admitted its verified UNSPENT proofs. A PENDING proof keeps a marker at
@@ -304,6 +330,24 @@ export async function settleSeedRestoreDeferral(input: {
       waitReason: "pending-proof",
       failures,
       nextAttemptAtMs: input.nowMs + seedRestoreBackoffMs(failures),
+    });
+  });
+}
+
+/** Postpones one deferral without a failure, for example while local work is in flight. */
+export async function postponeSeedRestoreDeferral(input: {
+  readonly scopeId: string;
+  readonly mintUrl: string;
+  readonly keysetId: string;
+  readonly nextAttemptAtMs: number;
+}): Promise<void> {
+  const database = seedRestoreDatabase(input.scopeId);
+  await database.transaction("rw", database.resync, async () => {
+    const row = await database.resync.get([input.scopeId, input.mintUrl, input.keysetId]);
+    if (row?.pendingFromCounter == null) return;
+    await database.resync.put({
+      ...row,
+      nextAttemptAtMs: Math.max(row.nextAttemptAtMs, input.nextAttemptAtMs),
     });
   });
 }
@@ -403,6 +447,8 @@ export function initialSeedRestoreState(scopeId: string, mintUrl: string): SeedR
     catalogueCursor: null,
     catalogueDone: false,
     catalogueWalkedAtMs: null,
+    catalogueFailures: 0,
+    catalogueNextAttemptAtMs: 0,
     nextOrder: 0,
     failures: 0,
     nextAttemptAtMs: 0,

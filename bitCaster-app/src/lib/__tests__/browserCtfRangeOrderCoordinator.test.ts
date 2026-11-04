@@ -4375,8 +4375,23 @@ describe("browser CTF range output reuse and second sells", () => {
     const receive = preparation.receiveKeyset.id;
     const probedFrom =
       (await counterStore.readSnapshotInContext(context, receive)).nextCounter ?? 0;
-    const probes: string[][] = [];
-    const scans: Array<{ keysetId: string; fromCounter: number }> = [];
+    // Another client already signed the next 41 receive outputs.
+    const signed = new Set(
+      Array.from(
+        { length: 41 },
+        (_, offset) =>
+          OutputData.createSingleDeterministicData(1, SEED, probedFrom + offset, receive)
+            .blindedMessage.B_,
+      ),
+    );
+    const restores: string[][] = [];
+    const mint = {
+      restore: async ({ outputs }: { outputs: Array<{ B_: string }> }) => {
+        restores.push(outputs.map(({ B_ }) => B_));
+        return { outputs: outputs.filter(({ B_ }) => signed.has(B_)) };
+      },
+    };
+    const advances: Array<{ keysetId: string; fromCounter: number; nextCounter: number }> = [];
     const cache = createBuyReceiveProbeCache();
     const probeOnce = () =>
       probeBuyReceiveRange({
@@ -4385,33 +4400,33 @@ describe("browser CTF range output reuse and second sells", () => {
         preparation,
         seed: SEED,
         cache,
-        probe: async (_mintUrl, outputs) => {
-          probes.push(outputs.map(({ B_ }) => B_));
-          // Another client already signed the first planned receive output.
-          return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
-        },
-        scanPastSignedOutputs: async (keyset, fromCounter) => {
-          scans.push({ keysetId: keyset.id, fromCounter });
-          // The gap scan finds that the other client signed up to counter 40.
-          await counterStore.advanceToAtLeastInContext(context, keyset.id, 41, true);
+        mint,
+        advancePastSignedOutputs: async (keyset, fromCounter, nextCounter) => {
+          advances.push({ keysetId: keyset.id, fromCounter, nextCounter });
+          await counterStore.advanceToAtLeastInContext(context, keyset.id, nextCounter, true);
         },
       });
 
     await probeOnce();
-    expect(probes).toHaveLength(2);
-    // The scan keeps the probed start, so a later pass admits the signed outputs.
-    expect(scans).toEqual([{ keysetId: receive, fromCounter: probedFrom }]);
-    expect((await counterStore.readSnapshotInContext(context, receive)).nextCounter).toBe(41);
-    expect(probes[1]!.includes(probes[0]![0]!)).toBe(false);
+    // The gap scan found the last signed output. The advance keeps the probed
+    // start, so a later pass admits the signed outputs.
+    expect(advances).toEqual([
+      { keysetId: receive, fromCounter: probedFrom, nextCounter: probedFrom + 41 },
+    ]);
+    expect((await counterStore.readSnapshotInContext(context, receive)).nextCounter).toBe(
+      probedFrom + 41,
+    );
 
     // The submit reuses the preview's clean probe while the cursor stays.
+    const requests = restores.length;
     await probeOnce();
-    expect(probes).toHaveLength(2);
+    expect(restores).toHaveLength(requests);
 
     // A moved cursor needs a new probe.
-    await counterStore.advanceToAtLeastInContext(context, receive, 45, true);
+    await counterStore.advanceToAtLeastInContext(context, receive, probedFrom + 45, true);
     await probeOnce();
-    expect(probes).toHaveLength(3);
+    expect(restores.length).toBeGreaterThan(requests);
+    expect(advances).toHaveLength(1);
   });
 
   it("does not probe a sell preparation", async () => {
@@ -4426,11 +4441,13 @@ describe("browser CTF range output reuse and second sells", () => {
       preparation,
       seed: SEED,
       cache: createBuyReceiveProbeCache(),
-      probe: async () => {
-        probes += 1;
-        return new Set();
+      mint: {
+        restore: async () => {
+          probes += 1;
+          return { outputs: [] };
+        },
       },
-      scanPastSignedOutputs: async () => undefined,
+      advancePastSignedOutputs: async () => undefined,
     });
 
     expect(probes).toBe(0);

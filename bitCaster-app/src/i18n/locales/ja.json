@@ -70,7 +70,7 @@
     "setupDesc": "新しいローカル Cashu ウォレットを作成するか、既存のシードフレーズをインポートします。",
     "setupFailed": "ウォレットを設定できませんでした。もう一度お試しください。",
     "created": "ウォレットを作成しました！",
-    "usedInAnotherBrowser": "このウォレットは別のブラウザーでも使われました。一度に使うブラウザーは1つにしてください。",
+    "usedInAnotherBrowser": "別のブラウザーでも使われました。ブラウザーは1つだけ使ってください。",
     "createNewWallet": "新しいウォレットを作成",
     "importExistingWallet": "既存のウォレットをインポート",
     "enterSeedPhrase": "シードフレーズを入力",

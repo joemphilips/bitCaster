@@ -133,10 +133,16 @@ export function blindedOutput(keyset: FakeKeyset, counter: number): string {
   return OutputData.createSingleDeterministicData(0, SEED, counter, keyset.id).blindedMessage.B_;
 }
 
+const ECHO_REQUESTS_MAX = 60;
+
 export class FakeMint {
   readonly requests: MintRequest[] = [];
   /** A failing NUT-07 check stops each scan before admission. */
   failCheckstate = false;
+  /** A failing NUT-09 restore stops every probe and scan. */
+  failRestore = false;
+  /** A hostile mint reports every queried output as signed. */
+  echoRestore = false;
   /** Conditions whose filtered keyset listing fails. */
   readonly failConditionListing = new Set<string>();
   /** The public engine catalogue at the app origin. Null answers 404. */
@@ -152,6 +158,7 @@ export class FakeMint {
     { id: string; amount: number; C_: string; dleq: { e: string; s: string } }
   >();
   readonly #states = new Map<string, ProofState>();
+  #echoes = 0;
 
   constructor(
     readonly regular: FakeKeyset,
@@ -243,6 +250,20 @@ export class FakeMint {
         (keyset) => conditionId === null || keyset.conditional!.conditionId === conditionId,
       );
       return json({ keysets: keysets.map(descriptor), next_cursor: null });
+    }
+    if (method === "POST" && url.pathname === "/v1/restore" && this.failRestore) {
+      return json({ detail: "unavailable" }, 503);
+    }
+    if (method === "POST" && url.pathname === "/v1/restore" && this.echoRestore) {
+      // A test bound: an unbounded client scan fails here instead of running forever.
+      this.#echoes += 1;
+      if (this.#echoes > ECHO_REQUESTS_MAX) return json({ detail: "echo bound" }, 503);
+      const outputs = (parsed().outputs ?? []) as { B_: string; id: string }[];
+      // Zero-amount signatures with a valid point are enough to echo each output.
+      return json({
+        outputs,
+        signatures: outputs.map(({ id, B_ }) => ({ id, amount: 0, C_: B_ })),
+      });
     }
     if (method === "POST" && url.pathname === "/v1/restore") {
       const outputs = (parsed().outputs ?? []) as { B_: string }[];

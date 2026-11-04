@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PositionsList } from "@/components/portfolio/PositionsList";
 import { StatsRow } from "@/components/portfolio/StatsRow";
+import { Portfolio } from "@/components/portfolio/Portfolio";
 import { TradingPanel } from "@/components/market-detail/TradingPanel";
 import type { SeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
 import type { SellHoldingsState, YesNoMarketDetail } from "@/types/market-detail";
@@ -115,12 +116,12 @@ describe("empty states during the seed restore", () => {
     expect(screen.getByText("0")).toBeInTheDocument();
   });
 
-  it("keeps an already restored total while the restore runs", () => {
+  it("does not show a partial total while the restore runs", () => {
     render(<StatsRow stats={{ ...stats, totalValueSats: 12_000 }} positionsRestoring />);
 
-    // The msat balance is back; only the zero position totals are unknown.
-    expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getByText("Total Value").parentElement).not.toHaveTextContent("—");
+    // The msat balance is back, but the total also needs the positions.
+    expect(screen.getByText("Total Value").parentElement).toHaveTextContent("—");
+    expect(screen.getByText("Total Value").parentElement).not.toHaveTextContent("12");
   });
 
   it("does not report zero held shares in the Sell panel while the restore runs", () => {
@@ -132,6 +133,41 @@ describe("empty states during the seed restore", () => {
     expect(screen.queryByText(/Held: 0 shares/)).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
     expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Restoring positions…");
+  });
+
+  it("does not show a partial total on the Portfolio page while the restore runs", () => {
+    restore.status = { kind: "restoring", scopeId: "scope" };
+
+    render(
+      <Portfolio
+        walletState="ready"
+        baseCurrency="BTC"
+        selectedTimeRange="ALL"
+        profile={{ displayName: "Anonymous", avatarUrl: null, bio: "" }}
+        plChartData={{ "1D": [], "1W": [], "1M": [], ALL: [] }}
+        stats={{ ...stats, totalValueSats: 12_000 }}
+        positions={[]}
+        activity={[]}
+        funds={[]}
+        createdMarkets={[]}
+        positionsTab="active"
+      />,
+    );
+
+    // Neither the chart header nor the statistics row shows the partial total.
+    expect(screen.queryByText(/12[,.]?000|12 sats/)).not.toBeInTheDocument();
+  });
+
+  it("names unavailable holdings in the Sell panel after the restore failed", () => {
+    restore.status = { kind: "failed", scopeId: "scope" };
+
+    renderSell();
+
+    expect(screen.queryByText("No selectable shares")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent(
+      "Wallet holdings are unavailable",
+    );
+    expect(screen.getByTestId("trade-confirm")).not.toHaveTextContent("Restoring positions");
   });
 
   it("reports zero held shares in the Sell panel after the restore", () => {

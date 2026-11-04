@@ -7,7 +7,7 @@ import { LoaderCircle } from "lucide-react";
 
 interface StatsRowProps {
   stats: PortfolioStats;
-  /** A seed restore runs or failed, so a zero total is not known to be zero. */
+  /** A seed restore runs or failed, so the total and a zero position value are not known. */
   positionsRestoring?: boolean;
 }
 
@@ -60,8 +60,8 @@ function formatTotals(
 
 export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
   const { t } = useTranslation();
-  // While a seed restore runs or failed, show a zero as unknown. A value above
-  // zero is already restored, so it stays.
+  // While a seed restore runs or failed, show a zero position value as
+  // unknown. A value above zero is already restored, so it stays.
   const known = (value: number, valueKnown: boolean | undefined) =>
     positionsRestoring && value === 0 ? false : valueKnown;
   return (
@@ -72,7 +72,8 @@ export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
         value={formatTotals(
           stats.totalValueByUnit,
           stats.totalValueSats,
-          known(stats.totalValueSats, stats.totalValueKnown),
+          // The total also needs the positions, so a partial number would mislead.
+          positionsRestoring ? false : stats.totalValueKnown,
         )}
       />
       <StatCard

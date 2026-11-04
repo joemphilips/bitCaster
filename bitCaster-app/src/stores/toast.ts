@@ -8,6 +8,8 @@ export interface Toast {
   type: ToastType;
   /** Auto-dismiss delay in ms. Defaults to 4000 for success and info. Errors ignore this value. */
   duration?: number;
+  /** Visible text lines. Defaults to 2. Use 3 only for a short notice that names an action. */
+  lines?: 2 | 3;
 }
 
 interface ToastState {

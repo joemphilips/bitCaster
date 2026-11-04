@@ -49,7 +49,6 @@ import {
   cursor,
   installLockManager,
   position,
-  regularHolding,
   regularKeyset,
   scopeId,
   selectableHoldings,
@@ -251,7 +250,8 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   it("re-syncs a keyset in use when another browser signed past the local cursor", async () => {
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
-    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "SPENT" });
+    // A live proof keeps the keyset in the daily re-sync.
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
     vi.stubGlobal("fetch", mint.fetch);
     // This browser restored the msat keyset earlier, so its cursor is 1.
     await runStartupPass();
@@ -265,7 +265,7 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await runStartupPass();
 
     expect(await cursor(regular.id)).toBe(3);
-    expect(await selectableHoldings()).toEqual([regularHolding(regular, 4)]);
+    expect(await amounts()).toEqual([4, 8]);
     expect(useToastStore.getState().toasts.map(({ message }) => message)).toContain(
       "This wallet was used in another browser. Use one browser at a time.",
     );
@@ -307,27 +307,46 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     expectNoIdentity(mint);
   });
 
-  it("limits the daily re-sync to keysets with live custody or recent activity", async () => {
+  it("limits the daily re-sync to keysets with live custody or recent local activity", async () => {
     await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const market = binaryMarket("ab".repeat(32));
     const mint = new FakeMint(regular, [market.yes, market.no]);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
     vi.stubGlobal("fetch", mint.fetch);
-    // This browser used YES once and holds no YES proof now.
+    // This browser used YES once and holds no YES proof now. An empty scan of
+    // NO left a counter association without a cursor.
     await usedKeyset(market.yes.id, 1);
-    await runStartupPass();
-    expect(mint.restoredOutputs().flat()).toContain(blindedOutput(market.yes, 1));
+    await usedKeyset(market.no.id, 0);
+    expect(await cursor(market.no.id)).toBeUndefined();
 
-    advanceClock(40 * DAY_MS);
-    const before = mint.restoredOutputs().length;
+    // Day 0: the first sight of YES is not local activity.
     await runStartupPass();
+    expect(mint.restoredOutputs().flat()).toContain(blindedOutput(regular, 1));
+    expect(mint.restoredOutputs().flat()).not.toContain(blindedOutput(market.yes, 1));
 
-    const probed = mint.restoredOutputs().slice(before).flat();
-    // The msat keyset holds live funds, so the daily re-sync probes it.
+    // Day 1: YES has no live proof and its cursor did not move.
+    advanceClock(DAY_MS + HOUR_MS);
+    let before = mint.restoredOutputs().length;
+    await runStartupPass();
+    let probed = mint.restoredOutputs().slice(before).flat();
     expect(probed).toContain(blindedOutput(regular, 1));
-    // YES has no live proof and no recent activity.
     expect(probed).not.toContain(blindedOutput(market.yes, 1));
+
+    // Evidence probes every keyset in use, but not one without a cursor.
+    await requestBrowserKeysetResync({ scopeId: scopeId(), mintUrl: MINT_URL });
+    before = mint.restoredOutputs().length;
+    await runStartupPass();
+    probed = mint.restoredOutputs().slice(before).flat();
+    expect(probed).toContain(blindedOutput(market.yes, 1));
+    expect(probed).not.toContain(blindedOutput(market.no, 0));
+
+    // This browser uses YES again, so its moved cursor is recent activity.
+    await usedKeyset(market.yes.id, 3);
+    advanceClock(DAY_MS + HOUR_MS);
+    before = mint.restoredOutputs().length;
+    await runStartupPass();
+    expect(mint.restoredOutputs().slice(before).flat()).toContain(blindedOutput(market.yes, 3));
   });
 
   it("admits outputs that a counter-only advance skipped in the next pass", async () => {
@@ -473,7 +492,7 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   it("advances the cursor and keeps found outputs for a later pass when admission fails", async () => {
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
-    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "SPENT" });
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
     vi.stubGlobal("fetch", mint.fetch);
     await runStartupPass();
     mint.sign({ keyset: regular, counter: 1, amount: 4, state: "UNSPENT" });
@@ -484,14 +503,14 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
 
     // The cursor moved past the signed output, so no local output reuses it.
     expect(await cursor(regular.id)).toBe(2);
-    expect(await selectableHoldings()).toEqual([]);
+    expect(await amounts()).toEqual([8]);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
 
     mint.failCheckstate = false;
     advanceClock(HOUR_MS);
     await runStartupPass();
 
-    expect(await amounts()).toEqual([4]);
+    expect(await amounts()).toEqual([4, 8]);
   });
 
   it("backs off a keyset with a PENDING proof and scans it again from the pending counter", async () => {
@@ -569,5 +588,112 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
         keyset: activeKeyset(regular),
       }),
     ).rejects.toBeInstanceOf(WalletKeysetCounterPendingError);
+  });
+  it("waits with a deferral scan while an operation of this browser is in flight", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    // A refused order planned counters 1 and 2. Another browser had signed 1.
+    await counters().advanceToAtLeastInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      regular.id,
+      3,
+      false,
+    );
+    mint.sign({ keyset: regular, counter: 1, amount: 2, state: "UNSPENT" });
+    await advanceWalletKeysetCounterPastMint({
+      scopeId: scopeId(),
+      mintUrl: MINT_URL,
+      unit: "msat",
+      keyset: activeKeyset(regular),
+      plannedFromCounter: 1,
+    });
+    // Another operation of this browser has not finished. A scan from the
+    // marker could admit its outputs before the operation records them.
+    await db.custodyActiveWork.put({
+      scopeId: scopeId(),
+      operationId: "in-flight-order",
+      nextAttemptAtMs: 0,
+    } as never);
+    const start = Date.now();
+    const scans = mint.restoredOutputs().length;
+
+    const waiting = await resync(start);
+
+    expect(mint.restoredOutputs().slice(scans).flat()).not.toContain(blindedOutput(regular, 1));
+    expect(await amounts()).toEqual([8]);
+    // The wait is not an admission failure.
+    expect(await resyncRow(regular.id)).toMatchObject({ pendingFromCounter: 1, failures: 0 });
+    expect(waiting.retryAtMs).toBeGreaterThan(start);
+
+    await db.custodyActiveWork.clear();
+    await resync(waiting.retryAtMs!);
+
+    expect(await amounts()).toEqual([2, 8]);
+    expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(null);
+  });
+
+  it("waits for the probe backoff before it probes again on evidence", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await requestBrowserKeysetResync({ scopeId: scopeId(), mintUrl: MINT_URL });
+    mint.failRestore = true;
+    const start = Date.now();
+
+    const result = await resync(start);
+
+    const schedule = await seedRestore!.resyncSchedules.get([scopeId(), MINT_URL]);
+    expect(schedule?.probeFailures).toBe(1);
+    // The evidence waits for the probe backoff, so the hook does not run every second.
+    expect(result.retryAtMs).toBe(schedule?.nextProbeAtMs);
+    expect(result.retryAtMs).toBeGreaterThan(start + 10_000);
+  });
+
+  it("keeps the condition of a keyset that an order checks", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+
+    await ensureWalletKeysetCounterReady({
+      scopeId: scopeId(),
+      mintUrl: MINT_URL,
+      unit: "msat",
+      keyset: activeKeyset(market.yes),
+      conditionalAsset: conditionalAsset(market.yes),
+    });
+
+    // A later deferral of this keyset finds its authority without the mint listing.
+    expect(await resyncRow(market.yes.id)).toMatchObject({
+      condition: conditionalAsset(market.yes),
+    });
+  });
+
+  it("bounds the counter scan when the mint reports every output as signed", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    expect(await cursor(regular.id)).toBe(1);
+    mint.echoRestore = true;
+    const requests = mint.requestsTo("/v1/restore").length;
+
+    await advanceWalletKeysetCounterPastMint({
+      scopeId: scopeId(),
+      mintUrl: MINT_URL,
+      unit: "msat",
+      keyset: activeKeyset(regular),
+    });
+
+    // One scan asks about 3,000 counters in requests of 100, then stops.
+    expect(mint.requestsTo("/v1/restore").length - requests).toBe(30);
+    expect(await cursor(regular.id)).toBe(3_001);
+    expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
   });
 });

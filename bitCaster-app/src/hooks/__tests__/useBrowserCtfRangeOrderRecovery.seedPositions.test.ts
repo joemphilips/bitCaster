@@ -38,6 +38,7 @@ import {
   seedRestoreDatabase,
   type SeedRestoreDB,
 } from "@/stores/seed-restore-db";
+import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useToastStore } from "@/stores/toast";
 import {
@@ -45,6 +46,7 @@ import {
   MINT_URL,
   MNEMONIC,
   binaryMarket,
+  blindedOutput,
   byKeysetAndAmount,
   conditionalKeyset,
   installLockManager,
@@ -484,6 +486,44 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect((await restoreRow(market.no.id))?.state).toBe("restored");
   });
 
+  it("does not probe again a keyset that this browser now uses", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+    let nowMs = 1_000_000;
+    const now = () => nowMs;
+    await restorePass(now);
+    expect((await restoreRow(market.no.id))?.state).toBe("no-signature");
+
+    // This browser then used NO. An output of its own order that is still in
+    // flight is signed at counter 0. The keyset re-sync owns this keyset now.
+    await new BrowserWalletCounterDexieStore({
+      database: db,
+      scopeId: scopeId(),
+      isCurrentProfile: () => true,
+    }).restoreInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      market.no.id,
+      2,
+      false,
+      () => undefined,
+    );
+    mint.sign({ keyset: market.no, counter: 0, amount: 4, state: "UNSPENT" });
+    const evidence = (await seedRestore!.resyncSchedules.get([scopeId(), MINT_URL]))?.evidence ?? 0;
+    const before = mint.restoredOutputs().length;
+    nowMs += 2 * HOUR_MS;
+
+    await restorePass(now);
+
+    expect(mint.restoredOutputs().slice(before).flat()).not.toContain(blindedOutput(market.no, 0));
+    expect(await selectableHoldings()).toEqual([]);
+    // Its own outputs are no evidence of another client.
+    expect((await seedRestore!.resyncSchedules.get([scopeId(), MINT_URL]))?.evidence ?? 0).toBe(
+      evidence,
+    );
+  });
+
   it("probes every keyset with no signature again within the re-probe cycle", async () => {
     const regular = regularKeyset();
     const markets = Array.from({ length: 12 }, (_, index) =>
@@ -550,6 +590,37 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     await restorePass(now);
 
     expect(await selectableHoldings()).toEqual([position(later.no, 2)]);
+  });
+
+  it("resumes a later catalogue walk at the page that failed", async () => {
+    const regular = regularKeyset();
+    const early = binaryMarket("ab".repeat(32));
+    const second = binaryMarket("cd".repeat(32));
+    const third = binaryMarket("ef".repeat(32));
+    const mint = new FakeMint(regular, [early.yes, early.no]);
+    mint.catalogue = [catalogueEntry("ab".repeat(32))];
+    vi.stubGlobal("fetch", mint.fetch);
+    let nowMs = 1_000_000;
+    const now = () => nowMs;
+    expect((await restorePass(now)).status).toBe("complete");
+
+    // Two markets open. The read of the second page of the next walk fails.
+    mint.catalogue = [
+      catalogueEntry("cd".repeat(32)),
+      catalogueEntry("ef".repeat(32)),
+      ...mint.catalogue,
+    ];
+    registerAtMint(mint, second.yes, second.no, third.yes, third.no);
+    mint.sign({ keyset: third.yes, counter: 0, amount: 4, state: "UNSPENT" });
+    mint.cursorReadFailures = 1;
+    nowMs += DAY_MS;
+    await restorePass(now);
+
+    // A later pass continues at the failed page, so its market is not lost.
+    nowMs += 2 * HOUR_MS;
+    await restorePass(now);
+
+    expect(await selectableHoldings()).toEqual([position(third.yes, 4)]);
   });
 
   it("restarts the catalogue walk from its first page on Retry", async () => {

@@ -57,7 +57,7 @@ import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecovery
 import {
   createBuyReceiveProbeCache,
   probeBuyReceiveRange,
-  probeSignedBlindedOutputs,
+  browserSeedCounterRestoreClient,
 } from "./browserCtfRangeCounterProbe";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
@@ -78,6 +78,7 @@ import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import {
   WalletKeysetCounterPendingError,
   advanceWalletKeysetCounterPastMint,
+  advanceWalletKeysetCounterPastSignedOutputs,
   ensureWalletKeysetCounterReady,
 } from "./cashu";
 import { requestBrowserKeysetResync } from "@/stores/seed-restore-db";
@@ -1434,16 +1435,17 @@ async function probeBuyReceiveCounters(
     counterStore,
     preparation,
     seed,
-    probe: probeSignedBlindedOutputs,
+    mint: browserSeedCounterRestoreClient(preparation.mintUrl),
     cache: buyReceiveProbeCache,
-    scanPastSignedOutputs: (keyset, fromCounter) =>
-      advanceWalletKeysetCounterPastMint({
+    advancePastSignedOutputs: (keyset, fromCounter, nextCounter) =>
+      advanceWalletKeysetCounterPastSignedOutputs({
         scopeId,
         mintUrl: preparation.mintUrl,
         unit: "msat",
         keyset,
         ...conditionalCounterAsset(keyset),
-        plannedFromCounter: fromCounter,
+        fromCounter,
+        nextCounter,
       }),
   });
 }

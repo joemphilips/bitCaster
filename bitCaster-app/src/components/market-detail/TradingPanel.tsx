@@ -1136,7 +1136,10 @@ export function TradingPanel({
     if (!walletReady) return t("wallet.startTrading");
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (isSell && selectedSellAvailability?.status === "restoring") {
-      return t("portfolio.restoringPositions");
+      // A failed restore does not run, so its holdings are unavailable.
+      return restoreStatus.kind === "failed"
+        ? t("trade.sellHoldingsUnavailable")
+        : t("portfolio.restoringPositions");
     }
     if (isSell && selectedSellAmountUnavailable) {
       return selectedSellStatusMessage ?? t("trade.sellHoldingsUnavailable");

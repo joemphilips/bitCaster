@@ -59,11 +59,13 @@ import {
 import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
 import type { ConditionalKeysetSeedRecoveryAuthority } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
 import {
+  recordSeedRestoreCondition,
   recordSeedRestoreDeferral,
   requestBrowserKeysetResync,
   seedRestoreDatabase,
   settleSeedRestoreDeferral,
 } from "@/stores/seed-restore-db";
+import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -812,11 +814,13 @@ export function ensureWalletKeysetCounterReady(input: {
 /**
  * Advance one selected keyset's counter past every output that the mint
  * signed for this seed, even after an earlier scan completed. Use it after
- * the mint reports a reused output, or after a probe finds signed outputs:
- * another client with the same seed signed outputs past this browser's
- * cursor. It admits no proof, so it claims no custody scope and can run while
- * the caller owns that scope. It first writes the deferral marker, so a later
- * pass admits the skipped outputs (ADR-033).
+ * the mint reports a reused output: another client with the same seed signed
+ * outputs past this browser's cursor. It admits no proof, so it claims no
+ * custody scope and can run while the caller owns that scope. The scan has a
+ * work bound (`findLastSignedSeedCounter`), so a mint that reports every
+ * output as signed cannot hold the wallet profile lock forever. It first
+ * writes the deferral marker, so a later pass admits the skipped outputs
+ * (ADR-033).
  */
 export async function advanceWalletKeysetCounterPastMint(input: {
   scopeId: string;
@@ -825,78 +829,146 @@ export async function advanceWalletKeysetCounterPastMint(input: {
   keyset: ActiveCtfRangeMintKeyset;
   conditionalAsset?: { conditionId: string; outcomeCollection: string };
   /**
-   * The first counter of the refused or probed output plan. The mint signed
-   * outputs from here, and the cursor can already be past them.
+   * The first counter of the refused output plan. The mint signed outputs
+   * from here, and the cursor can already be past them.
    */
   plannedFromCounter?: number;
 }): Promise<void> {
   let selected: ReturnType<typeof requireSelectedCounterRecovery>;
   try {
     selected = requireSelectedCounterRecovery(input);
-    if (
-      input.plannedFromCounter !== undefined &&
-      (!Number.isSafeInteger(input.plannedFromCounter) || input.plannedFromCounter < 0)
-    ) {
-      throw new Error("planned counter is invalid");
-    }
+    if (input.plannedFromCounter !== undefined) requireCounter(input.plannedFromCounter);
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
-  const isCurrentProfile = () => activeBrowserWalletScopeId() === input.scopeId;
-  const counters = new BrowserWalletCounterDexieStore({
-    database: db,
-    scopeId: input.scopeId,
-    isCurrentProfile,
-  });
-  const context = { mintUrl: selected.url, unit: input.unit };
+  const counters = selectedCounterStore(input.scopeId);
   try {
     const wallet = (await useWalletStore
       .getState()
       .getWalletForUnit(selected.url, input.unit)) as CashuWallet;
-    if (selected.conditionalKeyset !== undefined) {
-      registerCounterRecoveryConditionalKeyset(wallet, selected.conditionalKeyset);
-    }
-    const start = (await counters.readSnapshotInContext(context, input.keyset.id)).nextCounter ?? 0;
+    const start =
+      (
+        await counters.readSnapshotInContext(
+          { mintUrl: selected.url, unit: input.unit },
+          input.keyset.id,
+        )
+      ).nextCounter ?? 0;
     // The refused outputs lie below the cursor, which already moved past them.
     // Any outputs that the other client signed beyond them start at or after
     // the cursor, so the scan starts there.
-    const { lastCounterWithSignature } = await wallet.batchRestore(
-      300,
-      100,
-      start,
-      input.keyset.id,
-    );
-    requireValidCounterRecoveryResult(lastCounterWithSignature);
-    if (lastCounterWithSignature !== undefined || input.plannedFromCounter !== undefined) {
-      // The signed outputs can hold funds or positions of this seed: those
-      // past the cursor, and the planned outputs below it. Record them before
-      // the counter-only advance, so a later pass scans from the plan's start
-      // and admits them (ADR-033).
-      await recordSeedRestoreDeferral({
-        scopeId: input.scopeId,
-        mintUrl: selected.url,
-        keysetId: input.keyset.id,
-        fromCounter: Math.min(input.plannedFromCounter ?? start, start),
-        highestCounter: lastCounterWithSignature ?? null,
-        condition: input.conditionalAsset ?? null,
-        finding: true,
-        nowMs: Date.now(),
-      });
-    }
-    if (lastCounterWithSignature !== undefined) {
-      await counters.advanceToAtLeastInContext(
-        context,
-        input.keyset.id,
-        lastCounterWithSignature + 1,
-        true,
-      );
-    }
-    // Another client used this seed. Probe the keysets in use at once.
-    await requestBrowserKeysetResync({ scopeId: input.scopeId, mintUrl: selected.url });
+    const lastSigned = await findLastSignedSeedCounter({
+      mint: wallet.mint,
+      seed: toSeed(useWalletStore.getState().mnemonic.trim().split(/\s+/)),
+      keysetId: input.keyset.id,
+      startCounter: start,
+    });
+    await deferAndAdvanceSelectedKeyset({
+      ...input,
+      url: selected.url,
+      counters,
+      fromCounter: Math.min(input.plannedFromCounter ?? start, start),
+      lastSigned,
+      deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
+    });
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
-  if (!isCurrentProfile()) throw new WalletKeysetCounterReadinessError();
+  if (activeBrowserWalletScopeId() !== input.scopeId) {
+    throw new WalletKeysetCounterReadinessError();
+  }
+}
+
+/**
+ * Advance one selected keyset's counter to `nextCounter` after a probe found
+ * outputs that the mint signed from `fromCounter`. The caller already ran the
+ * bounded gap scan. It admits no proof. It first writes the deferral marker,
+ * so a later pass admits the skipped outputs (ADR-033).
+ */
+export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  fromCounter: number;
+  nextCounter: number;
+}): Promise<void> {
+  let selected: ReturnType<typeof requireSelectedCounterRecovery>;
+  try {
+    selected = requireSelectedCounterRecovery(input);
+    requireCounter(input.fromCounter);
+    if (!Number.isSafeInteger(input.nextCounter) || input.nextCounter <= input.fromCounter) {
+      throw new Error("next counter is invalid");
+    }
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  try {
+    await deferAndAdvanceSelectedKeyset({
+      ...input,
+      url: selected.url,
+      counters: selectedCounterStore(input.scopeId),
+      lastSigned: input.nextCounter - 1,
+      deferred: true,
+    });
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  if (activeBrowserWalletScopeId() !== input.scopeId) {
+    throw new WalletKeysetCounterReadinessError();
+  }
+}
+
+function selectedCounterStore(scopeId: string): BrowserWalletCounterDexieStore {
+  return new BrowserWalletCounterDexieStore({
+    database: db,
+    scopeId,
+    isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+  });
+}
+
+function requireCounter(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("counter is invalid");
+}
+
+/**
+ * The signed outputs can hold funds or positions of this seed: those past the
+ * cursor, and the planned outputs below it. Record them before the
+ * counter-only advance, so a later pass scans from `fromCounter` and admits
+ * them. Then ask for a re-sync: another client used this seed.
+ */
+async function deferAndAdvanceSelectedKeyset(input: {
+  scopeId: string;
+  url: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  counters: BrowserWalletCounterDexieStore;
+  fromCounter: number;
+  lastSigned: number | null;
+  deferred: boolean;
+}): Promise<void> {
+  if (input.deferred) {
+    await recordSeedRestoreDeferral({
+      scopeId: input.scopeId,
+      mintUrl: input.url,
+      keysetId: input.keyset.id,
+      fromCounter: input.fromCounter,
+      highestCounter: input.lastSigned,
+      condition: input.conditionalAsset ?? null,
+      finding: true,
+      nowMs: Date.now(),
+    });
+  }
+  if (input.lastSigned !== null) {
+    await input.counters.advanceToAtLeastInContext(
+      { mintUrl: input.url, unit: input.unit },
+      input.keyset.id,
+      input.lastSigned + 1,
+      true,
+    );
+  }
+  await requestBrowserKeysetResync({ scopeId: input.scopeId, mintUrl: input.url });
 }
 
 function requireSelectedCounterRecovery(input: {
@@ -933,6 +1005,19 @@ async function recoverSelectedKeysetCounterReadiness(input: {
   conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   profileLockHeld: boolean;
 }): Promise<void> {
+  if (input.conditionalKeyset !== undefined) {
+    // A later deferral of this keyset can then find its keyset authority
+    // without a walk of the mint listing. The record only saves mint work.
+    await recordSeedRestoreCondition({
+      scopeId: input.scopeId,
+      mintUrl: input.mintUrl,
+      keysetId: input.keysetId,
+      condition: {
+        conditionId: input.conditionalKeyset.conditionId,
+        outcomeCollection: input.conditionalKeyset.outcomeCollection,
+      },
+    }).catch(() => undefined);
+  }
   const result = await recoverKeysetCountersForMintCore(input.mintUrl, {
     unit: input.unit,
     keysetId: input.keysetId,

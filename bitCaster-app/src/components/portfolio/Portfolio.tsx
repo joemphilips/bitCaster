@@ -196,7 +196,7 @@ export function Portfolio(props: PortfolioProps) {
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
-            totalValueKnown={props.stats.totalValueKnown}
+            totalValueKnown={positionsRestoring ? false : props.stats.totalValueKnown}
             totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
