@@ -1096,7 +1096,7 @@ it.each(["en", "ja"])(
       `button[aria-label="${i18n.t("common.close")}"]`,
     )!;
     const copy = card.querySelector<HTMLButtonElement>(
-      `button[aria-label="${i18n.t("userProfile.copyNpub")}"]`,
+      `button[aria-label="${i18n.t("comment.copyAuthorNpub", { name: displayName })}"]`,
     )!;
     const author = card.querySelector<HTMLElement>('[data-testid="price-chart-comment-author"]')!;
     const authorLink = author.closest("a")!;

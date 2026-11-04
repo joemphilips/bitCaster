@@ -1170,7 +1170,24 @@ describe("PriceChart", () => {
       expect(link).toHaveAttribute("href", `/user/${authorNpub}`);
       expect(link).toContainElement(author);
       expect(link).not.toContainElement(
-        within(dialog).getByRole("button", { name: "Copy Nostr ID" }),
+        within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" }),
+      );
+    });
+
+    it("names the copy control after the resolved profile name", async () => {
+      fetchPublicNostrProfile.mockResolvedValue({
+        pubkey: authorHex,
+        displayName: "Alice",
+        avatar: "",
+      });
+      const { dialog } = renderAuthor(authorHex);
+
+      expect(
+        await within(dialog).findByRole("button", { name: "Copy Alice's Nostr ID" }),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole("link", { name: "Alice" })).toHaveAttribute(
+        "href",
+        `/user/${authorNpub}`,
       );
     });
 
@@ -1180,7 +1197,7 @@ describe("PriceChart", () => {
       const { marker, dialog } = renderAuthor(authorHex, writeText);
       fireEvent.pointerLeave(marker);
       fireEvent.pointerEnter(dialog);
-      const copy = within(dialog).getByRole("button", { name: "Copy Nostr ID" });
+      const copy = within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" });
 
       fireEvent.pointerDown(copy, { pointerType: "mouse" });
       await act(async () => fireEvent.click(copy));
@@ -1204,7 +1221,9 @@ describe("PriceChart", () => {
       const { dialog } = renderAuthor(authorHex, vi.fn().mockRejectedValue(new Error("denied")));
 
       await act(async () =>
-        fireEvent.click(within(dialog).getByRole("button", { name: "Copy Nostr ID" })),
+        fireEvent.click(
+          within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" }),
+        ),
       );
       expect(useToastStore.getState().toasts).toEqual([
         expect.objectContaining({ type: "error", message: "Could not copy the Nostr ID." }),
@@ -1220,7 +1239,7 @@ describe("PriceChart", () => {
         const target =
           control === "link"
             ? within(dialog).getByRole("link", { name: "Trader author" })
-            : within(dialog).getByRole("button", { name: "Copy Nostr ID" });
+            : within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" });
         act(() => target.focus());
         fireEvent.pointerLeave(marker);
         act(() => vi.advanceTimersByTime(300));
@@ -1244,7 +1263,7 @@ describe("PriceChart", () => {
       expect(author).toHaveTextContent("Trader author");
       expect(author).toHaveAttribute("title", userId);
       expect(within(dialog).queryByRole("link")).not.toBeInTheDocument();
-      expect(within(dialog).queryByRole("button", { name: "Copy Nostr ID" })).toBeNull();
+      expect(within(dialog).queryByRole("button", { name: /Nostr ID/ })).toBeNull();
     });
   });
 

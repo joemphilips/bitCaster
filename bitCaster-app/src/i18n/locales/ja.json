@@ -442,7 +442,8 @@
     "title": "コメント",
     "noComments": "まだコメントがありません。トレードするとコメントできます！",
     "unavailable": "現在コメントを読み込めません。",
-    "loadMore": "さらにコメントを表示"
+    "loadMore": "さらにコメントを表示",
+    "copyAuthorNpub": "{{name}}のNostr IDをコピー"
   },
   "portfolio": {
     "title": "ポートフォリオ",

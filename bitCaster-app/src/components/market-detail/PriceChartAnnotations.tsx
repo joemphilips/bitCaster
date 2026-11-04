@@ -582,10 +582,11 @@ export function PriceChartAnnotations({
                                 >
                                   <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[11px] text-slate-600 dark:text-slate-300">
                                     {authorNpub ? (
-                                      <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-0.5">
+                                      <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-1.5">
+                                        {/* The padding enlarges the touch target. The negative margin keeps the line height. */}
                                         <Link
                                           to={`/user/${authorNpub}`}
-                                          className="min-w-0 rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                          className="-my-1 min-w-0 rounded py-1 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                                         >
                                           <span
                                             className="block truncate font-medium"
@@ -598,7 +599,9 @@ export function PriceChartAnnotations({
                                         {/* The negative margin keeps the author line height. */}
                                         <CopyNpubButton
                                           npub={authorNpub}
-                                          label={t("userProfile.copyNpub")}
+                                          label={t("comment.copyAuthorNpub", {
+                                            name: authorName,
+                                          })}
                                           copiedMessage={t("userProfile.npubCopied")}
                                           failedMessage={t("userProfile.npubCopyFailed")}
                                           iconSize="sm"

@@ -445,7 +445,8 @@
     "title": "Comments",
     "noComments": "No comments yet. Place a trade to leave a comment!",
     "unavailable": "Comments are not available now.",
-    "loadMore": "Load more comments"
+    "loadMore": "Load more comments",
+    "copyAuthorNpub": "Copy {{name}}'s Nostr ID"
   },
   "portfolio": {
     "title": "Portfolio",

@@ -84,16 +84,16 @@ function CommentRow({ comment }: { comment: Comment }) {
               {/* The negative margin keeps the name line height. */}
               <CopyNpubButton
                 npub={npub}
-                label={t("userProfile.copyNpub")}
+                label={t("comment.copyAuthorNpub", { name })}
                 copiedMessage={t("userProfile.npubCopied")}
                 failedMessage={t("userProfile.npubCopyFailed")}
-                className="-my-1.5 p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-white"
+                className="-my-1.5 p-2 text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
               />
             </div>
           ) : (
             nameLabel
           )}
-          <span className="text-xs text-slate-400 dark:text-slate-500 ml-2">
+          <span className="text-xs text-slate-400 dark:text-slate-500">
             {formatTimeAgo(comment.timestamp)}
           </span>
         </div>

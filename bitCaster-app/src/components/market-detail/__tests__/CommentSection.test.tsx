@@ -153,6 +153,9 @@ it("resolves only visible authors and renders public names as text", async () =>
     }),
   );
   expect(screen.getByText("<script>Alice</script>")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Copy <script>Alice</script>'s Nostr ID" }),
+  ).toBeVisible();
   expect(document.querySelector("script,img")).toBeNull();
 });
 
@@ -245,7 +248,9 @@ describe("CommentSection author identity", () => {
 
     const nameLink = screen.getByRole("link", { name: "Trader" });
     expect(nameLink).toHaveAttribute("href", `/user/${authorNpub}`);
-    expect(nameLink).not.toContainElement(screen.getByRole("button", { name: "Copy Nostr ID" }));
+    expect(nameLink).not.toContainElement(
+      screen.getByRole("button", { name: "Copy Trader's Nostr ID" }),
+    );
     // The avatar repeats the name link for pointer users only.
     const avatar = screen.getByRole("img", { name: "Trader", hidden: true });
     const avatarLink = avatar.closest("a");
@@ -271,7 +276,7 @@ describe("CommentSection author identity", () => {
     stubClipboard(writeText);
     renderComments(<CommentSection comments={[authorComment(authorHex)]} />);
 
-    await user.click(screen.getByRole("button", { name: "Copy Nostr ID" }));
+    await user.click(screen.getByRole("button", { name: "Copy Trader's Nostr ID" }));
     expect(writeText).toHaveBeenCalledExactlyOnceWith(authorNpub);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await act(async () => {
@@ -290,7 +295,7 @@ describe("CommentSection author identity", () => {
       );
       renderComments(<CommentSection comments={[authorComment(authorHex)]} />);
 
-      await user.click(screen.getByRole("button", { name: "Copy Nostr ID" }));
+      await user.click(screen.getByRole("button", { name: "Copy Trader's Nostr ID" }));
       expect(await screen.findByRole("status")).toHaveTextContent("Could not copy the Nostr ID.");
       expect(useToastStore.getState().toasts).toEqual([
         expect.objectContaining({ type: "error", message: "Could not copy the Nostr ID." }),
@@ -298,12 +303,34 @@ describe("CommentSection author identity", () => {
     },
   );
 
+  it("names each author's copy control after the author and keeps the icon and toast", async () => {
+    const user = userEvent.setup();
+    stubClipboard(vi.fn().mockResolvedValue(undefined));
+    renderComments(
+      <CommentSection
+        comments={[
+          { ...authorComment(authorHex, "Alice"), id: "alice" },
+          { ...authorComment("b".repeat(64), "Bob"), id: "bob" },
+        ]}
+      />,
+    );
+
+    const alice = screen.getByRole("button", { name: "Copy Alice's Nostr ID" });
+    const bob = screen.getByRole("button", { name: "Copy Bob's Nostr ID" });
+    for (const copy of [alice, bob]) {
+      expect(copy.textContent).toBe("");
+      expect(copy.querySelectorAll("svg")).toHaveLength(1);
+    }
+    await user.click(bob);
+    expect(await screen.findByRole("status")).toHaveTextContent("Nostr ID copied.");
+  });
+
   it("labels the author copy control and its result in Japanese", async () => {
     const user = userEvent.setup();
     stubClipboard(vi.fn().mockResolvedValue(undefined));
     renderComments(<CommentSection comments={[authorComment(authorHex)]} />, "ja");
 
-    await user.click(screen.getByRole("button", { name: "Nostr IDをコピー" }));
+    await user.click(screen.getByRole("button", { name: "TraderのNostr IDをコピー" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Nostr IDをコピーしました。");
   });
 
@@ -317,7 +344,7 @@ describe("CommentSection author identity", () => {
 
     expect(screen.getByText("Trader")).toBeVisible();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy Nostr ID" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Nostr ID/ })).not.toBeInTheDocument();
   });
 
   it("truncates a long linked name and keeps the copy control outside the truncation", () => {
@@ -328,7 +355,7 @@ describe("CommentSection author identity", () => {
     expect(label).toHaveClass("block", "truncate");
     expect(label).toHaveAttribute("title", name);
     expect(label.closest("a")).toHaveAttribute("href", `/user/${authorNpub}`);
-    const copy = screen.getByRole("button", { name: "Copy Nostr ID" });
+    const copy = screen.getByRole("button", { name: `Copy ${name}'s Nostr ID` });
     expect(copy).toHaveClass("shrink-0");
     expect(label).not.toContainElement(copy);
   });
