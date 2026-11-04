@@ -5,6 +5,7 @@ import type {
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
 import { computeAssetMonitoringOutcomeUniverseDigest } from "@bitcaster/client-sdk/assetMonitoring";
+import { EngineClientError } from "@bitcaster/client-sdk/engineClient";
 import {
   portfolioInvalidatedEvent,
   publishPortfolioInvalidation,
@@ -433,6 +434,106 @@ function conditionalMonitoringAsset(
   };
 }
 
+function rateLimitedPortfolioRead(retryAfterSeconds: number | undefined): EngineClientError {
+  return new EngineClientError(
+    429,
+    '{"limitCode":"asset-monitoring-history-rate-window"}',
+    undefined,
+    "Retry after the current rate-limit window.",
+    retryAfterSeconds,
+  );
+}
+
+/** Advances fake time in small steps, so that each started read sees its own time. */
+async function advanceInSteps(totalMs: number, stepMs = 100): Promise<void> {
+  for (let elapsedMs = 0; elapsedMs < totalMs; elapsedMs += stepMs) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(stepMs);
+    });
+  }
+}
+
+/** The engine admits 12 Portfolio reads per caller in each one-minute window. */
+const engineReadsPerMinute = 12;
+
+function maximumReadsInAnyMinute(readAtMs: readonly number[]): number {
+  return Math.max(
+    0,
+    ...readAtMs.map((start) => readAtMs.filter((at) => at >= start && at < start + 60_000).length),
+  );
+}
+
+type RealisticWalletEvent =
+  | { atMs: number; kind: "report"; totalMsat: number }
+  | { atMs: number; kind: "settlement" }
+  | { atMs: number; kind: "price" };
+
+/**
+ * One minute on the Portfolio page: open it, a deposit completes, a buy
+ * settles and a sell settles. Each wallet change sends an accepted report, a
+ * trade also sends a settlement notice and a price notice. The fake
+ * projection answers after 200 ms and builds for 2 s after each report.
+ */
+const realisticWalletMinute: readonly RealisticWalletEvent[] = [
+  { atMs: 400, kind: "report", totalMsat: 15_000 },
+  { atMs: 10_000, kind: "report", totalMsat: 20_000 },
+  { atMs: 25_000, kind: "report", totalMsat: 20_000 },
+  { atMs: 27_000, kind: "settlement" },
+  { atMs: 27_400, kind: "report", totalMsat: 23_000 },
+  { atMs: 27_500, kind: "price" },
+  { atMs: 40_000, kind: "report", totalMsat: 23_000 },
+  { atMs: 42_000, kind: "settlement" },
+  { atMs: 42_400, kind: "report", totalMsat: 21_000 },
+  { atMs: 42_500, kind: "price" },
+];
+
+async function driveRealisticWalletMinute(
+  untilMs: number,
+): Promise<{ readAtMs: number[]; result: { current: ReturnType<typeof usePortfolioState> } }> {
+  const startedAt = Date.now();
+  const readAtMs: number[] = [];
+  let reportAtMs = Number.NEGATIVE_INFINITY;
+  let projectedTotalMsat = 15_000;
+  mocks.getPortfolio.mockImplementation(async () => {
+    const atMs = Date.now() - startedAt;
+    readAtMs.push(atMs);
+    const building = atMs - reportAtMs < 2_000;
+    const totalMsat = projectedTotalMsat;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return building
+      ? buildingUnvaluedPortfolioResponse()
+      : completePortfolioResponse("ALL", totalMsat);
+  });
+  const { result } = renderHook(() => usePortfolioState());
+  const pending = [...realisticWalletMinute];
+  for (let nowMs = 0; nowMs < untilMs; nowMs += 100) {
+    while (pending[0] !== undefined && pending[0].atMs <= nowMs) {
+      const event = pending.shift()!;
+      act(() => {
+        switch (event.kind) {
+          case "report":
+            reportAtMs = event.atMs;
+            projectedTotalMsat = event.totalMsat;
+            publishPortfolioInvalidation({ walletId: activeWalletId });
+            return;
+          case "settlement":
+            publishPortfolioInvalidation({ walletId: activeWalletId });
+            return;
+          case "price":
+            mocks.portfolioObservers[0]?.onRefresh();
+            return;
+          default:
+            throw new Error(`Unhandled wallet event: ${String(event satisfies never)}`);
+        }
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+  }
+  return { readAtMs, result };
+}
+
 describe("usePortfolioState monitoring facade", () => {
   it("shows profile metadata only for a runtime-authorized signer and keeps the description", async () => {
     mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
@@ -482,31 +583,52 @@ describe("usePortfolioState monitoring facade", () => {
   });
 
   it("repairs explicit portfolio loss after a failed read without another notification", async () => {
-    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
-    const view = renderHook(() => usePortfolioState());
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0),
-    );
-    mocks.getPortfolio
-      .mockRejectedValueOnce(new Error("unavailable"))
-      .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
-    act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
-    expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
-    view.unmount();
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      const view = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0);
+      mocks.getPortfolio
+        .mockRejectedValueOnce(new Error("unavailable"))
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+      act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
+      await advanceInSteps(1_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+
+      // The repair retry is the third read, so it waits for a read permit.
+      await advanceInSteps(15_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
+      expect(view.result.current.stats.totalValueSats).toBe(12_000);
+      view.unmount();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("does not clear explicit repair after a building response", async () => {
-    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
-    const view = renderHook(() => usePortfolioState());
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    mocks.getPortfolio
-      .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
-      .mockResolvedValueOnce(completePortfolioResponse());
-    act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
-    view.unmount();
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      const view = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      mocks.getPortfolio
+        .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+      act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
+      await advanceInSteps(16_000);
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      expect(view.result.current.stats.totalValueSats).toBe(12_000);
+      view.unmount();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("retains the last complete display through a building response and a failed refresh", async () => {
@@ -1318,7 +1440,7 @@ describe("usePortfolioState monitoring facade", () => {
     expect(result.current.funds).toEqual([localFund]);
   });
 
-  it("reads a building projection again after 1, 2, 4 and 8 s", async () => {
+  it("reads a building projection again after 1 s and then once per read interval", async () => {
     vi.useFakeTimers();
     try {
       const startedAt = Date.now();
@@ -1328,14 +1450,11 @@ describe("usePortfolioState monitoring facade", () => {
         return buildingUnvaluedPortfolioResponse();
       });
       const { result } = renderHook(() => usePortfolioState());
-      for (let second = 0; second < 30; second += 1) {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(1_000);
-        });
-      }
+      await advanceInSteps(90_000);
 
-      // Four extra reads, then the bounded cycle ends.
-      expect(readAtMs).toEqual([0, 1_000, 3_000, 7_000, 15_000]);
+      // The 2, 4 and 8 s retries wait for a permit every 15 s. Four extra
+      // reads, then the bounded cycle ends.
+      expect(readAtMs).toEqual([0, 1_000, 15_000, 30_000, 45_000]);
       expect(result.current.monitoring.building).toBe(true);
       expect(result.current.stats.totalValueKnown).toBe(false);
     } finally {
@@ -1581,6 +1700,116 @@ describe("usePortfolioState monitoring facade", () => {
     }
   });
 
+  it("keeps a realistic minute of wallet changes well inside the engine read limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const { readAtMs, result } = await driveRealisticWalletMinute(90_000);
+
+      // Half the engine window leaves room for a reload or a second tab.
+      expect(
+        maximumReadsInAnyMinute(readAtMs),
+        `reads at ${readAtMs.join(", ")} ms`,
+      ).toBeLessThanOrEqual(engineReadsPerMinute / 2);
+      // The coalesced reads still show the value after the last wallet change.
+      expect(result.current.stats.totalValueSats).toBe(21_000);
+      expect(result.current.monitoring).toMatchObject({ building: false, error: null });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for Retry-After after a 429 and then shows the priced state", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio
+        .mockRejectedValueOnce(rateLimitedPortfolioRead(3))
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 19_000));
+      const { result } = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+
+      // A transient refusal is not an unavailable monitor. Local data stays.
+      expect(result.current.monitoring.error).toBeNull();
+      expect(result.current.stats.totalValueLoading).toBe(true);
+      expect(result.current.funds).toEqual([localFund]);
+      expect(result.current.positions.map((position) => position.id)).toContain("local-position");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_999);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      expect(result.current.monitoring.error).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.stats).toMatchObject({
+        totalValueSats: 19_000,
+        totalValueKnown: true,
+        totalValueLoading: false,
+      });
+      expect(result.current.monitoring).toMatchObject({ error: null, building: false });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a 429 without Retry-After after 5 and then 10 s", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      const responses = [
+        rateLimitedPortfolioRead(undefined),
+        rateLimitedPortfolioRead(undefined),
+        completePortfolioResponse("ALL", 19_000),
+      ];
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        const response = responses.shift();
+        if (response instanceof Error) throw response;
+        return response;
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      for (let second = 0; second < 20; second += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+
+      expect(readAtMs).toEqual([0, 5_000, 15_000]);
+      expect(result.current.stats.totalValueSats).toBe(19_000);
+      expect(result.current.monitoring.error).toBeNull();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the unavailable state after four 429 retries and then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockRejectedValue(rateLimitedPortfolioRead(1));
+      const { result } = renderHook(() => usePortfolioState());
+      for (let second = 0; second < 120; second += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(5);
+      expect(result.current.monitoring.error).toBe("unavailable");
+      expect(result.current.stats.totalValueLoading).toBe(false);
+      expect(result.current.funds).toEqual([localFund]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("coalesces wallet invalidations into one immediate read and starts a new bounded cycle", async () => {
     vi.useFakeTimers();
     try {
@@ -1602,14 +1831,11 @@ describe("usePortfolioState monitoring facade", () => {
       await act(async () => {});
       expect(readAtMs).toEqual([0, 500]);
 
-      for (let second = 0; second < 20; second += 1) {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(1_000);
-        });
-      }
+      await advanceInSteps(90_000);
 
-      // The building retry of the first read joined the immediate read.
-      expect(readAtMs).toEqual([0, 500, 1_500, 3_500, 7_500, 15_500]);
+      // The building retry of the first read joined the immediate read. The
+      // new cycle has four extra reads, one per read interval.
+      expect(readAtMs).toEqual([0, 500, 15_000, 30_000, 45_000, 60_000]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

@@ -161,12 +161,19 @@ or payment changes the wallet. If the app cannot read the local wallet yet,
 the tab can show the funds that asset monitoring reports.
 
 **Positions Value** and **Total Value** come from asset monitoring. The app
-reads them again at once after the service accepts a wallet update or a trade
-settles. While the service still builds the values, the app reads them again a
-few times after short delays. **Total Value** can therefore update a short
-time after the Funds tab. An updating or unavailable value does not mean that funds are
-lost. Positions without a known price remain visible. Use the wallet's payment
-or trade flow to check which funds it can spend.
+reads them again after the service accepts a wallet update or a trade settles.
+While the service still builds the values, the app reads them again a few
+times. The service limits how often one account can read these values. The app
+therefore reads them at most twice in quick succession, and then at most once
+every 15 seconds. Changes in that time share one read. **Total Value** can
+therefore update up to about 15 seconds after the Funds tab. If the service
+refuses a read because of its limit, the values show as loading and the wallet
+data stays on screen. The app reads again after the wait that the service
+states, or after a delay of up to one minute. If the service refuses the read
+again and again, the values show as unavailable. An updating or unavailable
+value does not mean that funds are lost. Positions without a known price remain
+visible. Use the wallet's payment or trade flow to check which funds it can
+spend.
 
 During portfolio updates or an unfinished claim, the app can keep the last
 successful value estimate on screen. It marks that estimate as out of date.

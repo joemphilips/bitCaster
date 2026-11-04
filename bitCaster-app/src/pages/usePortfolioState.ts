@@ -1,4 +1,5 @@
 import { createDisplayResyncRepair } from "@bitcaster/client-sdk/displayResync";
+import { EngineClientError } from "@bitcaster/client-sdk/engineClient";
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
@@ -71,6 +72,62 @@ const valuationRefreshDelayMs = 10_000;
 /** A projection that is still building is read again after these delays. */
 const buildingPortfolioRetryDelaysMs = [1_000, 2_000, 4_000, 8_000] as const;
 const maximumBuildingPortfolioExtraReads = buildingPortfolioRetryDelaysMs.length;
+/**
+ * The engine admits 12 Portfolio reads per caller in each minute. One page
+ * holds 2 read permits and gets one more every 15 s. Each read spends a
+ * permit. An automatic read waits for a permit, so one page starts at most
+ * 2 + 60 / 15 = 6 automatic reads in any minute. The rest of the engine limit
+ * covers a reload, a second tab, or a timeframe change, which does not wait.
+ */
+const portfolioReadBurst = 2;
+const portfolioReadIntervalMs = 15_000;
+/** A read that the engine refuses with 429 is read again after these delays. */
+const rateLimitedPortfolioRetryDelaysMs = [5_000, 10_000, 20_000, 40_000] as const;
+const maximumRateLimitedPortfolioRetries = rateLimitedPortfolioRetryDelaysMs.length;
+/** Retry-After can extend a retry delay to this bound, and not beyond. */
+const maximumRateLimitedPortfolioRetryDelayMs = 60_000;
+
+type AutomaticPortfolioReadKind = "notification" | "building";
+
+/**
+ * The read permits of one page, as a generic cell rate: a read is in budget
+ * when `nextReadAtMs` is at most `portfolioReadBurst - 1` intervals ahead.
+ */
+interface PortfolioReadBudget {
+  nextReadAtMs: number;
+  /** After a 429, no automatic read starts before this time. */
+  refusedUntilMs: number;
+}
+
+function earliestBudgetedPortfolioReadAtMs(budget: PortfolioReadBudget, nowMs: number): number {
+  return Math.max(
+    nowMs,
+    budget.nextReadAtMs - (portfolioReadBurst - 1) * portfolioReadIntervalMs,
+    budget.refusedUntilMs,
+  );
+}
+
+/** A read that reached the engine uses one permit. The budget never goes below empty. */
+function spendPortfolioReadPermit(budget: PortfolioReadBudget, nowMs: number): void {
+  budget.nextReadAtMs = Math.min(
+    Math.max(budget.nextReadAtMs, nowMs) + portfolioReadIntervalMs,
+    nowMs + portfolioReadBurst * portfolioReadIntervalMs,
+  );
+}
+
+function rateLimitedPortfolioRetryDelayMs(error: EngineClientError, retry: number): number {
+  return error.retryAfterSeconds === undefined
+    ? (rateLimitedPortfolioRetryDelaysMs[retry - 1] ?? maximumRateLimitedPortfolioRetryDelayMs)
+    : Math.min(maximumRateLimitedPortfolioRetryDelayMs, error.retryAfterSeconds * 1_000);
+}
+
+function mergeAutomaticPortfolioReadKinds(
+  pending: AutomaticPortfolioReadKind | null,
+  requested: AutomaticPortfolioReadKind,
+): AutomaticPortfolioReadKind {
+  return pending === null || pending === requested ? requested : "notification";
+}
+
 type PortfolioPositionSnapshot = {
   scopeId: string;
   positions: Position[];
@@ -476,21 +533,11 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   };
 }
 
-function automaticRefreshDelayMs(
-  kind: "notification" | "building",
-  buildingExtraReadsStarted: number,
-): number {
-  switch (kind) {
-    case "notification":
-      return valuationRefreshDelayMs;
-    case "building":
-      return (
-        buildingPortfolioRetryDelaysMs[buildingExtraReadsStarted] ??
-        buildingPortfolioRetryDelaysMs[maximumBuildingPortfolioExtraReads - 1]
-      );
-    default:
-      throw new Error(`Unhandled Portfolio refresh kind: ${String(kind satisfies never)}`);
-  }
+function buildingRetryDelayMs(buildingExtraReadsStarted: number): number {
+  return (
+    buildingPortfolioRetryDelaysMs[buildingExtraReadsStarted] ??
+    buildingPortfolioRetryDelaysMs[maximumBuildingPortfolioExtraReads - 1]
+  );
 }
 
 export function usePortfolioState(): PortfolioState & {
@@ -520,6 +567,9 @@ export function usePortfolioState(): PortfolioState & {
     getNostrSignerRevision,
   );
   const [loadingMonitoringKey, setLoadingMonitoringKey] = useState<string | null>(null);
+  // A 429 is a wait, not an unavailable monitor: the scope shows loading
+  // values and local data until its retry ends.
+  const [rateLimitedMonitoringKey, setRateLimitedMonitoringKey] = useState<string | null>(null);
   const [monitoringAssets, setMonitoringAssets] = useState<{
     key: string;
     generation: number;
@@ -545,13 +595,20 @@ export function usePortfolioState(): PortfolioState & {
     controller: AbortController;
   } | null>(null);
   const automaticRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const automaticRefreshTimerKind = useRef<"notification" | "building" | null>(null);
+  const automaticRefreshTimerAtMs = useRef(0);
+  const automaticRefreshTimerKind = useRef<AutomaticPortfolioReadKind | null>(null);
   const automaticRefreshScheduled = useRef(false);
-  const automaticRefreshScheduledKind = useRef<"notification" | "building" | null>(null);
+  const automaticRefreshScheduledKind = useRef<AutomaticPortfolioReadKind | null>(null);
   const buildingRefreshCycle = useRef<{
     monitoringKey: string;
     extraReadsStarted: number;
   } | null>(null);
+  // Every timeframe and wallet scope of this page shares one engine caller.
+  const portfolioReadBudget = useRef<PortfolioReadBudget>({
+    nextReadAtMs: Number.NEGATIVE_INFINITY,
+    refusedUntilMs: 0,
+  });
+  const rateLimitedPortfolioRetries = useRef(0);
   const portfolioObserver = useRef<ReturnType<typeof observePortfolioValuations> | null>(null);
   const portfolioRepair = useRef<ReturnType<typeof createDisplayResyncRepair> | null>(null);
   const portfolioRepairWaiter = useRef<{
@@ -599,10 +656,13 @@ export function usePortfolioState(): PortfolioState & {
   );
   const monitoringKey = displayScopeKey !== null ? `${displayScopeKey}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
+  const monitoringRateLimited =
+    monitoringKey !== null && rateLimitedMonitoringKey === monitoringKey;
   useEffect(() => {
     setLastCompleteDisplay(null);
     setMonitoringError(null);
     setMonitoringUnavailable(false);
+    setRateLimitedMonitoringKey(null);
     setLoadingMoreAssets(false);
   }, [displayScopeKey]);
   const clearAutomaticRefreshTimer = useCallback(() => {
@@ -625,77 +685,72 @@ export function usePortfolioState(): PortfolioState & {
     read.controller.abort();
   }, []);
 
-  const scheduleAutomaticPortfolioRefresh = useCallback(
-    (kind: "notification" | "building") => {
+  // Wallet changes, price notices, building retries, 429 retries and display
+  // repairs all request reads here. A read in flight owns the next read: it
+  // starts when that read ends, and later requests only change its reason.
+  // Otherwise one timer holds the earliest requested read that the read
+  // budget permits. A notification read starts a new bounded building cycle.
+  const requestAutomaticPortfolioRead = useCallback(
+    function request(kind: AutomaticPortfolioReadKind, delayMs: number): void {
       if (monitoringKey === null || walletId === null) return;
-
-      // A timer wake that already became dirty owns the next read. More events
-      // can change its reason, but they must not enqueue or defer another read.
       if (automaticRefreshScheduled.current) {
-        if (kind === "notification") {
-          automaticRefreshScheduledKind.current = "notification";
-          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
-        }
+        automaticRefreshScheduledKind.current = mergeAutomaticPortfolioReadKinds(
+          automaticRefreshScheduledKind.current,
+          kind,
+        );
         return;
       }
 
-      // Later notifications join the first timer. A notification also turns a
-      // pending building retry into the new bounded cycle's reconciliation read.
-      if (automaticRefreshTimer.current !== null) {
-        if (kind === "notification") automaticRefreshTimerKind.current = "notification";
-        return;
-      }
-
-      automaticRefreshTimerKind.current = kind;
-      const delayMs = automaticRefreshDelayMs(
-        kind,
-        buildingRefreshCycle.current?.extraReadsStarted ?? 0,
+      const nowMs = Date.now();
+      const atMs = Math.max(
+        nowMs + delayMs,
+        earliestBudgetedPortfolioReadAtMs(portfolioReadBudget.current, nowMs),
       );
-      automaticRefreshTimer.current = setTimeout(() => {
+      let readKind = kind;
+      if (automaticRefreshTimer.current !== null) {
+        readKind = mergeAutomaticPortfolioReadKinds(automaticRefreshTimerKind.current, kind);
+        automaticRefreshTimerKind.current = readKind;
+        if (automaticRefreshTimerAtMs.current <= atMs) return;
+        clearTimeout(automaticRefreshTimer.current);
         automaticRefreshTimer.current = null;
-        const wakeKind = automaticRefreshTimerKind.current;
-        automaticRefreshTimerKind.current = null;
-        if (activeMonitoringKey.current !== monitoringKey || wakeKind === null) return;
+      }
+      if (atMs > nowMs) {
+        automaticRefreshTimerKind.current = readKind;
+        automaticRefreshTimerAtMs.current = atMs;
+        automaticRefreshTimer.current = setTimeout(() => {
+          automaticRefreshTimer.current = null;
+          const wakeKind = automaticRefreshTimerKind.current;
+          automaticRefreshTimerKind.current = null;
+          if (activeMonitoringKey.current !== monitoringKey || wakeKind === null) return;
+          request(wakeKind, 0);
+        }, atMs - nowMs);
+        return;
+      }
 
-        if (wakeKind === "notification") {
-          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
-        } else {
-          const cycle = buildingRefreshCycle.current;
-          if (
-            cycle?.monitoringKey !== monitoringKey ||
-            cycle.extraReadsStarted >= maximumBuildingPortfolioExtraReads
-          )
-            return;
-          cycle.extraReadsStarted += 1;
-        }
-
-        if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
-          automaticRefreshScheduled.current = true;
-          automaticRefreshScheduledKind.current = wakeKind;
+      automaticRefreshTimerKind.current = null;
+      if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+        automaticRefreshScheduled.current = true;
+        automaticRefreshScheduledKind.current = readKind;
+        return;
+      }
+      if (readKind === "notification") {
+        buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+      } else {
+        const cycle = buildingRefreshCycle.current;
+        if (
+          cycle?.monitoringKey !== monitoringKey ||
+          cycle.extraReadsStarted >= maximumBuildingPortfolioExtraReads
+        )
           return;
-        }
-        setPortfolioRefreshEpoch((current) => current + 1);
-      }, delayMs);
+        cycle.extraReadsStarted += 1;
+      }
+      setPortfolioRefreshEpoch((current) => current + 1);
     },
     [monitoringKey, walletId],
   );
 
-  // A change of this wallet's holdings is read at once. A pending timed wake
-  // joins this read. A read in flight can predate the change, so one more
-  // read follows it.
-  const refreshPortfolioNow = useCallback(() => {
-    if (monitoringKey === null || walletId === null) return;
-    clearAutomaticRefreshTimer();
-    buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
-    if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
-      automaticRefreshScheduled.current = true;
-      automaticRefreshScheduledKind.current = "notification";
-      return;
-    }
-    setPortfolioRefreshEpoch((current) => current + 1);
-  }, [clearAutomaticRefreshTimer, monitoringKey, walletId]);
-
-  portfolioObserverRefresh.current = () => scheduleAutomaticPortfolioRefresh("notification");
+  portfolioObserverRefresh.current = () =>
+    requestAutomaticPortfolioRead("notification", valuationRefreshDelayMs);
 
   useEffect(() => {
     const observer = observePortfolioValuations(
@@ -726,6 +781,7 @@ export function usePortfolioState(): PortfolioState & {
     automaticRefreshScheduledKind.current = null;
     buildingRefreshCycle.current =
       monitoringKey === null ? null : { monitoringKey, extraReadsStarted: 0 };
+    rateLimitedPortfolioRetries.current = 0;
     const activeRead = activePortfolioRead.current;
     if (activeRead && activeRead.monitoringKey !== monitoringKey) abortActivePortfolioRead();
     return () => {
@@ -765,8 +821,7 @@ export function usePortfolioState(): PortfolioState & {
           };
           portfolioRepairWaiter.current = waiter;
           signal.addEventListener("abort", abort, { once: true });
-          clearAutomaticRefreshTimer();
-          setPortfolioRefreshEpoch((current) => current + 1);
+          requestAutomaticPortfolioRead("notification", 0);
         });
         signal.throwIfAborted();
       },
@@ -776,7 +831,7 @@ export function usePortfolioState(): PortfolioState & {
       if (portfolioRepair.current === repair) portfolioRepair.current = null;
       void repair.dispose();
     };
-  }, [monitoringKey, walletId, clearAutomaticRefreshTimer]);
+  }, [monitoringKey, walletId, requestAutomaticPortfolioRead]);
 
   const invalidatePortfolio = useCallback(
     (invalidation: PortfolioInvalidation) => {
@@ -786,9 +841,10 @@ export function usePortfolioState(): PortfolioState & {
       } catch {
         return;
       }
-      refreshPortfolioNow();
+      // A change of this wallet's holdings is read as soon as the budget permits.
+      requestAutomaticPortfolioRead("notification", 0);
     },
-    [monitoringKey, refreshPortfolioNow, walletId],
+    [monitoringKey, requestAutomaticPortfolioRead, walletId],
   );
 
   useEffect(() => {
@@ -818,9 +874,18 @@ export function usePortfolioState(): PortfolioState & {
     activeAssetPageRequest.current += 1;
     assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
+    // An aborted read can end before its request leaves the browser, for
+    // example in a Strict Mode replay. Only a read that ends spends a permit.
+    let permitSpent = false;
+    const spendPermit = () => {
+      if (permitSpent || controller.signal.aborted) return;
+      permitSpent = true;
+      spendPortfolioReadPermit(portfolioReadBudget.current, Date.now());
+    };
     void createAuthenticatedBrowserEngineClient()
       .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 }, controller.signal)
       .then((value) => {
+        spendPermit();
         if (
           activeMonitoringKey.current !== monitoringKey ||
           getNostrSignerRevision() !== signerRevision ||
@@ -861,6 +926,8 @@ export function usePortfolioState(): PortfolioState & {
         });
         setLoadingMoreAssets(false);
         setMonitoringError(null);
+        rateLimitedPortfolioRetries.current = 0;
+        setRateLimitedMonitoringKey(null);
         const waiter = portfolioRepairWaiter.current;
         if (waiter?.key === monitoringKey && requestId >= waiter.minimumRequest) {
           if (
@@ -881,7 +948,7 @@ export function usePortfolioState(): PortfolioState & {
           cycle?.monitoringKey === monitoringKey &&
           cycle.extraReadsStarted < maximumBuildingPortfolioExtraReads
         ) {
-          scheduleAutomaticPortfolioRefresh("building");
+          requestAutomaticPortfolioRead("building", buildingRetryDelayMs(cycle.extraReadsStarted));
         } else if (!building) {
           const notificationWakePending =
             automaticRefreshTimerKind.current === "notification" ||
@@ -891,7 +958,8 @@ export function usePortfolioState(): PortfolioState & {
           if (automaticRefreshTimerKind.current === "building") clearAutomaticRefreshTimer();
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        spendPermit();
         if (
           activeMonitoringKey.current !== monitoringKey ||
           getNostrSignerRevision() !== signerRevision ||
@@ -901,6 +969,26 @@ export function usePortfolioState(): PortfolioState & {
           controller.signal.aborted
         )
           return;
+        if (
+          error instanceof EngineClientError &&
+          error.status === 429 &&
+          rateLimitedPortfolioRetries.current < maximumRateLimitedPortfolioRetries
+        ) {
+          // The engine read limit refused this read. Hold every automatic
+          // read, then read again. A pending display repair waits for that read.
+          rateLimitedPortfolioRetries.current += 1;
+          const delayMs = rateLimitedPortfolioRetryDelayMs(
+            error,
+            rateLimitedPortfolioRetries.current,
+          );
+          const budget = portfolioReadBudget.current;
+          budget.refusedUntilMs = Math.max(budget.refusedUntilMs, Date.now() + delayMs);
+          setRateLimitedMonitoringKey(monitoringKey);
+          requestAutomaticPortfolioRead("notification", delayMs);
+          return;
+        }
+        rateLimitedPortfolioRetries.current = 0;
+        setRateLimitedMonitoringKey(null);
         const notificationWakePending =
           automaticRefreshTimerKind.current === "notification" ||
           (automaticRefreshScheduled.current &&
@@ -924,9 +1012,10 @@ export function usePortfolioState(): PortfolioState & {
         activePortfolioRead.current = null;
         setLoadingMonitoringKey(null);
         if (automaticRefreshScheduled.current) {
+          const kind = automaticRefreshScheduledKind.current ?? "notification";
           automaticRefreshScheduled.current = false;
           automaticRefreshScheduledKind.current = null;
-          setPortfolioRefreshEpoch((current) => current + 1);
+          requestAutomaticPortfolioRead(kind, 0);
         }
       });
     return () => {
@@ -938,7 +1027,7 @@ export function usePortfolioState(): PortfolioState & {
     clearAutomaticRefreshTimer,
     monitoringKey,
     portfolioRefreshEpoch,
-    scheduleAutomaticPortfolioRefresh,
+    requestAutomaticPortfolioRead,
     selectedTimeRange,
     walletId,
     displayScopeKey,
@@ -1088,7 +1177,7 @@ export function usePortfolioState(): PortfolioState & {
         ? displayMonitoringConditionIdsKey.split(",")
         : [];
       // The catalogue read waits for the monitor so that one read covers its rows.
-      const catalogueRead = monitoringUnavailable || monitoringReady;
+      const catalogueRead = monitoringUnavailable || monitoringReady || monitoringRateLimited;
       const catalogueConditionIds = new Set(
         catalogueRead
           ? [...entries.map((entry) => entry.conditionId), ...displayMonitoringConditionIds]
@@ -1154,7 +1243,13 @@ export function usePortfolioState(): PortfolioState & {
       });
       return { scopeId, positions, marketCatalogue: catalogue, catalogueConditionIds };
     },
-    [monitoringReady, monitoringUnavailable, displayMonitoringConditionIdsKey, walletMnemonic],
+    [
+      monitoringReady,
+      monitoringUnavailable,
+      monitoringRateLimited,
+      displayMonitoringConditionIdsKey,
+      walletMnemonic,
+    ],
     undefined as PortfolioPositionSnapshot | undefined,
   );
   const currentLocalPositions =
@@ -1194,7 +1289,8 @@ export function usePortfolioState(): PortfolioState & {
   const cachedDisplay =
     lastCompleteDisplay?.scopeKey === displayScopeKey ? lastCompleteDisplay : null;
   const claimInProgress = positions.some((position) => position.claimRecoveryPending);
-  const valuesLoading = monitoringKey !== null && loadingMonitoringKey === monitoringKey;
+  const valuesLoading =
+    (monitoringKey !== null && loadingMonitoringKey === monitoringKey) || monitoringRateLimited;
   const retainingDisplay =
     cachedDisplay !== null &&
     (valuesLoading ||
