@@ -198,6 +198,14 @@ reload does not mean that the extension has authorized the connection.
 Disconnect cancels pending connection work. Disconnect before switching from
 an extension to a local private key.
 
+The user menu shows **Log in** when no Nostr identity is set. It opens the
+Nostr section of Settings. When an identity is set, the menu shows **Log out**.
+**Log out** and **Disconnect** remove only the Nostr identity. The wallet does
+not change. If you did not back up a generated key, this browser has the only
+copy. Then the app asks you first. Select **Back up key** to open the Nostr
+settings, or **Log out** to delete the key. While an order is in progress, the
+app shows only **Back up key**, because the order needs this key to finish.
+
 Settings and Portfolio show the same connected Nostr profile card.
 The card shows your picture, display name, and description. Settings also has
 a refresh control. The card shows the newest profile that the selected relays
@@ -253,7 +261,7 @@ Top-up and other new wallet changes stay paused until backup preparation or reco
 If **Wallet backup stopped** is shown, use **Retry wallet backup**.
 If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
 Close an unused second wallet tab when the message asks you to do so.
-Sign in or reload when the message says the backup driver is unavailable.
+Log in or reload when the message says the backup driver is unavailable.
 Keep the page open while a retry is pending.
 Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
 The local wallet keeps its funds and unfinished work while recovery is incomplete.
