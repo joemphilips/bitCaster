@@ -73,6 +73,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Keep the React runtime in one static, cacheable chunk. This leaves
+          // room for app code without raising the per-asset precache limit.
+          if (
+            id.includes("/node_modules/react/") ||
+            id.includes("/node_modules/react-dom/") ||
+            id.includes("/node_modules/scheduler/")
+          ) {
+            return "react-runtime";
+          }
           // Keep the real-time client below the same per-asset precache limit.
           // This remains a static import and retains one SignalR module instance.
           if (id.includes("/node_modules/@microsoft/signalr/")) {

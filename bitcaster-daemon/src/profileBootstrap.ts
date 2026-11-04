@@ -115,7 +115,8 @@ export async function bootstrapFreshDaemonProfile(
   let createdConfigRevision: string | null = null
   try {
     createdConfigRevision = prepareBootstrapConfig(input.directory, engineBaseUrl, mintUrl)
-    reservation = await open(databasePath, 'wx', 0o600)
+    // Darwin cannot reopen /dev/fd with read access when this descriptor is write-only.
+    reservation = await open(databasePath, 'wx+', 0o600)
     const stat = await reservation.stat({ bigint: true })
     reservedIdentity = { dev: stat.dev, ino: stat.ino }
     input.injectFault?.('database-reserved')

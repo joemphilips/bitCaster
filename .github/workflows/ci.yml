@@ -79,6 +79,11 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
+      - name: Install boundary-check prerequisite
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+      - name: Test boundary checks
+        working-directory: .
+        run: node --test scripts/tests/boundary-checks.test.mjs
       - run: npm ci --ignore-scripts
         working-directory: .
       - run: npm run patch:dependencies
