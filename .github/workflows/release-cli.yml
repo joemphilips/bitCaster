@@ -2,7 +2,8 @@ name: Release CLI
 
 # Each push to main (a merged PR) publishes one bitcaster-cli release.
 # A pull request that changes the CLI build runs the build jobs only, so the
-# archives are checked before the merge. Only the publish job can write.
+# archives are checked before the merge. Only the attest job can sign, and
+# only the publish job can write repository contents.
 on:
   push:
     branches: [main]
@@ -79,9 +80,40 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  attest:
+    name: Attest the build provenance
+    needs: build
+    if: >-
+      github.repository == 'joemphilips/bitCaster' &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The OIDC token signs the attestation. This job cannot write repository contents.
+    permissions:
+      id-token: write
+      attestations: write
+    # This job runs no repository code.
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bitcaster-cli-*
+          path: release
+          merge-multiple: true
+      - name: Verify the checksums
+        working-directory: release
+        run: |
+          set -euo pipefail
+          for checksum in *.tar.gz.sha256; do
+            sha256sum --check --strict "$checksum"
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/bitcaster-cli-*.tar.gz
+
   publish:
     name: Publish the release
-    needs: build
+    needs: [build, attest]
     if: >-
       github.repository == 'joemphilips/bitCaster' &&
       github.event_name != 'pull_request' &&
@@ -107,7 +139,7 @@ jobs:
           cat *.tar.gz.sha256 > SHA256SUMS
           rm *.tar.gz.sha256
           cat SHA256SUMS
-      - name: Read the CLI version from the archives
+      - name: Read the CLI version and source commit from the archives
         id: version
         working-directory: release
         run: |
@@ -115,7 +147,13 @@ jobs:
           version=''
           for archive in bitcaster-cli-*.tar.gz; do
             name="${archive%.tar.gz}"
-            found="$(tar -xzOf "$archive" "$name/node_modules/@bitcaster-market/cli/package.json" | jq -r .version)"
+            cli="$name/node_modules/@bitcaster-market/cli"
+            commit="$(tar -xzOf "$archive" "$cli/build-info.json" | jq -r .commit)"
+            if [[ "$commit" != "$GITHUB_SHA" ]]; then
+              echo "$archive was not built from $GITHUB_SHA" >&2
+              exit 1
+            fi
+            found="$(tar -xzOf "$archive" "$cli/package.json" | jq -r .version)"
             if [[ ! "$found" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
               echo "$archive has an invalid CLI version" >&2
               exit 1
@@ -161,12 +199,19 @@ jobs:
           ./bitcaster-cli-darwin-arm64/bin/bitcaster-cli --help
           ```
 
+          Optionally, check with the GitHub CLI that GitHub Actions built the archive from this repository. Use the name of the archive that you downloaded:
+
+          ```sh
+          gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+          ```
+
+          `bitcaster-cli --version` prints `@VERSION@+@SHORT@`.
           To run `bitcaster-cli` from any directory, add the `bin` directory to `PATH`.
           Then read the [CLI guide](https://bitcasterdoc.com/user-guide/getting-started/ai-trading/).
           NOTES
           # The values are a checked version, a tag made from it, and the commit SHA.
           sed -i -e "s|@VERSION@|${VERSION}|g" -e "s|@COMMIT@|${GITHUB_SHA}|g" \
-            -e "s|@BASE@|${base}|g" notes.md
+            -e "s|@SHORT@|${GITHUB_SHA:0:12}|g" -e "s|@BASE@|${base}|g" notes.md
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --title "bitcaster-cli ${VERSION} (${GITHUB_SHA:0:12})" \

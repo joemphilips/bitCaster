@@ -44,6 +44,16 @@ On macOS, use `bitcaster-cli-darwin-arm64` instead of `bitcaster-cli-linux-x64`,
 oracle helper that market creation uses. To keep `bitcaster-cli` available in a new shell, add the
 `bin` directory to `PATH` in your shell profile.
 
+Optionally, check that GitHub Actions built the archive from this repository. This step needs the
+GitHub CLI:
+
+```bash
+gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+```
+
+`bitcaster-cli --version` prints the version and the source commit of the release, for example
+`0.1.0+0123456789ab`.
+
 You can also build the CLI from a clone of the public repository. You need Git and Node.js 22.15 or
 later. The build needs only the `cashu-ts` submodule.
 

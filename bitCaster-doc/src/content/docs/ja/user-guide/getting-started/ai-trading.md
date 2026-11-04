@@ -43,6 +43,15 @@ macOS では、`bitcaster-cli-linux-x64` の代わりに `bitcaster-cli-darwin-a
 アーカイブには、CLI、daemon、マーケット作成に使うオラクルヘルパーが入っています。
 新しいシェルでも `bitcaster-cli` を使えるようにするには、シェルのプロファイルで `bin` ディレクトリを `PATH` に追加してください。
 
+必要に応じて、GitHub Actions がこのリポジトリからアーカイブをビルドしたことを確認できます。
+この手順には GitHub CLI が必要です。
+
+```bash
+gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster
+```
+
+`bitcaster-cli --version` は、リリースのバージョンとソースのコミットを表示します。例: `0.1.0+0123456789ab`
+
 公開リポジトリのクローンから CLI をビルドすることもできます。
 Git と Node.js 22.15 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
 
