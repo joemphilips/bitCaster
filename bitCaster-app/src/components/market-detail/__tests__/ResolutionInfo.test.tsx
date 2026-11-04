@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 const { readExplanation } = vi.hoisted(() => ({ readExplanation: vi.fn() }));
 vi.mock("@/lib/oracleAttestation", () => ({
   readBrowserResolutionExplanation: (...args: unknown[]) => readExplanation(...args),
@@ -8,6 +8,9 @@ import { ResolutionInfo } from "../ResolutionInfo";
 import type { ResolutionDetails } from "@/types/market-detail";
 
 describe("ResolutionInfo", () => {
+  beforeEach(() => {
+    readExplanation.mockReset();
+  });
   it("loads the verified companion after paint and renders HTML-looking content as plain text", async () => {
     readExplanation.mockResolvedValueOnce("<b>Official result</b>\nSecond line");
     const { container } = render(
@@ -30,8 +33,32 @@ describe("ResolutionInfo", () => {
     expect(container.querySelector("b")).toBeNull();
     expect(screen.getByRole("region", { name: "Verified oracle explanation" })).toBeVisible();
   });
+  it("reads the companion once more after a failed read", async () => {
+    readExplanation
+      .mockRejectedValueOnce(new Error("relay silent"))
+      .mockResolvedValueOnce("Official result");
+    render(
+      <ResolutionInfo
+        resolution={{
+          conditionId: "retried",
+          criteria: "Rule",
+          source: "oracle",
+          resolutionDate: null,
+          status: "resolved",
+          finalOutcome: "YES",
+        }}
+      />,
+    );
+    expect(await screen.findByText("Official result")).toBeVisible();
+    expect(readExplanation).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByText(
+        "The optional explanation is unavailable. Verified resolution is unchanged.",
+      ),
+    ).not.toBeInTheDocument();
+  });
   it("keeps optional explanation failure separate from verified resolution", async () => {
-    readExplanation.mockRejectedValueOnce(new Error("relay unavailable"));
+    readExplanation.mockRejectedValue(new Error("relay unavailable"));
     render(
       <ResolutionInfo
         resolution={{
@@ -50,6 +77,7 @@ describe("ResolutionInfo", () => {
       ),
     ).toBeVisible();
     expect(screen.getByText("NO")).toBeVisible();
+    expect(readExplanation).toHaveBeenCalledTimes(2);
   });
   it.each([
     { status: "open" as const, finalOutcome: undefined },

@@ -24,11 +24,18 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
     const conditionId = resolution.conditionId;
     if (!conditionId || resolution.status !== "resolved") return;
     let cancelled = false;
+    const read = async () => {
+      const { readBrowserResolutionExplanation } = await import("@/lib/oracleAttestation");
+      return readBrowserResolutionExplanation(conditionId, JSON.parse(relayKey));
+    };
     // Companion I/O never blocks the market detail loader or verified resolution.
-    void import("@/lib/oracleAttestation")
-      .then(({ readBrowserResolutionExplanation }) =>
-        readBrowserResolutionExplanation(conditionId, JSON.parse(relayKey)),
-      )
+    // A relay connection can stay silent until its deadline, so one more read
+    // opens a new connection.
+    void read()
+      .catch((error: unknown) => {
+        if (cancelled) throw error;
+        return read();
+      })
       .then((text) => {
         if (!cancelled) setExplanation({ conditionId, text, unavailable: false });
       })
