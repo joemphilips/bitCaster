@@ -1087,7 +1087,7 @@
       "order-submission-rejected": "エンジンが注文を拒否しました。ウォレットは再送信しません。",
       "order-submission-uncertain": "注文結果を確認できません。ウォレットは注文を再送信しません。",
       "recovery-pending": "永続ウォレット操作では、まだ資金の復旧が必要です。",
-      "source-preparation-pending": "この市場の前の売り注文が資金を準備しています。終わるまで待ってください。"
+      "source-preparation-pending": "このマーケットの前の売り注文が資金を準備しています。終わるまで待ってください。"
     }
   },
   "notification": {
