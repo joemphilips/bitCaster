@@ -56,11 +56,16 @@ Do not clear browser storage to resolve an uncertain payment or trade.
 ## Open your wallet in a new browser
 
 When you restore a wallet with its recovery phrase in a browser that did not
-create it, the app restores your funds and your market positions from the mint.
-It does this automatically. It does not need a Nostr identity or a backup.
-Portfolio and the Sell tab show **Restoring positions…** while the app checks
-the mint. With many markets, this can take some minutes. If the check fails,
-the app shows an error with **Retry**.
+create it, the app restores your funds and your market positions from the mint
+at once. It does this automatically. It does not need a Nostr identity or a
+backup. Portfolio and the Sell tab show **Restoring positions…** while the app
+checks the mint. With many markets, this can take some minutes. If the check
+fails, the app shows an error with **Retry**.
+
+A browser starts at most 4 such restores in 24 hours. When it reaches this
+limit, the next restore waits until the oldest of the 4 is 24 hours old.
+Portfolio shows **Restoring positions…** while it waits. A restore that
+continues after an error, and **Retry**, do not count as a new restore.
 
 Let your trades finish before you move to a new browser. An order in progress
 locks funds that only the old browser can complete or refund. After the order
@@ -77,7 +82,7 @@ mint does not receive your Nostr identity or your matching-engine account.
 The app checks the first 128 counters of each market. A position can stay
 hidden when many orders on one outcome did not fill before its first fill. The
 CLI command `wallet recover-seed --condition-id` can restore such a market.
-Later, the app checks the market list again for new markets.
+The app checks the market list once, when the restore starts.
 
 An earlier version of the app did not record which browser created a wallet.
 So the first time a browser opens this version, it runs the restore for its
@@ -85,19 +90,19 @@ current wallet, also when that browser created the wallet.
 
 ### Check for use in another browser
 
-Every browser that holds a wallet checks the mint for outputs that another
-browser signed after its own last output. It checks each keyset (the mint keys
-of one asset) that holds funds or positions, or that this browser used in the
-last 30 days. It checks at most once a day. It checks every keyset in use at
-once after the mint refuses an order because another browser used the same
-outputs or funds. When the app finds such outputs, it adds the funds and
-positions to this browser.
+The app does not check the mint on a schedule. It checks for use in another
+browser only after evidence of that use: the mint refuses an order because
+another browser used the same outputs or funds, or a buy finds outputs that
+another browser signed. Then the browser checks each keyset (the mint keys of
+one asset) that it uses for outputs that another browser signed after its own
+last output. When the app finds such outputs, it adds the funds and positions
+to this browser.
 
-Each check sends to the mint the next 100 outputs of each checked keyset.
-These outputs are not signed yet. The mint can link them to this recovery
-phrase when another browser uses them later. A future version replaces this
-check with the encrypted backup, which stores the highest used output of each
-keyset.
+Each check sends to the mint the next 100 outputs of each keyset that this
+browser uses. These outputs are not signed yet. The mint can link them to this
+recovery phrase when another browser uses them later. A future version
+replaces this check with the encrypted backup, which stores the highest used
+output of each keyset.
 
 If the app cannot add the outputs that it found, it shows
 **Positions could not be restored from the mint.** with **Retry**. The funds

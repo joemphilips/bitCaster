@@ -174,8 +174,8 @@ or paste the complete phrase into one field. Setup does not submit a payment aut
 After you restore a wallet, the app restores its funds and market positions
 from the mint. Portfolio shows **Restoring positions…** until the restore
 finishes. Let your trades finish in the old browser before you move. Use one
-browser at a time: the app checks the mint for use in another browser at most
-once a day, and at once after a refusal that shows such use.
+browser at a time: the app checks the mint for use in another browser after a
+refusal that shows such use.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
