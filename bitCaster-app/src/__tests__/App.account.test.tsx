@@ -77,12 +77,16 @@ function expectIdentity(expected: NostrIdentityState) {
   expect(state.nsecSecret === expected.nsecSecret).toBe(true);
 }
 
-function renderShell(initialEntry = "/markets") {
-  return render(
+function shell(nostrIdentityRestored: boolean, initialEntry = "/markets") {
+  return (
     <MemoryRouter initialEntries={[initialEntry]}>
-      <ShellRoutes canReadOrderStatus={false} />
-    </MemoryRouter>,
+      <ShellRoutes canReadOrderStatus={false} nostrIdentityRestored={nostrIdentityRestored} />
+    </MemoryRouter>
   );
+}
+
+function renderShell(initialEntry = "/markets") {
+  return render(shell(true, initialEntry));
 }
 
 // The control that opens the account menu in each layout.
@@ -403,6 +407,68 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account state", (l
     expect(
       await screen.findByRole("dialog", { name: DIALOG, description: ORDERS_IN_PROGRESS_TEXT }),
     ).toBeInTheDocument();
+  });
+});
+
+describe.each(["desktop", "mobile"] as const)("ShellRoutes %s startup restore", (layout) => {
+  const storedKey: NostrIdentityState = {
+    nostrSignerMode: "nsec",
+    signerSource: "user-nsec",
+    signerBackupState: "confirmed",
+    nsecSecret: nip19.nsecEncode(generateSecretKey()),
+  };
+
+  function expectAccountItem(name: "Log in" | "Log out") {
+    openMenu(layout);
+    expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: name === "Log in" ? "Log out" : "Log in" }),
+    ).not.toBeInTheDocument();
+    // Close the menu again without an account action.
+    if (layout === "desktop") fireEvent.click(menuControl(layout));
+    else fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  }
+
+  function setStatus(status: "disconnected" | "connecting" | "connected") {
+    act(() => useSettingsStore.setState({ signerConnectionStatus: status }));
+  }
+
+  // A reload starts with a disconnected status until the restore runs.
+  function startRestore(identity: NostrIdentityState) {
+    setIdentity(identity);
+    useSettingsStore.setState({ signerConnectionStatus: "disconnected" });
+    return render(shell(false));
+  }
+
+  it("shows log in during the restore when no identity is stored", () => {
+    startRestore(LOGGED_OUT);
+
+    expectAccountItem("Log in");
+  });
+
+  it("keeps log out until a failed restore completes, then shows log in", () => {
+    const view = startRestore(storedKey);
+    expectAccountItem("Log out");
+    setStatus("connecting");
+    expectAccountItem("Log out");
+    // The status settles first. The restore is not complete yet.
+    setStatus("disconnected");
+    expectAccountItem("Log out");
+
+    view.rerender(shell(true));
+    expectAccountItem("Log in");
+  });
+
+  it("follows the status after the completion signal comes first", () => {
+    const view = startRestore(storedKey);
+    setStatus("connecting");
+
+    view.rerender(shell(true));
+    expectAccountItem("Log out");
+    setStatus("connected");
+    expectAccountItem("Log out");
+    setStatus("disconnected");
+    expectAccountItem("Log in");
   });
 });
 

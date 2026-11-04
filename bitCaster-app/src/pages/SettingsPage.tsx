@@ -175,8 +175,11 @@ export function SettingsPage() {
   );
 
   // The app bar logout uses the same guard for a local key without a backup.
-  const { requestLogout: handleDisconnectNostr, confirmation: logoutConfirmation } =
-    useNostrLogout();
+  const {
+    requestLogout: handleDisconnectNostr,
+    confirmIdentityReplacement,
+    confirmation: logoutConfirmation,
+  } = useNostrLogout();
 
   const handleRemoveMint = useCallback((url: string) => {
     userRemoveMint(url);
@@ -278,6 +281,8 @@ export function SettingsPage() {
 
   const handleSignerModeChange = useCallback(
     async (mode: NostrSignerMode): Promise<boolean> => {
+      // A new identity replaces the stored key, so it uses the logout guard.
+      if (!(await confirmIdentityReplacement())) return false;
       const result = await userConnectNostrSignerMode(mode);
       if (result.superseded) return false;
       if (!result.ok) {
@@ -288,11 +293,12 @@ export function SettingsPage() {
       }
       return result.ok;
     },
-    [t],
+    [confirmIdentityReplacement, t],
   );
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {
+      if (!(await confirmIdentityReplacement())) return false;
       const result = await userConnectNsecIdentity(nsec, passphrase);
       if (result.superseded) return false;
       if (result.ok) {
@@ -308,7 +314,7 @@ export function SettingsPage() {
       });
       return false;
     },
-    [],
+    [confirmIdentityReplacement],
   );
 
   return (

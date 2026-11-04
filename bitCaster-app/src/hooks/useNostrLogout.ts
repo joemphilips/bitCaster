@@ -32,29 +32,41 @@ function focusedElement(): HTMLElement | null {
 }
 
 /**
- * Log out of the Nostr identity. The wallet does not change. A local key
- * without a backup asks for confirmation first, because logout deletes it.
- * While orders are in progress, that key cannot log out: the orders need
- * it to finish. A backed-up key or an extension signer logs out at once,
- * and a later login resumes its orders.
+ * Log out of the Nostr identity, or replace it with another one. The wallet
+ * does not change. Both remove the stored key, so both use one guard. A
+ * local key without a backup asks for confirmation first, because removal
+ * deletes it. While orders are in progress, that key cannot be removed: the
+ * orders need it to finish. A backed-up key or an extension signer is
+ * removed at once, and a later login resumes its orders.
  */
 export function useNostrLogout(): {
   /** Focus returns to `returnFocusTo`, or to the focused control, after a dialog. */
   requestLogout: (returnFocusTo?: HTMLElement | null) => void;
+  /**
+   * Resolve true when another identity can replace the stored one. The
+   * caller connects the new identity, which replaces the key only on success.
+   */
+  confirmIdentityReplacement: () => Promise<boolean>;
   confirmation: NostrLogoutConfirmation | null;
 } {
   const openNostrSettings = useOpenNostrSettings();
   const [dialog, setDialog] = useState<{ ordersInProgress: boolean } | null>(null);
   // Only the latest local read can open or change the dialog.
   const readGeneration = useRef(0);
+  // Runs the removal when the guard passes, or reports that it did not.
+  const settleRequest = useRef<((proceed: boolean) => void) | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const dialogWasOpen = useRef(false);
-  useEffect(
-    () => () => {
-      readGeneration.current += 1;
-    },
-    [],
-  );
+
+  const finish = useCallback((proceed: boolean) => {
+    readGeneration.current += 1;
+    setDialog(null);
+    const settle = settleRequest.current;
+    settleRequest.current = null;
+    settle?.(proceed);
+  }, []);
+
+  useEffect(() => () => finish(false), [finish]);
 
   // The menu item that opened the dialog is gone. Run after the dialog closes,
   // so the browser does not move focus again.
@@ -71,47 +83,60 @@ export function useNostrLogout(): {
   }, [dialog]);
 
   // Read the stored identity and the local orders at the time of each action.
-  const logOutOrConfirm = useCallback(async (confirmed: boolean) => {
-    const generation = ++readGeneration.current;
-    if (!nostrLogoutNeedsBackupConfirmation(useSettingsStore.getState())) {
-      // This also cancels a pending connection attempt.
-      setDialog(null);
-      disconnectNostrIdentity();
-      return;
-    }
-    const ordersInProgress = await hasLocalOrdersInProgress();
-    if (generation !== readGeneration.current) return;
-    if (confirmed && !ordersInProgress) {
-      setDialog(null);
-      disconnectNostrIdentity();
-      return;
-    }
-    setDialog({ ordersInProgress });
-  }, []);
+  const evaluate = useCallback(
+    async (confirmed: boolean) => {
+      const generation = ++readGeneration.current;
+      if (!nostrLogoutNeedsBackupConfirmation(useSettingsStore.getState())) {
+        finish(true);
+        return;
+      }
+      const ordersInProgress = await hasLocalOrdersInProgress();
+      if (generation !== readGeneration.current) return;
+      if (confirmed && !ordersInProgress) {
+        finish(true);
+        return;
+      }
+      setDialog({ ordersInProgress });
+    },
+    [finish],
+  );
+
+  const start = useCallback(
+    (settle: (proceed: boolean) => void, returnFocusTo?: HTMLElement | null) => {
+      // A new request replaces an earlier one that did not finish.
+      finish(false);
+      settleRequest.current = settle;
+      returnFocus.current = returnFocusTo ?? focusedElement();
+      void evaluate(false);
+    },
+    [evaluate, finish],
+  );
 
   const requestLogout = useCallback(
-    (returnFocusTo?: HTMLElement | null) => {
-      returnFocus.current = returnFocusTo ?? focusedElement();
-      void logOutOrConfirm(false);
-    },
-    [logOutOrConfirm],
+    (returnFocusTo?: HTMLElement | null) =>
+      start((proceed) => {
+        // This also cancels a pending connection attempt.
+        if (proceed) disconnectNostrIdentity();
+      }, returnFocusTo),
+    [start],
+  );
+
+  const confirmIdentityReplacement = useCallback(
+    () => new Promise<boolean>((resolve) => start(resolve)),
+    [start],
   );
 
   const confirmation: NostrLogoutConfirmation | null = dialog
     ? {
         ordersInProgress: dialog.ordersInProgress,
         onBackUp: () => {
-          readGeneration.current += 1;
-          setDialog(null);
+          finish(false);
           openNostrSettings();
         },
-        onLogout: () => void logOutOrConfirm(true),
-        onDismiss: () => {
-          readGeneration.current += 1;
-          setDialog(null);
-        },
+        onLogout: () => void evaluate(true),
+        onDismiss: () => finish(false),
       }
     : null;
 
-  return { requestLogout, confirmation };
+  return { requestLogout, confirmIdentityReplacement, confirmation };
 }

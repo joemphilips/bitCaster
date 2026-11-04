@@ -446,6 +446,125 @@ describe("SettingsPage local Nostr-key backup", () => {
     expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
   });
 
+  describe.each(["extension", "imported key"] as const)(
+    "connecting an %s over a stored key",
+    (method) => {
+      // A stored key that failed to reconnect leaves the connect buttons visible.
+      function setStoredKey(backup: "needs_backup" | "confirmed"): string {
+        const secret = makeNsec();
+        useSettingsStore.setState({
+          nostrSignerMode: "nsec",
+          signerConnectionStatus: "disconnected",
+          signerSource: "implicit-generated",
+          signerBackupState: backup,
+          nostrProfile: null,
+          nostrProfileFetchStatus: "idle",
+          nsecSecret: secret,
+        });
+        return secret;
+      }
+
+      const replacementKey = makeNsec();
+      const connect = () =>
+        method === "extension"
+          ? nostrNetwork.loginWithExtension
+          : nostrNetwork.loginWithNsecOrNcryptsec;
+
+      async function startConnect(firstAttempt = true) {
+        if (method === "extension") {
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Connect with NIP-07 Extension" }),
+          );
+          fireEvent.click(screen.getByRole("button", { name: "OK" }));
+          return;
+        }
+        if (firstAttempt) {
+          fireEvent.click(await screen.findByRole("button", { name: "Connect with Private Key" }));
+          fireEvent.change(screen.getByPlaceholderText("nsec1... or ncryptsec1..."), {
+            target: { value: replacementKey },
+          });
+        }
+        fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+      }
+
+      async function expectReplaced() {
+        await waitFor(() =>
+          expect(useSettingsStore.getState().signerSource).toBe(
+            method === "extension" ? "nip07" : "user-nsec",
+          ),
+        );
+        expect(connect()).toHaveBeenCalledOnce();
+        expect(
+          useSettingsStore.getState().nsecSecret ===
+            (method === "extension" ? null : replacementKey),
+        ).toBe(true);
+      }
+
+      beforeEach(() => {
+        Object.defineProperty(window, "nostr", {
+          configurable: true,
+          value: { getPublicKey: vi.fn(async () => "a".repeat(64)) },
+        });
+      });
+
+      it("asks before it replaces a local key that has no backup", async () => {
+        const secret = setStoredKey("needs_backup");
+        await renderSettingsPage();
+
+        await startConnect();
+        const dialog = await screen.findByRole("dialog", {
+          name: LOGOUT_DIALOG,
+          description: /only this browser has this key/i,
+        });
+        expect(connect()).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+
+        // Close keeps the stored key and ends the pending connection.
+        fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+        expect(connect()).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+
+        await startConnect(false);
+        fireEvent.click(
+          within(await screen.findByRole("dialog", { name: LOGOUT_DIALOG })).getByRole("button", {
+            name: "Log out",
+          }),
+        );
+        await expectReplaced();
+      });
+
+      it("keeps a local key without a backup while an order is in progress", async () => {
+        const mnemonic = bip39.generate().join(" ");
+        useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+        const secret = setStoredKey("needs_backup");
+        addPendingOrder(mnemonic);
+        await renderSettingsPage();
+
+        await startConnect();
+        const dialog = await screen.findByRole("dialog", {
+          name: LOGOUT_DIALOG,
+          description: ORDERS_IN_PROGRESS,
+        });
+        expect(within(dialog).queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+        fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+        expect(connect()).not.toHaveBeenCalled();
+        expect(useSettingsStore.getState().nsecSecret === secret).toBe(true);
+      });
+
+      it("replaces a backed-up local key at once", async () => {
+        setStoredKey("confirmed");
+        await renderSettingsPage();
+
+        await startConnect();
+
+        await expectReplaced();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      });
+    },
+  );
+
   it.each([
     { name: "an imported key", mode: "nsec", signerSource: "user-nsec", local: true },
     {

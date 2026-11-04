@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   },
   settings: {
     nostrSignerMode: "none",
+    signerConnectionStatus: "disconnected",
     nostrProfile: null,
     relays: [{ url: "wss://relay.example", connectionStatus: "disconnected" }],
   },
@@ -29,7 +30,12 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/components/shell", () => ({
-  AppShell: ({ children }: { children: ReactNode }) => children,
+  AppShell: ({ children, isLoggedIn }: { children: ReactNode; isLoggedIn: boolean }) => (
+    <>
+      <output data-testid="account-logged-in">{String(isLoggedIn)}</output>
+      {children}
+    </>
+  ),
   DurableWalletErrors: () => null,
   EncryptedWalletBackupRecoveryStatus: () => null,
 }));
@@ -122,6 +128,7 @@ vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
 beforeEach(() => {
   mocks.wallet.mnemonic = "wallet-a";
   mocks.settings.nostrSignerMode = "none";
+  mocks.settings.signerConnectionStatus = "disconnected";
   mocks.settings.relays = [{ url: "wss://relay.example", connectionStatus: "disconnected" }];
   mocks.startListener.mockReset().mockResolvedValue(undefined);
   mocks.stopListener.mockReset();
@@ -215,5 +222,38 @@ describe("App NIP-17 listener lifecycle", () => {
 
     view.unmount();
     expect(mocks.stopWatchingBolt11).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("App account item during the startup identity restore", () => {
+  it("treats a stored identity as logged in until the restore signals completion", async () => {
+    let finishRestore!: () => void;
+    mocks.rehydrateIdentity.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishRestore = resolve;
+      }),
+    );
+    mocks.settings.nostrSignerMode = "nsec";
+    render(<App />);
+
+    expect(screen.getByTestId("account-logged-in")).toHaveTextContent("true");
+
+    // The restore failed, so the signer is still disconnected when it completes.
+    await act(async () => finishRestore());
+    expect(screen.getByTestId("account-logged-in")).toHaveTextContent("false");
+  });
+
+  it("does not treat a missing identity as logged in during the restore", async () => {
+    let finishRestore!: () => void;
+    mocks.rehydrateIdentity.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishRestore = resolve;
+      }),
+    );
+    render(<App />);
+
+    expect(screen.getByTestId("account-logged-in")).toHaveTextContent("false");
+    await act(async () => finishRestore());
+    expect(screen.getByTestId("account-logged-in")).toHaveTextContent("false");
   });
 });

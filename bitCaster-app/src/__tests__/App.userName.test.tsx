@@ -40,7 +40,7 @@ const LONG_NAME = `Release Three Oracle ${RLO}ruoivaheB evil ${"x".repeat(90)}`;
 function renderShell() {
   return render(
     <MemoryRouter initialEntries={["/markets"]}>
-      <ShellRoutes canReadOrderStatus={false} />
+      <ShellRoutes canReadOrderStatus={false} nostrIdentityRestored />
     </MemoryRouter>,
   );
 }

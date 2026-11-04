@@ -86,9 +86,12 @@ function WizardRoutes() {
 
 export function ShellRoutes({
   canReadOrderStatus,
+  nostrIdentityRestored,
   walletBackupRecovery,
 }: {
   canReadOrderStatus: boolean;
+  /** The startup restore of the stored Nostr identity has completed. */
+  nostrIdentityRestored: boolean;
   walletBackupRecovery?: EncryptedWalletBackupDriverState;
 }) {
   const navigate = useNavigate();
@@ -97,9 +100,13 @@ export function ShellRoutes({
   const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
   // Follow the signer, as Settings does. A stored identity that did not reconnect,
-  // such as a missing extension after a reload, offers log in.
+  // such as a missing extension after a reload, offers log in. Until the startup
+  // restore completes, a stored identity counts as connecting.
   const isLoggedIn = useSettingsStore(
-    (s) => s.signerConnectionStatus === "connected" || s.signerConnectionStatus === "connecting",
+    (s) =>
+      s.signerConnectionStatus === "connected" ||
+      s.signerConnectionStatus === "connecting" ||
+      (!nostrIdentityRestored && s.nostrSignerMode !== "none"),
   );
   const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
   const openNostrSettings = useOpenNostrSettings();
@@ -410,6 +417,7 @@ function AppRoutes() {
       ) : (
         <ShellRoutes
           canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"}
+          nostrIdentityRestored={nostrSignerReady}
           walletBackupRecovery={walletBackupRecovery}
         />
       )}
