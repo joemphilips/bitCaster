@@ -252,6 +252,13 @@ interface CtfRangeWalletLike {
   checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
 }
 
+/**
+ * The browser default for an immediate (FOK) order authorization (ADR-037).
+ * The mint's 24-hour maximum is only a ceiling. A cancelled FOK stays locked
+ * until this expiry, because cancellation cannot revoke the authorization.
+ */
+export const DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS = 300
+
 export interface DaemonCtfRangeOrderCoordinatorDependencies {
   readonly observeOrderTimeline?: OrderTimelineObserver
   readonly allowInsecureLoopbackHttp?: boolean
@@ -1018,7 +1025,9 @@ export class DaemonCtfRangeOrderCoordinator {
         market,
         nowUnixSeconds: this.#nowSeconds(),
         randomId: this.#randomId.bind(this),
-        authorizationLifetimeSeconds: this.#dependencies.authorizationLifetimeSeconds,
+        authorizationLifetimeSeconds:
+          this.#dependencies.authorizationLifetimeSeconds ??
+          DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS,
       }),
       metadata,
       mint,

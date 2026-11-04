@@ -74,6 +74,7 @@ import type {
   SettlementCapabilityResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
 import {
+  DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS,
   DaemonCtfRangeOrderCoordinator,
   type DaemonCtfRangeOrderCoordinatorDependencies,
 } from '../src/ctfRangeOrderCoordinator.ts'
@@ -1243,6 +1244,37 @@ test(
     )
   },
 )
+
+test('daemon caps a FOK authorization at 300 seconds by default, as the browser does', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-default-lifetime-',
+      incarnationId: 'range-default-lifetime-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const posted: CreateSettlementCapabilityRequest[] = []
+      const client = fakeEngineClient((request) => {
+        posted.push(structuredClone(request))
+        return boundCapability(request)
+      })
+      const ids = ['range-default-lifetime-operation', 'range-default-lifetime-authorization']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => new FakeWallet([sourceProof]),
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      await coordinator.prepare(orderRequest(), client).catch(() => undefined)
+      const artifact = decodeSettlementCapabilityArtifactBytes(
+        Buffer.from(posted[0]!.artifact, 'base64'),
+      )
+      assert.equal(artifact.expiry, 10 + DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS)
+    },
+  )
+})
 
 test('daemon retains a capped authorization after restart with a different cap', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
