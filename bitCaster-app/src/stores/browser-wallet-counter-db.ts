@@ -36,6 +36,9 @@ export type BrowserWalletCounterErrorCode =
   | "snapshot_limit"
   | "recovery_incomplete";
 
+/** Whether a counter restore completes the keyset recovery (ADR-033). */
+export type BrowserWalletCounterRecovery = "complete" | "incomplete";
+
 export class BrowserWalletCounterError extends Error {
   constructor(
     readonly code: BrowserWalletCounterErrorCode,
@@ -277,6 +280,7 @@ export class BrowserWalletCounterDexieStore {
     restoredNext: number,
     admissionChangesWallet: boolean,
     admit: () => T | Promise<T>,
+    recovery: BrowserWalletCounterRecovery = "complete",
   ): Promise<BrowserWalletCounterAdvanceResult> {
     const id = requireKeysetId(keysetId);
     const minimum = requireCounter(restoredNext);
@@ -294,7 +298,14 @@ export class BrowserWalletCounterDexieStore {
         this.#database.proofs,
       ],
       () =>
-        this.#restoreInOwnedTransaction(association, id, minimum, admissionChangesWallet, admit),
+        this.#restoreInOwnedTransaction(
+          association,
+          id,
+          minimum,
+          admissionChangesWallet,
+          admit,
+          recovery,
+        ),
     );
   }
 
@@ -305,6 +316,7 @@ export class BrowserWalletCounterDexieStore {
     restoredNext: number,
     admissionChangesWallet: boolean,
     admit: () => T | Promise<T>,
+    recovery: BrowserWalletCounterRecovery = "complete",
   ): Promise<BrowserWalletCounterAdvanceResult> {
     this.#requireCurrentProfile();
     return this.#restoreInOwnedTransaction(
@@ -313,6 +325,7 @@ export class BrowserWalletCounterDexieStore {
       requireCounter(restoredNext),
       admissionChangesWallet,
       admit,
+      recovery,
     );
   }
 
@@ -322,14 +335,20 @@ export class BrowserWalletCounterDexieStore {
     minimum: number,
     admissionChangesWallet: boolean,
     admit: () => T | Promise<T>,
+    recovery: BrowserWalletCounterRecovery,
   ): Promise<BrowserWalletCounterAdvanceResult> {
+    if (recovery !== "complete" && recovery !== "incomplete") {
+      throw new BrowserWalletCounterError("invalid_counter", "counter recovery state is invalid");
+    }
     const row = await this.#ensureAssociation(association, keysetId);
     const current = await this.#currentNext(keysetId);
     const next = Math.max(current, minimum);
     const admission = admit();
     if (isPromiseLike(admission)) await admission;
     this.#requireCurrentProfile();
-    const recoveryChanged = !row.recoveryComplete;
+    // An incomplete restore never marks the keyset complete. It also keeps an
+    // earlier completion from a full scan.
+    const recoveryChanged = recovery === "complete" && !row.recoveryComplete;
     if (recoveryChanged) {
       await this.#database.walletCounterAssociations.put({ ...row, recoveryComplete: true });
     }

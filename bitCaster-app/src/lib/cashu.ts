@@ -57,6 +57,8 @@ import {
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
+import type { ConditionalKeysetSeedRecoveryAuthority } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
+import { recordSeedRestoreResyncFinding } from "@/stores/seed-restore-db";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -701,6 +703,11 @@ export interface KeysetRecoveryResult {
    *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
   scannedKeysets: string[];
   complete: boolean;
+  /**
+   * Scanned keysets with a restored proof that the mint reports `PENDING`.
+   * Their counters advanced, but their recovery stays incomplete (ADR-033).
+   */
+  pendingKeysets?: string[];
 }
 
 type RecoverableMintKeyset = {
@@ -708,7 +715,9 @@ type RecoverableMintKeyset = {
   unit?: string | null;
 };
 
-type ConditionalCounterRecoveryKeyset = ActiveCtfRangeMintKeyset & {
+// The seed restore also scans inactive (resolved) keysets.
+type ConditionalCounterRecoveryKeyset = Omit<ActiveCtfRangeMintKeyset, "active"> & {
+  active: boolean;
   conditionId: string;
   outcomeCollection: string;
   outcomeCollectionId: string;
@@ -824,6 +833,16 @@ export async function advanceWalletKeysetCounterPastMint(input: {
     );
     requireValidCounterRecoveryResult(lastCounterWithSignature);
     if (lastCounterWithSignature !== undefined) {
+      // The skipped outputs can hold funds or positions. Record them first, so
+      // the next startup pass scans from `start` and admits them (ADR-033).
+      await recordSeedRestoreResyncFinding({
+        scopeId: input.scopeId,
+        mintUrl: selected.url,
+        keysetId: input.keyset.id,
+        fromCounter: start,
+        highestCounter: lastCounterWithSignature,
+        pending: true,
+      });
       await counters.advanceToAtLeastInContext(
         context,
         input.keyset.id,
@@ -1293,6 +1312,57 @@ export async function recoverKeysetCountersForMint(
   return recoverKeysetCountersForMintCore(mintUrl, opts);
 }
 
+/**
+ * Scan one validated conditional keyset for the seed restore event (ADR-039,
+ * amendment 2026-11-04). The keyset can be inactive. The caller validated the
+ * authority with the mint keys and the condition. The scan verifies each
+ * proof, admits only UNSPENT proofs, and advances the NUT-13 cursor.
+ */
+export async function restoreBrowserConditionalKeyset(input: {
+  mintUrl: string;
+  authority: ConditionalKeysetSeedRecoveryAuthority;
+  /** Scan again although an earlier scan completed. */
+  force?: boolean;
+  startCounter?: number;
+}): Promise<KeysetRecoveryResult> {
+  const url = normalizeUrl(input.mintUrl);
+  const authority = input.authority;
+  if (authority.unit !== "msat") throw new Error("seed restore keyset unit is invalid");
+  return recoverKeysetCountersForMintCore(url, {
+    unit: "msat",
+    keysetId: authority.id,
+    force: input.force === true,
+    ...(input.startCounter === undefined ? {} : { startCounter: input.startCounter }),
+    conditionalKeyset: {
+      canonicalMintUrl: url,
+      id: authority.id,
+      unit: "msat",
+      keys: { ...authority.keys },
+      inputFeePpk: authority.inputFeePpk,
+      finalExpiry: authority.finalExpiry,
+      active: authority.active,
+      conditionId: authority.conditionId,
+      outcomeCollection: authority.outcomeCollection,
+      outcomeCollectionId: authority.outcomeCollectionId,
+      registeredAt: authority.registeredAt,
+    },
+  });
+}
+
+/** Scan one regular keyset again from a counter, for the startup re-sync. */
+export async function rescanBrowserRegularKeyset(input: {
+  mintUrl: string;
+  keysetId: string;
+  startCounter: number;
+}): Promise<KeysetRecoveryResult> {
+  return recoverKeysetCountersForMintCore(input.mintUrl, {
+    unit: "msat",
+    keysetId: input.keysetId,
+    force: true,
+    startCounter: input.startCounter,
+  });
+}
+
 async function recoverKeysetCountersForMintCore(
   mintUrl: string,
   opts: {
@@ -1302,8 +1372,14 @@ async function recoverKeysetCountersForMintCore(
     keysetId?: string;
     conditionalKeyset?: ConditionalCounterRecoveryKeyset;
     profileLockHeld?: boolean;
+    /** The first counter to scan. A startup re-sync scans from the local cursor. */
+    startCounter?: number;
   } = {},
 ): Promise<KeysetRecoveryResult> {
+  const startCounter = opts.startCounter ?? 0;
+  if (!Number.isSafeInteger(startCounter) || startCounter < 0) {
+    throw new Error("counter recovery start counter is invalid");
+  }
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [], complete: true };
@@ -1378,6 +1454,7 @@ async function recoverKeysetCountersForMintCore(
     ),
   );
   const scanned: string[] = [];
+  const pendingKeysets: string[] = [];
   let complete =
     fresh !== null || discoveredKeysets.length > 0 || opts.conditionalKeyset !== undefined;
   for (const unit of units) {
@@ -1409,7 +1486,7 @@ async function recoverKeysetCountersForMintCore(
         const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
           300,
           100,
-          0,
+          startCounter,
           keyset.id,
         );
         requireCapturedProfile();
@@ -1420,15 +1497,19 @@ async function recoverKeysetCountersForMintCore(
         // proofs would inflate the displayed balance and cause spent-token
         // errors on the next spend. Filter via `groupProofsByState` and keep
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
-        // another device and will resolve to SPENT or UNSPENT shortly.
+        // another device and will resolve to SPENT or UNSPENT later. A
+        // PENDING proof keeps the keyset recovery incomplete, so a later pass
+        // admits it if it becomes UNSPENT (ADR-033).
         validateRecoveredProofs(wallet, url, unit, keyset.id, proofs);
+        const groups =
+          proofs.length === 0
+            ? { unspent: [], pending: [], spent: [] }
+            : await wallet.groupProofsByState(proofs);
         const unspentSecrets =
           proofs.length === 0
             ? new Set<string>()
-            : requireExactCounterRecoveryProofStates(
-                proofs,
-                await wallet.groupProofsByState(proofs),
-              );
+            : requireExactCounterRecoveryProofStates(proofs, groups);
+        const proofPending = groups.pending.length > 0;
         const safe = proofs.filter((proof) => unspentSecrets.has(proof.secret));
         requireCapturedProfile();
         const stored: StoredProof[] = safe.map((proof) => {
@@ -1536,6 +1617,7 @@ async function recoverKeysetCountersForMintCore(
               unit,
               keysetId: keyset.id,
               restoredNext: next,
+              recovery: proofPending ? "incomplete" : "complete",
               isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
             });
             requireCapturedProfile();
@@ -1547,13 +1629,21 @@ async function recoverKeysetCountersForMintCore(
           await withWalletProfileLock(scopeId, persistRecoveredKeyset);
         }
         scanned.push(keyset.id);
+        if (proofPending) {
+          pendingKeysets.push(keyset.id);
+          complete = false;
+        }
       } catch {
         // Best-effort: retry a failed keyset scan on the next startup.
         complete = false;
       }
     }
   }
-  return { scannedKeysets: scanned, complete };
+  return {
+    scannedKeysets: scanned,
+    complete,
+    ...(pendingKeysets.length === 0 ? {} : { pendingKeysets }),
+  };
 }
 
 /** Encode proofs as a cashuV4 token string ready to share. */

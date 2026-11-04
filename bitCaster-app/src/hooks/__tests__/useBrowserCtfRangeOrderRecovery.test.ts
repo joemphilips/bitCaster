@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
   resumeBackupAfterRecovery: vi.fn(),
+  resyncBrowserKeysetsInUse: vi.fn(),
+  runBrowserSeedPositionRestorePass: vi.fn(),
   activeScope: "wallet-scope-a" as string | null,
 }));
 
@@ -28,6 +30,13 @@ vi.mock("@/lib/cashu", () => ({
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: mocks.recoverBrowserCtfRangeOrders,
+}));
+
+// The seed restore stages have their own tests (useBrowserCtfRangeOrderRecovery.seedPositions).
+vi.mock("@/lib/browserSeedPositionRestore", () => ({
+  endBrowserSeedPositionRestoreFirstPass: vi.fn(),
+  resyncBrowserKeysetsInUse: mocks.resyncBrowserKeysetsInUse,
+  runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));
 
 vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
@@ -57,6 +66,8 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     });
     mocks.recoverKeysetCountersForMint.mockResolvedValue({ complete: true });
     mocks.recoverBrowserCtfRangeOrders.mockResolvedValue({ recovered: 0, pending: [] });
+    mocks.resyncBrowserKeysetsInUse.mockResolvedValue({ usedElsewhere: false, complete: true });
+    mocks.runBrowserSeedPositionRestorePass.mockResolvedValue({ status: "complete" });
   });
 
   afterEach(() => {

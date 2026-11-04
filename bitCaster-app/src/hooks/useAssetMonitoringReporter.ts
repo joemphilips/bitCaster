@@ -30,6 +30,7 @@ import {
 } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import { browserSeedPositionRestoreGate } from "@/lib/browserSeedPositionRestore";
 
 /** Mounts fail-open asset-monitoring reports for the active wallet profile. */
 export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
@@ -79,13 +80,30 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
         if (isCurrent()) publishPortfolioInvalidation({ walletId });
       },
     });
-    const unsubscribe = subscribeToCommittedProofChanges(database, () => reporter.request());
-    const unsubscribeOwner = subscribeToBrowserEncryptedBackupMonitoring(scopeId, () =>
-      reporter.request(),
-    );
-    reporter.request();
+    // The engine keeps only the latest report. A new profile reports nothing
+    // until its first seed restore pass read the earlier report (ADR-039).
+    const gate = browserSeedPositionRestoreGate(scopeId);
+    let released = gate.released;
+    let stopped = false;
+    const request = () => {
+      if (released) reporter.request();
+    };
+    const unsubscribe = subscribeToCommittedProofChanges(database, request);
+    const unsubscribeOwner = subscribeToBrowserEncryptedBackupMonitoring(scopeId, request);
+    if (released) {
+      reporter.request();
+    } else {
+      void gate.wait
+        .catch(() => undefined)
+        .then(() => {
+          if (stopped) return;
+          released = true;
+          reporter.request();
+        });
+    }
 
     return () => {
+      stopped = true;
       reporter.stop();
       unsubscribe();
       unsubscribeOwner();

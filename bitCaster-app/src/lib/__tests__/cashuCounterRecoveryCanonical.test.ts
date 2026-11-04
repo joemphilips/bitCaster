@@ -456,8 +456,13 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     const first = await recoverKeysetCountersForMint(MINT_URL, { force: true });
     const second = await recoverKeysetCountersForMint(MINT_URL, { force: true });
 
-    expect(first).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
-    expect(second).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    // A PENDING proof keeps the keyset incomplete. The counter still advances (ADR-033).
+    const pending = { scannedKeysets: [KEYSET_ID], complete: false, pendingKeysets: [KEYSET_ID] };
+    expect(first).toEqual(pending);
+    expect(second).toEqual(pending);
+    expect(
+      await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
+    ).toMatchObject({ recoveryComplete: false });
     expect(await database!.custodyProofs.count()).toBe(1);
     expect(await database!.custodyProofs.toArray()).toEqual(
       expect.arrayContaining([expect.objectContaining({ amount: 7, selectability: "selectable" })]),
@@ -472,7 +477,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     if (existing === undefined) throw new Error("recovered custody proof is missing");
     await database!.proofs.clear();
     const selectableRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(selectableRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(selectableRetry).toEqual(pending);
     expect(await database!.proofs.count()).toBe(0);
     await database!.custodyProofs.put({
       ...existing,
@@ -492,7 +497,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       proofState: "spent",
     });
     const spentRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(spentRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(spentRetry).toEqual(pending);
     expect(await database!.custodyProofs.get([scopeId(), existing.proofId])).toMatchObject({
       revision: existing.revision + 1,
       selectability: "spent",
@@ -523,7 +528,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       proofState: "locked",
     });
     const lockedRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(lockedRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(lockedRetry).toEqual(pending);
     expect(await database!.custodyProofs.get([scopeId(), existing.proofId])).toMatchObject({
       revision: spent.revision + 1,
       selectability: "locked",

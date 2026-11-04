@@ -15,8 +15,19 @@ import {
   listenForBrowserCtfRangeRecoveryWake,
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
+import {
+  endBrowserSeedPositionRestoreFirstPass,
+  resyncBrowserKeysetsInUse,
+  runBrowserSeedPositionRestorePass,
+} from "@/lib/browserSeedPositionRestore";
+import { useToastStore } from "@/stores/toast";
+import i18n from "@/i18n";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
+/** A seed restore pass that ran out of budget continues soon. */
+const SEED_RESTORE_CONTINUE_MS = 1_000;
+
+const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 export function useBrowserCtfRangeOrderRecovery(input: {
   readonly nostrSignerReady: boolean;
@@ -26,7 +37,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
   const { nostrSignerReady, walletMnemonic, walletMintUrls } = input;
 
   // Another device can advance the shared seed's cursor. Recover default msat
-  // keysets before reuse; scanning every conditional keyset at startup is unbounded.
+  // keysets before reuse, probe each keyset in use above its cursor, and run
+  // the budgeted seed restore of conditional keysets (ADR-039).
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -40,6 +52,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     let receiveRecoveryAfterOperationId: string | null = null;
     let mintsRecovered = false;
     let countersRecovered = false;
+    let keysetsResynced = false;
+    let usedElsewhereShown = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const isCurrent = () => !cancelled && activeBrowserWalletScopeId() === scopeId;
@@ -47,12 +61,12 @@ export function useBrowserCtfRangeOrderRecovery(input: {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
     };
-    const schedule = () => {
+    const schedule = (delayMs = RANGE_RECOVERY_RETRY_MS) => {
       if (!isCurrent() || timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
         void runRecovery();
-      }, RANGE_RECOVERY_RETRY_MS);
+      }, delayMs);
     };
     const runRecovery = async () => {
       if (!isCurrent()) return;
@@ -63,6 +77,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
       }
       running = true;
       let retryRequired = false;
+      let restoreMore = false;
       try {
         if (!receivesRecovered) {
           try {
@@ -127,6 +142,57 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryRequired = true;
           }
         }
+        if (!isCurrent()) return;
+        // Another client with this seed can sign outputs above the local
+        // cursors. Probe each keyset in use once at startup (ADR-033).
+        if (!keysetsResynced) {
+          try {
+            let complete = true;
+            for (const mintUrl of mintUrls) {
+              const result = await resyncBrowserKeysetsInUse({
+                scopeId,
+                mnemonic: walletMnemonic,
+                mintUrl,
+                yieldControl: yieldToBrowser,
+              });
+              if (!isCurrent()) return;
+              complete &&= result.complete;
+              if (result.usedElsewhere && !usedElsewhereShown) {
+                usedElsewhereShown = true;
+                useToastStore.getState().addToast({
+                  type: "info",
+                  message: i18n.t("wallet.usedInAnotherBrowser"),
+                });
+              }
+            }
+            keysetsResynced = complete;
+            retryRequired ||= !complete;
+          } catch {
+            retryRequired = true;
+          }
+        }
+        if (!isCurrent()) return;
+        // The automatic seed restore event (ADR-039, amendment 2026-11-04).
+        try {
+          for (const mintUrl of mintUrls) {
+            const result = await runBrowserSeedPositionRestorePass({
+              scopeId,
+              mnemonic: walletMnemonic,
+              mintUrl,
+              yieldControl: yieldToBrowser,
+            });
+            if (!isCurrent()) return;
+            restoreMore ||= result.status === "more";
+            retryRequired ||=
+              result.status === "waiting" ||
+              result.status === "failed" ||
+              result.retryLater === true;
+          }
+        } catch {
+          retryRequired = true;
+        } finally {
+          endBrowserSeedPositionRestoreFirstPass(scopeId);
+        }
       } finally {
         running = false;
         if (!isCurrent()) return;
@@ -134,6 +200,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         if (rerunRequested) {
           rerunRequested = false;
           void runRecovery();
+        } else if (restoreMore) {
+          schedule(SEED_RESTORE_CONTINUE_MS);
         } else if (retryRequired) {
           schedule();
         }

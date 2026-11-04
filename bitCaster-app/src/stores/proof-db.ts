@@ -1388,6 +1388,12 @@ export async function restoreProofsAndAdvanceCounter(
     readonly unit: CashuProofUnit | string;
     readonly keysetId: string;
     readonly restoredNext: number;
+    /**
+     * `complete` only after a full scan with no `PENDING` proof. A backup or
+     * hint restore and a scan with a `PENDING` proof leave it `incomplete`, so
+     * the next use of the keyset scans the mint again (ADR-033).
+     */
+    readonly recovery: "complete" | "incomplete";
     readonly isCurrentProfile: () => boolean;
   },
   database: BitcasterDB = db,
@@ -1407,6 +1413,7 @@ export async function restoreProofsAndAdvanceCounter(
     input.restoredNext,
     rows.length > 0,
     admitRestoredProofs,
+    input.recovery,
   );
 }
 

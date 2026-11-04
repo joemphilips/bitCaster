@@ -4,6 +4,7 @@ import type { Position, PortfolioProps } from "@/types/portfolio";
 import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
+import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
 
 interface PositionsListProps {
   positions: Position[];
@@ -81,6 +82,8 @@ export function PositionsList({
           );
         })}
       </div>
+
+      <SeedPositionRestoreNotice className="mb-3" />
 
       {/* Position List */}
       {claimCelebrations.map((celebration) => (
