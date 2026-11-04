@@ -1,0 +1,42 @@
+---
+interface Props {
+  text: string
+  href: string
+  linkLabel: string
+}
+
+const { text, href, linkLabel } = Astro.props
+---
+
+<div class="landing-footer not-content">
+  <p>{text}</p>
+  <a href={href}>{linkLabel}</a>
+</div>
+
+<style>
+  .landing-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0 1rem;
+    padding-block: 1.25rem 0;
+    color: var(--bc-muted);
+    font-size: var(--sl-text-sm);
+  }
+
+  p {
+    margin: 0;
+  }
+
+  a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+    color: var(--sl-color-gray-2);
+  }
+
+  a:hover {
+    color: var(--sl-color-text-accent);
+  }
+</style>

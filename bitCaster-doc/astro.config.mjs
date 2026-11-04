@@ -31,7 +31,8 @@ export default defineConfig({
         },
       },
       logo: {
-        src: './public/logo.svg',
+        dark: './public/logo.svg',
+        light: './public/logo-light.svg',
       },
       social: [
         {
@@ -41,6 +42,9 @@ export default defineConfig({
         },
       ],
       customCss: ['./src/styles/fonts.css', './src/styles/custom.css'],
+      components: {
+        Hero: './src/components/LandingHero.astro',
+      },
       sidebar: [
         {
           label: 'User Guide',
