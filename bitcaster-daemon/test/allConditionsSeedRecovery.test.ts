@@ -47,7 +47,8 @@ function fakeMint(signed: Set<string>) {
       requests.push({ path: '/v1/conditional_keysets', body: query })
       return {
         keysets: KEYSETS.filter(
-          ({ condition_id }) => query.condition_id === undefined || condition_id === query.condition_id,
+          ({ condition_id }) =>
+            query.condition_id === undefined || condition_id === query.condition_id,
         ),
         next_cursor: null,
       }
@@ -119,7 +120,10 @@ test('recovers regular keysets and each catalogue market with a probe signature'
     assert.deepEqual(
       recoverCalls.map(({ recoveryId, scanPolicy }) => ({ recoveryId, scanPolicy })),
       [
-        { recoveryId: 'restore-1', scanPolicy: { version: 1, scope: 'regular-msat', gapLimit: 300 } },
+        {
+          recoveryId: 'restore-1',
+          scanPolicy: { version: 1, scope: 'regular-msat', gapLimit: 300 },
+        },
         {
           recoveryId: conditionRecoveryId('restore-1', HELD),
           scanPolicy: { version: 1, scope: 'condition', conditionId: HELD, gapLimit: 300 },

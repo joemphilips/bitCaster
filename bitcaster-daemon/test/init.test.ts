@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
+import { importedSeedRestoreHint } from '../src/allConditionsSeedRecovery.ts'
 import { profilePath, readProfile, writeProfile } from '../src/profile.ts'
 import { ensureRpcToken, readRpcToken, rpcTokenPath } from '../src/rpcAuth.ts'
 import { acquireDaemonRunLock, runLockPath } from '../src/runLock.ts'
@@ -61,7 +62,11 @@ test('fresh init publishes one complete SQLite authority', async () => {
       assert.equal(profilePath(), secretsPath())
       assert.equal(profilePath(), rpcTokenPath())
     })
-    assert.equal(initOutput, 'bitcaster-daemon profile initialized\n')
+    // An imported seed can hold funds and positions; init names the restore command.
+    assert.equal(
+      initOutput,
+      'bitcaster-daemon profile initialized\n' + importedSeedRestoreHint('https://mint.example'),
+    )
     assert.equal(initOutput.includes(nativeOracleNonceSeedHex), false)
     assert.equal(initOutput.includes(walletSeedHex), false)
     assert.equal(initOutput.includes(nostrSecretKeyHex), false)

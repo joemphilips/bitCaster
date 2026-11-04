@@ -51,9 +51,8 @@ switch (command) {
   case 'recover-seed': {
     const options = parseRecoverSeedOptions(args)
     if (options.allConditions) {
-      const { runOfflineDaemonSeedRecoveryAllConditions } = await import(
-        './allConditionsSeedRecovery.ts'
-      )
+      const { runOfflineDaemonSeedRecoveryAllConditions } =
+        await import('./allConditionsSeedRecovery.ts')
       const result = await runOfflineDaemonSeedRecoveryAllConditions(options)
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
       break

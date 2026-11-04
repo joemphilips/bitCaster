@@ -229,7 +229,11 @@ function fakeRestore(signed: ReadonlySet<string>, requests: SerializedBlindedMes
     const matched = outputs.filter(({ B_ }) => signed.has(B_))
     return {
       outputs: matched,
-      signatures: matched.map((output) => ({ id: output.id, amount: 4, C_: `02${'aa'.repeat(32)}` })),
+      signatures: matched.map((output) => ({
+        id: output.id,
+        amount: 4,
+        C_: `02${'aa'.repeat(32)}`,
+      })),
     }
   }
 }
