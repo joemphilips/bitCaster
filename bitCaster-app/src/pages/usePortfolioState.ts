@@ -67,8 +67,12 @@ import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/no
 import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
 import { loadMarketCatalogue } from "@/lib/marketCatalogueBatches";
 
-/** Price and closure notices for held markets share one read after this delay. */
-const valuationRefreshDelayMs = 10_000;
+/**
+ * A price or closure notice arrives before the engine valuation view applies
+ * its event. The view applies events up to 13 s late, so notices for held
+ * markets share one read after this delay.
+ */
+const valuationRefreshDelayMs = 15_000;
 /** A projection that is still building is read again after these delays. */
 const buildingPortfolioRetryDelaysMs = [1_000, 2_000, 4_000, 8_000] as const;
 const maximumBuildingPortfolioExtraReads = buildingPortfolioRetryDelaysMs.length;
@@ -86,6 +90,8 @@ const rateLimitedPortfolioRetryDelaysMs = [5_000, 10_000, 20_000, 40_000] as con
 const maximumRateLimitedPortfolioRetries = rateLimitedPortfolioRetryDelaysMs.length;
 /** Retry-After can extend a retry delay to this bound, and not beyond. */
 const maximumRateLimitedPortfolioRetryDelayMs = 60_000;
+/** A 429 retry delay varies by this fraction, so refused pages do not retry together. */
+const rateLimitedPortfolioRetryJitter = 0.25;
 
 type AutomaticPortfolioReadKind = "notification" | "building";
 
@@ -115,10 +121,29 @@ function spendPortfolioReadPermit(budget: PortfolioReadBudget, nowMs: number): v
   );
 }
 
-function rateLimitedPortfolioRetryDelayMs(error: EngineClientError, retry: number): number {
-  return error.retryAfterSeconds === undefined
-    ? (rateLimitedPortfolioRetryDelaysMs[retry - 1] ?? maximumRateLimitedPortfolioRetryDelayMs)
-    : Math.min(maximumRateLimitedPortfolioRetryDelayMs, error.retryAfterSeconds * 1_000);
+/**
+ * A backoff delay varies by 25 % either side. A Retry-After delay only grows
+ * by up to 25 %, because the engine does not admit the read before it.
+ */
+function rateLimitedPortfolioRetryDelayMs(
+  error: EngineClientError,
+  retry: number,
+  unitRandom: number,
+): number {
+  if (error.retryAfterSeconds === undefined) {
+    const delayMs =
+      rateLimitedPortfolioRetryDelaysMs[retry - 1] ?? maximumRateLimitedPortfolioRetryDelayMs;
+    return Math.round(
+      delayMs *
+        (1 - rateLimitedPortfolioRetryJitter + 2 * rateLimitedPortfolioRetryJitter * unitRandom),
+    );
+  }
+  return Math.min(
+    maximumRateLimitedPortfolioRetryDelayMs,
+    Math.round(
+      error.retryAfterSeconds * 1_000 * (1 + rateLimitedPortfolioRetryJitter * unitRandom),
+    ),
+  );
 }
 
 function mergeAutomaticPortfolioReadKinds(
@@ -595,7 +620,10 @@ export function usePortfolioState(): PortfolioState & {
     controller: AbortController;
   } | null>(null);
   const automaticRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The read budget clock is performance.now(): a wall clock change must not refill permits.
   const automaticRefreshTimerAtMs = useRef(0);
+  const valuationNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const valuationNoticeJoined = useRef(false);
   const automaticRefreshTimerKind = useRef<AutomaticPortfolioReadKind | null>(null);
   const automaticRefreshScheduled = useRef(false);
   const automaticRefreshScheduledKind = useRef<AutomaticPortfolioReadKind | null>(null);
@@ -665,6 +693,12 @@ export function usePortfolioState(): PortfolioState & {
     setRateLimitedMonitoringKey(null);
     setLoadingMoreAssets(false);
   }, [displayScopeKey]);
+  const clearValuationNoticeTimer = useCallback(() => {
+    valuationNoticeJoined.current = false;
+    if (valuationNoticeTimer.current === null) return;
+    clearTimeout(valuationNoticeTimer.current);
+    valuationNoticeTimer.current = null;
+  }, []);
   const clearAutomaticRefreshTimer = useCallback(() => {
     if (automaticRefreshTimer.current !== null) {
       clearTimeout(automaticRefreshTimer.current);
@@ -701,7 +735,7 @@ export function usePortfolioState(): PortfolioState & {
         return;
       }
 
-      const nowMs = Date.now();
+      const nowMs = performance.now();
       const atMs = Math.max(
         nowMs + delayMs,
         earliestBudgetedPortfolioReadAtMs(portfolioReadBudget.current, nowMs),
@@ -749,8 +783,29 @@ export function usePortfolioState(): PortfolioState & {
     [monitoringKey, walletId],
   );
 
-  portfolioObserverRefresh.current = () =>
-    requestAutomaticPortfolioRead("notification", valuationRefreshDelayMs);
+  // The notice read keeps its own timer. A wallet change that reads at once
+  // comes before the valuation view applies the notice, so it must not take
+  // the place of this later read. A notice that joins a pending timer can
+  // arrive just before it fires, so its read is too early. One more timer for
+  // the full delay then follows that read.
+  const startValuationNoticeTimer = () => {
+    valuationNoticeTimer.current = setTimeout(() => {
+      valuationNoticeTimer.current = null;
+      if (activeMonitoringKey.current !== monitoringKey) return;
+      const joined = valuationNoticeJoined.current;
+      valuationNoticeJoined.current = false;
+      requestAutomaticPortfolioRead("notification", 0);
+      if (joined) startValuationNoticeTimer();
+    }, valuationRefreshDelayMs);
+  };
+  portfolioObserverRefresh.current = () => {
+    if (monitoringKey === null || walletId === null) return;
+    if (valuationNoticeTimer.current !== null) {
+      valuationNoticeJoined.current = true;
+      return;
+    }
+    startValuationNoticeTimer();
+  };
 
   useEffect(() => {
     const observer = observePortfolioValuations(
@@ -786,6 +841,7 @@ export function usePortfolioState(): PortfolioState & {
     if (activeRead && activeRead.monitoringKey !== monitoringKey) abortActivePortfolioRead();
     return () => {
       clearAutomaticRefreshTimer();
+      clearValuationNoticeTimer();
       automaticRefreshScheduled.current = false;
       automaticRefreshScheduledKind.current = null;
       if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
@@ -793,7 +849,12 @@ export function usePortfolioState(): PortfolioState & {
       }
       if (activeMonitoringKey.current === monitoringKey) activeMonitoringKey.current = null;
     };
-  }, [abortActivePortfolioRead, clearAutomaticRefreshTimer, monitoringKey]);
+  }, [
+    abortActivePortfolioRead,
+    clearAutomaticRefreshTimer,
+    clearValuationNoticeTimer,
+    monitoringKey,
+  ]);
 
   useEffect(() => {
     if (monitoringKey === null || walletId === null) return;
@@ -880,7 +941,7 @@ export function usePortfolioState(): PortfolioState & {
     const spendPermit = () => {
       if (permitSpent || controller.signal.aborted) return;
       permitSpent = true;
-      spendPortfolioReadPermit(portfolioReadBudget.current, Date.now());
+      spendPortfolioReadPermit(portfolioReadBudget.current, performance.now());
     };
     void createAuthenticatedBrowserEngineClient()
       .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 }, controller.signal)
@@ -895,6 +956,9 @@ export function usePortfolioState(): PortfolioState & {
           controller.signal.aborted
         )
           return;
+        // Any 200 ends a 429 wait, also a 200 whose assets are unusable.
+        rateLimitedPortfolioRetries.current = 0;
+        setRateLimitedMonitoringKey(null);
         const initialAssets = appendMonitoringAssets([], value.assets.assets);
         if (initialAssets.kind !== "appended") {
           setMonitoringUnavailable(true);
@@ -926,8 +990,6 @@ export function usePortfolioState(): PortfolioState & {
         });
         setLoadingMoreAssets(false);
         setMonitoringError(null);
-        rateLimitedPortfolioRetries.current = 0;
-        setRateLimitedMonitoringKey(null);
         const waiter = portfolioRepairWaiter.current;
         if (waiter?.key === monitoringKey && requestId >= waiter.minimumRequest) {
           if (
@@ -980,9 +1042,10 @@ export function usePortfolioState(): PortfolioState & {
           const delayMs = rateLimitedPortfolioRetryDelayMs(
             error,
             rateLimitedPortfolioRetries.current,
+            Math.random(),
           );
           const budget = portfolioReadBudget.current;
-          budget.refusedUntilMs = Math.max(budget.refusedUntilMs, Date.now() + delayMs);
+          budget.refusedUntilMs = Math.max(budget.refusedUntilMs, performance.now() + delayMs);
           setRateLimitedMonitoringKey(monitoringKey);
           requestAutomaticPortfolioRead("notification", delayMs);
           return;
