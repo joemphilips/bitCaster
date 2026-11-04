@@ -24,8 +24,28 @@ the daemon running while an order, a payment, or a market creation is in progres
 
 ## Set up the CLI
 
-The CLI is not on npm. Build it from a clone of the public repository. You need Git and Node.js 22
-or later. The build needs only the `cashu-ts` submodule.
+Download the CLI from the [latest release](https://github.com/joemphilips/bitCaster/releases/latest).
+There is an archive for Linux on x64 and an archive for macOS on Apple silicon. You need Node.js
+22.15 or later. There is no Windows archive, because order submission does not work on Windows yet.
+
+On Linux, download the archive and the checksum file. Check the archive, then extract it:
+
+```bash
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS
+grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
+tar -xzf bitcaster-cli-linux-x64.tar.gz
+export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH"
+bitcaster-cli --help
+```
+
+On macOS, use `bitcaster-cli-darwin-arm64` instead of `bitcaster-cli-linux-x64`, and
+`shasum -a 256 -c -` instead of `sha256sum -c -`. The archive contains the CLI, the daemon, and the
+oracle helper that market creation uses. To keep `bitcaster-cli` available in a new shell, add the
+`bin` directory to `PATH` in your shell profile.
+
+You can also build the CLI from a clone of the public repository. You need Git and Node.js 22.15 or
+later. The build needs only the `cashu-ts` submodule.
 
 ```bash
 git clone https://github.com/joemphilips/bitCaster.git
@@ -37,7 +57,8 @@ bitcaster-cli --help
 ```
 
 `npm ci` installs the dependencies and builds the CLI. `npm link` puts `bitcaster-cli` in the global
-bin directory of npm. Order submission does not work on Windows yet.
+bin directory of npm. This build does not include the oracle helper, so it cannot create markets. Use
+a release archive to create markets.
 
 The CLI defaults to a local development engine and mint. Set the bitCaster engine URL and mint
 URL. Then create the wallet profile:
@@ -112,8 +133,14 @@ for the agent. Do not import the recovery phrase of your main wallet, and do not
 the agent. Anyone with the phrase can spend that wallet's funds.
 
 Tell the agent to show you `order fee-preview` and `market creation-quote` results before it
-submits. Use `--dry-run` to validate a command and print the request without sending it.
-`order submit`, `market create`, and `wallet invoice create` support it. Not every command supports
-it. A command without this support ignores `--dry-run` and runs normally. Rely on `--dry-run` only
-when the `--help` of that command lists it. Keep the data directory until every operation has a
-final result.
+submits. Put `--dry-run` before a command to check the command without acting. The `--help` of each
+command states its dry-run mode, and every command has a mode. A supported command prints
+`{"dryRun": true, "method", "params"}` and changes nothing. `params` does not contain secret values.
+`order submit`, `market create`, and `wallet invoice create` are supported. A read-only command runs
+normally. It does not change funds, orders, markets, keys, or settings. A refused command stops with
+exit code 2 before it acts. `daemon init`, `daemon stop`, and `daemon restart` refuse `--dry-run`.
+
+With `--dry-run`, the CLI does not start the daemon. A command that needs the daemon then works only
+when the daemon already runs. Put `--dry-run` before any `--`, and give it no value. Otherwise, the
+CLI stops with exit code 2. A dry run does not prove that the operation can succeed. Keep the data
+directory until every operation has a final result.

@@ -24,8 +24,27 @@ daemon は、ウォレットと保存された処理を保持するローカル�
 
 ## CLI を準備する
 
-CLI は npm で公開していません。公開リポジトリのクローンからビルドします。
-Git と Node.js 22 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
+CLI は[最新リリース](https://github.com/joemphilips/bitCaster/releases/latest)からダウンロードします。
+x64 の Linux 用と、Apple シリコンの macOS 用のアーカイブがあります。Node.js 22.15 以降が必要です。
+Windows ではまだ注文を送信できないため、Windows 用のアーカイブはありません。
+
+Linux では、アーカイブとチェックサムファイルをダウンロードします。アーカイブを検証してから展開します。
+
+```bash
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS
+grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
+tar -xzf bitcaster-cli-linux-x64.tar.gz
+export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH"
+bitcaster-cli --help
+```
+
+macOS では、`bitcaster-cli-linux-x64` の代わりに `bitcaster-cli-darwin-arm64` を、`sha256sum -c -` の代わりに `shasum -a 256 -c -` を使います。
+アーカイブには、CLI、daemon、マーケット作成に使うオラクルヘルパーが入っています。
+新しいシェルでも `bitcaster-cli` を使えるようにするには、シェルのプロファイルで `bin` ディレクトリを `PATH` に追加してください。
+
+公開リポジトリのクローンから CLI をビルドすることもできます。
+Git と Node.js 22.15 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
 
 ```bash
 git clone https://github.com/joemphilips/bitCaster.git
@@ -38,7 +57,8 @@ bitcaster-cli --help
 
 `npm ci` は依存関係をインストールし、CLI をビルドします。
 `npm link` は `bitcaster-cli` を npm のグローバル bin ディレクトリに置きます。
-Windows ではまだ注文を送信できません。
+このビルドにはオラクルヘルパーが含まれないため、マーケットを作成できません。
+マーケットを作成するには、リリースのアーカイブを使ってください。
 
 CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
 bitCaster のエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
@@ -119,9 +139,17 @@ daemon の結果は `{ "ok": true, "result": ... }` の形式です。
 エージェントに復元フレーズを渡さないでください。復元フレーズを持つ人は、そのウォレットの資金を使えます。
 
 送信する前に、`order fee-preview` と `market creation-quote` の結果を見せるようエージェントに指示してください。
-`--dry-run` を使うと、コマンドを検証し、送信せずにリクエストを表示します。
-`order submit`、`market create`、`wallet invoice create` が対応しています。
-すべてのコマンドが対応しているわけではありません。
-対応していないコマンドは `--dry-run` を無視して通常どおり実行します。
-そのコマンドの `--help` に `--dry-run` がある場合だけ、`--dry-run` に頼ってください。
+コマンドの前に `--dry-run` を付けると、実行せずにコマンドを確認できます。
+各コマンドの `--help` に、そのコマンドの dry-run での動作を示します。すべてのコマンドに、この動作が定められています。
+対応するコマンドは `{"dryRun": true, "method", "params"}` を表示し、何も変更しません。`params` に秘密の値は入りません。
+`order submit`、`market create`、`wallet invoice create` は対応しています。
+読み取り専用のコマンドは通常どおり実行します。資金、注文、マーケット、鍵、設定は変更しません。
+拒否するコマンドは、何も実行せずに終了コード 2 で終了します。
+`daemon init`、`daemon stop`、`daemon restart` は `--dry-run` を拒否します。
+
+`--dry-run` を付けると、CLI は daemon を起動しません。
+daemon を必要とするコマンドは、daemon がすでに動いているときだけ動作します。
+`--dry-run` は `--` より前に、値を付けずに指定してください。
+それ以外の場合、CLI は終了コード 2 で終了します。
+dry-run が成功しても、操作の成功は保証されません。
 すべての処理の最終結果が出るまで、データディレクトリを保持してください。
