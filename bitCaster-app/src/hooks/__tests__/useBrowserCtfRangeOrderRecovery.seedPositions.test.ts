@@ -38,7 +38,6 @@ import {
   seedRestoreDatabase,
   type SeedRestoreDB,
 } from "@/stores/seed-restore-db";
-import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useToastStore } from "@/stores/toast";
 import {
@@ -46,7 +45,6 @@ import {
   MINT_URL,
   MNEMONIC,
   binaryMarket,
-  blindedOutput,
   byKeysetAndAmount,
   conditionalKeyset,
   installLockManager,
@@ -55,7 +53,6 @@ import {
   regularKeyset,
   scopeId,
   selectableHoldings,
-  type FakeKeyset,
 } from "@/test/seedRestoreFakeMint";
 
 // A browser that opens an existing recovery phrase must get back the market
@@ -202,13 +199,14 @@ function restorePass(now: () => number) {
   });
 }
 
-function catalogueEntry(conditionId: string) {
-  return { conditionId, outcomes: ["YES", "NO"] };
+/** Deletes the restore record of the seed, as a seed handoff or a wallet reset does. */
+async function clearRestoreRecord(): Promise<void> {
+  const database = seedRestoreDatabase(scopeId());
+  for (const table of database.tables) await table.clear();
 }
 
-/** Adds keysets that the mint registers after the test started. */
-function registerAtMint(mint: FakeMint, ...keysets: FakeKeyset[]): void {
-  (mint.conditional as FakeKeyset[]).push(...keysets);
+function catalogueEntry(conditionId: string) {
+  return { conditionId, outcomes: ["YES", "NO"] };
 }
 
 function activityHint(marketId: string) {
@@ -240,6 +238,8 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     mocks.getAssets.mockReset();
     useActivityLogStore.setState({ items: [] });
     useToastStore.setState({ toasts: [] });
+    // The cap of full restore scans is browser-level storage.
+    window.localStorage.clear();
     installLockManager();
   });
 
@@ -463,164 +463,86 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
   });
 
-  it("probes a keyset with no signature again later", async () => {
+  it("resumes an incomplete catalogue walk at the page that failed", async () => {
     const regular = regularKeyset();
-    const market = binaryMarket("ab".repeat(32));
-    const mint = new FakeMint(regular, [market.yes, market.no]);
-    vi.stubGlobal("fetch", mint.fetch);
-    let nowMs = 1_000_000;
-    const now = () => nowMs;
-
-    await restorePass(now);
-    expect((await restoreRow(market.no.id))?.state).toBe("no-signature");
-
-    // Another client with this seed bought NO after the first restore.
-    mint.sign({ keyset: market.no, counter: 0, amount: 4, state: "UNSPENT" });
-    nowMs += 30 * 60_000;
-    await restorePass(now);
-    expect(await selectableHoldings()).toEqual([]);
-
-    nowMs += 31 * 60_000;
-    await restorePass(now);
-    expect(await selectableHoldings()).toEqual([position(market.no, 4)]);
-    expect((await restoreRow(market.no.id))?.state).toBe("restored");
-  });
-
-  it("does not probe again a keyset that this browser now uses", async () => {
-    const regular = regularKeyset();
-    const market = binaryMarket("ab".repeat(32));
-    const mint = new FakeMint(regular, [market.yes, market.no]);
-    vi.stubGlobal("fetch", mint.fetch);
-    let nowMs = 1_000_000;
-    const now = () => nowMs;
-    await restorePass(now);
-    expect((await restoreRow(market.no.id))?.state).toBe("no-signature");
-
-    // This browser then used NO. An output of its own order that is still in
-    // flight is signed at counter 0. The keyset re-sync owns this keyset now.
-    await new BrowserWalletCounterDexieStore({
-      database: db,
-      scopeId: scopeId(),
-      isCurrentProfile: () => true,
-    }).restoreInContext(
-      { mintUrl: MINT_URL, unit: "msat" },
-      market.no.id,
-      2,
-      false,
-      () => undefined,
-    );
-    mint.sign({ keyset: market.no, counter: 0, amount: 4, state: "UNSPENT" });
-    const evidence = (await seedRestore!.resyncSchedules.get([scopeId(), MINT_URL]))?.evidence ?? 0;
-    const before = mint.restoredOutputs().length;
-    nowMs += 2 * HOUR_MS;
-
-    await restorePass(now);
-
-    expect(mint.restoredOutputs().slice(before).flat()).not.toContain(blindedOutput(market.no, 0));
-    expect(await selectableHoldings()).toEqual([]);
-    // Its own outputs are no evidence of another client.
-    expect((await seedRestore!.resyncSchedules.get([scopeId(), MINT_URL]))?.evidence ?? 0).toBe(
-      evidence,
-    );
-  });
-
-  it("probes every keyset with no signature again within the re-probe cycle", async () => {
-    const regular = regularKeyset();
-    const markets = Array.from({ length: 12 }, (_, index) =>
-      binaryMarket((index + 16).toString(16).repeat(32)),
-    );
-    const keysets = markets.flatMap(({ yes, no }) => [yes, no]);
-    const mint = new FakeMint(regular, keysets);
-    vi.stubGlobal("fetch", mint.fetch);
-    let nowMs = 1_000_000;
-    const now = () => nowMs;
-    await restorePass(now);
-
-    // An oldest-first order with equal probe times reaches this keyset last.
-    const last = [...keysets].sort((left, right) => left.id.localeCompare(right.id)).at(-1)!;
-    mint.sign({ keyset: last, counter: 0, amount: 2, state: "UNSPENT" });
-    nowMs += 7 * DAY_MS;
-    await restorePass(now);
-
-    expect(await selectableHoldings()).toEqual([position(last, 2)]);
-  });
-
-  it("returns to the engine catalogue after a failed first page", async () => {
-    const regular = regularKeyset();
-    const early = binaryMarket("ab".repeat(32));
-    const later = binaryMarket("cd".repeat(32));
-    const mint = new FakeMint(regular, [early.yes, early.no]);
-    mint.catalogue = [catalogueEntry("ab".repeat(32))];
-    mint.catalogueFailures = 1;
-    vi.stubGlobal("fetch", mint.fetch);
-    let nowMs = 1_000_000;
-    const now = () => nowMs;
-
-    // The engine fails at the first page, so this walk uses the mint listing.
-    expect((await restorePass(now)).status).toBe("complete");
-    expect((await restoreState())?.catalogueSource).toBe("mint");
-
-    // A later walk reads the engine catalogue again.
-    mint.catalogue = [catalogueEntry("cd".repeat(32)), ...mint.catalogue];
-    registerAtMint(mint, later.yes, later.no);
-    mint.sign({ keyset: later.yes, counter: 0, amount: 4, state: "UNSPENT" });
-    nowMs += DAY_MS;
-    await restorePass(now);
-
-    expect(await selectableHoldings()).toEqual([position(later.yes, 4)]);
-    expect((await restoreState())?.catalogueSource).toBe("engine");
-  });
-
-  it("walks the catalogue again for new markets", async () => {
-    const regular = regularKeyset();
-    const early = binaryMarket("ab".repeat(32));
-    const later = binaryMarket("cd".repeat(32));
-    const mint = new FakeMint(regular, [early.yes, early.no]);
-    mint.catalogue = [catalogueEntry("ab".repeat(32))];
-    vi.stubGlobal("fetch", mint.fetch);
-    let nowMs = 1_000_000;
-    const now = () => nowMs;
-    expect((await restorePass(now)).status).toBe("complete");
-
-    // A new market opened, and another browser with this seed bought it.
-    mint.catalogue = [catalogueEntry("cd".repeat(32)), ...mint.catalogue];
-    registerAtMint(mint, later.yes, later.no);
-    mint.sign({ keyset: later.no, counter: 0, amount: 2, state: "UNSPENT" });
-    nowMs += DAY_MS;
-    await restorePass(now);
-
-    expect(await selectableHoldings()).toEqual([position(later.no, 2)]);
-  });
-
-  it("resumes a later catalogue walk at the page that failed", async () => {
-    const regular = regularKeyset();
-    const early = binaryMarket("ab".repeat(32));
+    const first = binaryMarket("ab".repeat(32));
     const second = binaryMarket("cd".repeat(32));
-    const third = binaryMarket("ef".repeat(32));
-    const mint = new FakeMint(regular, [early.yes, early.no]);
-    mint.catalogue = [catalogueEntry("ab".repeat(32))];
+    const mint = new FakeMint(regular, [first.yes, first.no, second.yes, second.no]);
+    mint.catalogue = [catalogueEntry("ab".repeat(32)), catalogueEntry("cd".repeat(32))];
+    mint.sign({ keyset: second.no, counter: 0, amount: 4, state: "UNSPENT" });
+    // The read of the second page fails once.
+    mint.cursorReadFailures = 1;
     vi.stubGlobal("fetch", mint.fetch);
     let nowMs = 1_000_000;
     const now = () => nowMs;
+
+    expect((await restorePass(now)).status).not.toBe("complete");
+    expect((await restoreState())?.catalogueCursor).not.toBeNull();
+
+    // After the backoff, the next pass continues at the failed page.
+    nowMs += HOUR_MS;
+    expect((await restorePass(now)).status).toBe("complete");
+    expect(await selectableHoldings()).toEqual([position(second.no, 4)]);
+  });
+
+  it("starts at most four full restore scans in a rolling day", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+    const firstStart = 1_000_000;
+    let nowMs = firstStart;
+    const now = () => nowMs;
+    for (let start = 0; start < 4; start += 1) {
+      // A seed handoff or a wallet reset deletes the restore record of the seed.
+      await clearRestoreRecord();
+      expect((await restorePass(now)).status).toBe("complete");
+      nowMs += HOUR_MS;
+    }
+    await clearRestoreRecord();
+    const requests = mint.requests.length;
+
+    const capped = await restorePass(now);
+
+    // The fifth start waits for a free slot. It sends no request to the mint.
+    expect(capped.status).toBe("waiting");
+    expect(capped.retryAtMs).toBe(firstStart + DAY_MS);
+    expect(mint.requests).toHaveLength(requests);
+    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
+      kind: "restoring",
+      scopeId: scopeId(),
+    });
+
+    nowMs = firstStart + DAY_MS;
+    expect((await restorePass(now)).status).toBe("complete");
+  });
+
+  it("does not count a resumed scan or a Retry as a new start", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.failConditionListing.add("ab".repeat(32));
+    vi.stubGlobal("fetch", mint.fetch);
+    let nowMs = 1_000_000;
+    const now = () => nowMs;
+    // One start, then resumed passes and a Retry while the listing fails.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect((await restorePass(now)).status).not.toBe("complete");
+      nowMs += HOUR_MS;
+    }
+    await retryBrowserSeedPositionRestore(scopeId());
+    mint.failConditionListing.clear();
     expect((await restorePass(now)).status).toBe("complete");
 
-    // Two markets open. The read of the second page of the next walk fails.
-    mint.catalogue = [
-      catalogueEntry("cd".repeat(32)),
-      catalogueEntry("ef".repeat(32)),
-      ...mint.catalogue,
-    ];
-    registerAtMint(mint, second.yes, second.no, third.yes, third.no);
-    mint.sign({ keyset: third.yes, counter: 0, amount: 4, state: "UNSPENT" });
-    mint.cursorReadFailures = 1;
-    nowMs += DAY_MS;
-    await restorePass(now);
-
-    // A later pass continues at the failed page, so its market is not lost.
-    nowMs += 2 * HOUR_MS;
-    await restorePass(now);
-
-    expect(await selectableHoldings()).toEqual([position(third.yes, 4)]);
+    // Three more starts fit in the same day. A fifth start does not.
+    for (let start = 0; start < 3; start += 1) {
+      await clearRestoreRecord();
+      nowMs += 1_000;
+      expect((await restorePass(now)).status).toBe("complete");
+    }
+    await clearRestoreRecord();
+    nowMs += 1_000;
+    expect((await restorePass(now)).status).toBe("waiting");
   });
 
   it("restarts the catalogue walk from its first page on Retry", async () => {

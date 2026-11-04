@@ -31,14 +31,12 @@ import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-
 import { decodeBrowserCustodyConditionalKeysetRow } from "@/stores/durable-custody-types";
 import { db } from "@/stores/proof-db";
 import {
-  initialSeedRestoreResyncRow,
   initialSeedRestoreResyncSchedule,
   initialSeedRestoreState,
   isBrowserSeedGeneratedHere,
   postponeSeedRestoreDeferral,
   recordSeedRestoreDeferral,
   recordSeedRestoreDeferralFailure,
-  requestBrowserKeysetResync,
   seedRestoreBackoffMs,
   seedRestoreDatabase,
   type SeedRestoreCondition,
@@ -48,12 +46,15 @@ import {
   type SeedRestoreResyncRow,
   type SeedRestoreStateRow,
 } from "@/stores/seed-restore-db";
+import { claimSeedRestoreStart } from "@/stores/seed-restore-starts";
 import { useWalletStore } from "@/stores/wallet";
 
 // The automatic seed restore event of ADR-039 and the keyset re-sync of
 // ADR-033 (amendments 2026-11-04). They are a release 4 measure: the release 5
 // wallet-id backup replaces them with its counter high-water marks, and this
-// scan then stays only as a fallback.
+// scan then stays only as a fallback. Operator decision 2026-11-04: no scan
+// runs on a timer. A seed entry starts the restore (at most four starts per
+// browser in 24 hours), and only evidence of another client starts a re-sync.
 
 /** Work bounds of one round. A pass runs rounds until its time budget ends. */
 const ROUND_CATALOGUE_PAGES = 4;
@@ -61,24 +62,9 @@ const ROUND_LISTINGS = 8;
 const ROUND_PROBE_OUTPUTS = 1024;
 const ROUND_FULL_SCANS = 4;
 const PASS_TIME_BUDGET_MS = 15_000;
-/** A later walk of the catalogue looks for new markets, at most this often. */
-const CATALOGUE_REWALK_INTERVAL_MS = 60 * 60_000;
-/**
- * Keysets with no signature are probed again at most hourly. Each probe again
- * takes a share of them by elapsed time, so every keyset is probed again
- * within one cycle, within the per-pass bounds.
- */
-const REPROBE_INTERVAL_MS = 60 * 60_000;
-const REPROBE_CYCLE_MS = 7 * 24 * 60 * 60_000;
-const REPROBE_KEYSETS_MIN = 8;
-const REPROBE_KEYSETS_MAX = 32;
 /** After this many failures in a row, the UI shows a persistent error. */
 export const SEED_RESTORE_PERSISTENT_FAILURES = 3;
 const ASSET_MONITORING_HINT_PAGES = 4;
-/** The keyset re-sync probes keysets in use at most once a day, without evidence. */
-const RESYNC_INTERVAL_MS = 24 * 60 * 60_000;
-/** A keyset with no live proof is in the daily re-sync for this long after local activity. */
-const RESYNC_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60_000;
 /** Pages of the unfiltered mint listing that the re-sync reads to find one keyset. */
 const RESYNC_RESOLVE_LISTING_PAGES = 20;
 const MINT_LISTING_PAGE_SIZE = 100;
@@ -196,12 +182,8 @@ export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<
           nextAttemptAtMs: 0,
           lastFailure: null,
           itemFailures: 0,
-          catalogueFailures: 0,
-          catalogueNextAttemptAtMs: 0,
-          // A restarted walk is a full walk with no early stop.
-          ...(state.catalogueDone
-            ? {}
-            : { catalogueSource: null, catalogueCursor: null, catalogueWalkedAtMs: null }),
+          // An unfinished walk starts again at the first page: its cursor can be stale.
+          ...(state.catalogueDone ? {} : { catalogueSource: null, catalogueCursor: null }),
         });
       });
       await ofScope(database.conditions).modify((row: SeedRestoreConditionRow) => {
@@ -232,6 +214,19 @@ export async function runBrowserSeedPositionRestorePass(
   const isCurrent = () => activeBrowserWalletScopeId() === input.scopeId;
   if (await isBrowserSeedGeneratedHere(input.scopeId)) {
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
+  }
+  const startedBefore = await database.states
+    .where("[scopeId+mintUrl]")
+    .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
+    .count();
+  if (startedBefore === 0) {
+    // A new restore of this seed counts toward the browser cap. A resumed
+    // scan and Retry do not. The restoring notice stays while it waits.
+    const claim = claimSeedRestoreStart(now());
+    if (!claim.granted) {
+      return { status: "waiting", retryAtMs: claim.retryAtMs, hintsSettled: false };
+    }
+    await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
   }
   let state =
     (await database.states.get([input.scopeId, mintUrl])) ??
@@ -288,20 +283,11 @@ export async function runBrowserSeedPositionRestorePass(
     }
     state = await readState(context);
     if (finished && state.initialCompletedAtMs === null) {
-      state = { ...state, initialCompletedAtMs: now(), lastReprobeAtMs: now() };
-    } else if (
-      state.initialCompletedAtMs !== null &&
-      (state.lastReprobeAtMs === null || now() - state.lastReprobeAtMs >= REPROBE_INTERVAL_MS)
-    ) {
-      // A "no signature" mark is not final. Another client can use the keyset
-      // later. Probe a share of the marks again, oldest first.
-      await reprobeKeysets(context, now() - (state.lastReprobeAtMs ?? 0));
-      state = { ...(await readState(context)), lastReprobeAtMs: now() };
+      state = { ...state, initialCompletedAtMs: now() };
     }
     const waiting = await waitingWork(context);
     state = {
       ...state,
-      firstPassEndedAtMs: state.firstPassEndedAtMs ?? now(),
       failures: 0,
       nextAttemptAtMs: 0,
       lastFailure: null,
@@ -326,7 +312,6 @@ export async function runBrowserSeedPositionRestorePass(
     const nextAttemptAtMs = now() + seedRestoreBackoffMs(failures);
     await database.states.put({
       ...failed,
-      firstPassEndedAtMs: failed.firstPassEndedAtMs ?? now(),
       failures,
       nextAttemptAtMs,
       lastFailure: failureCode(error),
@@ -350,12 +335,12 @@ export interface BrowserKeysetResyncResult {
  * Re-syncs the keysets that this browser uses (ADR-033, amendment
  * 2026-11-04). Another client with the same seed can sign outputs above a
  * local cursor, and a later local output at those counters then fails with
- * 11008. Without evidence, it probes at most once a day, and only keysets
- * with live proofs or recent local activity. Evidence that another client
- * used the seed asks for a probe of every keyset in use at once. On a hit, it
- * records a local diagnostic and a deferral marker, then admits the verified
- * UNSPENT proofs. Each deferral has its own backoff. A deferral that cannot
- * be admitted gets a counter-only advance, so a later pass admits it.
+ * 11008. Only evidence that another client used the seed (a mint refusal or
+ * a buy probe hit) asks for a probe of every keyset in use; no probe runs on
+ * a timer. On a hit, it records a local diagnostic and a deferral marker,
+ * then admits the verified UNSPENT proofs. Each deferral has its own backoff.
+ * A deferral that cannot be admitted gets a counter-only advance, so a later
+ * pass admits it.
  */
 export async function resyncBrowserKeysetsInUse(input: {
   readonly scopeId: string;
@@ -372,47 +357,30 @@ export async function resyncBrowserKeysetsInUse(input: {
   const schedule =
     (await database.resyncSchedules.get([input.scopeId, mintUrl])) ??
     initialSeedRestoreResyncSchedule(input.scopeId, mintUrl);
-  const evidence = schedule.evidence > schedule.handledEvidence;
   const probeDue =
-    startedAtMs >= schedule.nextProbeAtMs &&
-    (evidence ||
-      schedule.lastProbeAtMs === null ||
-      startedAtMs - schedule.lastProbeAtMs >= RESYNC_INTERVAL_MS);
-  const rows = new Map(
-    (await resyncRows(input.scopeId, mintUrl)).map((row) => [row.keysetId, row] as const),
-  );
-  const associations = await db.walletCounterAssociations
-    .where("[scopeId+normalizedMint+unit]")
-    .equals([input.scopeId, mintUrl, "msat"])
-    .toArray();
+    schedule.evidence > schedule.handledEvidence && startedAtMs >= schedule.nextProbeAtMs;
   const targets: SeedRestoreProbeTarget[] = [];
-  for (const association of associations) {
-    if (association.recoveryComplete !== true) continue;
-    // An association without a cursor (an empty scan) holds no output of this browser.
-    const cursor = await db.walletCounterCursors.get([input.scopeId, association.keysetId]);
-    if (cursor === undefined) continue;
-    const start = cursor.next;
-    let row = rows.get(association.keysetId);
-    if (row === undefined || row.observedCursor === null) {
-      // The first sight of a cursor is no local activity.
-      row = {
-        ...(row ?? initialSeedRestoreResyncRow(input.scopeId, mintUrl, association.keysetId)),
-        observedCursor: start,
-      };
-      await database.resync.put(row);
-      rows.set(association.keysetId, row);
-    } else if (row.observedCursor !== start) {
-      // A moved cursor is local activity.
-      row = { ...row, observedCursor: start, activeAtMs: startedAtMs };
-      await database.resync.put(row);
-      rows.set(association.keysetId, row);
-    }
-    // The deferral of a keyset scans it from its marker.
-    if (!probeDue || row.pendingFromCounter !== null) continue;
-    const recent =
-      row.activeAtMs !== null && startedAtMs - row.activeAtMs <= RESYNC_ACTIVITY_WINDOW_MS;
-    if (evidence || recent || (await hasLiveProof(input.scopeId, mintUrl, association.keysetId))) {
-      targets.push({ keysetId: association.keysetId, start, count: SEED_POSITION_RESYNC_COUNTERS });
+  if (probeDue) {
+    const deferred = new Set(
+      (await resyncRows(input.scopeId, mintUrl))
+        .filter((row) => row.pendingFromCounter !== null)
+        .map(({ keysetId }) => keysetId),
+    );
+    const associations = await db.walletCounterAssociations
+      .where("[scopeId+normalizedMint+unit]")
+      .equals([input.scopeId, mintUrl, "msat"])
+      .toArray();
+    for (const association of associations) {
+      // The deferral of a keyset scans it from its marker.
+      if (association.recoveryComplete !== true || deferred.has(association.keysetId)) continue;
+      // An association without a cursor (an empty scan) holds no output of this browser.
+      const cursor = await db.walletCounterCursors.get([input.scopeId, association.keysetId]);
+      if (cursor === undefined) continue;
+      targets.push({
+        keysetId: association.keysetId,
+        start: cursor.next,
+        count: SEED_POSITION_RESYNC_COUNTERS,
+      });
     }
   }
   const wallet = await walletForMint(mintUrl);
@@ -450,7 +418,6 @@ export async function resyncBrowserKeysetsInUse(input: {
       await database.resyncSchedules.put({
         ...schedule,
         ...(await database.resyncSchedules.get([input.scopeId, mintUrl])),
-        lastProbeAtMs: startedAtMs,
         handledEvidence: schedule.evidence,
         probeFailures: 0,
         nextProbeAtMs: 0,
@@ -595,18 +562,6 @@ async function hasCustodyWorkInFlight(scopeId: string): Promise<boolean> {
     (await db.custodyActiveWork
       .where("[scopeId+operationId]")
       .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
-      .count()) > 0
-  );
-}
-
-async function hasLiveProof(scopeId: string, mintUrl: string, keysetId: string): Promise<boolean> {
-  return (
-    (await db.custodyProofs
-      .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
-      .anyOf([
-        [scopeId, mintUrl, "msat", keysetId, "selectable"],
-        [scopeId, mintUrl, "msat", keysetId, "locked"],
-      ])
       .count()) > 0
   );
 }
@@ -790,12 +745,10 @@ async function addActivityLogHints(context: PassContext): Promise<void> {
 }
 
 /**
- * Walks the market catalogue. The catalogue sets the scan scope. A first-page
- * failure of the engine catalogue uses the strict mint listing for this walk
- * only. After a walk ends, a later walk looks for new markets. A walk of the
- * engine catalogue, newest first, stops at the first page with no new market.
- * A failed page of a later walk keeps its cursor and backs off, so the next
- * pass resumes at that page.
+ * Walks the market catalogue once for this restore. The catalogue sets the
+ * scan scope. A first-page failure of the engine catalogue uses the strict
+ * mint listing for this walk. Another page failure fails the pass; the walk
+ * keeps its cursor, so a later pass resumes at that page after the backoff.
  */
 async function walkCatalogue(
   context: PassContext,
@@ -803,15 +756,6 @@ async function walkCatalogue(
 ): Promise<SeedRestoreStateRow> {
   const database = seedRestoreDatabase(context.scopeId);
   let current = state;
-  if (
-    current.catalogueDone &&
-    (current.catalogueWalkedAtMs === null ||
-      context.now() - current.catalogueWalkedAtMs >= CATALOGUE_REWALK_INTERVAL_MS)
-  ) {
-    current = { ...current, catalogueSource: null, catalogueCursor: null, catalogueDone: false };
-  }
-  if (context.now() < current.catalogueNextAttemptAtMs) return current;
-  const rewalk = current.catalogueWalkedAtMs !== null;
   for (let page = 0; page < ROUND_CATALOGUE_PAGES && !current.catalogueDone; page += 1) {
     if (current.catalogueSource !== "mint") {
       let result: Awaited<ReturnType<typeof readSeedRestoreCataloguePage>>;
@@ -822,98 +766,39 @@ async function walkCatalogue(
           cursor: current.catalogueCursor,
         });
       } catch (error) {
-        if (current.catalogueSource === "engine") {
-          // Only the first walk fails the pass. A later walk resumes later.
-          if (!rewalk) throw error;
-          current = rewalkPageFailed(current, context.now());
-          break;
-        }
-        // Use the strict mint listing for this walk only.
+        if (current.catalogueSource === "engine") throw error;
+        // Use the strict mint listing for this walk.
         current = { ...current, catalogueSource: "mint", catalogueCursor: null };
         continue;
       }
-      const added = await addConditions(context, result.markets, 1);
-      const done = result.nextCursor === null || (rewalk && added === 0);
+      await addConditions(context, result.markets, 1);
       current = {
         ...(await readState(context)),
         catalogueSource: "engine",
-        catalogueCursor: done ? null : result.nextCursor,
-        catalogueDone: done,
-        catalogueWalkedAtMs: done ? context.now() : current.catalogueWalkedAtMs,
-        catalogueFailures: 0,
-        catalogueNextAttemptAtMs: 0,
+        catalogueCursor: result.nextCursor,
+        catalogueDone: result.nextCursor === null,
       };
       await database.states.put(current);
       continue;
     }
-    let result: Awaited<ReturnType<typeof readSeedRestoreMintConditionPage>>;
-    try {
-      result = await readSeedRestoreMintConditionPage({
-        mint: context.wallet.mint,
-        cursor: current.catalogueCursor,
-      });
-    } catch (error) {
-      if (!rewalk) throw error;
-      current = rewalkPageFailed(current, context.now());
-      break;
-    }
+    const result = await readSeedRestoreMintConditionPage({
+      mint: context.wallet.mint,
+      cursor: current.catalogueCursor,
+    });
     await addConditions(
       context,
       result.conditionIds.map((conditionId) => ({ conditionId, outcomes: null })),
       1,
     );
-    const done = result.nextCursor === null;
     current = {
       ...(await readState(context)),
       catalogueSource: "mint",
-      catalogueCursor: done ? null : result.nextCursor,
-      catalogueDone: done,
-      catalogueWalkedAtMs: done ? context.now() : current.catalogueWalkedAtMs,
-      catalogueFailures: 0,
-      catalogueNextAttemptAtMs: 0,
+      catalogueCursor: result.nextCursor,
+      catalogueDone: result.nextCursor === null,
     };
     await database.states.put(current);
   }
-  if (current !== state) {
-    await database.states.put({ ...(await readState(context)), ...pick(current) });
-  }
   return current;
-}
-
-/**
- * A failed page of a later walk keeps its cursor, so the next pass resumes at
- * that page. A cursor that keeps failing can be stale: the walk then starts
- * again at the first page as a first walk, with no early stop, and a further
- * failure shows the persistent error.
- */
-function rewalkPageFailed(state: SeedRestoreStateRow, nowMs: number): SeedRestoreStateRow {
-  const failures = state.catalogueFailures + 1;
-  if (failures >= SEED_RESTORE_PERSISTENT_FAILURES) {
-    return {
-      ...state,
-      catalogueSource: null,
-      catalogueCursor: null,
-      catalogueWalkedAtMs: null,
-      catalogueFailures: 0,
-      catalogueNextAttemptAtMs: 0,
-    };
-  }
-  return {
-    ...state,
-    catalogueFailures: failures,
-    catalogueNextAttemptAtMs: nowMs + seedRestoreBackoffMs(failures),
-  };
-}
-
-function pick(state: SeedRestoreStateRow) {
-  return {
-    catalogueSource: state.catalogueSource,
-    catalogueCursor: state.catalogueCursor,
-    catalogueDone: state.catalogueDone,
-    catalogueWalkedAtMs: state.catalogueWalkedAtMs,
-    catalogueFailures: state.catalogueFailures,
-    catalogueNextAttemptAtMs: state.catalogueNextAttemptAtMs,
-  };
 }
 
 function byPriorityAndOrder<T extends { priority: number; order: number }>(left: T, right: T) {
@@ -972,7 +857,6 @@ async function listConditions(context: PassContext): Promise<number> {
             priority: latest.priority,
             order: state.nextOrder,
             state: "queued",
-            probedAtMs: null,
             failures: 0,
             nextAttemptAtMs: 0,
           });
@@ -1012,45 +896,13 @@ async function probeCatalogueKeysets(context: PassContext): Promise<number> {
     .filter((row) => row.state === "queued")
     .sort(byPriorityAndOrder)
     .slice(0, Math.floor(ROUND_PROBE_OUTPUTS / SEED_POSITION_PROBE_COUNTERS));
-  await probeAndScan(context, rows, false);
+  await probeAndScan(context, rows);
   return rows.length;
-}
-
-/**
- * Probes a share of the keysets with no signature again, oldest first. The
- * share grows with the time since the last probe again, so every keyset is
- * probed again within one cycle.
- */
-async function reprobeKeysets(context: PassContext, elapsedMs: number): Promise<void> {
-  // The keyset re-sync owns a keyset that this browser uses. Its own outputs
-  // there are no evidence of another client, and a full scan could admit the
-  // outputs of its own operation in flight.
-  const used = new Set(
-    (
-      await db.walletCounterAssociations
-        .where("[scopeId+normalizedMint+unit]")
-        .equals([context.scopeId, context.mintUrl, "msat"])
-        .toArray()
-    ).map(({ keysetId }) => keysetId),
-  );
-  const marks = (await keysetRows(context))
-    .filter((row) => row.state === "no-signature" && !used.has(row.keysetId))
-    .sort((left, right) => (left.probedAtMs ?? 0) - (right.probedAtMs ?? 0));
-  const share = Math.ceil(
-    (marks.length * Math.min(elapsedMs, REPROBE_CYCLE_MS)) / REPROBE_CYCLE_MS,
-  );
-  const quota = Math.min(REPROBE_KEYSETS_MAX, Math.max(REPROBE_KEYSETS_MIN, share));
-  const chunk = Math.floor(ROUND_PROBE_OUTPUTS / SEED_POSITION_PROBE_COUNTERS);
-  const due = marks.slice(0, quota);
-  for (let start = 0; start < due.length; start += chunk) {
-    await probeAndScan(context, due.slice(start, start + chunk), true);
-  }
 }
 
 async function probeAndScan(
   context: PassContext,
   rows: readonly SeedRestoreKeysetRow[],
-  again: boolean,
 ): Promise<void> {
   if (rows.length === 0) return;
   requireCurrent(context);
@@ -1065,17 +917,13 @@ async function probeAndScan(
     ...(context.yieldControl === undefined ? {} : { yieldControl: context.yieldControl }),
   });
   const database = seedRestoreDatabase(context.scopeId);
-  let hit = false;
   for (const row of rows) {
     if (highest.get(row.keysetId) === null) {
-      await database.keysets.put({ ...row, state: "no-signature", probedAtMs: context.now() });
+      await database.keysets.put({ ...row, state: "no-signature" });
     } else {
-      hit ||= again;
-      await fullScan(context, { ...row, probedAtMs: context.now() });
+      await fullScan(context, row);
     }
   }
-  // A new signature on a probed keyset shows that another client used the seed.
-  if (hit) await requestBrowserKeysetResync({ scopeId: context.scopeId, mintUrl: context.mintUrl });
 }
 
 async function fullScan(context: PassContext, row: SeedRestoreKeysetRow): Promise<void> {

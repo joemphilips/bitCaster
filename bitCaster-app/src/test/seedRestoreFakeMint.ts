@@ -147,8 +147,6 @@ export class FakeMint {
   readonly failConditionListing = new Set<string>();
   /** The public engine catalogue at the app origin. Null answers 404. */
   catalogue: readonly { conditionId: string; outcomes: readonly string[] }[] | null = null;
-  /** The next catalogue reads that fail with 503. */
-  catalogueFailures = 0;
   /** The next catalogue reads with a cursor that fail with 503. */
   cursorReadFailures = 0;
   /** A restarted engine issues new cursors and rejects the old ones. */
@@ -289,10 +287,6 @@ export class FakeMint {
   #engine(url: URL): Response {
     if (url.pathname !== "/api/v1/markets/query" || this.catalogue === null) {
       return json({ detail: "not found" }, 404);
-    }
-    if (this.catalogueFailures > 0) {
-      this.catalogueFailures -= 1;
-      return json({ detail: "unavailable" }, 503);
     }
     const requested = url.searchParams.get("cursor");
     if (requested !== null && this.cursorReadFailures > 0) {

@@ -21,23 +21,16 @@ export interface SeedRestoreStateRow {
   readonly scopeId: string;
   readonly mintUrl: string;
   readonly schemaVersion: 2;
-  /** The first pass ended (complete, out of budget, or failed). */
-  readonly firstPassEndedAtMs: number | null;
   /** Every condition was listed and every listed keyset was probed or scanned. */
   readonly initialCompletedAtMs: number | null;
   /** The earlier asset-monitoring report was read with a signer. */
   readonly hintsDone: boolean;
   /** Failed reads of the earlier asset-monitoring report in a row. */
   readonly hintFailures: number;
-  /** The source of the current catalogue walk. A later walk tries the engine first again. */
+  /** The source of the catalogue walk of this restore. */
   readonly catalogueSource: "engine" | "mint" | null;
   readonly catalogueCursor: string | null;
   readonly catalogueDone: boolean;
-  /** When the last catalogue walk ended. A later walk looks for new markets. */
-  readonly catalogueWalkedAtMs: number | null;
-  /** Failed page reads of a later walk in a row. The walk keeps its cursor. */
-  readonly catalogueFailures: number;
-  readonly catalogueNextAttemptAtMs: number;
   /** Insertion order of the next condition or keyset row. */
   readonly nextOrder: number;
   readonly failures: number;
@@ -45,8 +38,6 @@ export interface SeedRestoreStateRow {
   readonly lastFailure: string | null;
   /** The most failures in a row of one condition listing or one keyset scan. */
   readonly itemFailures: number;
-  /** The last probe again of keysets with no signature. */
-  readonly lastReprobeAtMs: number | null;
 }
 
 export interface SeedRestoreConditionRow {
@@ -79,7 +70,7 @@ export interface SeedRestoreKeysetDescriptor {
 export type SeedRestoreKeysetState =
   /** Not probed yet. */
   | "queued"
-  /** Probed with no signature. Not final: later passes probe it again. */
+  /** Probed with no signature in its first counters. A hint can still ask for a full scan. */
   | "no-signature"
   /** Fully scanned. A PENDING proof that the scan found waits in the deferral marker. */
   | "restored"
@@ -94,7 +85,6 @@ export interface SeedRestoreKeysetRow {
   readonly priority: 0 | 1;
   readonly order: number;
   readonly state: SeedRestoreKeysetState;
-  readonly probedAtMs: number | null;
   readonly failures: number;
   readonly nextAttemptAtMs: number;
 }
@@ -123,9 +113,6 @@ export interface SeedRestoreResyncRow {
   readonly keysetId: string;
   /** The condition of a conditional keyset. It locates the keyset authority at the mint. */
   readonly condition: SeedRestoreCondition | null;
-  /** The local cursor at the last re-sync. A change shows local activity. */
-  readonly observedCursor: number | null;
-  readonly activeAtMs: number | null;
   /** Local diagnostic: how many times the mint held outputs that this browser did not sign. */
   readonly findings: number;
   readonly lastFoundAtMs: number | null;
@@ -142,12 +129,10 @@ export interface SeedRestoreResyncRow {
   readonly nextAttemptAtMs: number;
 }
 
-/** The re-sync schedule of keysets in use for one wallet mint. */
+/** The evidence-triggered re-sync of keysets in use for one wallet mint. */
 export interface SeedRestoreResyncScheduleRow {
   readonly scopeId: string;
   readonly mintUrl: string;
-  /** The last probe of keysets in use. The routine probe runs at most once a day. */
-  readonly lastProbeAtMs: number | null;
   /** Evidence that another client used the seed. A value above `handledEvidence` asks for a probe at once. */
   readonly evidence: number;
   readonly handledEvidence: number;
@@ -198,8 +183,6 @@ export function initialSeedRestoreResyncRow(
     mintUrl,
     keysetId,
     condition: null,
-    observedCursor: null,
-    activeAtMs: null,
     findings: 0,
     lastFoundAtMs: null,
     lastHighestCounter: null,
@@ -217,7 +200,6 @@ export function initialSeedRestoreResyncSchedule(
   return {
     scopeId,
     mintUrl,
-    lastProbeAtMs: null,
     evidence: 0,
     handledEvidence: 0,
     probeFailures: 0,
@@ -439,22 +421,17 @@ export function initialSeedRestoreState(scopeId: string, mintUrl: string): SeedR
     scopeId,
     mintUrl,
     schemaVersion: 2,
-    firstPassEndedAtMs: null,
     initialCompletedAtMs: null,
     hintsDone: false,
     hintFailures: 0,
     catalogueSource: null,
     catalogueCursor: null,
     catalogueDone: false,
-    catalogueWalkedAtMs: null,
-    catalogueFailures: 0,
-    catalogueNextAttemptAtMs: 0,
     nextOrder: 0,
     failures: 0,
     nextAttemptAtMs: 0,
     lastFailure: null,
     itemFailures: 0,
-    lastReprobeAtMs: null,
   };
 }
 

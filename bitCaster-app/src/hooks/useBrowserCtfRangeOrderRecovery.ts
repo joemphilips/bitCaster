@@ -158,7 +158,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         }
         if (!isCurrent()) return;
         // Another client with this seed can sign outputs above the local
-        // cursors. The re-sync probes at most daily, at once after evidence,
+        // cursors. The re-sync probes only after evidence of another client,
         // and admits deferred outputs when their backoff ends (ADR-033).
         try {
           for (const mintUrl of mintUrls) {

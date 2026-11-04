@@ -124,10 +124,8 @@ const layouts = [
 async function restoreState(state: "restoring" | "failed" | "idle"): Promise<void> {
   await seedRestoreDatabase(scopeId).states.put({
     ...initialSeedRestoreState(scopeId, MINT_URL),
-    ...(state === "failed"
-      ? { failures: 3, firstPassEndedAtMs: 1, nextAttemptAtMs: Date.now() + 60_000 }
-      : {}),
-    ...(state === "idle" ? { firstPassEndedAtMs: 1, initialCompletedAtMs: 1 } : {}),
+    ...(state === "failed" ? { failures: 3, nextAttemptAtMs: Date.now() + 60_000 } : {}),
+    ...(state === "idle" ? { initialCompletedAtMs: 1 } : {}),
   });
 }
 
