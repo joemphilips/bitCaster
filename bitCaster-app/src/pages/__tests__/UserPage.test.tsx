@@ -288,6 +288,27 @@ describe("UserPage", () => {
     expect(heading.parentElement).toHaveClass("flex", "items-center");
   });
 
+  it("reports a failed Nostr ID copy from its compact control", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    serve(relays[0]!, [profileEvent({ display_name: "Frank" })]);
+    renderPage();
+
+    await screen.findByRole("heading", { name: "Frank" });
+    const copy = screen.getByRole("button", { name: "Copy Nostr ID" });
+    // The profile header uses a smaller control than the market and comment controls.
+    expect(copy).toHaveClass("p-1.5");
+    expect(copy.querySelector("svg")).toHaveClass("h-3.5", "w-3.5");
+    await user.click(copy);
+    expect(await screen.findByRole("status")).toHaveTextContent("Could not copy the Nostr ID.");
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", message: "Could not copy the Nostr ID." }),
+    ]);
+  });
+
   it("keeps the copy control beside the short Nostr ID when the profile has a name", async () => {
     serve(relays[0]!, [profileEvent({ display_name: "Frank" })]);
     renderPage();

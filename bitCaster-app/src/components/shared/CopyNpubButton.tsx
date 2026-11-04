@@ -1,14 +1,18 @@
 import { Copy } from "lucide-react";
 import { useToastStore } from "@/stores/toast";
 
+const ICON_SIZE_CLASSES = { md: "w-4 h-4", sm: "h-3.5 w-3.5" } as const;
+
 interface CopyNpubButtonProps {
   /** The value that a user pastes to mention the person. */
   npub: string;
   label: string;
   copiedMessage: string;
   failedMessage: string;
-  /** Size and color classes. The control sets its shape and the icon size. */
+  /** Padding, margin, and color classes. The control sets its shape. */
   className: string;
+  /** Use "sm" in a compact header. */
+  iconSize?: keyof typeof ICON_SIZE_CLASSES;
 }
 
 export function CopyNpubButton({
@@ -17,6 +21,7 @@ export function CopyNpubButton({
   copiedMessage,
   failedMessage,
   className,
+  iconSize = "md",
 }: CopyNpubButtonProps) {
   // Report success only after the clipboard write completes.
   const copy = async () => {
@@ -36,7 +41,7 @@ export function CopyNpubButton({
       aria-label={label}
       title={label}
     >
-      <Copy className="w-4 h-4" />
+      <Copy className={ICON_SIZE_CLASSES[iconSize]} />
     </button>
   );
 }

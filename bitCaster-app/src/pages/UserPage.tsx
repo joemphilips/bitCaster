@@ -2,7 +2,7 @@ import { Component, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams } from "react-router";
 import { nip19 } from "nostr-tools";
-import { BadgeCheck, Copy, Globe } from "lucide-react";
+import { BadgeCheck, Globe } from "lucide-react";
 import {
   parseNostrPublicKey,
   type NostrFollowCount,
@@ -10,6 +10,7 @@ import {
   type NostrProfilePageSnapshot,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import type { NostrProfileIndexerStats } from "@bitcaster/client-sdk/primalProfileIndexer";
+import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
 import { useAbortableLoad, type Loadable } from "@/hooks/useAbortableLoad";
 import { assertNever } from "@/lib/enumDiscipline";
 import { getMarketThumbnail, getMarkets } from "@/lib/markets";
@@ -20,7 +21,6 @@ import {
   profilePageRelayUrls,
 } from "@/lib/nostrProfilePage";
 import { useSettingsStore } from "@/stores/settings";
-import { useToastStore } from "@/stores/toast";
 import type { Market } from "@/types/market";
 
 const CREATED_MARKETS_PAGE_SIZE = 20;
@@ -298,27 +298,15 @@ function ProfileReadState({ page }: { page: Loadable<NostrProfilePageSnapshot> }
 
 function NpubCopyButton({ npub }: { npub: string }) {
   const { t } = useTranslation();
-  const copy = async () => {
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-      await navigator.clipboard.writeText(npub);
-      useToastStore.getState().addToast({ type: "success", message: t("userProfile.npubCopied") });
-    } catch {
-      useToastStore
-        .getState()
-        .addToast({ type: "error", message: t("userProfile.npubCopyFailed") });
-    }
-  };
   return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={t("userProfile.copyNpub")}
-      title={t("userProfile.copyNpub")}
-      className="shrink-0 rounded-full p-1.5 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-    >
-      <Copy className="h-3.5 w-3.5" />
-    </button>
+    <CopyNpubButton
+      npub={npub}
+      label={t("userProfile.copyNpub")}
+      copiedMessage={t("userProfile.npubCopied")}
+      failedMessage={t("userProfile.npubCopyFailed")}
+      iconSize="sm"
+      className="p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+    />
   );
 }
 
