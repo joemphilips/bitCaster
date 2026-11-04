@@ -52,9 +52,24 @@ the preparation or refund its paid fees. Unused locked funds follow the normal
 expiry and refund process. Recovery does not submit a new order automatically.
 
 If the mint's preparation reply is missing, the wallet keeps the affected
-funds reserved while it checks the result. An expired authorization or a
-rejected retry does not prove that the first request failed. Recovery can
-remain pending if the mint cannot complete or return the exact result.
+funds reserved while it checks the result. An expired authorization or most
+rejected retries do not prove that the first request failed. The wallet tries
+the check again after an interval. The interval increases after each failed
+try, up to 15 minutes. If the mint sends a wait time, the wallet obeys it.
+If the mint refuses the same retry several times, the wallet stops the
+automatic retries. The alert then shows the mint code and **Retry**. The funds
+stay reserved.
+
+Some mint refusals prove that the mint did not complete the preparation and
+cannot complete it later. After such a refusal, the wallet checks the reserved
+funds again. If the mint did not spend them, the wallet ends the order attempt
+and makes the funds available again. It does not submit the order. If another
+operation spent part of the funds, the wallet releases the remaining funds. If
+the mint still processes a reserved input, the wallet waits.
+
+While an earlier sell in a market prepares its funds, the app does not start
+another sell in the same market. Wait until the earlier preparation finishes
+or ends. The **Active trade progress** list shows it.
 
 ## If a trade is delayed
 
@@ -86,6 +101,12 @@ when the wallet finishes an operation. Its alerts that say the order result is
 uncertain or that funds recovery is pending then close. Use **Next** to read
 more alerts without dismissing an unresolved alert. Use **First alerts** to
 return to the start. Dismissing an alert does not stop recovery or delete funds.
+
+An alert can show the code that the mint returned, for example
+**Mint code: 11008**. If the mint refused an order preparation, the alert says
+**Order was not completed**, and the reserved funds are available again. If the
+wallet stopped the automatic retries, the alert shows **Retry**. Select
+**Retry** to send the check one more time.
 
 The **Active trade progress** list shows operations that the wallet still needs
 to finish. It survives a reload while the wallet data remains available.
