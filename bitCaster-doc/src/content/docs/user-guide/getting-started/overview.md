@@ -351,7 +351,9 @@ In the comment list, select an author's avatar or name to open the author's
 profile page. Select **Copy Nostr ID** next to the name to copy the author's
 npub, for example to mention the author.
 
-Each expanded chart comment shows its public author and text. When the linked
+Each expanded chart comment shows its public author and text. As in the comment
+list, select the author's name to open the author's profile page. Select
+**Copy Nostr ID** next to the name to copy the author's npub. When the linked
 trade facts are available, it also shows the author's buy or sell action, exact
 share quantity, selected outcome, and trade time. This describes the linked fill,
 not the whole order. Missing historical facts do not imply a buy. The card uses
