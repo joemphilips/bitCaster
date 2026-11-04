@@ -556,23 +556,31 @@ describe("TopUpOverlay", () => {
         deficit={5_000}
         baseAsset="sat"
         proofUnit="msat"
-        minimumErrorDescription="Amount must be at least 5 sats to cover Engine Score."
+        minimumErrorDescription="Amount must be at least 5 sats to cover Participation Score."
+        minimumErrorHelp={<button type="button">About Participation Score</button>}
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
       />,
     );
 
     expect(screen.queryByText(/at least/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
     expect(screen.getByTestId("top-up-amount-input")).toHaveValue(15);
     await user.clear(screen.getByTestId("top-up-amount-input"));
     await user.type(screen.getByTestId("top-up-amount-input"), "4");
     await user.tab();
-    expect(screen.getByTestId("top-up-amount-error")).toHaveTextContent(
-      "Amount must be at least 5 sats to cover Engine Score.",
+    const error = screen.getByTestId("top-up-amount-error");
+    expect(error).toHaveTextContent(
+      /^Amount must be at least 5 sats to cover Participation Score\.$/,
     );
+    // The help sits next to the error, outside the alert text.
+    const help = screen.getByRole("button", { name: "About Participation Score" });
+    expect(error).not.toContainElement(help);
+    expect(error.parentElement).toContainElement(help);
     await user.clear(screen.getByTestId("top-up-amount-input"));
     await user.type(screen.getByTestId("top-up-amount-input"), "5");
     expect(screen.queryByTestId("top-up-amount-error")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
 
     await user.click(screen.getByTestId("top-up-continue"));
 

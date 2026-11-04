@@ -27,9 +27,14 @@ import {
   createCtfRangePreparationIntent,
   decodeCtfRangeOrderPreparationFromRecord,
   planPersistedCtfRangeOrderAuthorization,
+  previewCtfRangeSettlementCapabilityWorkFacts,
   reconstructCtfRangePreparation,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import {
+  CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+  calculateSettlementCapabilityTariff,
+} from "@bitcaster/client-sdk/participationScore";
 import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type { DurableCtfRangeAsset } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
@@ -37,16 +42,23 @@ import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
 import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
-import { getWalletForMnemonicUnit } from "@/stores/wallet";
+import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 import {
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
   browserCtfRangeOrderErrorMessage,
+  type BrowserCtfRangeMintError,
   type BrowserCtfRangeOrderErrorCode,
   type BrowserCtfRangeRecoveryPage,
   type BrowserCtfRangeOrderSubmitControl,
 } from "./browserCtfRangeOrderCoordinator";
+import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
+import {
+  createBuyReceiveProbeCache,
+  probeBuyReceiveRange,
+  browserSeedCounterRestoreClient,
+} from "./browserCtfRangeCounterProbe";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
   readCtfRangePreparation,
@@ -55,6 +67,7 @@ import {
 import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import { db } from "@/stores/proof-db";
 import {
+  raiseBrowserCtfRangeAttentionMessage,
   recordBrowserCtfRangeMessage,
   resolveTerminalBrowserCtfRangeMessages,
 } from "@/stores/ctf-range-order-messages";
@@ -62,15 +75,27 @@ import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ct
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
-import { ensureWalletKeysetCounterReady } from "./cashu";
+import {
+  WalletKeysetCounterPendingError,
+  advanceWalletKeysetCounterPastMint,
+  advanceWalletKeysetCounterPastSignedOutputs,
+  ensureWalletKeysetCounterReady,
+} from "./cashu";
+import { requestBrowserKeysetResync } from "@/stores/seed-restore-db";
+import i18n from "@/i18n";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
-import type { BrowserParticipationScoreRecoveryStatus } from "./browserParticipationScoreDelivery";
+import {
+  readBrowserParticipationScorePayableScore,
+  type BrowserParticipationScoreRecoveryStatus,
+} from "./browserParticipationScoreDelivery";
 import {
   beginBrowserCtfRangeOrderAttempt,
   endBrowserCtfRangeOrderAttempt,
 } from "./browserCtfRangeOrderRecoveryWake";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
+/** The preview and the submit share clean buy receive-range probes. */
+const buyReceiveProbeCache = createBuyReceiveProbeCache();
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
@@ -147,6 +172,9 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
+  // Probe during the preview so the submit adds no mint round trip. A failed
+  // probe here only means that the submit probes again.
+  await previewBuyReceiveCounters(scopeId, preparation).catch(() => undefined);
   const selection = await loadBrowserRangeSourceSelection(
     preparation,
     scopeId,
@@ -170,6 +198,44 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     default:
       return assertNever(selection);
   }
+}
+
+/** Display-only facts for the Participation Score purchase that an order can cause. */
+export interface BrowserCtfRangeOrderScorePreview {
+  /** Score that the order's capability admission charges under the current tariff rule. */
+  readonly requiredScore: number;
+  /** Whole Score that the wallet can pay after the order sets its own sats aside. */
+  readonly availableScore: number;
+}
+
+/**
+ * Preview the Score facts for a new order, without reserving funds or
+ * counters. The submission computes the tariff again from its real artifact
+ * and reads the spare Score again after it reserves the order's funds.
+ */
+export async function previewBrowserCtfRangeOrderScore(input: {
+  readonly market: MarketDetail;
+  readonly ticket: TradeTicket;
+  readonly mintUrl: string;
+}): Promise<BrowserCtfRangeOrderScorePreview> {
+  const { preparation } = await loadBrowserRangePreparation({
+    ...input,
+    clientOrderId: crypto.randomUUID(),
+  });
+  if (preparation.version !== 2) throw new Error("new browser preparation must be version 2");
+  const requiredScore = calculateSettlementCapabilityTariff(
+    CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
+    previewCtfRangeSettlementCapabilityWorkFacts(preparation),
+  );
+  // A Buy offers ordinary sats, so its authorization stays out of the Score
+  // purchase. A Sell offers shares. Its small preparation fees are not set
+  // aside here.
+  const reservedScore =
+    preparation.side === "Buy"
+      ? Math.ceil(Number(planPersistedCtfRangeOrderAuthorization(preparation).inputAmount) / 1_000)
+      : 0;
+  const payableScore = await readBrowserParticipationScorePayableScore(input.mintUrl);
+  return { requiredScore, availableScore: Math.max(0, payableScore - reservedScore) };
 }
 
 export async function submitBrowserCtfRangeOrder(
@@ -212,17 +278,23 @@ export async function submitBrowserCtfRangeOrder(
           ...conditionalCounterAsset(keyset),
         });
       }
-    } catch {
-      throw new BrowserCtfRangeOrderError(
-        "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-      );
+    } catch (error) {
+      throw counterReadinessError(error);
     }
     const counterStore = new BrowserWalletCounterDexieStore({
       database: db,
       scopeId,
       isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
     });
+    try {
+      // Reuses the preview's clean probe unless the receive cursor moved.
+      await probeBuyReceiveCounters(scopeId, basePreparation, seed, counterStore);
+    } catch {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+      );
+    }
     const reservation = await counterStore.reserveCtfPreparationInContext({
       context: { mintUrl: basePreparation.mintUrl, unit: "msat" },
       preparation: basePreparation,
@@ -264,11 +336,8 @@ export async function submitBrowserCtfRangeOrder(
               });
             }
             sourceCountersReady = true;
-          } catch {
-            throw new BrowserCtfRangeOrderError(
-              "source-preparation-failed",
-              "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-            );
+          } catch (error) {
+            throw counterReadinessError(error);
           }
         }
         const consolidated = await consolidateBrowserRangeSource({
@@ -289,6 +358,12 @@ export async function submitBrowserCtfRangeOrder(
     });
   } catch (error) {
     failed = true;
+    if (seedUsedElsewhere(error instanceof BrowserCtfRangeOrderError ? error.mintError : null)) {
+      // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+      await requestBrowserKeysetResync({ scopeId, mintUrl: preparation.mintUrl }).catch(
+        () => undefined,
+      );
+    }
     const durableCode =
       error instanceof BrowserCtfRangeOrderError
         ? error.code
@@ -297,7 +372,8 @@ export async function submitBrowserCtfRangeOrder(
           : error instanceof BrowserCtfRangeScoreTopUpCancelledError
             ? "score-top-up-cancelled"
             : null;
-    if (durableCode !== null) {
+    // A refused second sell locked nothing, so it needs no durable alert.
+    if (durableCode !== null && durableCode !== "source-preparation-pending") {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
       if (record !== null) {
         await persistRangeMessages({
@@ -307,6 +383,10 @@ export async function submitBrowserCtfRangeOrder(
           code: durableCode,
           observedAtMs: Date.now(),
           ...(record.lifecycleState === "terminal" ? { includeRecovery: false } : {}),
+          ...(error instanceof BrowserCtfRangeOrderError ? mintErrorField(error.mintError) : {}),
+          ...(error instanceof BrowserCtfRangeOrderError && error.released
+            ? { fundsReleased: true as const }
+            : {}),
         });
       } else if (durableCode === "asset-recovery-failed" && record === null) {
         await persistRangeMessages({
@@ -732,11 +812,9 @@ export class BrowserCtfRangeScoreTopUpRequiredError extends Error {
     balanceSats: number | null;
     recoveryStatus?: BrowserParticipationScoreRecoveryStatus;
   }) {
-    super(
-      input.recoveryStatus === "unavailable"
-        ? "Participation Score asset recovery is unavailable. Retry recovery or add funds."
-        : "Participation Score balance is insufficient for this capability. Top up and retry to recover the prepared capability.",
-    );
+    // The GUI shows the localized `trade.scoreTopUpRequired` or
+    // `trade.scoreRecoveryUnavailable` text. This message is for diagnosis.
+    super(`Participation Score top-up is required (${input.recoveryStatus ?? "insufficient"}).`);
     this.name = "BrowserCtfRangeScoreTopUpRequiredError";
     this.requiredSats = input.requiredSats;
     this.balanceSats = input.balanceSats;
@@ -1093,11 +1171,8 @@ export async function recoverBrowserCtfRangeOrders(input: {
       ...(after === undefined ? {} : { after }),
     });
     recovered += page.recoveredOperationIds.length;
-    for (const message of page.pending) {
-      pending.push(message);
-      await persistRecoveryPending(scopeId, message);
-    }
-    await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+    pending.push(...page.pending);
+    await persistRecoveryResults(scopeId, page);
     if (page.nextCursor === null) break;
     const cursor = JSON.stringify(page.nextCursor);
     if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
@@ -1130,10 +1205,7 @@ export async function recoverBrowserCtfRangeOrder(input: {
     seed,
     clientOrderId: input.clientOrderId,
   });
-  for (const message of recovery.pending) {
-    await persistRecoveryPending(scopeId, message);
-  }
-  await resolveRecoveredRangeMessages(scopeId, recovery.recoveredOperationIds);
+  await persistRecoveryResults(scopeId, recovery);
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
 }
 
@@ -1172,20 +1244,94 @@ function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): b
   }
 }
 
+async function persistRecoveryResults(
+  scopeId: string,
+  page: Omit<BrowserCtfRangeRecoveryPage, "nextCursor">,
+): Promise<void> {
+  for (const message of page.pending) await persistRecoveryPending(scopeId, message);
+  // The automatic replay stopped. The funds alert shows the mint code and a
+  // retry. It returns on every pass, also after the user dismissed it.
+  for (const halted of page.attention) {
+    await raiseBrowserCtfRangeAttentionMessage({
+      scopeId,
+      operationId: halted.operationId,
+      revision: halted.revision,
+      code: "recovery-pending",
+      kind: "funds",
+      observedAtMs: Date.now(),
+      mintError: halted.mintError,
+      retryable: true,
+    });
+  }
+  const evidenceMints = new Set(
+    page.refused
+      .filter(({ mintError }) => seedUsedElsewhere(mintError))
+      .map(({ mintUrl }) => mintUrl),
+  );
+  for (const mintUrl of evidenceMints) {
+    // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+    await requestBrowserKeysetResync({ scopeId, mintUrl }).catch(() => undefined);
+  }
+  // A released order is a definitive outcome. No funds recovery is left.
+  for (const released of page.refused) {
+    await persistRangeMessages({
+      scopeId,
+      operationId: released.operationId,
+      revision: released.revision,
+      code: "order-attempt-ended",
+      observedAtMs: Date.now(),
+      includeRecovery: false,
+      fundsReleased: true,
+      ...mintErrorField(released.mintError),
+    });
+  }
+  await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+}
+
 async function persistRecoveryPending(
   scopeId: string,
   pending: BrowserCtfRangeRecoveryPending,
 ): Promise<void> {
-  // Recovery keeps retrying this operation. A durable funds message would
-  // report the protocol's normal pre-expiry refund wait as a failure.
-  if (pending.code === "awaiting-authorization-expiry") return;
-  await persistRangeMessages({
-    scopeId,
-    operationId: pending.operationId,
-    revision: pending.revision,
-    code: pending.code,
-    observedAtMs: Date.now(),
-  });
+  switch (pending.code) {
+    // Recovery keeps retrying this operation. A durable funds message would
+    // report the protocol's normal pre-expiry refund wait, or a scheduled
+    // retry, as a failure.
+    case "awaiting-authorization-expiry":
+    case "awaiting-mint-retry":
+      return;
+    default:
+      await persistRangeMessages({
+        scopeId,
+        operationId: pending.operationId,
+        revision: pending.revision,
+        code: pending.code,
+        observedAtMs: Date.now(),
+        ...mintErrorField(pending.mintError ?? null),
+      });
+  }
+}
+
+// The mint refused reused outputs or spent inputs: another client used the seed.
+const SEED_USED_ELSEWHERE_MINT_CODES: ReadonlySet<number> = new Set([11001, 11003, 11008]);
+
+function seedUsedElsewhere(mintError: BrowserCtfRangeMintError | null | undefined): boolean {
+  return mintError != null && SEED_USED_ELSEWHERE_MINT_CODES.has(mintError.code);
+}
+
+/** The order was not submitted. A PENDING restored proof has its own message. */
+function counterReadinessError(error: unknown): BrowserCtfRangeOrderError {
+  return new BrowserCtfRangeOrderError(
+    "source-preparation-failed",
+    error instanceof WalletKeysetCounterPendingError
+      ? i18n.t("trade.walletFundsPendingAtMint")
+      : "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+  );
+}
+
+function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
+  mintError?: BrowserCtfRangeMintError;
+} {
+  return mintError === null ? {} : { mintError };
 }
 
 async function persistRangeMessages(input: {
@@ -1195,10 +1341,17 @@ async function persistRangeMessages(input: {
   code: BrowserCtfRangeOrderErrorCode;
   observedAtMs: number;
   includeRecovery?: boolean;
+  mintError?: BrowserCtfRangeMintError;
+  fundsReleased?: true;
 }): Promise<void> {
-  const { includeRecovery, ...message } = input;
+  const { includeRecovery, mintError, fundsReleased, ...message } = input;
   const kind = orderFailureCode(message.code) ? "order" : "funds";
-  await recordBrowserCtfRangeMessage({ ...message, kind });
+  await recordBrowserCtfRangeMessage({
+    ...message,
+    kind,
+    ...(mintError === undefined ? {} : { mintError }),
+    ...(fundsReleased === undefined ? {} : { fundsReleased }),
+  });
   if (kind === "order" && includeRecovery !== false) {
     await recordBrowserCtfRangeMessage({ ...message, code: "recovery-pending", kind: "funds" });
   }
@@ -1218,6 +1371,24 @@ function createBrowserCtfRangeCoordinator(
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
     allowInsecureLoopbackHttp,
+    recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
+    // The coordinator holds the profile lock and the custody scope here. The
+    // advance admits no proof, so it needs neither again.
+    recoverOutputCounters: async ({ mintUrl, keysets, fromCounters }) => {
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+      for (const keyset of keysets) {
+        const plannedFromCounter = fromCounters[keyset.id];
+        await advanceWalletKeysetCounterPastMint({
+          scopeId,
+          mintUrl,
+          unit: "msat",
+          keyset,
+          ...conditionalCounterAsset(keyset),
+          ...(plannedFromCounter === undefined ? {} : { plannedFromCounter }),
+        });
+      }
+    },
     beforeCreateCapability: async ({ mintUrl, requiredScore }) => {
       while (true) {
         const score = await ensureParticipationScoreForNextMatch({
@@ -1251,6 +1422,56 @@ function createBrowserCtfRangeCoordinator(
     isDefinitiveOrderRejection: (error) =>
       error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error),
   });
+}
+
+/**
+ * Another client with this seed can have signed a buy's planned receive
+ * outputs. The engine's group convert would then reject every participant.
+ */
+async function probeBuyReceiveCounters(
+  scopeId: string,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
+  counterStore: BrowserWalletCounterDexieStore,
+): Promise<void> {
+  if (preparation.version !== 2) return;
+  await probeBuyReceiveRange({
+    scopeId,
+    counterStore,
+    preparation,
+    seed,
+    mint: browserSeedCounterRestoreClient(preparation.mintUrl),
+    cache: buyReceiveProbeCache,
+    advancePastSignedOutputs: (keyset, fromCounter, nextCounter) =>
+      advanceWalletKeysetCounterPastSignedOutputs({
+        scopeId,
+        mintUrl: preparation.mintUrl,
+        unit: "msat",
+        keyset,
+        ...conditionalCounterAsset(keyset),
+        fromCounter,
+        nextCounter,
+      }),
+  });
+}
+
+async function previewBuyReceiveCounters(
+  scopeId: string,
+  preparation: PersistedCtfRangeOrderPreparation,
+): Promise<void> {
+  if (preparation.side !== "Buy") return;
+  const mnemonic = useWalletStore.getState().mnemonic;
+  if (!mnemonic || browserWalletScopeIdFromMnemonic(mnemonic) !== scopeId) return;
+  await probeBuyReceiveCounters(
+    scopeId,
+    preparation,
+    toSeed(mnemonic.trim().split(/\s+/).filter(Boolean)),
+    new BrowserWalletCounterDexieStore({
+      database: db,
+      scopeId,
+      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+    }),
+  );
 }
 
 function isLoopbackMint(mintUrl: string): boolean {

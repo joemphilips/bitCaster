@@ -413,7 +413,11 @@ test('actual dry-run validates all command envelopes and performs no daemon or m
   ]
   for (const { args, command } of cases) {
     const result = await run(['--dry-run', 'wallet', 'request', ...args])
-    assert.deepEqual(JSON.parse(result.stdout), command)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      dryRun: true,
+      method: command.method,
+      params: command.params ?? {},
+    })
     assertPublic(result.stdout)
   }
 })

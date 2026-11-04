@@ -27,6 +27,7 @@ import { BitcasterDB, getProofOperation, prepareProofOperation } from "@/stores/
 import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
+import { useActivityLogStore } from "@/stores/activity-log";
 
 const requireNewWritePermission = vi.hoisted(() =>
   vi.fn(async (_input: { database: BitcasterDB; scopeId: string }): Promise<void> => undefined),
@@ -108,6 +109,7 @@ import {
   recoverBrowserDurableBolt11MintQuotes,
   recoverBrowserDurableBolt11MintQuotesInPass,
   subscribeActiveBrowserDurableBolt11MintQuote,
+  watchPendingBrowserDurableBolt11MintQuotes,
 } from "../browserDurableBolt11MintQuote";
 
 const SCOPE = browserWalletScope(new Uint8Array(64)).scopeId;
@@ -125,6 +127,7 @@ const PROOFS = [{ id: KEYSET_ID, amount: 100, secret: "output-1", C: "proof-C" }
 const databases: BitcasterDB[] = [];
 
 beforeEach(async () => {
+  useActivityLogStore.setState({ items: [] });
   requireNewWritePermission.mockReset();
   requireNewWritePermission.mockResolvedValue(undefined);
   mocks.privateFactory.mockClear();
@@ -653,12 +656,102 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
   });
 
-  it("retains UNPAID quotes after recording the current recovery pass", async () => {
+  it("ends an expired quote only after the grace and an UNPAID check under its lock", async () => {
+    // The default fixture quote expired at Unix time 50, long before the 24 h grace.
     const created = await createBrowserDurableBolt11MintQuote({
       amount: 100,
       mintUrl: MINT_URL,
       unit: UNIT,
     });
+    const lockedChecks: boolean[] = [];
+    let locked = false;
+    mocks.context().lockManager = {
+      request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) => {
+        locked = true;
+        try {
+          return await action();
+        } finally {
+          locked = false;
+        }
+      },
+    };
+    mocks.wallet.checkMintQuote.mockImplementation(async () => {
+      lockedChecks.push(locked);
+      return { state: "UNPAID" };
+    });
+
+    expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 10 })).toEqual({
+      pending: 0,
+      hasMore: false,
+    });
+    expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 11 })).toEqual({
+      pending: 0,
+      hasMore: false,
+    });
+
+    const row = await mocks
+      .context()
+      .database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+    expect(row?.recoveryState).toBe("completed");
+    expect(row?.quote.observedState).toBe("UNPAID");
+    // The deciding check runs under the quote lock, just before the end write.
+    expect(lockedChecks.at(-1)).toBe(true);
+    expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
+    expect(useActivityLogStore.getState().items).toEqual([]);
+  });
+
+  it("mints an expired quote whose check under the lock reports PAID", async () => {
+    const created = await createBrowserDurableBolt11MintQuote({
+      amount: 100,
+      mintUrl: MINT_URL,
+      unit: UNIT,
+    });
+    // The pass check sees UNPAID. The payment lands before the deciding check.
+    mocks.wallet.checkMintQuote
+      .mockResolvedValueOnce({ state: "UNPAID" })
+      .mockResolvedValue({ state: "PAID" });
+
+    expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 10 })).toEqual({
+      pending: 0,
+      hasMore: false,
+    });
+
+    const row = await mocks
+      .context()
+      .database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+    expect(row?.recoveryState).toBe("completed");
+    expect(row?.quote.observedState).toBe("PAID");
+    expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
+    expect(
+      (await getProofOperation(created.quote.walletMintOperationId, mocks.context().database))
+        ?.state,
+    ).toBe("completed");
+  });
+
+  it("still mints a quote that the mint reports PAID after its browser-time expiry, within the grace", async () => {
+    // The browser clock can run ahead of the mint. The quote looks expired here.
+    mocks.wallet.createMintQuote.mockResolvedValueOnce({
+      quote: "quote-1",
+      request: "lnbc1invoice",
+      expiry: Math.floor(Date.now() / 1000) - 23 * 60 * 60,
+    });
+    const created = await createBrowserDurableBolt11MintQuote({
+      amount: 100,
+      mintUrl: MINT_URL,
+      unit: UNIT,
+    });
+
+    expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 1, hasMore: false });
+    expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("pending");
+    mocks.wallet.checkMintQuote.mockResolvedValue({ state: "PAID" });
+    expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 0, hasMore: false });
+
+    expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("completed");
+    expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
+  });
+
+  it("retains UNPAID quotes after recording the current recovery pass", async () => {
+    const created = await createUnexpiredQuote();
 
     expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 1, hasMore: false });
     const row = await mocks
@@ -671,11 +764,7 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
   });
 
   it("checks each pending quote once per pass and checks it again in a later pass", async () => {
-    const created = await createBrowserDurableBolt11MintQuote({
-      amount: 100,
-      mintUrl: MINT_URL,
-      unit: UNIT,
-    });
+    const created = await createUnexpiredQuote();
 
     expect(await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 10 })).toEqual({
       pending: 1,
@@ -816,6 +905,362 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
   });
 });
 
+describe("browser BOLT11 mint quote watch", () => {
+  it("keeps watching a pending quote after the deposit sheet closes and completes it at once", async () => {
+    const created = await createUnexpiredQuote();
+    const waiter = waiterStarted();
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      const background = await waiter.started;
+      const closeSheet = await subscribeActiveBrowserDurableBolt11MintQuote({
+        quote: created.quote,
+        onResult: vi.fn(),
+      });
+      // The sheet joins the app-level watch. It does not start a second waiter.
+      expect(mocks.waitForMintQuotePaidForUnit).toHaveBeenCalledOnce();
+      closeSheet();
+      await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+      expect(waiter.stop).not.toHaveBeenCalled();
+
+      await background.onResult({ status: "PAID", quote: { state: "PAID" } });
+
+      expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
+      expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("completed");
+      expect(
+        (await getProofOperation(created.quote.walletMintOperationId, mocks.context().database))
+          ?.state,
+      ).toBe("completed");
+    } finally {
+      stopWatching();
+    }
+  });
+
+  it("checks a background quote only while NUT-17 is unacknowledged and wakes checks for a visible invoice", async () => {
+    const created = await createUnexpiredQuote();
+    const waiter = waiterStarted();
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      const { options } = await waiter.started;
+      const wake = vi.fn();
+      options.bindPollingControls({ resume: wake, checkNow: vi.fn() });
+      expect(options.pollIntervalMs()).toBe(15_000);
+      expect(options.pollWhileSubscribed()).toBe(false);
+
+      const closeSheet = await subscribeActiveBrowserDurableBolt11MintQuote({
+        quote: created.quote,
+        onResult: vi.fn(),
+      });
+      expect(options.pollIntervalMs()).toBe(2_000);
+      expect(options.pollWhileSubscribed()).toBe(true);
+      expect(wake).toHaveBeenCalledOnce();
+
+      closeSheet();
+      expect(options.pollIntervalMs()).toBe(15_000);
+      expect(options.pollWhileSubscribed()).toBe(false);
+      expect(waiter.stop).not.toHaveBeenCalled();
+    } finally {
+      const stopped = new Promise<void>((resolve) => waiter.stop.mockImplementation(resolve));
+      stopWatching();
+      await stopped;
+    }
+    expect(waiter.stop).toHaveBeenCalledOnce();
+  });
+
+  it("checks every watched quote now when the browser comes online or the page becomes visible", async () => {
+    const fakeWindow = new EventTarget();
+    const fakeDocument = Object.assign(new EventTarget(), {
+      visibilityState: "hidden" as DocumentVisibilityState,
+    });
+    vi.stubGlobal("window", fakeWindow);
+    vi.stubGlobal("document", fakeDocument);
+    let stopWatching = () => {};
+    try {
+      await createUnexpiredQuote();
+      const waiter = waiterStarted();
+      stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+      const { options } = await waiter.started;
+      const checkNow = vi.fn();
+      options.bindPollingControls({ resume: vi.fn(), checkNow });
+
+      fakeWindow.dispatchEvent(new Event("online"));
+      expect(checkNow).toHaveBeenCalledOnce();
+      fakeDocument.dispatchEvent(new Event("visibilitychange"));
+      expect(checkNow).toHaveBeenCalledOnce();
+      fakeDocument.visibilityState = "visible";
+      fakeDocument.dispatchEvent(new Event("visibilitychange"));
+      expect(checkNow).toHaveBeenCalledTimes(2);
+    } finally {
+      stopWatching();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops the shared waiter after the quote watch settles", async () => {
+    const created = await createUnexpiredQuote();
+    const waiter = waiterStarted();
+    const onResult = vi.fn();
+    await subscribeActiveBrowserDurableBolt11MintQuote({ quote: created.quote, onResult });
+    const { onResult: settle } = await waiter.started;
+
+    await settle({ status: "PAID", quote: { state: "PAID" } });
+
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "PAID" }));
+    expect(waiter.stop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a new quote inside the watch window when many older quotes are pending", async () => {
+    const created = await createUnexpiredQuote();
+    await mocks
+      .context()
+      .database.mintQuotes.bulkAdd(
+        olderPendingRowsBefore(
+          created.quote.quoteRecordId,
+          BROWSER_BOLT11_MINT_RECOVERY_LIMIT + 6,
+          Math.floor(Date.now() / 1000) + 600,
+        ),
+      );
+    let newQuoteWatched!: () => void;
+    const watched = new Promise<void>((resolve) => {
+      newQuoteWatched = resolve;
+    });
+    mocks.waitForMintQuotePaidForUnit.mockImplementation(async (quote: { quote: string }) => {
+      if (quote.quote === "quote-1") newQuoteWatched();
+      return () => undefined;
+    });
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      await watched;
+      expect(mocks.waitForMintQuotePaidForUnit).toHaveBeenCalledTimes(
+        BROWSER_BOLT11_MINT_RECOVERY_LIMIT,
+      );
+    } finally {
+      stopWatching();
+    }
+  });
+
+  it("retries a watch that failed to start after 5, 15 and 60 s", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const startsAtMs: number[] = [];
+    let stopWatching = () => {};
+    try {
+      await createUnexpiredQuote();
+      mocks.waitForMintQuotePaidForUnit.mockImplementation(async () => {
+        startsAtMs.push(Date.now());
+        if (startsAtMs.length <= 3) throw new Error("mint is unreachable");
+        return () => undefined;
+      });
+      stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+      for (let second = 0; second < 100; second += 1) await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(startsAtMs.map((at) => at - startsAtMs[0]!)).toEqual([0, 5_000, 20_000, 80_000]);
+    } finally {
+      stopWatching();
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes one deposit activity from the durable completion", async () => {
+    const created = await createUnexpiredQuote();
+    const waiter = waiterStarted();
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      const background = await waiter.started;
+      await background.onResult({ status: "PAID", quote: { state: "PAID" } });
+      // A sheet that sees ISSUED later finds the completed quote.
+      const onResult = vi.fn();
+      await subscribeActiveBrowserDurableBolt11MintQuote({ quote: created.quote, onResult });
+      const issued = mocks.waitForMintQuotePaidForUnit.mock.calls.at(-1)?.[1];
+      await issued({ status: "ERROR", error: new Error("issued"), quote: { state: "ISSUED" } });
+      expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
+    } finally {
+      stopWatching();
+    }
+
+    expect(useActivityLogStore.getState().items).toEqual([
+      expect.objectContaining({
+        id: `deposit:${created.quote.quoteRecordId}`,
+        walletId: SCOPE.slice("custody:wallet:".length),
+        type: "deposit",
+        amountSubunits: 100_000,
+        baseAsset: "sat",
+        status: "completed",
+        lightningInvoice: "lnbc1invoice",
+      }),
+    ]);
+  });
+
+  it("stops the app-level watch when another tab completes the quote", async () => {
+    const created = await createUnexpiredQuote();
+    const waiter = waiterStarted();
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      await waiter.started;
+      const stopped = new Promise<void>((resolve) => waiter.stop.mockImplementation(resolve));
+      const database = mocks.context().database as BitcasterDB;
+      const row = await database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+      await database.mintQuotes.put({ ...row!, recoveryState: "completed" });
+
+      await stopped;
+      expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
+    } finally {
+      stopWatching();
+    }
+  });
+
+  it("does not watch an expired quote", async () => {
+    // The default fixture quote expired at Unix time 50.
+    await createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT });
+    const waiter = waiterStarted();
+    const stopWatching = watchPendingBrowserDurableBolt11MintQuotes();
+    try {
+      // A quote without an expiry wakes the live query and is watched.
+      await mocks.context().database.mintQuotes.bulkAdd([pendingRow(1)]);
+      const { quote } = await waiter.started;
+
+      expect(quote.quote).toBe("pending-1");
+      expect(
+        mocks.waitForMintQuotePaidForUnit.mock.calls.map(([watched]) => watched.quote),
+      ).toEqual(["pending-1"]);
+    } finally {
+      stopWatching();
+    }
+  });
+
+  it("recovers a quote once when a recovery pass and PAID evidence overlap", async () => {
+    let signalSecondAttempt!: () => void;
+    const secondAttempt = new Promise<void>((resolve) => {
+      signalSecondAttempt = resolve;
+    });
+    // The second attempt either waits for a held lock or calls the mint again.
+    mocks.context().lockManager = queuedLockManager(signalSecondAttempt);
+    const created = await createUnexpiredQuote();
+    const mint = barrier<typeof PROOFS>();
+    mocks.wallet.completeMint
+      .mockImplementationOnce(() => mint.promise)
+      .mockImplementationOnce(async () => {
+        signalSecondAttempt();
+        return PROOFS;
+      });
+    mocks.wallet.checkMintQuote.mockResolvedValue({ state: "PAID" });
+    const onResult = vi.fn();
+    await subscribeActiveBrowserDurableBolt11MintQuote({ quote: created.quote, onResult });
+    const paid = mocks.waitForMintQuotePaidForUnit.mock.calls[0]?.[1];
+
+    const pass = recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs: 40 });
+    await mint.started;
+    const evidence = paid({ status: "PAID", quote: { state: "PAID" } });
+    await secondAttempt;
+    mint.resolve(PROOFS);
+
+    await expect(pass).resolves.toEqual({ pending: 0, hasMore: false });
+    await evidence;
+    expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
+    expect(await quoteRecoveryState(created.quote.quoteRecordId)).toBe("completed");
+  });
+
+  it("reports a quote that another tab already completed as paid when the mint says ISSUED", async () => {
+    const created = await createUnexpiredQuote();
+    const database = mocks.context().database as BitcasterDB;
+    await database.proofOperations.update(created.quote.walletMintOperationId, {
+      state: "completed",
+      resultProofs: { receive: PROOFS },
+    });
+    const row = await database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+    await database.mintQuotes.put({ ...row!, recoveryState: "completed" });
+    const onResult = vi.fn();
+    await subscribeActiveBrowserDurableBolt11MintQuote({ quote: created.quote, onResult });
+    const settle = mocks.waitForMintQuotePaidForUnit.mock.calls[0]?.[1];
+
+    await settle({
+      status: "ERROR",
+      error: new Error("Mint reports quote already issued"),
+      quote: { state: "ISSUED" },
+    });
+
+    expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "PAID" }));
+    expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
+  });
+});
+
+async function createUnexpiredQuote() {
+  mocks.wallet.createMintQuote.mockResolvedValueOnce({
+    quote: "quote-1",
+    request: "lnbc1invoice",
+    expiry: Math.floor(Date.now() / 1000) + 3_600,
+  });
+  return createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT });
+}
+
+async function quoteRecoveryState(quoteRecordId: string) {
+  return (await mocks.context().database.mintQuotes.get([SCOPE, "bolt11", quoteRecordId]))
+    ?.recoveryState;
+}
+
+/** Resolve when the shared quote watch starts its NUT-17 and NUT-04 waiter. */
+function waiterStarted() {
+  const stop = vi.fn();
+  const started = new Promise<{
+    quote: { quote: string };
+    onResult: (result: unknown) => Promise<void>;
+    options: {
+      pollIntervalMs: () => number;
+      pollWhileSubscribed: () => boolean;
+      bindPollingControls: (controls: { resume: () => void; checkNow: () => void }) => void;
+    };
+  }>((resolve) => {
+    mocks.waitForMintQuotePaidForUnit.mockImplementation(async (quote, onResult, options) => {
+      resolve({ quote, onResult, options });
+      return stop;
+    });
+  });
+  return { started, stop };
+}
+
+function barrier<T>() {
+  let resolve!: (value: T) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((done) => {
+    markStarted = done;
+  });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  }).finally(() => undefined);
+  const gate = {
+    started,
+    resolve,
+    get promise() {
+      markStarted();
+      return promise;
+    },
+  };
+  return gate;
+}
+
+function queuedLockManager(onBlocked: () => void = () => {}): Pick<LockManager, "request"> {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    request: (async (name: string, _options: LockOptions, callback: (lock: Lock) => unknown) => {
+      const held = tails.get(name);
+      if (held !== undefined) onBlocked();
+      const previous = held ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => gate);
+      tails.set(name, tail);
+      await previous;
+      try {
+        return await callback({ name, mode: "exclusive" } as Lock);
+      } finally {
+        release();
+        if (tails.get(name) === tail) tails.delete(name);
+      }
+    }) as LockManager["request"],
+  };
+}
+
 function mintPreview(quote: string, output: string) {
   const data = OutputData.createSingleData("100", KEYSET_ID, output, 3n);
   return {
@@ -848,6 +1293,31 @@ function pendingRow(index: number) {
     lastRecoveryAttemptAtMs: 0,
     quote,
   };
+}
+
+function olderPendingRowsBefore(targetQuoteRecordId: string, count: number, expiry: number) {
+  const rows = [];
+  for (let index = 0; rows.length < count; index += 1) {
+    const quote = createDurableBolt11MintQuote({
+      mintUrl: MINT_URL,
+      unit: UNIT,
+      requestedAmount: "100",
+      quoteId: `older-${index}`,
+      invoiceRequest: `lnbc1older${index}`,
+      expiryUnixSeconds: expiry,
+    });
+    if (quote.quoteRecordId >= targetQuoteRecordId) continue;
+    rows.push({
+      scopeId: SCOPE,
+      paymentMethod: "bolt11" as const,
+      quoteRecordId: quote.quoteRecordId,
+      observedState: "UNPAID" as const,
+      recoveryState: "pending" as const,
+      lastRecoveryAttemptAtMs: 0,
+      quote,
+    });
+  }
+  return rows;
 }
 
 function pendingRowsBefore(targetQuoteRecordId: string, count: number) {

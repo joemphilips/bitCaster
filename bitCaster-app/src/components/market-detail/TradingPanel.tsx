@@ -12,6 +12,7 @@ import type {
   CategoricalMarketDetail,
   SellHoldingsState,
   TradeFeasibilityReason,
+  ParticipationScoreOrderCost,
 } from "@/types/market-detail";
 import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
 import { useTranslation } from "react-i18next";
@@ -32,8 +33,11 @@ import {
 import { TRADE_COMMENT_MAX_LENGTH } from "@bitcaster/client-sdk/tradeComment";
 import { DepositStep } from "@/components/market-creation/DepositStep";
 import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
+import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
+import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
+import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
 
 function formatNullablePrice(
   price: number | null,
@@ -58,6 +62,11 @@ interface TradingPanelProps {
   tradePreview: FokOrderPreviewState | null;
   tradeFeeFacts?: TradeFeeFacts | null;
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
+  /**
+   * The order's Participation Score charge, and the Score that confirming the
+   * order buys from ordinary sats. Null shows no Score lines.
+   */
+  participationScore?: ParticipationScoreOrderCost | null;
   feeConsentCurrent?: boolean;
   tradeSide: TradeSide;
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
@@ -68,6 +77,10 @@ interface TradingPanelProps {
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
     message: string;
+    /** The message names Participation Score, so the term's help goes next to it. */
+    participationScoreHelp?: boolean;
+    /** A halted earlier operation blocks this order. The user can retry it here. */
+    onRetry?: () => void;
   } | null;
   onTradeSubmitStatusDismiss?: () => void;
   tradeFeasibility?: {
@@ -103,7 +116,8 @@ const QUICK_SHARE_PRESETS = [100, 500, 1000, 5000];
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100];
 
 type SellOutcomeAvailability =
-  | { status: "loading" | "unavailable" }
+  // A seed restore runs, so a zero holding is not known yet. The notice explains it.
+  | { status: "loading" | "unavailable" | "restoring" }
   | { status: "zero"; reserved: boolean; ownedShares: number | null }
   | { status: "available"; shares: number; ownedShares: number | null };
 
@@ -111,6 +125,7 @@ function sellOutcomeAvailability(
   market: MarketDetail,
   sellHoldings: SellHoldingsState | undefined,
   selection: TradeSelection,
+  positionsRestoring: boolean,
 ): SellOutcomeAvailability {
   if (sellHoldings?.status === "loading" || sellHoldings === undefined) {
     return { status: "loading" };
@@ -129,16 +144,20 @@ function sellOutcomeAvailability(
     (BigInt(holding.selectableSubunits) + BigInt(holding.reservedSubunits)) / BigInt(divisibility);
   const ownedShares =
     wholeOwnedShares <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(wholeOwnedShares) : null;
-  return sharesAvailableToSell > 0
-    ? { status: "available", shares: sharesAvailableToSell, ownedShares }
-    : { status: "zero", reserved: holding.reservedSubunits > 0, ownedShares };
+  if (sharesAvailableToSell > 0) {
+    return { status: "available", shares: sharesAvailableToSell, ownedShares };
+  }
+  if (positionsRestoring) return { status: "restoring" };
+  return { status: "zero", reserved: holding.reservedSubunits > 0, ownedShares };
 }
 
 function sellAvailabilityMessage(availability: SellOutcomeAvailability): {
   key: string;
   options?: Record<string, string>;
-} {
+} | null {
   switch (availability.status) {
+    case "restoring":
+      return null;
     case "loading":
       return { key: "trade.sellHoldingsLoading" };
     case "unavailable":
@@ -248,6 +267,7 @@ function YesNoOutcomes({
   tradeSelection,
   tradeSide,
   sellHoldings,
+  positionsRestoring,
   onTradeSelect,
   disabled = false,
 }: {
@@ -255,16 +275,28 @@ function YesNoOutcomes({
   tradeSelection: TradeSelection | null;
   tradeSide: TradeSide;
   sellHoldings?: SellHoldingsState;
+  /** A seed restore runs or failed, so a zero holding is not known yet. */
+  positionsRestoring: boolean;
   onTradeSelect?: (selection: TradeSelection) => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const isSell = tradeSide === "Sell";
-  const yesAvailability = sellOutcomeAvailability(market, sellHoldings, { side: "yes" });
-  const noAvailability = sellOutcomeAvailability(market, sellHoldings, { side: "no" });
+  const yesAvailability = sellOutcomeAvailability(
+    market,
+    sellHoldings,
+    { side: "yes" },
+    positionsRestoring,
+  );
+  const noAvailability = sellOutcomeAvailability(
+    market,
+    sellHoldings,
+    { side: "no" },
+    positionsRestoring,
+  );
   const availabilityText = (availability: SellOutcomeAvailability) => {
     const message = sellAvailabilityMessage(availability);
-    return t(message.key, message.options);
+    return message === null ? null : t(message.key, message.options);
   };
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -346,6 +378,7 @@ function CategoricalOutcomes({
   tradeSelection,
   tradeSide,
   sellHoldings,
+  positionsRestoring,
   onTradeSelect,
   disabled = false,
 }: {
@@ -353,6 +386,8 @@ function CategoricalOutcomes({
   tradeSelection: TradeSelection | null;
   tradeSide: TradeSide;
   sellHoldings?: SellHoldingsState;
+  /** A seed restore runs or failed, so a zero holding is not known yet. */
+  positionsRestoring: boolean;
   onTradeSelect?: (selection: TradeSelection) => void;
   disabled?: boolean;
 }) {
@@ -360,7 +395,7 @@ function CategoricalOutcomes({
   const isSell = tradeSide === "Sell";
   const availabilityText = (availability: SellOutcomeAvailability) => {
     const message = sellAvailabilityMessage(availability);
-    return t(message.key, message.options);
+    return message === null ? null : t(message.key, message.options);
   };
   return (
     <ScrollableContainer className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-hide">
@@ -368,8 +403,18 @@ function CategoricalOutcomes({
         const isSelected = tradeSelection?.outcomeId === outcome.id;
         const yesSelection = { side: "yes" as const, outcomeId: outcome.id };
         const noSelection = { side: "no" as const, outcomeId: outcome.id };
-        const yesAvailability = sellOutcomeAvailability(market, sellHoldings, yesSelection);
-        const noAvailability = sellOutcomeAvailability(market, sellHoldings, noSelection);
+        const yesAvailability = sellOutcomeAvailability(
+          market,
+          sellHoldings,
+          yesSelection,
+          positionsRestoring,
+        );
+        const noAvailability = sellOutcomeAvailability(
+          market,
+          sellHoldings,
+          noSelection,
+          positionsRestoring,
+        );
         return (
           <div
             key={outcome.id}
@@ -612,6 +657,7 @@ function FokOrderPreviewSection({
   divisibility,
   baseAsset,
   feeFacts,
+  participationScore,
   feeConsentCurrent,
   feeCheckFailed,
   deliveredFaceAmountSubunits,
@@ -624,6 +670,7 @@ function FokOrderPreviewSection({
   divisibility: number;
   baseAsset: MarketBaseAsset;
   feeFacts: TradeFeeFacts | null | undefined;
+  participationScore: ParticipationScoreOrderCost | null;
   feeConsentCurrent: boolean;
   feeCheckFailed: boolean;
   deliveredFaceAmountSubunits: number;
@@ -869,6 +916,36 @@ function FokOrderPreviewSection({
                 </span>
               </div>
             )}
+            {participationScore != null && (
+              // Score is paid apart from the trade, so the totals above exclude both lines.
+              <>
+                <div
+                  data-testid="trade-participation-score"
+                  className="mt-2 flex items-center justify-between gap-2 text-sm"
+                >
+                  <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                    {t("participationScore.name")}
+                    <ParticipationScoreHelp testId="trade-participation-score-help" />
+                  </span>
+                  <span className="shrink-0 whitespace-nowrap text-slate-600 dark:text-slate-300">
+                    {formatMsatSubunits(BigInt(participationScore.chargeScore) * 1_000n)}
+                  </span>
+                </div>
+                {participationScore.purchaseScore != null && (
+                  <div
+                    data-testid="trade-participation-score-purchase"
+                    className="mt-1 flex items-start justify-between gap-2 text-sm"
+                  >
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {t("participationScore.purchaseAtConfirm")}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap font-medium text-amber-700 dark:text-amber-300">
+                      +{formatMsatSubunits(BigInt(participationScore.purchaseScore) * 1_000n)}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
             {!feeConsentCurrent && (
               <p
                 data-testid="trade-fee-consent-required"
@@ -900,6 +977,7 @@ export function TradingPanel({
   tradePreview,
   tradeFeeFacts,
   attemptedTradeFeeFacts,
+  participationScore = null,
   feeConsentCurrent = false,
   tradeSide,
   tradeCapacityPreview = null,
@@ -954,9 +1032,12 @@ export function TradingPanel({
     tradeAmount > 0 ? String(tradeAmount) : "",
   );
   const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
+  // One status read keeps the notice and the Sell availability consistent.
+  const restoreStatus = useSeedPositionRestoreStatus();
+  const positionsRestoring = restoreStatus.kind !== "idle";
   const selectedSellAvailability =
     isSell && tradeSelection !== null
-      ? sellOutcomeAvailability(market, sellHoldings, tradeSelection)
+      ? sellOutcomeAvailability(market, sellHoldings, tradeSelection, positionsRestoring)
       : null;
   const userHoldingShares =
     selectedSellAvailability?.status === "available" || selectedSellAvailability?.status === "zero"
@@ -982,7 +1063,7 @@ export function TradingPanel({
     }
     if (selectedSellAvailability.status === "available") return null;
     const message = sellAvailabilityMessage(selectedSellAvailability);
-    return t(message.key, message.options);
+    return message === null ? null : t(message.key, message.options);
   })();
   const tradingDisabled = disabled;
   const previewResponse = tradePreview?.response ?? null;
@@ -1054,6 +1135,12 @@ export function TradingPanel({
     if (isTradeSubmitting) return t("trade.submittingOrder");
     if (!walletReady) return t("wallet.startTrading");
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
+    if (isSell && selectedSellAvailability?.status === "restoring") {
+      // A failed restore does not run, so its holdings are unavailable.
+      return restoreStatus.kind === "failed"
+        ? t("trade.sellHoldingsUnavailable")
+        : t("portfolio.restoringPositions");
+    }
     if (isSell && selectedSellAmountUnavailable) {
       return selectedSellStatusMessage ?? t("trade.sellHoldingsUnavailable");
     }
@@ -1194,6 +1281,9 @@ export function TradingPanel({
         </div>
       ) : (
         <>
+          {activeTradeSide === "Sell" && (
+            <SeedPositionRestoreNotice className="mb-3" status={restoreStatus} />
+          )}
           {/* Outcomes based on market type */}
           {market.type === "yesno" && (
             <YesNoOutcomes
@@ -1201,6 +1291,7 @@ export function TradingPanel({
               tradeSelection={tradeSelection}
               tradeSide={activeTradeSide}
               sellHoldings={sellHoldings}
+              positionsRestoring={positionsRestoring}
               onTradeSelect={onTradeSelect}
               disabled={tradingDisabled}
             />
@@ -1211,6 +1302,7 @@ export function TradingPanel({
               tradeSelection={tradeSelection}
               tradeSide={activeTradeSide}
               sellHoldings={sellHoldings}
+              positionsRestoring={positionsRestoring}
               onTradeSelect={onTradeSelect}
               disabled={tradingDisabled}
             />
@@ -1340,6 +1432,7 @@ export function TradingPanel({
               baseAsset={baseAsset}
               deliveredFaceAmountSubunits={tradeAmount * divisibility}
               feeFacts={tradeFeeFacts}
+              participationScore={participationScore}
               feeConsentCurrent={feeConsentCurrent}
               // The cost check needs the Nostr signer. Without it no check runs, and the
               // "Start trading" action sets up the identity first.
@@ -1393,6 +1486,16 @@ export function TradingPanel({
             >
               <div className="flex items-start gap-2">
                 <span className="min-w-0 flex-1">{tradeSubmitStatus.message}</span>
+                {tradeSubmitStatus.participationScoreHelp === true && <ParticipationScoreHelp />}
+                {tradeSubmitStatus.onRetry && (
+                  <button
+                    type="button"
+                    onClick={tradeSubmitStatus.onRetry}
+                    className="shrink-0 text-sm underline"
+                  >
+                    {t("walletRecovery.retry")}
+                  </button>
+                )}
                 {onTradeSubmitStatusDismiss && (
                   <button
                     type="button"

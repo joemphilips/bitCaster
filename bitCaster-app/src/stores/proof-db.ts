@@ -334,6 +334,15 @@ export interface BrowserCtfRangeMessageRow {
   status: "active" | "acknowledged";
   observedAtMs: number;
   acknowledgedAtMs: number | null;
+  /**
+   * The bounded mint code and detail behind the alert. Rows written before
+   * this field have none. The current production build ignores it.
+   */
+  mintError?: { code: number; detail: string };
+  /** The automatic replay stopped. The alert offers a manual retry. */
+  retryable?: true;
+  /** The wallet released the reserved funds of this ended order attempt. */
+  fundsReleased?: true;
 }
 
 /**
@@ -1379,6 +1388,14 @@ export async function restoreProofsAndAdvanceCounter(
     readonly unit: CashuProofUnit | string;
     readonly keysetId: string;
     readonly restoredNext: number;
+    /**
+     * `complete` after a scan that covers every lower counter and finds no
+     * `PENDING` proof, and after a backup or hint restore: the encrypted
+     * backup needs a complete keyset as its counter authority, and the keyset
+     * re-sync covers a mark that lags the mint. A scan with a `PENDING` proof
+     * leaves it `incomplete`, so a later scan admits the proof (ADR-033).
+     */
+    readonly recovery: "complete" | "incomplete";
     readonly isCurrentProfile: () => boolean;
   },
   database: BitcasterDB = db,
@@ -1398,6 +1415,7 @@ export async function restoreProofsAndAdvanceCounter(
     input.restoredNext,
     rows.length > 0,
     admitRestoredProofs,
+    input.recovery,
   );
 }
 

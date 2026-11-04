@@ -41,14 +41,24 @@ interface DaemonPidFile {
   dataDir?: string
 }
 
+// Daemon startup resumes unfinished custody work, so a dry run must not start it.
+let daemonAutoStartPrevented = false
+
+export function preventDaemonAutoStart(): void {
+  daemonAutoStartPrevented = true
+}
+
 export class DaemonNotReachableError extends Error {
   readonly address: string
-  readonly hint = "Run 'bitcaster daemon init' and verify the selected --datadir."
+  readonly hint: string
 
   constructor(address: string, options?: { cause?: unknown }) {
     super(`daemon not reachable at ${address}`, options)
     this.name = 'DaemonNotReachableError'
     this.address = address
+    this.hint = daemonAutoStartPrevented
+      ? "--dry-run does not start bitcaster-daemon. Run 'bitcaster-cli health' to start it, then retry."
+      : "Run 'bitcaster daemon init' and verify the selected --datadir."
   }
 }
 
@@ -500,6 +510,7 @@ export function readDaemonRpcResponse<T = unknown>(
 }
 
 function shouldAutoStartDaemon(err: unknown): boolean {
+  if (daemonAutoStartPrevented) return false
   if (injectedDaemonBaseUrl() !== undefined) return false
   if (!isNetworkFailure(err)) return false
   const socketPath = daemonSocketPath()

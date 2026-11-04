@@ -72,6 +72,26 @@ describe("public profile card and editor", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E", true],
+    ["data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==", true],
+    ["data:text/html;base64,PHNjcmlwdD4=", false],
+    ["data:image/svg+xml,<svg onload=alert(1)>", false],
+  ])("shows the own data picture %s only when it is an accepted image", (avatar, shown) => {
+    const { container } = render(
+      <NostrProfilePanel
+        profile={{ ...profile, displayName: "joemphilips", avatar }}
+        status="found"
+        retry={vi.fn()}
+        retrying={false}
+      />,
+    );
+    if (shown)
+      expect(screen.getByRole("img", { name: "joemphilips" })).toHaveAttribute("src", avatar);
+    else expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("object, iframe, embed")).toBeNull();
+  });
+
   it("shows the own kind 0 name and description without bidi controls", () => {
     const rlo = "\u202E";
     render(

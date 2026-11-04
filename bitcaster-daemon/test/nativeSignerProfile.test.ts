@@ -169,11 +169,12 @@ test('the owned deadline refuses a missing EOSE instead of treating a synthetic 
   try {
     const pending = readNativeSignerProfile(io)
     const rejected = assert.rejects(pending, /Check the configured relays/)
-    for (
-      let turn = 0;
-      turn < 100 &&
-      (io.sockets.length !== 2 || io.sockets.some((socket) => socket.sent.length === 0));
-      turn += 1
+    // The read does file I/O before it opens the sockets, so wait on the sockets
+    // with a wall-clock bound, not a turn count. setTimeout is mocked here.
+    const deadline = Date.now() + 10_000
+    while (
+      Date.now() < deadline &&
+      (io.sockets.length !== 2 || io.sockets.some((socket) => socket.sent.length === 0))
     )
       await new Promise<void>((resolve) => setImmediate(resolve))
     assert.equal(io.sockets.length, 2)

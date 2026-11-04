@@ -589,6 +589,11 @@ async function commitExactMintProofs(
         unit: input.asset.unit,
         keysetId: request.keysetId,
         restoredNext: request.counterStart + request.counterCount,
+        // The V2 backup snapshot needs a complete keyset as its counter
+        // authority. A hint window can lag the mint. Evidence of another
+        // client then probes the keyset above this cursor
+        // (resyncBrowserKeysetsInUse, ADR-033).
+        recovery: "complete",
         isCurrentProfile: input.isCurrentProfile,
       },
       input.database,

@@ -5,6 +5,7 @@ import type {
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
 import { computeAssetMonitoringOutcomeUniverseDigest } from "@bitcaster/client-sdk/assetMonitoring";
+import { EngineClientError } from "@bitcaster/client-sdk/engineClient";
 import {
   portfolioInvalidatedEvent,
   publishPortfolioInvalidation,
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   positionSnapshot: null as null | {
     positions: Position[];
     marketCatalogue: Map<string, unknown>;
+    catalogueConditionIds: ReadonlySet<string>;
   },
   activityItems: [] as ActivityItem[],
   liveQueryCalls: 0,
@@ -74,7 +76,11 @@ vi.mock("dexie-react-hooks", () => ({
     return mocks.liveQueryCalls % 2 === 1
       ? {
           scopeId: "custody:wallet:" + "a".repeat(64),
-          ...(mocks.positionSnapshot ?? { positions: [localPosition], marketCatalogue: new Map() }),
+          ...(mocks.positionSnapshot ?? {
+            positions: [localPosition],
+            marketCatalogue: new Map(),
+            catalogueConditionIds: new Set(),
+          }),
         }
       : mocks.localFundsState === "null"
         ? null
@@ -398,6 +404,7 @@ function stubCatalogue({
 interface PortfolioPositionSnapshot {
   positions: Position[];
   marketCatalogue: Map<string, MarketCatalogueEntry>;
+  catalogueConditionIds: ReadonlySet<string>;
 }
 
 async function localPositionSnapshotAfterMonitoringFailure(): Promise<PortfolioPositionSnapshot> {
@@ -425,6 +432,106 @@ function conditionalMonitoringAsset(
       outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(["NO", "YES"]),
     },
   };
+}
+
+function rateLimitedPortfolioRead(retryAfterSeconds: number | undefined): EngineClientError {
+  return new EngineClientError(
+    429,
+    '{"limitCode":"asset-monitoring-history-rate-window"}',
+    undefined,
+    "Retry after the current rate-limit window.",
+    retryAfterSeconds,
+  );
+}
+
+/** Advances fake time in small steps, so that each started read sees its own time. */
+async function advanceInSteps(totalMs: number, stepMs = 100): Promise<void> {
+  for (let elapsedMs = 0; elapsedMs < totalMs; elapsedMs += stepMs) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(stepMs);
+    });
+  }
+}
+
+/** The engine admits 12 Portfolio reads per caller in each one-minute window. */
+const engineReadsPerMinute = 12;
+
+function maximumReadsInAnyMinute(readAtMs: readonly number[]): number {
+  return Math.max(
+    0,
+    ...readAtMs.map((start) => readAtMs.filter((at) => at >= start && at < start + 60_000).length),
+  );
+}
+
+type RealisticWalletEvent =
+  | { atMs: number; kind: "report"; totalMsat: number }
+  | { atMs: number; kind: "settlement" }
+  | { atMs: number; kind: "price" };
+
+/**
+ * One minute on the Portfolio page: open it, a deposit completes, a buy
+ * settles and a sell settles. Each wallet change sends an accepted report, a
+ * trade also sends a settlement notice and a price notice. The fake
+ * projection answers after 200 ms and builds for 2 s after each report.
+ */
+const realisticWalletMinute: readonly RealisticWalletEvent[] = [
+  { atMs: 400, kind: "report", totalMsat: 15_000 },
+  { atMs: 10_000, kind: "report", totalMsat: 20_000 },
+  { atMs: 25_000, kind: "report", totalMsat: 20_000 },
+  { atMs: 27_000, kind: "settlement" },
+  { atMs: 27_400, kind: "report", totalMsat: 23_000 },
+  { atMs: 27_500, kind: "price" },
+  { atMs: 40_000, kind: "report", totalMsat: 23_000 },
+  { atMs: 42_000, kind: "settlement" },
+  { atMs: 42_400, kind: "report", totalMsat: 21_000 },
+  { atMs: 42_500, kind: "price" },
+];
+
+async function driveRealisticWalletMinute(
+  untilMs: number,
+): Promise<{ readAtMs: number[]; result: { current: ReturnType<typeof usePortfolioState> } }> {
+  const startedAt = Date.now();
+  const readAtMs: number[] = [];
+  let reportAtMs = Number.NEGATIVE_INFINITY;
+  let projectedTotalMsat = 15_000;
+  mocks.getPortfolio.mockImplementation(async () => {
+    const atMs = Date.now() - startedAt;
+    readAtMs.push(atMs);
+    const building = atMs - reportAtMs < 2_000;
+    const totalMsat = projectedTotalMsat;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return building
+      ? buildingUnvaluedPortfolioResponse()
+      : completePortfolioResponse("ALL", totalMsat);
+  });
+  const { result } = renderHook(() => usePortfolioState());
+  const pending = [...realisticWalletMinute];
+  for (let nowMs = 0; nowMs < untilMs; nowMs += 100) {
+    while (pending[0] !== undefined && pending[0].atMs <= nowMs) {
+      const event = pending.shift()!;
+      act(() => {
+        switch (event.kind) {
+          case "report":
+            reportAtMs = event.atMs;
+            projectedTotalMsat = event.totalMsat;
+            publishPortfolioInvalidation({ walletId: activeWalletId });
+            return;
+          case "settlement":
+            publishPortfolioInvalidation({ walletId: activeWalletId });
+            return;
+          case "price":
+            mocks.portfolioObservers[0]?.onRefresh();
+            return;
+          default:
+            throw new Error(`Unhandled wallet event: ${String(event satisfies never)}`);
+        }
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+  }
+  return { readAtMs, result };
 }
 
 describe("usePortfolioState monitoring facade", () => {
@@ -476,31 +583,52 @@ describe("usePortfolioState monitoring facade", () => {
   });
 
   it("repairs explicit portfolio loss after a failed read without another notification", async () => {
-    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
-    const view = renderHook(() => usePortfolioState());
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0),
-    );
-    mocks.getPortfolio
-      .mockRejectedValueOnce(new Error("unavailable"))
-      .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
-    act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
-    expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
-    view.unmount();
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      const view = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      expect(mocks.portfolioObservers[0].conditionSets.length).toBeGreaterThan(0);
+      mocks.getPortfolio
+        .mockRejectedValueOnce(new Error("unavailable"))
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+      act(() => mocks.portfolioObservers[0].onResync!("a".repeat(32)));
+      await advanceInSteps(1_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+
+      // The repair retry is the third read, so it waits for a read permit.
+      await advanceInSteps(15_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      expect(mocks.getPortfolio.mock.calls.at(-1)?.[0].walletId).toBe(activeWalletId);
+      expect(view.result.current.stats.totalValueSats).toBe(12_000);
+      view.unmount();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("does not clear explicit repair after a building response", async () => {
-    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
-    const view = renderHook(() => usePortfolioState());
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    mocks.getPortfolio
-      .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
-      .mockResolvedValueOnce(completePortfolioResponse());
-    act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3), { timeout: 2000 });
-    view.unmount();
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      const view = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      mocks.getPortfolio
+        .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 12_000));
+      act(() => mocks.portfolioObservers[0].onResync!("b".repeat(32)));
+      await advanceInSteps(16_000);
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      expect(view.result.current.stats.totalValueSats).toBe(12_000);
+      view.unmount();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("retains the last complete display through a building response and a failed refresh", async () => {
@@ -551,13 +679,18 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.positionSnapshot = {
       positions: [{ ...localPosition, claimRecoveryPending: true, canClaimPayout: true }],
       marketCatalogue: new Map(),
+      catalogueConditionIds: new Set(),
     };
     mocks.localFundsState = "undefined";
     rerender();
     expect(result.current.stats.totalValueSats).toBe(15_000);
     expect(result.current.stats.totalValueLoading).toBe(true);
     expect(result.current.monitoring.stale).toBe(true);
-    mocks.positionSnapshot = { positions: [], marketCatalogue: new Map() };
+    mocks.positionSnapshot = {
+      positions: [],
+      marketCatalogue: new Map(),
+      catalogueConditionIds: new Set(),
+    };
     rerender();
     expect(result.current.positions.every((position) => position.canClaimPayout !== true)).toBe(
       true,
@@ -978,7 +1111,7 @@ describe("usePortfolioState monitoring facade", () => {
 
       act(() => observer?.onRefresh());
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(9_999);
+        await vi.advanceTimersByTimeAsync(14_999);
       });
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
       await act(async () => {
@@ -1120,6 +1253,79 @@ describe("usePortfolioState monitoring facade", () => {
     });
   });
 
+  it("marks a local row as loading until the catalogue read starts", async () => {
+    const conditionId = conditionIdFor(805);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    mocks.getPortfolio.mockReturnValue(new Promise(() => {}));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => usePortfolioState());
+
+    const snapshot = (await mocks.localQueries[0]!()) as PortfolioPositionSnapshot;
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(snapshot.positions[0]).toMatchObject({
+      marketId: `${conditionId}-YES`,
+      marketLoading: true,
+    });
+    expect(snapshot.catalogueConditionIds.size).toBe(0);
+  });
+
+  it("ends the loading state after the catalogue read, also when the market is missing", async () => {
+    const conditionId = conditionIdFor(806);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 503 })),
+    );
+
+    const snapshot = await localPositionSnapshotAfterMonitoringFailure();
+
+    expect(snapshot.positions[0]).toMatchObject({
+      marketTitle: `Condition ${conditionId.slice(0, 12)}`,
+      marketLoading: false,
+    });
+    expect([...snapshot.catalogueConditionIds]).toEqual([conditionId]);
+  });
+
+  it("marks a monitored row as loading until the catalogue read covers its condition", async () => {
+    const conditionId = conditionIdFor(807);
+    mocks.readCustody.mockResolvedValue([]);
+    stubCatalogue({ closedConditionId: conditionIdFor(808) });
+    mocks.getPortfolio.mockResolvedValue(portfolioWithConditionalConditions([conditionId], null));
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    const monitored = () =>
+      result.current.positions.find((position) => position.marketId === conditionId);
+
+    await waitFor(() => expect(monitored()).toMatchObject({ marketLoading: true }));
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    expect(monitored()).toMatchObject({ marketLoading: false });
+  });
+
+  it("ends the loading state of a retained monitored row after a later read fails", async () => {
+    const conditionId = conditionIdFor(809);
+    mocks.readCustody.mockResolvedValue([]);
+    stubCatalogue({ closedConditionId: conditionIdFor(810) });
+    mocks.getPortfolio
+      .mockResolvedValueOnce(portfolioWithConditionalConditions([conditionId], null))
+      .mockRejectedValue(new Error("engine unavailable"));
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.stats.totalValueKnown).toBe(true));
+
+    // The read for the new range fails, so the last complete display stays.
+    act(() => result.current.setSelectedTimeRange("1D"));
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    expect(result.current.monitoring.retainingDisplay).toBe(true);
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    expect(
+      result.current.positions.find((position) => position.marketId === conditionId),
+    ).toMatchObject({ marketLoading: false });
+  });
+
   it("keeps monitored rows visible while display catalogue enrichment is delayed or fails", async () => {
     const conditionId = conditionIdFor(803);
     mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
@@ -1206,30 +1412,146 @@ describe("usePortfolioState monitoring facade", () => {
     await expect(pendingRead).resolves.toBeUndefined();
   });
 
-  it("coalesces valuation events on the first fixed ten-second wake", async () => {
+  it("reads the projection at once after a wallet invalidation", async () => {
     vi.useFakeTimers();
     try {
       mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
       renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
 
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await act(async () => {});
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows funds from the live local wallet while the projection supplies valuations", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(15_000));
+
+    // The projection reports 7 000 msat of collateral. The local wallet has 2 000.
+    expect(result.current.funds).toEqual([localFund]);
+  });
+
+  it("reads a building projection again after 1 s and then once per read interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        return buildingUnvaluedPortfolioResponse();
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      await advanceInSteps(90_000);
+
+      // The 2, 4 and 8 s retries wait for a permit every 15 s. Four extra
+      // reads, then the bounded cycle ends.
+      expect(readAtMs).toEqual([0, 1_000, 15_000, 30_000, 45_000]);
+      expect(result.current.monitoring.building).toBe(true);
+      expect(result.current.stats.totalValueKnown).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a valuation notice read after a wallet invalidation reads at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      let projectedTotalMsat = 229_990;
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        return completePortfolioResponse("ALL", projectedTotalMsat);
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      // The subscription to the first-page conditions ends with a notice.
+      act(() => mocks.portfolioObservers[0]?.onRefresh());
+      await advanceInSteps(1_000);
+      // The report of this page load is accepted, and its read starts at once.
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await advanceInSteps(7_000);
+      // The engine valuation view applies the closure some seconds late.
+      projectedTotalMsat = 224_890;
+      await advanceInSteps(30_000);
+
+      // The notice read comes 15 s after the notice. No notice joined its
+      // timer, so no second notice read follows.
+      expect(readAtMs).toEqual([0, 1_000, 15_000]);
+      expect(result.current.stats.totalValueSats).toBe(224_890);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a live price notice read after a settlement invalidation reads at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      let projectedTotalMsat = 249_992;
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        return completePortfolioResponse("ALL", projectedTotalMsat);
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      await advanceInSteps(30_000);
+      expect(readAtMs).toEqual([0]);
+
+      // A resolution notice arrives, then the settlement of the same market.
+      act(() => mocks.portfolioObservers[0]?.onRefresh());
+      await advanceInSteps(500);
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await advanceInSteps(6_000);
+      projectedTotalMsat = 254_892;
+      await advanceInSteps(20_000);
+
+      // The settlement read is at once. The notice read comes 15 s after the notice.
+      expect(readAtMs).toEqual([0, 30_500, 45_000]);
+      expect(result.current.stats.totalValueSats).toBe(254_892);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads once more 15 s after its read when a notice joins the pending timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      let projectedTotalMsat = 15_000;
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        return completePortfolioResponse("ALL", projectedTotalMsat);
+      });
+      const { result } = renderHook(() => usePortfolioState());
       await act(async () => {});
       const observer = mocks.portfolioObservers[0];
       expect(observer?.conditionSets).toHaveLength(1);
 
+      // Notice A starts the timer. Resolution notice B joins it 9 s later.
       act(() => observer?.onRefresh());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(6_000);
-      });
+      await advanceInSteps(9_000);
       act(() => observer?.onRefresh());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3_999);
-      });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      // The valuation view applies B 12 s after B, after the first notice read.
+      await advanceInSteps(12_000);
+      projectedTotalMsat = 19_000;
+      await advanceInSteps(69_000);
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1);
-      });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(readAtMs).toEqual([0, 15_000, 30_000]);
+      expect(result.current.stats.totalValueSats).toBe(19_000);
       expect(observer?.conditionSets).toHaveLength(1);
     } finally {
       vi.clearAllTimers();
@@ -1256,7 +1578,7 @@ describe("usePortfolioState monitoring facade", () => {
       const observer = mocks.portfolioObservers[0];
       act(() => observer?.onRefresh());
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(15_000);
       });
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
       expect(result.current.stats.totalValueLoading).toBe(true);
@@ -1266,7 +1588,7 @@ describe("usePortfolioState monitoring facade", () => {
 
       act(() => observer?.onRefresh());
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(15_000);
       });
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
 
@@ -1334,31 +1656,6 @@ describe("usePortfolioState monitoring facade", () => {
       }
     },
   );
-
-  it("limits a continuously building portfolio to three extra reads", async () => {
-    vi.useFakeTimers();
-    try {
-      mocks.getPortfolio.mockResolvedValue(buildingUnvaluedPortfolioResponse());
-      const { result } = renderHook(() => usePortfolioState());
-
-      await act(async () => {});
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(10_000);
-        });
-      }
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
-
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(4);
-      expect(result.current.monitoring.building).toBe(true);
-      expect(result.current.stats.totalValueKnown).toBe(false);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
-  });
 
   it.each(["stale", "incomplete", "unvalued"] as const)(
     "does not refresh a non-building %s portfolio",
@@ -1468,37 +1765,256 @@ describe("usePortfolioState monitoring facade", () => {
     }
   });
 
-  it("coalesces wallet invalidations on the fixed wake and starts a new bounded cycle", async () => {
+  it("keeps a realistic minute of wallet changes well inside the engine read limit", async () => {
     vi.useFakeTimers();
     try {
-      mocks.getPortfolio.mockResolvedValue(buildingUnvaluedPortfolioResponse());
-      renderHook(() => usePortfolioState());
+      const { readAtMs, result } = await driveRealisticWalletMinute(90_000);
 
+      // Half the engine window leaves room for a reload or a second tab.
+      expect(
+        maximumReadsInAnyMinute(readAtMs),
+        `reads at ${readAtMs.join(", ")} ms`,
+      ).toBeLessThanOrEqual(engineReadsPerMinute / 2);
+      // The coalesced reads still show the value after the last wallet change.
+      expect(result.current.stats.totalValueSats).toBe(21_000);
+      expect(result.current.monitoring).toMatchObject({ building: false, error: null });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for Retry-After after a 429 and then shows the priced state", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      mocks.getPortfolio
+        .mockRejectedValueOnce(rateLimitedPortfolioRead(3))
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 19_000));
+      const { result } = renderHook(() => usePortfolioState());
       await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+
+      // A transient refusal is not an unavailable monitor. Local data stays.
+      expect(result.current.monitoring.error).toBeNull();
+      expect(result.current.stats.totalValueLoading).toBe(true);
+      expect(result.current.funds).toEqual([localFund]);
+      expect(result.current.positions.map((position) => position.id)).toContain("local-position");
+
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(2_999);
       });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(5_000);
-      });
-      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
-      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4_999);
-      });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      expect(result.current.monitoring.error).toBeNull();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1);
       });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.stats).toMatchObject({
+        totalValueSats: 19_000,
+        totalValueKnown: true,
+        totalValueLoading: false,
+      });
+      expect(result.current.monitoring).toMatchObject({ error: null, building: false });
+    } finally {
+      random.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    [0, 3_000],
+    [0.999_999, 3_750],
+  ])(
+    "never retries before Retry-After and adds up to 25 percent (random %s)",
+    async (unitRandom, retryAtMs) => {
+      vi.useFakeTimers();
+      const random = vi.spyOn(Math, "random").mockReturnValue(unitRandom);
+      try {
+        mocks.getPortfolio
+          .mockRejectedValueOnce(rateLimitedPortfolioRead(3))
+          .mockResolvedValueOnce(completePortfolioResponse("ALL", 19_000));
+        renderHook(() => usePortfolioState());
+        await act(async () => {});
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(10_000);
+          await vi.advanceTimersByTimeAsync(retryAtMs - 1);
+        });
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      } finally {
+        random.mockRestore();
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    [0, 3_750],
+    [0.5, 5_000],
+    [0.999_999, 6_250],
+  ])(
+    "spreads the first 429 backoff by 25 percent either side (random %s)",
+    async (unitRandom, retryAtMs) => {
+      vi.useFakeTimers();
+      const random = vi.spyOn(Math, "random").mockReturnValue(unitRandom);
+      try {
+        mocks.getPortfolio
+          .mockRejectedValueOnce(rateLimitedPortfolioRead(undefined))
+          .mockResolvedValueOnce(completePortfolioResponse("ALL", 19_000));
+        renderHook(() => usePortfolioState());
+        await act(async () => {});
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(retryAtMs - 1);
+        });
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      } finally {
+        random.mockRestore();
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("retries a 429 without Retry-After after 5 and then 10 s", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      const responses = [
+        rateLimitedPortfolioRead(undefined),
+        rateLimitedPortfolioRead(undefined),
+        completePortfolioResponse("ALL", 19_000),
+      ];
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        const response = responses.shift();
+        if (response instanceof Error) throw response;
+        return response;
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      for (let second = 0; second < 20; second += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
         });
       }
 
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(6);
+      expect(readAtMs).toEqual([0, 5_000, 15_000]);
+      expect(result.current.stats.totalValueSats).toBe(19_000);
+      expect(result.current.monitoring.error).toBeNull();
+    } finally {
+      random.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the unavailable state after four 429 retries and then stops", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      mocks.getPortfolio.mockRejectedValue(rateLimitedPortfolioRead(1));
+      const { result } = renderHook(() => usePortfolioState());
+      for (let second = 0; second < 120; second += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(5);
+      expect(result.current.monitoring.error).toBe("unavailable");
+      expect(result.current.stats.totalValueLoading).toBe(false);
+      expect(result.current.funds).toEqual([localFund]);
+    } finally {
+      random.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends a 429 wait when the retry returns a 200 with unusable assets", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const unusable = completePortfolioResponse();
+      unusable.assets.assets = [unusable.assets.assets[0]!, unusable.assets.assets[0]!];
+      mocks.getPortfolio
+        .mockRejectedValueOnce(rateLimitedPortfolioRead(1))
+        .mockResolvedValueOnce(unusable);
+      const { result } = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      expect(result.current.stats.totalValueLoading).toBe(true);
+      await advanceInSteps(1_000);
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.monitoring.error).toBe("unavailable");
+      expect(result.current.stats.totalValueLoading).toBe(false);
+    } finally {
+      random.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the read budget on the monotonic clock when the wall clock jumps", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      renderHook(() => usePortfolioState());
+      await act(async () => {});
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+
+      // Both permits are spent. A wall clock that jumps does not refill them.
+      vi.setSystemTime(Date.now() + 3_600_000);
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      await advanceInSteps(15_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces wallet invalidations into one immediate read and starts a new bounded cycle", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const readAtMs: number[] = [];
+      mocks.getPortfolio.mockImplementation(async () => {
+        readAtMs.push(Date.now() - startedAt);
+        return buildingUnvaluedPortfolioResponse();
+      });
+      renderHook(() => usePortfolioState());
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      act(() => {
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+      });
+      await act(async () => {});
+      expect(readAtMs).toEqual([0, 500]);
+
+      await advanceInSteps(90_000);
+
+      // The building retry of the first read joined the immediate read. The
+      // new cycle has four extra reads, one per read interval.
+      expect(readAtMs).toEqual([0, 500, 15_000, 30_000, 45_000, 60_000]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -1575,13 +2091,7 @@ describe("usePortfolioState monitoring facade", () => {
       );
       expect(result.current.stats.totalValueSats).toBe(13_000);
       expect(mocks.getPortfolio.mock.calls[0]?.[1]?.aborted).toBe(false);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(9_999);
-      });
-      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1);
-      });
+      // One trailing read follows the read that was in flight.
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
       expect(mocks.getPortfolio.mock.calls[1]?.[1]?.aborted).toBe(false);
       await act(async () => refresh.resolve(portfolioResponse()));
@@ -1611,11 +2121,9 @@ describe("usePortfolioState monitoring facade", () => {
       publishPortfolioInvalidation({ walletId: activeWalletId });
     });
 
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
     expect(mocks.getPortfolio.mock.calls[1]?.[1]?.aborted).toBe(false);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
+    await act(async () => {});
     vi.clearAllTimers();
     vi.useRealTimers();
 
@@ -1637,36 +2145,38 @@ describe("usePortfolioState monitoring facade", () => {
   });
 
   it("resets appended pagination for a portfolio invalidation", async () => {
-    const portfolioWithMoreAssets = completePortfolioResponse();
-    portfolioWithMoreAssets.assets.nextCursor = "cursor-1";
-    portfolioWithMoreAssets.assets.incomplete = true;
-    mocks.getPortfolio
-      .mockResolvedValueOnce(portfolioWithMoreAssets)
-      .mockResolvedValueOnce(completePortfolioResponse());
-    mocks.getAssetMonitoringAssets.mockResolvedValue(nextPage(conditionalAsset("NO")));
-    const { result } = renderHook(() => usePortfolioState());
-
-    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
-    act(() => result.current.loadMoreAssets());
-    await waitFor(() =>
-      expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true),
-    );
+    // The read budget clock is the fake performance.now() from the first read on.
     vi.useFakeTimers();
-    act(() => {
-      publishPortfolioInvalidation({ walletId: activeWalletId });
-    });
+    try {
+      const portfolioWithMoreAssets = completePortfolioResponse();
+      portfolioWithMoreAssets.assets.nextCursor = "cursor-1";
+      portfolioWithMoreAssets.assets.incomplete = true;
+      mocks.getPortfolio
+        .mockResolvedValueOnce(portfolioWithMoreAssets)
+        .mockResolvedValueOnce(completePortfolioResponse());
+      mocks.getAssetMonitoringAssets.mockResolvedValue(nextPage(conditionalAsset("NO")));
+      const { result } = renderHook(() => usePortfolioState());
 
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
-    expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    vi.clearAllTimers();
-    vi.useRealTimers();
+      await act(async () => {});
+      expect(result.current.monitoring.hasMoreAssets).toBe(true);
+      act(() => result.current.loadMoreAssets());
+      await act(async () => {});
+      expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true);
+      act(() => {
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+      });
 
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(false));
-    expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(false);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true);
+      await act(async () => {});
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.monitoring.hasMoreAssets).toBe(false);
+      expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a failed portfolio invalidation refresh", async () => {

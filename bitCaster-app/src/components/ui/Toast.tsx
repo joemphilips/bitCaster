@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, AlertCircle, Info, X } from "lucide-react";
 import { useToastStore, type Toast, type ToastType } from "@/stores/toast";
 
@@ -32,6 +33,7 @@ const TYPE_ICONS: Record<ToastType, typeof Check> = {
 };
 
 function ToastItem({ toast }: { toast: Toast }) {
+  const { t } = useTranslation();
   const removeToast = useToastStore((s) => s.removeToast);
   const [visible, setVisible] = useState(false);
 
@@ -66,12 +68,19 @@ function ToastItem({ toast }: { toast: Toast }) {
       <div className={["flex-shrink-0 mt-0.5 rounded-full p-1", styles.bg].join(" ")}>
         <Icon className={["w-3.5 h-3.5", styles.icon].join(" ")} strokeWidth={2} />
       </div>
-      <p className="text-sm text-slate-200 flex-1 min-w-0 break-words leading-snug pt-0.5">
+      {/* Two lines keep a toast with a long market title off the page heading.
+          The clamp is visual only; assistive technology reads the whole text. */}
+      <p
+        className={[
+          "text-sm text-slate-200 flex-1 min-w-0 break-words leading-snug pt-0.5",
+          toast.lines === 3 ? "line-clamp-3" : "line-clamp-2",
+        ].join(" ")}
+      >
         {toast.message}
       </p>
       <button
         onClick={() => removeToast(toast.id)}
-        aria-label="Dismiss"
+        aria-label={t("common.dismiss")}
         className="flex-shrink-0 p-0.5 rounded text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
       >
         <X className="w-3.5 h-3.5" strokeWidth={2} />

@@ -163,6 +163,21 @@ test('ACK, durable reload, and older relay replies preserve previous canonical a
   }
 })
 
+test('a display_name edit writes only display_name and keeps the canonical name', async () => {
+  const close = await fixture()
+  try {
+    const io = transport()
+    const result = await editNativeSignerProfile({ display_name: 'Shown' }, io)
+    assert.equal(result.status, 'saved')
+    assert.equal(
+      io.published[0]!.event.content,
+      '{"name":"Old","custom":{"keep":true},"display_name":"Shown"}',
+    )
+  } finally {
+    await close()
+  }
+})
+
 test('partial ACK succeeds with accurate explicit rejection and uncertain destinations', async () => {
   const close = await fixture()
   try {

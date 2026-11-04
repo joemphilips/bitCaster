@@ -63,7 +63,7 @@ describe("ShellRoutes search URL authority", () => {
             path="*"
             element={
               <>
-                <ShellRoutes canReadOrderStatus={false} />
+                <ShellRoutes canReadOrderStatus={false} nostrIdentityRestored />
                 <NavigationControls />
               </>
             }
@@ -116,7 +116,7 @@ describe("ShellRoutes search URL authority", () => {
             path="*"
             element={
               <>
-                <ShellRoutes canReadOrderStatus={false} />
+                <ShellRoutes canReadOrderStatus={false} nostrIdentityRestored />
                 <NavigationControls />
               </>
             }

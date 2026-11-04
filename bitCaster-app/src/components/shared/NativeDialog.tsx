@@ -2,6 +2,8 @@ import { useCallback, useLayoutEffect, useRef, type ReactNode } from "react";
 
 interface NativeDialogProps {
   ariaLabel: string;
+  /** The id of the element that states the dialog text. */
+  describedBy?: string;
   canDismiss?: boolean;
   dismissOnBackdrop?: boolean;
   onDismiss: () => void;
@@ -24,6 +26,7 @@ function openDialog(dialog: HTMLDialogElement): void {
  */
 export function NativeDialog({
   ariaLabel,
+  describedBy,
   canDismiss = true,
   dismissOnBackdrop = true,
   onDismiss,
@@ -46,6 +49,7 @@ export function NativeDialog({
     <dialog
       ref={dialogRef}
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       className="fixed inset-0 m-0 h-screen max-h-none w-screen max-w-none border-0 bg-transparent p-0 backdrop:bg-black/60"
       onCancel={(event) => {
         event.preventDefault();

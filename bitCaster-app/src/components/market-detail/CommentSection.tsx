@@ -1,9 +1,13 @@
 import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
-import { useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import type { Comment } from "@/types/market-detail";
 import { formatTimeAgo } from "@/lib/format";
+import { safeNostrProfilePictureUrl } from "@bitcaster/client-sdk/nostrProfilePage";
+import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
+import { commentAuthorNpub } from "./commentAuthor";
 
 interface CommentSectionProps {
   comments: Comment[];
@@ -13,6 +17,7 @@ interface CommentSectionProps {
 }
 
 function CommentRow({ comment }: { comment: Comment }) {
+  const { t } = useTranslation();
   const row = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -23,9 +28,33 @@ function CommentRow({ comment }: { comment: Comment }) {
   }, []);
   const profile = usePublicCommentProfiles(visible ? [comment.userId] : []).get(comment.userId);
   const name = profile?.displayName.trim() || comment.userDisplayName;
-  const avatar = profile?.avatar || comment.userAvatarUrl;
-  const safeAvatar = avatar?.startsWith("https://") ? avatar : undefined;
+  const rawAvatar = profile?.avatar || comment.userAvatarUrl;
+  // A data image can be 64 KiB, so check it only when the raw value changes.
+  const safeAvatar = useMemo(() => safeNostrProfilePictureUrl(rawAvatar) ?? undefined, [rawAvatar]);
   const [failedAvatar, setFailedAvatar] = useState<string>();
+  const npub = useMemo(() => commentAuthorNpub(comment.userId), [comment.userId]);
+  const avatar =
+    safeAvatar && failedAvatar !== safeAvatar ? (
+      <img
+        src={safeAvatar}
+        referrerPolicy="no-referrer"
+        onError={() => setFailedAvatar(safeAvatar)}
+        alt={name}
+        className="w-8 h-8 shrink-0 rounded-full"
+      />
+    ) : (
+      <div className="w-8 h-8 shrink-0 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">
+        {name.charAt(0).toUpperCase()}
+      </div>
+    );
+  const nameLabel = (
+    <span
+      className="block truncate text-sm font-medium text-slate-900 dark:text-white"
+      title={name}
+    >
+      {name}
+    </span>
+  );
   return (
     <div
       ref={row}
@@ -33,27 +62,38 @@ function CommentRow({ comment }: { comment: Comment }) {
     >
       {/* Header */}
       <div className="flex items-center gap-3 mb-2">
-        {safeAvatar && failedAvatar !== safeAvatar ? (
-          <img
-            src={safeAvatar}
-            referrerPolicy="no-referrer"
-            onError={() => setFailedAvatar(safeAvatar)}
-            alt={name}
-            className="w-8 h-8 shrink-0 rounded-full"
-          />
+        {npub ? (
+          // The name link is the accessible link. The avatar repeats it for pointer users.
+          <Link
+            to={`/user/${npub}`}
+            tabIndex={-1}
+            aria-hidden="true"
+            className="shrink-0 rounded-full transition-opacity hover:opacity-80"
+          >
+            {avatar}
+          </Link>
         ) : (
-          <div className="w-8 h-8 shrink-0 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">
-            {name.charAt(0).toUpperCase()}
-          </div>
+          avatar
         )}
         <div className="flex-1 min-w-0">
-          <span
-            className="block truncate text-sm font-medium text-slate-900 dark:text-white"
-            title={name}
-          >
-            {name}
-          </span>
-          <span className="text-xs text-slate-400 dark:text-slate-500 ml-2">
+          {npub ? (
+            <div className="flex min-w-0 items-center gap-1">
+              <Link to={`/user/${npub}`} className="min-w-0 hover:underline">
+                {nameLabel}
+              </Link>
+              {/* The negative margin keeps the name line height. */}
+              <CopyNpubButton
+                npub={npub}
+                label={t("comment.copyAuthorNpub", { name })}
+                copiedMessage={t("userProfile.npubCopied")}
+                failedMessage={t("userProfile.npubCopyFailed")}
+                className="-my-1.5 p-2 text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
+              />
+            </div>
+          ) : (
+            nameLabel
+          )}
+          <span className="text-xs text-slate-400 dark:text-slate-500">
             {formatTimeAgo(comment.timestamp)}
           </span>
         </div>

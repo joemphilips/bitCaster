@@ -65,6 +65,25 @@ bitcaster-cli market comments <condition-id> --minimum-event-order <event-order>
 bitcaster-cli market history <condition-id> --timeframe 7d
 ```
 
+コマンドの前にグローバルオプション `--dry-run` を付けると、実行せずに確認できます。
+
+```bash
+bitcaster-cli --dry-run market fund begin <condition-id> --amount-msat 8000 --max-wallet-debit-msat 8002
+```
+
+各コマンドの `--help` に、dry-run での動作を示します。
+対応するコマンドは `{"dryRun": true, "method": ..., "params": ...}` を表示します。
+`method` は予定する操作の名前です。`params` には、秘密の値を除いたリクエストが入ります。
+資金の移動や、注文、マーケット、鍵、設定の変更は行いません。
+読み取り専用のコマンドは通常どおり実行します。
+資金、注文、マーケット、鍵、設定は変更しません。
+dry-run はデーモンを起動しないため、`--dry-run` を使う前にデーモンを起動しておく必要があります。
+拒否するコマンドは、何も実行せずに終了コード 2 で終了します。
+`daemon init`、`daemon stop`、`daemon restart` は `--dry-run` を拒否します。
+`--dry-run` は `--` より前に、値を付けずに指定してください。
+それ以外の場合、CLI は終了コード 2 で終了します。
+dry-run が成功しても、操作の成功は保証されません。
+
 現在の対応状況は `bitcaster-cli --help` と各コマンドの `--help` で確認してください。
 CLI は、まだ Web アプリのすべての操作には対応していません。
 アプリケーションの全機能を同等に利用できる設計を目指しています。
@@ -99,6 +118,12 @@ bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file 
 
 seed recovery では `--recovery-phrase-file` または `--wallet-seed-hex-file` の
 どちらか一方を指定します。どちらの file も所有者以外に読ませないでください。
+マーケットのポジションも復元する場合は、`--all-conditions` を加えます。コマンドは
+公開カタログの各マーケットを mint で確認します。失敗したマーケットがあってもコマンドは
+止まりません。出力には、そのマーケットの復旧 ID と失敗した段階が表示され、`failed` は
+そのようなマーケットの数を示します。この場合、コマンドは 0 以外の終了ステータスで終了します。
+同じ復旧 ID でコマンドを再実行してください。
+インポートしたシードで `daemon init` を実行すると、このコマンドを表示します。
 
 プロファイルに設定されたミントを指定します。後の実行でも同じ復旧 ID を使ってください。
 この確認オプションは、シードから生成したプルーフ候補をミントに開示することへの同意です。
@@ -137,11 +162,13 @@ bitcaster-cli signer profile
 
 ```bash
 bitcaster-cli signer profile --name "Alice" --about "About Alice" --picture "https://example.com/alice.png"
+bitcaster-cli signer profile --display-name "Alice A."
 bitcaster-cli signer profile --about ""
 ```
 
 指定したフィールドだけを変更します。空文字列を指定すると、そのフィールドを空にします。
-別の `display_name` を含む、他のメタデータは変更しません。
+`--name` は正規の `name` を、`--display-name` は `display_name` を設定します。
+もう一方の名前フィールドを含む、他のメタデータは変更しません。
 プロフィールの編集時は、デーモンを停止する必要はありません。
 署名前に、選択したすべてのリレーからの取得を完了する必要があります。
 最新のプロフィールを解釈できない場合や取得が未完了の場合、編集を拒否します。

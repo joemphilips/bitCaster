@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
+  deriveDurableCustodyProofId,
   type DurableCustodyScope,
   type DurableCustodyRecord,
   type DurableCustodyArtifactReference,
@@ -216,6 +217,83 @@ function bindDaemonRangeSourceInputsInTransaction(
     (transaction) =>
       bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
   )
+}
+
+/**
+ * Release a refused range source or consolidation in canonical custody
+ * (ADR-037 mint refusal settlement). Abort the resultless operation, return
+ * its inputs to selection, and retire the inputs that a fresh NUT-07 reading
+ * reports SPENT. The caller releases the legacy mirror and ends the order
+ * journal in the same transaction.
+ */
+export function releaseRefusedDaemonRangeSourceInTransaction(
+  database: DatabaseSync,
+  input: {
+    readonly custodyOperationId: string
+    readonly spentInputs: readonly Pick<Proof, 'id' | 'secret'>[]
+    readonly fence: CustodyScopeFence
+    readonly nowMs: number
+  },
+): void {
+  const store = new DurableCustodySqliteStore(database)
+  const record = store.getOperation(input.custodyOperationId)
+  if (
+    record === null ||
+    record.scope.scopeId !== input.fence.scopeId ||
+    record.operation.result.state !== 'none' ||
+    (record.operation.state !== 'dispatch-intent' &&
+      record.operation.state !== 'transport-attempted')
+  ) {
+    throw new Error('refused range custody operation cannot be released')
+  }
+  const authorization = {
+    incarnationId: input.fence.incarnationId,
+    fencingEpoch: input.fence.fencingEpoch,
+    observedAtMs: input.nowMs,
+  }
+  const operationId = record.operation.operationId
+  const transaction = new DurableCustodyTransactionSqlite(
+    database,
+    input.fence.scopeId,
+    input.nowMs,
+    [record],
+  )
+  applyDurableCustodyTransaction(
+    transaction,
+    {
+      scope: record.scope,
+      owner: authorization,
+      operationRows: [{ operationId, expectedRevision: record.revision }],
+    },
+    (selected) =>
+      selected.transitionOperation({
+        operationId,
+        expectedRevision: record.revision,
+        transition: {
+          kind: 'release-unspent-reservation',
+          authorization,
+          expectedRevision: record.revision,
+        },
+      }),
+  )
+  transaction.rebuildActiveWorkIndex({
+    scopeId: input.fence.scopeId,
+    operationRows: [{ operationId, expectedRevision: record.revision + 1 }],
+  })
+  store.retireReleasedMintSpentInputs({
+    scopeId: input.fence.scopeId,
+    operationId,
+    proofIds: input.spentInputs.map(({ id, secret }) =>
+      deriveDurableCustodyProofId({
+        scopeId: input.fence.scopeId,
+        normalizedMint: record.operation.custodyContext.normalizedMint,
+        unit: 'msat',
+        keysetId: requireText(id, 'refused range input keyset'),
+        secret,
+      }),
+    ),
+    nowMs: input.nowMs,
+  })
 }
 
 export interface CommittedDaemonCtfRangeSource {

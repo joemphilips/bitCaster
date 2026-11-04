@@ -89,18 +89,10 @@ export function computeLimitOrderPreview(params: {
   limitPrice: number;
   feePercent: number;
   mintInputFeePpk: number;
-  engineScoreFeeSats?: number | null;
   baseAsset?: string | null;
   divisibility?: number | null;
 }): LimitOrderPreview {
-  const {
-    displayShares,
-    limitPrice,
-    feePercent,
-    mintInputFeePpk,
-    engineScoreFeeSats = null,
-    baseAsset = "sat",
-  } = params;
+  const { displayShares, limitPrice, feePercent, mintInputFeePpk, baseAsset = "sat" } = params;
   const cost = computeTradeCost({
     displayShares,
     price: limitPrice,
@@ -116,7 +108,6 @@ export function computeLimitOrderPreview(params: {
     quoteSubunits: cost.quoteSubunits,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
-    engineScoreFeeSats,
     potentialPayout: displaySharesToFaceSubunits(displayShares, baseAsset, params.divisibility),
     totalCost: cost.totalCost,
   };

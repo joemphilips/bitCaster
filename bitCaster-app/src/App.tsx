@@ -31,7 +31,10 @@ import {
 } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
-import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
+import {
+  recoverBrowserDurableBolt11MintQuotesInPass,
+  watchPendingBrowserDurableBolt11MintQuotes,
+} from "@/lib/browserDurableBolt11MintQuote";
 import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
 import { startNip17Listener, stopNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
@@ -54,6 +57,8 @@ import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
+import { useNostrLogout, useOpenNostrSettings } from "@/hooks/useNostrLogout";
+import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -81,9 +86,12 @@ function WizardRoutes() {
 
 export function ShellRoutes({
   canReadOrderStatus,
+  nostrIdentityRestored,
   walletBackupRecovery,
 }: {
   canReadOrderStatus: boolean;
+  /** The startup restore of the stored Nostr identity has completed. */
+  nostrIdentityRestored: boolean;
   walletBackupRecovery?: EncryptedWalletBackupDriverState;
 }) {
   const navigate = useNavigate();
@@ -91,6 +99,17 @@ export function ShellRoutes({
   const { t } = useTranslation();
   const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
+  // Follow the signer, as Settings does. A stored identity that did not reconnect,
+  // such as a missing extension after a reload, offers log in. Until the startup
+  // restore completes, a stored identity counts as connecting.
+  const isLoggedIn = useSettingsStore(
+    (s) =>
+      s.signerConnectionStatus === "connected" ||
+      s.signerConnectionStatus === "connecting" ||
+      (!nostrIdentityRestored && s.nostrSignerMode !== "none"),
+  );
+  const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
+  const openNostrSettings = useOpenNostrSettings();
   const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
   const navigationItems = [
@@ -116,8 +135,11 @@ export function ShellRoutes({
     <AppShell
       navigationItems={navigationItems}
       user={user}
+      isLoggedIn={isLoggedIn}
       searchQuery={searchQuery}
       onNavigate={(href) => navigate(href)}
+      onLogin={openNostrSettings}
+      onLogout={requestLogout}
       onSearchChange={(query) => {
         navigate(
           {
@@ -142,6 +164,7 @@ export function ShellRoutes({
         <Route path="/mint-details" element={<MintDetailPage />} />
         <Route path="/user/:pubkey" element={<UserPage />} />
       </Routes>
+      {logoutConfirmation && <NostrLogoutConfirmModal {...logoutConfirmation} />}
     </AppShell>
   );
 }
@@ -201,6 +224,8 @@ function AppRoutes() {
 
   // BOLT11 quote recovery is independent from CTF range recovery. One pass
   // checks each pending quote at most once. An online event starts a new pass.
+  // The app also watches each unexpired pending quote, so a deposit completes
+  // after its sheet closes.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -236,9 +261,11 @@ function AppRoutes() {
     const onOnline = () => void runPass();
     window.addEventListener("online", onOnline);
     void runPass();
+    const stopWatchingQuotes = watchPendingBrowserDurableBolt11MintQuotes();
     return () => {
       cancelled = true;
       window.removeEventListener("online", onOnline);
+      stopWatchingQuotes();
     };
   }, [nostrSignerReady, walletMnemonic]);
 
@@ -390,6 +417,7 @@ function AppRoutes() {
       ) : (
         <ShellRoutes
           canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"}
+          nostrIdentityRestored={nostrSignerReady}
           walletBackupRecovery={walletBackupRecovery}
         />
       )}

@@ -1,15 +1,6 @@
-import {
-  Heart,
-  Share2,
-  Clock,
-  CheckCircle2,
-  TrendingUp,
-  Droplet,
-  Landmark,
-  Copy,
-} from "lucide-react";
+import { Heart, Share2, Clock, CheckCircle2, TrendingUp, Droplet, Landmark } from "lucide-react";
 import { nip19 } from "nostr-tools";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
@@ -17,9 +8,10 @@ import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
   parseNostrPublicKey,
-  safeNostrImageUrl,
+  safeNostrProfilePictureUrl,
   sanitizeNostrDisplayText,
 } from "@bitcaster/client-sdk/nostrProfilePage";
+import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { MetricExplanation } from "@/components/shared/MetricExplanation";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
@@ -27,7 +19,6 @@ import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useWalletStore } from "@/stores/wallet";
-import { useToastStore } from "@/stores/toast";
 
 interface MarketHeaderProps {
   market: MarketDetail;
@@ -117,9 +108,16 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
   const creatorHex = parseNostrPublicKey(market.creator.id);
-  // A kind-0 picture names a host that the oracle chose. Load only https without a referrer.
-  const oracleAvatar =
-    safeNostrImageUrl(oracleProfile?.avatar) ?? safeNostrImageUrl(market.creator.avatarUrl);
+  // A kind-0 picture names a host that the oracle chose. Load only https without a
+  // referrer, or an embedded data image. A data image can be 64 KiB, so check it
+  // only when the raw value changes.
+  const rawOracleAvatar = oracleProfile?.avatar;
+  const rawCreatorAvatar = market.creator.avatarUrl;
+  const oracleAvatar = useMemo(
+    () =>
+      safeNostrProfilePictureUrl(rawOracleAvatar) ?? safeNostrProfilePictureUrl(rawCreatorAvatar),
+    [rawOracleAvatar, rawCreatorAvatar],
+  );
   // An empty sanitized name has no visible character, so the label falls back to the key.
   const oracleName = sanitizeNostrDisplayText(
     oracleProfile?.displayName,
@@ -298,29 +296,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
               <div className="flex min-w-0 flex-1 items-center gap-3">{oracleIdentity}</div>
             )}
             {creatorNpub && (
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-                    await navigator.clipboard.writeText(creatorNpub);
-                    useToastStore.getState().addToast({
-                      type: "success",
-                      message: t("market.oraclePubkeyCopied"),
-                    });
-                  } catch {
-                    useToastStore.getState().addToast({
-                      type: "error",
-                      message: t("market.oraclePubkeyCopyFailed"),
-                    });
-                  }
-                }}
-                className={`shrink-0 rounded-full p-2 transition-colors ${market.imageUrl ? "text-slate-300 hover:bg-white/15 hover:text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"}`}
-                aria-label={t("market.copyOraclePubkey")}
-                title={t("market.copyOraclePubkey")}
-              >
-                <Copy className="w-4 h-4" />
-              </button>
+              <CopyNpubButton
+                npub={creatorNpub}
+                label={t("market.copyOraclePubkey")}
+                copiedMessage={t("market.oraclePubkeyCopied")}
+                failedMessage={t("market.oraclePubkeyCopyFailed")}
+                className={`p-2 ${market.imageUrl ? "text-slate-300 hover:bg-white/15 hover:text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"}`}
+              />
             )}
           </div>
 

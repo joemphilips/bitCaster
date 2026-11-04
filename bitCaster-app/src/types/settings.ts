@@ -1,5 +1,5 @@
 import type { BrowserProfileEditView, BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
-import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 
 // =============================================================================
 // Settings Category
@@ -112,6 +112,9 @@ export interface SettingsProps {
   walletBackupState?: SecretBackupState;
   localNsecSecret?: string | null;
 
+  /** Opens the private-key entry at once, also while an extension is connected. */
+  nsecEntryRequested?: boolean;
+
   /** Called when user toggles a category group */
   onCategoryToggle?: (category: SettingsCategory) => void;
 
@@ -144,7 +147,7 @@ export interface SettingsProps {
   onRetryNostrProfile?: () => Promise<void>;
   onLoadNostrProfileEdit?: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
   onSaveNostrProfileEdit?: (
-    patch: NostrProfilePatch,
+    patch: NostrProfileEditorPatch,
     signal: AbortSignal,
   ) => Promise<BrowserProfileSaveResult>;
   onAddRelay?: (url: string) => void;

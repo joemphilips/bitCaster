@@ -6,12 +6,14 @@ import {
   BrowserCtfRangeScoreTopUpCancelledError,
   BrowserCtfRangeScoreTopUpRequiredError,
   previewBrowserCtfRangeOrderFees,
+  previewBrowserCtfRangeOrderScore,
   recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
   type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
 import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import { BrowserCtfRangeRecoverySchedule } from "../browserCtfRangeRecoverySchedule";
 import {
   listenForBrowserCtfRangeRecoveryWake,
   publishBrowserCtfRangeRecoveryWake,
@@ -50,9 +52,18 @@ const mocks = vi.hoisted(() => ({
   recoverFundedAsset: vi.fn(),
   readPreparation: vi.fn(),
   recordMessage: vi.fn(),
+  raiseMessage: vi.fn(),
   resolveMessages: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
+  previewWorkFacts: vi.fn(),
+  readPayableScore: vi.fn(),
   counterReady: vi.fn(),
+  advanceCounterPastMint: vi.fn(),
+  advanceCounterPastSignedOutputs: vi.fn(),
+  requestResync: vi.fn(),
+  probePreparation: vi.fn(),
+  probeMint: { kind: "test-probe-mint" },
+  probeCache: { kind: "test-probe-cache" },
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
@@ -74,6 +85,8 @@ vi.mock("@bitcaster/client-sdk/ctfRangeOrderProtocol", async (importOriginal) =>
     ...actual,
     decodeCtfRangeOrderPreparationFromRecord: (record: unknown) => record,
     reconstructCtfRangePreparation: () => ({}),
+    // The SDK tests own the shape model. These tests own its use.
+    previewCtfRangeSettlementCapabilityWorkFacts: mocks.previewWorkFacts,
   };
 });
 
@@ -106,12 +119,19 @@ vi.mock("@/stores/browser-wallet-counter-db", () => ({
 }));
 
 vi.mock("@/stores/ctf-range-order-messages", () => ({
+  raiseBrowserCtfRangeAttentionMessage: mocks.raiseMessage,
   recordBrowserCtfRangeMessage: mocks.recordMessage,
   resolveTerminalBrowserCtfRangeMessages: mocks.resolveMessages,
 }));
 
 vi.mock("@/stores/wallet", () => ({
   getWalletForMnemonicUnit: mocks.getWalletForMnemonicUnit,
+  useWalletStore: {
+    getState: () => ({
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    }),
+  },
 }));
 
 vi.mock("../markets", () => ({
@@ -122,10 +142,24 @@ vi.mock("../participationScorePayment", () => ({
   ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
-vi.mock("../cashu", () => ({ ensureWalletKeysetCounterReady: mocks.counterReady }));
+vi.mock("../browserParticipationScoreDelivery", () => ({
+  readBrowserParticipationScorePayableScore: mocks.readPayableScore,
+}));
+
+vi.mock("../cashu", () => ({
+  ensureWalletKeysetCounterReady: mocks.counterReady,
+  advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
+  advanceWalletKeysetCounterPastSignedOutputs: mocks.advanceCounterPastSignedOutputs,
+  WalletKeysetCounterPendingError: class extends Error {},
+}));
+
+vi.mock("@/stores/seed-restore-db", () => ({
+  requestBrowserKeysetResync: mocks.requestResync,
+}));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   buildBrowserCtfRangeOrderPreparation: mocks.buildPreparation,
+  browserCtfRangeOrderErrorMessage: (code: string) => `message for ${code}`,
   BrowserCtfRangeOrderError: class extends Error {
     constructor(
       readonly code: string,
@@ -145,6 +179,12 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
     recoverPage = mocks.recoverPage;
     recoverClientOrder = mocks.recoverClientOrder;
   },
+}));
+
+vi.mock("../browserCtfRangeCounterProbe", () => ({
+  createBuyReceiveProbeCache: () => mocks.probeCache,
+  probeBuyReceiveRange: mocks.probePreparation,
+  browserSeedCounterRestoreClient: () => mocks.probeMint,
 }));
 
 vi.mock("../browserFundedAssetRecovery", () => ({
@@ -196,7 +236,12 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverClientOrder.mockReset();
     mocks.readPreparation.mockResolvedValue(null);
     mocks.readPreparation.mockClear();
+    mocks.advanceCounterPastMint.mockResolvedValue(undefined);
+    mocks.advanceCounterPastSignedOutputs.mockResolvedValue(undefined);
+    mocks.requestResync.mockResolvedValue(undefined);
+    mocks.probePreparation.mockResolvedValue(undefined);
     mocks.recordMessage.mockResolvedValue(undefined);
+    mocks.raiseMessage.mockResolvedValue(undefined);
     mocks.resolveMessages.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
     mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
@@ -250,6 +295,8 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverPage.mockResolvedValue({
       recoveredOperationIds: [],
       pending: [],
+      attention: [],
+      refused: [],
       nextCursor: null,
     });
     const recovery = vi.fn(() =>
@@ -1068,6 +1115,18 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it("says that wallet funds are pending at the mint when they block the order", async () => {
+    const { WalletKeysetCounterPendingError } = await import("../cashu");
+    mocks.counterReady.mockRejectedValue(new WalletKeysetCounterPendingError());
+
+    await expect(submitRangeOrder("client-pending-keyset")).rejects.toMatchObject({
+      code: "source-preparation-failed",
+      message:
+        "Some funds of this wallet are still pending at the mint. No order was submitted. Try again later.",
+    });
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+  });
+
   it("previews the exact proof consolidation fee for the trade pane", async () => {
     mocks.candidates = fragmentedRegularCandidatesWithRoundInputs();
     mocks.planConsolidation.mockReturnValueOnce({
@@ -1388,11 +1447,15 @@ describe("submitBrowserCtfRangeOrder", () => {
       .mockResolvedValueOnce({
         recoveredOperationIds: ["range-1"],
         pending: [{ operationId: "range-2", revision: 2, code: "recovery-pending" }],
+        attention: [],
+        refused: [],
         nextCursor: { createdAtMs: 10, rangeOperationId: "range-2" },
       })
       .mockResolvedValueOnce({
         recoveredOperationIds: ["range-3"],
         pending: [],
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
 
@@ -1437,11 +1500,15 @@ describe("submitBrowserCtfRangeOrder", () => {
       mocks.recoverPage.mockResolvedValue({
         recoveredOperationIds: ["range-1"],
         pending: [],
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
       mocks.recoverClientOrder.mockResolvedValue({
         recoveredOperationIds: ["range-1"],
         pending: [],
+        attention: [],
+        refused: [],
       });
       mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>
         scopeId === mocks.scopeId && operationId === "range-1"
@@ -1493,9 +1560,16 @@ describe("submitBrowserCtfRangeOrder", () => {
       mocks.recoverPage.mockResolvedValue({
         recoveredOperationIds: [],
         pending,
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
-      mocks.recoverClientOrder.mockResolvedValue({ recoveredOperationIds: [], pending });
+      mocks.recoverClientOrder.mockResolvedValue({
+        recoveredOperationIds: [],
+        pending,
+        attention: [],
+        refused: [],
+      });
       const wallet = {
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -1517,10 +1591,281 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it.each([11001, 11008])(
+    "asks for a re-sync of the refused order's mint after a recovery refusal %s",
+    async (code) => {
+      mocks.recoverPage.mockResolvedValue({
+        recoveredOperationIds: ["range-refused"],
+        pending: [],
+        attention: [],
+        refused: [
+          {
+            operationId: "range-refused",
+            revision: 1,
+            mintUrl: "https://mint.example",
+            mintError: { code, detail: "refused" },
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal", revision: 1 });
+
+      await recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      });
+
+      // Without the mint, a browser with no re-sync row yet would drop the evidence.
+      expect(mocks.requestResync).toHaveBeenCalledWith({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+      });
+    },
+  );
+
+  it("records each kind of recovery result with its stored mint code", async () => {
+    const mintError = { code: 11008, detail: "Duplicate outputs" };
+    mocks.recoverPage.mockResolvedValue({
+      recoveredOperationIds: ["range-refused"],
+      pending: [
+        {
+          operationId: "range-pending",
+          revision: 4,
+          code: "mint-source-uncertain",
+          mintError: { code: 11001, detail: "Token already spent" },
+        },
+        { operationId: "range-waiting", revision: 1, code: "awaiting-mint-retry" },
+      ],
+      attention: [
+        {
+          operationId: "range-halted",
+          revision: 2,
+          mintError: { code: 11002, detail: "Token pending" },
+        },
+      ],
+      refused: [
+        { operationId: "range-refused", revision: 1, mintUrl: "https://mint.example", mintError },
+      ],
+      nextCursor: null,
+    });
+    mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>
+      operationId === "range-refused"
+        ? { scopeId, rangeOperationId: operationId, lifecycleState: "terminal", revision: 1 }
+        : null,
+    );
+
+    await recoverBrowserCtfRangeOrders({
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      mintUrls: ["https://mint.example"],
+    });
+
+    const recorded = mocks.recordMessage.mock.calls.map(([message]) => message);
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        operationId: "range-pending",
+        revision: 4,
+        code: "mint-source-uncertain",
+        kind: "funds",
+        mintError: { code: 11001, detail: "Token already spent" },
+      }),
+      // The released order is a definitive outcome, with no funds recovery left.
+      expect.objectContaining({
+        operationId: "range-refused",
+        revision: 1,
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError,
+        fundsReleased: true,
+      }),
+    ]);
+    // A halted operation raises its alert again on every pass, even after Dismiss.
+    expect(mocks.raiseMessage.mock.calls.map(([message]) => message)).toEqual([
+      expect.objectContaining({
+        operationId: "range-halted",
+        revision: 2,
+        code: "recovery-pending",
+        kind: "funds",
+        mintError: { code: 11002, detail: "Token pending" },
+        retryable: true,
+      }),
+    ]);
+    expect(mocks.resolveMessages).toHaveBeenCalledWith({
+      scopeId: mocks.scopeId,
+      operationId: "range-refused",
+      resolvedAtMs: expect.any(Number),
+    });
+  });
+
+  it("stores the mint code of a refused submission with its order alert", async () => {
+    const ended = new BrowserCtfRangeOrderError(
+      "order-attempt-ended",
+      "The mint refused this order. No order was submitted. The reserved funds are available again.",
+    );
+    Object.assign(ended, {
+      mintError: { code: 11008, detail: "Duplicate outputs" },
+      released: true,
+    });
+    mocks.readPreparation.mockResolvedValue({ revision: 1, lifecycleState: "terminal" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(ended);
+
+    await expect(submitRangeOrder("client-refused-source")).rejects.toBe(ended);
+
+    expect(mocks.recordMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revision: 1,
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError: { code: 11008, detail: "Duplicate outputs" },
+        fundsReleased: true,
+      }),
+    );
+  });
+
+  it("probes a buy receive range during the preview and again before it reserves counters", async () => {
+    await previewBrowserCtfRangeOrderFees({
+      market: market(),
+      ticket: {
+        marketId: "condition-1-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    }).catch(() => undefined);
+    expect(mocks.probePreparation).toHaveBeenCalledTimes(1);
+
+    await submitRangeOrder("client-probed-preparation");
+
+    // The submit call reuses the preview probe through the shared cache unless the cursor moved.
+    expect(mocks.probePreparation).toHaveBeenCalledTimes(2);
+    for (const [input] of mocks.probePreparation.mock.calls) {
+      expect(input).toMatchObject({
+        scopeId: mocks.scopeId,
+        cache: mocks.probeCache,
+        mint: mocks.probeMint,
+        preparation: expect.objectContaining({ operationId: "range-operation" }),
+      });
+    }
+    expect(mocks.probePreparation.mock.invocationCallOrder[1]!).toBeLessThan(
+      mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
+    );
+    const receiveKeyset = preparationFor(sellRequest()).receiveKeyset;
+    await mocks.probePreparation.mock.calls[1]![0].advancePastSignedOutputs(receiveKeyset, 7, 12);
+    // The probed range starts the deferral, so a later pass admits its outputs.
+    expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeId: mocks.scopeId,
+        unit: "msat",
+        keyset: receiveKeyset,
+        fromCounter: 7,
+        nextCounter: 12,
+      }),
+    );
+  });
+
+  it.each([11001, 11003, 11008])(
+    "asks for a re-sync of keysets in use after the mint refuses with %s",
+    async (code) => {
+      const refused = Object.assign(
+        new BrowserCtfRangeOrderError("order-attempt-ended", "The mint refused this order."),
+        { mintError: { code, detail: "refused" }, released: true },
+      );
+      mocks.prepareAndSubmit.mockRejectedValueOnce(refused);
+
+      await expect(submitRangeOrder(`client-refused-${code}`)).rejects.toBe(refused);
+
+      // Another client used the seed, so the re-sync must not wait a day.
+      expect(mocks.requestResync).toHaveBeenCalledWith({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+      });
+    },
+  );
+
+  it("does not ask for a re-sync after another mint refusal", async () => {
+    const refused = Object.assign(
+      new BrowserCtfRangeOrderError("order-attempt-ended", "The mint refused this order."),
+      { mintError: { code: 12002, detail: "Keyset is inactive" }, released: true },
+    );
+    mocks.prepareAndSubmit.mockRejectedValueOnce(refused);
+
+    await expect(submitRangeOrder("client-refused-inactive")).rejects.toBe(refused);
+
+    expect(mocks.requestResync).not.toHaveBeenCalled();
+  });
+
+  it("records no alert when an earlier sell of the market blocks a second sell", async () => {
+    const blocked = new BrowserCtfRangeOrderError(
+      "source-preparation-pending",
+      "An earlier sell in this market is still preparing its funds. Wait until it finishes.",
+    );
+    mocks.readPreparation.mockResolvedValue({ revision: 1, lifecycleState: "terminal" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(blocked);
+
+    await expect(submitRangeOrder("client-second-sell")).rejects.toBe(blocked);
+
+    // The refusal locked nothing. Its terminal journal needs no durable alert.
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it("advances every output keyset past the mint for the coordinator", async () => {
+    await submitRangeOrder("client-counter-wiring");
+    const input = mocks.coordinatorInput as {
+      recoverOutputCounters: (input: {
+        mintUrl: string;
+        keysets: readonly unknown[];
+        fromCounters: Readonly<Record<string, number>>;
+      }) => Promise<void>;
+      recoverySchedule: unknown;
+    };
+    const preparation = preparationFor(sellRequest());
+
+    // Only the offered keyset had a seed-derived output plan.
+    await input.recoverOutputCounters({
+      mintUrl: "https://mint.example",
+      keysets: [preparation.offerKeyset, preparation.receiveKeyset],
+      fromCounters: { [preparation.offerKeyset.id]: 3 },
+    });
+
+    expect(mocks.advanceCounterPastMint.mock.calls).toEqual([
+      [
+        {
+          scopeId: mocks.scopeId,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          keyset: preparation.offerKeyset,
+          conditionalAsset: { conditionId: "11".repeat(32), outcomeCollection: "YES" },
+          plannedFromCounter: 3,
+        },
+      ],
+      [
+        {
+          scopeId: mocks.scopeId,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          keyset: preparation.receiveKeyset,
+        },
+      ],
+    ]);
+    expect(input.recoverySchedule).toBeInstanceOf(BrowserCtfRangeRecoverySchedule);
+  });
+
   it("recovers only the active preparation for one engine order", async () => {
     mocks.recoverClientOrder.mockResolvedValue({
       recoveredOperationIds: ["range-target"],
       pending: [{ operationId: "range-target", revision: 2, code: "recovery-pending" }],
+      attention: [],
+      refused: [],
     });
 
     await expect(
@@ -1546,6 +1891,87 @@ describe("submitBrowserCtfRangeOrder", () => {
         code: "recovery-pending",
       }),
     );
+  });
+});
+
+describe("previewBrowserCtfRangeOrderScore", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.buildPreparation.mockImplementation(({ request }) => preparationFor(request));
+    mocks.engine.getSettlementCapabilityAdmissionPolicy.mockResolvedValue({
+      coordinatorPubkey: "11".repeat(32),
+    });
+    mocks.loadMintMetadata.mockResolvedValue({ maxOutputs: 256, observation: {} });
+    // v1 = 1 + 7 + ceil(12/16) + ceil(12000/4096) = 12, so v2 = ceil(12/10) = 2.
+    mocks.previewWorkFacts.mockReturnValue({
+      inputCount: 7,
+      manifestCount: 12,
+      artifactByteCount: 12_000,
+    });
+    mocks.readPayableScore.mockResolvedValue(1_000);
+  });
+
+  it("charges the v2 tariff and sets the Buy authorization aside from the spare Score", async () => {
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score"),
+      ticket: {
+        marketId: "condition-score-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    });
+
+    // The one-share Buy authorizes 401 msat, so 1 whole Score stays with the order.
+    expect(preview).toEqual({ requiredScore: 2, availableScore: 999 });
+    expect(mocks.previewWorkFacts).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 2, side: "Buy", amountSubunits: 1_000 }),
+    );
+    expect(mocks.readPayableScore).toHaveBeenCalledWith("https://mint.example");
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.counterReady).not.toHaveBeenCalled();
+  });
+
+  it("keeps all ordinary sats spare for a Sell, which offers shares", async () => {
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score-sell"),
+      ticket: sellTicket("condition-score-sell"),
+      mintUrl: "https://mint.example",
+    });
+
+    expect(preview).toEqual({ requiredScore: 2, availableScore: 1_000 });
+  });
+
+  it("never reports a negative spare Score", async () => {
+    mocks.readPayableScore.mockResolvedValue(0);
+
+    const preview = await previewBrowserCtfRangeOrderScore({
+      market: market("condition-score-empty"),
+      ticket: {
+        marketId: "condition-score-empty-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    });
+
+    expect(preview.availableScore).toBe(0);
   });
 });
 

@@ -343,12 +343,14 @@ describe("MarketHeader", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
-  it("loads only an https oracle picture on a public host and sends no referrer", async () => {
+  it("loads only an https oracle picture on a public host or a data image and sends no referrer", async () => {
     for (const avatar of [
       "javascript:alert(1)",
       "http://img.example/oracle.png",
       "https://127.0x1/oracle.png",
       "https://printer.local/oracle.png",
+      "data:text/html;base64,PHNjcmlwdD4=",
+      "data:image/svg+xml,<svg onload=alert(1)>",
     ]) {
       vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
         pubkey: creatorPubkey,
@@ -371,6 +373,18 @@ describe("MarketHeader", () => {
     const safe = renderHeader(makeMarket());
     await waitFor(() =>
       expect(safe.container.querySelector("img")).toHaveAttribute("referrerpolicy", "no-referrer"),
+    );
+    safe.unmount();
+
+    const picture = "data:image/png;base64,AAAA";
+    vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
+      pubkey: creatorPubkey,
+      displayName: "Alice Oracle",
+      avatar: picture,
+    });
+    const embedded = renderHeader(makeMarket());
+    await waitFor(() =>
+      expect(embedded.container.querySelector("img")).toHaveAttribute("src", picture),
     );
   });
 

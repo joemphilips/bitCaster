@@ -76,7 +76,7 @@ describe("Settings connection consent", () => {
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     expect(connect).toHaveBeenCalledWith("nip07");
     expect(screen.getByRole("status")).toHaveTextContent("Connecting to Nostr");
-    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(disconnect).toHaveBeenCalledOnce();
     await act(async () => settle(false));
@@ -103,7 +103,7 @@ describe("Settings connection consent", () => {
     );
     expect(screen.getByRole("status")).toHaveTextContent("Connecting to Nostr");
     expect(screen.queryByText("Cached Alice")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
   });
 
   it("clears an open private-key form when an extension connection commits", () => {
@@ -150,6 +150,54 @@ describe("Settings connection consent", () => {
       />,
     );
     expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
+  });
+
+  it("opens the requested local-key entry while an extension is connected and submits it", async () => {
+    const submit = vi.fn().mockResolvedValue(true);
+    const nsec = nip19.nsecEncode(generateSecretKey());
+    render(
+      <Settings
+        activeCategory="nostr"
+        nsecEntryRequested
+        onNsecSubmit={submit}
+        settings={settingsState({ signerMode: "nip07", connectionStatus: "connected" })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Log out" })).toBeVisible();
+    expect(screen.getByText("Private Key (nsec or ncryptsec)")).toBeVisible();
+    fireEvent.change(screen.getByPlaceholderText(i18n.t("settings.nsecPlaceholder")), {
+      target: { value: nsec },
+    });
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("common.connect") }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(nsec, undefined));
+    await waitFor(() =>
+      expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument(),
+    );
+  });
+});
+
+describe("Settings logout", () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([
+    ["en", "Log out", "Disconnect"],
+    ["ja", "ログアウト", "切断"],
+  ])("uses the app bar name for the logout in %s", async (language, name, oldName) => {
+    await i18n.changeLanguage(language);
+    const logout = vi.fn();
+    render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({ signerMode: "nip07" })}
+        onDisconnectNostr={logout}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: oldName })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name }));
+    expect(logout).toHaveBeenCalledOnce();
   });
 });
 

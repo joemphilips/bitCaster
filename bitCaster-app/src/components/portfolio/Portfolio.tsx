@@ -11,6 +11,7 @@ import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
+import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -124,6 +125,8 @@ function LoadMoreAssets({
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
   const [mainTab, setMainTab] = useState<MainTab>("positions");
+  // While a seed restore runs or failed, the position totals are not known.
+  const positionsRestoring = useSeedPositionRestoreStatus().kind !== "idle";
   const positionsRequestKey = props.positionsRequest?.key;
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");
@@ -193,7 +196,7 @@ export function Portfolio(props: PortfolioProps) {
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
-            totalValueKnown={props.stats.totalValueKnown}
+            totalValueKnown={positionsRestoring ? false : props.stats.totalValueKnown}
             totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
@@ -201,7 +204,7 @@ export function Portfolio(props: PortfolioProps) {
       </div>
 
       {/* Stats Row */}
-      <StatsRow stats={props.stats} />
+      <StatsRow stats={props.stats} positionsRestoring={positionsRestoring} />
 
       {/* Deposit / Withdraw Buttons */}
       <div className="grid grid-cols-2 gap-3">

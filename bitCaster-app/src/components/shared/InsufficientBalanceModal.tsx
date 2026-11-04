@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { NativeDialog } from "./NativeDialog";
@@ -8,6 +9,8 @@ interface InsufficientBalanceModalProps {
   /** What the pending trade will cost in base-asset subunits, all-in. */
   required: number;
   title?: string;
+  /** A help control shown beside the title, outside the heading's accessible name. */
+  titleHelp?: ReactNode;
   requiredDescription?: string;
   formatAmount?: (amount: number) => string;
   onCancel: () => void;
@@ -16,6 +19,10 @@ interface InsufficientBalanceModalProps {
   recoveryUnavailable?: boolean;
   /** Retries the recovery check without starting it automatically. */
   onRetry?: () => void;
+}
+
+function markInitialFocus(element: HTMLButtonElement | null): void {
+  element?.setAttribute("autofocus", "");
 }
 
 /**
@@ -28,6 +35,7 @@ export function InsufficientBalanceModal({
   balance,
   required,
   title,
+  titleHelp,
   requiredDescription,
   formatAmount,
   onCancel,
@@ -55,9 +63,12 @@ export function InsufficientBalanceModal({
               <Zap className="w-8 h-8 text-[#f7931a]" />
             </div>
 
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-              {title ?? t("insufficientBalance.title")}
-            </h2>
+            <div className="mb-2 flex items-center justify-center gap-2">
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+                {title ?? t("insufficientBalance.title")}
+              </h2>
+              {titleHelp}
+            </div>
 
             <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
               {requiredDescription ?? t("insufficientBalance.tradeNeeds")}{" "}
@@ -102,6 +113,10 @@ export function InsufficientBalanceModal({
               <button
                 type="button"
                 data-testid="insufficient-balance-cancel"
+                // The dialog's initial focus. Without it, showModal() focuses
+                // the first control, which can be the title help. React's
+                // autoFocus prop does not set the attribute that showModal reads.
+                ref={markInitialFocus}
                 onClick={dismiss}
                 className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
               >

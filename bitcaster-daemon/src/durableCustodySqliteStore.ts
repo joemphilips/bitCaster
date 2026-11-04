@@ -756,6 +756,55 @@ export class DurableCustodySqliteStore {
     return decodeProofSqlRow(this.#database.prepare(CUSTODY_PROOF_SELECT_SQL).get(scopeId, proofId))
   }
 
+  /**
+   * Retire inputs of a released operation that the mint reports SPENT. The
+   * operation is aborted without a result, and the same transaction released
+   * its reservation. The caller holds exact NUT-07 SPENT evidence.
+   */
+  retireReleasedMintSpentInputs(input: {
+    readonly scopeId: string
+    readonly operationId: string
+    readonly proofIds: readonly string[]
+    readonly nowMs: number
+  }): void {
+    if (input.proofIds.length === 0) return
+    const record = this.getOperation(input.operationId)
+    if (
+      record === null ||
+      record.scope.scopeId !== input.scopeId ||
+      record.operation.state !== 'aborted' ||
+      record.operation.result.state !== 'none'
+    ) {
+      throw new Error('custody released operation lifecycle is invalid')
+    }
+    const predecessors = new Set(record.operation.reservation.inputs.map(({ proofId }) => proofId))
+    if (
+      new Set(input.proofIds).size !== input.proofIds.length ||
+      input.proofIds.some((proofId) => !predecessors.has(proofId))
+    ) {
+      throw new Error('custody released input authority is foreign')
+    }
+    const retire = this.#database.prepare(
+      `UPDATE custody_proofs SET
+         nut07_state = 'SPENT', selectability = 'spent',
+         revision = revision + 1, updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND proof_id = ?
+         AND nut07_state = 'UNSPENT' AND selectability = 'selectable'
+         AND reservation_operation_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM custody_proof_reservations AS reservations
+           WHERE reservations.scope_id = custody_proofs.scope_id
+             AND reservations.proof_id = custody_proofs.proof_id
+         )`,
+    )
+    for (const proofId of input.proofIds) {
+      this.assertProofNotRetired(input.scopeId, proofId)
+      if (retire.run(input.nowMs, input.scopeId, proofId).changes !== 1) {
+        throw new Error('custody released input retirement CAS lost')
+      }
+    }
+  }
+
   assertProofNotRetired(scopeId: string, proofId: string): void {
     if (
       this.#database

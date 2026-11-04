@@ -3,19 +3,20 @@ import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { DeferredSettings } from "@/components/settings/DeferredSettings";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
+import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
+import { useNostrLogout } from "@/hooks/useNostrLogout";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useToastStore } from "@/stores/toast";
 import { detectMintCapabilities, getMintIconUrl } from "@/lib/mints";
 import { requestNotificationPermission } from "@/lib/webNotifications";
 import {
-  disconnectNostrIdentity,
   refreshNostrProfile,
   userConnectNostrSignerMode,
   userConnectNsecIdentity,
   resolveCreatorPubkey,
 } from "@/lib/identityOps";
-import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
 import {
@@ -36,7 +37,7 @@ async function loadBrowserNostrProfileEdit(signal: AbortSignal) {
   const adapter = await import("@/lib/browserNostrProfile");
   return adapter.loadBrowserNostrProfileEdit(signal);
 }
-async function saveBrowserNostrProfileEdit(patch: NostrProfilePatch, signal: AbortSignal) {
+async function saveBrowserNostrProfileEdit(patch: NostrProfileEditorPatch, signal: AbortSignal) {
   const adapter = await import("@/lib/browserNostrProfile");
   return adapter.saveBrowserNostrProfileEdit(patch, signal);
 }
@@ -173,9 +174,12 @@ export function SettingsPage() {
     [navigate],
   );
 
-  const handleDisconnectNostr = useCallback(() => {
-    disconnectNostrIdentity();
-  }, []);
+  // The app bar logout uses the same guard for a local key without a backup.
+  const {
+    requestLogout: handleDisconnectNostr,
+    confirmIdentityReplacement,
+    confirmation: logoutConfirmation,
+  } = useNostrLogout();
 
   const handleRemoveMint = useCallback((url: string) => {
     userRemoveMint(url);
@@ -277,6 +281,8 @@ export function SettingsPage() {
 
   const handleSignerModeChange = useCallback(
     async (mode: NostrSignerMode): Promise<boolean> => {
+      // A new identity replaces the stored key, so it uses the logout guard.
+      if (!(await confirmIdentityReplacement())) return false;
       const result = await userConnectNostrSignerMode(mode);
       if (result.superseded) return false;
       if (!result.ok) {
@@ -287,11 +293,12 @@ export function SettingsPage() {
       }
       return result.ok;
     },
-    [t],
+    [confirmIdentityReplacement, t],
   );
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {
+      if (!(await confirmIdentityReplacement())) return false;
       const result = await userConnectNsecIdentity(nsec, passphrase);
       if (result.superseded) return false;
       if (result.ok) {
@@ -307,7 +314,7 @@ export function SettingsPage() {
       });
       return false;
     },
-    [],
+    [confirmIdentityReplacement],
   );
 
   return (
@@ -323,6 +330,7 @@ export function SettingsPage() {
             ? settingsStore.nsecSecret
             : null
         }
+        nsecEntryRequested={searchParams.get("connect") === "nsec"}
         onCategoryToggle={settingsStore.setActiveCategory}
         onThemeChange={handleThemeChange}
         onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
@@ -355,6 +363,7 @@ export function SettingsPage() {
           onImportSeed={(words) => handleWalletAction(words)}
         />
       )}
+      {logoutConfirmation && <NostrLogoutConfirmModal {...logoutConfirmation} />}
     </>
   );
 }

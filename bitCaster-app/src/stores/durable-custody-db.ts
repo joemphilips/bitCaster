@@ -613,6 +613,90 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     }
   }
 
+  /**
+   * Retire the mint-SPENT inputs of a released reservation. Use only inside an
+   * explicit active Dexie readwrite transaction, after the same transaction
+   * released the operation. The caller must hold exact NUT-07 SPENT evidence.
+   */
+  async retireReleasedMintSpentInputsInCurrentTransaction(
+    dexieTransaction: Transaction,
+    input: {
+      scopeId: string;
+      operationId: string;
+      proofIds: readonly string[];
+      observedAtMs: number;
+    },
+  ): Promise<void> {
+    assertCurrentReadwriteTransaction(
+      dexieTransaction,
+      this.#database,
+      this.#retirementTransactionTables(),
+      "browser released input retirement",
+    );
+    try {
+      await this.#retireReleasedMintSpentInputs(input);
+    } catch (error) {
+      abortActiveTransaction(dexieTransaction);
+      throw error;
+    }
+  }
+
+  async #retireReleasedMintSpentInputs(input: {
+    scopeId: string;
+    operationId: string;
+    proofIds: readonly string[];
+    observedAtMs: number;
+  }): Promise<void> {
+    if (input.proofIds.length === 0) return;
+    const operationRow = await this.#database.custodyOperations.get([
+      input.scopeId,
+      input.operationId,
+    ]);
+    if (!operationRow) throw new Error("browser released operation is missing");
+    const operation = decodeOperationRow(operationRow).record;
+    if (operation.operation.state !== "aborted" || operation.operation.result.state !== "none") {
+      throw new Error("browser released operation lifecycle is invalid");
+    }
+    const predecessors = operation.operation.proofStorage.lineage.predecessorProofIds;
+    if (
+      new Set(input.proofIds).size !== input.proofIds.length ||
+      input.proofIds.some((proofId) => !predecessors.includes(proofId))
+    ) {
+      throw new Error("browser released input authority is foreign");
+    }
+    const keys = input.proofIds.map((proofId) => [input.scopeId, proofId] as [string, string]);
+    const [proofRows, reservations] = await Promise.all([
+      this.#database.custodyProofs.bulkGet(keys),
+      this.#database.custodyReservations.bulkGet(keys),
+    ]);
+    if (reservations.some((reservation) => reservation !== undefined)) {
+      throw new Error("browser released input is still reserved");
+    }
+    const retired = proofRows.map((row) => {
+      if (!row) throw new Error("browser released input proof is missing");
+      const proof = decodeBrowserCustodyProofRow(row);
+      if (proof.selectability !== "selectable" || proof.reservationOperationId !== null) {
+        throw new Error("browser released input proof authority is invalid");
+      }
+      return decodeBrowserCustodyProofRow({
+        ...proof,
+        revision: incrementRevision(proof.revision, "proof"),
+        selectability: "spent",
+        reservationOperationId: null,
+      });
+    });
+    const persisted = await this.#persistProofRowsWithBackupAuthority(
+      retired.map((proof) => ({ proof, derivationLocator: undefined })),
+      input.observedAtMs,
+    );
+    await advanceBrowserV2DesiredAssetsForProofChanges(
+      this.#database,
+      input.scopeId,
+      persisted.changes.map(desiredAssetProofChange),
+      conditionalKeysetLookup(persisted.conditionalKeysets),
+    );
+  }
+
   /** Retire a bounded exact batch only after its caller obtains exact mint-SPENT evidence. */
   async retireExactMintSpentProofs(
     input: BrowserMintSpentProofRetirementInput,

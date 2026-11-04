@@ -28,6 +28,19 @@ describe("PLChart", () => {
     }
   });
 
+  it.each([
+    ["en", "No data"],
+    ["ja", "データがありません"],
+  ])("states an empty range in %s", async (language, text) => {
+    await i18n.changeLanguage(language);
+    try {
+      render(<PLChart chartData={chartData} selectedTimeRange="1W" totalValueSats={0} />);
+      expect(screen.getByText(text)).toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("suppresses value changes and the chart while valuation is unknown", () => {
     render(
       <PLChart

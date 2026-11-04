@@ -148,18 +148,98 @@ describe("NotificationBell language", () => {
 describe("NotificationBell order failures", () => {
   it("does not describe a failed order as cancelled", () => {
     useNotificationsStore.getState().add({
-      ...persistedBareMarketClosed(),
+      ...orderNotice("Failed", 0, 1_000),
       id: "order-1-failed",
-      kind: "Failed",
-      orderId: "order-1",
-      marketId: `${COND}-Alice`,
     });
     let navigated: string | null = null;
 
     openBell((href) => (navigated = href));
-    fireEvent.click(screen.getByText(/Order failed on Alice/i));
+    fireEvent.click(screen.getByText(`Order failed on “${TITLE}”`));
 
     expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
     expect(navigated).toBe(`/markets/${COND}`);
+  });
+});
+
+/** An order entry as the order builders store it: share face subunits and D = 1,000. */
+function orderNotice(
+  kind: Notification["kind"],
+  filledAmountSubunits: number,
+  remainingAmountSubunits: number,
+): Notification {
+  return {
+    id: `order-1-${kind}-${remainingAmountSubunits}`,
+    kind,
+    orderId: "order-1",
+    // A No order on a Yes/No market uses the Yes route with the complement token.
+    marketId: `${COND}-Yes`,
+    filledAmountSubunits,
+    remainingAmountSubunits,
+    unit: "sat",
+    divisibility: 1_000,
+    marketTitle: TITLE,
+    occurredAt: Date.now(),
+    read: false,
+  };
+}
+
+describe("NotificationBell order notices", () => {
+  it("counts shares, not sats, and names the market", () => {
+    useNotificationsStore.getState().add(orderNotice("accepted", 0, 1_000_000));
+    useNotificationsStore.getState().add(orderNotice("Matched", 1_000_000, 0));
+    useNotificationsStore.getState().add(orderNotice("partially_filled", 400_000, 600_000));
+    useNotificationsStore.getState().add(orderNotice("Filled", 1_000, 0));
+
+    openBell();
+
+    expect(screen.getByText(`Order accepted on “${TITLE}”`)).toBeInTheDocument();
+    expect(
+      screen.getByText(`Order matched: 1,000 shares reserved on “${TITLE}”`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`Partial fill: 400 shares filled on “${TITLE}”, 600 shares remaining`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(`Order filled: 1 share on “${TITLE}”`)).toBeInTheDocument();
+    expect(screen.queryByText(/sats|on Yes/)).not.toBeInTheDocument();
+  });
+
+  it("shows the Japanese order text with the market title and share count", async () => {
+    await i18n.changeLanguage("ja");
+    useNotificationsStore.getState().add(orderNotice("Matched", 1_000_000, 0));
+    useNotificationsStore.getState().add(orderNotice("partially_filled", 400_000, 600_000));
+    useNotificationsStore.getState().add(orderNotice("cancelled", 0, 1_000));
+
+    openBell();
+
+    expect(
+      screen.getByText(`注文がマッチしました: 「${TITLE}」で 1,000 枚を予約済み`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`一部約定: 「${TITLE}」で 400 枚が約定、残り 600 枚`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(`「${TITLE}」の注文がキャンセルされました`)).toBeInTheDocument();
+  });
+
+  // ADR-049: entries persisted before release 4 have no title and no denominator.
+  it.each([
+    ["en", "Order filled: 250 shares on “Yes”"],
+    ["ja", "注文が約定しました: 「Yes」で 250 枚"],
+  ])("reads an order entry stored before titles were kept in %s", async (language, text) => {
+    await i18n.changeLanguage(language);
+    useNotificationsStore.getState().add({
+      id: "o-filled",
+      kind: "Filled",
+      orderId: "o",
+      marketId: `${COND}-Yes`,
+      filledAmountSubunits: 250_000,
+      remainingAmountSubunits: 0,
+      unit: "sat",
+      occurredAt: Date.now(),
+      read: false,
+    });
+
+    openBell();
+
+    expect(screen.getByText(text)).toBeInTheDocument();
   });
 });

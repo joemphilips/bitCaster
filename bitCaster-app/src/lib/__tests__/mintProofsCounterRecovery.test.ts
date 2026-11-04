@@ -654,7 +654,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     const result = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
     const persistenceInput = mocks.restoreProofsAndAdvanceCounter.mock.calls[0]?.[0] as
       | {
           keysetId: string;
@@ -875,7 +875,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
       ([input]) => input as { proofs: { secret: string }[]; sourceOperationId: string },
     );
 
-    expect(first).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(first).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
     expect(firstCalls.map(({ proofs }) => proofs.length)).toEqual([32, 1]);
     expect(firstCalls[0]?.sourceOperationId).not.toBe(firstCalls[1]?.sourceOperationId);
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledOnce();
@@ -907,7 +907,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     const result = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(result).toEqual({ scannedKeysets: [], complete: false });
+    expect(result).toEqual({ scannedKeysets: [], complete: false, failed: true });
     expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledTimes(2);
     expect(mocks.restoreProofsAndAdvanceCounter).not.toHaveBeenCalled();
   });
@@ -933,7 +933,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     const result = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
       expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 4_098 }),
     );

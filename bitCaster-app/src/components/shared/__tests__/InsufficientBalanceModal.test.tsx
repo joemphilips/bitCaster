@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import i18n from "@/i18n";
 import { InsufficientBalanceModal } from "../InsufficientBalanceModal";
+import { ParticipationScoreHelp } from "../ParticipationScoreHelp";
 
 function renderModal(overrides: Partial<ComponentProps<typeof InsufficientBalanceModal>> = {}) {
   const onCancel = vi.fn();
@@ -62,6 +63,70 @@ describe("InsufficientBalanceModal", () => {
     expect(handlers.onRetry).toHaveBeenCalledOnce();
     expect(handlers.onTopUp).toHaveBeenCalledOnce();
     expect(handlers.onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("puts the title help beside the heading without changing the heading name", async () => {
+    const user = userEvent.setup();
+    const handlers = renderModal({
+      title: i18n.t("insufficientBalance.scoreTitle"),
+      requiredDescription: i18n.t("insufficientBalance.scoreNeeds"),
+      titleHelp: <ParticipationScoreHelp />,
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Top Up Participation Score", level: 2 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Participation Score needs/)).toBeInTheDocument();
+    const help = screen.getByRole("button", { name: "About Participation Score" });
+    await user.click(help);
+
+    expect(screen.getByRole("tooltip")).toHaveTextContent("An anti-spam fee.");
+    expect(handlers.onCancel).not.toHaveBeenCalled();
+    expect(handlers.onTopUp).not.toHaveBeenCalled();
+  });
+
+  it("starts on Cancel when Enter opens it, and the title help stays closed", async () => {
+    const user = userEvent.setup();
+    function OpenWithEnter() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Buy
+          </button>
+          {open && (
+            <InsufficientBalanceModal
+              balance={1}
+              required={3}
+              title={i18n.t("insufficientBalance.scoreTitle")}
+              titleHelp={<ParticipationScoreHelp />}
+              onCancel={vi.fn()}
+              onTopUp={vi.fn()}
+            />
+          )}
+        </>
+      );
+    }
+    render(<OpenWithEnter />);
+
+    act(() => screen.getByRole("button", { name: "Buy" }).focus());
+    await user.keyboard("{Enter}");
+
+    // jsdom omits the dialog focusing steps. A browser focuses the autofocus
+    // control, which is Cancel, as before the help existed.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector("[autofocus]")).toBe(
+      screen.getByTestId("insufficient-balance-cancel"),
+    );
+    // Focus that follows Enter does not open the help over the amounts.
+    act(() => screen.getByRole("button", { name: "About Participation Score" }).focus());
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("shows no title help by default", () => {
+    renderModal();
+
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
   });
 
   it("does not present an unknown local balance as zero", () => {

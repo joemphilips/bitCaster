@@ -170,11 +170,11 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v1` の下で 1 回だけ課金します。料金は `1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。fill、取消、settlement failure、refund、recovery は Score を debit しません。この料金は公開クライアントの capability に適用します。
+Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v2` の下で 1 回だけ課金します。料金は `max(1, ceil(v1 / 10))` です。ここで `v1 = 1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。以前に `settlement-capability-v1` の下で記録した課金は、`v1` の金額のままです。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。fill、取消、settlement failure、refund、recovery は Score を debit しません。この料金は公開クライアントの capability に適用します。
 
 Score が不足すると、daemon は支払いを送信します。delivery state が `credited` になるまで待ってから、注文 capability を準備します。再試行には同じ delivery identity を使用します。ミントが支払いを受け取った後も、Score の反映が遅れることがあります。待機時間の上限に達しても、その支払いは回復できます。pending の delivery は、支払いの失敗を示すものではありません。
 
-注文に使用する資金を除いた使用可能な残高が 200 sats 以上ある場合、Score のチャージでは 50 sats 分の Score を購入します。不足額が 50 sats より大きい場合は、不足額をすべて購入します。以降の取引では残りの Score を使用するため、チャージが不要になることが多くなります。それ以外の場合と、同じクライアントの別の注文を準備している間は、不足額だけを購入します。残高の少ないウォレットは、資金を取引に使用できます。Score は返金できず、出金もできません。
+注文に使用する資金を除いた使用可能な残高が 200 sats 以上ある場合、Score のチャージでは 20 sats 分の Score を購入します。不足額がこれより大きい場合は、不足額をすべて購入します。以降の取引では残りの Score を使用するため、チャージが不要になることが多くなります。それ以外の場合と、同じクライアントの別の注文を準備している間は、不足額だけを購入します。残高の少ないウォレットは、資金を取引に使用できます。Score は返金できず、出金もできません。
 
 ## 信頼境界
 

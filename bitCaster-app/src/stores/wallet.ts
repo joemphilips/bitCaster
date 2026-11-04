@@ -34,6 +34,7 @@ import {
   type BitcasterDB,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
+import { recordGeneratedBrowserSeed } from "./seed-restore-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { readPublicMintMetadata } from "@bitcaster/client-sdk";
@@ -269,6 +270,11 @@ export const useWalletStore = create<WalletState>()(
         _walletCache = new Map();
         activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
+        // A generated seed has no proofs elsewhere, so the seed restore skips it.
+        const generatedScopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (generatedScopeId !== null) {
+          void recordGeneratedBrowserSeed(generatedScopeId).catch(() => undefined);
+        }
       },
 
       ensureImplicitWallet: async () => {

@@ -3,13 +3,16 @@ import type { NDKSigner } from "@nostr-dev-kit/ndk";
 import { getEventHash, type Event, type EventTemplate } from "nostr-tools/pure";
 import {
   decodeNostrProfileEvent,
+  nostrProfileEditFields,
+  nostrProfileEditorPatch,
   prepareNostrProfileEdit,
   readNostrProfile,
   readNostrProfileEditSnapshot,
   selectNostrProfileEditBase,
   signNostrProfileEdit,
-  validateNostrProfilePatch,
-  type NostrProfilePatch,
+  validateNostrProfileEditorPatch,
+  type NostrProfileEditFields,
+  type NostrProfileEditorPatch,
 } from "@bitcaster/client-sdk/nostrProfile";
 import { useSettingsStore } from "@/stores/settings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrSignerRevision";
@@ -172,7 +175,7 @@ async function editBase(
 
 export interface BrowserProfileEditView {
   readonly publicKey: string;
-  readonly fields: { readonly name: string; readonly about: string; readonly picture: string };
+  readonly fields: NostrProfileEditFields;
 }
 
 export async function loadBrowserNostrProfileEdit(
@@ -186,13 +189,7 @@ export async function loadBrowserNostrProfileEdit(
       async (session) => {
         selection.requireCurrent();
         const base = await editBase(selection, session.read(), options);
-        const metadata = JSON.parse(base?.content ?? "{}") as Record<string, unknown>;
-        const text = (key: string) =>
-          typeof metadata[key] === "string" ? (metadata[key] as string) : "";
-        return {
-          publicKey: selection.publicKey,
-          fields: { name: text("name"), about: text("about"), picture: text("picture") },
-        };
+        return { publicKey: selection.publicKey, fields: nostrProfileEditFields(base) };
       },
       selection.signal,
     );
@@ -276,13 +273,13 @@ async function deliverProfile(
 }
 
 export async function saveBrowserNostrProfileEdit(
-  value: NostrProfilePatch,
+  value: NostrProfileEditorPatch,
   signal?: AbortSignal,
   options: BrowserNostrProfileOptions = {},
 ): Promise<BrowserProfileSaveResult> {
-  let patch: NostrProfilePatch;
+  let patch: NostrProfileEditorPatch;
   try {
-    patch = validateNostrProfilePatch(value);
+    patch = validateNostrProfileEditorPatch(value);
   } catch {
     throw new BrowserProfileError("invalid-input");
   }
@@ -311,7 +308,7 @@ type ProfileDelivery = Pick<
 
 async function saveInSession(
   selection: BrowserProfileSelection,
-  patch: NostrProfilePatch,
+  patch: NostrProfileEditorPatch,
   options: BrowserNostrProfileOptions,
   session: ProfileEditSession,
 ): Promise<BrowserProfileSaveResult> {
@@ -319,10 +316,11 @@ async function saveInSession(
   const base = await editBase(selection, session.read(), options);
   let template: EventTemplate;
   try {
+    // The editor name goes to the key that the card shows on this fresh base.
     template = prepareNostrProfileEdit(
       selection.publicKey,
       base,
-      patch,
+      nostrProfileEditorPatch(base, patch),
       (options.nowSeconds ?? (() => Math.floor(Date.now() / 1000)))(),
     );
   } catch {

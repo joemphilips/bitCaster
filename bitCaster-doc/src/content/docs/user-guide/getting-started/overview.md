@@ -171,6 +171,11 @@ Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
 a valid 12-word or 24-word recovery phrase. Enter each word in its numbered field,
 or paste the complete phrase into one field. Setup does not submit a payment automatically.
+After you restore a wallet, the app restores its funds and market positions
+from the mint. Portfolio shows **Restoring positions…** until the restore
+finishes. Let your trades finish in the old browser before you move. Use one
+browser at a time: the app checks the mint for use in another browser after a
+mint refusal or a buy check that shows such use.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
@@ -195,8 +200,20 @@ Other supported features can use the extension. Select OK to request the
 extension identity, or Cancel to keep the current state. Connection stays
 pending until the extension returns a valid identity. A saved identity after
 reload does not mean that the extension has authorized the connection.
-Disconnect cancels pending connection work. Disconnect before switching from
-an extension to a local private key.
+**Log out** cancels pending connection work. Log out before you switch from an
+extension to a local private key.
+
+The user menu shows **Log in** when no Nostr signer is connected. It opens the
+Nostr section of Settings. When a signer is connected, the menu shows **Log out**.
+**Log out** in the user menu and in Settings removes only the Nostr identity.
+The wallet does not change. If you did not back up a generated key, this browser
+has the only copy. Then the app asks you first. Select **Back up key** to open the Nostr
+settings, or **Log out** to delete the key. While an order is in progress, the
+app shows only **Back up key**, because the order needs this key to finish.
+A backed-up key or a NIP-07 signer logs out at once. Log in again with the
+same key to let open orders finish.
+The app also asks first when you connect another identity, because that replaces
+the key that is not backed up.
 
 Settings and Portfolio show the same connected Nostr profile card.
 The card shows your picture, display name, and description. Settings also has
@@ -214,6 +231,8 @@ side to at most 1024 pixels and re-encodes the image without its original metada
 The upload goes to the public nostr.build service with your Nostr signer.
 Uploading does not publish the profile. Choose **Save profile** to publish its URL.
 You can still enter an existing HTTPS image URL instead.
+The card also shows a PNG, JPEG, GIF, WebP, or SVG picture that the profile
+embeds as a `data:` URI. Other `data:` content does not appear.
 
 Keep this editor open to retry a failed profile publication without uploading the
 image again. Cancel an upload or choose another image if needed. A signer change
@@ -222,8 +241,9 @@ The service can be unavailable or change its retention policy. bitCaster does no
 pay upload fees or guarantee image retention. Replacing a picture does not delete
 the old image from the host or other Nostr clients.
 
-Other metadata stays unchanged. A separate display name set in another client
-can still take priority over the name you edit here.
+The name and description fields start with the values that your profile card
+shows. A changed name is saved as your display name, or as your name when your
+profile has no display name. Other metadata stays unchanged.
 
 Save first reads all selected relays. If a read or signature request fails,
 your draft stays available. A relay rejection and a missing acknowledgement
@@ -250,7 +270,7 @@ Top-up and other new wallet changes stay paused until backup preparation or reco
 If **Wallet backup stopped** is shown, use **Retry wallet backup**.
 If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
 Close an unused second wallet tab when the message asks you to do so.
-Sign in or reload when the message says the backup driver is unavailable.
+Log in or reload when the message says the backup driver is unavailable.
 Keep the page open while a retry is pending.
 Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
 The local wallet keeps its funds and unfinished work while recovery is incomplete.
@@ -334,8 +354,13 @@ the same font size and allow scrolling for long text. Likes increase opacity.
 A comment stays
 in the comment list when its trade point is unavailable or outside the chart
 view. The list shows when the comment was written.
+In the comment list, select an author's avatar or name to open the author's
+profile page. Select **Copy Nostr ID** next to the name to copy the author's
+npub, for example to mention the author.
 
-Each expanded chart comment shows its public author and text. When the linked
+Each expanded chart comment shows its public author and text. As in the comment
+list, select the author's name to open the author's profile page. Select
+**Copy Nostr ID** next to the name to copy the author's npub. When the linked
 trade facts are available, it also shows the author's buy or sell action, exact
 share quantity, selected outcome, and trade time. This describes the linked fill,
 not the whole order. Missing historical facts do not imply a buy. The card uses

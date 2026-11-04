@@ -10,6 +10,8 @@ export interface PendingTrade {
   /** Missing only on legacy persisted orders whose wallet cannot be inferred. */
   walletId?: string;
   marketId: string;
+  /** Market title at submission. Order notifications quote it. Older records lack it. */
+  marketTitle?: string;
   clientOrderId?: string;
   /** Unix ms when the order was submitted — useful for recovery diagnostics. */
   submittedAt: number;

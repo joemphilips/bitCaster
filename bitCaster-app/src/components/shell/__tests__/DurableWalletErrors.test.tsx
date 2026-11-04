@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn().mockResolvedValue(undefined),
+  retry: vi.fn().mockResolvedValue(undefined),
   readPage: vi.fn(),
   scopeId: "scope-1",
   page: {
@@ -18,7 +19,19 @@ const mocks = vi.hoisted(() => ({
         observedAtMs: 10,
         acknowledgedAtMs: null,
       },
-    ],
+    ] as Array<{
+      scopeId: string;
+      operationId: string;
+      revision: number;
+      code: string;
+      kind: string;
+      status: string;
+      observedAtMs: number;
+      acknowledgedAtMs: null;
+      mintError?: { code: number; detail: string };
+      retryable?: true;
+      fundsReleased?: true;
+    }>,
     nextCursor: null,
   },
 }));
@@ -40,6 +53,9 @@ vi.mock("@/stores/ctf-range-order-messages", () => ({
   acknowledgeBrowserCtfRangeMessage: mocks.acknowledge,
   pageActiveBrowserCtfRangeMessages: mocks.readPage,
 }));
+vi.mock("@/lib/browserCtfRangeRecoveryRetry", () => ({
+  retryBrowserCtfRangeOrderRecovery: mocks.retry,
+}));
 
 describe("DurableWalletErrors", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -59,6 +75,112 @@ describe("DurableWalletErrors", () => {
       code: "mint-source-uncertain",
       acknowledgedAtMs: expect.any(Number),
     });
+  });
+
+  it.each([
+    "score-top-up-required",
+    "score-top-up-cancelled",
+    "settlement-capability-score-required",
+  ])("puts the Participation Score help next to the %s alert", (code) => {
+    const original = mocks.page;
+    mocks.page = { ...original, messages: [{ ...original.messages[0]!, code, kind: "order" }] };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Participation Score");
+      expect(
+        within(alert).getByRole("button", { name: "About Participation Score" }),
+      ).toHaveAccessibleDescription(
+        "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
+      );
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("shows the stored mint code without its detail", () => {
+    const original = mocks.page;
+    mocks.page = {
+      ...original,
+      messages: [
+        {
+          ...original.messages[0]!,
+          mintError: { code: 11008, detail: "Duplicate outputs" },
+        },
+      ],
+    };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Mint code: 11008");
+      expect(alert).not.toHaveTextContent("Duplicate outputs");
+      expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull();
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("says that the funds are available again after the mint refused an order", () => {
+    const original = mocks.page;
+    mocks.page = {
+      ...original,
+      messages: [
+        {
+          ...original.messages[0]!,
+          code: "order-attempt-ended",
+          kind: "order",
+          mintError: { code: 11008, detail: "Duplicate outputs" },
+          fundsReleased: true as const,
+        },
+      ],
+    };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Order was not completed");
+      expect(alert).toHaveTextContent(
+        "The mint refused this order. No order was submitted. The reserved funds are available again.",
+      );
+      expect(alert).toHaveTextContent("Mint code: 11008");
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("offers a manual retry for a halted recovery alert", () => {
+    const original = mocks.page;
+    mocks.page = {
+      ...original,
+      messages: [
+        {
+          ...original.messages[0]!,
+          code: "recovery-pending",
+          mintError: { code: 11002, detail: "Token pending" },
+          retryable: true as const,
+        },
+      ],
+    };
+    try {
+      render(<DurableWalletErrors />);
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("Mint code: 11002");
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+
+      expect(mocks.retry).toHaveBeenCalledWith({ scopeId: "scope-1", operationId: "range-1" });
+      expect(mocks.acknowledge).not.toHaveBeenCalled();
+    } finally {
+      mocks.page = original;
+    }
+  });
+
+  it("shows no Participation Score help on another alert", () => {
+    render(<DurableWalletErrors />);
+
+    expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
   });
 
   it("can read later alerts without dismissing an unresolved alert", () => {

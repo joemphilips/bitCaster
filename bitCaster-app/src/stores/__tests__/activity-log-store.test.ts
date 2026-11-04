@@ -26,6 +26,32 @@ beforeEach(() => {
 });
 
 describe("useActivityLogStore", () => {
+  it("records a completed deposit once for each quote record", () => {
+    const deposit = {
+      walletId: WALLET_A,
+      quoteRecordId: "c".repeat(64),
+      amountSubunits: 100_000,
+      baseAsset: "sat" as const,
+      lightningInvoice: "lnbc1invoice",
+    };
+
+    useActivityLogStore.getState().recordCompletedDeposit(deposit);
+    useActivityLogStore.getState().recordCompletedDeposit({ ...deposit, amountSubunits: 1 });
+    useActivityLogStore
+      .getState()
+      .recordCompletedDeposit({ ...deposit, quoteRecordId: "d".repeat(64) });
+
+    expect(
+      useActivityLogStore.getState().items.map(({ id, amountSubunits }) => [id, amountSubunits]),
+    ).toEqual([
+      [`deposit:${"d".repeat(64)}`, 100_000],
+      [`deposit:${"c".repeat(64)}`, 100_000],
+    ]);
+    expect(
+      useActivityLogStore.getState().items.every((entry) => decodeActivityItem(entry) !== null),
+    ).toBe(true);
+  });
+
   it("retains two exact order-linked fill records across local reload and compares order identity", async () => {
     const fills = ["first", "second"].map((fillId) =>
       item({

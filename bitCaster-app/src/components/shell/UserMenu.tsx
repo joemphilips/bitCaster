@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   User,
+  LogIn,
   LogOut,
   ChevronDown,
   Wallet,
@@ -18,19 +19,32 @@ import { EnvironmentLink } from "./EnvironmentLink";
 
 interface UserMenuProps {
   user: { name: string; avatarUrl?: string; balance?: number };
-  onLogout?: () => void;
+  /** A Nostr signer is connected. */
+  isLoggedIn: boolean;
+  onLogin?: () => void;
+  /** Receives the menu button, so focus can return to it after a dialog. */
+  onLogout?: (returnFocusTo: HTMLElement | null) => void;
   onNavigate?: (href: string) => void;
   onCreateClick?: () => void;
 }
 
-export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenuProps) {
+export function UserMenu({
+  user,
+  isLoggedIn,
+  onLogin,
+  onLogout,
+  onNavigate,
+  onCreateClick,
+}: UserMenuProps) {
   const { t, i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className="flex min-w-0 items-center space-x-3 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
       >
@@ -160,12 +174,13 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
             <button
               onClick={() => {
                 setIsOpen(false);
-                onLogout?.();
+                if (isLoggedIn) onLogout?.(triggerRef.current);
+                else onLogin?.();
               }}
               className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
             >
-              <LogOut className="w-4 h-4" />
-              <span>{t("nav.logout")}</span>
+              {isLoggedIn ? <LogOut className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              <span>{isLoggedIn ? t("nav.logout") : t("nav.login")}</span>
             </button>
           </div>
         </>

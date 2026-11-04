@@ -23,6 +23,7 @@ test('actual liked watch help/dry-run explain capture, refusal and restart seman
     assert.deepEqual(
       JSON.parse((await f.run(['market', 'watch', '--liked', '--dry-run'])).stdout),
       {
+        dryRun: true,
         method: 'market.watch',
         params: { liked: true },
       },
@@ -30,6 +31,7 @@ test('actual liked watch help/dry-run explain capture, refusal and restart seman
     assert.deepEqual(
       JSON.parse((await f.run(['--dry-run', 'market', 'watch', CONDITION])).stdout),
       {
+        dryRun: true,
         method: 'market.watch',
         params: { conditionIds: [CONDITION] },
       },

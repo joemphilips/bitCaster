@@ -1045,6 +1045,165 @@ describe("TradingPanel", () => {
     );
   }
 
+  it.each(["Buy", "Sell"] as const)(
+    "shows the %s Participation Score charge and a separate purchase at confirm",
+    async (tradeSide) => {
+      const user = userEvent.setup();
+      render(
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={5}
+          tradePreview={readyPreview()}
+          tradeFeeFacts={feeFacts()}
+          participationScore={{ chargeScore: 2, purchaseScore: 20 }}
+          feeConsentCurrent
+          tradeSide={tradeSide}
+          sellHoldings={sellHoldings({ Yes: { selectableSubunits: 10_000 } })}
+          onTradeConfirm={vi.fn()}
+        />,
+      );
+
+      const charge = screen.getByTestId("trade-participation-score");
+      expect(charge).toHaveTextContent(/^Participation Score.*2\.000 sats$/);
+      const purchase = screen.getByTestId("trade-participation-score-purchase");
+      expect(purchase).toHaveTextContent(
+        /^Score top-up at confirm \(kept as balance\)\+20\.000 sats$/,
+      );
+      // Score is paid apart from the trade, so the trade totals exclude both lines.
+      expect(
+        screen.getByTestId(tradeSide === "Buy" ? "trade-grand-total" : "trade-net-proceeds"),
+      ).toHaveTextContent(tradeSide === "Buy" ? "30.000 sats" : "0.000 sats");
+      const help = within(charge).getByRole("button", { name: "About Participation Score" });
+      expect(help).toHaveAccessibleDescription(
+        "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
+      );
+      await user.pointer({ keys: "[TouchA]", target: help });
+      expect(screen.getByRole("tooltip")).toHaveTextContent("An anti-spam fee.");
+    },
+  );
+
+  it("shows the charge without a purchase line when the Score balance covers the order", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        participationScore={{ chargeScore: 2, purchaseScore: null }}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-participation-score")).toHaveTextContent("2.000 sats");
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
+  });
+
+  it("shows no Score lines when Score is off or its read failed", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        participationScore={null}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-grand-total")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
+  });
+
+  it("does not show Score lines before the fee check is current", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={null}
+        participationScore={{ chargeScore: 2, purchaseScore: 20 }}
+        tradeSide="Buy"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-fees-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-participation-score-purchase")).not.toBeInTheDocument();
+  });
+
+  it("offers the halted earlier sell's retry next to the refusal of a second sell", () => {
+    const onRetry = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Sell"
+        tradeSubmitStatus={{
+          kind: "error",
+          message: "An earlier sell in this market is still preparing its funds.",
+          onRetry,
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId("trade-submit-status")).getByRole("button", { name: "Retry" }),
+    );
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the Participation Score help next to a Score status message", () => {
+    const { rerender } = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Buy"
+        tradeSubmitStatus={{
+          kind: "info",
+          message: "Participation Score top-up was cancelled. The order was not submitted.",
+          participationScoreHelp: true,
+        }}
+      />,
+    );
+
+    const status = screen.getByTestId("trade-submit-status");
+    expect(
+      within(status).getByRole("button", { name: "About Participation Score" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeSide="Buy"
+        tradeSubmitStatus={{ kind: "error", message: "Order failed." }}
+      />,
+    );
+    expect(
+      within(screen.getByTestId("trade-submit-status")).queryByRole("button", {
+        name: "About Participation Score",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses a share input and shows the authoritative Buy quote and exact fees", () => {
     render(
       <TradingPanel
@@ -1075,7 +1234,7 @@ describe("TradingPanel", () => {
     expect(screen.getByRole("button", { name: "Buy YES for 50 shares" })).toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
     expect(screen.queryByText("Mint fee")).not.toBeInTheDocument();
-    expect(screen.queryByText("Engine Score fee")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();
@@ -1424,7 +1583,7 @@ describe("TradingPanel", () => {
     expect(screen.queryByText("Shares you receive if order fills")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
     expect(screen.queryByText("Mint fee")).not.toBeInTheDocument();
-    expect(screen.queryByText("Engine Score fee")).not.toBeInTheDocument();
+    expect(screen.queryByText("Participation Score")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();

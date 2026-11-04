@@ -307,6 +307,8 @@ export type DaemonCommand =
   | { method: 'order.status'; params: { marketId: string; orderId: string } }
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
   | { method: 'order.cancel'; params: { marketId: string; orderId: string } }
+  | { method: 'order.recovery'; params?: undefined }
+  | { method: 'order.retry'; params: { operationId: string } }
   | { method: 'order.book'; params: { marketId: string } }
 
 export interface OrderDraftParams {
@@ -516,6 +518,8 @@ export interface DaemonResponse<T = unknown> {
   result?: T
   error?: string
   code?: string
+  /** The coded mint refusal that ended an order attempt. */
+  mintError?: { code: number; detail: string }
   clientOrderId?: string
   operationId?: string
   orderId?: string

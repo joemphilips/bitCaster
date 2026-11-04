@@ -1,5 +1,6 @@
 import {
   nativeConfigPath,
+  parseNativeConfig,
   readNativeConfig,
   updateNativeConfig,
   type NativeConfig,
@@ -26,6 +27,12 @@ export function updateConfig(update: (current: CliConfig) => CliConfig): CliConf
     toNativeConfig(current, update(toCliConfig(current))),
   )
   return toCliConfig(snapshot.config)
+}
+
+/** Validate an update like `updateConfig` without writing it. */
+export function validateConfigUpdate(update: (current: CliConfig) => CliConfig): void {
+  const current = readNativeConfig(true).config
+  parseNativeConfig(JSON.stringify(toNativeConfig(current, update(toCliConfig(current)))))
 }
 
 function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig {

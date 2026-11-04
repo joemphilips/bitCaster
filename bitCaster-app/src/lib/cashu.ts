@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import { requireValidCashuProofs } from "@bitcaster/client-sdk";
 /**
  * cashu-ts wallet helpers for bitCaster.
@@ -30,6 +31,7 @@ import {
   browserWalletScopeIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
+import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import {
   addProofs,
   addProofsIfMissing,
@@ -56,6 +58,15 @@ import {
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
+import type { ConditionalKeysetSeedRecoveryAuthority } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
+import {
+  recordSeedRestoreCondition,
+  recordSeedRestoreDeferral,
+  requestBrowserKeysetResync,
+  seedRestoreDatabase,
+  settleSeedRestoreDeferral,
+} from "@/stores/seed-restore-db";
+import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -700,14 +711,32 @@ export interface KeysetRecoveryResult {
    *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
   scannedKeysets: string[];
   complete: boolean;
+  /**
+   * Keysets with a restored proof that the mint reports `PENDING`. Their
+   * counters advanced, but their recovery stays incomplete (ADR-033). A
+   * deferral marker at the pending counter backs off the next scan.
+   */
+  pendingKeysets?: string[];
+  /** A keyset scan or the keyset discovery failed. A pending proof alone is not a failure. */
+  failed?: boolean;
+  /**
+   * Deferral scans that admitted nothing because custody work started during
+   * the scan. The caller postpones them; this is not a failure.
+   */
+  postponedKeysets?: string[];
 }
+
+/** A deferral scan met custody work in flight at admission. */
+class CounterRecoveryPostponedError extends Error {}
 
 type RecoverableMintKeyset = {
   id: string;
   unit?: string | null;
 };
 
-type ConditionalCounterRecoveryKeyset = ActiveCtfRangeMintKeyset & {
+// The seed restore also scans inactive (resolved) keysets.
+type ConditionalCounterRecoveryKeyset = Omit<ActiveCtfRangeMintKeyset, "active"> & {
+  active: boolean;
   conditionId: string;
   outcomeCollection: string;
   outcomeCollectionId: string;
@@ -715,9 +744,21 @@ type ConditionalCounterRecoveryKeyset = ActiveCtfRangeMintKeyset & {
 };
 
 export class WalletKeysetCounterReadinessError extends Error {
-  constructor() {
-    super("Wallet counter recovery is incomplete for the selected keyset.");
+  constructor(message = "Wallet counter recovery is incomplete for the selected keyset.") {
+    super(message);
     this.name = "WalletKeysetCounterReadinessError";
+  }
+}
+
+/**
+ * The selected keyset holds a restored proof that the mint reports as
+ * `PENDING`. Its recovery stays incomplete until a later pass sees the proof
+ * `SPENT` or `UNSPENT` (ADR-033).
+ */
+export class WalletKeysetCounterPendingError extends WalletKeysetCounterReadinessError {
+  constructor() {
+    super("A restored proof of the selected keyset is pending at the mint.");
+    this.name = "WalletKeysetCounterPendingError";
   }
 }
 
@@ -735,24 +776,7 @@ export function ensureWalletKeysetCounterReady(input: {
   let url: string;
   let conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   try {
-    url = normalizeUrl(input.mintUrl);
-    conditionalKeyset = requireCounterRecoveryKeyset(
-      input.keyset,
-      url,
-      input.unit,
-      input.conditionalAsset,
-    );
-    const store = useWalletStore.getState();
-    const capturedScopeId = store.mnemonic
-      ? browserWalletScopeIdFromMnemonic(store.mnemonic)
-      : null;
-    if (
-      capturedScopeId === null ||
-      capturedScopeId !== input.scopeId ||
-      activeBrowserWalletScopeId() !== input.scopeId
-    ) {
-      throw new Error("wallet profile changed");
-    }
+    ({ url, conditionalKeyset } = requireSelectedCounterRecovery(input));
   } catch {
     return Promise.reject(new WalletKeysetCounterReadinessError());
   }
@@ -780,8 +804,10 @@ export function ensureWalletKeysetCounterReady(input: {
     keysetId: input.keyset.id,
     conditionalKeyset,
     profileLockHeld: input.profileLockHeld === true,
-  }).catch(() => {
-    throw new WalletKeysetCounterReadinessError();
+  }).catch((error: unknown) => {
+    throw error instanceof WalletKeysetCounterPendingError
+      ? error
+      : new WalletKeysetCounterReadinessError();
   });
   walletKeysetCounterReadiness.set(coalescingKey, promise);
   void promise
@@ -794,6 +820,192 @@ export function ensureWalletKeysetCounterReady(input: {
   return promise;
 }
 
+/**
+ * Advance one selected keyset's counter past every output that the mint
+ * signed for this seed, even after an earlier scan completed. Use it after
+ * the mint reports a reused output: another client with the same seed signed
+ * outputs past this browser's cursor. It admits no proof, so it claims no
+ * custody scope and can run while the caller owns that scope. The scan has a
+ * work bound (`findLastSignedSeedCounter`), so a mint that reports every
+ * output as signed cannot hold the wallet profile lock forever. It first
+ * writes the deferral marker, so a later pass admits the skipped outputs
+ * (ADR-033).
+ */
+export async function advanceWalletKeysetCounterPastMint(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  /**
+   * The first counter of the refused output plan. The mint signed outputs
+   * from here, and the cursor can already be past them.
+   */
+  plannedFromCounter?: number;
+}): Promise<void> {
+  let selected: ReturnType<typeof requireSelectedCounterRecovery>;
+  try {
+    selected = requireSelectedCounterRecovery(input);
+    if (input.plannedFromCounter !== undefined) requireCounter(input.plannedFromCounter);
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  const counters = selectedCounterStore(input.scopeId);
+  try {
+    const wallet = (await useWalletStore
+      .getState()
+      .getWalletForUnit(selected.url, input.unit)) as CashuWallet;
+    const start =
+      (
+        await counters.readSnapshotInContext(
+          { mintUrl: selected.url, unit: input.unit },
+          input.keyset.id,
+        )
+      ).nextCounter ?? 0;
+    // The refused outputs lie below the cursor, which already moved past them.
+    // Any outputs that the other client signed beyond them start at or after
+    // the cursor, so the scan starts there.
+    const lastSigned = await findLastSignedSeedCounter({
+      mint: wallet.mint,
+      seed: toSeed(useWalletStore.getState().mnemonic.trim().split(/\s+/)),
+      keysetId: input.keyset.id,
+      startCounter: start,
+    });
+    await deferAndAdvanceSelectedKeyset({
+      ...input,
+      url: selected.url,
+      counters,
+      fromCounter: Math.min(input.plannedFromCounter ?? start, start),
+      lastSigned,
+      deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
+    });
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  if (activeBrowserWalletScopeId() !== input.scopeId) {
+    throw new WalletKeysetCounterReadinessError();
+  }
+}
+
+/**
+ * Advance one selected keyset's counter to `nextCounter` after a probe found
+ * outputs that the mint signed from `fromCounter`. The caller already ran the
+ * bounded gap scan. It admits no proof. It first writes the deferral marker,
+ * so a later pass admits the skipped outputs (ADR-033).
+ */
+export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  fromCounter: number;
+  nextCounter: number;
+}): Promise<void> {
+  let selected: ReturnType<typeof requireSelectedCounterRecovery>;
+  try {
+    selected = requireSelectedCounterRecovery(input);
+    requireCounter(input.fromCounter);
+    if (!Number.isSafeInteger(input.nextCounter) || input.nextCounter <= input.fromCounter) {
+      throw new Error("next counter is invalid");
+    }
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  try {
+    await deferAndAdvanceSelectedKeyset({
+      ...input,
+      url: selected.url,
+      counters: selectedCounterStore(input.scopeId),
+      lastSigned: input.nextCounter - 1,
+      deferred: true,
+    });
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  if (activeBrowserWalletScopeId() !== input.scopeId) {
+    throw new WalletKeysetCounterReadinessError();
+  }
+}
+
+function selectedCounterStore(scopeId: string): BrowserWalletCounterDexieStore {
+  return new BrowserWalletCounterDexieStore({
+    database: db,
+    scopeId,
+    isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+  });
+}
+
+function requireCounter(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("counter is invalid");
+}
+
+/**
+ * The signed outputs can hold funds or positions of this seed: those past the
+ * cursor, and the planned outputs below it. Record them before the
+ * counter-only advance, so a later pass scans from `fromCounter` and admits
+ * them. Then ask for a re-sync: another client used this seed.
+ */
+async function deferAndAdvanceSelectedKeyset(input: {
+  scopeId: string;
+  url: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  counters: BrowserWalletCounterDexieStore;
+  fromCounter: number;
+  lastSigned: number | null;
+  deferred: boolean;
+}): Promise<void> {
+  if (input.deferred) {
+    await recordSeedRestoreDeferral({
+      scopeId: input.scopeId,
+      mintUrl: input.url,
+      keysetId: input.keyset.id,
+      fromCounter: input.fromCounter,
+      highestCounter: input.lastSigned,
+      condition: input.conditionalAsset ?? null,
+      finding: true,
+      nowMs: Date.now(),
+    });
+  }
+  if (input.lastSigned !== null) {
+    await input.counters.advanceToAtLeastInContext(
+      { mintUrl: input.url, unit: input.unit },
+      input.keyset.id,
+      input.lastSigned + 1,
+      true,
+    );
+  }
+  await requestBrowserKeysetResync({ scopeId: input.scopeId, mintUrl: input.url });
+}
+
+function requireSelectedCounterRecovery(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+}): { url: string; conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined } {
+  const url = normalizeUrl(input.mintUrl);
+  const conditionalKeyset = requireCounterRecoveryKeyset(
+    input.keyset,
+    url,
+    input.unit,
+    input.conditionalAsset,
+  );
+  const store = useWalletStore.getState();
+  const capturedScopeId = store.mnemonic ? browserWalletScopeIdFromMnemonic(store.mnemonic) : null;
+  if (
+    capturedScopeId === null ||
+    capturedScopeId !== input.scopeId ||
+    activeBrowserWalletScopeId() !== input.scopeId
+  ) {
+    throw new Error("wallet profile changed");
+  }
+  return { url, conditionalKeyset };
+}
+
 async function recoverSelectedKeysetCounterReadiness(input: {
   scopeId: string;
   mintUrl: string;
@@ -802,12 +1014,28 @@ async function recoverSelectedKeysetCounterReadiness(input: {
   conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   profileLockHeld: boolean;
 }): Promise<void> {
+  if (input.conditionalKeyset !== undefined) {
+    // A later deferral of this keyset can then find its keyset authority
+    // without a walk of the mint listing. The record only saves mint work.
+    await recordSeedRestoreCondition({
+      scopeId: input.scopeId,
+      mintUrl: input.mintUrl,
+      keysetId: input.keysetId,
+      condition: {
+        conditionId: input.conditionalKeyset.conditionId,
+        outcomeCollection: input.conditionalKeyset.outcomeCollection,
+      },
+    }).catch(() => undefined);
+  }
   const result = await recoverKeysetCountersForMintCore(input.mintUrl, {
     unit: input.unit,
     keysetId: input.keysetId,
     conditionalKeyset: input.conditionalKeyset,
     profileLockHeld: input.profileLockHeld,
   });
+  if (result.pendingKeysets?.includes(input.keysetId) === true) {
+    throw new WalletKeysetCounterPendingError();
+  }
   const ready =
     result.complete &&
     (result.scannedKeysets.includes(input.keysetId) ||
@@ -956,8 +1184,10 @@ function requireValidCounterRecoveryResult(lastCounterWithSignature: number | un
 function locateRecoveredProofs(
   seed: Uint8Array,
   keysetId: string,
-  proofs: readonly StoredProof[],
+  proofs: readonly Pick<Proof, "secret">[],
   lastCounterWithSignature: number,
+  // A scan from a counter finds only outputs at or above it.
+  firstCounter = 0,
 ): ReadonlyMap<string, DurableWalletProofDerivationLocator> {
   if (!Number.isSafeInteger(lastCounterWithSignature) || lastCounterWithSignature < 0) {
     throw new Error("counter recovery high-water mark is invalid");
@@ -965,7 +1195,7 @@ function locateRecoveredProofs(
   const remaining = new Set(proofs.map((proof) => proof.secret));
   const locators = new Map<string, DurableWalletProofDerivationLocator>();
   for (
-    let pageStart = 0;
+    let pageStart = Math.min(firstCounter, lastCounterWithSignature);
     pageStart <= lastCounterWithSignature && remaining.size > 0;
     pageStart += COUNTER_RECOVERY_DERIVATION_PAGE_SIZE
   ) {
@@ -1224,6 +1454,57 @@ export async function recoverKeysetCountersForMint(
   return recoverKeysetCountersForMintCore(mintUrl, opts);
 }
 
+/**
+ * Scan one validated conditional keyset for the seed restore event (ADR-039,
+ * amendment 2026-11-04). The keyset can be inactive. The caller validated the
+ * authority with the mint keys and the condition. The scan verifies each
+ * proof, admits only UNSPENT proofs, and advances the NUT-13 cursor.
+ */
+export async function restoreBrowserConditionalKeyset(input: {
+  mintUrl: string;
+  authority: ConditionalKeysetSeedRecoveryAuthority;
+  /** Scan again although an earlier scan completed. */
+  force?: boolean;
+  startCounter?: number;
+}): Promise<KeysetRecoveryResult> {
+  const url = normalizeUrl(input.mintUrl);
+  const authority = input.authority;
+  if (authority.unit !== "msat") throw new Error("seed restore keyset unit is invalid");
+  return recoverKeysetCountersForMintCore(url, {
+    unit: "msat",
+    keysetId: authority.id,
+    force: input.force === true,
+    ...(input.startCounter === undefined ? {} : { startCounter: input.startCounter }),
+    conditionalKeyset: {
+      canonicalMintUrl: url,
+      id: authority.id,
+      unit: "msat",
+      keys: { ...authority.keys },
+      inputFeePpk: authority.inputFeePpk,
+      finalExpiry: authority.finalExpiry,
+      active: authority.active,
+      conditionId: authority.conditionId,
+      outcomeCollection: authority.outcomeCollection,
+      outcomeCollectionId: authority.outcomeCollectionId,
+      registeredAt: authority.registeredAt,
+    },
+  });
+}
+
+/** Scan one regular keyset again from a counter, for the keyset re-sync. */
+export async function rescanBrowserRegularKeyset(input: {
+  mintUrl: string;
+  keysetId: string;
+  startCounter: number;
+}): Promise<KeysetRecoveryResult> {
+  return recoverKeysetCountersForMintCore(input.mintUrl, {
+    unit: "msat",
+    keysetId: input.keysetId,
+    force: true,
+    startCounter: input.startCounter,
+  });
+}
+
 async function recoverKeysetCountersForMintCore(
   mintUrl: string,
   opts: {
@@ -1233,8 +1514,14 @@ async function recoverKeysetCountersForMintCore(
     keysetId?: string;
     conditionalKeyset?: ConditionalCounterRecoveryKeyset;
     profileLockHeld?: boolean;
+    /** The first counter to scan. A deferral scan starts at its marker. */
+    startCounter?: number;
   } = {},
 ): Promise<KeysetRecoveryResult> {
+  const startCounter = opts.startCounter ?? 0;
+  if (!Number.isSafeInteger(startCounter) || startCounter < 0) {
+    throw new Error("counter recovery start counter is invalid");
+  }
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [], complete: true };
@@ -1309,8 +1596,23 @@ async function recoverKeysetCountersForMintCore(
     ),
   );
   const scanned: string[] = [];
-  let complete =
-    fresh !== null || discoveredKeysets.length > 0 || opts.conditionalKeyset !== undefined;
+  const pendingKeysets: string[] = [];
+  const postponedKeysets: string[] = [];
+  // A deferral scan can start below counters that an operation of this
+  // browser reserved. It must not admit that operation's outputs first.
+  const deferralScan = opts.force === true && opts.startCounter !== undefined;
+  let failed = !(
+    fresh !== null ||
+    discoveredKeysets.length > 0 ||
+    opts.conditionalKeyset !== undefined
+  );
+  const condition =
+    opts.conditionalKeyset === undefined
+      ? null
+      : {
+          conditionId: opts.conditionalKeyset.conditionId,
+          outcomeCollection: opts.conditionalKeyset.outcomeCollection,
+        };
   for (const unit of units) {
     const wallet =
       unit === discoveryUnit
@@ -1325,22 +1627,34 @@ async function recoverKeysetCountersForMintCore(
         if (opts.conditionalKeyset !== undefined) {
           registerCounterRecoveryConditionalKeyset(wallet, opts.conditionalKeyset);
         }
-        if (
-          !opts.force &&
-          (await isWalletCounterRecoveryComplete({
-            scopeId,
-            mintUrl: url,
-            unit,
-            keysetId: keyset.id,
-            isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-          }))
-        ) {
-          continue;
+        const recoveredBefore = await isWalletCounterRecoveryComplete({
+          scopeId,
+          mintUrl: url,
+          unit,
+          keysetId: keyset.id,
+          isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+        });
+        if (!opts.force && recoveredBefore) continue;
+        // An earlier full scan found a PENDING proof. It recorded a marker at
+        // its counter, so the next scan starts there after a backoff.
+        const deferral = await readCounterRecoveryDeferral(scopeId, url, keyset.id);
+        const pendingFrom =
+          deferral?.waitReason === "pending-proof" ? deferral.pendingFromCounter : null;
+        let scanFrom = startCounter;
+        if (!opts.force && opts.startCounter === undefined && pendingFrom !== null) {
+          if (deferral!.nextAttemptAtMs > Date.now()) {
+            pendingKeysets.push(keyset.id);
+            continue;
+          }
+          scanFrom = pendingFrom;
         }
+        // Only a scan that covers every lower counter can complete the keyset.
+        const coversLowerCounters =
+          scanFrom === 0 || recoveredBefore || (pendingFrom !== null && scanFrom <= pendingFrom);
         const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
           300,
           100,
-          0,
+          scanFrom,
           keyset.id,
         );
         requireCapturedProfile();
@@ -1351,15 +1665,19 @@ async function recoverKeysetCountersForMintCore(
         // proofs would inflate the displayed balance and cause spent-token
         // errors on the next spend. Filter via `groupProofsByState` and keep
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
-        // another device and will resolve to SPENT or UNSPENT shortly.
+        // another device and will resolve to SPENT or UNSPENT later. A
+        // PENDING proof keeps the keyset recovery incomplete, so a later pass
+        // admits it if it becomes UNSPENT (ADR-033).
         validateRecoveredProofs(wallet, url, unit, keyset.id, proofs);
+        const groups =
+          proofs.length === 0
+            ? { unspent: [], pending: [], spent: [] }
+            : await wallet.groupProofsByState(proofs);
         const unspentSecrets =
           proofs.length === 0
             ? new Set<string>()
-            : requireExactCounterRecoveryProofStates(
-                proofs,
-                await wallet.groupProofsByState(proofs),
-              );
+            : requireExactCounterRecoveryProofStates(proofs, groups);
+        const proofPending = groups.pending.length > 0;
         const safe = proofs.filter((proof) => unspentSecrets.has(proof.secret));
         requireCapturedProfile();
         const stored: StoredProof[] = safe.map((proof) => {
@@ -1383,11 +1701,41 @@ async function recoverKeysetCountersForMintCore(
         const locators =
           stored.length === 0
             ? new Map<string, DurableWalletProofDerivationLocator>()
-            : locateRecoveredProofs(seed, keyset.id, stored, lastCounterWithSignature ?? -1);
+            : locateRecoveredProofs(
+                seed,
+                keyset.id,
+                stored,
+                lastCounterWithSignature ?? -1,
+                scanFrom,
+              );
+        const lowestPendingCounter = proofPending
+          ? Math.min(
+              ...[
+                ...locateRecoveredProofs(
+                  seed,
+                  keyset.id,
+                  groups.pending,
+                  lastCounterWithSignature ?? -1,
+                  scanFrom,
+                ).values(),
+              ].map(nut13Counter),
+            )
+          : null;
         const persistRecoveredKeyset = async () => {
           requireCapturedProfile();
           await db.transaction("rw", db.tables, async () => {
             requireCapturedProfile();
+            // Check again in the admission transaction: an operation can start
+            // after the caller's check and while this scan runs.
+            if (
+              deferralScan &&
+              (await db.custodyActiveWork
+                .where("[scopeId+operationId]")
+                .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+                .count()) > 0
+            ) {
+              throw new CounterRecoveryPostponedError();
+            }
             const cacheSafe: StoredProof[] = [];
             for (
               let pageStart = 0;
@@ -1467,6 +1815,7 @@ async function recoverKeysetCountersForMintCore(
               unit,
               keysetId: keyset.id,
               restoredNext: next,
+              recovery: coversLowerCounters && !proofPending ? "complete" : "incomplete",
               isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
             });
             requireCapturedProfile();
@@ -1477,14 +1826,56 @@ async function recoverKeysetCountersForMintCore(
         } else {
           await withWalletProfileLock(scopeId, persistRecoveredKeyset);
         }
+        // The scan admitted the deferred outputs from `scanFrom`. A PENDING
+        // proof keeps a marker at its counter and backs off (ADR-033). The
+        // marker is a record that only saves mint work: without it, the
+        // incomplete keyset scans again from counter 0.
+        await settleSeedRestoreDeferral({
+          scopeId,
+          mintUrl: url,
+          keysetId: keyset.id,
+          scannedFrom: scanFrom,
+          pendingFrom: lowestPendingCounter,
+          condition,
+          nowMs: Date.now(),
+        }).catch(() => undefined);
         scanned.push(keyset.id);
-      } catch {
+        if (proofPending) pendingKeysets.push(keyset.id);
+      } catch (error) {
+        if (error instanceof CounterRecoveryPostponedError) {
+          postponedKeysets.push(keyset.id);
+          continue;
+        }
         // Best-effort: retry a failed keyset scan on the next startup.
-        complete = false;
+        failed = true;
       }
     }
   }
-  return { scannedKeysets: scanned, complete };
+  return {
+    scannedKeysets: scanned,
+    complete: !failed && pendingKeysets.length === 0 && postponedKeysets.length === 0,
+    failed,
+    ...(pendingKeysets.length === 0 ? {} : { pendingKeysets }),
+    ...(postponedKeysets.length === 0 ? {} : { postponedKeysets }),
+  };
+}
+
+/**
+ * Reads the deferral marker of one keyset. The seed restore record is a
+ * separate database. When it cannot be read, the scan starts at counter 0,
+ * which covers the marker.
+ */
+async function readCounterRecoveryDeferral(scopeId: string, mintUrl: string, keysetId: string) {
+  try {
+    return await seedRestoreDatabase(scopeId).resync.get([scopeId, mintUrl, keysetId]);
+  } catch {
+    return undefined;
+  }
+}
+
+function nut13Counter(locator: DurableWalletProofDerivationLocator): number {
+  if (locator.kind !== "nut13") throw new Error("counter recovery locator is not NUT-13");
+  return locator.counter;
 }
 
 /** Encode proofs as a cashuV4 token string ready to share. */
@@ -1939,28 +2330,53 @@ export type MintQuoteWaitResult =
 export interface WaitForMintQuoteOptions {
   /** Bolt11 expiry as unix-seconds. Defaults to the quote's own `expiry`. */
   expiresAtSec?: number;
-  /** Poll interval. Default 2s — short enough to mask <3s fakewallet latency. */
-  pollIntervalMs?: number;
+  /**
+   * Delay between NUT-04 checks after the first check, which runs at once.
+   * A function is read again before each later check. Default 2s — short
+   * enough to mask <3s fakewallet latency.
+   */
+  pollIntervalMs?: number | (() => number);
+  /**
+   * Returns false when NUT-04 checks pause while an acknowledged NUT-17
+   * subscription watches the quote. Checks resume after a WebSocket error.
+   * The first check and the final check at expiry always run. Default: true.
+   */
+  pollWhileSubscribed?: () => boolean;
+  /**
+   * Receives the polling controls. `resume` restarts paused checks, for
+   * example when an invoice becomes visible. `checkNow` runs one check at
+   * once, also while an acknowledged subscription pauses checks.
+   */
+  bindPollingControls?: (controls: { resume: () => void; checkNow: () => void }) => void;
   /** Fired on each non-terminal poll error so the UI can surface diagnostics
    *  without tearing the wait down. */
   onTransientError?: (error: Error) => void;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+/**
+ * A subscription without a first notification in this time counts as failed.
+ * cashu-ts gives no callback for a clean close before the acknowledgement.
+ */
+const NUT17_ACKNOWLEDGEMENT_TIMEOUT_MS = 10_000;
 
 /**
  * Subscribe to mint quote payment updates. Runs NUT-17 WS and polling
  * concurrently — whichever sees PAID first wins — so we don't hang when the
  * WS silently drops its subscription ACK (cashu-ts only registers the sub
  * listener *after* the ACK; if it never arrives, no error, no callback).
+ * NUT-17 sends the current quote state after it accepts a subscription, so
+ * the first notification proves the acknowledgement.
  *
  * Returns an unsubscribe function that tears down both paths AND the expiry
  * timer. The single `onResult` callback fires exactly once with a terminal
- * `MintQuoteWaitResult` (or never, if the caller unsubscribes first).
+ * `MintQuoteWaitResult` (or never, if the caller unsubscribes first). A
+ * terminal result also tears both paths down.
  *
- * Bounded by the bolt11's `expiry`: once that timestamp passes the wait
- * resolves to `EXPIRED` instead of polling forever — the bug behind P8's
- * "Waiting for payment…" forever symptom.
+ * Bounded by the bolt11's `expiry`: once that timestamp passes, one final
+ * NUT-04 check runs and the wait resolves to its result or to `EXPIRED`
+ * instead of polling forever — the bug behind P8's "Waiting for payment…"
+ * forever symptom.
  */
 export async function waitForMintQuotePaid(
   quote: MintQuoteResponse,
@@ -1991,34 +2407,136 @@ function waitForMintQuotePaidWithWallet(
   onResult: (result: MintQuoteWaitResult) => void,
   options: WaitForMintQuoteOptions = {},
 ): () => void {
-  const expiresAtSec = options.expiresAtSec ?? quote.expiry ?? undefined;
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-
+  const configuredInterval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const intervalMs =
+    typeof configuredInterval === "function" ? configuredInterval : () => configuredInterval;
+  const pollWhileSubscribed = options.pollWhileSubscribed ?? (() => true);
   let done = false;
-  const isDone = () => done;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let acknowledgementTimer: ReturnType<typeof setTimeout> | null = null;
+  let subscription: (() => void) | null = null;
+  // Each subscription attempt has a number. A failed attempt is abandoned,
+  // so its late callbacks cannot change the state of a newer attempt.
+  let attempt = 0;
+  let subscribing = false;
+  let acknowledged = false;
+  const shouldPoll = () => !acknowledged || pollWhileSubscribed();
+  const clearAcknowledgementTimer = () => {
+    if (acknowledgementTimer) clearTimeout(acknowledgementTimer);
+    acknowledgementTimer = null;
+  };
+  const stop = () => {
+    done = true;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+    clearAcknowledgementTimer();
+    if (expiryTimer) clearTimeout(expiryTimer);
+    subscription?.();
+    subscription = null;
+  };
   const fire = (result: MintQuoteWaitResult) => {
     if (done) return;
-    done = true;
+    stop();
     onResult(result);
   };
-
-  const wsUnsub = subscribeWsForPaid(wallet, quote.quote, fire, isDone);
-  const expiryTimer = scheduleExpiryTimer(expiresAtSec, fire);
-  const pollHandle = startMintQuotePoll(
-    wallet,
-    quote.quote,
-    pollIntervalMs,
-    fire,
-    isDone,
-    options.onTransientError,
-  );
-
-  return () => {
-    done = true;
-    pollHandle.cancel();
-    if (expiryTimer) clearTimeout(expiryTimer);
-    wsUnsub.cancel();
+  const schedulePoll = (delayMs: number) => {
+    if (done || pollTimer !== null) return;
+    pollTimer = setTimeout(() => void poll(false), delayMs);
   };
+  const checkOnce = async (): Promise<MintQuoteWaitResult | null> =>
+    classifyPollState(await wallet.checkMintQuote(quote.quote));
+  const poll = async (always: boolean) => {
+    pollTimer = null;
+    if (done) return;
+    if (!acknowledged && !subscribing) subscribe();
+    if (!always && !shouldPoll()) return;
+    try {
+      const terminal = await checkOnce();
+      if (terminal) return fire(terminal);
+    } catch (e) {
+      options.onTransientError?.(e as Error);
+    }
+    if (shouldPoll()) schedulePoll(intervalMs());
+  };
+  const subscriptionFailed = (failedAttempt: number, error: unknown) => {
+    if (done || failedAttempt !== attempt) return;
+    console.warn("[cashu] mint quote WS subscription failed, polling until it resubscribes", error);
+    attempt += 1;
+    acknowledged = false;
+    subscribing = false;
+    clearAcknowledgementTimer();
+    const stale = subscription;
+    subscription = null;
+    stale?.();
+    // The next check also tries a new subscription. It is not immediate, so
+    // a failing WebSocket does not make a tight loop.
+    schedulePoll(intervalMs());
+  };
+  const subscribe = () => {
+    attempt += 1;
+    const current = attempt;
+    subscribing = true;
+    acknowledgementTimer = setTimeout(() => {
+      acknowledgementTimer = null;
+      subscriptionFailed(current, new Error("NUT-17 subscription was not acknowledged"));
+    }, NUT17_ACKNOWLEDGEMENT_TIMEOUT_MS);
+    wallet.on
+      .mintQuoteUpdates(
+        [quote.quote],
+        (update) => {
+          if (done) return;
+          if (current === attempt && !acknowledged) {
+            acknowledged = true;
+            subscribing = false;
+            clearAcknowledgementTimer();
+            if (!shouldPoll() && pollTimer) {
+              clearTimeout(pollTimer);
+              pollTimer = null;
+            }
+          }
+          // A payment notice is evidence from any attempt.
+          const terminal = classifyPollState(update as PartialMintQuoteResponse);
+          if (terminal) fire(terminal);
+        },
+        (error) => subscriptionFailed(current, error),
+      )
+      .then((cancel) => {
+        if (!done && current === attempt) subscription = cancel;
+        else cancel();
+      })
+      .catch((error: unknown) => subscriptionFailed(current, error));
+  };
+  // A paid quote can still be minted. One check at expiry keeps a payment in
+  // the last seconds from showing as expired.
+  const finalCheck = async () => {
+    if (done) return;
+    try {
+      const terminal = await checkOnce();
+      if (terminal) return fire(terminal);
+    } catch {
+      // The expiry still ends the wait. Durable recovery checks the quote again.
+    }
+    fire({ status: "EXPIRED" });
+  };
+  const expiryTimer = scheduleExpiryTimer(
+    options.expiresAtSec ?? quote.expiry ?? undefined,
+    () => void finalCheck(),
+  );
+  subscribe();
+  // A payment can arrive before the invoice is shown, or while no waiter runs.
+  pollTimer = setTimeout(() => void poll(true), 0);
+  options.bindPollingControls?.({
+    resume: () => {
+      if (shouldPoll()) schedulePoll(intervalMs());
+    },
+    checkNow: () => {
+      if (done) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+      void poll(true);
+    },
+  });
+  return stop;
 }
 
 /** Map a poll-observed MintQuoteState into a terminal result, or `null` if
@@ -2043,76 +2561,14 @@ function classifyPollState(q: PartialMintQuoteResponse): MintQuoteWaitResult | n
   }
 }
 
-function startMintQuotePoll(
-  wallet: CashuWallet,
-  quoteId: string,
-  intervalMs: number,
-  fire: (r: MintQuoteWaitResult) => void,
-  isDone: () => boolean,
-  onTransientError?: (e: Error) => void,
-): { cancel: () => void } {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const tick = async () => {
-    if (isDone()) return;
-    try {
-      const q = await wallet.checkMintQuote(quoteId);
-      const terminal = classifyPollState(q);
-      if (terminal) {
-        fire(terminal);
-        return;
-      }
-    } catch (e) {
-      onTransientError?.(e as Error);
-    }
-    if (!isDone()) timer = setTimeout(tick, intervalMs);
-  };
-  timer = setTimeout(tick, intervalMs);
-  return {
-    cancel: () => {
-      if (timer) clearTimeout(timer);
-    },
-  };
-}
-
-function subscribeWsForPaid(
-  wallet: CashuWallet,
-  quoteId: string,
-  fire: (r: MintQuoteWaitResult) => void,
-  isDone: () => boolean,
-): { cancel: () => void } {
-  let unsub: (() => void) | null = null;
-  wallet.on
-    .mintQuotePaid(
-      quoteId,
-      (response: PartialMintQuoteResponse) => fire({ status: "PAID", quote: response }),
-      (error: Error) => {
-        // Surface as a transient error — polling will continue and may still
-        // resolve to PAID or EXPIRED. Don't fire a terminal ERROR on a WS hiccup.
-        console.warn("[cashu] mintQuotePaid WS error", error);
-      },
-    )
-    .then((u) => {
-      if (isDone()) u();
-      else unsub = u;
-    })
-    .catch((e) => {
-      console.warn("[cashu] mintQuotePaid WS subscribe failed, polling only", e);
-    });
-  return { cancel: () => unsub?.() };
-}
-
 function scheduleExpiryTimer(
   expiresAtSec: number | undefined,
-  fire: (r: MintQuoteWaitResult) => void,
+  onExpiry: () => void,
 ): ReturnType<typeof setTimeout> | null {
   if (!expiresAtSec || !Number.isFinite(expiresAtSec)) return null;
-  const msUntilExpiry = expiresAtSec * 1000 - Date.now();
-  if (msUntilExpiry <= 0) {
-    // Already expired at call time — fire on next tick so the caller's
-    // returned-unsub handle is set before the callback runs.
-    return setTimeout(() => fire({ status: "EXPIRED" }), 0);
-  }
-  return setTimeout(() => fire({ status: "EXPIRED" }), msUntilExpiry);
+  // An already expired quote fires on the next tick, after the caller has
+  // received its unsubscribe handle.
+  return setTimeout(onExpiry, Math.max(0, expiresAtSec * 1000 - Date.now()));
 }
 
 function assertNeverState(s: never): never {

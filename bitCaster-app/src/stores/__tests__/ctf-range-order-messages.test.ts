@@ -3,7 +3,9 @@ import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acknowledgeBrowserCtfRangeMessage,
+  clearBrowserCtfRangeMessageRetry,
   pageActiveBrowserCtfRangeMessages,
+  raiseBrowserCtfRangeAttentionMessage,
   recordBrowserCtfRangeMessage,
   resolveTerminalBrowserCtfRangeMessages,
 } from "../ctf-range-order-messages";
@@ -113,6 +115,102 @@ describe("durable browser range messages", () => {
       "order-submission-uncertain",
     ]);
     expect(resolved).toMatchObject({ status: "acknowledged", acknowledgedAtMs: 50 });
+  });
+
+  it("adds a mint code to an alert row written by the current production build", async () => {
+    const database = createDatabase();
+    // The current production build writes exactly these fields.
+    await database.ctfRangeMessages.add({
+      ...message(0, "mint-source-uncertain", 10),
+      status: "active",
+      acknowledgedAtMs: null,
+    });
+
+    await recordBrowserCtfRangeMessage(
+      {
+        ...message(0, "mint-source-uncertain", 20),
+        mintError: { code: 11002, detail: "Token pending" },
+      },
+      database,
+    );
+
+    expect((await page(database)).messages).toEqual([
+      {
+        ...message(0, "mint-source-uncertain", 10),
+        status: "active",
+        acknowledgedAtMs: null,
+        mintError: { code: 11002, detail: "Token pending" },
+      },
+    ]);
+  });
+
+  it("marks a halted recovery alert for a manual retry and clears that mark", async () => {
+    const database = createDatabase();
+    const halted = {
+      ...message(0, "recovery-pending", 10),
+      mintError: { code: 11002, detail: "Token pending" },
+      retryable: true as const,
+    };
+    await recordBrowserCtfRangeMessage(halted, database);
+    expect((await page(database)).messages).toMatchObject([{ retryable: true }]);
+
+    await clearBrowserCtfRangeMessageRetry(
+      { scopeId: "scope-1", operationId: "operation-1" },
+      database,
+    );
+    const [cleared] = (await page(database)).messages;
+    expect(cleared?.retryable).toBeUndefined();
+    expect(cleared?.mintError).toEqual({ code: 11002, detail: "Token pending" });
+
+    await recordBrowserCtfRangeMessage({ ...halted, observedAtMs: 30 }, database);
+    expect((await page(database)).messages).toMatchObject([{ retryable: true, observedAtMs: 10 }]);
+  });
+
+  it("raises a halted alert again after the user dismissed it", async () => {
+    const database = createDatabase();
+    const halted = {
+      ...message(0, "recovery-pending", 10),
+      mintError: { code: 11002, detail: "Token pending" },
+      retryable: true as const,
+    };
+    await raiseBrowserCtfRangeAttentionMessage(halted, database);
+    await acknowledgeBrowserCtfRangeMessage({ ...halted, acknowledgedAtMs: 11 }, database);
+    expect((await page(database)).messages).toEqual([]);
+
+    await raiseBrowserCtfRangeAttentionMessage({ ...halted, observedAtMs: 20 }, database);
+
+    expect((await page(database)).messages).toMatchObject([
+      { status: "active", acknowledgedAtMs: null, retryable: true, observedAtMs: 10 },
+    ]);
+  });
+
+  it("keeps the released-funds mark of a refused order alert", async () => {
+    const database = createDatabase();
+    await recordBrowserCtfRangeMessage(
+      {
+        ...message(1, "recovery-pending", 10),
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError: { code: 11008, detail: "Duplicate outputs" },
+        fundsReleased: true,
+      },
+      database,
+    );
+
+    expect((await page(database)).messages).toMatchObject([
+      { code: "order-attempt-ended", fundsReleased: true, mintError: { code: 11008 } },
+    ]);
+  });
+
+  it("refuses an invalid mint error before it stores an alert", async () => {
+    const database = createDatabase();
+    await expect(
+      recordBrowserCtfRangeMessage(
+        { ...message(0, "recovery-pending", 10), mintError: { code: -1, detail: "" } },
+        database,
+      ),
+    ).rejects.toThrow("Browser range message mint error is invalid");
+    expect(await database.ctfRangeMessages.count()).toBe(0);
   });
 
   it("retains alerts beyond the visible page after reopening", async () => {

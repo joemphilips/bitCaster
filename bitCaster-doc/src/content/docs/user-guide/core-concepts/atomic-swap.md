@@ -20,6 +20,17 @@ you accepted. It also checks the accepted worst execution price.
 These limits do not remove wallet preparation or refund fees.
 Preparation can cost a fee even if no trade completes.
 
+The trade summary can also show a Participation Score row. Participation Score
+is an anti-spam fee. bitCaster charges a few sats of Score when your order uses
+the order book. The row shows the Score charge for this order. If your Score
+balance does not cover the charge, a **Score top-up at confirm (kept as
+balance)** row also appears. It shows the Score that the app buys with ordinary
+sats from your wallet when you confirm. This purchase can be larger than the
+shortfall. Score that the order does not use stays in your Score balance for
+later orders. The trade totals do not include these rows. Score is not
+refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
+for the charge and top-up rules.
+
 To sell all your shares, keep some ordinary sats available for preparation
 fees. The wallet can pay those fees with sats instead of reducing the shares
 you sell. The sale proceeds cannot pay this fee because preparation comes first.
@@ -41,9 +52,24 @@ the preparation or refund its paid fees. Unused locked funds follow the normal
 expiry and refund process. Recovery does not submit a new order automatically.
 
 If the mint's preparation reply is missing, the wallet keeps the affected
-funds reserved while it checks the result. An expired authorization or a
-rejected retry does not prove that the first request failed. Recovery can
-remain pending if the mint cannot complete or return the exact result.
+funds reserved while it checks the result. An expired authorization or most
+rejected retries do not prove that the first request failed. The wallet tries
+the check again after an interval. The interval increases after each failed
+try, up to 15 minutes. If the mint sends a wait time, the wallet obeys it.
+If the mint refuses the same retry several times, the wallet stops the
+automatic retries. The alert then shows the mint code and **Retry**. The funds
+stay reserved.
+
+Some mint refusals prove that the mint did not complete the preparation and
+cannot complete it later. After such a refusal, the wallet checks the reserved
+funds again. If the mint did not spend them, the wallet ends the order attempt
+and makes the funds available again. It does not submit the order. If another
+operation spent part of the funds, the wallet releases the remaining funds. If
+the mint still processes a reserved input, the wallet waits.
+
+While an earlier sell in a market prepares its funds, the app does not start
+another sell in the same market. Wait until the earlier preparation finishes
+or ends. The **Active trade progress** list shows it.
 
 ## If a trade is delayed
 
@@ -76,6 +102,12 @@ uncertain or that funds recovery is pending then close. Use **Next** to read
 more alerts without dismissing an unresolved alert. Use **First alerts** to
 return to the start. Dismissing an alert does not stop recovery or delete funds.
 
+An alert can show the code that the mint returned, for example
+**Mint code: 11008**. If the mint refused an order preparation, the alert says
+**Order was not completed**, and the reserved funds are available again. If the
+wallet stopped the automatic retries, the alert shows **Retry**. Select
+**Retry** to send the check one more time.
+
 The **Active trade progress** list shows operations that the wallet still needs
 to finish. It survives a reload while the wallet data remains available.
 Use **Refresh status** to check again. An unavailable status is not a failed
@@ -87,6 +119,12 @@ not your completed-trade history.
 
 While the wallet finishes the trade that you just submitted, the trading panel
 shows **Updating your wallet…**. This includes the refund of a failed trade.
+
+When bitCaster reports that the settlement of your order is confirmed, the
+wallet applies the result at once. Your balance, your positions, and the
+Portfolio Funds tab then update. You do not need to reload the page. If the
+result is not ready yet, the wallet checks again after short delays, then at
+a longer interval.
 
 Wallet preparation is separate from order acceptance. The progress list shows
 which stage is confirmed. A prepared payment does not prove that the engine

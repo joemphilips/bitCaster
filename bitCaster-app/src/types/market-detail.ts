@@ -252,7 +252,6 @@ export interface LimitOrderPreview {
   quoteSubunits: number;
   creatorFee: number;
   mintFee: number;
-  engineScoreFeeSats: number | null;
   potentialPayout: number;
   totalCost: number;
 }
@@ -269,8 +268,18 @@ export interface TradePreview {
   mintFee: number;
   potentialPayout: number;
   creatorFee: number;
-  engineScoreFeeSats: number | null;
   totalCost: number;
+}
+
+/**
+ * Display-only Participation Score facts for one order. `chargeScore` is the
+ * order's tariff, paid from the Score balance. `purchaseScore` is the Score
+ * that confirming the order buys from ordinary sats, or null when the balance
+ * covers the charge. One Score is one sat.
+ */
+export interface ParticipationScoreOrderCost {
+  chargeScore: number;
+  purchaseScore: number | null;
 }
 
 /** Exact wallet preparation and settlement facts shown beside the quote. */
@@ -331,6 +340,9 @@ export interface MarketDetailProps {
   /** Display-only reviewed fees for the last cancelled or failed attempt. These do not supply current consent. */
   attemptedTradeFeeFacts?: TradeFeeFacts | null;
 
+  /** The order's Participation Score charge and purchase. Null shows no Score lines. */
+  participationScore?: ParticipationScoreOrderCost | null;
+
   /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
   feeConsentCurrent?: boolean;
 
@@ -353,6 +365,8 @@ export interface MarketDetailProps {
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
     message: string;
+    /** The message names Participation Score, so the term's help goes next to it. */
+    participationScoreHelp?: boolean;
   } | null;
 
   /** Explicitly dismiss the latest order-submit status. */

@@ -1,5 +1,13 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { useState } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderWithoutRouter,
+  screen,
+  within,
+} from "@testing-library/react";
+import { useState, type ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import { Chart } from "chart.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -7,6 +15,10 @@ import { PriceChart } from "../PriceChart";
 import { chartDomain, preparePriceSeries, windowPriceSeries } from "../priceChartModel";
 import type { ChartTimeframe, Comment, PriceHistory } from "@/types/market-detail";
 import type { PublicNostrProfile } from "@/lib/nostr";
+import { useToastStore } from "@/stores/toast";
+
+// An opened comment with a valid author key renders a profile link, which needs a router.
+const render = (ui: ReactElement) => renderWithoutRouter(ui, { wrapper: MemoryRouter });
 
 const fetchPublicNostrProfile = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/nostr", () => ({ fetchPublicNostrProfile }));
@@ -1114,6 +1126,145 @@ describe("PriceChart", () => {
     await act(async () => fireEvent.click(screen.getByTestId("price-chart-comment-marker")));
     expect(fetchPublicNostrProfile).toHaveBeenCalledTimes(11);
     expect(screen.getByRole("dialog")).toHaveTextContent("Trader new-author");
+  });
+
+  describe("opened comment author", () => {
+    // NIP-19 specification example: this hex public key encodes to this npub.
+    const authorHex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+    const authorNpub = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
+    const timestamp = "2026-05-25T10:00:00.000Z";
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
+    afterEach(() => {
+      vi.useRealTimers();
+      useToastStore.setState({ toasts: [] });
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+
+    function renderAuthor(userId: string, writeText?: (text: string) => Promise<void>) {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: writeText ? { writeText } : undefined,
+      });
+      const view = render(
+        <PriceChart
+          chartTimeframe="all"
+          priceHistory={{ timeframe: "all", data: [{ eventOrder: "first", timestamp, price: 50 }] }}
+          comments={[{ ...makeComment("author", timestamp, makeTrade(timestamp)), userId }]}
+        />,
+      );
+      const marker = screen.getByTestId("price-chart-comment-marker");
+      // Hover opens the card without a pin. Only a later interaction may pin it.
+      fireEvent.pointerEnter(marker, { pointerType: "mouse" });
+      return { view, marker, dialog: screen.getByRole("dialog") };
+    }
+
+    it("links the author name to the profile page and keeps the E2E author identity", () => {
+      const { dialog } = renderAuthor(authorHex);
+
+      const author = within(dialog).getByTestId("price-chart-comment-author");
+      expect(author).toHaveTextContent("Trader author");
+      expect(author).toHaveAttribute("title", authorHex);
+      const link = within(dialog).getByRole("link", { name: "Trader author" });
+      expect(link).toHaveAttribute("href", `/user/${authorNpub}`);
+      expect(link).toContainElement(author);
+      expect(link).not.toContainElement(
+        within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" }),
+      );
+    });
+
+    it("names the copy control after the resolved profile name", async () => {
+      fetchPublicNostrProfile.mockResolvedValue({
+        pubkey: authorHex,
+        displayName: "Alice",
+        avatar: "",
+      });
+      const { dialog } = renderAuthor(authorHex);
+
+      expect(
+        await within(dialog).findByRole("button", { name: "Copy Alice's Nostr ID" }),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole("link", { name: "Alice" })).toHaveAttribute(
+        "href",
+        `/user/${authorNpub}`,
+      );
+    });
+
+    it("copies the npub and keeps a hover card open after the copy and link clicks", async () => {
+      vi.useFakeTimers();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      const { marker, dialog } = renderAuthor(authorHex, writeText);
+      fireEvent.pointerLeave(marker);
+      fireEvent.pointerEnter(dialog);
+      const copy = within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" });
+
+      fireEvent.pointerDown(copy, { pointerType: "mouse" });
+      await act(async () => fireEvent.click(copy));
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(authorNpub);
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: "success", message: "Nostr ID copied." }),
+      ]);
+      fireEvent.pointerLeave(dialog);
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(marker).toHaveAttribute("aria-expanded", "true");
+
+      const link = within(dialog).getByRole("link", { name: "Trader author" });
+      fireEvent.pointerDown(link, { pointerType: "mouse" });
+      fireEvent.click(link);
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.getByRole("dialog")).toBe(dialog);
+    });
+
+    it("reports a failed copy and keeps the card open", async () => {
+      const { dialog } = renderAuthor(authorHex, vi.fn().mockRejectedValue(new Error("denied")));
+
+      await act(async () =>
+        fireEvent.click(
+          within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" }),
+        ),
+      );
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: "error", message: "Could not copy the Nostr ID." }),
+      ]);
+      expect(screen.getByRole("dialog")).toBe(dialog);
+    });
+
+    it.each(["link", "copy"] as const)(
+      "keeps a hover card open while the %s control has focus and Escape returns to the marker",
+      (control) => {
+        vi.useFakeTimers();
+        const { marker, dialog } = renderAuthor(authorHex);
+        const target =
+          control === "link"
+            ? within(dialog).getByRole("link", { name: "Trader author" })
+            : within(dialog).getByRole("button", { name: "Copy Trader author's Nostr ID" });
+        act(() => target.focus());
+        fireEvent.pointerLeave(marker);
+        act(() => vi.advanceTimersByTime(300));
+        expect(screen.getByRole("dialog")).toBe(dialog);
+        expect(target).toHaveFocus();
+
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(marker).toHaveFocus();
+      },
+    );
+
+    it.each([
+      ["a non-key value", "user-author"],
+      ["an uppercase hex key", authorHex.toUpperCase()],
+      ["an npub", authorNpub],
+    ])("shows %s as plain text without a link or copy control", (_, userId) => {
+      const { dialog } = renderAuthor(userId);
+
+      const author = within(dialog).getByTestId("price-chart-comment-author");
+      expect(author).toHaveTextContent("Trader author");
+      expect(author).toHaveAttribute("title", userId);
+      expect(within(dialog).queryByRole("link")).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: /Nostr ID/ })).toBeNull();
+    });
   });
 
   it("caps comment markers to the visible history window and a bounded count", () => {

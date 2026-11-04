@@ -40,7 +40,7 @@ const LONG_NAME = `Release Three Oracle ${RLO}ruoivaheB evil ${"x".repeat(90)}`;
 function renderShell() {
   return render(
     <MemoryRouter initialEntries={["/markets"]}>
-      <ShellRoutes canReadOrderStatus={false} />
+      <ShellRoutes canReadOrderStatus={false} nostrIdentityRestored />
     </MemoryRouter>,
   );
 }
@@ -87,10 +87,12 @@ describe("ShellRoutes own profile name", () => {
   // Only the key owner signs the own profile, so any http or https host is allowed.
   it.each([
     ["javascript:alert(1)", false],
-    ["data:image/png;base64,AAAA", false],
+    ["data:text/html;base64,PHNjcmlwdD4=", false],
+    ["data:image/png;base64,AAAA", true],
+    ["data:image/svg+xml,%3Csvg%2F%3E", true],
     ["http://localhost:5173/me.svg", true],
     ["https://img.example/me.png", true],
-  ])("loads the own avatar %s only from an http or https URL", (avatar, loaded) => {
+  ])("loads the own avatar %s only from an http(s) URL or a data image", (avatar, loaded) => {
     settingsState.nostrProfile = { displayName: "Me", avatar };
     const { container } = renderShell();
 

@@ -2,6 +2,7 @@ import { playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
+import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
 export default mergeConfig(
   viteConfig,
@@ -21,6 +22,7 @@ export default mergeConfig(
             name: "shell-environment",
             browser: "chromium",
             provider: playwright({
+              launchOptions: chromiumLaunchOptions(),
               contextOptions: { locale: "en-US", timezoneId: "UTC", reducedMotion: "reduce" },
             }),
           },

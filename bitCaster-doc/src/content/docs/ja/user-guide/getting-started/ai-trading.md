@@ -24,8 +24,41 @@ daemon は、ウォレットと保存された処理を保持するローカル�
 
 ## CLI を準備する
 
-CLI は npm で公開していません。公開リポジトリのクローンからビルドします。
-Git と Node.js 22 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
+CLI は[最新リリース](https://github.com/joemphilips/bitCaster/releases/latest)からダウンロードします。
+x64 の Linux 用と、Apple シリコンの macOS 用のアーカイブがあります。Node.js 22.15 以降が必要です。
+Windows ではまだ注文を送信できないため、Windows 用のアーカイブはありません。
+
+Linux では、アーカイブとチェックサムファイルをダウンロードします。アーカイブを検証してから展開します。
+
+```bash
+curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/bitcaster-cli-linux-x64.tar.gz &&
+  curl -fLO https://github.com/joemphilips/bitCaster/releases/latest/download/SHA256SUMS &&
+  grep ' bitcaster-cli-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c - &&
+  tar -xzf bitcaster-cli-linux-x64.tar.gz &&
+  export PATH="$PWD/bitcaster-cli-linux-x64/bin:$PATH" &&
+  bitcaster-cli --help
+```
+
+コマンドは、失敗した手順で止まります。チェックサムの検証に失敗した場合は、2 つのファイルをもう一度ダウンロードしてください。
+2 回のダウンロードの間に、新しいリリースが公開されることがあります。
+
+macOS では、`bitcaster-cli-linux-x64` の代わりに `bitcaster-cli-darwin-arm64` を、`sha256sum -c -` の代わりに `shasum -a 256 -c -` を使います。
+アーカイブには、CLI、daemon、マーケット作成に使うオラクルヘルパーが入っています。
+新しいシェルでも `bitcaster-cli` を使えるようにするには、シェルのプロファイルで `bin` ディレクトリを `PATH` に追加してください。
+
+必要に応じて、このリポジトリの main ブランチのリリースワークフローがアーカイブをビルドしたことを確認できます。
+この手順には GitHub CLI が必要です。
+
+```bash
+gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaster \
+  --cert-identity https://github.com/joemphilips/bitCaster/.github/workflows/release-cli.yml@refs/heads/main \
+  --deny-self-hosted-runners
+```
+
+`bitcaster-cli --version` は、リリースのバージョンとソースのコミットを表示します。例: `0.1.0+0123456789ab`
+
+公開リポジトリのクローンから CLI をビルドすることもできます。
+Git と Node.js 22.15 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。
 
 ```bash
 git clone https://github.com/joemphilips/bitCaster.git
@@ -38,7 +71,8 @@ bitcaster-cli --help
 
 `npm ci` は依存関係をインストールし、CLI をビルドします。
 `npm link` は `bitcaster-cli` を npm のグローバル bin ディレクトリに置きます。
-Windows ではまだ注文を送信できません。
+このビルドにはオラクルヘルパーが含まれないため、マーケットを作成できません。
+マーケットを作成するには、リリースのアーカイブを使ってください。
 
 CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
 bitCaster のエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
@@ -108,6 +142,24 @@ daemon の結果は `{ "ok": true, "result": ... }` の形式です。
 `market watch` と `wallet watch` は、1 行に 1 つの JSON オブジェクトを出力します。
 `daemon init` など一部の準備用コマンドは、プレーンテキストを出力します。
 
+## ミントが注文を拒否したとき
+
+daemon は注文を送信する前に、ミントで注文の資金を準備します。
+ミントの拒否の中には、準備が完了しておらず、今後も完了しないことを証明するものがあります。
+このような拒否の後、daemon は予約した資金をもう一度確認し、注文の試行を終了します。
+このとき `order submit` はコード `order-attempt-released` で失敗し、`mintError` にミントのコードを含めます。
+`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.」です。
+別の操作が資金の一部を使っていた場合、daemon は残りの資金だけを解放します。新しい注文を送信できます。
+
+その他の失敗では資金は予約されたままで、daemon は結果をもう一度確認します。
+確認に失敗するたびに間隔が長くなり、最大 15 分になります。
+`order recovery` は、daemon がまだ回復している注文の操作と、ミントの拒否で終了した注文の試行を表示します。
+ミントが同じ確認を 5 回拒否すると、daemon は自動の確認を停止します。
+その項目には `"halted": true`、ミントのコード、`retryCommand`(例: `bitcaster-cli order retry <operation-id>`)が表示されます。
+そのコマンドを実行すると、確認をもう一度だけ送信します。daemon を再起動しても、自動の確認が再開します。
+`order retry` は `--dry-run` に対応しています。
+同じマーケットの前の売り注文が資金を準備している間、`order submit` はそのマーケットの新しい売り注文をコード `order-sell-preparation-pending` で拒否し、資金を予約しません。
+
 ## 資金を安全に保つ
 
 エージェントは CLI ウォレットのすべての資金を操作できます。
@@ -119,9 +171,17 @@ daemon の結果は `{ "ok": true, "result": ... }` の形式です。
 エージェントに復元フレーズを渡さないでください。復元フレーズを持つ人は、そのウォレットの資金を使えます。
 
 送信する前に、`order fee-preview` と `market creation-quote` の結果を見せるようエージェントに指示してください。
-`--dry-run` を使うと、コマンドを検証し、送信せずにリクエストを表示します。
-`order submit`、`market create`、`wallet invoice create` が対応しています。
-すべてのコマンドが対応しているわけではありません。
-対応していないコマンドは `--dry-run` を無視して通常どおり実行します。
-そのコマンドの `--help` に `--dry-run` がある場合だけ、`--dry-run` に頼ってください。
+コマンドの前に `--dry-run` を付けると、実行せずにコマンドを確認できます。
+各コマンドの `--help` に、そのコマンドの dry-run での動作を示します。すべてのコマンドに、この動作が定められています。
+対応するコマンドは `{"dryRun": true, "method", "params"}` を表示し、何も変更しません。`params` に秘密の値は入りません。
+`order submit`、`market create`、`wallet invoice create` は対応しています。
+読み取り専用のコマンドは通常どおり実行します。資金、注文、マーケット、鍵、設定は変更しません。
+拒否するコマンドは、何も実行せずに終了コード 2 で終了します。
+`daemon init`、`daemon stop`、`daemon restart` は `--dry-run` を拒否します。
+
+`--dry-run` を付けると、CLI は daemon を起動しません。
+daemon を必要とするコマンドは、daemon がすでに動いているときだけ動作します。
+`--dry-run` は `--` より前に、値を付けずに指定してください。
+それ以外の場合、CLI は終了コード 2 で終了します。
+dry-run が成功しても、操作の成功は保証されません。
 すべての処理の最終結果が出るまで、データディレクトリを保持してください。

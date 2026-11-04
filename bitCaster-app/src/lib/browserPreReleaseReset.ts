@@ -21,7 +21,13 @@ export interface BrowserPreReleaseResetDependencies {
 }
 
 function isBitcasterBrowserDatabase(name: string): boolean {
-  return name === "bitcaster" || name === "kormir" || name.startsWith("bitcaster-wallet-");
+  return (
+    name === "bitcaster" ||
+    name === "kormir" ||
+    name.startsWith("bitcaster-wallet-") ||
+    // The seed restore record of a wallet goes with its wallet database.
+    name.startsWith("bitcaster-seed-restore-")
+  );
 }
 
 function isBitcasterBrowserStorageKey(key: string): boolean {

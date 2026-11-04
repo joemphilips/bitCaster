@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -145,6 +145,8 @@ interface TopUpOverlayProps {
   proofUnit?: CashuProofUnit | null;
   /** Error for an amount below `deficit`. The default names the trade. */
   minimumErrorDescription?: string;
+  /** A help control shown beside the minimum error, outside the alert text. */
+  minimumErrorHelp?: ReactNode;
   /** Called after proofs have landed in the store. */
   onSuccess: () => void;
   /** User aborted the top-up. */
@@ -164,6 +166,7 @@ export function TopUpOverlay({
   baseAsset: baseAssetInput,
   proofUnit: proofUnitInput,
   minimumErrorDescription,
+  minimumErrorHelp,
   onSuccess,
   onCancel,
 }: TopUpOverlayProps) {
@@ -611,14 +614,17 @@ export function TopUpOverlay({
                     }`}
                   />
                   {amountError !== null && (
-                    <p
-                      id={amountErrorId}
-                      role="alert"
-                      data-testid="top-up-amount-error"
-                      className="mt-2 text-xs text-red-500 dark:text-red-400"
-                    >
-                      {amountError}
-                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <p
+                        id={amountErrorId}
+                        role="alert"
+                        data-testid="top-up-amount-error"
+                        className="text-xs text-red-500 dark:text-red-400"
+                      >
+                        {amountError}
+                      </p>
+                      {amountLimitError === null && minimumErrorHelp}
+                    </div>
                   )}
                 </>
               ) : (

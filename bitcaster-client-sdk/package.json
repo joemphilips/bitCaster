@@ -411,6 +411,10 @@
       "types": "./dist/conditionalKeysetSeedRecovery.d.ts",
       "import": "./dist/conditionalKeysetSeedRecovery.js"
     },
+    "./seedPositionRestore": {
+      "types": "./dist/seedPositionRestore.d.ts",
+      "import": "./dist/seedPositionRestore.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
@@ -479,6 +483,14 @@
       "types": "./dist/ctfRangeSourceRecovery.d.ts",
       "import": "./dist/ctfRangeSourceRecovery.js"
     },
+    "./mintRefusal": {
+      "types": "./dist/mintRefusal.d.ts",
+      "import": "./dist/mintRefusal.js"
+    },
+    "./seedCounterGapScan": {
+      "types": "./dist/seedCounterGapScan.d.ts",
+      "import": "./dist/seedCounterGapScan.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"
@@ -515,7 +527,10 @@
       "types": "./dist/tradeComment.d.ts",
       "import": "./dist/tradeComment.js"
     },
-    "./tradingClient": "./src/tradingClient.ts",
+    "./tradingClient": {
+      "types": "./dist/tradingClient.d.ts",
+      "import": "./dist/tradingClient.js"
+    },
     "./nut16Qr": {
       "types": "./dist/nut16Qr.d.ts",
       "import": "./dist/nut16Qr.js"
@@ -555,7 +570,6 @@
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },
   "files": [
@@ -576,7 +590,7 @@
   },
   "devDependencies": {
     "esbuild": "0.28.1",
-    "playwright": "1.60.0",
+    "playwright": "1.64.1",
     "typescript": "^5.7.2"
   }
 }

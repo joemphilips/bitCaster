@@ -13,8 +13,12 @@ export interface AppShellProps {
   children: React.ReactNode;
   navigationItems: Array<{ label: string; href: string; isActive?: boolean }>;
   user?: { name: string; avatarUrl?: string; balance?: number };
+  /** A Nostr signer is connected. The account item offers log out, not log in. */
+  isLoggedIn: boolean;
   onNavigate?: (href: string) => void;
-  onLogout?: () => void;
+  onLogin?: () => void;
+  /** Receives the control that opened the menu, so focus can return to it after a dialog. */
+  onLogout?: (returnFocusTo: HTMLElement | null) => void;
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
   onCreateClick?: () => void;
@@ -24,7 +28,9 @@ export function AppShell({
   children,
   navigationItems,
   user,
+  isLoggedIn,
   onNavigate,
+  onLogin,
   onLogout,
   searchQuery = "",
   onSearchChange,
@@ -37,6 +43,7 @@ export function AppShell({
   const lastUrlSearchQuery = useRef(searchQuery);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [mobileUserMenuOpen, setMobileUserMenuOpen] = useState(false);
+  const mobileUserTabRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (lastUrlSearchQuery.current === searchQuery) return;
@@ -77,6 +84,8 @@ export function AppShell({
             {user && (
               <UserMenu
                 user={user}
+                isLoggedIn={isLoggedIn}
+                onLogin={onLogin}
                 onLogout={onLogout}
                 onNavigate={onNavigate}
                 onCreateClick={onCreateClick}
@@ -141,6 +150,7 @@ export function AppShell({
 
           {/* User → Open mobile menu */}
           <button
+            ref={mobileUserTabRef}
             onClick={() => setMobileUserMenuOpen(true)}
             className="flex flex-col items-center justify-center gap-1 text-slate-500 dark:text-slate-400 transition-colors"
           >
@@ -263,11 +273,12 @@ export function AppShell({
             <button
               onClick={() => {
                 setMobileUserMenuOpen(false);
-                onLogout?.();
+                if (isLoggedIn) onLogout?.(mobileUserTabRef.current);
+                else onLogin?.();
               }}
               className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3"
             >
-              {t("nav.logout")}
+              {isLoggedIn ? t("nav.logout") : t("nav.login")}
             </button>
           </div>
         </div>

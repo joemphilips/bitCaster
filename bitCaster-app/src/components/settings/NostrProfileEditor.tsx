@@ -6,13 +6,14 @@ import {
   type BrowserProfileEditView,
   type BrowserProfileSaveResult,
 } from "@/lib/browserNostrProfile";
-import type { NostrProfilePatch } from "@bitcaster/client-sdk/nostrProfile";
+import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 import { NostrMediaUploadError } from "@bitcaster/client-sdk/nostrMediaUpload";
 import {
   uploadBrowserNostrProfileImage,
   type BrowserProfileImageReceipt,
 } from "@/lib/browserNostrProfileMedia";
 import { assertNever } from "@/lib/enumDiscipline";
+import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 
 export interface NostrProfileEditorProps {
   readonly upload?: typeof uploadBrowserNostrProfileImage;
@@ -20,7 +21,7 @@ export interface NostrProfileEditorProps {
   readonly onEditEnd?: () => void;
   readonly load: (signal: AbortSignal) => Promise<BrowserProfileEditView>;
   readonly save: (
-    patch: NostrProfilePatch,
+    patch: NostrProfileEditorPatch,
     signal: AbortSignal,
   ) => Promise<BrowserProfileSaveResult>;
 }
@@ -201,6 +202,7 @@ export function NostrProfileEditor({
       }
     }
   };
+  const picturePreview = ownProfileImageUrl(draft.picture);
 
   return (
     <>
@@ -251,9 +253,10 @@ export function NostrProfileEditor({
                       void uploadImage(event.dataTransfer.files[0]!);
                     }}
                   >
-                    {draft.picture.startsWith("https://") && (
+                    {/* The preview follows the rule of the own profile card. */}
+                    {picturePreview && (
                       <img
-                        src={draft.picture}
+                        src={picturePreview}
                         alt={t("settings.profileImagePreview")}
                         referrerPolicy="no-referrer"
                         className="mb-2 h-16 w-16 rounded-full object-cover"

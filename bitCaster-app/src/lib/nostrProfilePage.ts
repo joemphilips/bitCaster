@@ -1,6 +1,5 @@
 import {
   readNostrProfilePage,
-  selectPublicNostrProfileRelays,
   type NostrBoundedRelayQuery,
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import {
@@ -27,9 +26,12 @@ function relayQuery(signal: AbortSignal): NostrBoundedRelayQuery {
     });
 }
 
-/** The profile page reads the same relays as the public profile cache. */
+/**
+ * The profile page reads every selected relay, as the signer profile read does.
+ * The public profile cache reads fewer relays because it reads many authors.
+ */
 export function profilePageRelayUrls(relays: RelayConfig[]): string[] {
-  return selectPublicNostrProfileRelays(effectiveRelayUrls(relays));
+  return effectiveRelayUrls(relays);
 }
 
 /** One request to each relay reads the profile, the follow list and the notes. */

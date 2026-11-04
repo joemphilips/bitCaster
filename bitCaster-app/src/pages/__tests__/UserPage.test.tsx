@@ -215,6 +215,22 @@ describe("UserPage", () => {
     ).toEqual(relays.map((url) => [url, [[0], [3], [1]]]));
   });
 
+  it("reads every selected relay, not only the first three", async () => {
+    const selected = [...relays, "wss://three.example", "wss://four.example"];
+    useSettingsStore.setState({
+      relays: selected.map((url) => ({ url, connectionStatus: "disconnected" as const })),
+    });
+    serve(relays[0]!, [profileEvent({ name: "alice" })]);
+    serve(selected[3]!, [followList, ...notes]);
+    renderPage();
+
+    expect(await screen.findByText("2 following")).toBeInTheDocument();
+    expect(await screen.findAllByTestId("profile-note")).toHaveLength(3);
+    expect(relayTransport.queryBrowserProfileRelayFilters.mock.calls.map(([url]) => url)).toEqual(
+      selected,
+    );
+  });
+
   it("drops a note dated after the Date range and still shows the page", async () => {
     serve(relays[0]!, [
       profileEvent({ name: "alice" }),
@@ -272,6 +288,27 @@ describe("UserPage", () => {
     expect(heading.parentElement).toHaveClass("flex", "items-center");
   });
 
+  it("reports a failed Nostr ID copy from its compact control", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    serve(relays[0]!, [profileEvent({ display_name: "Frank" })]);
+    renderPage();
+
+    await screen.findByRole("heading", { name: "Frank" });
+    const copy = screen.getByRole("button", { name: "Copy Nostr ID" });
+    // The profile header uses a smaller control than the market and comment controls.
+    expect(copy).toHaveClass("p-1.5");
+    expect(copy.querySelector("svg")).toHaveClass("h-3.5", "w-3.5");
+    await user.click(copy);
+    expect(await screen.findByRole("status")).toHaveTextContent("Could not copy the Nostr ID.");
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", message: "Could not copy the Nostr ID." }),
+    ]);
+  });
+
   it("keeps the copy control beside the short Nostr ID when the profile has a name", async () => {
     serve(relays[0]!, [profileEvent({ display_name: "Frank" })]);
     renderPage();
@@ -294,6 +331,24 @@ describe("UserPage", () => {
     expect(markets.compareDocumentPosition(notesRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it("shows a data image picture as an image source and no data banner", async () => {
+    const picture =
+      "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
+    serve(relays[0]!, [
+      profileEvent({
+        display_name: "alice",
+        picture: ` DATA:IMAGE/SVG+XML,${picture.slice(19)}`,
+        banner: picture,
+      }),
+    ]);
+    const { container } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "alice" })).toBeInTheDocument();
+    expect(screen.getByTestId("profile-picture")).toHaveAttribute("src", picture);
+    expect(screen.queryByTestId("profile-banner")).not.toBeInTheDocument();
+    expect(container.querySelector("object, iframe, embed")).toBeNull();
   });
 
   it("clamps a long description on a narrow screen until the user opens it", async () => {

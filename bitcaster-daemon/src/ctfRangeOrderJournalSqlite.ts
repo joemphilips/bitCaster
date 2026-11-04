@@ -203,6 +203,36 @@ export function readRangePreparationHistoryByClientOrderId(
   ).map(decodePreparationRow)
 }
 
+const PREPARED_SELL_SCAN_LIMIT = 256
+
+/**
+ * Read the prepared sell journals of one market. `overflow` reports more than
+ * the bounded page; a caller that guards a position then fails closed.
+ */
+export function readPreparedRangeSells(
+  database: DatabaseSync,
+  scopeId: string,
+  conditionId: string,
+): { readonly records: RangePreparationRecord[]; readonly overflow: boolean } {
+  requireText(scopeId, 'scope id')
+  requireText(conditionId, 'condition id', 1_024)
+  const rows = database
+    .prepare(
+      `SELECT * FROM daemon_ctf_range_preparations
+       WHERE scope_id = ? AND lifecycle_state = 'prepared' AND side = 'Sell'
+         AND lower(condition_id) = ?
+       ORDER BY created_at_ms, range_operation_id
+       LIMIT ?`,
+    )
+    .all(scopeId, conditionId.toLowerCase(), PREPARED_SELL_SCAN_LIMIT + 1) as Array<
+    Record<string, unknown>
+  >
+  return {
+    records: rows.slice(0, PREPARED_SELL_SCAN_LIMIT).map(decodePreparationRow),
+    overflow: rows.length > PREPARED_SELL_SCAN_LIMIT,
+  }
+}
+
 export function readActiveRangePreparationByClientOrderId(
   database: DatabaseSync,
   scopeId: string,

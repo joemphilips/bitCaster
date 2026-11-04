@@ -60,6 +60,7 @@ for (const layout of ["desktop", "mobile"] as const) {
         createElement(AppShell, {
           navigationItems: [{ label: "Markets", href: "/markets", isActive: true }],
           user: { name: "Alice", balance: 7001 },
+          isLoggedIn: true,
           onNavigate,
           onLogout,
           children: createElement("p", { className: "p-6" }, "Market content"),

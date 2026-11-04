@@ -97,7 +97,7 @@ export function PLChart({
           </div>
         ) : data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
-            No data
+            {t("portfolio.chartNoData")}
           </div>
         ) : (
           <svg

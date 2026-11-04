@@ -11,6 +11,12 @@ To create a market, define the question and list its possible outcomes.
 In the current app, you also act as the oracle: you report the result when
 the event is resolved.
 
+The oracle signs with a Nostr private key (nsec) that the browser keeps.
+Without one, the wizard asks you to register your nsec or create a new key.
+If you connected a NIP-07 extension, the wizard shows only
+**Register nsec directly**. It opens the private-key entry in the Nostr
+settings. Register the nsec of the identity that your extension uses.
+
 You do not choose an opening probability or fund the market maker during
 registration. The mint can charge a separate registration fee. The app asks
 you to confirm that fee before proceeding. After creation, you can fund the market maker in a separate

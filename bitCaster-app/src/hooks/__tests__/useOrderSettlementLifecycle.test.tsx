@@ -2,8 +2,10 @@ import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import i18n from "@/i18n";
 import { useNotificationsStore } from "@/stores/notifications";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useToastStore } from "@/stores/toast";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 import type { OrderStatusResponse } from "@/lib/orderStatus";
@@ -662,6 +664,51 @@ describe("useOrderSettlementLifecycle", () => {
     },
   );
 
+  // ADR-049: a pending trade stored before release 4 has no market title.
+  it.each([
+    ["en", "Will it rain?", "Order filled: 10 shares on “Will it rain?”"],
+    ["ja", "Will it rain?", "注文が約定しました: 「Will it rain?」で 10 枚"],
+    ["en", undefined, "Order filled: 10 shares on “Yes”"],
+  ])("announces a filled order in %s for title %s", async (language, marketTitle, text) => {
+    await i18n.changeLanguage(language);
+    useToastStore.setState({ toasts: [] });
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    usePendingTradesStore.getState().add({
+      orderId,
+      walletId,
+      clientOrderId: "client-order-1",
+      marketId: "condition-Yes",
+      ...(marketTitle === undefined ? {} : { marketTitle }),
+      baseAsset: "sat",
+      divisibility: 1_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+    try {
+      renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+      act(() =>
+        callbacks.onOrderLifecycleChanged({
+          orderId,
+          marketId: "condition-Yes",
+          status: "filled",
+          remainingAmountSubunits: 0,
+          baseAsset: "sat",
+          collateralUnit: "msat",
+          divisibility: 1_000,
+          activeSettlementGroup: null,
+        }),
+      );
+
+      expect(useToastStore.getState().toasts.map(({ type, message }) => [type, message])).toEqual([
+        ["success", text],
+      ]);
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("does not join or mutate a pending order owned by another wallet", async () => {
     const orderId = "other-wallet-order";
     usePendingTradesStore.getState().add({
@@ -922,7 +969,8 @@ describe("useOrderSettlementLifecycle", () => {
         await act(async () => followup.reject(new Error("mint unavailable")));
         expect(Date.now()).toBe(startedAt);
         expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
-        await act(async () => vi.advanceTimersByTimeAsync(14_999));
+        // The first fallback read is 1 s after the failed follow-up.
+        await act(async () => vi.advanceTimersByTimeAsync(999));
         expect(mockRecover).toHaveBeenCalledTimes(2);
         await act(async () =>
           callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
@@ -957,7 +1005,7 @@ describe("useOrderSettlementLifecycle", () => {
       await act(async () => first.resolve(pendingRecovery));
       expect(mockRecover).toHaveBeenCalledTimes(2);
       expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
-      await act(async () => vi.advanceTimersByTimeAsync(14_999));
+      await act(async () => vi.advanceTimersByTimeAsync(999));
       expect(mockRecover).toHaveBeenCalledTimes(2);
       await act(async () => vi.advanceTimersByTimeAsync(1));
       expect(mockRecover).toHaveBeenCalledTimes(3);
@@ -1114,6 +1162,63 @@ describe("useOrderSettlementLifecycle", () => {
       await waitFor(() => expect(invalidate).toHaveBeenCalledExactlyOnceWith({ walletId }));
     } finally {
       stop();
+    }
+  });
+
+  it("applies the settlement result when Confirmed arrives, before the order status read returns", async () => {
+    const status = deferredStatus();
+    mockFetchOrderStatus.mockResolvedValueOnce(null).mockReturnValueOnce(status.promise);
+    const { orderId, unmount } = mountRecoveringOrder(false);
+    try {
+      await act(async () => {});
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+      await act(async () =>
+        callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+      );
+
+      expect(mockFetchOrderStatus).toHaveBeenCalledTimes(2);
+      expect(mockRecover).toHaveBeenCalledExactlyOnceWith({
+        ...recoveryInput,
+        clientOrderId: "client-order-1",
+      });
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+      // The status read still records the confirmed trade activity.
+      await act(async () => status.resolve(ownedStatus(orderId)));
+      expect(useActivityLogStore.getState().items).toHaveLength(1);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("retries a settlement result that is not ready at 1, 2 and 4 s, then every 15 s", async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const readAtMs: number[] = [];
+    mockFetchOrderStatus.mockResolvedValue(null);
+    mockRecover.mockImplementation(async () => {
+      readAtMs.push(Date.now() - startedAt);
+      return pendingRecovery;
+    });
+    const { orderId, unmount } = mountRecoveringOrder(false);
+    try {
+      await act(async () => {});
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+      await act(async () =>
+        callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+      );
+      for (let second = 0; second < 40; second += 1) {
+        await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      }
+
+      expect(readAtMs).toEqual([0, 1_000, 3_000, 7_000, 22_000, 37_000]);
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+      unmount();
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(readAtMs).toHaveLength(6);
+    } finally {
+      unmount();
+      vi.useRealTimers();
     }
   });
 

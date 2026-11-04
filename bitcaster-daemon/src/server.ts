@@ -192,6 +192,11 @@ import { claimDaemonPosition, recoverDaemonPositionClaims } from './nativePositi
 import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePositionRemove.ts'
 import { streamDaemonWatch, type DaemonWatchProvider } from './watchTransport.ts'
 import {
+  CtfRangeOrderReleasedError,
+  CtfRangeSellPreparationPendingError,
+  type DaemonCtfRangeRecoveryStatus,
+} from './ctfRangeOrderRelease.ts'
+import {
   DAEMON_WATCH_MEDIA_TYPE,
   DAEMON_WATCH_REQUEST_BYTES_MAX,
   isDaemonWatchCommand,
@@ -209,6 +214,8 @@ export interface DaemonServerOptions {
   prepareSettlementCapability?: PrepareSettlementCapability
   previewSettlementCapabilityFees?: PreviewSettlementCapabilityFees
   triggerSettlementRecovery?: () => void
+  readSettlementRecovery?: () => DaemonCtfRangeRecoveryStatus
+  retrySettlementRecovery?: (operationId: string) => boolean
   triggerCustodyRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
@@ -350,6 +357,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   previewSettlementCapabilityFees?: PreviewSettlementCapabilityFees
   trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   triggerSettlementRecovery?: () => void
+  readSettlementRecovery?: () => DaemonCtfRangeRecoveryStatus
+  retrySettlementRecovery?: (operationId: string) => boolean
   triggerCustodyRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
@@ -383,6 +392,8 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       prepareSettlementCapability: options.prepareSettlementCapability,
       previewSettlementCapabilityFees: options.previewSettlementCapabilityFees,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
+      readSettlementRecovery: options.readSettlementRecovery,
+      retrySettlementRecovery: options.retrySettlementRecovery,
       triggerCustodyRecovery: options.triggerCustodyRecovery,
       getCustodyFence: options.getCustodyFence,
       isCustodyReady: options.isCustodyReady,
@@ -1349,6 +1360,34 @@ export async function dispatch(
         result: await listLocalOrders(command.params ?? {}),
       }
     }
+    case 'order.recovery': {
+      if (!deps.readSettlementRecovery) {
+        return { ok: false, error: 'daemon order recovery is unavailable' }
+      }
+      return { ok: true, result: deps.readSettlementRecovery() }
+    }
+    case 'order.retry': {
+      const operationId = (command.params as { operationId?: unknown } | undefined)?.operationId
+      if (
+        typeof operationId !== 'string' ||
+        operationId.length < 1 ||
+        operationId.length > 1_024 ||
+        operationId !== operationId.trim()
+      ) {
+        return { ok: false, error: 'order retry operation id is invalid' }
+      }
+      if (!deps.retrySettlementRecovery?.(operationId)) {
+        return {
+          ok: false,
+          code: 'order-recovery-not-halted',
+          error:
+            'No stopped order recovery has this operation id. Run bitcaster-cli order recovery to see the pending operations.',
+          operationId,
+        }
+      }
+      deps.triggerSettlementRecovery?.()
+      return { ok: true, result: { operationId, retrying: true } }
+    }
     case 'order.cancel': {
       const profile = await readProfile()
       if (!profile) {
@@ -1961,6 +2000,27 @@ async function dispatchProtectedOrderSubmit(
   } catch (error) {
     if (error instanceof InsufficientParticipationScoreBackingError) {
       return { ok: false, error: error.message, clientOrderId, operationId, orderId }
+    }
+    if (error instanceof CtfRangeOrderReleasedError) {
+      // The mint refusal ended this attempt and released its funds. Nothing
+      // remains to recover, and no order exists.
+      return {
+        ok: false,
+        code: 'order-attempt-released',
+        error: error.message,
+        mintError: error.mintError,
+        clientOrderId,
+      }
+    }
+    if (error instanceof CtfRangeSellPreparationPendingError) {
+      // This sell reserved nothing and ended its attempt. The earlier sell
+      // keeps its own recovery.
+      return {
+        ok: false,
+        code: 'order-sell-preparation-pending',
+        error: error.message,
+        clientOrderId,
+      }
     }
     deps.triggerSettlementRecovery?.()
     return {
@@ -3457,6 +3517,7 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'order.submit':
     case 'order.status':
     case 'order.cancel':
+    case 'order.retry':
       return true
     case 'health':
     case 'daemon.status':
@@ -3509,6 +3570,7 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'wallet.recover':
     case 'order.list':
     case 'order.book':
+    case 'order.recovery':
       return false
     default: {
       const unsupported: never = method

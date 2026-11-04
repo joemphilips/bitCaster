@@ -45,8 +45,10 @@ function fixture() {
   const engine = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
     fetchImpl: async (input, init) => {
-      assert.equal(init?.signal, controller.signal)
       const url = new URL(String(input))
+      // An order book read adds its own deadline to the caller's signal.
+      if (url.pathname.endsWith('/orderbook')) assert.ok(init?.signal instanceof AbortSignal)
+      else assert.equal(init?.signal, controller.signal)
       calls.push(url.pathname + url.search)
       if (url.pathname.endsWith('/registration')) {
         const conditionId = url.pathname.split('/').at(-2)!

@@ -88,6 +88,7 @@ const wallet = {
   mint: {
     mintUrl: MINT_URL,
     getKeySets: vi.fn(),
+    restore: vi.fn(),
   },
   keyChain: {
     registerConditionalKeyset: vi.fn((meta, keys) => {
@@ -128,6 +129,7 @@ vi.mock("@/lib/walletProfileLock", () => ({
 
 import {
   ensureWalletKeysetCounterReady,
+  advanceWalletKeysetCounterPastMint,
   recoverKeysetCountersForMint,
   WalletKeysetCounterReadinessError,
 } from "../cashu";
@@ -142,6 +144,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     activateBrowserWalletDatabase(scopeId);
     database = db;
     wallet.mint.getKeySets.mockReset();
+    wallet.mint.restore.mockReset();
     wallet.mint.getKeySets.mockResolvedValue({
       keysets: [keyset.toMintKeyset() as MintKeyset],
     });
@@ -184,7 +187,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
 
     await expect(
       recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID }),
-    ).resolves.toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    ).resolves.toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
 
     expect(
       await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
@@ -330,6 +333,61 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     });
   });
 
+  it("advances a completed conditional keyset past outputs that another client signed", async () => {
+    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    // A completed keyset is not scanned again, so the browser keeps its stale cursor.
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    const locks = walletLockState.calls;
+    const custodyProofs = await database!.custodyProofs.count();
+
+    // The other client signed counters 5 to 40. The counter-only scan uses
+    // NUT-09 directly with a work bound, and it restores no proof.
+    const signed = new Set(
+      Array.from(
+        { length: 36 },
+        (_, offset) =>
+          OutputData.createSingleDeterministicData(1, SEED, 5 + offset, CONDITIONAL_KEYSET_ID)
+            .blindedMessage.B_,
+      ),
+    );
+    wallet.mint.restore.mockImplementation(async ({ outputs }: { outputs: { B_: string }[] }) => ({
+      outputs: outputs.filter(({ B_ }) => signed.has(B_)),
+      signatures: [],
+    }));
+    const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
+    await advanceWalletKeysetCounterPastMint(input);
+
+    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    // The scan starts at the cursor.
+    const [firstScan] = wallet.mint.restore.mock.calls[0]!;
+    expect((firstScan as { outputs: { B_: string }[] }).outputs[0]!.B_).toBe(
+      OutputData.createSingleDeterministicData(1, SEED, 5, CONDITIONAL_KEYSET_ID).blindedMessage.B_,
+    );
+    expect(
+      await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
+    ).toMatchObject({ next: 41 });
+    // The other client's outputs stay with that client. Nothing is admitted here,
+    // so the caller's profile lock and custody scope are not taken again.
+    expect(await database!.custodyProofs.count()).toBe(custodyProofs);
+    expect(walletLockState.calls).toBe(locks);
+  });
+
+  it("reports a failed counter advance", async () => {
+    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    wallet.mint.restore.mockRejectedValueOnce(new Error("restore is offline"));
+    const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
+
+    await expect(advanceWalletKeysetCounterPastMint(input)).rejects.toBeInstanceOf(
+      WalletKeysetCounterReadinessError,
+    );
+    expect(
+      await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
+    ).toMatchObject({ next: 5 });
+  });
+
   it("does not recursively acquire a profile lock when its caller already holds it", async () => {
     wallet.batchRestore.mockResolvedValue({ proofs: [], lastCounterWithSignature: 2 });
 
@@ -414,8 +472,18 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     const first = await recoverKeysetCountersForMint(MINT_URL, { force: true });
     const second = await recoverKeysetCountersForMint(MINT_URL, { force: true });
 
-    expect(first).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
-    expect(second).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    // A PENDING proof keeps the keyset incomplete. The counter still advances (ADR-033).
+    const pending = {
+      scannedKeysets: [KEYSET_ID],
+      complete: false,
+      failed: false,
+      pendingKeysets: [KEYSET_ID],
+    };
+    expect(first).toEqual(pending);
+    expect(second).toEqual(pending);
+    expect(
+      await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
+    ).toMatchObject({ recoveryComplete: false });
     expect(await database!.custodyProofs.count()).toBe(1);
     expect(await database!.custodyProofs.toArray()).toEqual(
       expect.arrayContaining([expect.objectContaining({ amount: 7, selectability: "selectable" })]),
@@ -430,7 +498,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     if (existing === undefined) throw new Error("recovered custody proof is missing");
     await database!.proofs.clear();
     const selectableRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(selectableRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(selectableRetry).toEqual(pending);
     expect(await database!.proofs.count()).toBe(0);
     await database!.custodyProofs.put({
       ...existing,
@@ -450,7 +518,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       proofState: "spent",
     });
     const spentRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(spentRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(spentRetry).toEqual(pending);
     expect(await database!.custodyProofs.get([scopeId(), existing.proofId])).toMatchObject({
       revision: existing.revision + 1,
       selectability: "spent",
@@ -481,7 +549,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       proofState: "locked",
     });
     const lockedRetry = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-    expect(lockedRetry).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(lockedRetry).toEqual(pending);
     expect(await database!.custodyProofs.get([scopeId(), existing.proofId])).toMatchObject({
       revision: spent.revision + 1,
       selectability: "locked",
@@ -505,6 +573,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [],
       complete: false,
+      failed: true,
     });
     expect(await database!.custodyProofs.count()).toBe(0);
     expect(await database!.proofs.count()).toBe(0);
@@ -526,7 +595,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
 
     const result = await recoverKeysetCountersForMint(MINT_URL, { force: true });
 
-    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true });
+    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
     expect(await database!.custodyProofs.toArray()).toEqual(
       expect.arrayContaining([expect.objectContaining({ amount: 7, selectability: "selectable" })]),
     );
@@ -549,6 +618,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [KEYSET_ID],
       complete: true,
+      failed: false,
     });
 
     const [existing] = await database!.custodyProofs.toArray();
@@ -558,6 +628,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [],
       complete: false,
+      failed: true,
     });
     expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
       next: 1,
@@ -571,6 +642,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [KEYSET_ID],
       complete: true,
+      failed: false,
     });
 
     const [existing] = await database!.custodyProofs.toArray();
@@ -596,6 +668,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [],
       complete: false,
+      failed: true,
     });
     expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
       next: 1,
@@ -658,6 +731,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [],
       complete: false,
+      failed: true,
     });
     expect(await database!.custodyProofs.count()).toBe(0);
     expect(await database!.proofs.count()).toBe(0);

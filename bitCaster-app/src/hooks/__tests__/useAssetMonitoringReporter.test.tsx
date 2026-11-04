@@ -136,6 +136,18 @@ vi.mock("@/stores/wallet", () => ({
   ),
 }));
 
+// The seed restore gate is open unless a test holds it.
+const restoreGate = vi.hoisted(() => ({
+  current: { released: true, wait: Promise.resolve() } as {
+    released: boolean;
+    wait: Promise<void>;
+  },
+}));
+
+vi.mock("@/lib/browserSeedPositionRestore", () => ({
+  browserSeedPositionRestoreGate: () => restoreGate.current,
+}));
+
 vi.mock("@/lib/portfolioInvalidation", () => ({
   publishPortfolioInvalidation: mocks.publishPortfolioInvalidation,
 }));
@@ -143,7 +155,10 @@ vi.mock("@/lib/portfolioInvalidation", () => ({
 const { subscribeToCommittedProofChanges, useAssetMonitoringReporter } =
   await import("../useAssetMonitoringReporter");
 
-beforeEach(() => mocks.reset());
+beforeEach(() => {
+  mocks.reset();
+  restoreGate.current = { released: true, wait: Promise.resolve() };
+});
 afterEach(() => vi.clearAllMocks());
 
 describe("useAssetMonitoringReporter", () => {
@@ -164,6 +179,27 @@ describe("useAssetMonitoringReporter", () => {
     expect(mocks.hook).toHaveBeenCalledTimes(3);
     expect(mocks.state.reporters).toHaveLength(1);
     expect(mocks.state.reporters[0]!.request).toHaveBeenCalledOnce();
+  });
+
+  it("holds every report of a new profile until its first seed restore pass ends", async () => {
+    let endFirstPass!: () => void;
+    restoreGate.current = {
+      released: false,
+      wait: new Promise<void>((resolve) => {
+        endFirstPass = resolve;
+      }),
+    };
+    renderHook(() => useAssetMonitoringReporter(true));
+    const reporter = mocks.state.reporters[0]!;
+    // A proof that the restore admits must not report an incomplete snapshot.
+    const restored = transaction();
+    trigger("creating", restored);
+    complete(restored);
+    expect(reporter.request).not.toHaveBeenCalled();
+
+    await act(async () => endFirstPass());
+
+    expect(reporter.request).toHaveBeenCalledOnce();
   });
 
   it("does not report when canonical custody authority is unavailable", async () => {
