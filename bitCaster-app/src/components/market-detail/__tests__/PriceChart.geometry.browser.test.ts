@@ -1,5 +1,6 @@
 import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { commands, page } from "vitest/browser";
 declare module "vitest/browser" {
@@ -29,7 +30,8 @@ let host: HTMLDivElement | undefined;
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 function RenderFixture({ fixture, committed }: { fixture: Fixture; committed: () => void }) {
   useEffect(committed, [fixture, committed]);
-  return createElement(PriceChart, fixture.props);
+  // An opened comment with a valid author key renders a profile link, which needs a router.
+  return createElement(MemoryRouter, null, createElement(PriceChart, fixture.props));
 }
 async function renderFixture(fixture: Fixture, expectedMarkers = 10) {
   if (!host) {
@@ -1090,29 +1092,38 @@ it.each(["en", "ja"])(
       .poll(() => host!.querySelector('[data-testid="price-chart-comment-popover"]'))
       .not.toBeNull();
     const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]')!;
-    const close = card.querySelector<HTMLButtonElement>("button")!;
+    const close = card.querySelector<HTMLButtonElement>(
+      `button[aria-label="${i18n.t("common.close")}"]`,
+    )!;
+    const copy = card.querySelector<HTMLButtonElement>(
+      `button[aria-label="${i18n.t("userProfile.copyNpub")}"]`,
+    )!;
     const author = card.querySelector<HTMLElement>('[data-testid="price-chart-comment-author"]')!;
+    const authorLink = author.closest("a")!;
     await expect
       .poll(() => Math.round(card.parentElement!.getBoundingClientRect().height))
       .toBe(Math.round(Math.min(176, plotRectangle().height - 8)));
     const bounds = card.getBoundingClientRect();
     const button = close.getBoundingClientRect();
+    const copyBounds = copy.getBoundingClientRect();
     const authorBounds = author.getBoundingClientRect();
     expect(author.textContent).toBe(displayName);
     expect(card.textContent).toContain(
       language === "ja" ? "NOを12.345枚売却" : "Sold 12.345 NO shares",
     );
     expect(authorBounds.width).toBeGreaterThanOrEqual(32);
-    expect(authorBounds.right).toBeLessThanOrEqual(button.left);
+    // The long name truncates before the copy control, which stays before Close.
+    expect(authorBounds.right).toBeLessThanOrEqual(copyBounds.left);
+    expect(copyBounds.right).toBeLessThanOrEqual(button.left);
     expect(button.left).toBeGreaterThanOrEqual(bounds.left);
     expect(button.right).toBeLessThanOrEqual(bounds.right);
     expect(button.top).toBeGreaterThanOrEqual(bounds.top);
     expect(button.bottom).toBeLessThanOrEqual(bounds.bottom);
-    const hit = document.elementFromPoint(
-      button.left + button.width / 2,
-      button.top + button.height / 2,
-    );
-    expect(hit === close || close.contains(hit)).toBe(true);
+    for (const control of [close, copy, authorLink]) {
+      const rect = control.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      expect(hit === control || control.contains(hit)).toBe(true);
+    }
     expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
     const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
     if (captureDirectory)
@@ -1169,7 +1180,9 @@ it("keeps a pinned confirmed NO comment at its fill after its history bucket is 
   host!.querySelector<HTMLButtonElement>('[data-testid="price-chart-comment-marker"]')!.click();
   await assertPointerAndStep(fixture);
   const card = host!.querySelector<HTMLElement>('[data-testid="price-chart-comment-popover"]')!;
-  const close = card.querySelector<HTMLButtonElement>("button")!;
+  const close = card.querySelector<HTMLButtonElement>(
+    `button[aria-label="${i18n.t("common.close")}"]`,
+  )!;
   close.focus();
   const replacement = {
     ...fixture,

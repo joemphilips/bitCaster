@@ -1,24 +1,19 @@
 import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
 import { useMemo, useRef, useState, useEffect } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
-import { nip19 } from "nostr-tools";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { Comment } from "@/types/market-detail";
 import { formatTimeAgo } from "@/lib/format";
 import { safeNostrProfilePictureUrl } from "@bitcaster/client-sdk/nostrProfilePage";
 import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
+import { commentAuthorNpub } from "./commentAuthor";
 
 interface CommentSectionProps {
   comments: Comment[];
   /** The last comment read failed. An empty list is then not "no comments". */
   unavailable?: boolean;
   onLoadMoreComments?: () => void;
-}
-
-/** The wire author key is lowercase hex. Any other value gets no profile link or copy control. */
-function authorNpub(userId: string): string | null {
-  return /^[0-9a-f]{64}$/.test(userId) ? nip19.npubEncode(userId) : null;
 }
 
 function CommentRow({ comment }: { comment: Comment }) {
@@ -37,7 +32,7 @@ function CommentRow({ comment }: { comment: Comment }) {
   // A data image can be 64 KiB, so check it only when the raw value changes.
   const safeAvatar = useMemo(() => safeNostrProfilePictureUrl(rawAvatar) ?? undefined, [rawAvatar]);
   const [failedAvatar, setFailedAvatar] = useState<string>();
-  const npub = useMemo(() => authorNpub(comment.userId), [comment.userId]);
+  const npub = useMemo(() => commentAuthorNpub(comment.userId), [comment.userId]);
   const avatar =
     safeAvatar && failedAvatar !== safeAvatar ? (
       <img

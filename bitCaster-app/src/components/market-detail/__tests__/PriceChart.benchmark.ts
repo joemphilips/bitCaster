@@ -1,5 +1,6 @@
 import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
 import { expect, it, vi } from "vitest";
 import { cdp, commands, page } from "vitest/browser";
 import type {} from "@vitest/browser-playwright";
@@ -280,7 +281,8 @@ function geometry(host: HTMLElement, fixture: Fixture, phase: string): Geometry 
 }
 function ChartFixture({ fixture, onCommit }: { fixture: Fixture; onCommit: () => void }) {
   useEffect(onCommit, [fixture, onCommit]);
-  return createElement(PriceChart, fixture.props);
+  // An opened comment with a valid author key renders a profile link, which needs a router.
+  return createElement(MemoryRouter, null, createElement(PriceChart, fixture.props));
 }
 async function render(
   root: Root,

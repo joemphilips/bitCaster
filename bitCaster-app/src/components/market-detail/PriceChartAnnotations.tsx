@@ -3,11 +3,14 @@ import { layoutChartComments } from "./priceChartCommentLayout";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import { X } from "lucide-react";
 import type { PriceChartRender } from "./PriceChartCanvas";
 import { confirmedPriceAtOrBefore } from "@/lib/priceHistory";
 import { usePublicCommentProfiles } from "@/lib/usePublicCommentProfiles";
 import type { ChartTimeframe } from "@/types/market-detail";
+import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
+import { commentAuthorNpub } from "./commentAuthor";
 import {
   clampPosition,
   commentTailPath,
@@ -568,20 +571,49 @@ export function PriceChartAnnotations({
                                 tradeText?.executedAt ??
                                 comment.trade?.executedAt ??
                                 comment.timestamp;
+                              const authorName =
+                                authorProfiles.get(comment.userId)?.displayName.trim() ||
+                                comment.userDisplayName;
+                              const authorNpub = commentAuthorNpub(comment.userId);
                               return (
                                 <li
                                   key={comment.id}
                                   className="border-b border-slate-300 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
                                 >
                                   <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[11px] text-slate-600 dark:text-slate-300">
-                                    <span
-                                      className="col-start-1 row-start-1 min-w-0 truncate font-medium"
-                                      data-testid="price-chart-comment-author"
-                                      title={comment.userId}
-                                    >
-                                      {authorProfiles.get(comment.userId)?.displayName.trim() ||
-                                        comment.userDisplayName}
-                                    </span>
+                                    {authorNpub ? (
+                                      <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-0.5">
+                                        <Link
+                                          to={`/user/${authorNpub}`}
+                                          className="min-w-0 rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                        >
+                                          <span
+                                            className="block truncate font-medium"
+                                            data-testid="price-chart-comment-author"
+                                            title={comment.userId}
+                                          >
+                                            {authorName}
+                                          </span>
+                                        </Link>
+                                        {/* The negative margin keeps the author line height. */}
+                                        <CopyNpubButton
+                                          npub={authorNpub}
+                                          label={t("userProfile.copyNpub")}
+                                          copiedMessage={t("userProfile.npubCopied")}
+                                          failedMessage={t("userProfile.npubCopyFailed")}
+                                          iconSize="sm"
+                                          className="-my-1.5 p-1.5 text-slate-500 hover:bg-slate-300 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <span
+                                        className="col-start-1 row-start-1 min-w-0 truncate font-medium"
+                                        data-testid="price-chart-comment-author"
+                                        title={comment.userId}
+                                      >
+                                        {authorName}
+                                      </span>
+                                    )}
                                     <time
                                       className="col-span-2 row-start-2 min-w-0 [overflow-wrap:anywhere]"
                                       dateTime={tradeTime}
