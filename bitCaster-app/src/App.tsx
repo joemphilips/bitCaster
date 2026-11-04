@@ -57,7 +57,7 @@ import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
-import { NOSTR_SETTINGS_PATH, useNostrLogout } from "@/hooks/useNostrLogout";
+import { useNostrLogout, useOpenNostrSettings } from "@/hooks/useNostrLogout";
 import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
@@ -96,8 +96,13 @@ export function ShellRoutes({
   const { t } = useTranslation();
   const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
-  const isLoggedIn = useSettingsStore((s) => s.nostrSignerMode !== "none");
+  // Follow the signer, as Settings does. A stored identity that did not reconnect,
+  // such as a missing extension after a reload, offers log in.
+  const isLoggedIn = useSettingsStore(
+    (s) => s.signerConnectionStatus === "connected" || s.signerConnectionStatus === "connecting",
+  );
   const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
+  const openNostrSettings = useOpenNostrSettings();
   const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
   const navigationItems = [
@@ -126,7 +131,7 @@ export function ShellRoutes({
       isLoggedIn={isLoggedIn}
       searchQuery={searchQuery}
       onNavigate={(href) => navigate(href)}
-      onLogin={() => navigate(NOSTR_SETTINGS_PATH)}
+      onLogin={openNostrSettings}
       onLogout={requestLogout}
       onSearchChange={(query) => {
         navigate(

@@ -719,7 +719,6 @@
     "showKey": "鍵を表示",
     "hideKey": "鍵を隠す",
     "reauthenticate": "再認証",
-    "disconnect": "切断",
     "localNsecBackupHint": "このNostr IDをこのブラウザー以外で復元する場合は、このnsecをバックアップしてください。",
     "removeRelay": "リレーを削除",
     "profileFetching": "プロフィールを取得中…",

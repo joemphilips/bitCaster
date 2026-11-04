@@ -724,7 +724,6 @@
     "showKey": "Show key",
     "hideKey": "Hide key",
     "reauthenticate": "Re-authenticate",
-    "disconnect": "Disconnect",
     "localNsecBackupHint": "Back up this nsec if you want to recover this Nostr identity outside this browser.",
     "removeRelay": "Remove relay",
     "profileFetching": "Fetching profile…",

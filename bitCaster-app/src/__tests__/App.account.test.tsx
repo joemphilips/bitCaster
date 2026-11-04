@@ -46,6 +46,10 @@ const LOGGED_OUT: NostrIdentityState = {
 
 const DIALOG = "Your Nostr key is not backed up";
 const ORDERS_IN_PROGRESS = /orders are in progress/i;
+const UNBACKED_KEY_TEXT =
+  "Only this browser has this key. If you log out, you delete the key and lose this Nostr identity.";
+const ORDERS_IN_PROGRESS_TEXT =
+  "Orders are in progress. They need this key to finish. Back up the key before you log out.";
 
 type Layout = "desktop" | "mobile";
 
@@ -73,12 +77,19 @@ function expectIdentity(expected: NostrIdentityState) {
   expect(state.nsecSecret === expected.nsecSecret).toBe(true);
 }
 
-function renderShell() {
+function renderShell(initialEntry = "/markets") {
   return render(
-    <MemoryRouter initialEntries={["/markets"]}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <ShellRoutes canReadOrderStatus={false} />
     </MemoryRouter>,
   );
+}
+
+// The control that opens the account menu in each layout.
+function menuControl(layout: Layout): HTMLElement {
+  return layout === "desktop"
+    ? screen.getByRole("button", { name: /^Anon/ })
+    : screen.getByRole("button", { name: "User" });
 }
 
 function openMenu(layout: Layout) {
@@ -160,6 +171,7 @@ afterEach(() => {
     setIdentity(LOGGED_OUT);
     useWalletStore.setState({ mnemonic: "", walletBackupState: "none" });
     usePendingTradesStore.setState({ byOrderId: {} });
+    useSettingsStore.setState({ activeCategory: "general" });
   });
   window.localStorage.clear();
 });
@@ -292,6 +304,108 @@ describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account item", (la
   });
 });
 
+describe.each(["desktop", "mobile"] as const)("ShellRoutes %s account state", (layout) => {
+  const extensionSigner: NostrIdentityState = {
+    nostrSignerMode: "nip07",
+    signerSource: "nip07",
+    signerBackupState: "confirmed",
+    nsecSecret: null,
+  };
+
+  it.each([
+    ["disconnected", "Log in", "Log out"],
+    ["connecting", "Log out", "Log in"],
+    ["connected", "Log out", "Log in"],
+  ] as const)("follows a %s signer, as Settings does", (status, shown, hidden) => {
+    setIdentity(extensionSigner);
+    useSettingsStore.setState({ signerConnectionStatus: status });
+    renderShell();
+
+    openMenu(layout);
+
+    expect(screen.getByRole("button", { name: shown })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: hidden })).not.toBeInTheDocument();
+  });
+
+  it("opens Nostr settings for a stored identity that did not reconnect", () => {
+    // An extension that is missing after a reload leaves its stored identity disconnected.
+    setIdentity(extensionSigner);
+    useSettingsStore.setState({ signerConnectionStatus: "disconnected" });
+    renderShell();
+
+    clickAccountItem(layout, "Log in");
+
+    expect(screen.getByTestId("settings-route")).toHaveTextContent(/^\/settings\?category=nostr$/);
+    expectIdentity(extensionSigner);
+  });
+
+  it("opens the Nostr card when the URL already names it", async () => {
+    useSettingsStore.setState({ activeCategory: null });
+    renderShell("/settings?category=nostr");
+
+    clickAccountItem(layout, "Log in");
+    expect(useSettingsStore.getState().activeCategory).toBe("nostr");
+
+    act(() => {
+      setIdentity(unbackedLocalKey());
+      useSettingsStore.setState({ activeCategory: null });
+    });
+    clickAccountItem(layout, "Log out");
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: DIALOG })).getByRole("button", {
+        name: "Back up key",
+      }),
+    );
+    expect(useSettingsStore.getState().activeCategory).toBe("nostr");
+  });
+
+  it("returns focus to the menu control after the dialog closes", async () => {
+    setIdentity(unbackedLocalKey());
+    renderShell();
+    const control = menuControl(layout);
+
+    for (const action of ["Close", "Back up key"] as const) {
+      control.blur();
+      clickAccountItem(layout, "Log out");
+      fireEvent.click(
+        within(await screen.findByRole("dialog", { name: DIALOG })).getByRole("button", {
+          name: action,
+        }),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(control);
+    }
+
+    control.blur();
+    clickAccountItem(layout, "Log out");
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: DIALOG })).getByRole("button", {
+        name: "Log out",
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(control);
+  });
+
+  it("announces the text of each dialog variant", async () => {
+    setIdentity(unbackedLocalKey());
+    renderShell();
+
+    clickAccountItem(layout, "Log out");
+    const dialog = await screen.findByRole("dialog", {
+      name: DIALOG,
+      description: UNBACKED_KEY_TEXT,
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    addPendingOrder();
+    clickAccountItem(layout, "Log out");
+    expect(
+      await screen.findByRole("dialog", { name: DIALOG, description: ORDERS_IN_PROGRESS_TEXT }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("ShellRoutes logout persistence", () => {
   it("keeps the logout after the settings store reloads from storage", async () => {
     setIdentity({
@@ -307,7 +421,11 @@ describe("ShellRoutes logout persistence", () => {
     expect(persisted).not.toBeNull();
 
     // Model a reload: replace the memory state, then read the stored state.
-    act(() => setIdentity(unbackedLocalKey()));
+    // The connection status is runtime state, and a reload starts disconnected.
+    act(() => {
+      setIdentity(unbackedLocalKey());
+      useSettingsStore.setState({ signerConnectionStatus: "disconnected" });
+    });
     window.localStorage.setItem("bitcaster-settings", persisted ?? "");
     await act(async () => {
       await useSettingsStore.persist.rehydrate();

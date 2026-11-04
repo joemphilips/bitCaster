@@ -71,12 +71,17 @@ describe.each([
   it("shows log out with a Nostr identity and asks the app to log out", async () => {
     await i18n.changeLanguage(language);
     const { onLogin, onLogout, onNavigate } = renderShell(true);
+    const trigger =
+      layout === "desktop"
+        ? screen.getByRole("button", { name: /^Alice/ })
+        : screen.getByRole("button", { name: labels.user });
     openMenu(layout, language);
 
     expect(screen.queryByRole("button", { name: labels.login })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: labels.logout }));
 
-    expect(onLogout).toHaveBeenCalledOnce();
+    // The menu item closes. A dialog returns focus to the control that opened the menu.
+    expect(onLogout).toHaveBeenCalledExactlyOnceWith(trigger);
     expect(onLogin).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: labels.logout })).not.toBeInTheDocument();

@@ -7,12 +7,28 @@ import { hasLocalOrdersInProgress } from "@/lib/nostrLogoutGuard";
 /** The Settings section that connects, backs up, and removes the Nostr identity. */
 export const NOSTR_SETTINGS_PATH = "/settings?category=nostr";
 
+/**
+ * Open the Nostr card of Settings. The deep link opens the card only when
+ * the URL changes, so open it in the store first.
+ */
+export function useOpenNostrSettings(): () => void {
+  const navigate = useNavigate();
+  return useCallback(() => {
+    useSettingsStore.getState().openCategory("nostr");
+    navigate(NOSTR_SETTINGS_PATH);
+  }, [navigate]);
+}
+
 export interface NostrLogoutConfirmation {
   /** Orders need this key to finish, so the dialog offers no logout. */
   ordersInProgress: boolean;
   onBackUp: () => void;
   onLogout: () => void;
   onDismiss: () => void;
+}
+
+function focusedElement(): HTMLElement | null {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
 }
 
 /**
@@ -23,19 +39,36 @@ export interface NostrLogoutConfirmation {
  * and a later login resumes its orders.
  */
 export function useNostrLogout(): {
-  requestLogout: () => void;
+  /** Focus returns to `returnFocusTo`, or to the focused control, after a dialog. */
+  requestLogout: (returnFocusTo?: HTMLElement | null) => void;
   confirmation: NostrLogoutConfirmation | null;
 } {
-  const navigate = useNavigate();
+  const openNostrSettings = useOpenNostrSettings();
   const [dialog, setDialog] = useState<{ ordersInProgress: boolean } | null>(null);
   // Only the latest local read can open or change the dialog.
   const readGeneration = useRef(0);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const dialogWasOpen = useRef(false);
   useEffect(
     () => () => {
       readGeneration.current += 1;
     },
     [],
   );
+
+  // The menu item that opened the dialog is gone. Run after the dialog closes,
+  // so the browser does not move focus again.
+  useEffect(() => {
+    if (dialog) {
+      dialogWasOpen.current = true;
+      return;
+    }
+    if (!dialogWasOpen.current) return;
+    dialogWasOpen.current = false;
+    const target = returnFocus.current;
+    returnFocus.current = null;
+    if (target?.isConnected) target.focus();
+  }, [dialog]);
 
   // Read the stored identity and the local orders at the time of each action.
   const logOutOrConfirm = useCallback(async (confirmed: boolean) => {
@@ -56,7 +89,13 @@ export function useNostrLogout(): {
     setDialog({ ordersInProgress });
   }, []);
 
-  const requestLogout = useCallback(() => void logOutOrConfirm(false), [logOutOrConfirm]);
+  const requestLogout = useCallback(
+    (returnFocusTo?: HTMLElement | null) => {
+      returnFocus.current = returnFocusTo ?? focusedElement();
+      void logOutOrConfirm(false);
+    },
+    [logOutOrConfirm],
+  );
 
   const confirmation: NostrLogoutConfirmation | null = dialog
     ? {
@@ -64,7 +103,7 @@ export function useNostrLogout(): {
         onBackUp: () => {
           readGeneration.current += 1;
           setDialog(null);
-          navigate(NOSTR_SETTINGS_PATH);
+          openNostrSettings();
         },
         onLogout: () => void logOutOrConfirm(true),
         onDismiss: () => {

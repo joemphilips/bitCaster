@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { Shield, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { NativeDialog } from "./NativeDialog";
@@ -18,9 +19,14 @@ export function NostrLogoutConfirmModal({
   onDismiss,
 }: NostrLogoutConfirmModalProps) {
   const { t } = useTranslation();
+  const descriptionId = useId();
 
   return (
-    <NativeDialog ariaLabel={t("auth.unbackedKeyLogoutTitle")} onDismiss={onDismiss}>
+    <NativeDialog
+      ariaLabel={t("auth.unbackedKeyLogoutTitle")}
+      describedBy={descriptionId}
+      onDismiss={onDismiss}
+    >
       {(dismiss) => (
         <div
           data-testid="nostr-logout-confirm-dialog-backdrop"
@@ -39,7 +45,7 @@ export function NostrLogoutConfirmModal({
                   <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
                     {t("auth.unbackedKeyLogoutTitle")}
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  <p id={descriptionId} className="mt-1 text-sm text-slate-500 dark:text-slate-400">
                     {t(
                       ordersInProgress
                         ? "auth.unbackedKeyOrdersInProgressDesc"

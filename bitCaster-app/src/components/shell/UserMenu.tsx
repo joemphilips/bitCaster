@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   User,
   LogIn,
@@ -19,10 +19,11 @@ import { EnvironmentLink } from "./EnvironmentLink";
 
 interface UserMenuProps {
   user: { name: string; avatarUrl?: string; balance?: number };
-  /** A Nostr identity is set. */
+  /** A Nostr signer is connected. */
   isLoggedIn: boolean;
   onLogin?: () => void;
-  onLogout?: () => void;
+  /** Receives the menu button, so focus can return to it after a dialog. */
+  onLogout?: (returnFocusTo: HTMLElement | null) => void;
   onNavigate?: (href: string) => void;
   onCreateClick?: () => void;
 }
@@ -38,10 +39,12 @@ export function UserMenu({
   const { t, i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className="flex min-w-0 items-center space-x-3 px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
       >
@@ -171,7 +174,7 @@ export function UserMenu({
             <button
               onClick={() => {
                 setIsOpen(false);
-                if (isLoggedIn) onLogout?.();
+                if (isLoggedIn) onLogout?.(triggerRef.current);
                 else onLogin?.();
               }}
               className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
