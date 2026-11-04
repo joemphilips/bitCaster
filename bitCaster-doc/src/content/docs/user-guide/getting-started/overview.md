@@ -207,6 +207,8 @@ settings, or **Log out** to delete the key. While an order is in progress, the
 app shows only **Back up key**, because the order needs this key to finish.
 A backed-up key or a NIP-07 signer logs out at once. Log in again with the
 same key to let open orders finish.
+The app also asks first when you connect another identity, because that replaces
+the key that is not backed up.
 
 Settings and Portfolio show the same connected Nostr profile card.
 The card shows your picture, display name, and description. Settings also has
