@@ -31,7 +31,9 @@ import { isDeepStrictEqual } from 'node:util'
 import test from 'node:test'
 import {
   Amount,
+  HttpResponseError,
   MintOperationError,
+  NetworkError,
   OutputData,
   createBlindSignature,
   createDLEQProof,
@@ -78,7 +80,10 @@ import {
   DaemonCtfRangeOrderCoordinator,
   type DaemonCtfRangeOrderCoordinatorDependencies,
 } from '../src/ctfRangeOrderCoordinator.ts'
-import { CtfRangeOrderReleasedError } from '../src/ctfRangeOrderRelease.ts'
+import {
+  CtfRangeOrderReleasedError,
+  CtfRangeSellPreparationPendingError,
+} from '../src/ctfRangeOrderRelease.ts'
 import { DaemonCtfRangeCoordinator } from '../src/ctfRangeCoordinator.ts'
 import { createCtfRangeRecoveryLoop } from '../src/ctfRangeRecoveryLoop.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
@@ -4446,7 +4451,8 @@ for (const scenario of WAITING_REFUSAL_CASES) {
               throw new Error('a reserved preparation must not request a capability')
             }),
           ),
-          (error: unknown) => error instanceof MintOperationError && error.code === scenario.code,
+          (error: unknown) =>
+            isRangeSourceRefusalPending(error, { code: scenario.code, detail: scenario.detail }),
         )
 
         assert.equal(mint.calls.restore, 0)
@@ -4788,9 +4794,8 @@ test('daemon stops replaying after five identical coded refusals and retries onc
         now: () => 10_000,
         randomId: randomIds('range-halt'),
       })
-      await assert.rejects(
-        coordinator.prepare(sellOneShareRequest(), client),
-        (error: unknown) => error instanceof MintOperationError && error.code === 12002,
+      await assert.rejects(coordinator.prepare(sellOneShareRequest(), client), (error: unknown) =>
+        isRangeSourceRefusalPending(error, { code: 12002, detail: 'Keyset is inactive' }),
       )
       const source = await rangeSourceOperation()
       const mintError = { code: 12002, detail: 'Keyset is inactive' }
@@ -5058,6 +5063,371 @@ test('daemon refund keeps at most eight replaced plans', async () => {
       assert.equal(refund.state, 'prepared')
       assert.equal((refund.metadata.replacedRefundOutputPlans as unknown[]).length, 8)
       assert.equal(await completedRefundCount(), 0)
+    },
+  )
+})
+
+test('daemon keeps a refund pending when the restore of its current outputs fails in transport', async () => {
+  let spent = false
+  const base = fakeMint()
+  const mint = {
+    ...base,
+    check: async ({ Ys }: { Ys: string[] }) => ({
+      states: Ys.map((Y) => ({
+        Y,
+        state: spent ? ('SPENT' as const) : ('UNSPENT' as const),
+        witness: null,
+      })),
+    }),
+  }
+  const swaps: SwapRequest[] = []
+  const restoreRequests: string[][] = []
+  await withExpiredOrdinaryRefund(
+    {
+      createMint: () => mint,
+      executeRefundSwap: async (_url, request) => {
+        swaps.push(structuredClone(request))
+        if (swaps.length === 1) throw new MintOperationError(11008, 'Duplicate outputs')
+        throw new Error('refund swap acknowledgement lost')
+      },
+      restoreOutputs: async (_mintUrl, groups) => {
+        const outputs = deserializeOutputGroups(groups).refund ?? []
+        restoreRequests.push(outputs.map(({ blindedMessage }) => blindedMessage.B_))
+        const current = new Set(swaps[1]!.outputs.map(({ B_ }) => B_))
+        if (outputs.some(({ blindedMessage }) => current.has(blindedMessage.B_))) {
+          throw new NetworkError('Network request failed at https://mint.example')
+        }
+        // The replaced plan answers, but a transport failure proves nothing
+        // about which plan the mint signed.
+        return { refund: outputs.map(signedProof) }
+      },
+    },
+    async ({ coordinator, client }) => {
+      const uncertain = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(uncertain.pending.length, 1)
+      assert.equal(swaps.length, 2)
+
+      spent = true
+      const result = await coordinator.recover(WALLET_SEED_HEX, client)
+
+      assert.deepEqual(result.recovered, [])
+      assert.equal(result.pending.length, 1)
+      assert.deepEqual(restoreRequests, [swaps[1]!.outputs.map(({ B_ }) => B_)])
+      assert.equal((await rangeRefundOperation()).state, 'prepared')
+      assert.equal(await completedRefundCount(), 0)
+    },
+  )
+})
+
+test('daemon reports a fixed message for a refund swap that fails without a mint code', async () => {
+  // A cdk database error can quote a blinded message or a proof Y point.
+  const body = `database error: ${'cd'.repeat(400)}`
+  await withExpiredOrdinaryRefund(
+    {
+      executeRefundSwap: async () => {
+        throw new HttpResponseError(body, 503)
+      },
+    },
+    async ({ coordinator, client }) => {
+      const result = await coordinator.recover(WALLET_SEED_HEX, client)
+
+      assert.equal(result.pending.length, 1)
+      assert.equal(result.pending[0]!.error, 'range recovery mint request failed (HTTP 503)')
+      assert.equal(result.pending[0]!.mintError, undefined)
+      assert.deepEqual(coordinator.recoveryStatus().pending, result.pending)
+      assert.equal((await rangeRefundOperation()).state, 'prepared')
+    },
+  )
+})
+
+test('daemon reports a fixed message and the bounded mint detail when a recovery source is refused', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-refused-detail-',
+      incarnationId: 'range-refused-detail-test',
+      proofs: heldShareProofs(),
+      asset: outcomeAsset(),
+      cashProofs: [cashProof(64)],
+    },
+    async ({ directory, fence }) => {
+      const client = fakeEngineClient(() => {
+        throw new Error('a prepared journal must not request a capability')
+      })
+      const consent = await new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mixedSourceMint(),
+        now: () => 10_000,
+        randomId: randomIds('range-refused-detail-preview'),
+      }).previewFeeFacts(sellOneShareRequest(), client)
+      const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mixedSourceMint(),
+        now: () => 10_000,
+        randomId: randomIds('range-refused-detail'),
+        injectRangeUnitOfWorkFault: (phase) => {
+          if (phase === 'before-commit') throw new Error('crash before the source commit')
+        },
+      })
+      await assert.rejects(
+        first.prepare(sellOneShareRequest(), client, undefined, consent),
+        /crash before the source commit/,
+      )
+      assert.equal((await mixedSourceCustody(directory)).lifecycle, 'prepared')
+
+      // Recovery prepares a fresh source. The mint refuses it with a code
+      // while every input is unspent, so the funds stay reserved.
+      const mint = mixedSourceMint({
+        convert: async () => {
+          throw new MintOperationError(11001, `Token already spent: ${'ab'.repeat(300)}`)
+        },
+      })
+      const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        now: () => 10_000,
+      })
+      const result = await restarted.recover(WALLET_SEED_HEX, client)
+
+      assert.equal(mint.convertRequests.length, 1)
+      const source = await rangeSourceOperation()
+      assert.deepEqual(result.pending, [
+        {
+          operationId: source.operationId,
+          error: `range source rejection remains pending (${source.operationId})`,
+          mintError: { code: 11001, detail: 'Token already spent: …' },
+        },
+      ])
+      assert.deepEqual(restarted.recoveryStatus().pending, result.pending)
+      assert.equal((await mixedSourceCustody(directory)).sourceOperation, 'dispatch-intent')
+    },
+  )
+})
+
+test('daemon counts identical refusals again after the order journal advances', async () => {
+  let orderStatus: Awaited<ReturnType<EngineClientLike['getOrderStatus']>> = null
+  let swaps = 0
+  const mintError = { code: 12002, detail: 'Keyset is inactive' }
+  await withExpiredOrdinaryRefund(
+    {
+      executeRefundSwap: async () => {
+        swaps += 1
+        throw new MintOperationError(mintError.code, mintError.detail)
+      },
+    },
+    async ({ directory, coordinator, client }) => {
+      const engine: EngineClientLike = { ...client, getOrderStatus: async () => orderStatus }
+      // The engine does not know the order, so the refund runs from the
+      // capability-bound journal.
+      for (let pass = 1; pass < 5; pass += 1) {
+        const result = await coordinator.recover(WALLET_SEED_HEX, engine)
+        assert.equal(result.pending.length, 1)
+        assert.deepEqual(result.pending[0]!.mintError, mintError)
+        assert.equal(result.pending[0]!.halted, undefined)
+      }
+      assert.deepEqual(
+        (await rangeRecoverySnapshot(directory)).preparations.map(({ lifecycle }) => lifecycle),
+        ['capability-bound'],
+      )
+
+      // The engine now reports the cancelled order. The journal advances, so
+      // the next refusal starts a new count.
+      orderStatus = cancelledOrderStatus()
+      const advanced = await coordinator.recover(WALLET_SEED_HEX, engine)
+
+      assert.equal(swaps, 5)
+      assert.equal(advanced.pending.length, 1)
+      assert.deepEqual(advanced.pending[0]!.mintError, mintError)
+      assert.equal(advanced.pending[0]!.halted, undefined)
+      assert.deepEqual(
+        (await rangeRecoverySnapshot(directory)).preparations.map(({ lifecycle }) => lifecycle),
+        ['order-submitted'],
+      )
+    },
+    { markRejected: false },
+  )
+})
+
+test('daemon refuses a second sell of a market while an earlier sell holds reserved funds', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-second-sell-',
+      incarnationId: 'range-second-sell-test',
+      proofs: [...heldShareProofs(), ...heldShareProofs(), ...heldShareProofs()],
+      asset: outcomeAsset(),
+      cashProofs: [cashProof(64), cashProof(64)],
+    },
+    async ({ directory, fence }) => {
+      const mint = mixedSourceMint({
+        convert: async () => {
+          throw new MintOperationError(12002, 'Keyset is inactive')
+        },
+      })
+      const ids = [
+        'first-sell-operation',
+        'first-sell-authorization',
+        'second-sell-operation',
+        'second-sell-authorization',
+        'third-sell-operation',
+        'third-sell-authorization',
+      ]
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      const client = fakeEngineClient(() => {
+        throw new Error('a reserved sell must not request a capability')
+      })
+      await assert.rejects(coordinator.prepare(sellOneShareRequest(), client))
+      const first = await rangeSourceOperation()
+      const reserved = await walletSummary()
+      assert.ok(reserved.reservedShares >= 1_000)
+      assert.ok(reserved.availableShares >= 1_000, 'the second sell must have its own shares')
+
+      const secondSell = async (clientOrderId: string) =>
+        coordinator.prepare({ ...sellOneShareRequest(), clientOrderId }, client).then(
+          () => null,
+          (error: unknown) => error,
+        )
+      const pendingError = await secondSell('client-order-second-sell')
+      assert.ok(pendingError instanceof CtfRangeSellPreparationPendingError)
+      assert.equal(pendingError.retryCommand, null)
+      assert.equal(
+        pendingError.message,
+        'An earlier sell in this market is still preparing its funds. No order was submitted. To see it, run: bitcaster-cli order recovery',
+      )
+
+      // The earlier sell stops its automatic retries. The refusal then names
+      // the command that retries it.
+      for (let pass = 1; pass <= 5; pass += 1) await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(coordinator.recoveryStatus().pending[0]?.halted, true)
+      const haltedError = await secondSell('client-order-third-sell')
+      assert.ok(haltedError instanceof CtfRangeSellPreparationPendingError)
+      assert.equal(haltedError.retryCommand, `bitcaster-cli order retry ${first.operationId}`)
+      assert.equal(
+        haltedError.message,
+        `An earlier sell in this market is still preparing its funds. Its automatic retries stopped. No order was submitted. To try it again, run: bitcaster-cli order retry ${first.operationId}`,
+      )
+
+      // Neither refused sell reserved funds or sent a mint request, and
+      // neither leaves recovery work.
+      assert.equal(mint.convertRequests.length, 6)
+      assert.deepEqual(await walletSummary(), reserved)
+      assert.equal((await rangeSourceOperation()).operationId, first.operationId)
+      assert.deepEqual(
+        (await rangeRecoverySnapshot(directory)).preparations
+          .map(({ lifecycle }) => lifecycle)
+          .sort(),
+        ['prepared', 'terminal', 'terminal'],
+      )
+    },
+  )
+})
+
+test('daemon refuses a racing second sell in the reservation transaction', async () => {
+  const proofs = [16_384, 16_384].map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), conditionalMintKeys())[0]!),
+  )
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-sell-race-',
+      incarnationId: 'range-sell-race-test',
+      proofs,
+      asset: outcomeAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(proofs)
+      let swaps = 0
+      wallet.completeConditionalSwap = async () => {
+        swaps += 1
+        throw new MintOperationError(12002, 'Keyset is inactive')
+      }
+      wallet.checkProofsStates = async (inputs) =>
+        inputs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
+      // Hold each sell after its early check and before its reservation.
+      const planned: Array<() => void> = []
+      const plannedSignals = [0, 1].map(
+        (index) => new Promise<void>((resolve) => (planned[index] = resolve)),
+      )
+      const resume: Array<() => void> = []
+      const resumeSignals = [0, 1].map(
+        (index) => new Promise<void>((resolve) => (resume[index] = resolve)),
+      )
+      let plans = 0
+      const prepareConditionalSwap = wallet.prepareConditionalSwap.bind(wallet)
+      wallet.prepareConditionalSwap = async (options) => {
+        const index = plans++
+        if (index < 2) {
+          planned[index]!()
+          await resumeSignals[index]
+        }
+        return prepareConditionalSwap(options)
+      }
+      const ids = [
+        'race-first-operation',
+        'race-first-authorization',
+        'race-second-operation',
+        'race-second-authorization',
+      ]
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      const client = fakeEngineClient(() => {
+        throw new Error('a reserved sell must not request a capability')
+      })
+      const sell = (clientOrderId: string) =>
+        coordinator
+          .prepare(
+            {
+              ...orderRequest(),
+              clientOrderId,
+              side: 'Sell',
+              maxQuotePaymentSubunits: null,
+              minQuotePaymentSubunits: 500,
+              amountSubunits: 10_000,
+              minimumFillAmountSubunits: 10_000,
+            },
+            client,
+          )
+          .then(
+            () => null,
+            (error: unknown) => error,
+          )
+
+      let firstError: unknown
+      let secondError: unknown
+      try {
+        const first = sell('client-order-race-first')
+        await plannedSignals[0]
+        const second = sell('client-order-race-second')
+        // Both sells passed the early check while neither held funds.
+        await plannedSignals[1]
+        resume[0]!()
+        firstError = await first
+        resume[1]!()
+        secondError = await second
+      } finally {
+        resume.forEach((release) => release())
+      }
+
+      assert.ok(
+        isRangeSourceRefusalPending(firstError, { code: 12002, detail: 'Keyset is inactive' }),
+      )
+      assert.ok(secondError instanceof CtfRangeSellPreparationPendingError)
+      assert.equal(swaps, 1)
+      assert.equal((await rangeSourceOperation()).state, 'prepared')
+      assert.deepEqual(await walletSummary(), {
+        availableShares: 16_384,
+        availableCash: 0,
+        reservedShares: 16_384,
+        reservedCash: 0,
+      })
+      assert.deepEqual(
+        (await rangeRecoverySnapshot(directory)).preparations
+          .map(({ lifecycle }) => lifecycle)
+          .sort(),
+        ['prepared', 'terminal'],
+      )
     },
   )
 })
@@ -6863,6 +7233,22 @@ function seedOutputs(keysetId: string, start: number, end: number): ReadonlySet<
   )
 }
 
+/**
+ * A refused source request that stays reserved reports a fixed message and
+ * only the bounded mint refusal, never the raw mint error.
+ */
+function isRangeSourceRefusalPending(
+  error: unknown,
+  mintError: { readonly code: number; readonly detail: string },
+): boolean {
+  return (
+    error instanceof Error &&
+    !(error instanceof MintOperationError) &&
+    /^range source rejection remains pending \([^)]+:source\)$/.test(error.message) &&
+    isDeepStrictEqual((error as { mintError?: unknown }).mintError, mintError)
+  )
+}
+
 /** The single range source operation of the legacy wallet mirror. */
 async function rangeSourceOperation() {
   const operations = Object.values((await readState())?.proofOperations ?? {}).filter(
@@ -7407,6 +7793,7 @@ async function withExpiredOrdinaryRefund(
     source: import('@bitcaster-market/client-sdk/durableCtfRangeOperation').DurableCtfRangeOperation
     custodyOperationId: string
   }) => Promise<void>,
+  options: { readonly markRejected?: boolean } = {},
 ) {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8192), mintKeys())[0]!)
   await withDaemonProfile(
@@ -7437,7 +7824,8 @@ async function withExpiredOrdinaryRefund(
       )
       const client = fakeEngineClient(boundCapability)
       const prepared = await coordinator.prepare(orderRequest(), client)
-      await prepared.markRejected()
+      // Without the rejection, the journal stays capability-bound.
+      if (options.markRejected !== false) await prepared.markRejected()
       const db = await openDaemonStateSqlite(directory)
       const row = db
         .prepare(

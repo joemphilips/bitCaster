@@ -40,6 +40,25 @@ export class CtfRangeOrderReleasedError extends Error {
   }
 }
 
+/**
+ * An earlier sell of the same market still holds reserved funds. The daemon
+ * refused this sell before it reserved anything, as the browser does.
+ */
+export class CtfRangeSellPreparationPendingError extends Error {
+  /** The command that retries the earlier sell, when its automatic retries stopped. */
+  readonly retryCommand: string | null
+
+  constructor(retryCommand: string | null) {
+    super(
+      retryCommand === null
+        ? 'An earlier sell in this market is still preparing its funds. No order was submitted. To see it, run: bitcaster-cli order recovery'
+        : `An earlier sell in this market is still preparing its funds. Its automatic retries stopped. No order was submitted. To try it again, run: ${retryCommand}`,
+    )
+    this.name = 'CtfRangeSellPreparationPendingError'
+    this.retryCommand = retryCommand
+  }
+}
+
 export function rangeOrderReleasedMessage(code: number): string {
   return `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds are available again.`
 }

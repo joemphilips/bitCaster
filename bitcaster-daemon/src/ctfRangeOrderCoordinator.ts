@@ -6,7 +6,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { startOrderPhase, measureOrderPhase, type OrderTimelineObserver } from './orderTimeline.ts'
 import {
   Amount,
+  HttpResponseError,
   Mint as CashuMint,
+  NetworkError,
   OutputData,
   Wallet as CashuWallet,
   type MintKeys,
@@ -180,6 +182,7 @@ import {
 import { profileDir } from './profile.ts'
 import {
   CtfRangeOrderReleasedError,
+  CtfRangeSellPreparationPendingError,
   rangeOrderReleasedMessage,
   rangeOrderRetryCommand,
   type DaemonCtfRangeRecoveryPending,
@@ -187,6 +190,7 @@ import {
   type DaemonCtfRangeReleasedOperation,
 } from './ctfRangeOrderRelease.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   CTF_RANGE_REFUND_PURPOSE,
   advanceDaemonKeysetCounter,
@@ -214,7 +218,9 @@ import {
   bindRangePreparationCapability,
   linkRangePreparationSource,
   pageActiveRangePreparations,
+  readPreparedRangeSells,
   readRangePreparation,
+  readRangePreparationOperationLinks,
   toSdkRangePreparationRecord,
   transitionRangePreparation,
   type RangePreparationCapability,
@@ -646,12 +652,33 @@ export class DaemonCtfRangeOrderCoordinator {
     }
     const pending = this.#haltedRecovery(operationId) ?? {
       operationId,
-      error: error instanceof Error ? error.message : String(error),
+      ...recoveryFailureStatus(error),
       ...(error instanceof RangeRecoveryDeferredError ? { retryAtMs: error.retryAtMs } : {}),
-      ...(error instanceof RangeMintRefusalPendingError ? { mintError: error.mintError } : {}),
     }
     this.#pendingStatus.set(operationId, pending)
     return pending
+  }
+
+  /**
+   * True when this pass moved the order journal. Then an earlier run of
+   * identical refusals no longer counts, as in the browser.
+   */
+  async #journalAdvanced(record: RangePreparationRecord): Promise<boolean> {
+    try {
+      const current = await withDurableCustodyFencedRead(
+        this.#storage,
+        this.#getFence(),
+        this.#nowMs(),
+        (database) => readRangePreparation(database, record.scopeId, record.rangeOperationId),
+      )
+      return (
+        current !== null &&
+        (current.revision !== record.revision || current.lifecycleState !== record.lifecycleState)
+      )
+    } catch {
+      // The count is a load control, not funds authority. A failed read keeps it.
+      return false
+    }
   }
 
   async recover(
@@ -699,6 +726,7 @@ export class DaemonCtfRangeOrderCoordinator {
           released.push({ operationId, mintError: error.mintError, message: error.message })
           continue
         }
+        if (await this.#journalAdvanced(preparation)) this.#refusals.delete(operationId)
         result.pending.push(this.#pendingResult(operationId, error))
       }
     }
@@ -831,10 +859,7 @@ export class DaemonCtfRangeOrderCoordinator {
         }
         this.#refundRepairCursor = row
       } catch (error) {
-        result.pending.push({
-          operationId: row.operationId,
-          error: error instanceof Error ? error.message : String(error),
-        })
+        result.pending.push({ operationId: row.operationId, ...recoveryFailureStatus(error) })
         result.more = false
         return result
       }
@@ -1873,6 +1898,9 @@ export class DaemonCtfRangeOrderCoordinator {
         }
         return proofs
       } catch (error) {
+        // The mint did not answer this restore. That proves nothing about
+        // which plan it signed, so the refund stays pending, as in the browser.
+        if (error instanceof HttpResponseError || error instanceof NetworkError) throw error
         firstError ??= error
       }
     }
@@ -2306,8 +2334,41 @@ export class DaemonCtfRangeOrderCoordinator {
       if (error instanceof ProofConsolidationRequiredError) {
         await this.#markTerminal(authority.preparationInput.operationId)
       }
+      if (error instanceof UnresolvedRangeSellError) {
+        await this.#endUnfundedPreparation(authority.preparationInput.operationId)
+        const blocking = error.blockingOperationId
+        throw new CtfRangeSellPreparationPendingError(
+          blocking !== null && this.#haltedRecovery(blocking) !== null
+            ? rangeOrderRetryCommand(blocking)
+            : null,
+        )
+      }
       throw error
     }
+  }
+
+  /** End a refused attempt's journal when it holds no funds, so it leaves no recovery work. */
+  async #endUnfundedPreparation(rangeOperationId: string): Promise<void> {
+    const mutation = this.#mutation()
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) => {
+        const scopeId = mutation.fence.scopeId
+        const journal = readRangePreparation(database, scopeId, rangeOperationId)
+        if (journal?.lifecycleState !== 'prepared') return
+        if (rangePreparationHoldsReservedFunds(database, scopeId, rangeOperationId)) return
+        transitionRangePreparation(database, {
+          scopeId,
+          rangeOperationId,
+          expectedRevision: journal.revision,
+          from: 'prepared',
+          to: 'terminal',
+          updatedAtMs: mutation.observedAtMs,
+        })
+      },
+    )
   }
 
   #createMint(mintUrl: string): CtfRangeMintLike {
@@ -2472,6 +2533,15 @@ async function prepareOrResumeSource(
   if (!allowFreshSource) {
     throw new Error('fresh range source preparation requires explicit fee consent')
   }
+  // Refuse before selection, so a sell that the earlier sell left short of
+  // funds gets this refusal. Each reservation checks again in its transaction.
+  const mutation = authority.mutation()
+  await withDurableCustodyFencedRead(
+    authority.storage,
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => requireNoUnresolvedSell(database, authority, mutation.fence.scopeId),
+  )
   for (;;) {
     const limits = await freshSourceLimits(authority, dependencies)
     const planned = await planFreshSourceWithFees(authority, limits, round)
@@ -2934,7 +3004,7 @@ async function completeNewSource(
     await settleRangeRequestRefusal(
       error,
       sourceRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
-      () => asError(error),
+      (mintError) => freshRequestPendingError('source', entry.operationId, mintError, error),
     )
     throw error
   }
@@ -3169,7 +3239,8 @@ async function consolidateSourceProofs(
       await settleRangeRequestRefusal(
         error,
         consolidationRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
-        () => asError(error),
+        (mintError) =>
+          freshRequestPendingError('consolidation', entry.operationId, mintError, error),
       )
       throw error
     }
@@ -3245,6 +3316,7 @@ async function persistPreparedConsolidation(
     dependencies.injectRangeUnitOfWorkFault,
     (database) => {
       existingOperation = readDaemonProofOperationFromDatabase(database, operationId) !== null
+      if (!existingOperation) requireNoUnresolvedSell(database, authority, mutation.fence.scopeId)
     },
   )
   return { validated, wasAlreadyCommitted: existingOperation }
@@ -3503,6 +3575,7 @@ async function persistPreparedSameKeysetSource(
       existingOperation =
         readDaemonProofOperationFromDatabase(database, authority.preparation.sourceOperationId) !==
         null
+      if (!existingOperation) requireNoUnresolvedSell(database, authority, mutation.fence.scopeId)
     },
     dependencies.injectRangeUnitOfWorkFault,
   )
@@ -3586,6 +3659,7 @@ async function persistPreparedMixedSource(
       existingOperation =
         readDaemonProofOperationFromDatabase(database, authority.preparation.sourceOperationId) !==
         null
+      if (!existingOperation) requireNoUnresolvedSell(database, authority, mutation.fence.scopeId)
     },
   )
   return existingOperation
@@ -3740,8 +3814,52 @@ function replayPendingError(
       )
 }
 
+/**
+ * A fresh source or consolidation request that the mint refused with a code
+ * stays reserved. Its error counts toward the halt and keeps only the bounded
+ * mint detail. Any other failure keeps its own error.
+ */
+function freshRequestPendingError(
+  request: 'source' | 'consolidation',
+  operationId: string,
+  mintError: CashuMintRefusal | null,
+  error: unknown,
+): Error {
+  return mintError === null
+    ? asError(error)
+    : new RangeMintRefusalPendingError(
+        `range ${request} rejection remains pending (${operationId})`,
+        mintError,
+      )
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+/**
+ * The recovery status of one failed pass, for the RPC reply and the daemon
+ * log. A mint HTTP answer can quote long text, such as a blinded message or a
+ * proof Y point. It gets a fixed message, and a coded refusal also keeps the
+ * SDK's bounded detail (ADR-037 mint refusal settlement).
+ */
+function recoveryFailureStatus(error: unknown): {
+  readonly error: string
+  readonly mintError?: CashuMintRefusal
+} {
+  if (error instanceof RangeMintRefusalPendingError) {
+    return { error: error.message, mintError: error.mintError }
+  }
+  if (!(error instanceof HttpResponseError)) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+  const failure = classifyCashuMintFailure(error)
+  return failure.kind === 'refusal'
+    ? {
+        error: `range recovery mint request was refused (mint code ${failure.code})`,
+        mintError: { code: failure.code, detail: failure.detail },
+      }
+    : { error: `range recovery mint request failed (HTTP ${error.status})` }
 }
 
 /** A coded mint refusal kept a range request reserved. Recovery retries it. */
@@ -3753,6 +3871,80 @@ class RangeMintRefusalPendingError extends Error {
     this.name = 'RangeMintRefusalPendingError'
     this.mintError = mintError
   }
+}
+
+/** An earlier sell of the same market holds reserved funds. */
+class UnresolvedRangeSellError extends Error {
+  /** The recovery id of the earlier sell, or null when the bounded scan overflowed. */
+  readonly blockingOperationId: string | null
+
+  constructor(blockingOperationId: string | null) {
+    super('an earlier sell of this market still holds reserved funds')
+    this.name = 'UnresolvedRangeSellError'
+    this.blockingOperationId = blockingOperationId
+  }
+}
+
+/**
+ * Refuse a sell that would lock more of a position while an earlier sell of
+ * the same market still holds reserved funds, as the browser does. A
+ * reservation runs this check in its own transaction, so the check and the
+ * new reservation cannot interleave with another submit.
+ */
+function requireNoUnresolvedSell(
+  database: DatabaseSync,
+  authority: PreparedMintAuthority,
+  scopeId: string,
+): void {
+  const preparation = authority.preparationInput
+  if (preparation.side !== 'Sell') return
+  const prepared = readPreparedRangeSells(database, scopeId, preparation.conditionId)
+  const blocking = prepared.records.find(
+    (record) =>
+      record.rangeOperationId !== preparation.operationId &&
+      rangePreparationHoldsReservedFunds(database, scopeId, record.rangeOperationId),
+  )
+  if (blocking === undefined && !prepared.overflow) return
+  throw new UnresolvedRangeSellError(blocking?.sourceOperationId ?? null)
+}
+
+/** True while a range preparation's source or consolidation keeps funds reserved. */
+function rangePreparationHoldsReservedFunds(
+  database: DatabaseSync,
+  scopeId: string,
+  rangeOperationId: string,
+): boolean {
+  const links = readRangePreparationOperationLinks(database, scopeId, rangeOperationId)
+  const store = new DurableCustodySqliteStore(database)
+  const custodyState = (operationId: string) => {
+    const custodyId = readDaemonProofOperationFromDatabase(database, operationId)?.metadata
+      .custodySourceOperationId
+    return typeof custodyId === 'string'
+      ? store.getOperation(custodyId)?.operation.state
+      : undefined
+  }
+  const source = links.source === null ? undefined : custodyState(links.source.sourceOperationId)
+  // An applied source passes its funds to the order authorization.
+  if (source !== undefined) return source !== 'aborted'
+  for (const link of links.consolidations) {
+    const state = custodyState(link.operationId)
+    switch (state) {
+      case 'dispatch-intent':
+      case 'transport-attempted':
+        return true
+      case 'reconciled':
+      case 'aborted':
+      case undefined:
+        break
+      default:
+        return assertNeverCustodyState(state)
+    }
+  }
+  return false
+}
+
+function assertNeverCustodyState(value: never): never {
+  throw new Error(`unhandled custody operation state: ${String(value)}`)
 }
 
 /** One persisted range request that the mint refused. */

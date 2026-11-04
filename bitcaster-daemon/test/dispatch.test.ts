@@ -73,7 +73,10 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
-import { CtfRangeOrderReleasedError } from '../src/ctfRangeOrderRelease.ts'
+import {
+  CtfRangeOrderReleasedError,
+  CtfRangeSellPreparationPendingError,
+} from '../src/ctfRangeOrderRelease.ts'
 import type { OrderDraftParams, ScorePurchaseConsent, SubmitOrderParams } from '../src/protocol.ts'
 import { retainNativeOrderLink } from './support/nativeOrderOwnership.ts'
 
@@ -2430,6 +2433,61 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.deepEqual(response.mintError, { code: 11008, detail: 'Duplicate outputs' })
         assert.ok(response.clientOrderId)
         assert.equal(response.orderId, undefined)
+        assert.equal(submits, 0)
+        assert.equal(recoveryTriggers, 0)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
+
+    await t.test(
+      'order.submit refuses a second sell while an earlier sell of the market holds funds',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let recoveryTriggers = 0
+        let submits = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Sell',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => ({
+              ...testOrderEngine(),
+              submitOrder: async () => {
+                submits += 1
+                throw new Error('a refused sell must not submit an order')
+              },
+            }),
+            prepareSettlementCapability: async () => {
+              throw new CtfRangeSellPreparationPendingError(
+                'bitcaster-cli order retry range-1:source',
+              )
+            },
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.deepEqual(
+          { ...response, clientOrderId: typeof response.clientOrderId },
+          {
+            ok: false,
+            code: 'order-sell-preparation-pending',
+            error:
+              'An earlier sell in this market is still preparing its funds. Its automatic retries stopped. No order was submitted. To try it again, run: bitcaster-cli order retry range-1:source',
+            clientOrderId: 'string',
+          },
+        )
         assert.equal(submits, 0)
         assert.equal(recoveryTriggers, 0)
         assert.deepEqual((await readState())?.orders, {})

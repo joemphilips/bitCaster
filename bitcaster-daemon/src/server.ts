@@ -193,6 +193,7 @@ import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePosit
 import { streamDaemonWatch, type DaemonWatchProvider } from './watchTransport.ts'
 import {
   CtfRangeOrderReleasedError,
+  CtfRangeSellPreparationPendingError,
   type DaemonCtfRangeRecoveryStatus,
 } from './ctfRangeOrderRelease.ts'
 import {
@@ -2008,6 +2009,16 @@ async function dispatchProtectedOrderSubmit(
         code: 'order-attempt-released',
         error: error.message,
         mintError: error.mintError,
+        clientOrderId,
+      }
+    }
+    if (error instanceof CtfRangeSellPreparationPendingError) {
+      // This sell reserved nothing and ended its attempt. The earlier sell
+      // keeps its own recovery.
+      return {
+        ok: false,
+        code: 'order-sell-preparation-pending',
+        error: error.message,
         clientOrderId,
       }
     }
