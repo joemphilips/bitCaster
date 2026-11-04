@@ -171,6 +171,9 @@ Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
 a valid 12-word or 24-word recovery phrase. Enter each word in its numbered field,
 or paste the complete phrase into one field. Setup does not submit a payment automatically.
+After you restore a wallet, the app restores its funds and market positions
+from the mint. Portfolio shows **Restoring positions…** until the restore
+finishes. Let your trades finish in the old browser before you move.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.

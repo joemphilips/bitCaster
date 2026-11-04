@@ -46,11 +46,37 @@ default. This includes new ordinary refund outputs after the mint signs them,
 within the selected scan range. It does not reconstruct the refund's operation
 history. Older refunds can still require their saved local records.
 Condition-specific recovery requires the supported discovery route described
-below. The web app uses encrypted backup recovery.
+below. The web app restores market positions in a new browser automatically
+(see "Open your wallet in a new browser").
 Keep the local wallet database until every active operation has a confirmed
 final result. Seed recovery does not replace saved retry records for unfinished
 operations.
 Do not clear browser storage to resolve an uncertain payment or trade.
+
+## Open your wallet in a new browser
+
+When you restore a wallet with its recovery phrase in a browser that did not
+create it, the app restores your funds and your market positions from the mint.
+It does this automatically. It does not need a Nostr identity or a backup.
+Portfolio and the Sell tab show **Restoring positions…** while the app checks
+the mint. With many markets, this can take some minutes. If the check fails,
+the app shows an error with **Retry**.
+
+Let your trades finish before you move to a new browser. An order in progress
+locks funds that only the old browser can complete or refund. After the order
+finishes, the new browser restores its result.
+
+Use one browser at a time. When the app finds outputs that another browser
+signed with this wallet, it shows **This wallet was used in another browser.
+Use one browser at a time.**
+
+The restore tells the mint which outputs belong to this recovery phrase. The
+mint can link these outputs and can learn which markets the wallet traded. The
+mint does not receive your Nostr identity or your matching-engine account.
+
+The app checks the first 128 counters of each market. A position can stay
+hidden when many orders on one outcome did not fill before its first fill. The
+CLI command `wallet recover-seed --condition-id` can restore such a market.
 
 ## What the web app stores
 
@@ -128,11 +154,12 @@ When the web app needs proofs for one asset, it uses this order:
 3. It makes one bounded targeted recovery attempt only when monitoring
    identifies an exact missing asset.
 
-The web app does not make a broad automatic keyset scan when monitoring does
-not identify an exact missing asset. If the backup service is unavailable, the
-web app shows a persistent error. Unavailability does not prove that an asset
-is absent and does not authorize automatic mint recovery. Broad recovery
-remains available through the CLI.
+Except for the restore in a new browser above, the web app does not make a
+broad automatic keyset scan when monitoring does not identify an exact missing
+asset. If the backup service is unavailable, the web app shows a persistent
+error. Unavailability does not prove that an asset is absent and does not
+authorize automatic mint recovery. Broad recovery remains available through
+the CLI.
 
 If a trade needs Participation Score and locally available funds are insufficient,
 the app checks wallet recovery. If recovery is unavailable, it offers Retry
@@ -244,8 +271,11 @@ omit both encrypted backup and asset monitoring. It keeps complete wallet
 state in its local durable store.
 
 Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when the backup
-service is unavailable. The command scans regular `msat` keysets only. It does
-not list conditional keysets. The default `--gap-limit` is 300. Set a larger
+service is unavailable. Without an option, the command scans regular `msat`
+keysets only. Add `--all-conditions` to restore market positions too: the
+command checks the first 128 counters of each market in the public catalogue,
+and it recovers each market where the mint signed an output of this seed. The
+default `--gap-limit` is 300. Set a larger
 gap to scan farther after the last verified signature. Each request has at most
 300 counters, and each invocation processes at most four batches.
 

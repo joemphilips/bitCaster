@@ -118,6 +118,9 @@ bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file 
 
 seed recovery では `--recovery-phrase-file` または `--wallet-seed-hex-file` の
 どちらか一方を指定します。どちらの file も所有者以外に読ませないでください。
+マーケットのポジションも復元する場合は、`--all-conditions` を加えます。コマンドは
+公開カタログの各マーケットを mint で確認します。インポートしたシードで `daemon init` を
+実行すると、このコマンドを表示します。
 
 プロファイルに設定されたミントを指定します。後の実行でも同じ復旧 ID を使ってください。
 この確認オプションは、シードから生成したプルーフ候補をミントに開示することへの同意です。

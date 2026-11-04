@@ -119,6 +119,9 @@ bitcaster-cli --datadir ./wallet-new wallet recover-seed --recovery-phrase-file 
 
 For seed recovery, supply exactly one of `--recovery-phrase-file` or
 `--wallet-seed-hex-file`. Keep either owner-only file private.
+Add `--all-conditions` to restore market positions too. The command then
+checks each market of the public catalogue at the mint. `daemon init` with an
+imported seed prints this command.
 
 Use the profile's configured mint and the same recovery ID for later invocations.
 The acknowledgment permits disclosure of deterministic proof candidates to the mint.
