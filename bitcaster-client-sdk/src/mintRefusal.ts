@@ -1,24 +1,29 @@
 /**
  * Cashu mint failures that a range-order client may act on.
  *
- * Two refusals let a client settle a persisted request, as ordinary Cashu
- * wallets do after a restore scan or a proof-state check:
+ * A coded refusal (HTTP 400 with a code) lets a client settle a persisted
+ * request after it checks the inputs again, as ordinary Cashu wallets do after
+ * a restore scan or a proof-state check:
  *
  * - 11003 and 11008 (outputs already signed): another client with the same
  *   seed signed these outputs. The client advances its counters past the
- *   mint's signed range, checks the inputs again, and releases them when all
- *   are unspent.
- * - 11001 (token already spent): the client checks the inputs again, retires
- *   the spent ones, and releases the rest.
+ *   mint's signed range and releases the inputs.
+ * - 13042 (convert not permitted): the condition is attested. It never
+ *   returns to pending, so no copy of a convert can commit. The client
+ *   releases the inputs.
+ * - Any other code, such as 11001 or 12002: the client releases the inputs
+ *   only when some are spent and the rest unspent. That mixed reading proves
+ *   that the request did not commit and can never commit.
  *
+ * In every case the client retires the spent inputs and releases the rest.
  * cdk 0.18.2 commits the inputs and the blind signatures of one request
  * together (CTF convert: `mint/swap/atomic.rs` `execute_atomic_ctf_convert`;
  * swap: `mint/swap/swap_saga` setup and finalize, with compensation). The
  * client sends one copy at a time under the wallet profile lock and never
- * resends released bytes. Every other code keeps the uncertain path.
+ * resends released bytes. A failure without a code keeps the uncertain path.
  */
 export const MINT_OUTPUT_REUSE_REFUSAL_CODES: ReadonlySet<number> = new Set([11003, 11008])
-export const MINT_SPENT_INPUT_REFUSAL_CODE = 11001
+export const MINT_CONDITION_ATTESTED_REFUSAL_CODE = 13042
 
 export interface CashuMintRefusal {
   readonly code: number
@@ -30,7 +35,7 @@ export type CashuMintFailure =
   | { readonly kind: 'transient'; readonly retryAfterMs: number | null }
 
 /** A refusal that, with a fresh NUT-07 reading, can settle a persisted request. */
-export type CtfRangeSettlingRefusal = 'outputs-signed' | 'inputs-spent'
+export type CtfRangeSettlingRefusal = 'outputs-signed' | 'condition-attested' | 'coded-refusal'
 
 const CAUSE_DEPTH_MAX = 4
 const DETAIL_LENGTH_MAX = 256
@@ -56,7 +61,8 @@ export function settlingMintRefusal(failure: CashuMintFailure): CtfRangeSettling
       return null
     case 'refusal':
       if (MINT_OUTPUT_REUSE_REFUSAL_CODES.has(failure.code)) return 'outputs-signed'
-      return failure.code === MINT_SPENT_INPUT_REFUSAL_CODE ? 'inputs-spent' : null
+      if (failure.code === MINT_CONDITION_ATTESTED_REFUSAL_CODE) return 'condition-attested'
+      return 'coded-refusal'
     default:
       return assertNever(failure)
   }
@@ -75,11 +81,13 @@ export type CtfRangeRequestSettlement =
  * - A pending or unknown input waits.
  * - All spent inputs need the exact NUT-09 restore: an earlier copy can have
  *   committed.
- * - Without a settling refusal, the client replays the exact request. A mixed
- *   reading replays too, so that the mint answers with its spent-input code.
- * - After an outputs-signed refusal, unspent inputs are released.
- * - After an inputs-spent refusal, the spent inputs are retired and the rest
- *   released. All unspent inputs contradict that answer and wait.
+ * - Without a refusal, the client replays the exact request. A mixed reading
+ *   replays too, so that the mint answers with a code.
+ * - After an outputs-signed or condition-attested refusal, unspent inputs are
+ *   released and spent inputs retired.
+ * - After any other coded refusal, a mixed reading retires the spent inputs
+ *   and releases the rest. All unspent inputs do not prove that the request
+ *   is final, so they wait.
  */
 export function decideCtfRangeRequestSettlement(input: {
   readonly refusal: CtfRangeSettlingRefusal | null
@@ -96,8 +104,9 @@ export function decideCtfRangeRequestSettlement(input: {
     case null:
       return { kind: 'replay' }
     case 'outputs-signed':
+    case 'condition-attested':
       return { kind: 'release', spentInputIndexes }
-    case 'inputs-spent':
+    case 'coded-refusal':
       return spentInputIndexes.length === 0
         ? { kind: 'wait' }
         : { kind: 'release', spentInputIndexes }

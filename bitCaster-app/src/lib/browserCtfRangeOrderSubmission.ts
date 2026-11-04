@@ -42,7 +42,7 @@ import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
 import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
-import { getWalletForMnemonicUnit } from "@/stores/wallet";
+import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 import {
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
@@ -55,7 +55,8 @@ import {
 } from "./browserCtfRangeOrderCoordinator";
 import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
 import {
-  advanceCtfRangePreparationPastSignedOutputs,
+  createBuyReceiveProbeCache,
+  probeBuyReceiveRange,
   probeSignedBlindedOutputs,
 } from "./browserCtfRangeCounterProbe";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
@@ -86,6 +87,8 @@ import {
 } from "./browserCtfRangeOrderRecoveryWake";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
+/** The preview and the submit share clean buy receive-range probes. */
+const buyReceiveProbeCache = createBuyReceiveProbeCache();
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
@@ -162,6 +165,9 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
+  // Probe during the preview so the submit adds no mint round trip. A failed
+  // probe here only means that the submit probes again.
+  await previewBuyReceiveCounters(scopeId, preparation).catch(() => undefined);
   const selection = await loadBrowserRangeSourceSelection(
     preparation,
     scopeId,
@@ -277,15 +283,8 @@ export async function submitBrowserCtfRangeOrder(
       isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
     });
     try {
-      // Another client with this seed can have signed the planned receive or
-      // change outputs. Skip those counters before the preparation reserves them.
-      await advanceCtfRangePreparationPastSignedOutputs({
-        counterStore,
-        preparation: basePreparation,
-        intent: preparationIntent.intent,
-        seed,
-        probe: probeSignedBlindedOutputs,
-      });
+      // Reuses the preview's clean probe unless the receive cursor moved.
+      await probeBuyReceiveCounters(scopeId, basePreparation, seed, counterStore);
     } catch {
       throw new BrowserCtfRangeOrderError(
         "source-preparation-failed",
@@ -1340,7 +1339,6 @@ function createBrowserCtfRangeCoordinator(
     engine,
     allowInsecureLoopbackHttp,
     recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
-    probeSignedOutputs: probeSignedBlindedOutputs,
     // The coordinator holds the profile lock and the custody scope here. The
     // advance admits no proof, so it needs neither again.
     recoverOutputCounters: async ({ mintUrl, keysets }) => {
@@ -1389,6 +1387,54 @@ function createBrowserCtfRangeCoordinator(
     isDefinitiveOrderRejection: (error) =>
       error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error),
   });
+}
+
+/**
+ * Another client with this seed can have signed a buy's planned receive
+ * outputs. The engine's group convert would then reject every participant.
+ */
+async function probeBuyReceiveCounters(
+  scopeId: string,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
+  counterStore: BrowserWalletCounterDexieStore,
+): Promise<void> {
+  if (preparation.version !== 2) return;
+  await probeBuyReceiveRange({
+    scopeId,
+    counterStore,
+    preparation,
+    seed,
+    probe: probeSignedBlindedOutputs,
+    cache: buyReceiveProbeCache,
+    scanPastSignedOutputs: (keyset) =>
+      advanceWalletKeysetCounterPastMint({
+        scopeId,
+        mintUrl: preparation.mintUrl,
+        unit: "msat",
+        keyset,
+        ...conditionalCounterAsset(keyset),
+      }),
+  });
+}
+
+async function previewBuyReceiveCounters(
+  scopeId: string,
+  preparation: PersistedCtfRangeOrderPreparation,
+): Promise<void> {
+  if (preparation.side !== "Buy") return;
+  const mnemonic = useWalletStore.getState().mnemonic;
+  if (!mnemonic || browserWalletScopeIdFromMnemonic(mnemonic) !== scopeId) return;
+  await probeBuyReceiveCounters(
+    scopeId,
+    preparation,
+    toSeed(mnemonic.trim().split(/\s+/).filter(Boolean)),
+    new BrowserWalletCounterDexieStore({
+      database: db,
+      scopeId,
+      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+    }),
+  );
 }
 
 function isLoopbackMint(mintUrl: string): boolean {

@@ -1,8 +1,6 @@
-import { Mint as CashuMint, type SerializedBlindedMessage } from "@cashu/cashu-ts";
+import { Mint as CashuMint, OutputData, type SerializedBlindedMessage } from "@cashu/cashu-ts";
 import {
-  createCounterCtfRangePreparation,
-  reconstructCtfRangePreparation,
-  type CtfRangePreparationIntent,
+  planCounterCtfRangePreparation,
   type PersistedCtfRangeOrderPreparationV2,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -50,60 +48,75 @@ export const probeSignedBlindedOutputs: BrowserSignedOutputProbe = async (mintUr
 };
 
 /**
- * Advance the offer and receive counters past every planned manifest output
- * that the mint already signed, before the preparation reserves them. Another
- * client with the same seed can have used these counters.
+ * Remembers a clean probe of one receive counter range. The submit reuses the
+ * preview's probe while the cursor stays where the preview saw it.
  */
-export async function advanceCtfRangePreparationPastSignedOutputs(input: {
+export interface BuyReceiveProbeCache {
+  isClean(key: string, nextCounter: number, count: number): boolean;
+  markClean(key: string, nextCounter: number, count: number): void;
+}
+
+const PROBE_CACHE_LIMIT = 64;
+
+export function createBuyReceiveProbeCache(): BuyReceiveProbeCache {
+  const clean = new Map<string, { nextCounter: number; count: number }>();
+  return {
+    isClean: (key, nextCounter, count) => {
+      const entry = clean.get(key);
+      return entry !== undefined && entry.nextCounter === nextCounter && entry.count >= count;
+    },
+    markClean: (key, nextCounter, count) => {
+      clean.delete(key);
+      clean.set(key, { nextCounter, count });
+      while (clean.size > PROBE_CACHE_LIMIT) {
+        const oldest = clean.keys().next().value;
+        if (oldest === undefined) break;
+        clean.delete(oldest);
+      }
+    },
+  };
+}
+
+/**
+ * Before a buy reserves its receive counters, ask the mint with NUT-09 whether
+ * another client with the same seed already signed those outputs. The engine
+ * signs receive outputs in a group convert, where one reused output rejects
+ * the whole group. On a hit, scan past the mint's signed range and probe the
+ * new range. Sells, consolidations, and refunds handle a reuse refusal instead.
+ */
+export async function probeBuyReceiveRange(input: {
+  readonly scopeId: string;
   readonly counterStore: BrowserWalletCounterDexieStore;
   readonly preparation: PersistedCtfRangeOrderPreparationV2;
-  readonly intent: CtfRangePreparationIntent;
   readonly seed: Uint8Array;
   readonly probe: BrowserSignedOutputProbe;
+  readonly cache: BuyReceiveProbeCache;
+  readonly scanPastSignedOutputs: (
+    keyset: PersistedCtfRangeOrderPreparationV2["receiveKeyset"],
+  ) => Promise<void>;
 }): Promise<void> {
+  if (input.preparation.side !== "Buy") return;
+  const keyset = input.preparation.receiveKeyset;
   const context = { mintUrl: input.preparation.mintUrl, unit: "msat" as const };
-  const offerKeysetId = input.preparation.offerKeyset.id;
-  const receiveKeysetId = input.preparation.receiveKeyset.id;
+  const count = planCounterCtfRangePreparation(input.preparation).receiveCount;
+  const key = JSON.stringify([input.scopeId, input.preparation.mintUrl, keyset.id]);
   for (let attempt = 0; attempt < PROBE_ATTEMPTS_MAX; attempt++) {
-    const [offer, receive] = await Promise.all([
-      input.counterStore.readSnapshotInContext(context, offerKeysetId),
-      input.counterStore.readSnapshotInContext(context, receiveKeysetId),
-    ]);
-    const receipt = createCounterCtfRangePreparation({
-      preparation: input.preparation,
-      intent: input.intent,
-      seed: input.seed,
-      offerCounterStart: offer.nextCounter ?? 0,
-      receiveCounterStart: receive.nextCounter ?? 0,
-    });
-    const entries = reconstructCtfRangePreparation(receipt, input.seed).manifest.entries;
-    const signed = await input.probe(
-      input.preparation.mintUrl,
-      entries.map(({ outputData }) => outputData.blindedMessage),
+    const start =
+      (await input.counterStore.readSnapshotInContext(context, keyset.id)).nextCounter ?? 0;
+    if (input.cache.isClean(key, start, count)) return;
+    // A NUT-13 blinded output does not depend on its amount.
+    const outputs = Array.from(
+      { length: count },
+      (_, index) =>
+        OutputData.createSingleDeterministicData(1, input.seed, start + index, keyset.id)
+          .blindedMessage,
     );
-    const signedKeysets = new Set(
-      entries
-        .filter(({ outputData }) => signed.has(outputData.blindedMessage.B_))
-        .map(({ outputData }) => outputData.blindedMessage.id),
-    );
-    if (signedKeysets.size === 0) return;
-    // Skip each touched range as a whole. A later probe checks the next range.
-    if (signedKeysets.has(receiveKeysetId)) {
-      await input.counterStore.advanceToAtLeastInContext(
-        context,
-        receiveKeysetId,
-        receipt.receiveCounterStart + receipt.receiveCounterCount,
-        true,
-      );
+    const signed = await input.probe(input.preparation.mintUrl, outputs);
+    if (!outputs.some(({ B_ }) => signed.has(B_))) {
+      input.cache.markClean(key, start, count);
+      return;
     }
-    if (signedKeysets.has(offerKeysetId)) {
-      await input.counterStore.advanceToAtLeastInContext(
-        context,
-        offerKeysetId,
-        receipt.offerCounterStart + receipt.offerCounterCount,
-        true,
-      );
-    }
+    await input.scanPastSignedOutputs(keyset);
   }
-  throw new Error("browser CTF preparation counters stay signed after repeated advances");
+  throw new Error("browser CTF buy receive counters stay signed after repeated scans");
 }

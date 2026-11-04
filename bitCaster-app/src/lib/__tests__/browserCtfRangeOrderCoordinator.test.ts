@@ -125,8 +125,7 @@ import {
   BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT,
   BrowserCtfRangeRecoverySchedule,
 } from "../browserCtfRangeRecoverySchedule";
-import { advanceCtfRangePreparationPastSignedOutputs } from "../browserCtfRangeCounterProbe";
-import { reconstructCtfRangePreparation } from "@bitcaster/client-sdk/ctfRangeOrderCounterPreparation";
+import { createBuyReceiveProbeCache, probeBuyReceiveRange } from "../browserCtfRangeCounterProbe";
 import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
 import {
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
@@ -3632,14 +3631,16 @@ describe("browser CTF range order coordinator", () => {
 /*
  * A refusal that outputs are already signed (11003, 11008) settles a request
  * after the wallet checks the inputs again: unspent inputs are released.
- * Every other coded refusal keeps the request reserved and uncertain.
+ * Every other coded refusal settles only a mixed reading. With every input
+ * unspent, it keeps the request reserved and uncertain.
  */
 const OUTPUT_REUSE_REFUSALS = [
   [11003, "Blinded message already signed or pending"],
   [11008, "Duplicate outputs"],
 ] as const;
-const NON_SETTLING_REFUSALS = [
+const CODED_REFUSALS = [
   [10001, "Token not verified"],
+  [11001, "Token already spent"],
   [11002, "Token pending"],
   [11005, "Transaction unbalanced"],
   [11007, "Duplicate inputs"],
@@ -3647,7 +3648,6 @@ const NON_SETTLING_REFUSALS = [
   [12001, "Keyset is not known"],
   [12002, "Keyset is inactive"],
   [13041, "Convert payoff fee violation"],
-  [13042, "Convert not permitted"],
   [50000, "Database error"],
 ] as const;
 
@@ -3705,8 +3705,8 @@ describe("browser CTF range final mint refusal", () => {
     },
   );
 
-  it.each(NON_SETTLING_REFUSALS)(
-    "keeps a partial sell refused with %s reserved and uncertain",
+  it.each(CODED_REFUSALS)(
+    "keeps an unspent partial sell refused with %s reserved and uncertain",
     async (code, detail) => {
       const fixture = partialSellFixture(`kept-partial-sell-${code}`);
       const counterRecoveries: unknown[] = [];
@@ -3729,6 +3729,68 @@ describe("browser CTF range final mint refusal", () => {
       await expectStuckPartialSell(fixture);
     },
   );
+
+  it.each(CODED_REFUSALS)(
+    "releases a mixed partial sell refused with %s and retires the spent input",
+    async (code, detail) => {
+      const fixture = partialSellFixture(`mixed-refused-partial-sell-${code}`);
+      // Another client with the same seed spent the fee input. This request
+      // did not commit and can never commit.
+      const states = new Map<string, ProofState["state"]>([[fixture.cash.secret, "SPENT"]]);
+      const counterRecoveries: unknown[] = [];
+      const coordinator = createCoordinator(fixture.database, stateWallet(states), fixture.engine, {
+        executeSourceConvert: async () => {
+          throw new MintOperationError(code, detail);
+        },
+        recoverOutputCounters: async (input) => {
+          counterRecoveries.push(input);
+        },
+      });
+
+      await expect(fixture.submit(coordinator)).rejects.toMatchObject({
+        code: "order-attempt-ended",
+        released: true,
+        mintError: { code, detail },
+      });
+
+      expect(counterRecoveries).toEqual([]);
+      await expectReleasedPartialSell(fixture, { spentSecrets: [fixture.cash.secret] });
+    },
+  );
+
+  it("releases a mixed stuck source when the replay meets a rotated keyset", async () => {
+    const fixture = partialSellFixture("mixed-rotated-keyset");
+    const states = new Map<string, ProofState["state"]>();
+    let rotated = false;
+    let converts = 0;
+    const coordinator = createCoordinator(fixture.database, stateWallet(states), fixture.engine, {
+      executeSourceConvert: async () => {
+        converts += 1;
+        if (!rotated) throw new NetworkError("connection reset");
+        throw new MintOperationError(12002, "Keyset is inactive");
+      },
+    });
+    await expect(fixture.submit(coordinator)).rejects.toMatchObject({
+      code: "mint-source-uncertain",
+    });
+    await expectStuckPartialSell(fixture);
+    // The mint rotated the output keyset, and another client spent the fee input.
+    rotated = true;
+    states.set(fixture.cash.secret, "SPENT");
+
+    const page = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+
+    expect(page.recoveredOperationIds).toEqual([fixture.preparation.operationId]);
+    expect(page.refused).toEqual([
+      {
+        operationId: fixture.preparation.operationId,
+        revision: 1,
+        mintError: { code: 12002, detail: "Keyset is inactive" },
+      },
+    ]);
+    expect(converts).toBe(2);
+    await expectReleasedPartialSell(fixture, { spentSecrets: [fixture.cash.secret] });
+  });
 
   it("releases both production attempts: a spent fee input, then reused outputs", async () => {
     // Attempt A (105 shares): another client spent the fee input, so the mint
@@ -3796,6 +3858,51 @@ describe("browser CTF range final mint refusal", () => {
         .map(({ selectability }) => selectability),
     ).toEqual(["selectable"]);
   });
+
+  it.each([
+    { operation: "937257e4", spentFee: true },
+    { operation: "9ca618bc", spentFee: false },
+  ])(
+    "releases stuck production operation $operation after the condition is attested",
+    async ({ operation, spentFee }) => {
+      // The market resolved before the fix loaded. Every convert replay now
+      // gets 13042 before the mint checks any input.
+      const fixture = partialSellFixture(`attested-${operation}`);
+      const states = new Map<string, ProofState["state"]>();
+      let attested = false;
+      let converts = 0;
+      const counterRecoveries: unknown[] = [];
+      const coordinator = createCoordinator(fixture.database, stateWallet(states), fixture.engine, {
+        executeSourceConvert: async () => {
+          converts += 1;
+          if (!attested) throw new NetworkError("connection reset");
+          throw new MintOperationError(13042, "Convert not permitted");
+        },
+        recoverOutputCounters: async (input) => {
+          counterRecoveries.push(input);
+        },
+      });
+      await expect(fixture.submit(coordinator)).rejects.toMatchObject({
+        code: "mint-source-uncertain",
+      });
+      await expectStuckPartialSell(fixture);
+      if (spentFee) states.set(fixture.cash.secret, "SPENT");
+      attested = true;
+
+      const page = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+
+      expect(page.recoveredOperationIds).toEqual([fixture.preparation.operationId]);
+      expect(page.refused).toMatchObject([
+        { operationId: fixture.preparation.operationId, mintError: { code: 13042 } },
+      ]);
+      expect(converts).toBe(2);
+      // An attested condition is not an output reuse, so no counter scan runs.
+      expect(counterRecoveries).toEqual([]);
+      await expectReleasedPartialSell(fixture, {
+        spentSecrets: spentFee ? [fixture.cash.secret] : [],
+      });
+    },
+  );
 
   it("releases a stuck production-shape partial sell on the first refused replay", async () => {
     const fixture = partialSellFixture("upgrade-stuck-partial-sell");
@@ -4086,19 +4193,28 @@ describe("browser CTF range output reuse and second sells", () => {
     expect(counterRecoveries).toEqual([[preparation.offerKeyset.id]]);
     expect(swapOutputs).toHaveLength(2);
     expect(swapOutputs[1]!.some((output) => swapOutputs[0]!.includes(output))).toBe(false);
-    expect(await database.proofOperations.get(refundId)).toMatchObject({ state: "completed" });
+    const refund = await database.proofOperations.get(refundId);
+    expect(refund).toMatchObject({ state: "completed" });
+    // The replaced plan stays, so a delayed old copy can still be restored.
+    expect(
+      (
+        refund?.metadata.replacedRefundOutputPlans as Array<{
+          outputs: Array<{ blindedMessage: { B_: string } }>;
+        }>
+      ).map(({ outputs }) => outputs.map(({ blindedMessage }) => blindedMessage.B_)),
+    ).toEqual([swapOutputs[0]]);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("terminal");
   });
 
-  it("probes refund outputs before it reserves them and skips signed counters", async () => {
+  // Nine recovery passes derive refund outputs, so this test needs more time.
+  it("stops planning new refund outputs after eight replaced plans", async () => {
     const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
-    const preparation = persistedPreparation("range-refund-probe");
+    const preparation = persistedPreparation("range-refund-replan-bound");
     await initializeRefundCounterFixture(database, preparation);
     let now = 20_000;
-    const probes: string[][] = [];
     const swapOutputs: string[][] = [];
     const coordinator = createCoordinator(
       database,
@@ -4107,14 +4223,9 @@ describe("browser CTF range output reuse and second sells", () => {
       {
         now: () => now,
         createMintRecovery: refundableRecovery(preparation),
-        probeSignedOutputs: async (_mintUrl, outputs) => {
-          probes.push(outputs.map(({ B_ }) => B_));
-          // Another client already signed the first planned refund output.
-          return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
-        },
         executeRefundSwap: async (_mintUrl, request) => {
           swapOutputs.push(request.outputs.map(({ B_ }) => B_));
-          return { signatures: request.outputs.map(signBlindedMessage) };
+          throw new MintOperationError(11008, "Duplicate outputs");
         },
       },
     );
@@ -4123,87 +4234,170 @@ describe("browser CTF range output reuse and second sells", () => {
       preparation,
       candidates: [sourceProof(preparation.offerKeyset.id)],
     });
-    const sourceProbes = probes.length;
-
+    const refundId = deriveDurableCtfRangeRefundOperationId(preparation.operationId);
     now = preparation.expiry * 1_000;
+
+    // Each pass replays the current plan, plans once more, and replays the new plan.
+    for (let pass = 0; pass < 8; pass++) {
+      await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+        pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+      });
+    }
+    expect(swapOutputs).toHaveLength(16);
+    const replaced = (await database.proofOperations.get(refundId))?.metadata
+      .replacedRefundOutputPlans as unknown[];
+    expect(replaced).toHaveLength(8);
+
+    await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      pending: [
+        {
+          operationId: preparation.operationId,
+          code: "recovery-pending",
+          mintError: { code: 11008 },
+        },
+      ],
+    });
+    // At the bound, the pass replays the current plan once and plans nothing new.
+    expect(swapOutputs).toHaveLength(17);
+    expect(
+      (await database.proofOperations.get(refundId))?.metadata.replacedRefundOutputPlans,
+    ).toEqual(replaced);
+  }, 20_000);
+
+  it("restores a delayed old refund copy from its replaced output plan", async () => {
+    const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
+    const preparation = persistedPreparation("range-refund-delayed-copy");
+    await initializeRefundCounterFixture(database, preparation);
+    let now = 20_000;
+    let refundSwaps = 0;
+    let inputsSpent = false;
+    const swapOutputs: string[][] = [];
+    const base = sourceWallet();
+    const wallet = {
+      ...base,
+      async checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>) {
+        return proofs.map(
+          (_, index): ProofState => ({
+            Y: `refund-y-${index}`,
+            state: inputsSpent ? "SPENT" : "UNSPENT",
+            witness: null,
+          }),
+        );
+      },
+    };
+    const coordinator = createCoordinator(database, wallet, engineMock({ resultFailure: true }), {
+      now: () => now,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => {
+        refundSwaps += 1;
+        swapOutputs.push(request.outputs.map(({ B_ }) => B_));
+        if (refundSwaps === 1) throw new MintOperationError(11008, "Duplicate outputs");
+        throw new NetworkError("connection reset");
+      },
+      // Only the first plan's outputs are signed: a delayed copy of the first
+      // request committed after the wallet planned new outputs.
+      restoreRefundOutputs: async (input) => {
+        const requested = input.outputs.map((output) => output.blindedMessage.B_);
+        if (!requested.every((output) => swapOutputs[0]!.includes(output))) {
+          throw new Error("refund outputs are not signed");
+        }
+        return restoreSignedRefundOutputs(input);
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    now = preparation.expiry * 1_000;
+    await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    });
+
+    inputsSpent = true;
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
-    const refundProbes = probes.slice(sourceProbes);
-    expect(refundProbes.length).toBeGreaterThanOrEqual(2);
-    expect(swapOutputs).toHaveLength(1);
-    expect(swapOutputs[0]).toEqual(refundProbes.at(-1));
-    expect(swapOutputs[0]!.includes(refundProbes[0]![0]!)).toBe(false);
+    expect(
+      await database.proofOperations.get(
+        deriveDurableCtfRangeRefundOperationId(preparation.operationId),
+      ),
+    ).toMatchObject({ state: "completed" });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
   });
 
-  it("probes source outputs before it reserves them and skips signed counters", async () => {
-    const fixture = partialSellFixture("probed-partial-sell");
-    const probes: string[][] = [];
-    const bodies: string[] = [];
-    const coordinator = createCoordinator(fixture.database, sourceWallet(), fixture.engine, {
-      probeSignedOutputs: async (_mintUrl, outputs) => {
-        probes.push(outputs.map(({ B_ }) => B_));
-        return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
-      },
-      executeSourceConvert: async (_mintUrl, request) => {
-        bodies.push(JSON.stringify(request));
-        return signingConvert(request);
-      },
-    });
-
-    await expect(fixture.submit(coordinator)).resolves.toMatchObject({
-      orderId: "44444444-4444-4444-8444-444444444444",
-    });
-
-    expect(probes.length).toBe(2);
-    const signedElsewhere = probes[0]![0]!;
-    expect(bodies).toHaveLength(1);
-    expect(bodies[0]!.includes(signedElsewhere)).toBe(false);
-    for (const output of probes[1]!) expect(bodies[0]!.includes(output)).toBe(true);
-  });
-
-  it("advances preparation counters past receive outputs that the mint already signed", async () => {
+  it("probes a buy receive range once, scans past signed counters, and reuses a clean probe", async () => {
     const database = createDatabase();
-    const preparation = persistedPreparation("probed-preparation");
+    const preparation = persistedPreparation("probed-buy-preparation");
     await initializeRefundCounterFixture(database, preparation);
-    const intent = createCtfRangePreparationIntent({
-      scopeId: walletScopeId(),
-      request: preparation.request,
-      feeConsentBytes: encodeCtfRangeOrderFeeConsentArtifact(coordinatorFeeFacts(preparation)),
-      consolidateProofs: true,
-    }).intent;
     const counterStore = new BrowserWalletCounterDexieStore({
       database,
       scopeId: walletScopeId(),
     });
+    const context = { mintUrl: preparation.mintUrl, unit: "msat" } as const;
+    const receive = preparation.receiveKeyset.id;
     const probes: string[][] = [];
+    const scans: string[] = [];
+    const cache = createBuyReceiveProbeCache();
+    const probeOnce = () =>
+      probeBuyReceiveRange({
+        scopeId: walletScopeId(),
+        counterStore,
+        preparation,
+        seed: SEED,
+        cache,
+        probe: async (_mintUrl, outputs) => {
+          probes.push(outputs.map(({ B_ }) => B_));
+          // Another client already signed the first planned receive output.
+          return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
+        },
+        scanPastSignedOutputs: async (keyset) => {
+          scans.push(keyset.id);
+          // The gap scan finds that the other client signed up to counter 40.
+          await counterStore.advanceToAtLeastInContext(context, keyset.id, 41, true);
+        },
+      });
 
-    await advanceCtfRangePreparationPastSignedOutputs({
-      counterStore,
-      preparation,
-      intent,
-      seed: SEED,
-      probe: async (_mintUrl, outputs) => {
-        probes.push(outputs.map(({ B_ }) => B_));
-        // Another client already signed the first planned receive output.
-        return new Set(probes.length === 1 ? [outputs[0]!.B_] : []);
-      },
-    });
-    const reservation = await counterStore.reserveCtfPreparationInContext({
-      context: { mintUrl: preparation.mintUrl, unit: "msat" },
-      preparation,
-      intent,
-      seed: SEED,
-      createdAtMs: 1,
-    });
-
+    await probeOnce();
     expect(probes).toHaveLength(2);
-    const reserved = reconstructCtfRangePreparation(
-      decodeCtfRangeOrderPreparationFromRecord(reservation.record),
-      SEED,
-    ).manifest.entries.map(({ outputData }) => outputData.blindedMessage.B_);
-    expect(reserved).toEqual(probes[1]);
-    expect(reserved.includes(probes[0]![0]!)).toBe(false);
+    expect(scans).toEqual([receive]);
+    expect((await counterStore.readSnapshotInContext(context, receive)).nextCounter).toBe(41);
+    expect(probes[1]!.includes(probes[0]![0]!)).toBe(false);
+
+    // The submit reuses the preview's clean probe while the cursor stays.
+    await probeOnce();
+    expect(probes).toHaveLength(2);
+
+    // A moved cursor needs a new probe.
+    await counterStore.advanceToAtLeastInContext(context, receive, 45, true);
+    await probeOnce();
+    expect(probes).toHaveLength(3);
+  });
+
+  it("does not probe a sell preparation", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("unprobed-sell-preparation", "FOK", { side: "Sell" });
+    await initializeRefundCounterFixture(database, preparation);
+    let probes = 0;
+
+    await probeBuyReceiveRange({
+      scopeId: walletScopeId(),
+      counterStore: new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() }),
+      preparation,
+      seed: SEED,
+      cache: createBuyReceiveProbeCache(),
+      probe: async () => {
+        probes += 1;
+        return new Set();
+      },
+      scanPastSignedOutputs: async () => undefined,
+    });
+
+    expect(probes).toBe(0);
   });
 
   it("refuses a second sell of the market while the first holds an unresolved source", async () => {
@@ -4714,7 +4908,6 @@ function createCoordinator(
     executeSourceConvert?: BrowserCtfRangeOrderCoordinatorDependencies["executeSourceConvert"];
     recoverOutputCounters?: BrowserCtfRangeOrderCoordinatorDependencies["recoverOutputCounters"];
     recoverySchedule?: BrowserCtfRangeOrderCoordinatorDependencies["recoverySchedule"];
-    probeSignedOutputs?: BrowserCtfRangeOrderCoordinatorDependencies["probeSignedOutputs"];
     now?: () => number;
   } = {},
 ): TestCoordinator {
@@ -4736,9 +4929,6 @@ function createCoordinator(
     ...(options.recoverySchedule === undefined
       ? {}
       : { recoverySchedule: options.recoverySchedule }),
-    ...(options.probeSignedOutputs === undefined
-      ? {}
-      : { probeSignedOutputs: options.probeSignedOutputs }),
     now: options.now ?? (() => fixtureNow++),
     randomId: () => crypto.randomUUID(),
     lockManager: options.lockManager ?? immediateLockManager(),

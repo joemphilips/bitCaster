@@ -23,12 +23,15 @@ test('classifies every coded mint answer as a refusal', () => {
   }
 })
 
-test('names only the outputs-signed and inputs-spent refusals as settling', () => {
+test('names every coded refusal, and only coded refusals, as settling', () => {
   assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11003, detail: '' }), 'outputs-signed')
   assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11008, detail: '' }), 'outputs-signed')
-  assert.equal(settlingMintRefusal({ kind: 'refusal', code: 11001, detail: '' }), 'inputs-spent')
-  for (const code of [10001, 11002, 11005, 11007, 12001, 12002, 13041, 13042, 50000]) {
-    assert.equal(settlingMintRefusal({ kind: 'refusal', code, detail: '' }), null)
+  assert.equal(
+    settlingMintRefusal({ kind: 'refusal', code: 13042, detail: '' }),
+    'condition-attested',
+  )
+  for (const code of [10001, 11001, 11002, 11005, 11007, 12001, 12002, 13041, 50000]) {
+    assert.equal(settlingMintRefusal({ kind: 'refusal', code, detail: '' }), 'coded-refusal')
   }
   assert.equal(settlingMintRefusal({ kind: 'transient', retryAfterMs: null }), null)
   assert.deepEqual([...MINT_OUTPUT_REUSE_REFUSAL_CODES].sort(), [11003, 11008])
@@ -55,22 +58,65 @@ test('releases unspent inputs after outputs-signed refusals', () => {
   )
 })
 
-test('retires spent inputs and releases the rest after an inputs-spent refusal', () => {
+test('settles a condition-attested refusal like outputs-signed', () => {
+  // An attested condition never permits a convert again, so no copy can commit.
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['UNSPENT', 'SPENT'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'condition-attested',
+      inputStates: ['UNSPENT', 'UNSPENT'],
+    }),
+    { kind: 'release', spentInputIndexes: [] },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'condition-attested',
+      inputStates: ['UNSPENT', 'SPENT'],
+    }),
     { kind: 'release', spentInputIndexes: [1] },
   )
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['SPENT', 'SPENT'] }),
+    decideCtfRangeRequestSettlement({ refusal: 'condition-attested', inputStates: ['SPENT'] }),
     { kind: 'restore' },
   )
-  // The mint said a spent input, but none reads spent: keep waiting.
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['UNSPENT'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'condition-attested',
+      inputStates: ['PENDING', 'UNSPENT'],
+    }),
+    { kind: 'wait' },
+  )
+})
+
+test('settles a mixed reading on any coded refusal and keeps an unspent one waiting', () => {
+  // A mixed reading proves that this request did not commit and can never commit.
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'coded-refusal',
+      inputStates: ['UNSPENT', 'SPENT'],
+    }),
+    { kind: 'release', spentInputIndexes: [1] },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'coded-refusal', inputStates: ['SPENT', 'SPENT'] }),
+    { kind: 'restore' },
+  )
+  // With every input unspent, a coded refusal does not prove the request is final.
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({ refusal: 'coded-refusal', inputStates: ['UNSPENT'] }),
     { kind: 'wait' },
   )
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'inputs-spent', inputStates: ['SPENT', 'unknown'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'coded-refusal',
+      inputStates: ['SPENT', 'unknown'],
+    }),
+    { kind: 'wait' },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'coded-refusal',
+      inputStates: ['SPENT', 'PENDING'],
+    }),
     { kind: 'wait' },
   )
 })

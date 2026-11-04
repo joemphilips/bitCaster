@@ -61,6 +61,7 @@ const mocks = vi.hoisted(() => ({
   advanceCounterPastMint: vi.fn(),
   probePreparation: vi.fn(),
   probeOutputs: vi.fn(),
+  probeCache: { kind: "test-probe-cache" },
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
@@ -123,6 +124,12 @@ vi.mock("@/stores/ctf-range-order-messages", () => ({
 
 vi.mock("@/stores/wallet", () => ({
   getWalletForMnemonicUnit: mocks.getWalletForMnemonicUnit,
+  useWalletStore: {
+    getState: () => ({
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    }),
+  },
 }));
 
 vi.mock("../markets", () => ({
@@ -167,7 +174,8 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
 }));
 
 vi.mock("../browserCtfRangeCounterProbe", () => ({
-  advanceCtfRangePreparationPastSignedOutputs: mocks.probePreparation,
+  createBuyReceiveProbeCache: () => mocks.probeCache,
+  probeBuyReceiveRange: mocks.probePreparation,
   probeSignedBlindedOutputs: mocks.probeOutputs,
 }));
 
@@ -1659,19 +1667,47 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
   });
 
-  it("probes the new preparation's counters with the mint before it reserves them", async () => {
+  it("probes a buy receive range during the preview and again before it reserves counters", async () => {
+    await previewBrowserCtfRangeOrderFees({
+      market: market(),
+      ticket: {
+        marketId: "condition-1-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          maxQuotePaymentSubunits: 400,
+          minQuotePaymentSubunits: null,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      mintUrl: "https://mint.example",
+    }).catch(() => undefined);
+    expect(mocks.probePreparation).toHaveBeenCalledTimes(1);
+
     await submitRangeOrder("client-probed-preparation");
 
-    expect(mocks.probePreparation).toHaveBeenCalledTimes(1);
-    expect(mocks.probePreparation.mock.calls[0]![0]).toMatchObject({
-      preparation: expect.objectContaining({ operationId: "range-operation" }),
-      intent: expect.objectContaining({ scopeId: mocks.scopeId }),
-    });
-    expect(mocks.probePreparation.mock.invocationCallOrder[0]!).toBeLessThan(
+    // The submit call reuses the preview probe through the shared cache unless the cursor moved.
+    expect(mocks.probePreparation).toHaveBeenCalledTimes(2);
+    for (const [input] of mocks.probePreparation.mock.calls) {
+      expect(input).toMatchObject({
+        scopeId: mocks.scopeId,
+        cache: mocks.probeCache,
+        probe: mocks.probeOutputs,
+        preparation: expect.objectContaining({ operationId: "range-operation" }),
+      });
+    }
+    expect(mocks.probePreparation.mock.invocationCallOrder[1]!).toBeLessThan(
       mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
     );
-    const input = mocks.coordinatorInput as { probeSignedOutputs?: unknown };
-    expect(input.probeSignedOutputs).toBe(mocks.probeOutputs);
+    await mocks.probePreparation.mock.calls[1]![0].scanPastSignedOutputs(
+      preparationFor(sellRequest()).receiveKeyset,
+    );
+    expect(mocks.advanceCounterPastMint).toHaveBeenCalledWith(
+      expect.objectContaining({ scopeId: mocks.scopeId, unit: "msat" }),
+    );
   });
 
   it("records no alert when an earlier sell of the market blocks a second sell", async () => {
