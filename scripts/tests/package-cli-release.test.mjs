@@ -3,6 +3,8 @@ import test from 'node:test'
 import {
   buildInfoJson,
   checksumLine,
+  elfInterpreterPresent,
+  helperBuildTarget,
   missingEntryPoints,
   moduleSearchDirs,
   releaseTarget,
@@ -154,6 +156,44 @@ test('the build information holds only the full lowercase source commit', bounde
   assert.throws(() => buildInfoJson(commit.toUpperCase()), /commit/)
   assert.throws(() => buildInfoJson(commit.slice(1)), /commit/)
   assert.throws(() => buildInfoJson(`${commit}\n`), /commit/)
+})
+
+test(
+  'a Linux oracle helper is built for musl, so it does not need a glibc version',
+  bounded,
+  () => {
+    assert.equal(helperBuildTarget('linux', 'x64'), 'x86_64-unknown-linux-musl')
+    assert.equal(helperBuildTarget('linux', 'arm64'), 'aarch64-unknown-linux-musl')
+    assert.equal(helperBuildTarget('darwin', 'arm64'), null)
+    assert.throws(() => helperBuildTarget('linux', 'ia32'), /musl/)
+  },
+)
+
+// A 64-bit little-endian ELF header and program headers of the given types.
+function elfWithSegments(types) {
+  const header = Buffer.alloc(64 + 56 * types.length)
+  header.write('\x7fELF', 0, 'latin1')
+  header[4] = 2 // 64-bit
+  header[5] = 1 // little-endian
+  header.writeBigUInt64LE(64n, 0x20) // e_phoff
+  header.writeUInt16LE(56, 0x36) // e_phentsize
+  header.writeUInt16LE(types.length, 0x38) // e_phnum
+  types.forEach((type, index) => header.writeUInt32LE(type, 64 + 56 * index))
+  return header
+}
+
+test('an ELF interpreter segment marks a dynamically linked helper', bounded, () => {
+  const PT_LOAD = 1
+  const PT_DYNAMIC = 2
+  const PT_INTERP = 3
+  assert.equal(elfInterpreterPresent(elfWithSegments([PT_LOAD, PT_INTERP, PT_DYNAMIC])), true)
+  // A static-pie binary keeps PT_DYNAMIC for self-relocation but has no interpreter.
+  assert.equal(elfInterpreterPresent(elfWithSegments([PT_LOAD, PT_DYNAMIC])), false)
+  assert.throws(() => elfInterpreterPresent(Buffer.from('#!/bin/sh\n')), /ELF/)
+  const bigEndian = elfWithSegments([PT_LOAD])
+  bigEndian[5] = 2
+  assert.throws(() => elfInterpreterPresent(bigEndian), /ELF/)
+  assert.throws(() => elfInterpreterPresent(elfWithSegments([PT_LOAD]).subarray(0, 80)), /ELF/)
 })
 
 test('a checksum line uses the sha256sum text format', bounded, () => {

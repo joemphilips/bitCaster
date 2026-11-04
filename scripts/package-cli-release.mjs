@@ -11,6 +11,11 @@
 //
 // The archive records the source commit in the CLI package, so
 // `bitcaster-cli --version` prints, for example, `0.1.0+0123456789ab`.
+//
+// On Linux, the oracle helper is a static musl binary, so it runs with any
+// glibc version that Node.js supports. The build needs the Rust musl target
+// (`rustup target add x86_64-unknown-linux-musl`) and a musl C compiler
+// (`musl-gcc`, for example from the Ubuntu package musl-tools).
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
@@ -40,6 +45,7 @@ const BIN_NAME_PATTERN = /^[a-z0-9-]+$/
 const PACKAGE_NAME_PATTERN = /^(@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/i
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 const BUILD_INFO_FILE = 'build-info.json'
+const PT_INTERP = 3
 const OUTPUT_BYTES_MAX = 64 * 1024 * 1024
 const SOCKET_PATH_BYTES_MAX = 100
 const LOOPBACK_HTTP_URL = 'http://127.0.0.1:9'
@@ -161,6 +167,39 @@ export function tarOwnerArguments(versionText) {
   throw new Error('packaging needs GNU tar or bsdtar')
 }
 
+/**
+ * Return the Rust target for the oracle helper, or null for the host target.
+ * A Linux helper is static musl, so it does not need a glibc version.
+ */
+export function helperBuildTarget(platform, arch) {
+  if (platform !== 'linux') return null
+  const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch]
+  if (cpu === undefined) throw new Error(`there is no musl target for linux-${arch}`)
+  return `${cpu}-unknown-linux-musl`
+}
+
+/** Return whether a 64-bit little-endian ELF file has an interpreter segment. */
+export function elfInterpreterPresent(bytes) {
+  if (
+    bytes.length < 64 ||
+    bytes.toString('latin1', 0, 4) !== '\x7fELF' ||
+    bytes[4] !== 2 ||
+    bytes[5] !== 1
+  ) {
+    throw new Error('the file is not a 64-bit little-endian ELF file')
+  }
+  const offset = Number(bytes.readBigUInt64LE(0x20))
+  const entrySize = bytes.readUInt16LE(0x36)
+  const count = bytes.readUInt16LE(0x38)
+  if (entrySize < 4 || offset + entrySize * count > bytes.length) {
+    throw new Error('the ELF program header table is truncated')
+  }
+  for (let index = 0; index < count; index += 1) {
+    if (bytes.readUInt32LE(offset + entrySize * index) === PT_INTERP) return true
+  }
+  return false
+}
+
 /** Return the build information that the CLI reads for `--version`. */
 export function buildInfoJson(commit) {
   if (!COMMIT_PATTERN.test(commit)) {
@@ -199,7 +238,15 @@ async function main(argv) {
   log('Build the client SDK, the daemon, and the CLI.')
   run('npm', ['run', 'build', '--workspace', CLI_PACKAGE], { cwd: root })
   log('Build the native oracle helper.')
-  run(process.execPath, [join(root, 'scripts', 'build-native-oracle-helper.mjs')], { cwd: root })
+  const helperTarget = helperBuildTarget(process.platform, process.arch)
+  run(
+    process.execPath,
+    [
+      join(root, 'scripts', 'build-native-oracle-helper.mjs'),
+      ...(helperTarget === null ? [] : ['--target', helperTarget]),
+    ],
+    { cwd: root },
+  )
 
   const workspaces = await readWorkspaces(root)
   const cli = workspaces.find((workspace) => workspace.name === CLI_PACKAGE)
@@ -474,6 +521,12 @@ async function verifyArchive({ archive, name, versionText, target, temp }) {
 async function verifyOracleHelper({ packageDir, target, extractDir, env }) {
   const daemonDir = join(packageDir, 'node_modules', ...DAEMON_PACKAGE.split('/'))
   const helper = join(daemonDir, 'native', target, HELPER_NAME)
+  if (target.startsWith('linux-')) {
+    expect(
+      !elfInterpreterPresent(await readFile(helper)),
+      'the Linux oracle helper is dynamically linked; build it for musl',
+    )
+  }
   // An empty request proves that the helper runs on this platform.
   const probe = spawnSync(helper, [], { input: '', encoding: 'utf8', env })
   expect(
