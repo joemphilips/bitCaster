@@ -252,7 +252,6 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   it("re-syncs a keyset in use after evidence that another browser signed past the cursor", async () => {
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
-    // A live proof keeps the keyset in the daily re-sync.
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
     vi.stubGlobal("fetch", mint.fetch);
     // This browser restored the msat keyset earlier, so its cursor is 1.
@@ -619,6 +618,50 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
 
     expect(await amounts()).toEqual([2, 8]);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(null);
+  });
+
+  it("postpones a deferral scan when an operation starts during the scan", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await counters().advanceToAtLeastInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      regular.id,
+      3,
+      false,
+    );
+    mint.sign({ keyset: regular, counter: 1, amount: 2, state: "UNSPENT" });
+    await advanceWalletKeysetCounterPastMint({
+      scopeId: scopeId(),
+      mintUrl: MINT_URL,
+      unit: "msat",
+      keyset: activeKeyset(regular),
+      plannedFromCounter: 1,
+    });
+    // The guard before the scan sees no work. A buy then starts while the
+    // scan runs, before the scan admits its outputs.
+    mint.onCheckstate = async () => {
+      await db.custodyActiveWork.put({
+        scopeId: scopeId(),
+        operationId: "buy-during-scan",
+        nextAttemptAtMs: 0,
+      } as never);
+    };
+    const start = Date.now();
+
+    const waiting = await resync(start);
+
+    expect(await amounts()).toEqual([8]);
+    // The wait is not an admission failure.
+    expect(await resyncRow(regular.id)).toMatchObject({ pendingFromCounter: 1, failures: 0 });
+    expect(waiting.retryAtMs).toBeGreaterThan(start);
+
+    await db.custodyActiveWork.clear();
+    await resync(waiting.retryAtMs!);
+
+    expect(await amounts()).toEqual([2, 8]);
   });
 
   it("waits for the probe backoff before it probes again on evidence", async () => {

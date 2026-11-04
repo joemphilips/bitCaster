@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import { requireValidCashuProofs } from "@bitcaster/client-sdk";
 /**
  * cashu-ts wallet helpers for bitCaster.
@@ -718,7 +719,15 @@ export interface KeysetRecoveryResult {
   pendingKeysets?: string[];
   /** A keyset scan or the keyset discovery failed. A pending proof alone is not a failure. */
   failed?: boolean;
+  /**
+   * Deferral scans that admitted nothing because custody work started during
+   * the scan. The caller postpones them; this is not a failure.
+   */
+  postponedKeysets?: string[];
 }
+
+/** A deferral scan met custody work in flight at admission. */
+class CounterRecoveryPostponedError extends Error {}
 
 type RecoverableMintKeyset = {
   id: string;
@@ -1505,7 +1514,7 @@ async function recoverKeysetCountersForMintCore(
     keysetId?: string;
     conditionalKeyset?: ConditionalCounterRecoveryKeyset;
     profileLockHeld?: boolean;
-    /** The first counter to scan. A startup re-sync scans from the local cursor. */
+    /** The first counter to scan. A deferral scan starts at its marker. */
     startCounter?: number;
   } = {},
 ): Promise<KeysetRecoveryResult> {
@@ -1588,6 +1597,10 @@ async function recoverKeysetCountersForMintCore(
   );
   const scanned: string[] = [];
   const pendingKeysets: string[] = [];
+  const postponedKeysets: string[] = [];
+  // A deferral scan can start below counters that an operation of this
+  // browser reserved. It must not admit that operation's outputs first.
+  const deferralScan = opts.force === true && opts.startCounter !== undefined;
   let failed = !(
     fresh !== null ||
     discoveredKeysets.length > 0 ||
@@ -1712,6 +1725,17 @@ async function recoverKeysetCountersForMintCore(
           requireCapturedProfile();
           await db.transaction("rw", db.tables, async () => {
             requireCapturedProfile();
+            // Check again in the admission transaction: an operation can start
+            // after the caller's check and while this scan runs.
+            if (
+              deferralScan &&
+              (await db.custodyActiveWork
+                .where("[scopeId+operationId]")
+                .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+                .count()) > 0
+            ) {
+              throw new CounterRecoveryPostponedError();
+            }
             const cacheSafe: StoredProof[] = [];
             for (
               let pageStart = 0;
@@ -1817,7 +1841,11 @@ async function recoverKeysetCountersForMintCore(
         }).catch(() => undefined);
         scanned.push(keyset.id);
         if (proofPending) pendingKeysets.push(keyset.id);
-      } catch {
+      } catch (error) {
+        if (error instanceof CounterRecoveryPostponedError) {
+          postponedKeysets.push(keyset.id);
+          continue;
+        }
         // Best-effort: retry a failed keyset scan on the next startup.
         failed = true;
       }
@@ -1825,9 +1853,10 @@ async function recoverKeysetCountersForMintCore(
   }
   return {
     scannedKeysets: scanned,
-    complete: !failed && pendingKeysets.length === 0,
+    complete: !failed && pendingKeysets.length === 0 && postponedKeysets.length === 0,
     failed,
     ...(pendingKeysets.length === 0 ? {} : { pendingKeysets }),
+    ...(postponedKeysets.length === 0 ? {} : { postponedKeysets }),
   };
 }
 

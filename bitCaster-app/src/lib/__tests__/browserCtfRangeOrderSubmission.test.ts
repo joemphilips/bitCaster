@@ -1591,6 +1591,39 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it.each([11001, 11008])(
+    "asks for a re-sync of the refused order's mint after a recovery refusal %s",
+    async (code) => {
+      mocks.recoverPage.mockResolvedValue({
+        recoveredOperationIds: ["range-refused"],
+        pending: [],
+        attention: [],
+        refused: [
+          {
+            operationId: "range-refused",
+            revision: 1,
+            mintUrl: "https://mint.example",
+            mintError: { code, detail: "refused" },
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal", revision: 1 });
+
+      await recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      });
+
+      // Without the mint, a browser with no re-sync row yet would drop the evidence.
+      expect(mocks.requestResync).toHaveBeenCalledWith({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+      });
+    },
+  );
+
   it("records each kind of recovery result with its stored mint code", async () => {
     const mintError = { code: 11008, detail: "Duplicate outputs" };
     mocks.recoverPage.mockResolvedValue({
@@ -1611,7 +1644,9 @@ describe("submitBrowserCtfRangeOrder", () => {
           mintError: { code: 11002, detail: "Token pending" },
         },
       ],
-      refused: [{ operationId: "range-refused", revision: 1, mintError }],
+      refused: [
+        { operationId: "range-refused", revision: 1, mintUrl: "https://mint.example", mintError },
+      ],
       nextCursor: null,
     });
     mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>

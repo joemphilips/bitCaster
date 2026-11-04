@@ -3797,6 +3797,8 @@ describe("browser CTF range final mint refusal", () => {
       {
         operationId: fixture.preparation.operationId,
         revision: 1,
+        // The re-sync needs the mint of the refused order (ADR-033 evidence).
+        mintUrl: fixture.preparation.mintUrl,
         mintError: { code: 12002, detail: "Keyset is inactive" },
       },
     ]);
@@ -3948,6 +3950,8 @@ describe("browser CTF range final mint refusal", () => {
       {
         operationId: fixture.preparation.operationId,
         revision: 1,
+        // The re-sync needs the mint of the refused order (ADR-033 evidence).
+        mintUrl: fixture.preparation.mintUrl,
         mintError: { code: 11008, detail: "Duplicate outputs" },
       },
     ]);
@@ -3983,6 +3987,8 @@ describe("browser CTF range final mint refusal", () => {
       {
         operationId: fixture.preparation.operationId,
         revision: 1,
+        // The re-sync needs the mint of the refused order (ADR-033 evidence).
+        mintUrl: fixture.preparation.mintUrl,
         mintError: { code: 11001, detail: "Token already spent" },
       },
     ]);

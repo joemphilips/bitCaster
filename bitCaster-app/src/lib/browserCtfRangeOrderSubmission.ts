@@ -1263,9 +1263,14 @@ async function persistRecoveryResults(
       retryable: true,
     });
   }
-  if (page.refused.some(({ mintError }) => seedUsedElsewhere(mintError))) {
+  const evidenceMints = new Set(
+    page.refused
+      .filter(({ mintError }) => seedUsedElsewhere(mintError))
+      .map(({ mintUrl }) => mintUrl),
+  );
+  for (const mintUrl of evidenceMints) {
     // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
-    await requestBrowserKeysetResync({ scopeId }).catch(() => undefined);
+    await requestBrowserKeysetResync({ scopeId, mintUrl }).catch(() => undefined);
   }
   // A released order is a definitive outcome. No funds recovery is left.
   for (const released of page.refused) {

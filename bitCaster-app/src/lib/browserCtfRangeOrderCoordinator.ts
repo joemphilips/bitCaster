@@ -367,6 +367,8 @@ export interface BrowserCtfRangeRecoveryPage {
   readonly refused: readonly {
     operationId: string;
     revision: number;
+    /** The mint of the refused request. A refusal can be evidence for its keyset re-sync. */
+    mintUrl: string;
     mintError: BrowserCtfRangeMintError | null;
   }[];
   readonly nextCursor: CtfRangeOrderPreparationPageCursor | null;
@@ -889,7 +891,12 @@ export class BrowserCtfRangeOrderCoordinator {
         if (error.released) {
           schedule?.recordProgress(scope.scopeId, operationId);
           recoveredOperationIds.push(operationId);
-          refused.push({ operationId, revision: current.revision, mintError: error.mintError });
+          refused.push({
+            operationId,
+            revision: current.revision,
+            mintUrl: decodeCtfRangeOrderPreparationFromRecord(current).mintUrl,
+            mintError: error.mintError,
+          });
           continue;
         }
         if (

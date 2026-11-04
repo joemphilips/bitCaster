@@ -508,6 +508,8 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(capped.status).toBe("waiting");
     expect(capped.retryAtMs).toBe(firstStart + DAY_MS);
     expect(mint.requests).toHaveLength(requests);
+    // A denied start leaves no restore record, so the next pass claims again.
+    expect(await restoreState()).toBeUndefined();
     expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
       kind: "restoring",
       scopeId: scopeId(),
@@ -515,6 +517,21 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
 
     nowMs = firstStart + DAY_MS;
     expect((await restorePass(now)).status).toBe("complete");
+  });
+
+  it("uses one start when two passes begin the same restore", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+    const now = () => 1_000_000;
+
+    // Two tabs open the same seed at once.
+    await Promise.all([restorePass(now), restorePass(now)]);
+
+    expect(JSON.parse(window.localStorage.getItem("bitcaster.seed-restore-starts")!)).toHaveLength(
+      1,
+    );
   });
 
   it("does not count a resumed scan or a Retry as a new start", async () => {

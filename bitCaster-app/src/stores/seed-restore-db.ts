@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCustody";
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
+import { normalizeUrl } from "@/lib/url";
 
 // The record of the automatic seed restore event and of the keyset re-sync
 // (ADR-039 and ADR-033, amendments 2026-11-04). The seed and the mint can
@@ -357,30 +358,21 @@ export async function recordSeedRestoreDeferralFailure(input: {
 
 /**
  * Records evidence that another client used the seed (a mint refusal of
- * reused outputs or spent inputs, or a probe hit) and wakes the recovery
- * pass. The next pass probes the keysets in use at once (ADR-033). Without a
- * mint URL, the evidence applies to every mint of the wallet.
+ * reused outputs or spent inputs, or a buy probe hit) at one mint, and wakes
+ * the recovery pass. The next pass probes the keysets in use at that mint at
+ * once (ADR-033). It creates the re-sync row when the mint has none yet.
  */
 export async function requestBrowserKeysetResync(input: {
   readonly scopeId: string;
-  readonly mintUrl?: string;
+  readonly mintUrl: string;
 }): Promise<void> {
+  const mintUrl = normalizeUrl(input.mintUrl);
   const database = seedRestoreDatabase(input.scopeId);
   await database.transaction("rw", database.resyncSchedules, async () => {
-    const rows =
-      input.mintUrl === undefined
-        ? await database.resyncSchedules
-            .where("[scopeId+mintUrl]")
-            .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
-            .toArray()
-        : [
-            (await database.resyncSchedules.get([input.scopeId, input.mintUrl])) ??
-              initialSeedRestoreResyncSchedule(input.scopeId, input.mintUrl),
-          ];
-    // A mint with no schedule yet probes on its first pass anyway.
-    for (const row of rows) {
-      await database.resyncSchedules.put({ ...row, evidence: row.evidence + 1 });
-    }
+    const row =
+      (await database.resyncSchedules.get([input.scopeId, mintUrl])) ??
+      initialSeedRestoreResyncSchedule(input.scopeId, mintUrl);
+    await database.resyncSchedules.put({ ...row, evidence: row.evidence + 1 });
   });
   publishBrowserCtfRangeRecoveryWake({ scopeId: input.scopeId });
 }

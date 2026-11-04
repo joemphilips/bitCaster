@@ -215,18 +215,25 @@ export async function runBrowserSeedPositionRestorePass(
   if (await isBrowserSeedGeneratedHere(input.scopeId)) {
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
   }
-  const startedBefore = await database.states
-    .where("[scopeId+mintUrl]")
-    .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
-    .count();
-  if (startedBefore === 0) {
+  // Write the first state row before the start is claimed, in one
+  // transaction, so a failed write or a second tab uses no start.
+  const created = await database.transaction("rw", database.states, async () => {
+    const started = await database.states
+      .where("[scopeId+mintUrl]")
+      .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
+      .count();
+    if (started > 0) return false;
+    await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
+    return true;
+  });
+  if (created) {
     // A new restore of this seed counts toward the browser cap. A resumed
     // scan and Retry do not. The restoring notice stays while it waits.
     const claim = claimSeedRestoreStart(now());
     if (!claim.granted) {
+      await database.states.delete([input.scopeId, mintUrl]);
       return { status: "waiting", retryAtMs: claim.retryAtMs, hintsSettled: false };
     }
-    await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
   }
   let state =
     (await database.states.get([input.scopeId, mintUrl])) ??
@@ -539,6 +546,17 @@ async function admitDueDeferrals(input: {
     }
     // The scan settled the marker: it admitted the outputs, or it backed off a PENDING proof.
     if (result?.scannedKeysets.includes(row.keysetId) === true) continue;
+    if (result?.postponedKeysets?.includes(row.keysetId) === true) {
+      // An operation started during the scan. Wait for it; this is no failure.
+      await advancePastHit(row.keysetId);
+      await postponeSeedRestoreDeferral({
+        scopeId: input.scopeId,
+        mintUrl: input.mintUrl,
+        keysetId: row.keysetId,
+        nextAttemptAtMs: input.now() + seedRestoreBackoffMs(1),
+      });
+      continue;
+    }
     // Admission cannot run now (no keyset authority, or a failed scan).
     await advancePastHit(row.keysetId);
     await recordSeedRestoreDeferralFailure({

@@ -143,6 +143,8 @@ export class FakeMint {
   failRestore = false;
   /** A hostile mint reports every queried output as signed. */
   echoRestore = false;
+  /** Runs once at the next NUT-07 check, between a scan and its admission. */
+  onCheckstate: (() => Promise<void>) | null = null;
   /** Conditions whose filtered keyset listing fails. */
   readonly failConditionListing = new Set<string>();
   /** The public engine catalogue at the app origin. Null answers 404. */
@@ -275,6 +277,9 @@ export class FakeMint {
       return json({ detail: "unavailable" }, 503);
     }
     if (method === "POST" && url.pathname === "/v1/checkstate") {
+      const hook = this.onCheckstate;
+      this.onCheckstate = null;
+      await hook?.();
       const Ys = (parsed().Ys ?? []) as string[];
       return json({
         states: Ys.map((Y) => ({ Y, state: this.#states.get(Y) ?? "UNSPENT", witness: null })),
