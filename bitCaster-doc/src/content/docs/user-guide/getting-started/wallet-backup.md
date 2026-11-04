@@ -77,6 +77,33 @@ mint does not receive your Nostr identity or your matching-engine account.
 The app checks the first 128 counters of each market. A position can stay
 hidden when many orders on one outcome did not fill before its first fill. The
 CLI command `wallet recover-seed --condition-id` can restore such a market.
+Later, the app checks the market list again for new markets.
+
+An earlier version of the app did not record which browser created a wallet.
+So the first time a browser opens this version, it runs the restore for its
+current wallet, also when that browser created the wallet.
+
+### Check for use in another browser
+
+Every browser that holds a wallet checks the mint for outputs that another
+browser signed after its own last output. It checks each keyset (the mint keys
+of one asset) that holds funds or positions, or that this browser used in the
+last 30 days. It checks at most once a day. It checks every keyset in use at
+once after the mint refuses an order because another browser used the same
+outputs or funds. When the app finds such outputs, it adds the funds and
+positions to this browser.
+
+Each check sends to the mint the next 100 outputs of each checked keyset.
+These outputs are not signed yet. The mint can link them to this recovery
+phrase when another browser uses them later. A future version replaces this
+check with the encrypted backup, which stores the highest used output of each
+keyset.
+
+If the app cannot add the outputs that it found, it shows
+**Positions could not be restored from the mint.** with **Retry**. The funds
+stay at the mint. Funds that the mint reports as pending wait until the other
+browser finishes. An order that needs them shows **Some funds of this wallet are
+still pending at the mint. No order was submitted. Try again later.**
 
 ## What the web app stores
 
@@ -154,10 +181,10 @@ When the web app needs proofs for one asset, it uses this order:
 3. It makes one bounded targeted recovery attempt only when monitoring
    identifies an exact missing asset.
 
-Except for the restore in a new browser above, the web app does not make a
-broad automatic keyset scan when monitoring does not identify an exact missing
-asset. If the backup service is unavailable, the web app shows a persistent
-error. Unavailability does not prove that an asset is absent and does not
+The restore in a new browser and the check for use in another browser above
+are the only automatic broad checks of the mint. The web app makes no other
+broad keyset scan when monitoring does not identify an exact missing asset. If
+the backup service is unavailable, the web app shows a persistent error. Unavailability does not prove that an asset is absent and does not
 authorize automatic mint recovery. Broad recovery remains available through
 the CLI.
 
