@@ -701,6 +701,7 @@ test('secret inputs are validated but only their file paths are previewed', asyn
     assert.deepEqual(JSON.parse(receive.stdout).params, { tokenFile: f.files.token })
     const seed = await f.run(['--dry-run', ...SUPPORTED['wallet recover-seed']!.args(f.files)])
     assert.deepEqual(Object.keys(JSON.parse(seed.stdout).params).sort(), [
+      'allConditions',
       'disclosureAcknowledged',
       'mintUrl',
       'recoveryId',
