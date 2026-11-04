@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildInfoJson,
   checksumLine,
   missingEntryPoints,
   moduleSearchDirs,
@@ -145,6 +146,14 @@ test('the archive records root as the owner for GNU tar and for bsdtar', bounded
     '--numeric-owner',
   ])
   assert.throws(() => tarOwnerArguments('tar (busybox) 1.36'), /tar/)
+})
+
+test('the build information holds only the full lowercase source commit', bounded, () => {
+  const commit = '0123456789abcdef0123456789abcdef01234567'
+  assert.deepEqual(JSON.parse(buildInfoJson(commit)), { commit })
+  assert.throws(() => buildInfoJson(commit.toUpperCase()), /commit/)
+  assert.throws(() => buildInfoJson(commit.slice(1)), /commit/)
+  assert.throws(() => buildInfoJson(`${commit}\n`), /commit/)
 })
 
 test('a checksum line uses the sha256sum text format', bounded, () => {

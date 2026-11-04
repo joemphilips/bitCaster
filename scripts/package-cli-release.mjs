@@ -8,6 +8,9 @@
 // tree, so the root lockfile decides every dependency version. The user needs
 // only Node.js to run the archive. The script then extracts the archive in a
 // temporary directory and checks it before it prints a JSON summary.
+//
+// The archive records the source commit in the CLI package, so
+// `bitcaster-cli --version` prints, for example, `0.1.0+0123456789ab`.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
@@ -35,6 +38,8 @@ const HELPER_NAME = 'bitcaster-oracle-helper'
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$/
 const BIN_NAME_PATTERN = /^[a-z0-9-]+$/
 const PACKAGE_NAME_PATTERN = /^(@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/i
+const COMMIT_PATTERN = /^[0-9a-f]{40}$/
+const BUILD_INFO_FILE = 'build-info.json'
 const OUTPUT_BYTES_MAX = 64 * 1024 * 1024
 const SOCKET_PATH_BYTES_MAX = 100
 const LOOPBACK_HTTP_URL = 'http://127.0.0.1:9'
@@ -156,6 +161,14 @@ export function tarOwnerArguments(versionText) {
   throw new Error('packaging needs GNU tar or bsdtar')
 }
 
+/** Return the build information that the CLI reads for `--version`. */
+export function buildInfoJson(commit) {
+  if (!COMMIT_PATTERN.test(commit)) {
+    throw new Error(`the source commit is not 40 lowercase hex digits: ${JSON.stringify(commit)}`)
+  }
+  return `${JSON.stringify({ commit })}\n`
+}
+
 export function checksumLine(sha256Hex, fileName) {
   return `${sha256Hex}  ${fileName}\n`
 }
@@ -180,6 +193,8 @@ async function main(argv) {
   if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
     throw new Error(`the CLI package version is not a release version: ${String(version)}`)
   }
+  const commit = sourceCommit(root)
+  const versionText = `${version}+${commit.slice(0, 12)}`
 
   log('Build the client SDK, the daemon, and the CLI.')
   run('npm', ['run', 'build', '--workspace', CLI_PACKAGE], { cwd: root })
@@ -197,6 +212,11 @@ async function main(argv) {
     log(`Stage ${closure.length} packages.`)
     await stagePackages({ root, workspaces, closure, stageDir, target })
     await linkBins(stageDir, cliManifest)
+    await writeFile(
+      join(stageDir, 'node_modules', ...CLI_PACKAGE.split('/'), BUILD_INFO_FILE),
+      buildInfoJson(commit),
+      { mode: 0o644 },
+    )
 
     await mkdir(out, { recursive: true })
     const archiveName = `${name}.tar.gz`
@@ -211,11 +231,29 @@ async function main(argv) {
     await writeFile(`${archive}.sha256`, checksumLine(sha256, archiveName))
 
     log('Check the extracted archive.')
-    await verifyArchive({ archive, name, version, target, temp })
-    process.stdout.write(`${JSON.stringify({ version, target, archive, sha256 })}\n`)
+    await verifyArchive({ archive, name, versionText, target, temp })
+    process.stdout.write(
+      `${JSON.stringify({ version, commit, versionText, target, archive, sha256 })}\n`,
+    )
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
+}
+
+function sourceCommit(root) {
+  const commit = run('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+    cwd: root,
+    capture: true,
+  }).trim()
+  const changes = run(
+    'git',
+    ['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=untracked'],
+    { cwd: root, capture: true },
+  )
+  if (changes.trim().length > 0) {
+    log(`Warning: tracked files differ from ${commit}, so the commit does not identify the source.`)
+  }
+  return commit
 }
 
 function parseArguments(argv) {
@@ -367,7 +405,7 @@ async function sha256File(path) {
   return hash.digest('hex')
 }
 
-async function verifyArchive({ archive, name, version, target, temp }) {
+async function verifyArchive({ archive, name, versionText, target, temp }) {
   const extractDir = join(temp, 'x')
   const home = join(temp, 'h')
   const dataDir = join(temp, 'd')
@@ -394,7 +432,10 @@ async function verifyArchive({ archive, name, version, target, temp }) {
       capture: true,
     })
 
-  expect(cli(['--version']).trim() === version, `bitcaster-cli --version does not print ${version}`)
+  expect(
+    cli(['--version']).trim() === versionText,
+    `bitcaster-cli --version does not print ${versionText}`,
+  )
   for (const bin of ['bitcaster-cli', 'bitcaster']) {
     const help = run(join(packageDir, 'bin', bin), ['--help'], { env, capture: true })
     expect(help.includes('Usage: bitcaster-cli'), `${bin} --help does not print the usage`)

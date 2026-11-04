@@ -6,7 +6,7 @@ import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { constants, existsSync, readFileSync } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
 import { open, readFile } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -87,6 +87,7 @@ import {
   DAEMON_ACTIVITY_SYNC_ROWS_MAX,
 } from '@bitcaster-market/daemon/protocol'
 import { applySavedSettings, registerSettingsCommands } from './settingsCommands.ts'
+import { readCliVersion } from './version.ts'
 import type {
   DaemonCommand,
   DaemonResponse,
@@ -105,9 +106,7 @@ import type {
 } from '@bitcaster-market/daemon/protocol'
 
 const execFileAsync = promisify(execFile)
-const packageJson = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-) as { version?: string }
+const cliVersionText = readCliVersion(new URL('../', import.meta.url))
 let globalEngineUrl: string | undefined
 let globalMintUrl: string | undefined
 let globalDryRun = false
@@ -134,7 +133,7 @@ async function main(): Promise<void> {
   program
     .name('bitcaster-cli')
     .description('Command-line client for bitCaster markets.')
-    .version(packageJson.version ?? '0.0.0', '-V, --version')
+    .version(cliVersionText, '-V, --version')
     .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
     .option('--dry-run', 'Check a command without acting; see "Dry run" below')
     .option('--json', 'Print JSON output (currently the default)')
