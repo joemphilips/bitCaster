@@ -638,6 +638,7 @@ export function PriceChartAnnotations({
                                     {index === 0 && (
                                       <button
                                         type="button"
+                                        data-testid="price-chart-comment-close"
                                         aria-label={t("common.close")}
                                         className="col-start-2 row-start-1 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-slate-700"
                                         onClick={(event) => {
