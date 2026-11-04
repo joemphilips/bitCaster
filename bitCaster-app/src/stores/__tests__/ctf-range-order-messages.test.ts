@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acknowledgeBrowserCtfRangeMessage,
+  clearBrowserCtfRangeMessageRetry,
   pageActiveBrowserCtfRangeMessages,
   recordBrowserCtfRangeMessage,
   resolveTerminalBrowserCtfRangeMessages,
@@ -113,6 +114,66 @@ describe("durable browser range messages", () => {
       "order-submission-uncertain",
     ]);
     expect(resolved).toMatchObject({ status: "acknowledged", acknowledgedAtMs: 50 });
+  });
+
+  it("adds a mint code to an alert row written by the current production build", async () => {
+    const database = createDatabase();
+    // The current production build writes exactly these fields.
+    await database.ctfRangeMessages.add({
+      ...message(0, "mint-source-uncertain", 10),
+      status: "active",
+      acknowledgedAtMs: null,
+    });
+
+    await recordBrowserCtfRangeMessage(
+      {
+        ...message(0, "mint-source-uncertain", 20),
+        mintError: { code: 11002, detail: "Token pending" },
+      },
+      database,
+    );
+
+    expect((await page(database)).messages).toEqual([
+      {
+        ...message(0, "mint-source-uncertain", 10),
+        status: "active",
+        acknowledgedAtMs: null,
+        mintError: { code: 11002, detail: "Token pending" },
+      },
+    ]);
+  });
+
+  it("marks a halted recovery alert for a manual retry and clears that mark", async () => {
+    const database = createDatabase();
+    const halted = {
+      ...message(0, "recovery-pending", 10),
+      mintError: { code: 11002, detail: "Token pending" },
+      retryable: true as const,
+    };
+    await recordBrowserCtfRangeMessage(halted, database);
+    expect((await page(database)).messages).toMatchObject([{ retryable: true }]);
+
+    await clearBrowserCtfRangeMessageRetry(
+      { scopeId: "scope-1", operationId: "operation-1" },
+      database,
+    );
+    const [cleared] = (await page(database)).messages;
+    expect(cleared?.retryable).toBeUndefined();
+    expect(cleared?.mintError).toEqual({ code: 11002, detail: "Token pending" });
+
+    await recordBrowserCtfRangeMessage({ ...halted, observedAtMs: 30 }, database);
+    expect((await page(database)).messages).toMatchObject([{ retryable: true, observedAtMs: 10 }]);
+  });
+
+  it("refuses an invalid mint error before it stores an alert", async () => {
+    const database = createDatabase();
+    await expect(
+      recordBrowserCtfRangeMessage(
+        { ...message(0, "recovery-pending", 10), mintError: { code: -1, detail: "" } },
+        database,
+      ),
+    ).rejects.toThrow("Browser range message mint error is invalid");
+    expect(await database.ctfRangeMessages.count()).toBe(0);
   });
 
   it("retains alerts beyond the visible page after reopening", async () => {

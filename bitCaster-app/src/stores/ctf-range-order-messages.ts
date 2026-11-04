@@ -5,6 +5,7 @@ import { db, type BitcasterDB, type BrowserCtfRangeMessageRow } from "./proof-db
 
 const ERROR_CODES = new Set<string>(BROWSER_CTF_RANGE_ORDER_ERROR_CODES);
 const PAGE_LIMIT_MAX = 64;
+const MINT_ERROR_DETAIL_LENGTH_MAX = 256;
 // One operation has one message for each recorded revision and bounded code.
 const OPERATION_MESSAGE_LIMIT = 1_024;
 
@@ -19,6 +20,10 @@ export type BrowserCtfRangeMessage = Omit<BrowserCtfRangeMessageRow, "code"> & {
   code: BrowserCtfRangeOrderErrorCode;
 };
 
+/**
+ * Record one alert. An existing alert keeps its identity, status, and time.
+ * A later observation can add its mint code or its manual-retry mark.
+ */
 export async function recordBrowserCtfRangeMessage(
   input: Omit<BrowserCtfRangeMessage, "status" | "acknowledgedAtMs">,
   database: BitcasterDB = db,
@@ -27,9 +32,44 @@ export async function recordBrowserCtfRangeMessage(
   return database.transaction("rw", database.ctfRangeMessages, async () => {
     const key = messageKey(message);
     const existing = await database.ctfRangeMessages.get(key);
-    if (existing) return decodeMessage(existing);
-    await database.ctfRangeMessages.add(message);
-    return message;
+    if (!existing) {
+      await database.ctfRangeMessages.add(message);
+      return message;
+    }
+    const current = decodeMessage(existing);
+    const merged = decodeMessage({
+      ...current,
+      ...(message.mintError === undefined ? {} : { mintError: message.mintError }),
+      ...(message.retryable === undefined ? {} : { retryable: message.retryable }),
+    });
+    if (
+      sameMintError(merged.mintError, current.mintError) &&
+      merged.retryable === current.retryable
+    ) {
+      return current;
+    }
+    await database.ctfRangeMessages.put(merged);
+    return merged;
+  });
+}
+
+/** Remove the manual-retry mark after the user asks for the retry. */
+export async function clearBrowserCtfRangeMessageRetry(
+  input: { scopeId: string; operationId: string },
+  database: BitcasterDB = db,
+): Promise<void> {
+  await database.transaction("rw", database.ctfRangeMessages, async () => {
+    const rows = await database.ctfRangeMessages
+      .where("[scopeId+operationId+revision+code]")
+      .between([input.scopeId, input.operationId], [input.scopeId, input.operationId, []])
+      .limit(OPERATION_MESSAGE_LIMIT)
+      .toArray();
+    for (const row of rows) {
+      const current = decodeMessage(row);
+      if (current.retryable === undefined) continue;
+      const { retryable: _retryable, ...cleared } = current;
+      await database.ctfRangeMessages.put(decodeMessage(cleared));
+    }
   });
 }
 
@@ -100,6 +140,7 @@ function terminalJournalResolves(code: BrowserCtfRangeOrderErrorCode): boolean {
     case "mint-source-uncertain":
     case "order-submission-uncertain":
       return true;
+    case "source-preparation-pending":
     case "invalid-order-type":
     case "insufficient-funds":
     case "score-top-up-required":
@@ -197,6 +238,9 @@ function decodeMessage(value: BrowserCtfRangeMessageRow): BrowserCtfRangeMessage
   if (value.kind !== "order" && value.kind !== "funds") {
     throw new Error("Browser range message kind is invalid");
   }
+  if (value.retryable !== undefined && value.retryable !== true) {
+    throw new Error("Browser range message retry mark is invalid");
+  }
   return {
     scopeId: nonempty(value.scopeId, "scope id"),
     operationId: nonempty(value.operationId, "operation id"),
@@ -206,7 +250,31 @@ function decodeMessage(value: BrowserCtfRangeMessageRow): BrowserCtfRangeMessage
     status,
     observedAtMs: nonnegativeInteger(value.observedAtMs, "observed time"),
     acknowledgedAtMs,
+    ...(value.mintError === undefined ? {} : { mintError: decodeMintError(value.mintError) }),
+    ...(value.retryable === undefined ? {} : { retryable: true as const }),
   };
+}
+
+function decodeMintError(value: unknown): { code: number; detail: string } {
+  const candidate = value as { code?: unknown; detail?: unknown } | null;
+  if (
+    candidate === null ||
+    typeof candidate !== "object" ||
+    !Number.isSafeInteger(candidate.code) ||
+    (candidate.code as number) <= 0 ||
+    typeof candidate.detail !== "string" ||
+    candidate.detail.length > MINT_ERROR_DETAIL_LENGTH_MAX
+  ) {
+    throw new Error("Browser range message mint error is invalid");
+  }
+  return { code: candidate.code as number, detail: candidate.detail };
+}
+
+function sameMintError(
+  left: { code: number; detail: string } | undefined,
+  right: { code: number; detail: string } | undefined,
+): boolean {
+  return left?.code === right?.code && left?.detail === right?.detail;
 }
 
 function decodeCode(value: string): BrowserCtfRangeOrderErrorCode {

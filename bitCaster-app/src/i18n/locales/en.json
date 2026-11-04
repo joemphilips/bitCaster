@@ -1048,6 +1048,8 @@
     "orderFailure": "Order was not completed",
     "fundsRecovery": "Funds recovery needs attention",
     "operation": "Operation: {{operationId}}",
+    "mintCode": "Mint code: {{code}}",
+    "retry": "Retry",
     "dismiss": "Dismiss this wallet alert",
     "morePending": "More wallet alerts are waiting. Select Next to see them.",
     "firstAlerts": "First alerts",
@@ -1084,7 +1086,8 @@
       "order-market-closed": "The engine rejected the order because the market closed.",
       "order-submission-rejected": "The engine rejected the order. The wallet will not retry it.",
       "order-submission-uncertain": "The order result is uncertain. The wallet will not submit it again.",
-      "recovery-pending": "The durable wallet operation still needs funds recovery."
+      "recovery-pending": "The durable wallet operation still needs funds recovery.",
+      "source-preparation-pending": "An earlier sell in this market is still preparing its funds. Wait until it finishes."
     }
   },
   "notification": {

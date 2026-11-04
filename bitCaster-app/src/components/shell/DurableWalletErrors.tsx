@@ -4,6 +4,7 @@ import { AlertCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import type { BrowserCtfRangeOrderErrorCode } from "@/lib/browserCtfRangeOrderCoordinator";
+import { retryBrowserCtfRangeOrderRecovery } from "@/lib/browserCtfRangeRecoveryRetry";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { useWalletStore } from "@/stores/wallet";
 import {
@@ -60,9 +61,28 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
               <p>{t(`walletRecovery.errors.${message.code}`)}</p>
               {PARTICIPATION_SCORE_MESSAGE_CODES.has(message.code) && <ParticipationScoreHelp />}
             </div>
+            {message.mintError !== undefined && (
+              <p className="mt-1 font-mono text-xs opacity-75">
+                {t("walletRecovery.mintCode", { code: message.mintError.code })}
+              </p>
+            )}
             <p className="mt-1 truncate font-mono text-xs opacity-75" title={message.operationId}>
               {t("walletRecovery.operation", { operationId: message.operationId })}
             </p>
+            {message.retryable === true && (
+              <button
+                type="button"
+                className="mt-1 text-sm underline"
+                onClick={() =>
+                  void retryBrowserCtfRangeOrderRecovery({
+                    scopeId,
+                    operationId: message.operationId,
+                  })
+                }
+              >
+                {t("walletRecovery.retry")}
+              </button>
+            )}
           </div>
           <button
             type="button"

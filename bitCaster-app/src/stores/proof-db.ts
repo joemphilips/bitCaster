@@ -334,6 +334,13 @@ export interface BrowserCtfRangeMessageRow {
   status: "active" | "acknowledged";
   observedAtMs: number;
   acknowledgedAtMs: number | null;
+  /**
+   * The bounded mint code and detail behind the alert. Rows written before
+   * this field have none. The current production build ignores it.
+   */
+  mintError?: { code: number; detail: string };
+  /** The automatic replay stopped. The alert offers a manual retry. */
+  retryable?: true;
 }
 
 /**

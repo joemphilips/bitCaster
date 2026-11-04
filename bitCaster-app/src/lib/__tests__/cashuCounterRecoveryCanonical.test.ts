@@ -128,6 +128,7 @@ vi.mock("@/lib/walletProfileLock", () => ({
 
 import {
   ensureWalletKeysetCounterReady,
+  advanceWalletKeysetCounterPastMint,
   recoverKeysetCountersForMint,
   WalletKeysetCounterReadinessError,
 } from "../cashu";
@@ -328,6 +329,47 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     ).toMatchObject({
       next: 101,
     });
+  });
+
+  it("advances a completed conditional keyset past outputs that another client signed", async () => {
+    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    // A completed keyset is not scanned again, so the browser keeps its stale cursor.
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    const locks = walletLockState.calls;
+    const custodyProofs = await database!.custodyProofs.count();
+
+    wallet.batchRestore.mockResolvedValueOnce({
+      proofs: [restoredProof(5)],
+      lastCounterWithSignature: 40,
+    });
+    const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
+    await advanceWalletKeysetCounterPastMint(input);
+
+    expect(wallet.batchRestore).toHaveBeenCalledTimes(2);
+    expect(wallet.batchRestore).toHaveBeenLastCalledWith(300, 100, 5, CONDITIONAL_KEYSET_ID);
+    expect(
+      await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
+    ).toMatchObject({ next: 41 });
+    // The other client's outputs stay with that client. Nothing is admitted here,
+    // so the caller's profile lock and custody scope are not taken again.
+    expect(await database!.custodyProofs.count()).toBe(custodyProofs);
+    expect(walletLockState.calls).toBe(locks);
+  });
+
+  it("reports a failed counter advance", async () => {
+    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    wallet.batchRestore.mockRejectedValueOnce(new Error("restore is offline"));
+    const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
+
+    await expect(advanceWalletKeysetCounterPastMint(input)).rejects.toBeInstanceOf(
+      WalletKeysetCounterReadinessError,
+    );
+    expect(
+      await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
+    ).toMatchObject({ next: 5 });
   });
 
   it("does not recursively acquire a profile lock when its caller already holds it", async () => {

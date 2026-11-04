@@ -30,6 +30,7 @@ import {
   browserWalletScopeIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
+import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-db";
 import {
   addProofs,
   addProofsIfMissing,
@@ -735,24 +736,7 @@ export function ensureWalletKeysetCounterReady(input: {
   let url: string;
   let conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   try {
-    url = normalizeUrl(input.mintUrl);
-    conditionalKeyset = requireCounterRecoveryKeyset(
-      input.keyset,
-      url,
-      input.unit,
-      input.conditionalAsset,
-    );
-    const store = useWalletStore.getState();
-    const capturedScopeId = store.mnemonic
-      ? browserWalletScopeIdFromMnemonic(store.mnemonic)
-      : null;
-    if (
-      capturedScopeId === null ||
-      capturedScopeId !== input.scopeId ||
-      activeBrowserWalletScopeId() !== input.scopeId
-    ) {
-      throw new Error("wallet profile changed");
-    }
+    ({ url, conditionalKeyset } = requireSelectedCounterRecovery(input));
   } catch {
     return Promise.reject(new WalletKeysetCounterReadinessError());
   }
@@ -792,6 +776,89 @@ export function ensureWalletKeysetCounterReady(input: {
     })
     .catch(() => undefined);
   return promise;
+}
+
+/**
+ * Advance one selected keyset's counter past every output that the mint
+ * signed for this seed, even after an earlier scan completed. Use it after
+ * the mint reports a reused output: another client with the same seed signed
+ * outputs past this browser's cursor. It admits no proof, so it claims no
+ * custody scope and can run while the caller owns that scope.
+ */
+export async function advanceWalletKeysetCounterPastMint(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+}): Promise<void> {
+  let selected: ReturnType<typeof requireSelectedCounterRecovery>;
+  try {
+    selected = requireSelectedCounterRecovery(input);
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  const isCurrentProfile = () => activeBrowserWalletScopeId() === input.scopeId;
+  const counters = new BrowserWalletCounterDexieStore({
+    database: db,
+    scopeId: input.scopeId,
+    isCurrentProfile,
+  });
+  const context = { mintUrl: selected.url, unit: input.unit };
+  try {
+    const wallet = (await useWalletStore
+      .getState()
+      .getWalletForUnit(selected.url, input.unit)) as CashuWallet;
+    if (selected.conditionalKeyset !== undefined) {
+      registerCounterRecoveryConditionalKeyset(wallet, selected.conditionalKeyset);
+    }
+    const start = (await counters.readSnapshotInContext(context, input.keyset.id)).nextCounter ?? 0;
+    // The reused outputs lie at or above the local cursor, so scan from there.
+    const { lastCounterWithSignature } = await wallet.batchRestore(
+      300,
+      100,
+      start,
+      input.keyset.id,
+    );
+    requireValidCounterRecoveryResult(lastCounterWithSignature);
+    if (lastCounterWithSignature !== undefined) {
+      await counters.advanceToAtLeastInContext(
+        context,
+        input.keyset.id,
+        lastCounterWithSignature + 1,
+        true,
+      );
+    }
+  } catch {
+    throw new WalletKeysetCounterReadinessError();
+  }
+  if (!isCurrentProfile()) throw new WalletKeysetCounterReadinessError();
+}
+
+function requireSelectedCounterRecovery(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+}): { url: string; conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined } {
+  const url = normalizeUrl(input.mintUrl);
+  const conditionalKeyset = requireCounterRecoveryKeyset(
+    input.keyset,
+    url,
+    input.unit,
+    input.conditionalAsset,
+  );
+  const store = useWalletStore.getState();
+  const capturedScopeId = store.mnemonic ? browserWalletScopeIdFromMnemonic(store.mnemonic) : null;
+  if (
+    capturedScopeId === null ||
+    capturedScopeId !== input.scopeId ||
+    activeBrowserWalletScopeId() !== input.scopeId
+  ) {
+    throw new Error("wallet profile changed");
+  }
+  return { url, conditionalKeyset };
 }
 
 async function recoverSelectedKeysetCounterReadiness(input: {

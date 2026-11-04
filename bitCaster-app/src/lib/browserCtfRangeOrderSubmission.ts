@@ -48,12 +48,15 @@ import {
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
   browserCtfRangeOrderErrorMessage,
+  type BrowserCtfRangeMintError,
   type BrowserCtfRangeOrderErrorCode,
   type BrowserCtfRangeRecoveryPage,
   type BrowserCtfRangeOrderSubmitControl,
 } from "./browserCtfRangeOrderCoordinator";
+import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
+  hasPreparedCtfRangeSell,
   readCtfRangePreparation,
   readCtfRangePreparationForIntent,
 } from "@/stores/ctf-range-order-db";
@@ -67,7 +70,7 @@ import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ct
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
-import { ensureWalletKeysetCounterReady } from "./cashu";
+import { advanceWalletKeysetCounterPastMint, ensureWalletKeysetCounterReady } from "./cashu";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import {
   readBrowserParticipationScorePayableScore,
@@ -244,6 +247,14 @@ export async function submitBrowserCtfRangeOrder(
     reconstructCtfRangePreparation(preparation, seed);
     engine = createAuthenticatedBrowserEngineClient();
   } else {
+    // The active trade progress already shows the earlier sell. A second
+    // sell would lock more of the same position before that one resolves.
+    if (request.side === "Sell" && (await hasPreparedCtfRangeSell(scopeId, request.conditionId))) {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-pending",
+        browserCtfRangeOrderErrorMessage("source-preparation-pending"),
+      );
+    }
     const loaded = await loadBrowserRangePreparation(input, request);
     engine = loaded.engine;
     const basePreparation = loaded.preparation;
@@ -353,6 +364,7 @@ export async function submitBrowserCtfRangeOrder(
           code: durableCode,
           observedAtMs: Date.now(),
           ...(record.lifecycleState === "terminal" ? { includeRecovery: false } : {}),
+          ...(error instanceof BrowserCtfRangeOrderError ? mintErrorField(error.mintError) : {}),
         });
       } else if (durableCode === "asset-recovery-failed" && record === null) {
         await persistRangeMessages({
@@ -1137,11 +1149,8 @@ export async function recoverBrowserCtfRangeOrders(input: {
       ...(after === undefined ? {} : { after }),
     });
     recovered += page.recoveredOperationIds.length;
-    for (const message of page.pending) {
-      pending.push(message);
-      await persistRecoveryPending(scopeId, message);
-    }
-    await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+    pending.push(...page.pending);
+    await persistRecoveryResults(scopeId, page);
     if (page.nextCursor === null) break;
     const cursor = JSON.stringify(page.nextCursor);
     if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
@@ -1174,10 +1183,7 @@ export async function recoverBrowserCtfRangeOrder(input: {
     seed,
     clientOrderId: input.clientOrderId,
   });
-  for (const message of recovery.pending) {
-    await persistRecoveryPending(scopeId, message);
-  }
-  await resolveRecoveredRangeMessages(scopeId, recovery.recoveredOperationIds);
+  await persistRecoveryResults(scopeId, recovery);
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
 }
 
@@ -1216,20 +1222,65 @@ function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): b
   }
 }
 
+async function persistRecoveryResults(
+  scopeId: string,
+  page: Omit<BrowserCtfRangeRecoveryPage, "nextCursor">,
+): Promise<void> {
+  for (const message of page.pending) await persistRecoveryPending(scopeId, message);
+  // The automatic replay stopped. The funds alert shows the mint code and a retry.
+  for (const halted of page.attention) {
+    await persistRangeMessages({
+      scopeId,
+      operationId: halted.operationId,
+      revision: halted.revision,
+      code: "recovery-pending",
+      observedAtMs: Date.now(),
+      mintError: halted.mintError,
+      retryable: true,
+    });
+  }
+  // A released order is a definitive outcome. No funds recovery is left.
+  for (const released of page.refused) {
+    await persistRangeMessages({
+      scopeId,
+      operationId: released.operationId,
+      revision: released.revision,
+      code: "order-attempt-ended",
+      observedAtMs: Date.now(),
+      includeRecovery: false,
+      ...mintErrorField(released.mintError),
+    });
+  }
+  await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+}
+
 async function persistRecoveryPending(
   scopeId: string,
   pending: BrowserCtfRangeRecoveryPending,
 ): Promise<void> {
-  // Recovery keeps retrying this operation. A durable funds message would
-  // report the protocol's normal pre-expiry refund wait as a failure.
-  if (pending.code === "awaiting-authorization-expiry") return;
-  await persistRangeMessages({
-    scopeId,
-    operationId: pending.operationId,
-    revision: pending.revision,
-    code: pending.code,
-    observedAtMs: Date.now(),
-  });
+  switch (pending.code) {
+    // Recovery keeps retrying this operation. A durable funds message would
+    // report the protocol's normal pre-expiry refund wait, or a scheduled
+    // retry, as a failure.
+    case "awaiting-authorization-expiry":
+    case "awaiting-mint-retry":
+      return;
+    default:
+      await persistRangeMessages({
+        scopeId,
+        operationId: pending.operationId,
+        revision: pending.revision,
+        code: pending.code,
+        observedAtMs: Date.now(),
+        ...mintErrorField(pending.mintError ?? null),
+      });
+  }
+}
+
+function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
+  mintError?: BrowserCtfRangeMintError;
+} {
+  return mintError === null ? {} : { mintError };
 }
 
 async function persistRangeMessages(input: {
@@ -1239,10 +1290,17 @@ async function persistRangeMessages(input: {
   code: BrowserCtfRangeOrderErrorCode;
   observedAtMs: number;
   includeRecovery?: boolean;
+  mintError?: BrowserCtfRangeMintError;
+  retryable?: true;
 }): Promise<void> {
-  const { includeRecovery, ...message } = input;
+  const { includeRecovery, mintError, retryable, ...message } = input;
   const kind = orderFailureCode(message.code) ? "order" : "funds";
-  await recordBrowserCtfRangeMessage({ ...message, kind });
+  await recordBrowserCtfRangeMessage({
+    ...message,
+    kind,
+    ...(mintError === undefined ? {} : { mintError }),
+    ...(retryable === undefined ? {} : { retryable }),
+  });
   if (kind === "order" && includeRecovery !== false) {
     await recordBrowserCtfRangeMessage({ ...message, code: "recovery-pending", kind: "funds" });
   }
@@ -1262,6 +1320,22 @@ function createBrowserCtfRangeCoordinator(
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
     allowInsecureLoopbackHttp,
+    recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
+    // The coordinator holds the profile lock and the custody scope here. The
+    // advance admits no proof, so it needs neither again.
+    recoverOutputCounters: async ({ mintUrl, keysets }) => {
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+      for (const keyset of keysets) {
+        await advanceWalletKeysetCounterPastMint({
+          scopeId,
+          mintUrl,
+          unit: "msat",
+          keyset,
+          ...conditionalCounterAsset(keyset),
+        });
+      }
+    },
     beforeCreateCapability: async ({ mintUrl, requiredScore }) => {
       while (true) {
         const score = await ensureParticipationScoreForNextMatch({

@@ -13,6 +13,7 @@ import {
   type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
 import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import { BrowserCtfRangeRecoverySchedule } from "../browserCtfRangeRecoverySchedule";
 import {
   listenForBrowserCtfRangeRecoveryWake,
   publishBrowserCtfRangeRecoveryWake,
@@ -50,12 +51,14 @@ const mocks = vi.hoisted(() => ({
   recoverClientOrder: vi.fn(),
   recoverFundedAsset: vi.fn(),
   readPreparation: vi.fn(),
+  hasPreparedSell: vi.fn(),
   recordMessage: vi.fn(),
   resolveMessages: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
   previewWorkFacts: vi.fn(),
   readPayableScore: vi.fn(),
   counterReady: vi.fn(),
+  advanceCounterPastMint: vi.fn(),
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
@@ -97,6 +100,7 @@ vi.mock("@/stores/proof-db", () => ({
 }));
 
 vi.mock("@/stores/ctf-range-order-db", () => ({
+  hasPreparedCtfRangeSell: mocks.hasPreparedSell,
   readCtfRangePreparation: mocks.readPreparation,
   readCtfRangePreparationForIntent: vi.fn().mockResolvedValue(null),
 }));
@@ -131,10 +135,14 @@ vi.mock("../browserParticipationScoreDelivery", () => ({
   readBrowserParticipationScorePayableScore: mocks.readPayableScore,
 }));
 
-vi.mock("../cashu", () => ({ ensureWalletKeysetCounterReady: mocks.counterReady }));
+vi.mock("../cashu", () => ({
+  ensureWalletKeysetCounterReady: mocks.counterReady,
+  advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
+}));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   buildBrowserCtfRangeOrderPreparation: mocks.buildPreparation,
+  browserCtfRangeOrderErrorMessage: (code: string) => `message for ${code}`,
   BrowserCtfRangeOrderError: class extends Error {
     constructor(
       readonly code: string,
@@ -205,6 +213,8 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverClientOrder.mockReset();
     mocks.readPreparation.mockResolvedValue(null);
     mocks.readPreparation.mockClear();
+    mocks.hasPreparedSell.mockResolvedValue(false);
+    mocks.advanceCounterPastMint.mockResolvedValue(undefined);
     mocks.recordMessage.mockResolvedValue(undefined);
     mocks.resolveMessages.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
@@ -259,6 +269,8 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverPage.mockResolvedValue({
       recoveredOperationIds: [],
       pending: [],
+      attention: [],
+      refused: [],
       nextCursor: null,
     });
     const recovery = vi.fn(() =>
@@ -1397,11 +1409,15 @@ describe("submitBrowserCtfRangeOrder", () => {
       .mockResolvedValueOnce({
         recoveredOperationIds: ["range-1"],
         pending: [{ operationId: "range-2", revision: 2, code: "recovery-pending" }],
+        attention: [],
+        refused: [],
         nextCursor: { createdAtMs: 10, rangeOperationId: "range-2" },
       })
       .mockResolvedValueOnce({
         recoveredOperationIds: ["range-3"],
         pending: [],
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
 
@@ -1446,11 +1462,15 @@ describe("submitBrowserCtfRangeOrder", () => {
       mocks.recoverPage.mockResolvedValue({
         recoveredOperationIds: ["range-1"],
         pending: [],
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
       mocks.recoverClientOrder.mockResolvedValue({
         recoveredOperationIds: ["range-1"],
         pending: [],
+        attention: [],
+        refused: [],
       });
       mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>
         scopeId === mocks.scopeId && operationId === "range-1"
@@ -1502,9 +1522,16 @@ describe("submitBrowserCtfRangeOrder", () => {
       mocks.recoverPage.mockResolvedValue({
         recoveredOperationIds: [],
         pending,
+        attention: [],
+        refused: [],
         nextCursor: null,
       });
-      mocks.recoverClientOrder.mockResolvedValue({ recoveredOperationIds: [], pending });
+      mocks.recoverClientOrder.mockResolvedValue({
+        recoveredOperationIds: [],
+        pending,
+        attention: [],
+        refused: [],
+      });
       const wallet = {
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -1526,10 +1553,183 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it("records each kind of recovery result with its stored mint code", async () => {
+    const mintError = { code: 11008, detail: "Duplicate outputs" };
+    mocks.recoverPage.mockResolvedValue({
+      recoveredOperationIds: ["range-refused"],
+      pending: [
+        {
+          operationId: "range-pending",
+          revision: 4,
+          code: "mint-source-uncertain",
+          mintError: { code: 11001, detail: "Token already spent" },
+        },
+        { operationId: "range-waiting", revision: 1, code: "awaiting-mint-retry" },
+      ],
+      attention: [
+        {
+          operationId: "range-halted",
+          revision: 2,
+          mintError: { code: 11002, detail: "Token pending" },
+        },
+      ],
+      refused: [{ operationId: "range-refused", revision: 1, mintError }],
+      nextCursor: null,
+    });
+    mocks.readPreparation.mockImplementation(async (scopeId: string, operationId: string) =>
+      operationId === "range-refused"
+        ? { scopeId, rangeOperationId: operationId, lifecycleState: "terminal", revision: 1 }
+        : null,
+    );
+
+    await recoverBrowserCtfRangeOrders({
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      mintUrls: ["https://mint.example"],
+    });
+
+    const recorded = mocks.recordMessage.mock.calls.map(([message]) => message);
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        operationId: "range-pending",
+        revision: 4,
+        code: "mint-source-uncertain",
+        kind: "funds",
+        mintError: { code: 11001, detail: "Token already spent" },
+      }),
+      expect.objectContaining({
+        operationId: "range-halted",
+        revision: 2,
+        code: "recovery-pending",
+        kind: "funds",
+        mintError: { code: 11002, detail: "Token pending" },
+        retryable: true,
+      }),
+      // The released order is a definitive outcome, with no funds recovery left.
+      expect.objectContaining({
+        operationId: "range-refused",
+        revision: 1,
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError,
+      }),
+    ]);
+    expect(mocks.resolveMessages).toHaveBeenCalledWith({
+      scopeId: mocks.scopeId,
+      operationId: "range-refused",
+      resolvedAtMs: expect.any(Number),
+    });
+  });
+
+  it("stores the mint code of a refused submission with its order alert", async () => {
+    const ended = new BrowserCtfRangeOrderError(
+      "order-attempt-ended",
+      "The mint refused this order. No order was submitted. The reserved funds are available again.",
+    );
+    Object.assign(ended, { mintError: { code: 11008, detail: "Duplicate outputs" } });
+    mocks.readPreparation.mockResolvedValue({ revision: 1, lifecycleState: "terminal" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(ended);
+
+    await expect(submitRangeOrder("client-refused-source")).rejects.toBe(ended);
+
+    expect(mocks.recordMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revision: 1,
+        code: "order-attempt-ended",
+        kind: "order",
+        mintError: { code: 11008, detail: "Duplicate outputs" },
+      }),
+    );
+  });
+
+  it("does not lock more shares while an earlier sell of the market waits for its source", async () => {
+    mocks.hasPreparedSell.mockResolvedValue(true);
+    const ticket: TradeTicket = {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Sell",
+        price: 400,
+        maxQuotePaymentSubunits: null,
+        minQuotePaymentSubunits: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
+      },
+    };
+
+    await expect(
+      submitBrowserCtfRangeOrder({
+        market: market(),
+        ticket,
+        clientOrderId: "client-second-sell",
+        mintUrl: "https://mint.example",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        consentedFeeFacts: feeFacts("Sell"),
+      }),
+    ).rejects.toMatchObject({ code: "source-preparation-pending" });
+
+    expect(mocks.hasPreparedSell).toHaveBeenCalledWith(mocks.scopeId, "condition-1");
+    expect(mocks.counterReady).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it("advances every output keyset past the mint for the coordinator", async () => {
+    await submitRangeOrder("client-counter-wiring");
+    const input = mocks.coordinatorInput as {
+      recoverOutputCounters: (input: {
+        mintUrl: string;
+        keysets: readonly unknown[];
+      }) => Promise<void>;
+      recoverySchedule: unknown;
+    };
+    const preparation = preparationFor(sellRequest());
+
+    await input.recoverOutputCounters({
+      mintUrl: "https://mint.example",
+      keysets: [preparation.offerKeyset, preparation.receiveKeyset],
+    });
+
+    expect(mocks.advanceCounterPastMint.mock.calls).toEqual([
+      [
+        {
+          scopeId: mocks.scopeId,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          keyset: preparation.offerKeyset,
+          conditionalAsset: { conditionId: "11".repeat(32), outcomeCollection: "YES" },
+        },
+      ],
+      [
+        {
+          scopeId: mocks.scopeId,
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          keyset: preparation.receiveKeyset,
+        },
+      ],
+    ]);
+    expect(input.recoverySchedule).toBeInstanceOf(BrowserCtfRangeRecoverySchedule);
+  });
+
+  it("does not block a buy while a sell of the market waits for its source", async () => {
+    mocks.hasPreparedSell.mockResolvedValue(true);
+
+    await expect(submitRangeOrder("client-buy-during-sell")).resolves.toEqual({
+      orderId: "order-1",
+    });
+    expect(mocks.hasPreparedSell).not.toHaveBeenCalled();
+  });
+
   it("recovers only the active preparation for one engine order", async () => {
     mocks.recoverClientOrder.mockResolvedValue({
       recoveredOperationIds: ["range-target"],
       pending: [{ operationId: "range-target", revision: 2, code: "recovery-pending" }],
+      attention: [],
+      refused: [],
     });
 
     await expect(

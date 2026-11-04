@@ -1042,6 +1042,8 @@
     "orderFailure": "注文は完了しませんでした",
     "fundsRecovery": "資金の復旧を確認してください",
     "operation": "操作: {{operationId}}",
+    "mintCode": "ミントのコード: {{code}}",
+    "retry": "再試行",
     "dismiss": "このウォレットアラートを閉じる",
     "morePending": "ほかのウォレットアラートがあります。「次へ」で表示できます。",
     "firstAlerts": "最初のアラート",
@@ -1078,7 +1080,8 @@
       "order-market-closed": "マーケットが閉鎖されたため、エンジンが注文を拒否しました。",
       "order-submission-rejected": "エンジンが注文を拒否しました。ウォレットは再送信しません。",
       "order-submission-uncertain": "注文結果を確認できません。ウォレットは注文を再送信しません。",
-      "recovery-pending": "永続ウォレット操作では、まだ資金の復旧が必要です。"
+      "recovery-pending": "永続ウォレット操作では、まだ資金の復旧が必要です。",
+      "source-preparation-pending": "この市場の前の売り注文が資金を準備しています。終わるまで待ってください。"
     }
   },
   "notification": {

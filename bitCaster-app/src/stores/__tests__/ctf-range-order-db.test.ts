@@ -15,6 +15,7 @@ import {
   bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
   hasActiveCtfRangePreparation,
+  hasPreparedCtfRangeSell,
   insertCtfRangePreparation,
   insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
@@ -64,6 +65,31 @@ describe("browser CTF range order journal", () => {
     expect(
       await readActiveCtfRangePreparationByClientOrderId(target.scopeId, "absent-client", database),
     ).toBeNull();
+  });
+
+  it("finds a sell of one market whose source is still unresolved", async () => {
+    const database = createDatabase();
+    const sell = { ...identity("range-sell", "client-sell", 1), side: "Sell" as const };
+    await insertCtfRangePreparation(identity("range-buy", "client-buy", 2), database);
+    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(false);
+
+    await insertCtfRangePreparation(sell, database);
+    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(true);
+    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-b", database)).toBe(false);
+
+    // Once the source is applied, the sell moves past preparation and no longer blocks.
+    await transitionCtfRangePreparation(
+      {
+        scopeId: sell.scopeId,
+        rangeOperationId: sell.rangeOperationId,
+        expectedRevision: 0,
+        from: "prepared",
+        to: "terminal",
+        updatedAtMs: 3,
+      },
+      database,
+    );
+    expect(await hasPreparedCtfRangeSell(sell.scopeId, "condition-a", database)).toBe(false);
   });
 
   it("persists an exact identity idempotently and rejects substitution", async () => {
