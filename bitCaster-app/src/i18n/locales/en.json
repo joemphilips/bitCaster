@@ -893,6 +893,8 @@
     "goToNostrSettings": "Go to Nostr Settings",
     "preferExistingNostrKey": "If you already use Nostr, register your existing nsec first so your market creator and oracle identity are portable across browsers. Create a new key only if you do not already have one.",
     "registerOwnNostrKey": "Register your own Nostr key",
+    "registerNsecDirectly": "Register nsec directly",
+    "registerExtensionNsec": "Register the nsec of the Nostr ID that your extension uses.",
     "createNostrKey": "Create Nostr key",
     "creatingNostrKey": "Creating Nostr key...",
     "nostrKeyCreateFailed": "Failed to create Nostr key",

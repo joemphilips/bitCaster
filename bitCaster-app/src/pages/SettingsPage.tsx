@@ -330,6 +330,7 @@ export function SettingsPage() {
             ? settingsStore.nsecSecret
             : null
         }
+        nsecEntryRequested={searchParams.get("connect") === "nsec"}
         onCategoryToggle={settingsStore.setActiveCategory}
         onThemeChange={handleThemeChange}
         onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}

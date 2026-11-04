@@ -129,6 +129,7 @@ export function Settings({
   seedPhrase,
   walletBackupState,
   localNsecSecret,
+  nsecEntryRequested = false,
   onCategoryToggle,
   onThemeChange,
   onLikedMarketCloseNotificationsChange,
@@ -164,7 +165,7 @@ export function Settings({
   const [copied, setCopied] = useState(false);
   const [nsecValue, setNsecValue] = useState("");
   const [showNsec, setShowNsec] = useState(false);
-  const [showNsecInput, setShowNsecInput] = useState(false);
+  const [showNsecInput, setShowNsecInput] = useState(nsecEntryRequested);
   const [showGeneratedNsecConfirm, setShowGeneratedNsecConfirm] = useState(false);
   const [showGeneratedNsecSecret, setShowGeneratedNsecSecret] = useState(false);
   const [generatedNsecBlurred, setGeneratedNsecBlurred] = useState(false);
@@ -184,7 +185,7 @@ export function Settings({
     nostr.connectionStatus === "connecting" || isConnectingNip07 || isConnectingNsec;
 
   useEffect(() => {
-    if (nostr.signerMode !== "nip07" || !signerConnected) return;
+    if (nsecEntryRequested || nostr.signerMode !== "nip07" || !signerConnected) return;
     setShowNsecInput(false);
     setNsecValue("");
     setNcryptsecPassphrase("");
@@ -727,7 +728,8 @@ export function Settings({
 
         {/* nsec Input (when user clicks Connect with Private Key) */}
         {showNsecInput &&
-          !(nostr.signerMode === "nip07" && (signerConnected || connectionPending)) &&
+          (nsecEntryRequested ||
+            !(nostr.signerMode === "nip07" && (signerConnected || connectionPending))) &&
           !isConnectingNip07 && (
             <div className="space-y-3">
               <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">

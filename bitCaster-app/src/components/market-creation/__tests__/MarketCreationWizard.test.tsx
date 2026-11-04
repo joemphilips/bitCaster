@@ -144,6 +144,41 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     expect(onDismissCreationError).toHaveBeenCalledTimes(1);
   });
 
+  it("offers only direct nsec registration while an extension is connected", () => {
+    useSettingsStore.setState({ nostrSignerMode: "nip07", nsecSecret: null });
+    render(
+      <MemoryRouter>
+        <MarketCreationWizard {...makeProps("yesno")} />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByRole("link", { name: i18n.t("marketCreation.registerNsecDirectly") }),
+    ).toHaveAttribute("href", "/settings?category=nostr&connect=nsec");
+    expect(screen.getByText(i18n.t("marketCreation.registerExtensionNsec"))).toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: i18n.t("marketCreation.createNostrKey") }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers key registration and key creation without a Nostr ID", () => {
+    useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
+    render(
+      <MemoryRouter>
+        <MarketCreationWizard {...makeProps("yesno")} />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByRole("link", { name: i18n.t("marketCreation.registerOwnNostrKey") }),
+    ).toHaveAttribute("href", "/settings?category=nostr");
+    expect(
+      screen.getByRole("button", { name: i18n.t("marketCreation.createNostrKey") }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("link", { name: i18n.t("marketCreation.registerNsecDirectly") }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows progress instead of recovery while the saved creation is loading", () => {
     render(
       <MarketCreationWizard

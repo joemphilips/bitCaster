@@ -112,6 +112,9 @@ export interface SettingsProps {
   walletBackupState?: SecretBackupState;
   localNsecSecret?: string | null;
 
+  /** Opens the private-key entry at once, also while an extension is connected. */
+  nsecEntryRequested?: boolean;
+
   /** Called when user toggles a category group */
   onCategoryToggle?: (category: SettingsCategory) => void;
 

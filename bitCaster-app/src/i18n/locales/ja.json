@@ -887,6 +887,8 @@
     "goToNostrSettings": "Nostr設定へ",
     "preferExistingNostrKey": "すでにNostrを使っている場合は、まず既存のnsecを登録してください。マーケット作成者とオラクルのIDをブラウザー間で持ち運べます。既存のキーがない場合だけ、新しいキーを作成してください。",
     "registerOwnNostrKey": "自分のNostrキーを登録",
+    "registerNsecDirectly": "nsecを直接登録",
+    "registerExtensionNsec": "拡張機能で使っているNostr IDのnsecを登録してください。",
     "createNostrKey": "Nostrキーを作成",
     "creatingNostrKey": "Nostrキーを作成中...",
     "nostrKeyCreateFailed": "Nostrキーを作成できませんでした",

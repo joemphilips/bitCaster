@@ -344,6 +344,10 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
 
 function NostrKeyRequired() {
   const { t } = useTranslation();
+  // An extension cannot sign as the oracle. A new key can differ from the
+  // identity that owns this wallet's backup, and the backup then blocks the
+  // fee payment. Only the nsec of the extension's identity is offered.
+  const extensionConnected = useSettingsStore((s) => s.nostrSignerMode === "nip07");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -366,34 +370,52 @@ function NostrKeyRequired() {
       <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
         {t("marketCreation.mustRegisterNostrKey")}
       </h2>
-      <p className="text-sm text-slate-400 mb-6">{t("marketCreation.nsecRequired")}</p>
+      <p className="text-sm text-slate-400 mb-6">
+        {t("marketCreation.nsecRequired")}
+        {extensionConnected && t("marketCreation.nip07Warning")}
+      </p>
       <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4 mb-6">
-        <p className="text-sm text-blue-100">{t("marketCreation.preferExistingNostrKey")}</p>
+        <p className="text-sm text-blue-100">
+          {t(
+            extensionConnected
+              ? "marketCreation.registerExtensionNsec"
+              : "marketCreation.preferExistingNostrKey",
+          )}
+        </p>
       </div>
 
-      <div className="flex flex-col gap-3">
+      {extensionConnected ? (
         <Link
-          to="/settings?category=nostr"
-          className="w-full rounded-full bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-colors hover:bg-blue-700"
+          to="/settings?category=nostr&connect=nsec"
+          className="block w-full rounded-full bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-colors hover:bg-blue-700"
         >
-          {t("marketCreation.registerOwnNostrKey")}
+          {t("marketCreation.registerNsecDirectly")}
         </Link>
-        <button
-          type="button"
-          onClick={handleCreate}
-          disabled={isCreating}
-          className="w-full rounded-full border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-500"
-        >
-          {isCreating ? (
-            <span className="inline-flex items-center justify-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {t("marketCreation.creatingNostrKey")}
-            </span>
-          ) : (
-            t("marketCreation.createNostrKey")
-          )}
-        </button>
-      </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <Link
+            to="/settings?category=nostr"
+            className="w-full rounded-full bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-colors hover:bg-blue-700"
+          >
+            {t("marketCreation.registerOwnNostrKey")}
+          </Link>
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={isCreating}
+            className="w-full rounded-full border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-500"
+          >
+            {isCreating ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t("marketCreation.creatingNostrKey")}
+              </span>
+            ) : (
+              t("marketCreation.createNostrKey")
+            )}
+          </button>
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-4">

@@ -151,6 +151,29 @@ describe("Settings connection consent", () => {
     );
     expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument();
   });
+
+  it("opens the requested local-key entry while an extension is connected and submits it", async () => {
+    const submit = vi.fn().mockResolvedValue(true);
+    const nsec = nip19.nsecEncode(generateSecretKey());
+    render(
+      <Settings
+        activeCategory="nostr"
+        nsecEntryRequested
+        onNsecSubmit={submit}
+        settings={settingsState({ signerMode: "nip07", connectionStatus: "connected" })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Log out" })).toBeVisible();
+    expect(screen.getByText("Private Key (nsec or ncryptsec)")).toBeVisible();
+    fireEvent.change(screen.getByPlaceholderText(i18n.t("settings.nsecPlaceholder")), {
+      target: { value: nsec },
+    });
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("common.connect") }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(nsec, undefined));
+    await waitFor(() =>
+      expect(screen.queryByText("Private Key (nsec or ncryptsec)")).not.toBeInTheDocument(),
+    );
+  });
 });
 
 describe("Settings logout", () => {
