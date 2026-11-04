@@ -166,7 +166,8 @@ While the service still builds the values, the app reads them again a few
 times. The service limits how often one account can read these values. The app
 therefore reads them at most twice in quick succession, and then at most once
 every 15 seconds. Changes in that time share one read. **Total Value** can
-therefore update up to about 15 seconds after the Funds tab. If the service
+therefore update about 15 seconds after the Funds tab, or later while the
+service still prepares the values. If the service
 refuses a read because of its limit, the values show as loading and the wallet
 data stays on screen. The app reads again after the wait that the service
 states, or after a delay of up to one minute. If the service refuses the read
