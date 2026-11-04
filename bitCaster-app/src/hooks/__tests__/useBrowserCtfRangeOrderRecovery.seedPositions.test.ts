@@ -534,6 +534,43 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     );
   });
 
+  it("does not let a second tab scan while the start cap is reached", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+    const nowMs = 1_000_000 + DAY_MS;
+    const starts = [0, 1, 2, 3].map((start) => nowMs - HOUR_MS + start);
+    window.localStorage.setItem("bitcaster.seed-restore-starts", JSON.stringify(starts));
+
+    // Two tabs open the same seed at once. The first start is denied, and
+    // its state row must not let the second tab resume a scan.
+    const passes = await Promise.all([restorePass(() => nowMs), restorePass(() => nowMs)]);
+
+    expect(passes.map(({ status }) => status)).toEqual(["waiting", "waiting"]);
+    expect(mint.requests).toHaveLength(0);
+    expect(await restoreState()).toBeUndefined();
+    expect(JSON.parse(window.localStorage.getItem("bitcaster.seed-restore-starts")!)).toEqual(
+      starts,
+    );
+  });
+
+  it("uses no start when the first state row cannot be written", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    vi.stubGlobal("fetch", mint.fetch);
+    const states = seedRestoreDatabase(scopeId()).states;
+    const put = vi.spyOn(states, "put").mockRejectedValueOnce(new Error("quota exceeded"));
+
+    await expect(restorePass(() => 1_000_000)).rejects.toThrow("quota exceeded");
+
+    expect(await restoreState()).toBeUndefined();
+    expect(window.localStorage.getItem("bitcaster.seed-restore-starts") ?? "[]").toBe("[]");
+    put.mockRestore();
+    expect((await restorePass(() => 1_000_000)).status).toBe("complete");
+  });
+
   it("does not count a resumed scan or a Retry as a new start", async () => {
     const regular = regularKeyset();
     const market = binaryMarket("ab".repeat(32));

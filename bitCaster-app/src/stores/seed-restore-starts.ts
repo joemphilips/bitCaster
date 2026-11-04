@@ -34,7 +34,32 @@ export function claimSeedRestoreStart(nowMs: number): SeedRestoreStartClaim {
   return { granted: true };
 }
 
+/**
+ * Gives back the start that `claimSeedRestoreStart(nowMs)` recorded. Call it
+ * when the restore record of that start could not be written.
+ */
+export function releaseSeedRestoreStart(nowMs: number): void {
+  const storage = browserStorage();
+  if (storage === null) return;
+  try {
+    // Keep the starts that other tabs recorded after this one.
+    const starts = storedStarts(storage.getItem(STARTS_KEY));
+    const index = starts.lastIndexOf(nowMs);
+    if (index < 0) return;
+    starts.splice(index, 1);
+    storage.setItem(STARTS_KEY, JSON.stringify(starts));
+  } catch {
+    // The cap is a limit, not a safety rule. A lost release only delays a scan.
+  }
+}
+
 function recentStarts(value: string | null, nowMs: number): number[] {
+  return storedStarts(value)
+    .filter((start) => start <= nowMs && nowMs - start < SEED_RESTORE_STARTS_WINDOW_MS)
+    .slice(-SEED_RESTORE_STARTS_MAX);
+}
+
+function storedStarts(value: string | null): number[] {
   if (value === null) return [];
   let parsed: unknown;
   try {
@@ -43,14 +68,7 @@ function recentStarts(value: string | null, nowMs: number): number[] {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  return parsed
-    .filter(
-      (start): start is number =>
-        Number.isSafeInteger(start) &&
-        start <= nowMs &&
-        nowMs - start < SEED_RESTORE_STARTS_WINDOW_MS,
-    )
-    .slice(-SEED_RESTORE_STARTS_MAX);
+  return parsed.filter((start): start is number => Number.isSafeInteger(start));
 }
 
 function browserStorage(): Storage | null {

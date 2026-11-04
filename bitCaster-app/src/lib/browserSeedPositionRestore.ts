@@ -46,7 +46,7 @@ import {
   type SeedRestoreResyncRow,
   type SeedRestoreStateRow,
 } from "@/stores/seed-restore-db";
-import { claimSeedRestoreStart } from "@/stores/seed-restore-starts";
+import { claimSeedRestoreStart, releaseSeedRestoreStart } from "@/stores/seed-restore-starts";
 import { useWalletStore } from "@/stores/wallet";
 
 // The automatic seed restore event of ADR-039 and the keyset re-sync of
@@ -215,25 +215,35 @@ export async function runBrowserSeedPositionRestorePass(
   if (await isBrowserSeedGeneratedHere(input.scopeId)) {
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
   }
-  // Write the first state row before the start is claimed, in one
-  // transaction, so a failed write or a second tab uses no start.
-  const created = await database.transaction("rw", database.states, async () => {
-    const started = await database.states
-      .where("[scopeId+mintUrl]")
-      .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
-      .count();
-    if (started > 0) return false;
-    await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
-    return true;
-  });
-  if (created) {
-    // A new restore of this seed counts toward the browser cap. A resumed
-    // scan and Retry do not. The restoring notice stays while it waits.
-    const claim = claimSeedRestoreStart(now());
-    if (!claim.granted) {
-      await database.states.delete([input.scopeId, mintUrl]);
-      return { status: "waiting", retryAtMs: claim.retryAtMs, hintsSettled: false };
-    }
+  // A new restore of this seed counts toward the browser cap. A resumed scan
+  // and Retry do not. Claim the start and write the first state row in one
+  // transaction: a second tab then sees the row only after a granted claim,
+  // and a denied claim writes no row. localStorage is not transactional, so a
+  // failed write gives the start back.
+  const claimed: { atMs: number | null } = { atMs: null };
+  let deniedRetryAtMs: number | null;
+  try {
+    deniedRetryAtMs = await database.transaction("rw", database.states, async () => {
+      const started = await database.states
+        .where("[scopeId+mintUrl]")
+        .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
+        .count();
+      if (started > 0) return null;
+      // The claim is synchronous, so the transaction stays active.
+      const atMs = now();
+      const claim = claimSeedRestoreStart(atMs);
+      if (!claim.granted) return claim.retryAtMs;
+      claimed.atMs = atMs;
+      await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
+      return null;
+    });
+  } catch (error) {
+    if (claimed.atMs !== null) releaseSeedRestoreStart(claimed.atMs);
+    throw error;
+  }
+  if (deniedRetryAtMs !== null) {
+    // The restoring notice stays while the start waits for a free slot.
+    return { status: "waiting", retryAtMs: deniedRetryAtMs, hintsSettled: false };
   }
   let state =
     (await database.states.get([input.scopeId, mintUrl])) ??
