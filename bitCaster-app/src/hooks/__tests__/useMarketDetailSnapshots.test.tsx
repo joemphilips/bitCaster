@@ -50,7 +50,7 @@ const market: MarketDetail = {
   baseAsset: "sat",
   baseUnit: "sats",
   creator: { id: "creator", name: "Creator", totalMarketsCreated: 1, feePercent: 0 },
-  resolution: { criteria: "Fixture", source: "oracle", resolutionDate: null, status: "open" },
+  resolution: { criteria: "Fixture", source: "oracle", resolutionDate: null },
   currentOdds: { yes: 600, no: 400 },
   orderBook: { bids: [], asks: [], spread: 0 },
   recentTrades: [],

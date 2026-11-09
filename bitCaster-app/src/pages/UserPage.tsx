@@ -14,6 +14,7 @@ import { CopyNpubButton } from "@/components/shared/CopyNpubButton";
 import { useAbortableLoad, type Loadable } from "@/hooks/useAbortableLoad";
 import { assertNever } from "@/lib/enumDiscipline";
 import { getMarketThumbnail, getMarkets } from "@/lib/markets";
+import { MARKET_RESOLUTION_LABEL_KEYS, marketResolutionState } from "@/lib/marketResolution";
 import {
   loadNip05Verification,
   loadProfileIndexerStats,
@@ -426,14 +427,16 @@ function NoteTime({ seconds }: { seconds: number }) {
   );
 }
 
-function marketStateLabel(state: Market["state"], t: (key: string) => string): string {
-  switch (state) {
+function marketStateLabel(market: Market, t: (key: string) => string): string {
+  const resolution = marketResolutionState(market.state, market.finalOutcome);
+  switch (resolution) {
     case "open":
       return t("marketStatus.active");
-    case "closed":
-      return t("market.closed");
+    case "awaitingResolution":
+    case "resolved":
+      return t(MARKET_RESOLUTION_LABEL_KEYS[resolution]);
     default:
-      return assertNever(state);
+      return assertNever(resolution);
   }
 }
 
@@ -478,7 +481,7 @@ function CreatedMarketLink({ market }: { market: Market }) {
         {market.title}
       </span>
       <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">
-        {marketStateLabel(market.state, t)}
+        {marketStateLabel(market, t)}
       </span>
     </Link>
   );

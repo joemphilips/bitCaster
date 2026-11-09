@@ -30,7 +30,12 @@ import { BitcasterDB } from "../../stores/proof-db";
 import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../../stores/encrypted-wallet-backup-owner-db";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
-import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  advanceBrowserV2DesiredAssetsForProofChanges,
+  createEncryptedWalletBackupV2DesiredAssetRow,
+} from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import { decodeBrowserCustodyProofRow } from "../../stores/durable-custody-types";
+import { createDurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { recordGeneratedBrowserSeed, seedRestoreDatabaseName } from "../../stores/seed-restore-db";
 import {
@@ -1124,6 +1129,113 @@ it("rejects a stale profile or a database from another scope", async () => {
   ).rejects.toThrow(/profile is stale/);
 });
 
+it("replaces a wallet without a backup configuration after a deposit and a full withdrawal", async () => {
+  const { database, scopeId } = fixture();
+  await depositAndWithdrawAll(database, scopeId);
+  expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
+    expect.objectContaining({ activeProofCount: 0, desiredAction: "remove", syncState: "pending" }),
+  ]);
+  const handoff = unconfiguredHandoff({ database, scopeId }, true);
+
+  await expect(handoff.result).resolves.toBeUndefined();
+  expect(handoff.invalidateOldProfile).toHaveBeenCalledOnce();
+  expect(handoff.activateNewProfile).toHaveBeenCalledOnce();
+  expect(await Dexie.exists(browserWalletDatabaseName(scopeId))).toBe(false);
+});
+
+it("replaces a wallet with a balance without a backup configuration", async () => {
+  const { database, scopeId } = fixture();
+  await deposit(database, scopeId);
+  const handoff = unconfiguredHandoff({ database, scopeId }, true);
+
+  await expect(handoff.result).resolves.toBeUndefined();
+  expect(handoff.activateNewProfile).toHaveBeenCalledOnce();
+  expect(await Dexie.exists(browserWalletDatabaseName(scopeId))).toBe(false);
+});
+
+it("refuses an unconfirmed current seed without a backup configuration", async () => {
+  const { database, scopeId } = fixture();
+  await depositAndWithdrawAll(database, scopeId);
+  const handoff = unconfiguredHandoff({ database, scopeId }, false);
+
+  const refusal = await handoff.result.catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+  expect(refusal).toMatchObject({ code: "seed-backup-unconfirmed" });
+  expect(handoff.invalidateOldProfile).not.toHaveBeenCalled();
+  expect(handoff.activateNewProfile).not.toHaveBeenCalled();
+  expect(database.isOpen()).toBe(true);
+  expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
+});
+
+it("keeps the backup check after a full withdrawal when a backup configuration exists", async () => {
+  const { database, scopeId } = fixture();
+  await depositAndWithdrawAll(database, scopeId);
+  const invalidate = vi.fn();
+
+  const refusal = await handoffBrowserEncryptedWalletBackupV2Seed({
+    database,
+    scopeId,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
+    lockManager: immediateLockManager(),
+    invalidateOldProfile: invalidate,
+    activateNewProfile: vi.fn(),
+    restoreOldProfile: vi.fn(),
+  }).catch((error: unknown) => error);
+  expect(refusal).toMatchObject({ code: "backup-not-current" });
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(database.isOpen()).toBe(true);
+});
+
+it("keeps every local work gate without a backup configuration", async () => {
+  const activeWork = fixture();
+  await activeWork.database.custodyActiveWork.put({
+    scopeId: activeWork.scopeId,
+    operationId: "active-work",
+    nextAttemptAtMs: 1,
+    estimatedBytes: 1,
+  });
+  await expectUnconfiguredRefusal(activeWork, /active custody work/);
+
+  const pendingDeposit = fixture();
+  await pendingDeposit.database.mintQuotes.put(
+    mintQuoteRow(pendingDeposit.scopeId, "UNPAID", "pending"),
+  );
+  await expectUnconfiguredRefusal(pendingDeposit, /unfinished deposit/);
+
+  const outgoing = fixture();
+  await outgoing.database.outgoingCashuTransfers.put({
+    scopeId: outgoing.scopeId,
+    mintUrl: "https://mint.example",
+    mintRecoveryState: "complete",
+    localAuthorityState: "nonterminal",
+    bearerMintUrl: null,
+    dueAtMs: 1,
+    transferId: "outgoing-nonterminal",
+    recipientBinding: null,
+    admissionState: "consumed",
+    transfer: {} as never,
+  });
+  await expectUnconfiguredRefusal(outgoing, /nonterminal outgoing Cashu authority/);
+
+  for (const selectability of ["locked", "retained-unverified"] as const) {
+    const uncertain = fixture();
+    await uncertain.database.custodyProofs.put({
+      ...proofRow(uncertain.scopeId, 1),
+      selectability,
+      reservationOperationId: selectability === "locked" ? "reservation" : null,
+    });
+    await expectUnconfiguredRefusal(uncertain, /reserved or unverified proof/);
+  }
+
+  const orders = fixture();
+  const pendingOrders = unconfiguredHandoff(orders, true, () => {
+    throw new Error("wallet has pending orders");
+  });
+  await expect(pendingOrders.result).rejects.toThrow(/pending orders/);
+  expect(pendingOrders.invalidateOldProfile).not.toHaveBeenCalled();
+});
+
 function fixture() {
   sequence += 1;
   const scopeId = deriveDurableCustodyScopeId({
@@ -1152,6 +1264,105 @@ function handoff(input: { readonly database: BitcasterDB; readonly scopeId: stri
     activateNewProfile: vi.fn(),
     restoreOldProfile: vi.fn(),
   });
+}
+
+/** Hand off without a backup configuration, as the wallet store does in that build. */
+function unconfiguredHandoff(
+  input: { readonly database: BitcasterDB; readonly scopeId: string },
+  currentSeedBackupConfirmed: boolean,
+  assertNoPendingOrders: () => void = () => undefined,
+) {
+  const invalidateOldProfile = vi.fn();
+  const activateNewProfile = vi.fn(async () => undefined);
+  const result = handoffBrowserEncryptedWalletBackupV2Seed({
+    ...input,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders,
+    withoutBackupConfiguration: { currentSeedBackupConfirmed },
+    lockManager: immediateLockManager(),
+    invalidateOldProfile,
+    activateNewProfile,
+    restoreOldProfile: vi.fn(),
+  });
+  return { result, invalidateOldProfile, activateNewProfile };
+}
+
+async function expectUnconfiguredRefusal(
+  input: { readonly database: BitcasterDB; readonly scopeId: string },
+  message: RegExp,
+) {
+  const handoff = unconfiguredHandoff(input, true);
+  const refusal = await handoff.result.catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+  expect(refusal).toMatchObject({
+    code: "active-wallet-work",
+    message: expect.stringMatching(message),
+  });
+  expect(handoff.invalidateOldProfile).not.toHaveBeenCalled();
+  expect(input.database.isOpen()).toBe(true);
+}
+
+const DEPOSIT_LOCATOR = { schemaVersion: 1, kind: "nut13", keysetId: KEYSET, counter: 0 } as const;
+
+/** Write one deposit through the production desired-asset writer. */
+async function deposit(database: BitcasterDB, scopeId: string) {
+  const deposited = proofRow(scopeId, 1);
+  await database.custodyProofs.put(deposited);
+  await advanceBrowserV2DesiredAssetsForProofChanges(database, scopeId, [
+    {
+      beforeProof: null,
+      beforeLocator: null,
+      afterProof: deposited,
+      afterLocator: DEPOSIT_LOCATOR,
+      payloadChanged: true,
+    },
+  ]);
+  await database.mintQuotes.put(mintQuoteRow(scopeId, "ISSUED", "completed"));
+  return deposited;
+}
+
+/** Spend the whole deposit, as a withdrawal does. The desired asset stays with zero proofs. */
+async function depositAndWithdrawAll(database: BitcasterDB, scopeId: string) {
+  const deposited = await deposit(database, scopeId);
+  const withdrawn = decodeBrowserCustodyProofRow({
+    ...deposited,
+    revision: deposited.revision + 1,
+    selectability: "spent",
+  });
+  await database.custodyProofs.put(withdrawn);
+  await advanceBrowserV2DesiredAssetsForProofChanges(database, scopeId, [
+    {
+      beforeProof: deposited,
+      beforeLocator: DEPOSIT_LOCATOR,
+      afterProof: withdrawn,
+      afterLocator: DEPOSIT_LOCATOR,
+      payloadChanged: true,
+    },
+  ]);
+}
+
+function mintQuoteRow(
+  scopeId: string,
+  observedState: "UNPAID" | "ISSUED",
+  recoveryState: "pending" | "completed",
+) {
+  const quote = createDurableBolt11MintQuote({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    requestedAmount: "1000",
+    quoteId: `deposit-${sequence}`,
+    invoiceRequest: `lnbc1deposit${sequence}`,
+    observedState,
+  });
+  return {
+    scopeId,
+    paymentMethod: "bolt11" as const,
+    quoteRecordId: quote.quoteRecordId,
+    observedState: quote.observedState,
+    recoveryState,
+    lastRecoveryAttemptAtMs: 0,
+    quote,
+  };
 }
 
 function rangeRecord(scopeId: string, lifecycleState: "prepared" | "terminal", ordinal = 0) {

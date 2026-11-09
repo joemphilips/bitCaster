@@ -12,6 +12,7 @@ import { ResolutionInfo } from "./ResolutionInfo";
 import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
+import { marketResolutionState } from "@/lib/marketResolution";
 import { deriveExecutableOrderBook } from "./orderBookViewModel";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 import { TRADE_COMMENT_MAX_LENGTH } from "@bitcaster/client-sdk/tradeComment";
@@ -30,14 +31,17 @@ function formatNumericPrice(value: number, unit: string, precision: number): str
 
 function computeCurrentDisplay(
   market: MarketDetailProps["market"],
-  t: (key: string) => string,
+  t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
-  const isResolved = market.resolution.status === "resolved";
+  const isResolved =
+    marketResolutionState(market.state, market.resolution.finalOutcome) === "resolved";
   const priceAuthorityUnavailable = market.latestConfirmedTradesValid === false;
 
   if (market.type === "numeric") {
     if (isResolved && market.attestedValue != null) {
-      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit, market.precision)}`;
+      return t("marketStatus.resolvedOutcome", {
+        outcome: formatNumericPrice(market.attestedValue, market.unit, market.precision),
+      });
     }
     // Numeric HI/LO probability ticks are not a native numeric trade
     // representation. Keep the public current value unavailable until the
@@ -46,7 +50,7 @@ function computeCurrentDisplay(
   }
 
   if (isResolved && market.resolution.finalOutcome) {
-    return `Resolved: ${market.resolution.finalOutcome}`;
+    return t("marketStatus.resolvedOutcome", { outcome: market.resolution.finalOutcome });
   }
 
   const historyPending =
@@ -160,16 +164,14 @@ export function MarketDetail({
 
   // Determine market state per ADR-009 (Amendment 2026-05-04 — detail-page
   // compliance). The detail page reads engine `state` for lifecycle
-  // (Open / Closed) and reduces mintd's `attestation.*` to outcome metadata
-  // (which outcome the oracle attested, when, whether the announcement
-  // window expired). `isResolved` keeps the existing semantics for the
-  // resolution-info badge — surfaced when mintd reports a resolved outcome,
-  // independent of the engine's lifecycle state. `isTradingDisabled` is the
+  // (Open / Closed). Only the engine final outcome resolves the market;
+  // closure alone leaves it awaiting resolution. `isTradingDisabled` is the
   // single closed-state gate consulted across the trade and deposit
   // affordances. The engine state is authoritative for routine rendering; a
   // stale or backfilled deadline must not hide the trade pane while the engine
   // still says the market is open.
-  const isResolved = market.resolution.status === "resolved";
+  const isResolved =
+    marketResolutionState(market.state, market.resolution.finalOutcome) === "resolved";
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;

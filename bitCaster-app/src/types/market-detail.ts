@@ -21,19 +21,22 @@ import type { components } from "@/generated/api";
 // Resolution Types
 // =============================================================================
 
-export type ResolutionStatus = "open" | "pending_resolution" | "resolved" | "disputed";
-
 export type ResolutionSource = "oracle" | "manual" | "community" | "smart_contract";
 
+/**
+ * Resolution facts. The displayed resolution state is derived from the engine
+ * `state` and `finalOutcome` with `marketResolutionState`, so a live status
+ * update cannot leave a stored state behind.
+ */
 export interface ResolutionDetails {
   conditionId?: string;
+  /** Creator Markdown. Render it only with `MarketMarkdown`. */
   criteria: string;
   source: ResolutionSource;
   sourceDescription?: string;
   resolutionDate: string | null;
-  status: ResolutionStatus;
-  finalOutcome?: string; // Only set when resolved
-  disputeDeadline?: string; // For disputed markets
+  /** The engine-verified winning outcome. Absent until the oracle answer is verified. */
+  finalOutcome?: string;
 }
 
 // =============================================================================

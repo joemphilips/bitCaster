@@ -293,7 +293,22 @@ it("distinguishes Japanese market resolution from trade settlement", () => {
   expect(ja.market.resolution).toBe("結果判定");
   expect(ja.market.resolutionCriteria).toBe("結果判定基準");
   expect(ja.marketStatus.resolved).toBe("結果判定済み");
-  expect(ja.resolutionStatus.pending_resolution).toBe("結果判定待ち");
+  expect(ja.marketStatus.awaitingResolution).toBe("結果判定待ち");
   expect(ja.activityType.payout_claimed).toBe("報酬受取");
   expect(ja.trade.estimatedSettlementFee).toBe("決済手数料（推定）");
+});
+
+it("names a closed market without a known outcome with one term in each language", () => {
+  const keysWith = (catalogue: object, pattern: RegExp) =>
+    flattenKeys(catalogue).filter((key) => pattern.test(String(getValueAt(catalogue, key))));
+
+  expect(en.marketStatus.awaitingResolution).toBe("Awaiting resolution");
+  expect(keysWith(en, /pending resolution|awaiting resolution|resolution pending/i)).toEqual([
+    "marketStatus.awaitingResolution",
+  ]);
+  expect(keysWith(ja, /結果待ち|結果判定待ち|判定待ち/)).toEqual([
+    "marketStatus.awaitingResolution",
+  ]);
+  // Japanese copy uses the resolution term for a known outcome, not a shortened form.
+  expect(keysWith(ja, /(?<!結果)判定済み/)).toEqual([]);
 });

@@ -60,7 +60,8 @@ Deadline closure alone does not identify winning tokens.
 
 A verified result can arrive after the deadline closes trading.
 It identifies the outcome without reopening trading or changing the first closure time.
-A closed market with no verified result remains unresolved.
+A closed market with no verified result remains unresolved. The app shows it
+as **Awaiting resolution**, not as **Resolved**.
 
 The oracle can publish its attestation through Nostr. A creator can also
 submit the signed attestation directly to the matching engine. Direct
@@ -119,8 +120,9 @@ After the choice is saved, an explanation failure does not block resolution deli
 Its verified text can appear on the closed market page. It is not a paid trade comment.
 
 A deadline-closed market with no verified result still permits the creator's
-resolution action. A closed trading status alone does not identify winning tokens
-or guarantee a payout. A later verified result does not reopen trading.
+resolution action. Its row shows **Awaiting resolution**. A closed trading status
+alone does not identify winning tokens or guarantee a payout. A later verified
+result does not reopen trading.
 
 ## Report a result as the native oracle
 
@@ -262,14 +264,17 @@ status remains visible after a reload. Retrying recovers the unfinished part;
 it does not credit a completed payout again. A lost connection does not mean
 that the mint rejected the payment.
 
-To remove a losing position, select Remove and confirm. The wallet checks
+To remove a losing token, select Remove and confirm. The wallet checks
 that the tokens cannot receive a payout before it deletes them. If the result
 is uncertain, it keeps the tokens. If the mint returns a payout instead, the
 wallet keeps that payment and stops removal.
 
-Removal can take time when encrypted backup is enabled. The position stays
-visible while removal is pending. Keep your wallet data until it finishes.
-Removal does not erase copies that you exported or kept in another browser.
+Without encrypted backup, removal finishes in this browser. With encrypted
+backup, removal can take time. The token stays visible while removal is
+pending. Keep your wallet data until it finishes. Removal does not erase
+copies that you exported or kept in another browser. A seed restore in another
+browser can bring back a removed losing token. It has no value, and you can
+remove it again.
 
 If removal fails, keep the removal reference shown in the message. It identifies
 the failed step and the attempt. Include that reference when you report the

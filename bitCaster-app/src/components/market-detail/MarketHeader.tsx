@@ -16,7 +16,7 @@ import { InlineAmount } from "@/components/shared/InlineAmount";
 import { MetricExplanation } from "@/components/shared/MetricExplanation";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
-import { assertNever } from "@/lib/enumDiscipline";
+import { MARKET_RESOLUTION_LABEL_KEYS, marketResolutionState } from "@/lib/marketResolution";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -71,33 +71,19 @@ function formatTimeRemaining(
   return t("market.minutesRemaining", { minutes });
 }
 
-function isEngineMarketClosed(state: MarketDetail["state"]): boolean {
-  if (state == null) return false;
-
-  switch (state) {
-    case "open":
-      return false;
-    case "closed":
-      return true;
-    default:
-      return assertNever(state);
-  }
-}
-
 export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const activeMint = useWalletStore((s) => s.mints.find((m) => m.url === activeMintUrl));
-  const isResolved = market.resolution.status === "resolved";
-  const isEngineClosed = isEngineMarketClosed(market.state);
-  const isClosed = isResolved || isEngineClosed;
+  const resolutionState = marketResolutionState(market.state, market.resolution.finalOutcome);
+  const isResolved = resolutionState === "resolved";
+  const isClosed = resolutionState !== "open";
   const [now, setNow] = useState(() => new Date());
-  const timeRemaining =
-    isEngineClosed && !isResolved
-      ? t("market.closed")
-      : formatTimeRemaining(market.closingDate, now, t, i18n.language);
+  const timeRemaining = isClosed
+    ? ""
+    : formatTimeRemaining(market.closingDate, now, t, i18n.language);
   const isClosingSoon =
     !isClosed &&
     market.closingDate != null &&
@@ -231,13 +217,19 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           >
             {market.title}
           </h1>
-          {isClosed && (
+          {resolutionState !== "open" && (
             <div className="shrink-0">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase tracking-wider">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                {isResolved ? t("marketStatus.resolved") : t("market.closed")}
+              <span
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full border uppercase tracking-wider ${isResolved ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/30"}`}
+              >
+                {isResolved ? (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : (
+                  <Clock className="w-3.5 h-3.5" />
+                )}
+                {t(MARKET_RESOLUTION_LABEL_KEYS[resolutionState])}
               </span>
-              {market.resolution.finalOutcome && (
+              {isResolved && market.resolution.finalOutcome && (
                 <div className="mt-2 text-right">
                   <p className="text-[10px] uppercase tracking-wider text-emerald-500/80">
                     {t("market.finalOutcome")}
@@ -253,12 +245,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
 
         {/* Meta Row */}
         <div className="flex flex-wrap items-center gap-4 mb-4">
-          {/* Time Remaining / Resolved Date — hidden when no real deadline known */}
-          {(isClosed || timeRemaining) && (
+          {/* Time Remaining / Resolved Date — hidden when no real deadline known.
+              The badge alone shows that a closed market awaits resolution. */}
+          {(isResolved || timeRemaining) && (
             <div
-              className={`flex items-center gap-1.5 ${isClosed ? "text-slate-400" : isClosingSoon ? "text-amber-400" : market.imageUrl ? "text-slate-300" : "text-slate-600 dark:text-slate-400"}`}
+              className={`flex items-center gap-1.5 ${isResolved ? "text-slate-400" : isClosingSoon ? "text-amber-400" : market.imageUrl ? "text-slate-300" : "text-slate-600 dark:text-slate-400"}`}
             >
-              {isClosed ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+              {isResolved ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
               <span className="text-sm font-medium">
                 {isResolved
                   ? resolvedDate

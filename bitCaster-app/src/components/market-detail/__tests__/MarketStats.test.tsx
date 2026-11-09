@@ -32,7 +32,6 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
       criteria: "Will it happen?",
       source: "oracle",
       resolutionDate: "2030-01-01T00:00:00Z",
-      status: "open",
     },
     priceHistory: { data: [], timeframe: "7d" },
     orderBook: { bids: [], asks: [], spread: 0 },

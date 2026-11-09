@@ -38,7 +38,6 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
       criteria: "test",
       source: "oracle",
       resolutionDate: "2026-01-02T00:00:00Z",
-      status: "open",
     },
     currentOdds: { yes: 50, no: 50 },
     priceHistory: { timeframe: "7d", data: [] },

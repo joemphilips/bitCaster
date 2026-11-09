@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchCreatorMarkets, type CreatorMarketEntry } from "@/lib/markets";
+import { loadMarketCatalogue } from "@/lib/marketCatalogueBatches";
+import { marketResolutionState } from "@/lib/marketResolution";
 import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -31,19 +33,54 @@ interface UseCreatorDashboardStateResult {
   refresh: () => void;
 }
 
-function toCreatedMarketStatus(
-  state: CreatorMarketEntry["state"] | null | undefined,
-): CreatedMarketStatus {
-  if (state == null) return "unknown";
+/** Engine creator facts, with the verified outcome that the catalogue reports for a closed market. */
+type CreatorMarketSnapshotEntry = CreatorMarketEntry & { finalOutcome?: string | null };
 
+function isEngineClosed(state: CreatorMarketEntry["state"]): boolean {
   switch (state) {
     case "open":
-      return "active";
+      return false;
     case "closed":
-      return "resolved";
+      return true;
     default:
       return assertNever(state);
   }
+}
+
+function toCreatedMarketStatus(
+  market: CreatorMarketSnapshotEntry | null | undefined,
+): CreatedMarketStatus {
+  if (market?.state == null) return "unknown";
+  const resolution = marketResolutionState(market.state, market.finalOutcome);
+  switch (resolution) {
+    case "open":
+      return "active";
+    case "awaitingResolution":
+    case "resolved":
+      return resolution;
+    default:
+      return assertNever(resolution);
+  }
+}
+
+/**
+ * The creator list has no outcome. A closed market reads its verified outcome
+ * from the catalogue. A failed read leaves the outcome unknown, so the market
+ * awaits resolution and is never shown as resolved.
+ */
+async function withVerifiedOutcomes(
+  markets: CreatorMarketEntry[],
+  signal: AbortSignal,
+): Promise<CreatorMarketSnapshotEntry[]> {
+  const closedIds = markets
+    .filter((market) => isEngineClosed(market.state))
+    .map((market) => market.conditionId);
+  if (closedIds.length === 0) return markets;
+  const catalogue = await loadMarketCatalogue(closedIds, { signal });
+  return markets.map((market) => {
+    const finalOutcome = catalogue.get(market.conditionId)?.finalOutcome;
+    return finalOutcome ? { ...market, finalOutcome } : market;
+  });
 }
 
 /**
@@ -58,7 +95,7 @@ function toCreatedMarketStatus(
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,
-  backendByConditionId: Map<string, CreatorMarketEntry>,
+  backendByConditionId: Map<string, CreatorMarketSnapshotEntry>,
   currentConditionIds: ReadonlySet<string>,
 ): CreatedMarket {
   const backend = backendByConditionId.get(stored.conditionId);
@@ -67,7 +104,7 @@ function buildCreatedMarket(
     oracleOwnerKind: "created",
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? "",
-    status: toCreatedMarketStatus(backend?.state),
+    status: toCreatedMarketStatus(backend),
     engineDataStatus: !backend
       ? "unavailable"
       : currentConditionIds.has(stored.conditionId)
@@ -97,16 +134,19 @@ function emptyStats(): DashboardStats {
 
 interface CreatorEngineSnapshot {
   pubkey: string | null;
-  markets: CreatorMarketEntry[];
+  markets: CreatorMarketSnapshotEntry[];
   currentConditionIds: string[];
   isLoading: boolean;
   error: string | null;
 }
 
-function mergeEngineSnapshot(previous: CreatorMarketEntry[], incoming: CreatorMarketEntry[]) {
+function mergeEngineSnapshot(
+  previous: CreatorMarketSnapshotEntry[],
+  incoming: CreatorMarketSnapshotEntry[],
+) {
   const previousClosed = new Map(
     previous
-      .filter((market) => toCreatedMarketStatus(market.state) === "resolved")
+      .filter((market) => isEngineClosed(market.state))
       .map((market) => [market.conditionId, market]),
   );
   const currentConditionIds: string[] = [];
@@ -114,8 +154,11 @@ function mergeEngineSnapshot(previous: CreatorMarketEntry[], incoming: CreatorMa
     const closed = previousClosed.get(market.conditionId);
     previousClosed.delete(market.conditionId);
     // A delayed open snapshot cannot reopen a confirmed closure.
-    if (closed && toCreatedMarketStatus(market.state) === "active") return closed;
+    if (closed && !isEngineClosed(market.state)) return closed;
     currentConditionIds.push(market.conditionId);
+    // A verified outcome cannot change. A failed catalogue read keeps the known outcome.
+    if (closed?.finalOutcome && !market.finalOutcome)
+      return { ...market, finalOutcome: closed.finalOutcome };
     return market;
   });
   return { markets: [...markets, ...previousClosed.values()], currentConditionIds };
@@ -165,6 +208,8 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
     }
 
     let cancelled = false;
+    const enrichmentController = new AbortController();
+    let enrichmentTimeout: ReturnType<typeof setTimeout> | undefined;
     setBackend((previous) => ({
       pubkey,
       markets: previous.pubkey === pubkey ? previous.markets : [],
@@ -178,6 +223,8 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
         if (cancelled) return;
         if (response.pubkey !== pubkey)
           throw new Error("Creator market response did not match the selected creator");
+        // Lifecycle and volume are the first-response facts. Optional outcome
+        // enrichment must not hold them behind a catalogue request waterfall.
         setBackend((previous) => ({
           pubkey,
           ...mergeEngineSnapshot(
@@ -187,6 +234,30 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
           isLoading: false,
           error: null,
         }));
+        if (!response.markets.some((market) => isEngineClosed(market.state))) return;
+        // Bound the whole enrichment, not each batch. A slow request cannot
+        // keep fetching after navigation, identity change, refresh, or timeout.
+        enrichmentTimeout = setTimeout(() => enrichmentController.abort(), 10_000);
+        try {
+          const enriched = await withVerifiedOutcomes(
+            response.markets,
+            enrichmentController.signal,
+          );
+          if (cancelled || enrichmentController.signal.aborted) return;
+          setBackend((previous) =>
+            previous.pubkey !== pubkey
+              ? previous
+              : {
+                  ...previous,
+                  ...mergeEngineSnapshot(previous.markets, enriched),
+                },
+          );
+        } catch {
+          // The first response remains valid. Failed enrichment establishes no
+          // new resolution; a previously verified outcome remains unchanged.
+        } finally {
+          clearTimeout(enrichmentTimeout);
+        }
       } catch (err) {
         if (cancelled) return;
         setBackend((previous) => ({
@@ -201,6 +272,8 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
 
     return () => {
       cancelled = true;
+      enrichmentController.abort();
+      clearTimeout(enrichmentTimeout);
     };
   }, [pubkey, refreshTick]);
 
@@ -209,7 +282,7 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
   }, []);
 
   const markets = useMemo<CreatedMarket[]>(() => {
-    const backendByConditionId = new Map<string, CreatorMarketEntry>();
+    const backendByConditionId = new Map<string, CreatorMarketSnapshotEntry>();
     if (backend.pubkey === pubkey) {
       for (const entry of backend.markets) backendByConditionId.set(entry.conditionId, entry);
     }
@@ -250,6 +323,8 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
       switch (market.status) {
         case "active":
           base.activeMarketsCount += 1;
+          break;
+        case "awaitingResolution":
           break;
         case "resolved":
           base.resolvedMarketsCount += 1;

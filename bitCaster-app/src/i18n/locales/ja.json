@@ -88,6 +88,7 @@
     "replaceBlockedPendingOrders": "このウォレットに未完了の注文があります。切り替える前に完了または復旧してください。",
     "replaceBlockedUnscopedOrders": "古い注文にウォレット識別子がありません。切り替える前に解決してください。",
     "replaceBlockedBackup": "現在のウォレットのすべての資産に最新のバックアップがありません。切り替える前にバックアップを完了し、確認してください。",
+    "replaceBlockedSeedBackup": "切り替える前に、シードバックアップで現在のシードフレーズをバックアップしてください。",
     "replaceBlockedActiveWork": "未完了のウォレット操作があります。切り替える前に完了または復旧してください。",
     "replaceBlockedBrowserLock": "このブラウザーではウォレットを安全にロックできません。現在のウォレットを保持し、ロックに対応したブラウザーで再試行してください。",
     "replaceBlockedSafetyChecks": "バックアップまたは復旧の安全確認に通らなかったため、ウォレットを切り替えませんでした。現在のウォレットは保持されています。"
@@ -221,7 +222,6 @@
     "source": "ソース",
     "resolutionDate": "結果判定日",
     "finalOutcome": "最終アウトカム",
-    "disputeDeadline": "異議申し立て期限: {{date}}",
     "priceChart": "価格チャート",
     "chartComments": "価格チャートのコメント",
     "chartCommentMarker": "{{time}} · コメント{{count}}件",
@@ -465,11 +465,8 @@
     "noClosedPositions": "クローズ済みポジションはありません",
     "won": "当たり",
     "lost": "ハズレ",
-    "awaitingResolution": "結果待ち",
     "claimAria": "{{title}} を換金する",
     "sellAria": "{{title}} を売却",
-    "removeAria": "{{title}} を削除",
-    "removeLostConfirm": "このハズレのポジションを削除しますか？このデバイスからトークンが完全に削除され、元に戻せません。",
     "noActivity": "アクティビティはありません",
     "noFunds": "資産はありません",
     "monitoringLabel": "ポートフォリオ監視",
@@ -495,28 +492,28 @@
     "sellPosition": "{{title}} を売る",
     "positionActionTitle": "ポジションの操作",
     "claimInProgress": "受取額を確認しています。結果が確認できるまで、このページを開いたままにしてください。",
-    "removalInProgress": "ポジションを削除しています。削除が確認できるまで、ウォレットに残ります。",
+    "removalInProgress": "トークンを削除しています。削除が確認できるまで、ウォレットに残ります。",
     "retainedUnverified": "条件付きトークン {{amount}} msat を保持しています。結果は未検証です。このトークンは受け取り、売却、削除できません。",
     "claimPending": "受け取りはまだ完了していません。完了した分はウォレットにあります。残りの支払いを復旧するには、受け取りを再試行してください。",
     "unverifiedOracleOutcome": "ミントはこの結果を報告していますが、指定されたオラクルの証拠はまだ検証できていません。",
     "claimFailed": "受け取りは完了しませんでした。すでに確定した支払いはウォレットにあります。エラーの詳細を確認してから再試行してください。",
-    "claimFailureProfileOwnership": "有効なウォレットまたは選択したプルーフが変更されました。ウォレットを確認し、ポジションを再読み込みしてください。",
+    "claimFailureProfileOwnership": "有効なウォレットまたはそのトークンが変更されました。ウォレットを確認し、ページを再読み込みしてください。",
     "claimFailureCounterReadiness": "このキーセットのウォレットカウンター復旧が完了していません。新しい受け取りを始める前にウォレットを復旧してください。",
     "claimFailureKeysetAuthority": "選択したミントのキーセットを検証できませんでした。ミントが利用可能になってから再試行してください。",
     "claimFailureAttestationLookup": "条件のアテステーションを取得できませんでした。利用可能になってから再試行してください。",
     "claimFailurePersistedRecovery": "保存済みの受け取り操作に復旧が必要です。再試行する前に復旧を再開してください。",
-    "claimFailureMintRefusal": "ミントがこの受け取りを拒否しました。ミントの結果が確認されるまでポジションを保持してください。",
+    "claimFailureMintRefusal": "ミントがこの受け取りを拒否しました。ミントの結果が確認されるまでトークンを保持してください。",
     "claimFailureUnknownMintResult": "ミントの結果を確認できていません。再試行する前に受け取りの復旧を再開してください。",
     "claimFailureLocalCommit": "ミントの結果を受け取りましたが、ウォレットに保存できませんでした。再試行する前に受け取りの復旧を再開してください。",
     "claimAttemptReference": "受け取り参照: {{reference}}",
     "claimOperationReference": "保存済み操作: {{reference}}",
-    "removePending": "削除はまだ完了していません。完了するまで、ポジションはウォレットに保持されます。",
-    "removeFailed": "削除を完了できませんでした。未削除のポジションはウォレットに保持されています。再試行してください。",
+    "removePending": "削除はまだ完了していません。トークンはウォレットに残っています。",
+    "removeFailed": "削除を完了できませんでした。削除されていないトークンはウォレットに残っています。再試行してください。",
     "removeAttemptReference": "削除参照: {{reference}}",
-    "removePayout": "このポジションには支払いがありました。受け取った分はウォレットにあります。削除を停止しました。更新後のポジションを確認してください。",
-    "discardLostPosition": "{{title}} のハズレのポジションを削除",
-    "discardLostPositionUntitled": "ハズレのポジションを削除",
-    "discardLostPositionConfirm": "このハズレのポジションをウォレットから削除しますか？ローカルの CTF プルーフは削除され、元に戻せません。",
+    "removePayout": "このトークンには支払いがありました。支払いはウォレットにあります。削除を停止しました。",
+    "discardLostPosition": "{{title}} のハズレのトークンを削除",
+    "discardLostPositionUntitled": "ハズレのトークンを削除",
+    "discardLostPositionConfirm": "このハズレのトークンをウォレットから削除しますか？元に戻せません。",
     "viewMarket": "{{title}} を表示",
     "volLabel": "出来高: {{value}}",
     "connectNostr": "Nostr に接続",
@@ -575,6 +572,8 @@
   "marketStatus": {
     "active": "アクティブ",
     "resolved": "結果判定済み",
+    "awaitingResolution": "結果判定待ち",
+    "resolvedOutcome": "結果判定済み: {{outcome}}",
     "refunded": "返金済み",
     "unknown": "エンジンの状態は不明"
   },
@@ -583,12 +582,6 @@
     "manual": "手動",
     "community": "コミュニティ投票",
     "smart_contract": "スマートコントラクト"
-  },
-  "resolutionStatus": {
-    "open": "オープン",
-    "pending_resolution": "結果判定待ち",
-    "resolved": "結果判定済み",
-    "disputed": "異議あり"
   },
   "settings": {
     "localNostrKey": "Nostr鍵のバックアップ",
@@ -813,7 +806,6 @@
     "winningOutcomeLabel": "判定結果",
     "closeMarket": "マーケットをクローズ",
     "closingMarket": "クローズ中...",
-    "attestedOutcome": "判定済み: {{outcome}}",
     "attestationErrorTitle": "オラクルの結果判定を公開できませんでした。",
     "resolveChoiceNotice": "オラクルの結果判定を公開して、このマーケットを閉じます。",
     "savedExplanation": "保存済みの公開説明"
@@ -875,6 +867,8 @@
     "reviewAndCreate": "確認して作成",
     "description": "説明",
     "descriptionPlaceholder": "マーケットを詳しく説明してください。結果判定基準、関連するコンテキスト、エッジケースなどを含めてください...",
+    "write": "編集",
+    "preview": "プレビュー",
     "marketSummary": "マーケットサマリー",
     "titleSummaryLabel": "タイトル",
     "categoriesSummaryLabel": "カテゴリ",
@@ -1029,7 +1023,7 @@
     "backupNow": "シードフレーズを表示"
   },
   "loading": {
-    "tagline": "金融は自由であるべきだ | 偽物こそ高価でなければならない"
+    "tagline": "Finance wants to be free | Fake must be expensive"
   },
   "settlementProgress": {
     "journalUnavailable": "ウォレットの進行状況を取得できません。ウォレットのデータを保持して、再読み込みしてください。",

@@ -34,7 +34,6 @@ const market: MarketDetail = {
     criteria: "Test market",
     source: "oracle",
     resolutionDate: "2026-12-31T00:00:00Z",
-    status: "open",
   },
   priceHistory: { data: [], timeframe: "7d" },
   orderBook: {

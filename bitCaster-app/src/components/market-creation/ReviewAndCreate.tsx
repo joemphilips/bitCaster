@@ -3,13 +3,18 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
 import { categoricalOutcomeColors, normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import {
   inspectNewMarketCreationText,
   MAX_MARKET_DESCRIPTION_CHARACTERS,
   MAX_MARKET_DESCRIPTION_UTF8_BYTES,
 } from "@bitcaster/client-sdk/marketCreationLimits";
 import { marketCreationTextError, marketCreationTagsError } from "@/lib/marketCreationValidation";
+
+import { MarketMarkdown } from "@/components/shared/MarketMarkdown";
+
+type DescriptionTab = "write" | "preview";
+const DESCRIPTION_TABS: readonly DescriptionTab[] = ["write", "preview"];
 
 interface ReviewAndCreateProps {
   description: string;
@@ -31,6 +36,9 @@ export function ReviewAndCreate({
   onCreateMarket,
 }: ReviewAndCreateProps) {
   const { t } = useTranslation();
+  const [descriptionTab, setDescriptionTab] = useState<DescriptionTab>("write");
+  const tabIdPrefix = useId();
+  const tabRefs = useRef<Partial<Record<DescriptionTab, HTMLButtonElement>>>({});
   const descriptionId = useId();
   const descriptionCountId = useId();
   const descriptionErrorId = useId();
@@ -63,22 +71,90 @@ export function ReviewAndCreate({
 
       {/* Description */}
       <div className="mb-8">
-        <label htmlFor={descriptionId} className="block text-sm font-medium text-slate-300 mb-2">
-          {t("marketCreation.description")}
-        </label>
-        <textarea
-          id={descriptionId}
-          value={description}
-          onBlur={() => setDescriptionBlurred(true)}
-          aria-invalid={!!descriptionError}
+        <div className="mb-2 flex items-end justify-between gap-3">
+          <label htmlFor={descriptionId} className="block text-sm font-medium text-slate-300">
+            {t("marketCreation.description")}
+          </label>
+          <div role="tablist" aria-label={t("marketCreation.description")} className="flex gap-1">
+            {DESCRIPTION_TABS.map((tab, index) => (
+              <button
+                key={tab}
+                ref={(node) => {
+                  tabRefs.current[tab] = node ?? undefined;
+                }}
+                type="button"
+                role="tab"
+                id={`${tabIdPrefix}-${tab}-tab`}
+                aria-selected={descriptionTab === tab}
+                aria-controls={`${tabIdPrefix}-${tab}-panel`}
+                tabIndex={descriptionTab === tab ? 0 : -1}
+                onClick={() => setDescriptionTab(tab)}
+                onKeyDown={(event) => {
+                  let next: DescriptionTab;
+                  switch (event.key) {
+                    case "ArrowRight":
+                      next = DESCRIPTION_TABS[(index + 1) % DESCRIPTION_TABS.length]!;
+                      break;
+                    case "ArrowLeft":
+                      next =
+                        DESCRIPTION_TABS[
+                          (index + DESCRIPTION_TABS.length - 1) % DESCRIPTION_TABS.length
+                        ]!;
+                      break;
+                    case "Home":
+                      next = DESCRIPTION_TABS[0]!;
+                      break;
+                    case "End":
+                      next = DESCRIPTION_TABS[DESCRIPTION_TABS.length - 1]!;
+                      break;
+                    default:
+                      return;
+                  }
+                  event.preventDefault();
+                  setDescriptionTab(next);
+                  tabRefs.current[next]?.focus();
+                }}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${descriptionTab === tab ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"}`}
+              >
+                {t(`marketCreation.${tab}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* Keep the textarea mounted to retain edit history; measure its raw source in both modes. */}
+        <div
+          id={`${tabIdPrefix}-write-panel`}
+          role="tabpanel"
+          aria-labelledby={`${tabIdPrefix}-write-tab`}
+          hidden={descriptionTab !== "write"}
+        >
+          <textarea
+            id={descriptionId}
+            value={description}
+            onBlur={() => setDescriptionBlurred(true)}
+            aria-invalid={!!descriptionError}
+            aria-describedby={[descriptionCountId, descriptionError ? descriptionErrorId : null]
+              .filter(Boolean)
+              .join(" ")}
+            onChange={(e) => onDescriptionChange?.(e.target.value)}
+            placeholder={t("marketCreation.descriptionPlaceholder")}
+            rows={6}
+            className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
+          />
+        </div>
+        <div
+          id={`${tabIdPrefix}-preview-panel`}
+          role="tabpanel"
+          aria-labelledby={`${tabIdPrefix}-preview-tab`}
+          hidden={descriptionTab !== "preview"}
+          tabIndex={0}
           aria-describedby={[descriptionCountId, descriptionError ? descriptionErrorId : null]
             .filter(Boolean)
             .join(" ")}
-          onChange={(e) => onDescriptionChange?.(e.target.value)}
-          placeholder={t("marketCreation.descriptionPlaceholder")}
-          rows={6}
-          className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
-        />
+          className="min-h-[9.5rem] w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm leading-relaxed text-slate-300"
+        >
+          {descriptionTab === "preview" && <MarketMarkdown source={description} />}
+        </div>
         <p id={descriptionCountId} className="mt-2 text-xs text-slate-400">
           {t("marketCreation.textCount", {
             characters: text.description.characters,

@@ -612,7 +612,6 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
       criteria: description || title,
       source: "oracle" as const,
       resolutionDate,
-      status: finalOutcome ? ("resolved" as const) : ("open" as const),
       finalOutcome,
     },
     priceHistory: { data: [], timeframe: "7d" as const },
