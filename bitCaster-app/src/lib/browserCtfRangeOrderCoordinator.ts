@@ -76,6 +76,7 @@ import {
   CtfRangeRecoveryTransportError,
   CtfRangeMintRecoveryAdapter,
   decodeCtfRangeEngineResult,
+  readAppliedCtfRangeEngineResult,
   restoreDurableCtfRangeRefundOutputs,
   verifyDurableCtfRangeRefundSignatures,
 } from "@bitcaster/client-sdk/ctfRangeRecoveryTransport";
@@ -1168,17 +1169,18 @@ export class BrowserCtfRangeOrderCoordinator {
       await this.#terminalizeRecoveredJournal(journalRecord);
       return;
     }
-    let response: SettlementCapabilityResultResponse | null;
-    try {
-      response = await this.#engine.getSettlementCapabilityResultByOperation(operation.operationId);
-    } catch (error) {
-      throw rangeError("recovery-pending", error);
+    const read = await this.#pendingOnRecoveryTransport(() =>
+      readAppliedCtfRangeEngineResult(this.#engine, {
+        operation,
+        reference: requireCapabilityReference(journalRecord),
+      }),
+    );
+    if (read.kind === "collected") {
+      // The engine deletes a result only after its acknowledgement, so nothing remains to do.
+      await this.#terminalizeRecoveredJournal(journalRecord);
+      return;
     }
-    if (response === null) throw rangeError("recovery-pending");
-    const engineResult = decodeCtfRangeEngineResult(response, {
-      operation,
-      reference: requireCapabilityReference(journalRecord),
-    });
+    const engineResult = read.result;
     await this.#assertPersistedEngineResult(scope, record, engineResult);
     await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
     await this.#terminalizeRecoveredJournal(journalRecord);

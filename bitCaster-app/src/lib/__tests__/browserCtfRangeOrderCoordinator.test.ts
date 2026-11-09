@@ -4819,6 +4819,118 @@ describe("browser CTF range recovery backoff", () => {
     ).toBe("terminal");
   });
 
+  // The engine deletes a confirmed result only after its owner acknowledges it and its retention ends.
+  // So an absent result for a result that the wallet already applied means complete.
+  it("completes an applied result that the engine deleted after its acknowledgement", async () => {
+    const now = 20_000;
+    const database = createDatabase();
+    const preparation = persistedPreparation("collected-result-after-acknowledgement");
+    let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+    let collected = false;
+    let mintRecoveryCalls = 0;
+    const engine = engineMock({
+      acknowledgeFailureOnce: true,
+      result: () => {
+        if (collected) return null;
+        if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+        return confirmedEngineResult(
+          confirmed.operation,
+          confirmed.selection,
+          confirmed.signatures,
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      recoverySchedule: new BrowserCtfRangeRecoverySchedule({ random: () => 1 }),
+      createMintRecovery: (operation) => {
+        confirmed = confirmedRangeRecovery(operation, preparation);
+        return {
+          async loadUncertainRecoveryObservation() {
+            mintRecoveryCalls += 1;
+            throw new Error("unexpected uncertain recovery");
+          },
+        };
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    const clientOrder = { seed: SEED, clientOrderId: preparation.request.clientOrderId };
+
+    // The wallet applies the engine result. The engine records the acknowledgement, but its response is lost.
+    expect(await coordinator.recoverClientOrder(clientOrder)).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    });
+    // After the retention time, the engine deletes the acknowledged result.
+    collected = true;
+    expect(await coordinator.recoverClientOrder(clientOrder)).toEqual({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+      attention: [],
+      refused: [],
+    });
+    expect(engine.acknowledgeCalls).toBe(1);
+    expect(mintRecoveryCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+  });
+
+  // An unreachable engine is not a deleted result, so the applied result stays pending.
+  it("keeps an applied result pending while the engine result transport fails", async () => {
+    const now = 20_000;
+    const database = createDatabase();
+    const preparation = persistedPreparation("applied-result-transport-failure");
+    let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+    let offline = false;
+    const engine = engineMock({
+      acknowledgeFailureOnce: true,
+      result: () => {
+        if (offline) throw new Error("engine result transport is offline");
+        if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+        return confirmedEngineResult(
+          confirmed.operation,
+          confirmed.selection,
+          confirmed.signatures,
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      recoverySchedule: new BrowserCtfRangeRecoverySchedule({ random: () => 1 }),
+      createMintRecovery: (operation) => {
+        confirmed = confirmedRangeRecovery(operation, preparation);
+        return {
+          async loadUncertainRecoveryObservation() {
+            throw new Error("unexpected uncertain recovery");
+          },
+        };
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    const clientOrder = { seed: SEED, clientOrderId: preparation.request.clientOrderId };
+    await coordinator.recoverClientOrder(clientOrder);
+
+    offline = true;
+    expect(await coordinator.recoverClientOrder(clientOrder)).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).not.toBe("terminal");
+  });
+
   it("applies a confirmed engine result while the mint backoff waits, without a mint request", async () => {
     let now = 20_000;
     const database = createDatabase();

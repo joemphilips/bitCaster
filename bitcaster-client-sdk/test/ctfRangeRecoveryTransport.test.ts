@@ -46,11 +46,13 @@ import {
   CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX,
   CtfRangeMintRecoveryAdapter,
   CtfRangeRecoveryResponseError,
+  CtfRangeRecoveryTransportError,
   acknowledgeCtfRangeEngineResult,
   assertCtfRangeEngineResultMatchesPersistedArtifact,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
+  readAppliedCtfRangeEngineResult,
   restoreDurableCtfRangeRefundOutputs,
   verifyDurableCtfRangeRefundSignatures,
   type CtfRangeMintClient,
@@ -129,6 +131,57 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
   assert.equal(decoded?.settlementGroupId, response.settlementGroup.groupId)
   assert.equal(decoded?.settlementGroupRevision, response.settlementGroup.revision)
 })
+
+// The engine deletes a result only after its owner acknowledges it and its retention ends. So for a result
+// that the wallet already applied, an absent result means complete. A transport failure must stay pending.
+test('an applied engine result reads as collected when the engine has deleted it', async () => {
+  const operation = createRangeOperation()
+  const requestDigest = 'ef'.repeat(32)
+  const response = engineResult(
+    operation.operationId,
+    requestDigest,
+    appliedEnvelope(operation, requestDigest),
+  )
+  const authority = { operation, reference: response.reference }
+
+  assert.deepEqual(
+    await readAppliedCtfRangeEngineResult(
+      { getSettlementCapabilityResultByOperation: async () => null },
+      authority,
+    ),
+    { kind: 'collected' },
+  )
+  const available = await readAppliedCtfRangeEngineResult(
+    { getSettlementCapabilityResultByOperation: async () => response },
+    authority,
+  )
+  assert.equal(available.kind, 'available')
+  assert.equal(available.kind === 'available' ? available.result.resultId : null, response.resultId)
+  await assert.rejects(
+    readAppliedCtfRangeEngineResult(
+      {
+        getSettlementCapabilityResultByOperation: async () => {
+          throw new Error('engine is offline')
+        },
+      },
+      authority,
+    ),
+    CtfRangeRecoveryTransportError,
+  )
+})
+
+function appliedEnvelope(operation: DurableCtfRangeOperation, requestDigest: string): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      schemaVersion: 1,
+      operationId: operation.operationId,
+      authorizationId: operation.authorizationId,
+      requestDigest,
+      selection: '01',
+      signatures: [],
+    }),
+  )
+}
 
 test('engine result accepts a deterministic UUIDv8 settlement group id', () => {
   const operation = createRangeOperation()

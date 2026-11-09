@@ -295,6 +295,42 @@ export async function fetchCtfRangeEngineResultByOperation(
     : decodeCtfRangeEngineResult(response, { ...authority, operation })
 }
 
+/**
+ * The engine result of an operation whose engine result the wallet already
+ * applied. The engine deletes a result only after its owner acknowledges it,
+ * and only after its retention time. So an absent result means that the engine
+ * holds the acknowledgement, and the operation is complete.
+ */
+export type AppliedCtfRangeEngineResultRead =
+  | { readonly kind: 'available'; readonly result: CtfRangeEngineResult }
+  | { readonly kind: 'collected' }
+
+/**
+ * Reads the engine result of an operation whose engine result the wallet
+ * already applied. A transport failure throws
+ * {@link CtfRangeRecoveryTransportError}, so a caller never takes an
+ * unreachable engine for a deleted result.
+ */
+export async function readAppliedCtfRangeEngineResult(
+  client: CtfRangeEngineResultClient,
+  authority: CtfRangeEngineResultAuthority,
+): Promise<AppliedCtfRangeEngineResultRead> {
+  const operation = decodeDurableCtfRangeOperation(authority.operation)
+  requireBoundedText(operation.operationId)
+  let response: SettlementCapabilityResultResponse | null
+  try {
+    response = await client.getSettlementCapabilityResultByOperation(operation.operationId)
+  } catch (error) {
+    throw new CtfRangeRecoveryTransportError('CTF range engine result request failed', error)
+  }
+  return response === null
+    ? { kind: 'collected' }
+    : {
+        kind: 'available',
+        result: decodeCtfRangeEngineResult(response, { ...authority, operation }),
+      }
+}
+
 export async function acknowledgeCtfRangeEngineResult(
   client: CtfRangeEngineResultAcknowledgementClient,
   authority: CtfRangeEngineResultAuthority,

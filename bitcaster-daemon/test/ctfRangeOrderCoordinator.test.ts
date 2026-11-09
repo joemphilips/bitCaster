@@ -2496,8 +2496,14 @@ test('daemon leaves an unexpectedly active FOK pending without cancellation or r
   )
 })
 
-for (const acknowledgementLost of [true, false])
-  test(`daemon completes a filled FOK result: acknowledgementLost=${acknowledgementLost}`, async () => {
+// After a lost acknowledgement response, the engine either still holds the acknowledged result, or its GC
+// deleted it after the retention time. A deleted result of an applied result means complete.
+for (const [acknowledgementLost, resultDeleted] of [
+  [true, false],
+  [true, true],
+  [false, false],
+] as const)
+  test(`daemon completes a filled FOK result: acknowledgementLost=${acknowledgementLost} resultDeleted=${resultDeleted}`, async () => {
     const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
     await withDaemonProfile(
       {
@@ -2511,19 +2517,22 @@ for (const acknowledgementLost of [true, false])
         let result: SettlementCapabilityResultResponse | null = null
         let acknowledgementCommitted = false
         let acknowledgementCalls = 0
+        let engineOffline = false
         const observations: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
         const mint = fakeMint(64, 1_000, () => selectedOutputs)
         const baseClient = fakeEngineClient(boundCapability)
         const client: EngineClientLike = {
           ...baseClient,
-          getSettlementCapabilityResultByOperation: async () =>
-            result === null
+          getSettlementCapabilityResultByOperation: async () => {
+            if (engineOffline) throw new Error('engine result transport is offline')
+            return result === null
               ? null
               : {
                   ...result,
                   acknowledgedAt: acknowledgementCommitted ? new Date(12_000).toISOString() : null,
                   version: acknowledgementCommitted ? 2 : 1,
-                },
+                }
+          },
           acknowledgeSettlementCapabilityResult: async (_resultId, request) => {
             acknowledgementCalls += 1
             assert.equal(request.expectedVersion, 1)
@@ -2675,12 +2684,34 @@ for (const acknowledgementLost of [true, false])
           'applied',
         )
 
-        result = null
+        // An unreachable engine is not a deleted result, so the applied result stays pending.
+        engineOffline = true
         const unavailable = await coordinator.recover(WALLET_SEED_HEX, client)
         assert.deepEqual(unavailable.recovered, [])
         assert.equal(unavailable.pending.length, 1)
         assert.ok(!observations.some(({ phase }) => phase === 'result-completion'))
         assert.deepEqual(mint.calls, mintCallsAfterPreparation)
+        engineOffline = false
+
+        if (resultDeleted) {
+          // The engine GC deletes a result only after its acknowledgement and its retention time.
+          result = null
+          assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+            recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
+            pending: [],
+          })
+          assert.equal(acknowledgementCalls, 1)
+          const collected = observations.filter(({ phase }) => phase === 'result-completion')
+          assert.equal(collected.length, 1)
+          assert.equal(collected[0]!.applicationPath, 'persisted-engine-reuse')
+          assert.equal(collected[0]!.outcome, 'reused')
+          assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+            recovered: [],
+            pending: [],
+          })
+          assert.deepEqual(mint.calls, mintCallsAfterPreparation)
+          return
+        }
 
         result = engineResult(prepared, loaded.operation, selection.selection)
         assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {

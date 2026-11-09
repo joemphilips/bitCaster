@@ -76,6 +76,8 @@ import {
   CtfRangeMintRecoveryAdapter,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
+  readAppliedCtfRangeEngineResult,
+  type AppliedCtfRangeEngineResultRead,
   type CtfRangeEngineResult,
   type CtfRangeMintClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
@@ -1438,72 +1440,41 @@ export class DaemonCtfRangeOrderCoordinator {
       preparationFromJournal(preparation),
     )
     if (loaded.record.operation.result.state !== 'none') {
-      if ((await this.#persistedResultSource(loaded.record)) === 'mint-recovery') {
-        const identity = {
-          clientOrderId: input.request.clientOrderId,
-          operationId: input.operationId,
-          orderId: capability.orderId,
-          applicationPath: 'persisted-mint-reuse' as const,
-        }
-        if (loaded.record.operation.result.state === 'verified-staged') {
-          await measureOrderPhase(
-            this.#dependencies.observeOrderTimeline,
-            'result-application',
-            identity,
-            () =>
-              coordinator.applyStaged({
-                seed: walletSeed(walletSeedHex),
-                custodyOperationId,
-                resolveKeyset: preparationResolver,
-                observedAtMs: this.#nowMs(),
-              }),
-          )
-        }
-        const recovered = await coordinator.readAppliedResult({
-          custodyOperationId,
-          resolveKeyset: preparationResolver,
-        })
-        this.#requireExactFokSettlement(input, loaded.operation, recovered)
-        if (loaded.record.operation.result.state === 'applied') {
-          startOrderPhase(
-            this.#dependencies.observeOrderTimeline,
-            'result-application',
-            identity,
-          )('reused')
-        }
-        await this.#markTerminal(input.operationId)
-        startOrderPhase(this.#dependencies.observeOrderTimeline, 'result-reuse', identity)('reused')
-        startOrderPhase(
-          this.#dependencies.observeOrderTimeline,
-          'result-completion',
-          identity,
-        )('reused')
-        return
-      }
-      const response = await this.#getEngineResult(client, input.operationId, {
+      const persistedIdentity = {
         clientOrderId: input.request.clientOrderId,
         operationId: input.operationId,
         orderId: capability.orderId,
+      }
+      if ((await this.#persistedResultSource(loaded.record)) === 'mint-recovery') {
+        await this.#completePersistedResult(
+          coordinator,
+          custodyOperationId,
+          loaded,
+          input,
+          walletSeedHex,
+          preparationResolver,
+          { ...persistedIdentity, applicationPath: 'persisted-mint-reuse' },
+        )
+        return
+      }
+      const read = await this.#readAppliedEngineResult(client, loaded.operation, reference, {
+        ...persistedIdentity,
         applicationPath: 'persisted-engine-reuse',
       })
-      if (response === null) {
-        throw new RangeRecoveryDeferredError(
-          'persisted engine range result acknowledgement is pending',
-          this.#nowMs() + 1_000,
+      if (read.kind === 'collected') {
+        // The engine deletes a result only after its acknowledgement, so the persisted result is complete.
+        await this.#completePersistedResult(
+          coordinator,
+          custodyOperationId,
+          loaded,
+          input,
+          walletSeedHex,
+          preparationResolver,
+          { ...persistedIdentity, applicationPath: 'persisted-engine-reuse' },
         )
+        return
       }
-      let persistedEngineResult: CtfRangeEngineResult
-      try {
-        persistedEngineResult = decodeCtfRangeEngineResult(response, {
-          operation: loaded.operation,
-          reference,
-        })
-      } catch {
-        throw new RangeRecoveryDeferredError(
-          'persisted engine range result is unavailable',
-          this.#nowMs() + 1_000,
-        )
-      }
+      const persistedEngineResult = read.result
       const decision = await this.#applyEngineResult(
         coordinator,
         walletSeedHex,
@@ -1723,6 +1694,84 @@ export class DaemonCtfRangeOrderCoordinator {
         }),
     )
     return staged
+  }
+
+  /**
+   * Applies a persisted result that is only staged, checks the FOK amount, and ends the order. The result is a
+   * verified mint recovery, or an engine result that the engine has since deleted after its acknowledgement.
+   */
+  async #completePersistedResult(
+    coordinator: DaemonCtfRangeCoordinator,
+    custodyOperationId: string,
+    loaded: NonNullable<Awaited<ReturnType<DaemonCtfRangeCoordinator['load']>>>,
+    input: PersistedPreparationInput,
+    walletSeedHex: string,
+    resolveKeyset: ReturnType<typeof createCtfRangeOrderPreparationKeysetResolver>,
+    identity: import('./orderTimeline.ts').OrderTimelineIdentity,
+  ): Promise<void> {
+    if (loaded.record.operation.result.state === 'verified-staged') {
+      await measureOrderPhase(
+        this.#dependencies.observeOrderTimeline,
+        'result-application',
+        identity,
+        () =>
+          coordinator.applyStaged({
+            seed: walletSeed(walletSeedHex),
+            custodyOperationId,
+            resolveKeyset,
+            observedAtMs: this.#nowMs(),
+          }),
+      )
+    }
+    const recovered = await coordinator.readAppliedResult({ custodyOperationId, resolveKeyset })
+    this.#requireExactFokSettlement(input, loaded.operation, recovered)
+    if (loaded.record.operation.result.state === 'applied') {
+      startOrderPhase(
+        this.#dependencies.observeOrderTimeline,
+        'result-application',
+        identity,
+      )('reused')
+    }
+    await this.#markTerminal(input.operationId)
+    startOrderPhase(this.#dependencies.observeOrderTimeline, 'result-reuse', identity)('reused')
+    startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'result-completion',
+      identity,
+    )('reused')
+  }
+
+  /**
+   * Reads the engine result of a persisted engine result. Unlike {@link #getEngineResult}, an unreachable
+   * engine defers, so it is never taken for a deleted result.
+   */
+  async #readAppliedEngineResult(
+    client: EngineClientLike,
+    operation: DurableCtfRangeOperation,
+    reference: SettlementCapabilityResponse['reference'],
+    identity: import('./orderTimeline.ts').OrderTimelineIdentity,
+  ): Promise<AppliedCtfRangeEngineResultRead> {
+    const finish = startOrderPhase(
+      this.#dependencies.observeOrderTimeline,
+      'engine-result-observation',
+      identity,
+    )
+    const getResult = client.getSettlementCapabilityResultByOperation
+    try {
+      if (getResult === undefined) throw new Error('engine client does not read settlement results')
+      const read = await readAppliedCtfRangeEngineResult(
+        { getSettlementCapabilityResultByOperation: (id) => getResult.call(client, id) },
+        { operation, reference },
+      )
+      finish(read.kind === 'available' ? 'success' : 'unverified')
+      return read
+    } catch {
+      finish('failed')
+      throw new RangeRecoveryDeferredError(
+        'persisted engine range result is unavailable',
+        this.#nowMs() + 1_000,
+      )
+    }
   }
 
   async #getEngineResult(
