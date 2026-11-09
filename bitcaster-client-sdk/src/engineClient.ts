@@ -215,7 +215,7 @@ export interface Fill {
   takerOrderId: string
   amountSubunits: number
   executionPrice: number
-  path: 'Complementary' | 'Mint'
+  path: MatchPath
   status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
   settlementGroup: SettlementGroupSummary
@@ -227,6 +227,8 @@ export interface Fill {
 }
 
 export type SettlementGroupStatus = components['schemas']['SettlementGroupStatus']
+
+export type MatchPath = components['schemas']['MatchPath']
 
 export interface SettlementGroupSummary {
   groupId: string
@@ -249,7 +251,7 @@ export interface MatchedDelta {
   readonly takerOrderId: string
   readonly executionPrice: number
   readonly amountSubunits: number
-  readonly path: 'Complementary' | 'Mint'
+  readonly path: MatchPath
   readonly matchedAt: string
   readonly baseAsset: MarketBaseAsset
   readonly collateralUnit: 'msat'
@@ -1385,9 +1387,7 @@ function decodeFill(value: unknown): Fill {
   requireUuid(fill.makerOrderId, 'maker order id')
   requireUuid(fill.takerOrderId, 'taker order id')
   requirePositiveSafeInteger(fill.amountSubunits, 'fill amount')
-  if (fill.path !== 'Complementary' && fill.path !== 'Mint') {
-    throw new Error('fill path is invalid')
-  }
+  const path = decodeMatchPath(fill.path, 'fill path is invalid')
   if (fill.status !== 'Matched' && fill.status !== 'Filled' && fill.status !== 'Failed') {
     throw new Error('fill status is invalid')
   }
@@ -1410,7 +1410,7 @@ function decodeFill(value: unknown): Fill {
     takerOrderId: fill.takerOrderId as string,
     amountSubunits: fill.amountSubunits as number,
     executionPrice: fill.executionPrice as number,
-    path: fill.path,
+    path,
     status: fill.status,
     filledAt: fill.filledAt as string,
     settlementGroup: decodeSettlementGroup(fill.settlementGroup),
@@ -1495,9 +1495,7 @@ export function decodeMatchedDelta(value: unknown): MatchedDelta {
   requireUuid(delta.takerOrderId, 'matched taker order id')
   requirePositiveSafeInteger(delta.executionPrice, 'matched execution price')
   requirePositiveSafeInteger(delta.amountSubunits, 'matched amount')
-  if (delta.path !== 'Complementary' && delta.path !== 'Mint') {
-    throw new Error('matched path is invalid')
-  }
+  const path = decodeMatchPath(delta.path, 'matched path is invalid')
   requireIsoEngineTime(delta.matchedAt, 'matched time')
   if (delta.baseAsset !== 'sat') throw new Error('matched base asset is invalid')
   if (delta.collateralUnit !== 'msat') throw new Error('matched collateral unit is invalid')
@@ -1517,7 +1515,7 @@ export function decodeMatchedDelta(value: unknown): MatchedDelta {
     takerOrderId: delta.takerOrderId,
     executionPrice: delta.executionPrice,
     amountSubunits: delta.amountSubunits,
-    path: delta.path,
+    path,
     matchedAt: delta.matchedAt,
     baseAsset: 'sat',
     collateralUnit: 'msat',
@@ -1562,6 +1560,19 @@ export function decodeOrderLifecycleChangedDelta(value: unknown): OrderLifecycle
         ? null
         : decodeSettlementGroup(delta.activeSettlementGroup),
   }
+}
+
+// The readers accept every contract value, including `Merge`, which the
+// engine does not send yet. A new generated value is a compile error here.
+const MATCH_PATHS: Readonly<Record<MatchPath, true>> = {
+  Complementary: true,
+  Mint: true,
+  Merge: true,
+}
+
+function decodeMatchPath(value: unknown, error: string): MatchPath {
+  if (typeof value !== 'string' || !Object.hasOwn(MATCH_PATHS, value)) throw new Error(error)
+  return value as MatchPath
 }
 
 function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStatus {

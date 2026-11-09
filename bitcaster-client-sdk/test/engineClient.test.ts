@@ -361,6 +361,33 @@ test('decodeMatchedDelta enforces the exact public match contract', () => {
   assert.throws(() => decodeMatchedDelta({ ...value, fillId: 'not-a-uuid' }), /fill id is invalid/)
 })
 
+test('decodeMatchedDelta accepts every contract match path and refuses any other', () => {
+  const value = {
+    marketId: 'condition-no',
+    fillId: '11111111-1111-4111-8111-111111111111',
+    makerOrderId: '22222222-2222-4222-8222-222222222222',
+    takerOrderId: '33333333-3333-4333-8333-333333333333',
+    executionPrice: 620,
+    amountSubunits: 1_000,
+    path: 'Merge',
+    matchedAt: '2026-08-01T00:00:00.000Z',
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 1_000,
+    quotePaymentSubunits: 620,
+    outcomeFaceAmountSubunits: 1_000,
+    tokenSide: 'Outcome',
+  } as const
+
+  for (const path of ['Complementary', 'Mint', 'Merge'] as const) {
+    assert.equal(decodeMatchedDelta({ ...value, path }).path, path)
+  }
+  for (const path of ['merge', 'MERGE', 'Split', '', null, undefined, 2]) {
+    assert.throws(() => decodeMatchedDelta({ ...value, path }), /matched path is invalid/)
+  }
+  assert.throws(() => decodeMatchedDelta({ ...value, mergedWith: 'YES' }), /fields are invalid/)
+})
+
 test('decodeOrderLifecycleChangedDelta enforces the retained owner notification contract', () => {
   const value = {
     orderId: '44444444-4444-4444-8444-444444444444',
@@ -1119,6 +1146,73 @@ test('decodeSubmitOrderResponse rejects removed fill trade identity', () => {
         ...response,
         fills: [{ ...fill, tradeId: 'not-a-uuid' }],
       }),
+    /fields are invalid/,
+  )
+})
+
+test('order fill readers accept every contract match path and refuse any other', () => {
+  const settlementGroup = {
+    groupId: '44444444-4444-4444-8444-444444444444',
+    status: 'Prepared',
+    revision: 1,
+    coalescingDeadline: '2026-07-29T00:00:10Z',
+    frozenAt: null,
+  }
+  const fill = {
+    id: '55555555-5555-4555-8555-555555555555',
+    makerOrderId: '66666666-6666-4666-8666-666666666666',
+    takerOrderId: '77777777-7777-4777-8777-777777777777',
+    amountSubunits: 1_000,
+    executionPrice: 620,
+    path: 'Merge',
+    status: 'Matched',
+    filledAt: '2026-07-29T00:00:00Z',
+    settlementGroup,
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    tokenSide: 'Complement',
+    quotePaymentSubunits: 620,
+    outcomeFaceAmountSubunits: 1_000,
+  }
+  const submitted = (path: unknown, extra: Record<string, unknown> = {}) => ({
+    orderId: '22222222-2222-4222-8222-222222222222',
+    status: 'filled',
+    remainingAmountSubunits: 0,
+    fills: [{ ...fill, path, ...extra }],
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: settlementGroup,
+  })
+  const status = (path: unknown) => ({
+    orderId: '22222222-2222-4222-8222-222222222222',
+    marketId: 'condition-YES',
+    status: 'matched',
+    remainingAmountSubunits: 0,
+    filledAmountSubunits: 1_000,
+    fills: [{ ...fill, path }],
+    amountSubunits: 1_000,
+    outcomeId: 'YES',
+    side: 'Sell',
+    price: 600,
+    placedAt: '2026-07-29T00:00:00Z',
+    timeInForce: 'FOK',
+    tokenSide: 'Complement',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: settlementGroup,
+  })
+
+  assert.deepEqual(decodeSubmitOrderResponse(submitted('Merge')).fills[0], fill)
+  for (const path of ['Complementary', 'Mint', 'Merge'] as const) {
+    assert.equal(decodeSubmitOrderResponse(submitted(path)).fills[0]?.path, path)
+    assert.equal(decodeOrderStatusResponse(status(path)).fills[0]?.path, path)
+  }
+  for (const path of ['merge', 'MERGE', 'Split', '', null, undefined, 2]) {
+    assert.throws(() => decodeSubmitOrderResponse(submitted(path)), /fill path is invalid/)
+    assert.throws(() => decodeOrderStatusResponse(status(path)), /fill path is invalid/)
+  }
+  assert.throws(
+    () => decodeSubmitOrderResponse(submitted('Merge', { mergedWith: 'YES' })),
     /fields are invalid/,
   )
 })

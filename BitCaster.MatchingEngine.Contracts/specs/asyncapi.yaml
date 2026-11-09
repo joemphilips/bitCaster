@@ -526,6 +526,12 @@ components:
       enum:
         - Complementary
         - Mint
+        - Merge
+      description: >
+        Same values and meaning as the REST `MatchPath`. The engine does not
+        send `Merge` yet. Until it does, it reports a Sell matched against a
+        Sell of the complementary set as `Complementary`. Clients must accept
+        `Merge`, because a later engine version will send it.
 
     BaseAsset:
       type: string

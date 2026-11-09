@@ -1217,10 +1217,10 @@ export interface components {
       frozenAt: string | null
     }
     /**
-     * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+     * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split; `Merge` pairs two Sells for complementary outcome sets, which merge into collateral. The engine does not send `Merge` yet. Until it does, it reports a Sell matched against a Sell of the complementary set as `Complementary`, with the taker's token side and execution price. Clients must accept `Merge`, because a later engine version will send it.
      * @enum {string}
      */
-    MatchPath: 'Complementary' | 'Mint'
+    MatchPath: 'Complementary' | 'Mint' | 'Merge'
     /**
      * @description Lifecycle status of a fill-shaped order execution row. `Matched` means its atomic mint settlement group is not yet confirmed; `Filled` means settlement committed; `Failed` means the group was definitively rejected and this fill will not be retried.
      * @enum {string}
