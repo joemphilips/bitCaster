@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within, waitFor } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OracleFirstSigningRefusedError } from "@bitcaster/client-sdk/oraclePublication";
 import type { CreatedMarket } from "@/types/portfolio";
 import type { DashboardStats } from "@/types/market-management";
 
@@ -1096,33 +1097,72 @@ describe("oracle owner confirmation", () => {
     },
   );
 
-  it("retranslates a retained publication error when the language changes without publishing again", async () => {
-    await setup();
-    mockPublishOracleOutcome.mockRejectedValueOnce(new Error("Unavailable"));
-    const english = i18n.t("creator.oracleRecoveryRequired", { lng: "en" });
-    const japanese = i18n.t("creator.oracleRecoveryRequired", { lng: "ja" });
-    const user = userEvent.setup();
-    renderDashboard();
-    try {
-      await chooseOutcome(user);
-      await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
-      expect((await screen.findAllByText(english)).length).toBeGreaterThan(0);
-      await act(async () => {
-        await i18n.changeLanguage("ja");
-      });
-      expect(screen.queryByText(english)).toBeNull();
-      expect(screen.getAllByText(japanese).length).toBeGreaterThan(0);
-      expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        await i18n.changeLanguage("en");
-      });
-      expect(screen.getAllByText(english).length).toBeGreaterThan(0);
-      expect(screen.queryByText(japanese)).toBeNull();
-      expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
-    } finally {
-      await act(async () => {
-        await i18n.changeLanguage("en");
-      });
-    }
-  });
+  it.each(["created", "imported"] as const)(
+    "explains a %s first-sign refusal without requesting key restoration in either language",
+    async (kind) => {
+      await setup(kind);
+      const retainedOwners = await useCreatorMarketsStore.getState().readOracleOwners();
+      mockPublishOracleOutcome.mockRejectedValueOnce(new OracleFirstSigningRefusedError());
+      const user = userEvent.setup();
+      renderDashboard();
+      try {
+        const dialog = await chooseOutcome(user);
+        await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
+        for (const language of ["en", "ja"] as const) {
+          await act(async () => {
+            await i18n.changeLanguage(language);
+          });
+          await waitFor(() =>
+            expect(within(dialog).getByRole("alert")).toHaveTextContent(
+              i18n.t("creator.oracleFirstSigningRefused", { lng: language }),
+            ),
+          );
+          expect(
+            screen.queryByText(i18n.t("creator.oracleRecoveryRequired", { lng: language })),
+          ).toBeNull();
+          expect(dialog).toBeVisible();
+          expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeEnabled();
+        }
+        expect(await useCreatorMarketsStore.getState().readOracleOwners()).toEqual(retainedOwners);
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+      }
+    },
+  );
+
+  it.each(["Unavailable", new OracleFirstSigningRefusedError().message])(
+    "keeps generic recovery guidance for an untyped error (%s)",
+    async (message) => {
+      await setup();
+      mockPublishOracleOutcome.mockRejectedValueOnce(new Error(message));
+      const english = i18n.t("creator.oracleRecoveryRequired", { lng: "en" });
+      const japanese = i18n.t("creator.oracleRecoveryRequired", { lng: "ja" });
+      const user = userEvent.setup();
+      renderDashboard();
+      try {
+        await chooseOutcome(user);
+        await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
+        expect((await screen.findAllByText(english)).length).toBeGreaterThan(0);
+        await act(async () => {
+          await i18n.changeLanguage("ja");
+        });
+        expect(screen.queryByText(english)).toBeNull();
+        expect(screen.getAllByText(japanese).length).toBeGreaterThan(0);
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+        expect(screen.getAllByText(english).length).toBeGreaterThan(0);
+        expect(screen.queryByText(japanese)).toBeNull();
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+      }
+    },
+  );
 });

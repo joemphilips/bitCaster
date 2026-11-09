@@ -781,6 +781,7 @@
     "explanationOptional": "Public explanation (optional)",
     "explanationTooLong_one": "The explanation is about {{count}} character too long.",
     "explanationTooLong_other": "The explanation is about {{count}} characters too long.",
+    "oracleFirstSigningRefused": "The engine already has a result or its result could not be checked. No new outcome was signed. Check the market result and your connection before trying again.",
     "oracleRecoveryRequired": "Resolution is incomplete. Enable browser storage and restore the original oracle key and announcement. The saved outcome is retried automatically. Do not create another announcement.",
     "resolutionPublishing": "Sending result…",
     "resolutionPublished": "Published",

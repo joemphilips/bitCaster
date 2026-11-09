@@ -684,7 +684,7 @@ test(
             'Yes',
             'New draft',
           ),
-          /not signed/,
+          /No new outcome was signed/,
         )
         const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
         assert.equal(saved.chosenOutcome, null)
@@ -694,7 +694,7 @@ test(
       for (const readResolution of observations) {
         await assert.rejects(
           retryNativeMarketPublication({ ...guarded, readResolution }, conditionId),
-          /not signed/,
+          /No new outcome was signed/,
         )
         const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
         assert.equal(saved.chosenOutcome, 'Yes')

@@ -775,6 +775,7 @@
     "restoredOracleSigningWarning": "最新のオラクルのコピーを1つだけ使ってください。別の端末や古いバックアップから、このアナウンスの異なる結果に署名しないでください。同じノンスで異なる結果に2回署名すると、オラクルの秘密鍵が漏えいするおそれがあります。",
     "explanationOptional": "公開の説明（任意）",
     "explanationTooLong_other": "説明が約{{count}}文字長すぎます。",
+    "oracleFirstSigningRefused": "エンジンにすでに結果があるか、結果を確認できませんでした。新しい結果への署名は行っていません。マーケットの結果と接続状況を確認してから、もう一度お試しください。",
     "oracleRecoveryRequired": "結果判定は未完了です。ブラウザーの保存を有効にし、元のオラクル鍵とアナウンスを復元してください。保存した結果は自動で再試行されます。新しいアナウンスを作成しないでください。",
     "resolutionPublishing": "結果を送信中…",
     "resolutionPublished": "公開済み",

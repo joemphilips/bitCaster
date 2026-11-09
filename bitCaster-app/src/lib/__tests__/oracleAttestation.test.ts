@@ -8,6 +8,7 @@ import { hexToBytes } from "nostr-tools/utils";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveDlcConditionId } from "@bitcaster/client-sdk";
 import {
+  OracleFirstSigningRefusedError,
   publishOracleOutcome,
   retryOraclePublication,
 } from "@bitcaster/client-sdk/oraclePublication";
@@ -454,7 +455,7 @@ describe("production creator row and shared coordinator", () => {
             read,
             { engineDelivery: "synchronize", automatic: true },
           ),
-        ).rejects.toThrow(/not signed/);
+        ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
         expect(restore).not.toHaveBeenCalled();
         expect(publish).not.toHaveBeenCalled();
         expect(network).not.toHaveBeenCalled();
@@ -504,6 +505,8 @@ describe("production creator row and shared coordinator", () => {
     it.each(["YES", "NO", "unavailable"] as const)(
       "refuses %s before saving a choice or draft, opening a signer, or publishing",
       async (observed) => {
+        const retainedNsec = nip19.nsecEncode(fixtureOraclePrivateKey);
+        useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: retainedNsec });
         const writer = createCreatorMarketsStore(() => localStorage);
         await writer.getState().addCreatedMarket(market());
         const draft = vi.spyOn(writer.getState(), "saveOracleExplanationDraft");
@@ -524,8 +527,11 @@ describe("production creator row and shared coordinator", () => {
               writer,
               read,
             ),
-          ).rejects.toThrow(/not signed/);
+          ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
           expect(read).toHaveBeenCalledWith(conditionId);
+          // Compare as a boolean so a failure cannot print the retained private key.
+          expect(useSettingsStore.getState().nsecSecret === retainedNsec).toBe(true);
+          expect(useSettingsStore.getState().nostrSignerMode).toBe("nsec");
           expect(draft).not.toHaveBeenCalled();
           expect(save).not.toHaveBeenCalled();
           expect(restore).not.toHaveBeenCalled();
@@ -551,7 +557,7 @@ describe("production creator row and shared coordinator", () => {
       try {
         await expect(
           publishBrowserOracleOutcome(conditionId, "YES", undefined, [], writer, read),
-        ).rejects.toThrow(/not signed/);
+        ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
         expect(read).toHaveBeenCalledTimes(2);
         expect(restore).not.toHaveBeenCalled();
         expect(await writer.getState().readOraclePublication(conditionId)).toBeNull();

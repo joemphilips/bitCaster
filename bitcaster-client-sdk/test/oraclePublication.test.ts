@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
   assertOracleFirstSigningAllowed,
+  OracleFirstSigningRefusedError,
   oraclePublicationDeliveryPending,
   oraclePublicationState,
   oraclePublicationTerminal,
@@ -25,16 +26,19 @@ test('first signing accepts only an explicit absent result and masks read errors
   for (const observed of [undefined, {}, { attestedOutcome: 'YES' }, { attestedOutcome: 'NO' }])
     await assert.rejects(
       assertOracleFirstSigningAllowed(async () => observed),
-      /not signed/,
+      OracleFirstSigningRefusedError,
     )
   await assert.rejects(
     assertOracleFirstSigningAllowed(async () => {
       throw new Error('private transport details')
     }),
     (error: unknown) => {
+      assert.ok(error instanceof OracleFirstSigningRefusedError)
+      assert.equal(error.name, 'OracleFirstSigningRefusedError')
+      assert.equal(error.cause, undefined)
       assert.equal(
         (error as Error).message,
-        'The engine shows a result or is unavailable. The saved outcome was not signed.',
+        'The engine shows a result or is unavailable. No new outcome was signed.',
       )
       return true
     },

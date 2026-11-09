@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { formatBtc } from "@/lib/format";
 import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { OracleFirstSigningRefusedError } from "@bitcaster/client-sdk/oraclePublication";
 import { publishBrowserOracleOutcome } from "@/lib/oracleAttestation";
 import { ORACLE_EXPLANATION_UTF8_BYTES_MAX } from "@bitcaster/client-sdk/oracleResolutionExplanation";
 import { NativeDialog } from "@/components/shared/NativeDialog";
@@ -93,9 +94,9 @@ export function CreatorDashboard() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<ActiveTab>("overview");
   const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null);
-  const [resolutionError, setResolutionError] = useState<"creator.oracleRecoveryRequired" | null>(
-    null,
-  );
+  const [resolutionError, setResolutionError] = useState<
+    "creator.oracleRecoveryRequired" | "creator.oracleFirstSigningRefused" | null
+  >(null);
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
   const generation = useRef(0);
@@ -248,8 +249,13 @@ export function CreatorDashboard() {
       if (!isCurrent()) return;
       setResolutionDialog(null);
       refresh();
-    } catch {
-      if (isCurrent()) setResolutionError("creator.oracleRecoveryRequired");
+    } catch (error) {
+      if (isCurrent())
+        setResolutionError(
+          error instanceof OracleFirstSigningRefusedError
+            ? "creator.oracleFirstSigningRefused"
+            : "creator.oracleRecoveryRequired",
+        );
     } finally {
       if (publication.current === operation) publication.current = null;
       if (isCurrent()) setResolvingMarketId(null);

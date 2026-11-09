@@ -220,13 +220,16 @@ test(
       }
       await assert.rejects(
         publishNativeMarketOutcome(ports, conditionId, 'Yes', 'New draft'),
-        /not signed/,
+        /No new outcome was signed/,
       )
       const unchosen = (await store.readAuthorityByConditionId(conditionId))!
       assert.equal(unchosen.chosenOutcome, null)
       assert.equal(unchosen.explanationDraft, null)
       await store.chooseAuthorityOutcome(conditionId, 'Yes', 'Original draft')
-      await assert.rejects(retryNativeMarketPublication(ports, conditionId), /not signed/)
+      await assert.rejects(
+        retryNativeMarketPublication(ports, conditionId),
+        /No new outcome was signed/,
+      )
       const saved = (await store.readAuthorityByConditionId(conditionId))!
       assert.equal(saved.chosenOutcome, 'Yes')
       assert.equal(saved.explanationDraft, 'Original draft')
