@@ -48,6 +48,19 @@ API clients can set the optional `color` field to a six-digit hexadecimal
 value with a leading `#`. Omit it for automatic assignment. See the
 [Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
 
+## Write the resolution criteria
+
+The market description is the resolution criteria. Write it in Markdown.
+Select **Write** to edit the text. Select **Preview** to see the text as the
+market page shows it. You can use paragraphs, lists, emphasis, quotes, code,
+and links. A heading shows as bold text. The CLI `--description` value uses
+the same Markdown.
+
+The market page shows raw HTML as plain text. A link must use an `http`,
+`https`, or `mailto` address. It opens in a new tab. The page shows other
+links as plain text. The page does not load images. It shows an image as a
+link with the alternative text of the image.
+
 ## Keep a draft image
 
 The browser saves your selected JPG, PNG, or WebP image before payment.
@@ -109,6 +122,9 @@ If you supply that option, the file must match the original thumbnail.
 ## Creator dashboard
 
 The creator dashboard shows engine lifecycle state and confirmed trade volume.
+A closed market shows **Awaiting resolution** until the engine has the verified
+result. Then it shows **Resolved**. The **Resolved** count includes only markets
+with a verified result.
 When engine data is absent, it shows an unknown state and an unavailable amount.
 After a failed refresh, it labels retained state and volume as last known.
 A failed refresh does not make a known closed market active.
