@@ -502,6 +502,51 @@ test('full recovery rejects missing DLEQ without advancing its durable cursor', 
   }
 })
 
+test('full recovery stops on restored amounts above the safe total without admission', async () => {
+  // Two restored outputs of 2^52 msat sum past the safe integer range. No
+  // honest restore holds that value, so the scan stops before any admission.
+  const fixture = await recoveryFixture('implausible-total')
+  const large = String(2 ** 52)
+  const keyset = regularKeyset({ '1': MINT_PUBLIC_KEY, [large]: MINT_PUBLIC_KEY })
+  const invalid = recoveryTransport({
+    regular: [{ id: keyset.id, unit: keyset.unit }],
+    regularKeys: [keyset],
+    onRestore(_keysetId, start, outputs) {
+      return start === 0
+        ? restoreResponse(outputs.slice(0, 2), [2 ** 52, 2 ** 52])
+        : { outputs: [], signatures: [] }
+    },
+    onCheckStates: (proofs) => proofs.map((proof) => proofState(proof, CheckStateEnum.UNSPENT)),
+  })
+  try {
+    await assert.rejects(
+      () => recoverAllDaemonWalletFromSeed(request(fixture), dependencies(fixture, invalid)),
+      /more value than a wallet can hold/,
+    )
+    await withDaemonHome(fixture.directory, async () => {
+      const available = await readAvailableWalletProofsFenced({
+        mintUrl: 'https://mint.example',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        mutation: { fence: fixture.fence, observedAtMs: 5 },
+      })
+      assert.equal(available.length, 0)
+    })
+    const starts: number[] = []
+    const resumed = recoveryTransport({
+      regular: [{ id: keyset.id, unit: keyset.unit }],
+      regularKeys: [keyset],
+      onRestore(_keysetId, start) {
+        starts.push(start)
+        return { outputs: [], signatures: [] }
+      },
+    })
+    await recoverAllDaemonWalletFromSeed(request(fixture), dependencies(fixture, resumed))
+    assert.deepEqual(starts, [0])
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('full recovery rejects a foreign raw row without advancing its durable cursor', async () => {
   const fixture = await recoveryFixture('foreign-raw-row')
   const keyset = regularKeyset({ '1': MINT_PUBLIC_KEY })

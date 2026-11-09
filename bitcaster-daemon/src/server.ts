@@ -36,7 +36,8 @@ import {
   type NativeOraclePublicationPorts,
 } from './nativeOraclePublicationCoordinator.ts'
 import { publishNativeOracleEvent } from './nativeOraclePublication.ts'
-import { type Proof } from '@cashu/cashu-ts'
+import { HttpResponseError, type Proof } from '@cashu/cashu-ts'
+import { classifyCashuMintFailure } from '@bitcaster-market/client-sdk/mintRefusal'
 import {
   BitcasterEngineClient,
   EngineClientError,
@@ -545,6 +546,8 @@ export async function handleRequest(
 }
 
 function normalizeRpcError(err: unknown): DaemonResponse {
+  const mintFailure = mintAnswerRpcError(err)
+  if (mintFailure !== null) return mintFailure
   if (!(err instanceof Error)) {
     return { ok: false, error: String(err) }
   }
@@ -553,6 +556,34 @@ function normalizeRpcError(err: unknown): DaemonResponse {
   const cause = 'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
   const detail = [err.message, status ? `status=${status}` : null, cause].filter(Boolean).join('; ')
   return { ok: false, error: detail || err.message }
+}
+
+// The cause depth that `classifyCashuMintFailure` reads.
+const MINT_ERROR_CAUSE_DEPTH_MAX = 4
+
+/**
+ * A mint HTTP answer can quote long text, such as a blinded message or a
+ * proof Y point. An RPC error that holds one gets fixed text. A coded refusal
+ * also keeps the SDK's bounded detail (ADR-037 mint refusal settlement).
+ * Return null when the error holds no mint answer.
+ */
+function mintAnswerRpcError(err: unknown): DaemonResponse | null {
+  const failure = classifyCashuMintFailure(err)
+  if (failure.kind === 'refusal') {
+    return {
+      ok: false,
+      error: `mint request was refused (mint code ${failure.code})`,
+      mintError: { code: failure.code, detail: failure.detail },
+    }
+  }
+  let current: unknown = err
+  for (let depth = 0; depth < MINT_ERROR_CAUSE_DEPTH_MAX && current instanceof Error; depth += 1) {
+    if (current instanceof HttpResponseError) {
+      return { ok: false, error: `mint request failed (HTTP ${current.status})` }
+    }
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
 }
 
 function retirementPending(

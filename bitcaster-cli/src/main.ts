@@ -2636,7 +2636,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nAn entry with "halted": true stopped its automatic retries after repeated identical mint refusals. Its "retryCommand" sends one more check.\n\nExample:\n  bitcaster-cli order recovery',
+      '\nAn entry with "halted": true stopped its automatic retries after repeated identical mint refusals of one request, or because its refund outputs match only an earlier output plan. Its "retryCommand" sends one more check.\n\nExample:\n  bitcaster-cli order recovery',
     )
     .action(async () => {
       await printDaemonResult(callDaemon({ method: 'order.recovery' }))

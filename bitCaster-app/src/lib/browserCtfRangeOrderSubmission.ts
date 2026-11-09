@@ -1249,8 +1249,9 @@ async function persistRecoveryResults(
   page: Omit<BrowserCtfRangeRecoveryPage, "nextCursor">,
 ): Promise<void> {
   for (const message of page.pending) await persistRecoveryPending(scopeId, message);
-  // The automatic replay stopped. The funds alert shows the mint code and a
-  // retry. It returns on every pass, also after the user dismissed it.
+  // The automatic replay stopped. The funds alert shows the mint code, when
+  // the mint refused, and a retry. It returns on every pass, also after the
+  // user dismissed it.
   for (const halted of page.attention) {
     await raiseBrowserCtfRangeAttentionMessage({
       scopeId,
@@ -1259,7 +1260,7 @@ async function persistRecoveryResults(
       code: "recovery-pending",
       kind: "funds",
       observedAtMs: Date.now(),
-      mintError: halted.mintError,
+      ...mintErrorField(halted.mintError),
       retryable: true,
     });
   }

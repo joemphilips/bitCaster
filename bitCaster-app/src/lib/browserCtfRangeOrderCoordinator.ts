@@ -119,6 +119,15 @@ import {
   settlingMintRefusal,
   type CashuMintRefusal,
 } from "@bitcaster/client-sdk/mintRefusal";
+import type { CtfRangeRefusedRequest } from "@bitcaster/client-sdk/ctfRangeRecoveryRefusal";
+import {
+  CTF_RANGE_REFUND_REPLACED_OUTPUT_PLANS_MAX,
+  CtfRangeRefundReplacedPlanSignedError,
+  assertReplacedCtfRangeRefundOutputPlans,
+  decodeReplacedCtfRangeRefundOutputPlans,
+  restoreSpentCtfRangeRefund,
+  savedReplacedCtfRangeRefundOutputPlans,
+} from "@bitcaster/client-sdk/ctfRangeRefundReplacedPlans";
 import {
   restoreOutputGroups,
   serializeOutputDataArray,
@@ -358,11 +367,15 @@ export interface BrowserCtfRangeRecoveryPage {
     code: BrowserCtfRangeRecoveryPendingCode;
     mintError?: BrowserCtfRangeMintError;
   }[];
-  /** Operations whose automatic replay stopped after repeated identical refusals. */
+  /**
+   * Operations whose automatic replay stopped: after repeated identical
+   * refusals, or at once when a refund matches only a replaced output plan
+   * (no mint error).
+   */
   readonly attention: readonly {
     operationId: string;
     revision: number;
-    mintError: BrowserCtfRangeMintError;
+    mintError: BrowserCtfRangeMintError | null;
   }[];
   /** Operations that a final mint refusal or a mixed input state released. */
   readonly refused: readonly {
@@ -477,6 +490,10 @@ export class BrowserCtfRangeOrderError extends Error {
   readonly shortfall: CtfRangeSourceShortfall | null;
   /** The mint refusal behind this error, if the mint answered with a code. */
   readonly mintError: BrowserCtfRangeMintError | null;
+  /** The request that the mint refused. The halt counts refusals for each request. */
+  readonly refusedRequest: CtfRangeRefusedRequest | null;
+  /** Automatic replay cannot settle this attempt. It halts at once with the alert and Retry. */
+  readonly halt: boolean;
   /** The mint's Retry-After delay for a transient failure. */
   readonly retryAfterMs: number | null;
   /** True when the wallet released the inputs and ended the order attempt. */
@@ -490,6 +507,8 @@ export class BrowserCtfRangeOrderError extends Error {
     shortfall: CtfRangeSourceShortfall | null = null,
     details: {
       readonly mintError?: BrowserCtfRangeMintError | null;
+      readonly refusedRequest?: CtfRangeRefusedRequest | null;
+      readonly halt?: boolean;
       readonly retryAfterMs?: number | null;
       readonly released?: boolean;
       readonly retry?: { readonly scopeId: string; readonly operationId: string } | null;
@@ -500,14 +519,13 @@ export class BrowserCtfRangeOrderError extends Error {
     this.code = code;
     this.shortfall = shortfall;
     this.mintError = details.mintError ?? null;
+    this.refusedRequest = details.refusedRequest ?? null;
+    this.halt = details.halt === true;
     this.retryAfterMs = details.retryAfterMs ?? null;
     this.released = details.released === true;
     this.retry = details.retry ?? null;
   }
 }
-
-/** Refund output plans that one refund can replace after output reuse refusals. */
-const REPLACED_REFUND_OUTPUT_PLANS_MAX = 8;
 
 const REFUSED_SOURCE_RELEASED_MESSAGE =
   "The mint refused this order. No order was submitted. The reserved funds are available again.";
@@ -918,9 +936,11 @@ export class BrowserCtfRangeOrderCoordinator {
         const halted =
           schedule?.recordFailure(scope.scopeId, operationId, this.#now(), {
             mintError: error.mintError,
+            refusedRequest: error.refusedRequest,
+            halt: error.halt,
             retryAfterMs: error.retryAfterMs,
           }).halted === true;
-        if (halted && error.mintError !== null) {
+        if (halted) {
           attention.push({ operationId, revision: current.revision, mintError: error.mintError });
           continue;
         }
@@ -1453,6 +1473,7 @@ export class BrowserCtfRangeOrderCoordinator {
     } catch (error) {
       await this.#settleMintRefusal({
         refusal: error,
+        request: "consolidation",
         uncertainCode: "mint-source-uncertain",
         preparation,
         scope,
@@ -1936,6 +1957,7 @@ export class BrowserCtfRangeOrderCoordinator {
       // Returns only when every input is spent: an earlier copy can have committed.
       await this.#settleMintRefusal({
         refusal: error,
+        request: "source",
         uncertainCode: "mint-source-uncertain",
         preparation,
         scope,
@@ -2224,6 +2246,7 @@ export class BrowserCtfRangeOrderCoordinator {
         } catch (error) {
           await this.#settleMintRefusal({
             refusal: error,
+            request: "consolidation",
             uncertainCode: "recovery-pending",
             preparation,
             scope,
@@ -2440,6 +2463,7 @@ export class BrowserCtfRangeOrderCoordinator {
    */
   async #settleMintRefusal(input: {
     readonly refusal: unknown;
+    readonly request: Exclude<CtfRangeRefusedRequest, "refund">;
     readonly uncertainCode: "mint-source-uncertain" | "recovery-pending";
     readonly preparation: PersistedCtfRangeOrderPreparation;
     readonly scope: DurableCustodyScope;
@@ -2447,13 +2471,15 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly custodyOperationId: string;
     readonly operation: DurableCustodyProofOperationInput;
   }): Promise<void> {
+    const pending = () =>
+      rangeError(input.uncertainCode, input.refusal, { refusedRequest: input.request });
     const refusal = settlingMintRefusal(classifyCashuMintFailure(input.refusal));
-    if (refusal === null) throw rangeError(input.uncertainCode, input.refusal);
+    if (refusal === null) throw pending();
     let states: readonly unknown[];
     try {
       states = await this.#observeInputStates(input.preparation, input.operation);
     } catch {
-      throw rangeError(input.uncertainCode, input.refusal);
+      throw pending();
     }
     const settlement = decideCtfRangeRequestSettlement({ refusal, inputStates: states });
     switch (settlement.kind) {
@@ -2461,7 +2487,7 @@ export class BrowserCtfRangeOrderCoordinator {
         return;
       case "wait":
       case "replay":
-        throw rangeError(input.uncertainCode, input.refusal);
+        throw pending();
       case "release":
         break;
       default:
@@ -2477,7 +2503,7 @@ export class BrowserCtfRangeOrderCoordinator {
           fromCounters: plannedOutputCounterStarts(input.operation.metadata),
         });
       } catch {
-        throw rangeError(input.uncertainCode, input.refusal);
+        throw pending();
       }
     }
     await this.#releaseReservation({ ...input, states });
@@ -3154,8 +3180,11 @@ export class BrowserCtfRangeOrderCoordinator {
     const replacedRefundOutputPlans =
       replaced === null
         ? []
-        : [...savedReplacedRefundOutputPlans(replaced), replaced.metadata.refundOutputPlan];
-    if (replacedRefundOutputPlans.length > REPLACED_REFUND_OUTPUT_PLANS_MAX)
+        : [
+            ...savedReplacedCtfRangeRefundOutputPlans(replaced.metadata),
+            replaced.metadata.refundOutputPlan,
+          ];
+    if (replacedRefundOutputPlans.length > CTF_RANGE_REFUND_REPLACED_OUTPUT_PLANS_MAX)
       throw rangeError("recovery-pending");
     const operationId = deriveDurableCtfRangeRefundOperationId(operation.operationId);
     const preparationContext = { mintUrl: operation.mintUrl, unit: "msat" };
@@ -3288,7 +3317,10 @@ export class BrowserCtfRangeOrderCoordinator {
     }
     // Legacy refund outputs come from their own derivation, not NUT-13 counters.
     if (!Object.hasOwn(refund.metadata, "refundOutputPlan")) return null;
-    if (savedReplacedRefundOutputPlans(refund).length >= REPLACED_REFUND_OUTPUT_PLANS_MAX) {
+    if (
+      savedReplacedCtfRangeRefundOutputPlans(refund.metadata).length >=
+      CTF_RANGE_REFUND_REPLACED_OUTPUT_PLANS_MAX
+    ) {
       return null;
     }
     let states: ProofState[];
@@ -3363,7 +3395,9 @@ export class BrowserCtfRangeOrderCoordinator {
                 operation,
                 refund,
               );
-          if (next === null) throw rangeError("recovery-pending", error);
+          if (next === null) {
+            throw rangeError("recovery-pending", error, { refusedRequest: "refund" });
+          }
           // Retry once now with the same inputs and the new outputs.
           return this.#resumeOuterRefund(
             journalRecord,
@@ -3411,9 +3445,10 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   /**
-   * Restore the outputs of the refund copy that the mint committed. A delayed
-   * copy can carry a replaced plan, so the wallet tries the current outputs
-   * first and then each replaced plan, newest first.
+   * Restore the outputs of the refund that the mint committed, from the
+   * current plan (ADR-037). A NUT-09 hit only on a replaced plan does not
+   * prove that this refund committed with it. The refund then halts at once
+   * with the alert and Retry, and the wallet admits nothing.
    */
   async #restoreSpentRefund(
     refund: ProofOperationRecord,
@@ -3425,22 +3460,31 @@ export class BrowserCtfRangeOrderCoordinator {
     if (current === undefined) {
       throw new Error("browser range refund output authority is missing");
     }
-    let firstError: unknown = null;
-    for (const outputs of [current, ...replacedRefundOutputs(refund).reverse()]) {
-      try {
-        return await this.#restoreRefundOutputs({
-          mintUrl: refund.mintUrl,
-          outputs,
-          record,
-          operation,
-          keyset,
-        });
-      } catch (error) {
-        if (error instanceof CtfRangeRecoveryTransportError) throw error;
-        firstError ??= error;
+    try {
+      return await restoreSpentCtfRangeRefund({
+        currentPlan: current,
+        replacedPlans: replacedRefundOutputs(refund),
+        restore: (outputs) =>
+          this.#restoreRefundOutputs({
+            mintUrl: refund.mintUrl,
+            outputs,
+            record,
+            operation,
+            keyset,
+          }),
+        isTransportFailure: (error) => error instanceof CtfRangeRecoveryTransportError,
+      });
+    } catch (error) {
+      if (error instanceof CtfRangeRefundReplacedPlanSignedError) {
+        throw new BrowserCtfRangeOrderError(
+          "recovery-pending",
+          browserCtfRangeOrderErrorMessage("recovery-pending"),
+          null,
+          { halt: true },
+        );
       }
+      throw error;
     }
-    throw firstError;
   }
 
   async #requireSubmittedFokRefundSafe(
@@ -4113,7 +4157,11 @@ function immediateFokRemainingAmount(
 function rangeError(
   code: BrowserCtfRangeOrderErrorCode,
   cause?: unknown,
-  options: { readonly released?: boolean; readonly message?: string } = {},
+  options: {
+    readonly released?: boolean;
+    readonly message?: string;
+    readonly refusedRequest?: CtfRangeRefusedRequest;
+  } = {},
 ): BrowserCtfRangeOrderError {
   const failure = cause === undefined ? null : classifyCashuMintFailure(cause);
   const error = new BrowserCtfRangeOrderError(
@@ -4125,6 +4173,7 @@ function rangeError(
         failure === null || failure.kind === "transient"
           ? null
           : { code: failure.code, detail: failure.detail },
+      refusedRequest: options.refusedRequest ?? null,
       retryAfterMs: failure?.kind === "transient" ? failure.retryAfterMs : null,
       released: options.released === true,
     },
@@ -4169,24 +4218,10 @@ function refundAuthorityFingerprint(row: ProofOperationRecord): string {
   }).fingerprint;
 }
 
-/** The refund output plans that a re-plan replaced, oldest first. */
-function savedReplacedRefundOutputPlans(refund: ProofOperationRecord): readonly unknown[] {
-  if (!Object.hasOwn(refund.metadata, "replacedRefundOutputPlans")) return [];
-  const plans: unknown = refund.metadata.replacedRefundOutputPlans;
-  if (
-    !Array.isArray(plans) ||
-    plans.length === 0 ||
-    plans.length > REPLACED_REFUND_OUTPUT_PLANS_MAX
-  ) {
-    throw new Error("browser refund replaced output plans are invalid");
-  }
-  return plans;
-}
-
 /** The stored outputs of each replaced refund plan, oldest first. */
 function replacedRefundOutputs(refund: ProofOperationRecord): StoredOutputData[][] {
-  return savedReplacedRefundOutputPlans(refund).map((value) =>
-    decodeDurableSeedDerivedOutputPlan(value).outputs.map((serialized) => {
+  return decodeReplacedCtfRangeRefundOutputPlans(refund.metadata).map((plan) =>
+    plan.outputs.map((serialized) => {
       const output = serializeDurableCustodyOutput(OutputData.deserialize(serialized));
       return {
         blindedMessage: {
@@ -4212,8 +4247,9 @@ function refundPlanOfProofs(
     keysetId,
     outputs: (refund.outputs.refund ?? []).map(deserializeDurableCustodyOutput),
   });
-  const replaced = savedReplacedRefundOutputPlans(refund).map(decodeDurableSeedDerivedOutputPlan);
-  for (const plan of [current, ...replaced.reverse()]) {
+  // A refund that an earlier release completed can hold the proofs of a replaced plan.
+  const replaced = [...decodeReplacedCtfRangeRefundOutputPlans(refund.metadata)].reverse();
+  for (const plan of [current, ...replaced]) {
     if (plan.keysetId !== keysetId) continue;
     try {
       return { plan, ordered: matchDurableSeedDerivedProofsToPlan({ plan, proofs }) };
@@ -4434,7 +4470,7 @@ function validateSavedBrowserRefundDerivation(
   keyset: import("@cashu/cashu-ts").HasKeysetKeys,
 ): void {
   const outputs = (refund.outputs.refund ?? []).map(deserializeDurableCustodyOutput);
-  const replacedPlans = savedReplacedRefundOutputPlans(refund);
+  const replacedPlans = savedReplacedCtfRangeRefundOutputPlans(refund.metadata);
   assertDurableCtfRangeRefundRequestWitness({
     source: operation,
     request: { inputs: refund.inputs, outputs: outputs.map((output) => output.blindedMessage) },
@@ -4477,19 +4513,12 @@ function validateSavedBrowserRefundDerivation(
       plan,
     });
     // Each replaced plan is seed-derived on the refund keyset for the same amount.
-    const total = outputs.reduce(
-      (sum, output) => sum + amountToNumber(output.blindedMessage.amount),
-      0,
-    );
-    for (const value of replacedPlans) {
-      const replaced = decodeDurableSeedDerivedOutputPlan(value);
-      const amounts = replaced.outputs.map((output) =>
-        amountToNumber(output.blindedMessage.amount),
-      );
-      if (amounts.reduce((sum, amount) => sum + amount, 0) !== total)
-        throw new Error("browser refund replaced plan amount differs");
-      reconstructDurableSeedDerivedOutputs({ seed, keyset, amounts, plan: replaced });
-    }
+    assertReplacedCtfRangeRefundOutputPlans({
+      metadata: refund.metadata,
+      seed,
+      keyset,
+      total: outputs.reduce((sum, output) => sum + amountToNumber(output.blindedMessage.amount), 0),
+    });
   } else {
     if (replacedPlans.length !== 0)
       throw new Error("browser refund legacy outputs cannot replace a plan");

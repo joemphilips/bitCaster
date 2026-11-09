@@ -37,6 +37,7 @@ import {
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import { withWalletProfileLock } from "../walletProfileLock";
+import { deleteSeedRestoreDatabase, seedRestoreDatabase } from "../../stores/seed-restore-db";
 
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -83,6 +84,25 @@ const knownKeysets = new Map<string, Keyset>([
   [CONDITIONAL_KEYSET_ID, conditionalKeyset],
 ]);
 const walletLockState = vi.hoisted(() => ({ held: false, calls: 0 }));
+// A test can lower the counter budget of the SDK admitting scan. A budget
+// test then stays small; the SDK tests cover the default budget.
+const scanBudget = vi.hoisted(() => ({ counters: undefined as number | undefined }));
+
+vi.mock("@bitcaster/client-sdk/seedCounterAdmissionScan", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@bitcaster/client-sdk/seedCounterAdmissionScan")>();
+  return {
+    ...actual,
+    scanSeedCountersForAdmission: (
+      input: Parameters<typeof actual.scanSeedCountersForAdmission>[0],
+    ) =>
+      actual.scanSeedCountersForAdmission(
+        scanBudget.counters === undefined
+          ? input
+          : { ...input, maxScannedCounters: scanBudget.counters },
+      ),
+  };
+});
 
 const wallet = {
   mint: {
@@ -96,9 +116,9 @@ const wallet = {
       knownKeysets.set(registered.id, registered);
       return registered;
     }),
+    ensureKeysetKeys: vi.fn(async (id: string) => knownKeysets.get(id)!),
   },
   getKeyset: vi.fn((id = KEYSET_ID) => knownKeysets.get(id)!),
-  batchRestore: vi.fn(),
   groupProofsByState: vi.fn(),
 };
 
@@ -154,8 +174,10 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     wallet.keyChain.registerConditionalKeyset.mockClear();
     wallet.getKeyset.mockClear();
     wallet.getKeyset.mockImplementation((id = KEYSET_ID) => knownKeysets.get(id)!);
-    wallet.batchRestore.mockReset();
     wallet.groupProofsByState.mockReset();
+    mintSigned([]);
+    mintStates();
+    scanBudget.counters = undefined;
     walletLockState.held = false;
     walletLockState.calls = 0;
   });
@@ -163,6 +185,9 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   afterEach(async () => {
     const active = database;
     database = null;
+    // The restore record keeps deferral markers. A marker of one test must
+    // not move the scan start of the next one.
+    await deleteSeedRestoreDatabase(scopeId());
     if (active === null) return;
     for (const table of active.tables) await table.clear();
   });
@@ -178,12 +203,12 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       }),
     ).resolves.toEqual({ scannedKeysets: [], complete: false });
 
-    expect(wallet.batchRestore).not.toHaveBeenCalled();
+    expect(wallet.mint.restore).not.toHaveBeenCalled();
     expect(await database!.walletCounterAssociations.count()).toBe(0);
   });
 
   it("marks an empty regular scan ready and reserves from zero", async () => {
-    wallet.batchRestore.mockResolvedValue({ proofs: [], lastCounterWithSignature: undefined });
+    mintSigned([]);
 
     await expect(
       recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID }),
@@ -204,7 +229,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   });
 
   it("recovers and registers one preparation-selected conditional keyset", async () => {
-    wallet.batchRestore.mockResolvedValue({ proofs: [], lastCounterWithSignature: 4 });
+    mintSigned(range(0, 4), CONDITIONAL_KEYSET_ID);
 
     await expect(
       ensureWalletKeysetCounterReady(conditionalReadinessInput()),
@@ -223,7 +248,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
         keys: { "7": bytesToHex(MINT_PUBLIC_KEY) },
       }),
     );
-    expect(wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, CONDITIONAL_KEYSET_ID);
+    expect(requestedOutputs(0)[0]).toMatchObject({
+      id: CONDITIONAL_KEYSET_ID,
+      B_: outputOf(CONDITIONAL_KEYSET_ID, 0),
+    });
+    const scanRequests = wallet.mint.restore.mock.calls.length;
     expect(
       await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
     ).toMatchObject({
@@ -241,7 +270,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     knownKeysets.delete(CONDITIONAL_KEYSET_ID);
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
 
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    expect(wallet.mint.restore).toHaveBeenCalledTimes(scanRequests);
     expect(wallet.keyChain.registerConditionalKeyset).toHaveBeenCalledTimes(2);
     const source = new BrowserWalletCounterSource(
       {
@@ -289,31 +318,36 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       message: new WalletKeysetCounterReadinessError().message,
     });
 
-    expect(wallet.batchRestore).not.toHaveBeenCalled();
+    expect(wallet.mint.restore).not.toHaveBeenCalled();
     expect(await database!.walletCounterAssociations.count()).toBe(0);
   });
 
   it("coalesces concurrent readiness scans for the same exact conditional keyset", async () => {
-    let completeRestore!: (value: { proofs: Proof[]; lastCounterWithSignature: number }) => void;
-    wallet.batchRestore.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          completeRestore = resolve;
-        }),
-    );
+    mintSigned(range(0, 1), CONDITIONAL_KEYSET_ID);
+    const answer = wallet.mint.restore.getMockImplementation()!;
+    let releaseRestore!: () => void;
+    const restoreReleased = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    wallet.mint.restore.mockImplementation(async (payload: RestorePayload) => {
+      await restoreReleased;
+      return answer(payload);
+    });
 
     const first = ensureWalletKeysetCounterReady(conditionalReadinessInput());
     const second = ensureWalletKeysetCounterReady(conditionalReadinessInput());
-    await vi.waitFor(() => expect(wallet.batchRestore).toHaveBeenCalledTimes(1));
-    completeRestore({ proofs: [], lastCounterWithSignature: 1 });
+    await vi.waitFor(() => expect(wallet.mint.restore).toHaveBeenCalledTimes(1));
+    releaseRestore();
     await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
     expect(wallet.keyChain.registerConditionalKeyset).toHaveBeenCalledTimes(1);
   });
 
   it("keeps exact conditional high-water monotonic during forced repair", async () => {
-    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 100 });
+    // Only the highest signed counter sets the high-water mark.
+    mintSigned([100], CONDITIONAL_KEYSET_ID);
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
-    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 7 });
+    mintSigned([7], CONDITIONAL_KEYSET_ID);
+    const scanRequests = wallet.mint.restore.mock.calls.length;
     const association = await database!.walletCounterAssociations.get([
       scopeId(),
       MINT_URL,
@@ -324,7 +358,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     await database!.walletCounterAssociations.put({ ...association, recoveryComplete: false });
 
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(2);
+    expect(wallet.mint.restore.mock.calls.length).toBeGreaterThan(scanRequests);
 
     expect(
       await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
@@ -334,11 +368,12 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   });
 
   it("advances a completed conditional keyset past outputs that another client signed", async () => {
-    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    mintSigned(range(0, 4), CONDITIONAL_KEYSET_ID);
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    const scanRequests = wallet.mint.restore.mock.calls.length;
     // A completed keyset is not scanned again, so the browser keeps its stale cursor.
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    expect(wallet.mint.restore).toHaveBeenCalledTimes(scanRequests);
     const locks = walletLockState.calls;
     const custodyProofs = await database!.custodyProofs.count();
 
@@ -352,6 +387,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
             .blindedMessage.B_,
       ),
     );
+    wallet.mint.restore.mockClear();
     wallet.mint.restore.mockImplementation(async ({ outputs }: { outputs: { B_: string }[] }) => ({
       outputs: outputs.filter(({ B_ }) => signed.has(B_)),
       signatures: [],
@@ -359,7 +395,6 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
     await advanceWalletKeysetCounterPastMint(input);
 
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
     // The scan starts at the cursor.
     const [firstScan] = wallet.mint.restore.mock.calls[0]!;
     expect((firstScan as { outputs: { B_: string }[] }).outputs[0]!.B_).toBe(
@@ -375,7 +410,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   });
 
   it("reports a failed counter advance", async () => {
-    wallet.batchRestore.mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 });
+    mintSigned(range(0, 4), CONDITIONAL_KEYSET_ID);
     await ensureWalletKeysetCounterReady(conditionalReadinessInput());
     wallet.mint.restore.mockRejectedValueOnce(new Error("restore is offline"));
     const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
@@ -389,14 +424,14 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   });
 
   it("does not recursively acquire a profile lock when its caller already holds it", async () => {
-    wallet.batchRestore.mockResolvedValue({ proofs: [], lastCounterWithSignature: 2 });
+    mintSigned(range(0, 2), CONDITIONAL_KEYSET_ID);
 
     await withWalletProfileLock(scopeId(), () =>
       ensureWalletKeysetCounterReady(conditionalReadinessInput({ profileLockHeld: true })),
     );
 
     expect(walletLockState.calls).toBe(1);
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    expect(wallet.mint.restore).toHaveBeenCalled();
     expect(
       await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
     ).toMatchObject({
@@ -407,9 +442,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   it("fails closed when the wallet profile changes during selected recovery", async () => {
     const otherMnemonic =
       "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    wallet.batchRestore.mockImplementation(async () => {
+    mintSigned(range(0, 2), CONDITIONAL_KEYSET_ID);
+    const answer = wallet.mint.restore.getMockImplementation()!;
+    wallet.mint.restore.mockImplementation(async (payload: RestorePayload) => {
       setActiveBrowserWalletProfile(otherMnemonic);
-      return { proofs: [], lastCounterWithSignature: 2 };
+      return answer(payload);
     });
 
     await expect(ensureWalletKeysetCounterReady(conditionalReadinessInput())).rejects.toMatchObject(
@@ -426,12 +463,13 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   it("fences a profile change after the final readiness read", async () => {
     const otherMnemonic =
       "legal winner thank year wave sausage worth useful legal winner thank yellow";
-    wallet.batchRestore.mockResolvedValue({ proofs: [], lastCounterWithSignature: undefined });
+    mintSigned([]);
     await recoverKeysetCountersForMint(MINT_URL, {
       force: true,
       unit: "msat",
       keysetId: KEYSET_ID,
     });
+    const scanRequests = wallet.mint.restore.mock.calls.length;
 
     const readAssociation = database!.walletCounterAssociations.get.bind(
       database!.walletCounterAssociations,
@@ -455,19 +493,21 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       message: new WalletKeysetCounterReadinessError().message,
     });
     expect(reads).toBe(2);
-    expect(wallet.batchRestore).toHaveBeenCalledTimes(1);
+    expect(wallet.mint.restore).toHaveBeenCalledTimes(scanRequests);
   });
 
+  // Five real scans of about 300 derived outputs each, so this case has a longer bound.
   it("admits only unspent restored value into canonical custody and is retry-safe", async () => {
     const proofs = [restoredProof(0), restoredProof(1), restoredProof(2)];
     expect(keyset.verify()).toBe(true);
     expect(() => requireValidCashuProofs(proofs, () => keyset)).not.toThrow();
-    wallet.batchRestore.mockResolvedValue({ proofs, lastCounterWithSignature: 2 });
-    wallet.groupProofsByState.mockResolvedValue({
-      unspent: [proofs[0]],
-      pending: [proofs[1]],
-      spent: [proofs[2]],
-    });
+    mintSigned(range(0, 2));
+    mintStates(
+      new Map([
+        [0, "unspent"],
+        [1, "pending"],
+      ]),
+    );
 
     const first = await recoverKeysetCountersForMint(MINT_URL, { force: true });
     const second = await recoverKeysetCountersForMint(MINT_URL, { force: true });
@@ -556,49 +596,132 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       reservationOperationId: "reservation:test",
     });
     expect(await database!.proofs.count()).toBe(0);
-  });
+  }, 30_000);
 
-  it("rolls back canonical custody and the counter when admission rejects recovered metadata", async () => {
-    const foreignMetadata = { ...restoredProof(0), conditionId: "aa".repeat(32) };
-    wallet.batchRestore.mockResolvedValue({
-      proofs: [foreignMetadata],
-      lastCounterWithSignature: 0,
-    });
-    wallet.groupProofsByState.mockResolvedValue({
-      unspent: [foreignMetadata],
-      pending: [],
-      spent: [],
-    });
+  it("fails closed without admission when the mint answers with zero-amount signatures", async () => {
+    // Zero-amount signatures for every queried output would keep a gap scan
+    // running. The SDK scan refuses the first one.
+    wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+      restoreAnswer(outputs, (B_) => ({
+        ...mintSignatureFor(KEYSET_ID, B_),
+        amount: Amount.from(0),
+      })),
+    );
 
-    await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
-      scannedKeysets: [],
-      complete: false,
-      failed: true,
-    });
+    await expect(
+      recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID }),
+    ).resolves.toEqual({ scannedKeysets: [], complete: false, failed: true });
+    expect(wallet.mint.restore).toHaveBeenCalledTimes(1);
     expect(await database!.custodyProofs.count()).toBe(0);
-    expect(await database!.proofs.count()).toBe(0);
     expect(await database!.walletCounterCursors.count()).toBe(0);
     expect(await database!.walletCounterAssociations.count()).toBe(0);
   });
 
-  it("recovers a sparse proof beyond the targeted candidate bound", async () => {
-    const sparse = restoredProof(4_097);
-    wallet.batchRestore.mockResolvedValue({
-      proofs: [sparse],
-      lastCounterWithSignature: 4_097,
-    });
-    wallet.groupProofsByState.mockResolvedValue({
-      unspent: [sparse],
-      pending: [],
-      spent: [],
-    });
-
-    const result = await recoverKeysetCountersForMint(MINT_URL, { force: true });
-
-    expect(result).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
-    expect(await database!.custodyProofs.toArray()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ amount: 7, selectability: "selectable" })]),
+  // Each signed output costs real curve work, so this case has a longer bound.
+  it("ends a pass at its counter budget when the mint signs every output, and resumes at the marker", async () => {
+    scanBudget.counters = 40;
+    // The mint signs every queried output, so a scan never sees a gap.
+    wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+      restoreAnswer(outputs, (B_) => mintSignatureFor(KEYSET_ID, B_)),
     );
+    const continued = {
+      scannedKeysets: [KEYSET_ID],
+      complete: false,
+      failed: false,
+      pendingKeysets: [KEYSET_ID],
+      continuedKeysets: [KEYSET_ID],
+    };
+
+    const first = await recoverKeysetCountersForMint(MINT_URL, {
+      unit: "msat",
+      keysetId: KEYSET_ID,
+    });
+
+    expect(first).toEqual(continued);
+    expect(requestedOutputCount()).toBe(40);
+    // The pass advanced the cursor past the signed outputs, and the keyset
+    // stays incomplete. The restore record keeps where the scan stopped.
+    expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
+      next: 40,
+    });
+    expect(
+      await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
+    ).toMatchObject({ recoveryComplete: false });
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 40,
+      waitReason: "scan-budget",
+      failures: 1,
+    });
+
+    wallet.mint.restore.mockClear();
+    const second = await recoverKeysetCountersForMint(MINT_URL, {
+      unit: "msat",
+      keysetId: KEYSET_ID,
+    });
+
+    expect(second).toEqual(continued);
+    expect(requestedOutputs(0)[0]!.B_).toBe(outputOf(KEYSET_ID, 40));
+    expect(requestedOutputCount()).toBe(40);
+    expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
+      next: 80,
+    });
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 80,
+      waitReason: "scan-budget",
+      failures: 2,
+    });
+  }, 30_000);
+
+  it("refuses order readiness while a scan continues past its budget, without a pending-funds error", async () => {
+    scanBudget.counters = 20;
+    wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+      restoreAnswer(outputs, (B_) => mintSignatureFor(CONDITIONAL_KEYSET_ID, B_)),
+    );
+
+    // No funds are pending at the mint. The scan only has more counters to read.
+    await expect(ensureWalletKeysetCounterReady(conditionalReadinessInput())).rejects.toMatchObject(
+      {
+        name: "WalletKeysetCounterReadinessError",
+        message: new WalletKeysetCounterReadinessError().message,
+      },
+    );
+    expect(await resyncRow(CONDITIONAL_KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 20,
+      waitReason: "scan-budget",
+    });
+  });
+
+  // The default budget derives about 4,400 outputs, so this case has a longer bound.
+  it("recovers a sparse proof beyond one scan budget in the next pass", async () => {
+    // Signed counters 250 apart keep each gap below the gap limit. Counter
+    // 4,097 lies beyond one scan budget, so the next pass reaches it from the
+    // marker that the first pass kept.
+    mintSigned([...Array.from({ length: 17 }, (_, index) => index * 250), 4_097]);
+    mintStates(new Map([[4_097, "unspent"]]));
+
+    const first = await recoverKeysetCountersForMint(MINT_URL, {
+      unit: "msat",
+      keysetId: KEYSET_ID,
+    });
+
+    expect(first).toEqual({
+      scannedKeysets: [KEYSET_ID],
+      complete: false,
+      failed: false,
+      pendingKeysets: [KEYSET_ID],
+      continuedKeysets: [KEYSET_ID],
+    });
+    expect(await database!.custodyProofs.count()).toBe(0);
+
+    const second = await recoverKeysetCountersForMint(MINT_URL, {
+      unit: "msat",
+      keysetId: KEYSET_ID,
+    });
+
+    expect(second).toEqual({ scannedKeysets: [KEYSET_ID], complete: true, failed: false });
+    expect(await database!.custodyProofs.toArray()).toEqual([
+      expect.objectContaining({ amount: 7, selectability: "selectable" }),
+    ]);
     expect(await database!.custodyProofBackupAuthorities.toArray()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -609,12 +732,18 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
       next: 4_098,
     });
-  });
+    expect(
+      await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
+    ).toMatchObject({ recoveryComplete: true });
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: null,
+      waitReason: null,
+    });
+  }, 60_000);
 
   it("fails closed on conflicting existing canonical material", async () => {
-    const proof = restoredProof(0);
-    wallet.batchRestore.mockResolvedValue({ proofs: [proof], lastCounterWithSignature: 0 });
-    wallet.groupProofsByState.mockResolvedValue({ unspent: [proof], pending: [], spent: [] });
+    mintSigned([0]);
+    mintStates(new Map([[0, "unspent"]]));
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [KEYSET_ID],
       complete: true,
@@ -636,9 +765,8 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
   });
 
   it("fails closed on conflicting canonical backup locator", async () => {
-    const proof = restoredProof(0);
-    wallet.batchRestore.mockResolvedValue({ proofs: [proof], lastCounterWithSignature: 0 });
-    wallet.groupProofsByState.mockResolvedValue({ unspent: [proof], pending: [], spent: [] });
+    mintSigned([0]);
+    mintStates(new Map([[0, "unspent"]]));
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [KEYSET_ID],
       complete: true,
@@ -718,15 +846,8 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       completedAtMs: 2,
     });
     await database!.custodyProofBackupAuthorities.put(marker);
-    wallet.batchRestore.mockResolvedValue({
-      proofs: [proof],
-      lastCounterWithSignature: 0,
-    });
-    wallet.groupProofsByState.mockResolvedValue({
-      unspent: [proof],
-      pending: [],
-      spent: [],
-    });
+    mintSigned([0]);
+    mintStates(new Map([[0, "unspent"]]));
 
     await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
       scannedKeysets: [],
@@ -735,6 +856,9 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     });
     expect(await database!.custodyProofs.count()).toBe(0);
     expect(await database!.proofs.count()).toBe(0);
+    // The rejected admission also leaves the counter as it was.
+    expect(await database!.walletCounterCursors.count()).toBe(0);
+    expect(await database!.walletCounterAssociations.count()).toBe(0);
     expect(
       await database!.custodyProofBackupAuthorities.get([scopeId(), proofRow.proofId]),
     ).toEqual(marker);
@@ -799,16 +923,96 @@ function regularReadinessInput(): Parameters<typeof ensureWalletKeysetCounterRea
 
 function restoredProof(counter: number): Proof {
   const output = OutputData.createSingleDeterministicData(0, SEED, counter, KEYSET_ID);
-  const blindedMessage = pointFromHex(output.blindedMessage.B_);
-  const blindSignature = createBlindSignature(blindedMessage, MINT_PRIVATE_KEY, KEYSET_ID);
-  const dleq = createDLEQProof(blindedMessage, MINT_PRIVATE_KEY);
-  return output.toProof(
-    {
-      id: KEYSET_ID,
-      amount: Amount.from(7),
-      C_: blindSignature.C_.toHex(true),
-      dleq: { s: bytesToHex(dleq.s), e: bytesToHex(dleq.e) },
-    },
-    keyset,
+  return output.toProof(mintSignatureFor(KEYSET_ID, output.blindedMessage.B_), keyset);
+}
+
+type RestorePayload = { outputs: { B_: string; id: string }[] };
+type TestMintSignature = {
+  id: string;
+  amount: Amount;
+  C_: string;
+  dleq: { s: string; e: string };
+};
+
+function outputOf(keysetId: string, counter: number): string {
+  return OutputData.createSingleDeterministicData(0, SEED, counter, keysetId).blindedMessage.B_;
+}
+
+function secretOf(keysetId: string, counter: number): string {
+  return new TextDecoder().decode(
+    OutputData.createSingleDeterministicData(0, SEED, counter, keysetId).secret,
   );
+}
+
+function range(from: number, through: number): number[] {
+  return Array.from({ length: through - from + 1 }, (_, offset) => from + offset);
+}
+
+// A mint stores one signature for each output, so a restore returns the same one.
+const mintSignatures = new Map<string, TestMintSignature>();
+
+function mintSignatureFor(keysetId: string, B_: string): TestMintSignature {
+  const key = `${keysetId}:${B_}`;
+  const existing = mintSignatures.get(key);
+  if (existing !== undefined) return existing;
+  const blindedMessage = pointFromHex(B_);
+  const dleq = createDLEQProof(blindedMessage, MINT_PRIVATE_KEY);
+  const signature = {
+    id: keysetId,
+    amount: Amount.from(7),
+    C_: createBlindSignature(blindedMessage, MINT_PRIVATE_KEY, keysetId).C_.toHex(true),
+    dleq: { s: bytesToHex(dleq.s), e: bytesToHex(dleq.e) },
+  };
+  mintSignatures.set(key, signature);
+  return signature;
+}
+
+/** A NUT-09 answer that names only the outputs that the mint signed. */
+function restoreAnswer(
+  outputs: RestorePayload["outputs"],
+  signatureFor: (B_: string) => TestMintSignature | undefined,
+) {
+  const signed = outputs.flatMap((output) => {
+    const signature = signatureFor(output.B_);
+    return signature === undefined ? [] : [{ output, signature }];
+  });
+  return {
+    outputs: signed.map(({ output }) => output),
+    signatures: signed.map(({ signature }) => signature),
+  };
+}
+
+/** The mint signed the outputs of these counters of one keyset. */
+function mintSigned(counters: Iterable<number>, keysetId = KEYSET_ID): void {
+  const signed = new Set([...counters].map((counter) => outputOf(keysetId, counter)));
+  wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+    restoreAnswer(outputs, (B_) => (signed.has(B_) ? mintSignatureFor(keysetId, B_) : undefined)),
+  );
+}
+
+/** The NUT-07 state of restored regular proofs by counter. Every other proof is spent. */
+function mintStates(states: ReadonlyMap<number, "unspent" | "pending"> = new Map()): void {
+  const bySecret = new Map(
+    [...states].map(([counter, state]) => [secretOf(KEYSET_ID, counter), state]),
+  );
+  wallet.groupProofsByState.mockImplementation(async (proofs: Proof[]) => ({
+    unspent: proofs.filter(({ secret }) => bySecret.get(secret) === "unspent"),
+    pending: proofs.filter(({ secret }) => bySecret.get(secret) === "pending"),
+    spent: proofs.filter(({ secret }) => !bySecret.has(secret)),
+  }));
+}
+
+function requestedOutputs(call: number): RestorePayload["outputs"] {
+  return (wallet.mint.restore.mock.calls[call]![0] as RestorePayload).outputs;
+}
+
+function requestedOutputCount(): number {
+  return wallet.mint.restore.mock.calls.reduce(
+    (total, [payload]) => total + (payload as RestorePayload).outputs.length,
+    0,
+  );
+}
+
+async function resyncRow(keysetId: string) {
+  return seedRestoreDatabase(scopeId()).resync.get([scopeId(), MINT_URL, keysetId]);
 }

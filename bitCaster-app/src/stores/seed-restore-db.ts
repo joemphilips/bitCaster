@@ -99,6 +99,11 @@ export interface SeedRestoreCondition {
 export type SeedRestoreDeferralWait =
   /** The mint reported a restored proof as PENDING. */
   | "pending-proof"
+  /**
+   * An admitting scan that covered every lower counter stopped at its counter
+   * budget. The next pass continues the scan from the marker.
+   */
+  | "scan-budget"
   /** The admission scan failed, or the keyset authority was not found. */
   | "admission-failed";
 
@@ -165,6 +170,12 @@ export class SeedRestoreDB extends Dexie {
 // The F13 range-recovery backoff bounds.
 const BACKOFF_BASE_MS = 15_000;
 const BACKOFF_MAX_MS = 15 * 60_000;
+/**
+ * Scan continuations in a row that run at the next pass. A long keyset
+ * history continues at once. Later continuations back off, so that a mint
+ * that signs every queried output cannot keep the wallet scanning.
+ */
+const SCAN_BUDGET_CONTINUATIONS_AT_ONCE = 10;
 
 /** The delay before the next attempt after `failures` failed attempts in a row. */
 export function seedRestoreBackoffMs(failures: number): number {
@@ -275,7 +286,9 @@ export async function recordSeedRestoreCondition(input: {
 /**
  * Settles the deferral of one keyset after a scan from `scannedFrom`
  * admitted its verified UNSPENT proofs. A PENDING proof keeps a marker at
- * its counter and backs off. A lower marker that the scan did not cover stays.
+ * its counter and backs off. A scan that stopped at its counter budget keeps
+ * a marker where it stopped, and the next pass continues from there. A lower
+ * marker that the scan did not cover stays.
  */
 export async function settleSeedRestoreDeferral(input: {
   readonly scopeId: string;
@@ -284,6 +297,11 @@ export async function settleSeedRestoreDeferral(input: {
   readonly scannedFrom: number;
   /** The lowest counter of a PENDING proof, or null when none waits. */
   readonly pendingFrom: number | null;
+  /**
+   * Where a scan that covered every lower counter stopped at its counter
+   * budget, or null when the scan ended at the gap limit.
+   */
+  readonly continueFrom: number | null;
   readonly condition: SeedRestoreCondition | null;
   readonly nowMs: number;
 }): Promise<void> {
@@ -291,10 +309,34 @@ export async function settleSeedRestoreDeferral(input: {
   await database.transaction("rw", database.resync, async () => {
     const key: [string, string, string] = [input.scopeId, input.mintUrl, input.keysetId];
     const existing = await database.resync.get(key);
-    if (input.pendingFrom === null && existing?.pendingFromCounter == null) return;
+    if (
+      input.pendingFrom === null &&
+      input.continueFrom === null &&
+      existing?.pendingFromCounter == null
+    ) {
+      return;
+    }
     const row =
       existing ?? initialSeedRestoreResyncRow(input.scopeId, input.mintUrl, input.keysetId);
     if (row.pendingFromCounter !== null && row.pendingFromCounter < input.scannedFrom) return;
+    // A PENDING proof lies below any budget stop, so its marker also covers
+    // the rest of the scan. Only a scan without one keeps a continuation.
+    if (input.pendingFrom === null && input.continueFrom !== null) {
+      const failures = row.waitReason === "scan-budget" ? row.failures + 1 : 1;
+      await database.resync.put({
+        ...row,
+        condition: input.condition ?? row.condition,
+        pendingFromCounter: requireCounter(input.continueFrom, "scan continuation counter"),
+        waitReason: "scan-budget",
+        failures,
+        nextAttemptAtMs:
+          input.nowMs +
+          (failures <= SCAN_BUDGET_CONTINUATIONS_AT_ONCE
+            ? 0
+            : seedRestoreBackoffMs(failures - SCAN_BUDGET_CONTINUATIONS_AT_ONCE)),
+      });
+      return;
+    }
     if (input.pendingFrom === null) {
       await database.resync.put({
         ...row,

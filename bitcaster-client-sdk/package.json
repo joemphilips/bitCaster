@@ -487,9 +487,21 @@
       "types": "./dist/mintRefusal.d.ts",
       "import": "./dist/mintRefusal.js"
     },
+    "./ctfRangeRecoveryRefusal": {
+      "types": "./dist/ctfRangeRecoveryRefusal.d.ts",
+      "import": "./dist/ctfRangeRecoveryRefusal.js"
+    },
+    "./ctfRangeRefundReplacedPlans": {
+      "types": "./dist/ctfRangeRefundReplacedPlans.d.ts",
+      "import": "./dist/ctfRangeRefundReplacedPlans.js"
+    },
     "./seedCounterGapScan": {
       "types": "./dist/seedCounterGapScan.d.ts",
       "import": "./dist/seedCounterGapScan.js"
+    },
+    "./seedCounterAdmissionScan": {
+      "types": "./dist/seedCounterAdmissionScan.d.ts",
+      "import": "./dist/seedCounterAdmissionScan.js"
     },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",

@@ -4303,12 +4303,17 @@ describe("browser CTF range output reuse and second sells", () => {
     ).toEqual(replaced);
   }, 20_000);
 
-  it("restores a delayed old refund copy from its replaced output plan", async () => {
+  it("halts a refund whose spent inputs match only a replaced output plan, and admits nothing", async () => {
+    // Backlog "Refund restore from a replaced output plan": another client
+    // with the same seed signed every output of the replaced plan, and the
+    // refund inputs then read SPENT. The current plan has no signature. A
+    // replaced-plan hit does not prove that this refund committed with it.
     const database = createDatabase(undefined, browserWalletDatabaseName(walletScopeId()));
     const preparation = persistedPreparation("range-refund-delayed-copy");
     await initializeRefundCounterFixture(database, preparation);
     let now = 20_000;
     let refundSwaps = 0;
+    let refundRestores = 0;
     let inputsSpent = false;
     const swapOutputs: string[][] = [];
     const base = sourceWallet();
@@ -4324,8 +4329,10 @@ describe("browser CTF range output reuse and second sells", () => {
         );
       },
     };
+    const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
     const coordinator = createCoordinator(database, wallet, engineMock({ resultFailure: true }), {
       now: () => now,
+      recoverySchedule: schedule,
       createMintRecovery: refundableRecovery(preparation),
       executeRefundSwap: async (_mintUrl, request) => {
         refundSwaps += 1;
@@ -4333,9 +4340,9 @@ describe("browser CTF range output reuse and second sells", () => {
         if (refundSwaps === 1) throw new MintOperationError(11008, "Duplicate outputs");
         throw new NetworkError("connection reset");
       },
-      // Only the first plan's outputs are signed: a delayed copy of the first
-      // request committed after the wallet planned new outputs.
+      // Only the first plan's outputs are signed.
       restoreRefundOutputs: async (input) => {
+        refundRestores += 1;
         const requested = input.outputs.map((output) => output.blindedMessage.B_);
         if (!requested.every((output) => swapOutputs[0]!.includes(output))) {
           throw new Error("refund outputs are not signed");
@@ -4353,20 +4360,41 @@ describe("browser CTF range output reuse and second sells", () => {
       recoveredOperationIds: [],
       pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
     });
+    const refundId = deriveDurableCtfRangeRefundOperationId(preparation.operationId);
+    const refundBefore = await database.proofOperations.get(refundId);
 
     inputsSpent = true;
+    now += 3_600_000;
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
-    expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
-    expect(
-      await database.proofOperations.get(
-        deriveDurableCtfRangeRefundOperationId(preparation.operationId),
-      ),
-    ).toMatchObject({ state: "completed" });
+    // The refund halts at once with the alert and Retry. It admits nothing.
+    expect(recovery.recoveredOperationIds).toEqual([]);
+    expect(recovery.pending).toEqual([]);
+    expect(recovery.attention).toEqual([
+      { operationId: preparation.operationId, revision: expect.any(Number), mintError: null },
+    ]);
+    expect(refundRestores).toBe(2);
+    expect(await database.proofOperations.get(refundId)).toEqual(refundBefore);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("terminal");
+    ).not.toBe("terminal");
+
+    // The halted refund stays visible on every pass, without a mint request.
+    now += 86_400_000;
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      attention: [{ operationId: preparation.operationId, mintError: null }],
+    });
+    expect(refundRestores).toBe(2);
+
+    // A manual retry reads the mint once more, and the same evidence halts it again.
+    schedule.resume(walletScopeId(), preparation.operationId);
+    const retried = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(retried.attention).toMatchObject([
+      { operationId: preparation.operationId, mintError: null },
+    ]);
+    expect(refundRestores).toBe(4);
+    expect(await database.proofOperations.get(refundId)).toEqual(refundBefore);
   });
 
   it("probes a buy receive range once, scans past signed counters, and reuses a clean probe", async () => {

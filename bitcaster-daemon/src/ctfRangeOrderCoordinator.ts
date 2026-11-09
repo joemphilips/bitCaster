@@ -129,6 +129,20 @@ import {
   type CashuMintRefusal,
 } from '@bitcaster-market/client-sdk/mintRefusal'
 import {
+  countCtfRangeRecoveryRefusal,
+  resumeCtfRangeRecoveryRefusalCount,
+  type CtfRangeRecoveryRefusalCount,
+  type CtfRangeRefusedRequest,
+} from '@bitcaster-market/client-sdk/ctfRangeRecoveryRefusal'
+import {
+  CTF_RANGE_REFUND_REPLACED_OUTPUT_PLANS_MAX,
+  CtfRangeRefundReplacedPlanSignedError,
+  assertReplacedCtfRangeRefundOutputPlans,
+  decodeReplacedCtfRangeRefundOutputPlans,
+  restoreSpentCtfRangeRefund,
+  savedReplacedCtfRangeRefundOutputPlans,
+} from '@bitcaster-market/client-sdk/ctfRangeRefundReplacedPlans'
+import {
   findLastSignedSeedCounter,
   probeSeedCounterRangeBeforeReservation,
   type SeedCounterRestoreClient,
@@ -165,7 +179,6 @@ import {
 } from './durableCtfRangeSqlite.ts'
 import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
-  decodeDurableSeedDerivedOutputPlan,
   reconstructDurableSeedDerivedOutputs,
 } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import {
@@ -255,10 +268,6 @@ const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const MIXED_SOURCE_ENDPOINT = 'POST /v1/ctf/convert'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const ACTIVE_RANGE_SOURCE_LIMIT = 256
-/** Identical coded refusals of one request before automatic replay stops. */
-const RANGE_RECOVERY_REFUSAL_LIMIT = 5
-/** Replaced refund output plans that a refund record keeps for restore. */
-const REPLACED_REFUND_OUTPUT_PLANS_MAX = 8
 /** Recently released order attempts that the recovery status reports. */
 const RELEASED_STATUS_LIMIT = 32
 const MAX_CONSOLIDATION_ROUNDS = 256
@@ -396,9 +405,10 @@ export class DaemonCtfRangeOrderCoordinator {
   #refundRepairExhausted = false
   #refundRepairNeedsTurn = false
   // A load control, not funds authority: a restart allows an earlier retry.
+  // A halt without a refusal comes from other evidence, such as a replaced refund plan.
   readonly #refusals = new Map<
     string,
-    { mintError: CashuMintRefusal; count: number; halted: boolean }
+    { refusal: CtfRangeRecoveryRefusalCount | null; halted: boolean }
   >()
   readonly #pendingStatus = new Map<string, DaemonCtfRangeRecoveryPending>()
   #releasedStatus: DaemonCtfRangeReleasedOperation[] = []
@@ -606,9 +616,8 @@ export class DaemonCtfRangeOrderCoordinator {
     const entry = this.#refusals.get(operationId)
     if (entry === undefined || !entry.halted) return false
     this.#refusals.set(operationId, {
-      ...entry,
+      refusal: entry.refusal === null ? null : resumeCtfRangeRecoveryRefusalCount(entry.refusal),
       halted: false,
-      count: RANGE_RECOVERY_REFUSAL_LIMIT - 1,
     })
     return true
   }
@@ -617,25 +626,55 @@ export class DaemonCtfRangeOrderCoordinator {
     const entry = this.#refusals.get(operationId)
     if (entry === undefined || !entry.halted) return null
     const command = rangeOrderRetryCommand(operationId)
+    if (entry.refusal === null) {
+      return {
+        operationId,
+        error: `The refund outputs match only an earlier output plan. Automatic retries stopped. The reserved funds stay reserved. To try again, run: ${command}`,
+        halted: true,
+        retryCommand: command,
+      }
+    }
+    const { code, detail, count } = entry.refusal
     return {
       operationId,
-      error: `The mint refused this order recovery ${entry.count} times (mint code ${entry.mintError.code}). Automatic retries stopped. The reserved funds stay reserved. To try again, run: ${command}`,
-      mintError: entry.mintError,
+      error: `The mint refused this order recovery ${count} times (mint code ${code}). Automatic retries stopped. The reserved funds stay reserved. To try again, run: ${command}`,
+      mintError: { code, detail },
       halted: true,
       retryCommand: command,
     }
   }
 
-  /** Count one coded refusal that kept a request reserved. */
-  #recordRefusal(operationId: string, mintError: CashuMintRefusal): void {
+  /**
+   * Count one coded refusal that kept a request reserved. Refusals count for
+   * each refused request and each code (SDK refusal count).
+   */
+  #recordRefusal(
+    operationId: string,
+    request: CtfRangeRefusedRequest,
+    mintError: CashuMintRefusal,
+  ): void {
     const previous = this.#refusals.get(operationId)
-    const count = previous?.mintError.code === mintError.code ? previous.count + 1 : 1
-    this.#refusals.delete(operationId)
-    this.#refusals.set(operationId, {
-      mintError,
-      count,
-      halted: count >= RANGE_RECOVERY_REFUSAL_LIMIT,
+    const counted = countCtfRangeRecoveryRefusal(previous?.refusal ?? null, {
+      request,
+      ...mintError,
     })
+    this.#setRefusal(operationId, counted)
+  }
+
+  /**
+   * Halt at once: a refund whose spent inputs match only a replaced output
+   * plan cannot complete, and automatic replay cannot change that (ADR-037).
+   */
+  #recordHalt(operationId: string): void {
+    this.#setRefusal(operationId, { refusal: null, halted: true })
+  }
+
+  #setRefusal(
+    operationId: string,
+    entry: { refusal: CtfRangeRecoveryRefusalCount | null; halted: boolean },
+  ): void {
+    this.#refusals.delete(operationId)
+    this.#refusals.set(operationId, entry)
     while (this.#refusals.size > ACTIVE_RANGE_SOURCE_LIMIT) {
       const oldest = this.#refusals.keys().next().value
       if (oldest === undefined) break
@@ -650,8 +689,9 @@ export class DaemonCtfRangeOrderCoordinator {
 
   #pendingResult(operationId: string, error: unknown): DaemonCtfRangeRecoveryPending {
     if (error instanceof RangeMintRefusalPendingError) {
-      this.#recordRefusal(operationId, error.mintError)
+      this.#recordRefusal(operationId, error.request, error.mintError)
     }
+    if (error instanceof CtfRangeRefundReplacedPlanSignedError) this.#recordHalt(operationId)
     const pending = this.#haltedRecovery(operationId) ?? {
       operationId,
       ...recoveryFailureStatus(error),
@@ -1932,28 +1972,28 @@ export class DaemonCtfRangeOrderCoordinator {
   }
 
   /**
-   * Restore the outputs of the refund copy that the mint committed. A delayed
-   * copy can carry a replaced plan, so try the current outputs first and then
-   * each replaced plan, newest first.
+   * Restore the outputs of the refund that the mint committed, from the
+   * current plan (ADR-037). A NUT-09 hit only on a replaced plan does not
+   * prove that this refund committed with it: the SDK throws
+   * `CtfRangeRefundReplacedPlanSignedError`, the refund halts at once, and
+   * the daemon admits nothing. A restore that the mint did not answer proves
+   * nothing, so the refund stays pending, as in the browser.
    */
   async #restoreSpentRefund(refund: ProofOperationRecord): Promise<Proof[]> {
     const restore = this.#dependencies.restoreOutputs ?? restoreOutputGroups
-    let firstError: unknown = null
-    for (const outputs of [refund.outputs, ...replacedRefundOutputGroups(refund).reverse()]) {
-      try {
+    return restoreSpentCtfRangeRefund({
+      currentPlan: refund.outputs,
+      replacedPlans: replacedRefundOutputGroups(refund),
+      restore: async (outputs) => {
         const proofs = (await restore(refund.mintUrl, outputs)).refund ?? []
         if (proofs.length === 0 || proofs.length !== (outputs.refund?.length ?? 0)) {
           throw new Error('range refund restore is incomplete')
         }
         return proofs
-      } catch (error) {
-        // The mint did not answer this restore. That proves nothing about
-        // which plan it signed, so the refund stays pending, as in the browser.
-        if (error instanceof HttpResponseError || error instanceof NetworkError) throw error
-        firstError ??= error
-      }
-    }
-    throw firstError
+      },
+      isTransportFailure: (error) =>
+        error instanceof HttpResponseError || error instanceof NetworkError,
+    })
   }
 
   /**
@@ -1976,8 +2016,8 @@ export class DaemonCtfRangeOrderCoordinator {
     }
     // Legacy refund outputs come from their own derivation, not NUT-13 counters.
     if (!Object.hasOwn(refund.metadata, 'refundOutputPlan')) return null
-    const replaced = savedReplacedRefundOutputPlans(refund)
-    if (replaced.length >= REPLACED_REFUND_OUTPUT_PLANS_MAX) return null
+    const replaced = savedReplacedCtfRangeRefundOutputPlans(refund.metadata)
+    if (replaced.length >= CTF_RANGE_REFUND_REPLACED_OUTPUT_PLANS_MAX) return null
     let states: ProofState[]
     try {
       states = await checkCtfRangeInputProofStates(mint, refund.inputs.map(toProof))
@@ -3474,7 +3514,7 @@ async function resumeConsolidationOperation(
           await settleRangeRequestRefusal(
             error,
             consolidationRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
-            (mintError) => replayPendingError(entry, mintError),
+            (mintError) => replayPendingError(entry, 'consolidation', mintError),
           )
           // Every input is spent: an earlier copy can have committed.
           result = await restore()
@@ -3797,7 +3837,7 @@ async function resumeSourceOperation(
         await settleRangeRequestRefusal(
           error,
           sourceRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
-          (mintError) => replayPendingError(entry, mintError),
+          (mintError) => replayPendingError(entry, 'source', mintError),
         )
         // Every input is spent: an earlier copy can have committed.
         result = await restore()
@@ -3853,13 +3893,15 @@ function replayKind(
 
 function replayPendingError(
   entry: ProofOperationRecord,
+  request: 'source' | 'consolidation',
   mintError: CashuMintRefusal | null,
 ): Error {
   return mintError === null
-    ? new Error(`range source replay result is uncertain (${entry.operationId})`)
+    ? new Error(`range ${request} replay result is uncertain (${entry.operationId})`)
     : new RangeMintRefusalPendingError(
-        `range source replay rejection remains pending (${entry.operationId})`,
+        `range ${request} replay rejection remains pending (${entry.operationId})`,
         mintError,
+        request,
       )
 }
 
@@ -3879,6 +3921,7 @@ function freshRequestPendingError(
     : new RangeMintRefusalPendingError(
         `range ${request} rejection remains pending (${operationId})`,
         mintError,
+        request,
       )
 }
 
@@ -3914,11 +3957,14 @@ function recoveryFailureStatus(error: unknown): {
 /** A coded mint refusal kept a range request reserved. Recovery retries it. */
 class RangeMintRefusalPendingError extends Error {
   readonly mintError: CashuMintRefusal
+  /** The refused request. The halt counts refusals for each request. */
+  readonly request: CtfRangeRefusedRequest
 
-  constructor(message: string, mintError: CashuMintRefusal) {
+  constructor(message: string, mintError: CashuMintRefusal, request: CtfRangeRefusedRequest) {
     super(message)
     this.name = 'RangeMintRefusalPendingError'
     this.mintError = mintError
+    this.request = request
   }
 }
 
@@ -4272,32 +4318,17 @@ function refundRefusalError(refund: ProofOperationRecord, error: unknown): Error
     ? new RangeMintRefusalPendingError(
         `range refund rejection remains pending (${refund.operationId})`,
         { code: failure.code, detail: failure.detail },
+        'refund',
       )
     : asError(error)
-}
-
-/** The refund output plans that a re-plan replaced, oldest first. */
-function savedReplacedRefundOutputPlans(refund: ProofOperationRecord): readonly unknown[] {
-  if (!Object.hasOwn(refund.metadata, 'replacedRefundOutputPlans')) return []
-  const plans: unknown = refund.metadata.replacedRefundOutputPlans
-  if (
-    !Array.isArray(plans) ||
-    plans.length === 0 ||
-    plans.length > REPLACED_REFUND_OUTPUT_PLANS_MAX
-  ) {
-    throw new Error('range refund replaced output plans are invalid')
-  }
-  return plans
 }
 
 /** The stored outputs of each replaced refund plan, oldest first. */
 function replacedRefundOutputGroups(
   refund: ProofOperationRecord,
 ): Array<Record<string, StoredOutputData[]>> {
-  return savedReplacedRefundOutputPlans(refund).map((value) => ({
-    refund: serializeOutputDataArray(
-      decodeDurableSeedDerivedOutputPlan(value).outputs.map(OutputData.deserialize),
-    ),
+  return decodeReplacedCtfRangeRefundOutputPlans(refund.metadata).map((plan) => ({
+    refund: serializeOutputDataArray(plan.outputs.map(OutputData.deserialize)),
   }))
 }
 
@@ -4678,24 +4709,14 @@ function assertSavedRangeRefundDerivation(
     const amounts = outputs.map((output) => amountToNumber(output.blindedMessage.amount))
     reconstructDurableSeedDerivedOutputs({ seed, keyset, amounts, plan })
     // Each replaced plan must be seed derived on the refund keyset for the
-    // same amount, so that a restore of a delayed copy stays exact.
-    const replaced = savedReplacedRefundOutputPlans(refund)
-    const total = amounts.reduce((sum, amount) => sum + amount, 0)
-    for (const value of replaced) {
-      const replacedPlan = decodeDurableSeedDerivedOutputPlan(value)
-      const replacedAmounts = replacedPlan.outputs.map((output) =>
-        amountToNumber(OutputData.deserialize(output).blindedMessage.amount),
-      )
-      if (replacedAmounts.reduce((sum, amount) => sum + amount, 0) !== total) {
-        throw new Error('range refund replaced output plan amount differs')
-      }
-      reconstructDurableSeedDerivedOutputs({
-        seed,
-        keyset,
-        amounts: replacedAmounts,
-        plan: replacedPlan,
-      })
-    }
+    // same amount.
+    const replaced = savedReplacedCtfRangeRefundOutputPlans(refund.metadata)
+    assertReplacedCtfRangeRefundOutputPlans({
+      metadata: refund.metadata,
+      seed,
+      keyset,
+      total: amounts.reduce((sum, amount) => sum + amount, 0),
+    })
     if (
       !isDeepStrictEqual(refund.metadata, {
         ...expectedMetadata,

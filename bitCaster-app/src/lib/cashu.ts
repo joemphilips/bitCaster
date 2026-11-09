@@ -67,6 +67,7 @@ import {
   settleSeedRestoreDeferral,
 } from "@/stores/seed-restore-db";
 import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
+import { scanSeedCountersForAdmission } from "@bitcaster/client-sdk/seedCounterAdmissionScan";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -712,11 +713,18 @@ export interface KeysetRecoveryResult {
   scannedKeysets: string[];
   complete: boolean;
   /**
-   * Keysets with a restored proof that the mint reports `PENDING`. Their
-   * counters advanced, but their recovery stays incomplete (ADR-033). A
-   * deferral marker at the pending counter backs off the next scan.
+   * Keysets whose recovery waits in a deferral marker. A restored proof that
+   * the mint reports `PENDING` keeps a marker at its counter and backs off the
+   * next scan (ADR-033). A scan that stopped at its counter budget keeps a
+   * marker where it stopped (`continuedKeysets`). Their counters advanced,
+   * but their recovery stays incomplete.
    */
   pendingKeysets?: string[];
+  /**
+   * The keysets of `pendingKeysets` whose scan stopped at its counter budget.
+   * A later pass continues the scan from the marker.
+   */
+  continuedKeysets?: string[];
   /** A keyset scan or the keyset discovery failed. A pending proof alone is not a failure. */
   failed?: boolean;
   /**
@@ -1033,6 +1041,10 @@ async function recoverSelectedKeysetCounterReadiness(input: {
     conditionalKeyset: input.conditionalKeyset,
     profileLockHeld: input.profileLockHeld,
   });
+  // A scan that stopped at its counter budget continues in a later pass.
+  if (result.continuedKeysets?.includes(input.keysetId) === true) {
+    throw new Error("counter recovery is incomplete");
+  }
   if (result.pendingKeysets?.includes(input.keysetId) === true) {
     throw new WalletKeysetCounterPendingError();
   }
@@ -1293,24 +1305,13 @@ type CounterRecoveryProofAsset =
       readonly outcomeCollection: string;
     };
 
+/** The asset of a recovered proof comes only from the authority of its keyset. */
 function counterRecoveryProofAsset(
   wallet: CashuWallet,
   keysetId: string,
-  proof: StoredProof,
 ): CounterRecoveryProofAsset {
   const keyset = wallet.getKeyset(keysetId);
-  const suppliedCondition = proof.conditionId ?? (proof as { condition_id?: unknown }).condition_id;
-  const suppliedOutcome =
-    proof.outcomeCollection ?? (proof as { outcome_collection?: unknown }).outcome_collection;
-  if ((suppliedCondition === undefined) !== (suppliedOutcome === undefined)) {
-    throw new Error("counter recovery proof metadata is incomplete");
-  }
-  if (!keyset.conditional) {
-    if (suppliedCondition !== undefined) {
-      throw new Error("counter recovery proof metadata conflicts with keyset");
-    }
-    return { kind: "regular" };
-  }
+  if (!keyset.conditional) return { kind: "regular" };
   const conditionId = keyset.conditional.conditionId;
   if (typeof conditionId !== "string" || !/^[0-9a-fA-F]{64}$/.test(conditionId)) {
     throw new Error("counter recovery keyset condition id is invalid");
@@ -1322,14 +1323,6 @@ function counterRecoveryProofAsset(
     outcomeCollection.length > 512
   ) {
     throw new Error("counter recovery keyset outcome collection is invalid");
-  }
-  if (
-    suppliedCondition !== undefined &&
-    (typeof suppliedCondition !== "string" ||
-      suppliedCondition.toLowerCase() !== conditionId.toLowerCase() ||
-      suppliedOutcome !== outcomeCollection)
-  ) {
-    throw new Error("counter recovery proof metadata conflicts with keyset");
   }
   return {
     kind: "conditional",
@@ -1350,7 +1343,7 @@ function expectedCounterRecoveryProofRow(
     normalizedMint: mintUrl,
     unit,
     proof,
-    asset: counterRecoveryProofAsset(wallet, proof.id, proof),
+    asset: counterRecoveryProofAsset(wallet, proof.id),
     receivedAtMs: 0,
   });
 }
@@ -1435,9 +1428,11 @@ function requireExactCounterRecoveryProofStates(
 }
 
 /**
- * Walk the mint's seen-outputs space (via cashu-ts `batchRestore`) for every
- * keyset of `mintUrl`, advance its authoritative cursor past the highest
+ * Walk the mint's seen-outputs space (via the SDK admitting NUT-09 scan) for
+ * every keyset of `mintUrl`, advance its authoritative cursor past the highest
  * signed output, and admit UNSPENT recovered proofs in the same transaction.
+ * One scan of a keyset asks about at most the SDK counter budget. A scan that
+ * stops at the budget keeps a deferral marker, and a later pass continues it.
  *
  * Returns the list of keyset IDs that were actually scanned so the caller
  * can decide whether a retry is worthwhile.
@@ -1597,7 +1592,10 @@ async function recoverKeysetCountersForMintCore(
   );
   const scanned: string[] = [];
   const pendingKeysets: string[] = [];
+  const continuedKeysets: string[] = [];
   const postponedKeysets: string[] = [];
+  // A scan that stopped at its counter budget did not finish its keyset.
+  let budgetStopped = false;
   // A deferral scan can start below counters that an operation of this
   // browser reserved. It must not admit that operation's outputs first.
   const deferralScan = opts.force === true && opts.startCounter !== undefined;
@@ -1635,15 +1633,19 @@ async function recoverKeysetCountersForMintCore(
           isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
         });
         if (!opts.force && recoveredBefore) continue;
-        // An earlier full scan found a PENDING proof. It recorded a marker at
-        // its counter, so the next scan starts there after a backoff.
+        // An earlier scan that covered every lower counter recorded a marker:
+        // at the counter of a PENDING proof, or where the scan stopped at its
+        // counter budget. The next scan starts there, after the marker's backoff.
         const deferral = await readCounterRecoveryDeferral(scopeId, url, keyset.id);
         const pendingFrom =
-          deferral?.waitReason === "pending-proof" ? deferral.pendingFromCounter : null;
+          deferral?.waitReason === "pending-proof" || deferral?.waitReason === "scan-budget"
+            ? deferral.pendingFromCounter
+            : null;
         let scanFrom = startCounter;
         if (!opts.force && opts.startCounter === undefined && pendingFrom !== null) {
           if (deferral!.nextAttemptAtMs > Date.now()) {
             pendingKeysets.push(keyset.id);
+            if (deferral!.waitReason === "scan-budget") continuedKeysets.push(keyset.id);
             continue;
           }
           scanFrom = pendingFrom;
@@ -1651,16 +1653,25 @@ async function recoverKeysetCountersForMintCore(
         // Only a scan that covers every lower counter can complete the keyset.
         const coversLowerCounters =
           scanFrom === 0 || recoveredBefore || (pendingFrom !== null && scanFrom <= pendingFrom);
-        const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
-          300,
-          100,
-          scanFrom,
-          keyset.id,
-        );
+        // One pass asks about at most the SDK counter budget. A mint that
+        // signs every queried output cannot hold the pass without end.
+        await wallet.keyChain.ensureKeysetKeys(keyset.id);
+        const scan = await scanSeedCountersForAdmission({
+          restore: (outputs) => wallet.mint.restore({ outputs }),
+          seed,
+          keyset: wallet.getKeyset(keyset.id),
+          startCounter: scanFrom,
+        });
+        const proofs = [...scan.proofs];
+        const lastCounterWithSignature = scan.lastCounterWithSignature ?? undefined;
+        // A scan that does not cover the lower counters keeps no continuation.
+        // The keyset stays incomplete, so a later full scan covers them.
+        const continueFrom =
+          scan.stop === "counter-budget" && coversLowerCounters ? scan.nextCounter : null;
         requireCapturedProfile();
         requireValidCounterRecoveryResult(lastCounterWithSignature);
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
-        // CRITICAL: batchRestore returns ALL deterministic proofs the mint
+        // CRITICAL: the scan returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
         // proofs would inflate the displayed balance and cause spent-token
         // errors on the next spend. Filter via `groupProofsByState` and keep
@@ -1687,7 +1698,7 @@ async function recoverKeysetCountersForMintCore(
             baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
             unit,
           };
-          const asset = counterRecoveryProofAsset(wallet, keyset.id, recoveredProof);
+          const asset = counterRecoveryProofAsset(wallet, keyset.id);
           return {
             ...recoveredProof,
             ...(asset.kind === "conditional"
@@ -1815,7 +1826,10 @@ async function recoverKeysetCountersForMintCore(
               unit,
               keysetId: keyset.id,
               restoredNext: next,
-              recovery: coversLowerCounters && !proofPending ? "complete" : "incomplete",
+              recovery:
+                coversLowerCounters && !proofPending && scan.stop === "gap-limit"
+                  ? "complete"
+                  : "incomplete",
               isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
             });
             requireCapturedProfile();
@@ -1827,20 +1841,24 @@ async function recoverKeysetCountersForMintCore(
           await withWalletProfileLock(scopeId, persistRecoveredKeyset);
         }
         // The scan admitted the deferred outputs from `scanFrom`. A PENDING
-        // proof keeps a marker at its counter and backs off (ADR-033). The
-        // marker is a record that only saves mint work: without it, the
-        // incomplete keyset scans again from counter 0.
+        // proof keeps a marker at its counter and backs off (ADR-033). A
+        // budget stop keeps a marker where the scan stopped. The marker is a
+        // record that only saves mint work: without it, the incomplete keyset
+        // scans again from counter 0.
         await settleSeedRestoreDeferral({
           scopeId,
           mintUrl: url,
           keysetId: keyset.id,
           scannedFrom: scanFrom,
           pendingFrom: lowestPendingCounter,
+          continueFrom,
           condition,
           nowMs: Date.now(),
         }).catch(() => undefined);
         scanned.push(keyset.id);
-        if (proofPending) pendingKeysets.push(keyset.id);
+        budgetStopped ||= scan.stop === "counter-budget";
+        if (proofPending || continueFrom !== null) pendingKeysets.push(keyset.id);
+        if (!proofPending && continueFrom !== null) continuedKeysets.push(keyset.id);
       } catch (error) {
         if (error instanceof CounterRecoveryPostponedError) {
           postponedKeysets.push(keyset.id);
@@ -1853,9 +1871,11 @@ async function recoverKeysetCountersForMintCore(
   }
   return {
     scannedKeysets: scanned,
-    complete: !failed && pendingKeysets.length === 0 && postponedKeysets.length === 0,
+    complete:
+      !failed && !budgetStopped && pendingKeysets.length === 0 && postponedKeysets.length === 0,
     failed,
     ...(pendingKeysets.length === 0 ? {} : { pendingKeysets }),
+    ...(continuedKeysets.length === 0 ? {} : { continuedKeysets }),
     ...(postponedKeysets.length === 0 ? {} : { postponedKeysets }),
   };
 }

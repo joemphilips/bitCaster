@@ -103,6 +103,22 @@ describe("browser CTF range recovery schedule", () => {
     expect(schedule.recordFailure(SCOPE, OPERATION, 0, pending)).toEqual({ halted: false });
   });
 
+  it("counts refusals for each refused request, so source refusals do not halt a refund", () => {
+    const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
+    const mintError = { code: 11001, detail: "Token already spent" };
+    const source = { mintError, refusedRequest: "source" as const, retryAfterMs: null };
+    const refund = { mintError, refusedRequest: "refund" as const, retryAfterMs: null };
+    for (let count = 1; count < BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT; count++) {
+      expect(schedule.recordFailure(SCOPE, OPERATION, 0, source)).toEqual({ halted: false });
+    }
+    // The same journal revision can restore the source and then refund it.
+    for (let count = 1; count < BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT; count++) {
+      expect(schedule.recordFailure(SCOPE, OPERATION, 0, refund)).toEqual({ halted: false });
+    }
+    expect(schedule.recordFailure(SCOPE, OPERATION, 0, refund)).toEqual({ halted: true });
+    expect(schedule.state(SCOPE, OPERATION, 0)).toEqual({ kind: "halted", mintError });
+  });
+
   it("resets the backoff when the operation makes progress", () => {
     const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -130,6 +146,52 @@ describe("browser CTF range recovery schedule", () => {
     expect(second.state(SCOPE, OPERATION, 0)).toEqual({ kind: "due" });
     expect(new BrowserCtfRangeRecoverySchedule({ storage }).state("other", OPERATION, 0)).toEqual({
       kind: "due",
+    });
+  });
+
+  it("converts a stored release 4 schedule: a halt stays halted and a refusal count carries over", () => {
+    const storage = memoryStorage();
+    const v1Key = `bitcaster:ctf-range-recovery-schedule:v1:${SCOPE}`;
+    const pending = { code: 11002, detail: "Token pending" };
+    storage.setItem(
+      v1Key,
+      JSON.stringify({
+        entries: {
+          halted: {
+            attempt: 5,
+            nextAttemptAtMs: 0,
+            refusal: { ...pending, count: BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT },
+            halted: true,
+          },
+          counting: {
+            attempt: 4,
+            nextAttemptAtMs: 0,
+            refusal: { ...pending, count: BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT - 1 },
+            halted: false,
+          },
+        },
+      }),
+    );
+    const schedule = new BrowserCtfRangeRecoverySchedule({ storage, random: () => 1 });
+
+    expect(schedule.state(SCOPE, "halted", 0)).toEqual({ kind: "halted", mintError: pending });
+    // A release 4 count has no refused request. One more identical refusal halts it.
+    expect(
+      schedule.recordFailure(SCOPE, "counting", 0, { mintError: pending, retryAfterMs: null }),
+    ).toEqual({ halted: true });
+
+    // The write moves the schedule to the current key.
+    expect(storage.values.has(v1Key)).toBe(false);
+    const stored = JSON.parse(
+      storage.getItem(`bitcaster:ctf-range-recovery-schedule:v2:${SCOPE}`)!,
+    ) as { entries: Record<string, { refusal: unknown; halted: boolean }> };
+    expect(stored.entries.halted).toMatchObject({
+      halted: true,
+      refusal: { request: null, ...pending, count: BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT },
+    });
+    expect(new BrowserCtfRangeRecoverySchedule({ storage }).state(SCOPE, "halted", 0)).toEqual({
+      kind: "halted",
+      mintError: pending,
     });
   });
 

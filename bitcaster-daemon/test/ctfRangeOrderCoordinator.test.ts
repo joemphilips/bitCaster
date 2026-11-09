@@ -5006,7 +5006,11 @@ test('daemon refund re-plans its outputs after 11008 and keeps the replaced plan
   )
 })
 
-test('daemon refund restore tries the current outputs, then each replaced plan, newest first', async () => {
+test('daemon halts a refund whose spent inputs match only a replaced plan, and admits nothing', async () => {
+  // Backlog "Refund restore from a replaced output plan": another client with
+  // the same seed signed every output of the replaced plan, and the refund
+  // inputs then read SPENT. The current plan has no signature. A replaced-plan
+  // hit does not prove that this refund committed with it.
   let spent = false
   const base = fakeMint()
   const mint = {
@@ -5032,7 +5036,7 @@ test('daemon refund restore tries the current outputs, then each replaced plan, 
       restoreOutputs: async (_mintUrl, groups) => {
         const outputs = deserializeOutputGroups(groups).refund ?? []
         restoreRequests.push(outputs.map(({ blindedMessage }) => blindedMessage.B_))
-        // A delayed copy of the first refund request committed.
+        // Only the outputs of the first plan are signed.
         const first = new Set(swaps[0]!.outputs.map(({ B_ }) => B_))
         return {
           refund: outputs
@@ -5047,26 +5051,36 @@ test('daemon refund restore tries the current outputs, then each replaced plan, 
       assert.equal(swaps.length, 2)
 
       spent = true
-      const restored = await coordinator.recover(WALLET_SEED_HEX, client)
+      const halted = await coordinator.recover(WALLET_SEED_HEX, client)
 
-      assert.deepEqual(restored.pending, [])
-      assert.equal(restored.recovered.length, 1)
-      assert.equal(swaps.length, 2)
+      // The current outputs are read first, then the replaced plan.
       assert.deepEqual(restoreRequests, [
         swaps[1]!.outputs.map(({ B_ }) => B_),
         swaps[0]!.outputs.map(({ B_ }) => B_),
       ])
-      const refund = await rangeRefundOperation()
-      assert.equal(refund.state, 'completed')
-      // A serialized plan output stores its secret as hex of the secret bytes.
-      const firstSecrets = (
-        refund.metadata.replacedRefundOutputPlans as Array<{ outputs: Array<{ secret: string }> }>
-      )[0]!.outputs.map(({ secret }) => Buffer.from(secret, 'hex').toString('utf8'))
-      assert.deepEqual(
-        refund.resultProofs?.refund?.map(({ secret }) => secret),
-        firstSecrets,
-      )
-      assert.equal(await completedRefundCount(), 1)
+      assert.deepEqual(halted.recovered, [])
+      assert.equal(halted.pending.length, 1)
+      const operationId = halted.pending[0]!.operationId
+      assert.deepEqual(halted.pending[0], {
+        operationId,
+        error: `The refund outputs match only an earlier output plan. Automatic retries stopped. The reserved funds stay reserved. To try again, run: bitcaster-cli order retry ${operationId}`,
+        halted: true,
+        retryCommand: `bitcaster-cli order retry ${operationId}`,
+      })
+      assert.equal((await rangeRefundOperation()).state, 'prepared')
+      assert.equal(await completedRefundCount(), 0)
+
+      // A halted refund stays visible on every pass without a mint request.
+      const still = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(still.pending[0]!.halted, true)
+      assert.equal(restoreRequests.length, 2)
+
+      // A manual retry reads the mint once more, and the same evidence halts it again.
+      assert.equal(coordinator.retryHaltedRecovery(operationId), true)
+      const retried = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(retried.pending[0]!.halted, true)
+      assert.equal(restoreRequests.length, 4)
+      assert.equal(await completedRefundCount(), 0)
     },
   )
 })
