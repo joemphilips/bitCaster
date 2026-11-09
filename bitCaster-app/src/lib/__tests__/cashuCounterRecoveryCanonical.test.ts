@@ -37,7 +37,13 @@ import {
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import { withWalletProfileLock } from "../walletProfileLock";
-import { deleteSeedRestoreDatabase, seedRestoreDatabase } from "../../stores/seed-restore-db";
+import {
+  SEED_RESTORE_SCAN_CONTINUATIONS_MAX,
+  deleteSeedRestoreDatabase,
+  recordSeedRestoreDeferralFailure,
+  seedRestoreDatabase,
+  settleSeedRestoreDeferral,
+} from "../../stores/seed-restore-db";
 
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -151,8 +157,11 @@ import {
   ensureWalletKeysetCounterReady,
   advanceWalletKeysetCounterPastMint,
   recoverKeysetCountersForMint,
+  rescanBrowserRegularKeyset,
   WalletKeysetCounterReadinessError,
 } from "../cashu";
+import { retryBrowserSeedPositionRestore } from "../browserSeedPositionRestore";
+import { readSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
 
 describe("recoverKeysetCountersForMint — canonical custody", () => {
   let database: BitcasterDB | null = null;
@@ -650,7 +659,8 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect(await resyncRow(KEYSET_ID)).toMatchObject({
       pendingFromCounter: 40,
       waitReason: "scan-budget",
-      failures: 1,
+      failures: 0,
+      scanContinuations: 1,
     });
 
     wallet.mint.restore.mockClear();
@@ -668,7 +678,8 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect(await resyncRow(KEYSET_ID)).toMatchObject({
       pendingFromCounter: 80,
       waitReason: "scan-budget",
-      failures: 2,
+      failures: 0,
+      scanContinuations: 2,
     });
   }, 30_000);
 
@@ -690,6 +701,164 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       waitReason: "scan-budget",
     });
   });
+
+  it("scans past a budget window that holds a PENDING proof, and checks that proof again later", async () => {
+    // The budget stays above the gap limit, as the SDK budget does, so a resumed
+    // scan of an empty range ends.
+    scanBudget.counters = 400;
+    // Counter 5 is PENDING. The UNSPENT outputs at 500 and 750 lie beyond the first window.
+    mintSigned([5, 250, 500, 750]);
+    mintStates(
+      new Map([
+        [5, "pending"],
+        [250, "unspent"],
+        [500, "unspent"],
+        [750, "unspent"],
+      ]),
+    );
+    const scanStarts: string[] = [];
+    for (let pass = 0; pass < 3; pass++) {
+      wallet.mint.restore.mockClear();
+      await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+      scanStarts.push(requestedOutputs(0)[0]!.B_);
+    }
+
+    expect(scanStarts).toEqual([0, 400, 800].map((n) => outputOf(KEYSET_ID, n)));
+    expect(await database!.custodyProofs.count()).toBe(3);
+    // The scan ended. The PENDING proof waits in its own marker, with its backoff.
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 5,
+      waitReason: "pending-proof",
+      failures: 1,
+    });
+    expect(
+      await database!.walletCounterAssociations.get([scopeId(), MINT_URL, "msat", KEYSET_ID]),
+    ).toMatchObject({ recoveryComplete: false });
+
+    // After its backoff, the next pass checks the PENDING proof again.
+    await seedRestoreDatabase(scopeId()).resync.update([scopeId(), MINT_URL, KEYSET_ID], {
+      nextAttemptAtMs: 0,
+    });
+    mintStates(
+      new Map([
+        [5, "unspent"],
+        [250, "unspent"],
+        [500, "unspent"],
+        [750, "unspent"],
+      ]),
+    );
+    wallet.mint.restore.mockClear();
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    expect(requestedOutputs(0)[0]!.B_).toBe(outputOf(KEYSET_ID, 5));
+    expect(await database!.custodyProofs.count()).toBe(4);
+  }, 60_000);
+
+  it("keeps the position and the backoff of a continuation whose scan failed", async () => {
+    scanBudget.counters = 40;
+    wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+      restoreAnswer(outputs, (B_) => mintSignatureFor(KEYSET_ID, B_)),
+    );
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    const key: [string, string, string] = [scopeId(), MINT_URL, KEYSET_ID];
+
+    // The deferral pass records two failed scans of the continuation.
+    for (const _ of [1, 2]) {
+      await recordSeedRestoreDeferralFailure({
+        scopeId: scopeId(),
+        mintUrl: MINT_URL,
+        keysetId: KEYSET_ID,
+        nowMs: 1_000,
+      });
+    }
+    const failed = await resyncRow(KEYSET_ID);
+    expect(failed).toMatchObject({
+      pendingFromCounter: 40,
+      waitReason: "scan-budget",
+      failures: 2,
+    });
+    // The second failure backs off 30 seconds, with 25 percent jitter.
+    expect(failed!.nextAttemptAtMs).toBeGreaterThanOrEqual(1_000 + 22_500);
+
+    // After the backoff, the scan resumes at its position and still covers the lower counters.
+    await seedRestoreDatabase(scopeId()).resync.update(key, { nextAttemptAtMs: 0 });
+    wallet.mint.restore.mockClear();
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    expect(requestedOutputs(0)[0]!.B_).toBe(outputOf(KEYSET_ID, 40));
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 80,
+      waitReason: "scan-budget",
+      failures: 0,
+    });
+  }, 30_000);
+
+  it("does not move a continuation back when a forced scan from counter 0 stops at its budget", async () => {
+    scanBudget.counters = 40;
+    wallet.mint.restore.mockImplementation(async ({ outputs }: RestorePayload) =>
+      restoreAnswer(outputs, (B_) => mintSignatureFor(KEYSET_ID, B_)),
+    );
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({ pendingFromCounter: 80 });
+
+    await recoverKeysetCountersForMint(MINT_URL, {
+      force: true,
+      unit: "msat",
+      keysetId: KEYSET_ID,
+    });
+
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: 80,
+      waitReason: "scan-budget",
+    });
+  }, 30_000);
+
+  it("stops automatic continuations at the cap and shows the restore error until Retry", async () => {
+    const key: [string, string, string] = [scopeId(), MINT_URL, KEYSET_ID];
+    for (let pass = 1; pass <= SEED_RESTORE_SCAN_CONTINUATIONS_MAX + 1; pass++) {
+      await settleSeedRestoreDeferral({
+        scopeId: scopeId(),
+        mintUrl: MINT_URL,
+        keysetId: KEYSET_ID,
+        scannedFrom: (pass - 1) * 3_000,
+        pendingFrom: null,
+        continueFrom: pass * 3_000,
+        condition: null,
+        nowMs: 0,
+      });
+    }
+    const capped = (SEED_RESTORE_SCAN_CONTINUATIONS_MAX + 1) * 3_000;
+    expect(await resyncRow(KEYSET_ID)).toMatchObject({
+      pendingFromCounter: capped,
+      waitReason: "scan-budget",
+    });
+    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
+      kind: "failed",
+      scopeId: scopeId(),
+    });
+
+    // The deferral pass sends no mint request for a capped continuation.
+    mintSigned([]);
+    const result = await rescanBrowserRegularKeyset({
+      mintUrl: MINT_URL,
+      keysetId: KEYSET_ID,
+      startCounter: capped,
+    });
+    expect(result.scannedKeysets).toEqual([]);
+    expect(wallet.mint.restore).not.toHaveBeenCalled();
+
+    // Retry starts the chain again from its position.
+    await retryBrowserSeedPositionRestore(scopeId());
+    expect(await seedRestoreDatabase(scopeId()).resync.get(key)).toMatchObject({
+      pendingFromCounter: capped,
+      waitReason: "scan-budget",
+      failures: 0,
+      nextAttemptAtMs: 0,
+      scanContinuations: 0,
+    });
+    expect((await readSeedPositionRestoreStatus(scopeId())).kind).not.toBe("failed");
+    await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
+    expect(requestedOutputs(0)[0]!.B_).toBe(outputOf(KEYSET_ID, capped));
+  }, 30_000);
 
   // The default budget derives about 4,400 outputs, so this case has a longer bound.
   it("recovers a sparse proof beyond one scan budget in the next pass", async () => {

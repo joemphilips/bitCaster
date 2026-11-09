@@ -61,6 +61,8 @@ import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrd
 import type { ConditionalKeysetSeedRecoveryAuthority } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
 import {
   recordSeedRestoreCondition,
+  isSeedRestoreScanCapped,
+  readSeedRestoreResyncRow,
   recordSeedRestoreDeferral,
   requestBrowserKeysetResync,
   seedRestoreDatabase,
@@ -1642,14 +1644,18 @@ async function recoverKeysetCountersForMintCore(
             ? deferral.pendingFromCounter
             : null;
         let scanFrom = startCounter;
-        if (!opts.force && opts.startCounter === undefined && pendingFrom !== null) {
-          if (deferral!.nextAttemptAtMs > Date.now()) {
-            pendingKeysets.push(keyset.id);
-            if (deferral!.waitReason === "scan-budget") continuedKeysets.push(keyset.id);
-            continue;
-          }
-          scanFrom = pendingFrom;
+        const resumes = !opts.force && opts.startCounter === undefined && pendingFrom !== null;
+        // A continuation at its cap waits for Retry. A scan that would resume
+        // it sends no mint request.
+        const capped =
+          isSeedRestoreScanCapped(deferral) &&
+          (resumes || (opts.startCounter !== undefined && opts.startCounter >= pendingFrom!));
+        if (capped || (resumes && deferral!.nextAttemptAtMs > Date.now())) {
+          pendingKeysets.push(keyset.id);
+          if (deferral!.waitReason === "scan-budget") continuedKeysets.push(keyset.id);
+          continue;
         }
+        if (resumes) scanFrom = pendingFrom!;
         // Only a scan that covers every lower counter can complete the keyset.
         const coversLowerCounters =
           scanFrom === 0 || recoveredBefore || (pendingFrom !== null && scanFrom <= pendingFrom);
@@ -1668,6 +1674,10 @@ async function recoverKeysetCountersForMintCore(
         // The keyset stays incomplete, so a later full scan covers them.
         const continueFrom =
           scan.stop === "counter-budget" && coversLowerCounters ? scan.nextCounter : null;
+        // A PENDING proof that an earlier covering scan passed, below this scan,
+        // keeps the keyset incomplete until a later scan checks it again.
+        const passedPending = deferral === undefined ? null : deferral.pendingProofCounter;
+        const pendingBelow = passedPending !== null && passedPending < scanFrom;
         requireCapturedProfile();
         requireValidCounterRecoveryResult(lastCounterWithSignature);
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
@@ -1827,7 +1837,7 @@ async function recoverKeysetCountersForMintCore(
               keysetId: keyset.id,
               restoredNext: next,
               recovery:
-                coversLowerCounters && !proofPending && scan.stop === "gap-limit"
+                coversLowerCounters && !proofPending && !pendingBelow && scan.stop === "gap-limit"
                   ? "complete"
                   : "incomplete",
               isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
@@ -1857,8 +1867,9 @@ async function recoverKeysetCountersForMintCore(
         }).catch(() => undefined);
         scanned.push(keyset.id);
         budgetStopped ||= scan.stop === "counter-budget";
-        if (proofPending || continueFrom !== null) pendingKeysets.push(keyset.id);
-        if (!proofPending && continueFrom !== null) continuedKeysets.push(keyset.id);
+        // A continuation goes on above a PENDING proof; the proof waits beside it.
+        if (proofPending || pendingBelow || continueFrom !== null) pendingKeysets.push(keyset.id);
+        if (continueFrom !== null) continuedKeysets.push(keyset.id);
       } catch (error) {
         if (error instanceof CounterRecoveryPostponedError) {
           postponedKeysets.push(keyset.id);
@@ -1887,7 +1898,8 @@ async function recoverKeysetCountersForMintCore(
  */
 async function readCounterRecoveryDeferral(scopeId: string, mintUrl: string, keysetId: string) {
   try {
-    return await seedRestoreDatabase(scopeId).resync.get([scopeId, mintUrl, keysetId]);
+    const row = await seedRestoreDatabase(scopeId).resync.get([scopeId, mintUrl, keysetId]);
+    return row === undefined ? undefined : readSeedRestoreResyncRow(row);
   } catch {
     return undefined;
   }

@@ -130,9 +130,21 @@ export interface SeedRestoreResyncRow {
    */
   readonly pendingFromCounter: number | null;
   readonly waitReason: SeedRestoreDeferralWait | null;
-  /** Attempts in a row that did not admit the deferral. They set the backoff. */
+  /**
+   * Attempts in a row that did not admit the deferral. They set the backoff.
+   * For a `scan-budget` marker they count failed scans of the continuation.
+   */
   readonly failures: number;
   readonly nextAttemptAtMs: number;
+  /** Budget continuations in a row of the covering scan. They set its cadence and its cap. */
+  readonly scanContinuations: number;
+  /**
+   * The lowest counter of a PENDING proof that the covering scan passed while
+   * it continues. When the scan ends, the marker moves here.
+   */
+  readonly pendingProofCounter: number | null;
+  /** The `failures` of the PENDING proof marker, kept while the scan continues. */
+  readonly pendingProofFailures: number;
 }
 
 /** The evidence-triggered re-sync of keysets in use for one wallet mint. */
@@ -176,6 +188,14 @@ const BACKOFF_MAX_MS = 15 * 60_000;
  * that signs every queried output cannot keep the wallet scanning.
  */
 const SCAN_BUDGET_CONTINUATIONS_AT_ONCE = 10;
+/**
+ * Scan continuations in a row of one keyset (300,000 counters at the SDK
+ * budget) before automatic continuation stops. The restore then shows its
+ * persistent error with Retry.
+ */
+export const SEED_RESTORE_SCAN_CONTINUATIONS_MAX = 100;
+/** Failures in a row that show the persistent restore error with Retry. */
+export const SEED_RESTORE_PERSISTENT_FAILURES = 3;
 
 /** The delay before the next attempt after `failures` failed attempts in a row. */
 export function seedRestoreBackoffMs(failures: number): number {
@@ -202,6 +222,23 @@ export function initialSeedRestoreResyncRow(
     waitReason: null,
     failures: 0,
     nextAttemptAtMs: 0,
+    scanContinuations: 0,
+    pendingProofCounter: null,
+    pendingProofFailures: 0,
+  };
+}
+
+/**
+ * A row that an earlier release wrote has no scan continuation fields. They
+ * mean no continuation and no PENDING proof left behind.
+ */
+export function readSeedRestoreResyncRow(row: SeedRestoreResyncRow): SeedRestoreResyncRow {
+  const stored = row as Partial<SeedRestoreResyncRow>;
+  return {
+    ...row,
+    scanContinuations: stored.scanContinuations ?? 0,
+    pendingProofCounter: stored.pendingProofCounter ?? null,
+    pendingProofFailures: stored.pendingProofFailures ?? 0,
   };
 }
 
@@ -285,17 +322,20 @@ export async function recordSeedRestoreCondition(input: {
 
 /**
  * Settles the deferral of one keyset after a scan from `scannedFrom`
- * admitted its verified UNSPENT proofs. A PENDING proof keeps a marker at
- * its counter and backs off. A scan that stopped at its counter budget keeps
- * a marker where it stopped, and the next pass continues from there. A lower
- * marker that the scan did not cover stays.
+ * admitted its verified UNSPENT proofs. A lower marker that the scan did not
+ * cover stays.
+ *
+ * A covering scan that stopped at its counter budget keeps a marker where it
+ * stopped, and the next pass continues from there. An existing continuation
+ * never moves back. A PENDING proof that the scan passed waits beside the
+ * continuation; when the scan ends, the marker moves to it and backs off.
  */
 export async function settleSeedRestoreDeferral(input: {
   readonly scopeId: string;
   readonly mintUrl: string;
   readonly keysetId: string;
   readonly scannedFrom: number;
-  /** The lowest counter of a PENDING proof, or null when none waits. */
+  /** The lowest counter of a PENDING proof that this scan found, or null. */
   readonly pendingFrom: number | null;
   /**
    * Where a scan that covered every lower counter stopped at its counter
@@ -308,55 +348,105 @@ export async function settleSeedRestoreDeferral(input: {
   const database = seedRestoreDatabase(input.scopeId);
   await database.transaction("rw", database.resync, async () => {
     const key: [string, string, string] = [input.scopeId, input.mintUrl, input.keysetId];
-    const existing = await database.resync.get(key);
+    const stored = await database.resync.get(key);
+    const row =
+      stored === undefined
+        ? initialSeedRestoreResyncRow(input.scopeId, input.mintUrl, input.keysetId)
+        : readSeedRestoreResyncRow(stored);
     if (
       input.pendingFrom === null &&
       input.continueFrom === null &&
-      existing?.pendingFromCounter == null
+      row.pendingFromCounter === null &&
+      row.pendingProofCounter === null
     ) {
       return;
     }
-    const row =
-      existing ?? initialSeedRestoreResyncRow(input.scopeId, input.mintUrl, input.keysetId);
     if (row.pendingFromCounter !== null && row.pendingFromCounter < input.scannedFrom) return;
-    // A PENDING proof lies below any budget stop, so its marker also covers
-    // the rest of the scan. Only a scan without one keeps a continuation.
-    if (input.pendingFrom === null && input.continueFrom !== null) {
-      const failures = row.waitReason === "scan-budget" ? row.failures + 1 : 1;
+    // A PENDING proof that this scan did not check again: below its start, or
+    // above the counter where it stopped.
+    const unchecked = (counter: number | null) =>
+      counter !== null &&
+      (counter < input.scannedFrom ||
+        (input.continueFrom !== null && counter >= input.continueFrom))
+        ? counter
+        : null;
+    const pendingProof = lowest(
+      lowest(
+        unchecked(row.pendingProofCounter),
+        row.waitReason === "pending-proof" ? unchecked(row.pendingFromCounter) : null,
+      ),
+      input.pendingFrom,
+    );
+    const pendingProofFailures =
+      row.waitReason === "pending-proof" ? row.failures : row.pendingProofFailures;
+    if (input.continueFrom !== null) {
+      const continuing = row.waitReason === "scan-budget" && row.pendingFromCounter !== null;
+      const scanContinuations = (continuing ? row.scanContinuations : 0) + 1;
+      const capped = scanContinuations > SEED_RESTORE_SCAN_CONTINUATIONS_MAX;
       await database.resync.put({
         ...row,
         condition: input.condition ?? row.condition,
-        pendingFromCounter: requireCounter(input.continueFrom, "scan continuation counter"),
+        pendingFromCounter: requireCounter(
+          continuing ? Math.max(row.pendingFromCounter!, input.continueFrom) : input.continueFrom,
+          "scan continuation counter",
+        ),
         waitReason: "scan-budget",
-        failures,
+        scanContinuations,
+        pendingProofCounter: pendingProof,
+        pendingProofFailures: pendingProof === null ? 0 : pendingProofFailures,
+        // At the cap the restore shows its persistent error. Only Retry continues.
+        failures: capped ? Math.max(row.failures, SEED_RESTORE_PERSISTENT_FAILURES) : 0,
         nextAttemptAtMs:
           input.nowMs +
-          (failures <= SCAN_BUDGET_CONTINUATIONS_AT_ONCE
-            ? 0
-            : seedRestoreBackoffMs(failures - SCAN_BUDGET_CONTINUATIONS_AT_ONCE)),
+          (capped
+            ? BACKOFF_MAX_MS
+            : scanContinuations <= SCAN_BUDGET_CONTINUATIONS_AT_ONCE
+              ? 0
+              : seedRestoreBackoffMs(scanContinuations - SCAN_BUDGET_CONTINUATIONS_AT_ONCE)),
       });
       return;
     }
-    if (input.pendingFrom === null) {
+    if (pendingProof === null) {
       await database.resync.put({
         ...row,
         pendingFromCounter: null,
         waitReason: null,
         failures: 0,
         nextAttemptAtMs: 0,
+        scanContinuations: 0,
+        pendingProofCounter: null,
+        pendingProofFailures: 0,
       });
       return;
     }
-    const failures = row.waitReason === "pending-proof" ? row.failures + 1 : 1;
+    const failures = pendingProofFailures + 1;
     await database.resync.put({
       ...row,
       condition: input.condition ?? row.condition,
-      pendingFromCounter: requireCounter(input.pendingFrom, "pending counter"),
+      pendingFromCounter: requireCounter(pendingProof, "pending counter"),
       waitReason: "pending-proof",
       failures,
       nextAttemptAtMs: input.nowMs + seedRestoreBackoffMs(failures),
+      scanContinuations: 0,
+      pendingProofCounter: null,
+      pendingProofFailures: 0,
     });
   });
+}
+
+/** True when automatic continuation of this marker stopped at the cap. Only Retry resumes it. */
+export function isSeedRestoreScanCapped(row: SeedRestoreResyncRow | undefined): boolean {
+  return (
+    row !== undefined &&
+    row.waitReason === "scan-budget" &&
+    readSeedRestoreResyncRow(row).scanContinuations > SEED_RESTORE_SCAN_CONTINUATIONS_MAX
+  );
+}
+
+function lowest(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
 }
 
 /** Postpones one deferral without a failure, for example while local work is in flight. */
@@ -377,7 +467,10 @@ export async function postponeSeedRestoreDeferral(input: {
   });
 }
 
-/** Records a failed admission of one deferral and backs it off. */
+/**
+ * Records a failed admission of one deferral and backs it off. A failed scan
+ * of a continuation keeps its position, its coverage, and its backoff.
+ */
 export async function recordSeedRestoreDeferralFailure(input: {
   readonly scopeId: string;
   readonly mintUrl: string;
@@ -388,6 +481,18 @@ export async function recordSeedRestoreDeferralFailure(input: {
   await database.transaction("rw", database.resync, async () => {
     const row = await database.resync.get([input.scopeId, input.mintUrl, input.keysetId]);
     if (row?.pendingFromCounter == null) return;
+    if (row.waitReason === "scan-budget") {
+      const failures = row.failures + 1;
+      await database.resync.put({
+        ...row,
+        failures,
+        nextAttemptAtMs: Math.max(
+          row.nextAttemptAtMs,
+          input.nowMs + seedRestoreBackoffMs(failures),
+        ),
+      });
+      return;
+    }
     const failures = row.waitReason === "admission-failed" ? row.failures + 1 : 1;
     await database.resync.put({
       ...row,

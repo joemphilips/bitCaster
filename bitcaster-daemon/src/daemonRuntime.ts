@@ -1,4 +1,5 @@
 import type { Server } from 'node:http'
+import { boundedErrorText } from './mintErrorText.ts'
 import { createOrderTimelineStderrSink } from './orderTimeline.ts'
 import { randomUUID } from 'node:crypto'
 import {
@@ -330,12 +331,11 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         onResult: (result) => {
           logRangeRecovery(result)
           void wakeManagedConditionRetirements().catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error)
-            process.stderr.write(`Condition retirement wake failed: ${message}\n`)
+            process.stderr.write(`Condition retirement wake failed: ${boundedErrorText(error)}\n`)
           })
         },
         onError: (error: Error) => {
-          process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
+          process.stderr.write(`Range recovery sweep failed: ${boundedErrorText(error)}\n`)
         },
       })
     rangeRecoveryLoop?.accept(initialRangeRecovery)
@@ -593,7 +593,9 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         }
       },
       onError: (error: Error) => {
-        process.stderr.write(`Automatic non-retirement custody recovery failed: ${error.message}\n`)
+        process.stderr.write(
+          `Automatic non-retirement custody recovery failed: ${boundedErrorText(error)}\n`,
+        )
       },
       retryAfterError: () => readiness.isRetryPending(),
     })

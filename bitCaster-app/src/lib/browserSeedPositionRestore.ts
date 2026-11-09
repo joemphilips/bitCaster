@@ -37,6 +37,7 @@ import {
   postponeSeedRestoreDeferral,
   recordSeedRestoreDeferral,
   recordSeedRestoreDeferralFailure,
+  SEED_RESTORE_PERSISTENT_FAILURES,
   seedRestoreBackoffMs,
   seedRestoreDatabase,
   type SeedRestoreCondition,
@@ -63,7 +64,7 @@ const ROUND_PROBE_OUTPUTS = 1024;
 const ROUND_FULL_SCANS = 4;
 const PASS_TIME_BUDGET_MS = 15_000;
 /** After this many failures in a row, the UI shows a persistent error. */
-export const SEED_RESTORE_PERSISTENT_FAILURES = 3;
+export { SEED_RESTORE_PERSISTENT_FAILURES };
 const ASSET_MONITORING_HINT_PAGES = 4;
 /** Pages of the unfiltered mint listing that the re-sync reads to find one keyset. */
 const RESYNC_RESOLVE_LISTING_PAGES = 20;
@@ -195,6 +196,10 @@ export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<
       await ofScope(database.resync).modify((row: SeedRestoreResyncRow) => {
         if (row.waitReason === "admission-failed") {
           Object.assign(row, { failures: 0, nextAttemptAtMs: 0 });
+        }
+        // A scan continuation also starts a new chain: a new backoff and a new cap.
+        if (row.waitReason === "scan-budget") {
+          Object.assign(row, { failures: 0, nextAttemptAtMs: 0, scanContinuations: 0 });
         }
       });
       await ofScope(database.resyncSchedules).modify((row) => {

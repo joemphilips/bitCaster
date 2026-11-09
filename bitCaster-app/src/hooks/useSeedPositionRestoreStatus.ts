@@ -51,7 +51,8 @@ export async function readSeedPositionRestoreStatus(
     deferrals.some(
       (row) =>
         row.pendingFromCounter !== null &&
-        row.waitReason === "admission-failed" &&
+        // A continuation that keeps failing, or that stopped at its cap, shows the error too.
+        (row.waitReason === "admission-failed" || row.waitReason === "scan-budget") &&
         row.failures >= SEED_RESTORE_PERSISTENT_FAILURES,
     )
   ) {

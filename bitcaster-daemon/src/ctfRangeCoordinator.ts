@@ -2,9 +2,9 @@ import { readRangePreparation, toSdkRangePreparationRecord } from './ctfRangeOrd
 import { decodeCtfRangeOrderPreparationFromRecord } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
-  decodeDurableSeedDerivedOutputPlan,
   matchDurableSeedDerivedProofsToPlan,
 } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
+import { decodeReplacedCtfRangeRefundOutputPlans } from '@bitcaster-market/client-sdk/ctfRangeRefundReplacedPlans'
 import { isDeepStrictEqual } from 'node:util'
 import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
@@ -948,13 +948,7 @@ function refundOutputsOfProofs(
       outputs: current,
     }),
   ]
-  if (Object.hasOwn(refund.metadata, 'replacedRefundOutputPlans')) {
-    const replaced: unknown = refund.metadata.replacedRefundOutputPlans
-    if (!Array.isArray(replaced) || replaced.length === 0) {
-      throw new Error('daemon CTF range refund replaced output plans are invalid')
-    }
-    plans.push(...replaced.map(decodeDurableSeedDerivedOutputPlan).reverse())
-  }
+  plans.push(...[...decodeReplacedCtfRangeRefundOutputPlans(refund.metadata)].reverse())
   for (const plan of plans) {
     if (plan.keysetId !== keysetId) continue
     try {

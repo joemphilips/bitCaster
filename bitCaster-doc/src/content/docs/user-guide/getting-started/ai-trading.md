@@ -151,12 +151,19 @@ remaining funds. You can submit a new order.
 After other failures, the funds stay reserved, and the daemon checks the result again. The interval
 increases after each failed check, up to 15 minutes. `order recovery` shows the order operations
 that the daemon still recovers, and the order attempts that a mint refusal ended. If the mint refuses
-the same check five times, the daemon stops the automatic checks. The entry then shows
-`"halted": true`, the mint code, and a `retryCommand`, for example
-`bitcaster-cli order retry <operation-id>`. Run that command to send the check one more time. A
+the same request five times with the same code, the daemon stops the automatic checks. The entry
+then shows `"halted": true`, the mint code, and a `retryCommand`, for example
+`bitcaster-cli order retry <operation-id>`. A refund also stops at once when the mint holds the
+outputs of an earlier output plan of that refund, but not the outputs of its current plan. The
+daemon does not use those outputs as the refund. That entry shows `"halted": true` and a
+`retryCommand`, but no `mintError`. Run the `retryCommand` to send the check one more time. A
 daemon restart also starts the automatic checks again. `order retry` supports `--dry-run`. While
 an earlier sell in a market still prepares its funds, `order submit` refuses a new sell in that
 market with the code `order-sell-preparation-pending` and reserves no funds.
+
+When another wallet command fails because of a mint answer, the `error` text is fixed. A coded
+refusal shows "mint request was refused (mint code 11001)", with the code and a short detail in
+`mintError`. Another mint HTTP answer shows "mint request failed (HTTP 502)".
 
 ## Keep your funds safe
 
