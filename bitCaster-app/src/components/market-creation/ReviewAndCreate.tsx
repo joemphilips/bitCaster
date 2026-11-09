@@ -186,9 +186,11 @@ export function ReviewAndCreate({
           {basicInfo && (
             <div className="flex items-start gap-3">
               <FileText className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
-              <div>
+              <div className="min-w-0">
                 <p className="text-xs text-slate-400">{t("marketCreation.titleSummaryLabel")}</p>
-                <p className="text-sm text-white">{basicInfo.title || t("common.untitled")}</p>
+                <p className="text-sm text-white [overflow-wrap:anywhere]">
+                  {basicInfo.title || t("common.untitled")}
+                </p>
               </div>
             </div>
           )}
