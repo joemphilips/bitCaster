@@ -1,0 +1,1439 @@
+{
+  "source": "bitCaster 52d412a1 (release 4, cli-v0.1.0-afaa6cc6aa6b tree): the shipped writers in src/stores/__tests__/release4-wallet-fixture-generator.test.ts of a git archive export",
+  "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+  "databases": [
+    {
+      "name": "bitcaster-wallet-e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+      "version": 21,
+      "tables": [
+        {
+          "name": "ctfRangeMessages",
+          "schema": "[scopeId+operationId+revision+code], [scopeId+status+observedAtMs+operationId+revision+code]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "range:release4",
+              "revision": 1,
+              "code": "order-rejected",
+              "status": "unread",
+              "observedAtMs": 20,
+              "message": "The order was not accepted."
+            }
+          ]
+        },
+        {
+          "name": "ctfRangePreparationConsolidations",
+          "schema": "[scopeId+rangeOperationId+round], &[scopeId+operationId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "rangeOperationId": "range:release4",
+              "round": 0,
+              "operationId": "consolidate:release4"
+            }
+          ]
+        },
+        {
+          "name": "ctfRangePreparations",
+          "schema": "[scopeId+rangeOperationId], scopeId, [scopeId+clientOrderId], [scopeId+lifecycleState+createdAtMs+rangeOperationId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "rangeOperationId": "range:release4",
+              "clientOrderId": "client-order-release4",
+              "lifecycleState": "prepared",
+              "createdAtMs": 20,
+              "updatedAtMs": 20
+            }
+          ]
+        },
+        {
+          "name": "ctfRangePreparationSources",
+          "schema": "[scopeId+rangeOperationId], &[scopeId+sourceOperationId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "rangeOperationId": "range:release4",
+              "sourceOperationId": "source:release4"
+            }
+          ]
+        },
+        {
+          "name": "custodyActiveWork",
+          "schema": "[scopeId+operationId], [scopeId+nextAttemptAtMs+operationId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "receive:release4-regular",
+              "nextAttemptAtMs": 30
+            }
+          ]
+        },
+        {
+          "name": "custodyArtifacts",
+          "schema": "[scopeId+operationId+artifactId], [scopeId+operationId]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:output",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:output",
+                "encoding": "canonical-json",
+                "fingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                "byteLength": 276
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "inventoryAuthorityFingerprint": "e5bf78c31abc7755abb26d0f2191c4e956417d7c32fdd398b9dea0d12480ec75",
+                  "proofs": [
+                    {
+                      "proofId": "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c",
+                      "proofFingerprint": "aabd35689e77c716ec41c4070c94b04d2f7e5d539105a4963eba05c0a2d08271"
+                    }
+                  ]
+                },
+                "fingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:private",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:private",
+                "encoding": "canonical-json",
+                "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                "byteLength": 30
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "kind": "no-private-material"
+                },
+                "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:request",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:request",
+                "encoding": "canonical-json",
+                "fingerprint": "ad9a8ec1109a1f7b67bff7fd3d5c657c30b213065e887cab498c11158e03baff",
+                "byteLength": 138
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "kind": "completed-proof-import",
+                  "sourceOperationId": "receive:release4-conditional",
+                  "normalizedMint": "https://mint.example",
+                  "unit": "msat"
+                },
+                "fingerprint": "ad9a8ec1109a1f7b67bff7fd3d5c657c30b213065e887cab498c11158e03baff"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:result",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:result",
+                "encoding": "canonical-json",
+                "fingerprint": "06bea03a875b85c067a26f45fdb786bd89a86ef878fe5958fc19b3b8dddcb9bf",
+                "byteLength": 462
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "proofs": [
+                    {
+                      "proofId": "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c",
+                      "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                      "curve": "secp256k1",
+                      "exactProof": {
+                        "schemaVersion": 1,
+                        "id": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                        "amount": "1",
+                        "secret": "release4-conditional-proof",
+                        "C": "022222222222222222222222222222222222222222222222222222222222222222",
+                        "dleq": null,
+                        "p2pkE": null,
+                        "witness": null
+                      }
+                    }
+                  ]
+                },
+                "fingerprint": "06bea03a875b85c067a26f45fdb786bd89a86ef878fe5958fc19b3b8dddcb9bf"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:output",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:output",
+                "encoding": "canonical-json",
+                "fingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                "byteLength": 276
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "inventoryAuthorityFingerprint": "fdf0a1aa9226ad326e4eae7efa1490741151aac3e2f34aa7e2fe0a5466d6bec7",
+                  "proofs": [
+                    {
+                      "proofId": "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123",
+                      "proofFingerprint": "3d2f34427ca7250bef0eb0293856a7da7fb51e4c59ae17eb7fecc676612aeb61"
+                    }
+                  ]
+                },
+                "fingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:private",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:private",
+                "encoding": "canonical-json",
+                "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                "byteLength": 30
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "kind": "no-private-material"
+                },
+                "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:request",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:request",
+                "encoding": "canonical-json",
+                "fingerprint": "e2588ad55723fd92e79c1cbdff0ce87b1f49ea1b30867f10c67de36d1295cbc2",
+                "byteLength": 133
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "kind": "completed-proof-import",
+                  "sourceOperationId": "receive:release4-regular",
+                  "normalizedMint": "https://mint.example",
+                  "unit": "sat"
+                },
+                "fingerprint": "e2588ad55723fd92e79c1cbdff0ce87b1f49ea1b30867f10c67de36d1295cbc2"
+              },
+              "revision": 0
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:result",
+              "reference": {
+                "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:result",
+                "encoding": "canonical-json",
+                "fingerprint": "983deb4ad5e93f9d71f8149d6676bef06b92bdda7c332e0fa2bcb1a61bfe9f94",
+                "byteLength": 458
+              },
+              "artifact": {
+                "encoding": "canonical-json",
+                "artifact": {
+                  "proofs": [
+                    {
+                      "proofId": "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123",
+                      "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+                      "curve": "secp256k1",
+                      "exactProof": {
+                        "schemaVersion": 1,
+                        "id": "013333333333333333333333333333333333333333333333333333333333333333",
+                        "amount": "8",
+                        "secret": "release4-regular-proof",
+                        "C": "022222222222222222222222222222222222222222222222222222222222222222",
+                        "dleq": null,
+                        "p2pkE": null,
+                        "witness": null
+                      }
+                    }
+                  ]
+                },
+                "fingerprint": "983deb4ad5e93f9d71f8149d6676bef06b92bdda7c332e0fa2bcb1a61bfe9f94"
+              },
+              "revision": 0
+            }
+          ]
+        },
+        {
+          "name": "custodyConditionalKeysets",
+          "schema": "[scopeId+normalizedMint+unit+keysetId], [scopeId+normalizedMint+unit+conditionId+outcomeCollectionId]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "schemaVersion": 1,
+              "normalizedMint": "https://mint.example",
+              "unit": "msat",
+              "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+              "denominationPublicKeys": {
+                "1": "022222222222222222222222222222222222222222222222222222222222222222"
+              },
+              "inputFeePpk": 100,
+              "conditionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "outcomeCollection": "YES",
+              "outcomeCollectionId": "def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e",
+              "registeredAtUnixSeconds": 0,
+              "finalExpiryUnixSeconds": 100,
+              "curve": "secp256k1",
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4"
+            }
+          ]
+        },
+        {
+          "name": "custodyOperations",
+          "schema": "[scopeId+operationId], [scopeId+operationState]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "revision": 2,
+              "operationState": "reconciled",
+              "nextAttemptAtMs": null,
+              "estimatedBytes": 6001,
+              "record": {
+                "schemaVersion": 1,
+                "revision": 2,
+                "scope": {
+                  "scopeKind": "wallet",
+                  "walletId": "e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                  "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4"
+                },
+                "operation": {
+                  "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+                  "retainedOperationKey": "completed-proof-import:receive:release4-conditional",
+                  "binding": {
+                    "kind": "wallet",
+                    "activityId": "receive:release4-conditional",
+                    "stage": "receive"
+                  },
+                  "semanticKind": "generic-receive",
+                  "state": "reconciled",
+                  "terminalReplayEvidenceRequired": false,
+                  "custodyContext": {
+                    "normalizedMint": "https://mint.example",
+                    "unit": "msat",
+                    "inventoryAccountId": null
+                  },
+                  "reservation": {
+                    "reservationId": "reservation:completed-proof-import:receive:release4-conditional",
+                    "parentReservationId": null,
+                    "inputs": []
+                  },
+                  "exactRequest": {
+                    "requestId": "request:completed-proof-import:receive:release4-conditional",
+                    "requestFingerprint": "ad9a8ec1109a1f7b67bff7fd3d5c657c30b213065e887cab498c11158e03baff",
+                    "payloadHandle": "request-payload:completed-proof-import:receive:release4-conditional",
+                    "inputProofIds": [],
+                    "outputPlanFingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                    "method": "POST",
+                    "path": "/internal/custody/completed-proof-import",
+                    "idempotencyKey": "receive:release4-conditional",
+                    "body": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:request",
+                      "encoding": "canonical-json",
+                      "fingerprint": "ad9a8ec1109a1f7b67bff7fd3d5c657c30b213065e887cab498c11158e03baff",
+                      "byteLength": 138
+                    }
+                  },
+                  "outputPlan": {
+                    "outputPlanId": "output-plan:completed-proof-import:receive:release4-conditional",
+                    "outputPlanFingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                    "outputMaterialHandle": "output-material:completed-proof-import:receive:release4-conditional",
+                    "exactOutput": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:output",
+                      "encoding": "canonical-json",
+                      "fingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                      "byteLength": 276
+                    }
+                  },
+                  "privateMaterial": {
+                    "materialHandle": "private-material:completed-proof-import:receive:release4-conditional",
+                    "useId": "private-use:completed-proof-import:receive:release4-conditional",
+                    "publicFingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                    "exactPrivateMaterial": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:private",
+                      "encoding": "canonical-json",
+                      "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                      "byteLength": 30
+                    }
+                  },
+                  "result": {
+                    "state": "applied",
+                    "resultHandle": "proof-import-result:06bea03a875b85c067a26f45fdb786bd89a86ef878fe5958fc19b3b8dddcb9bf",
+                    "resultFingerprint": "06bea03a875b85c067a26f45fdb786bd89a86ef878fe5958fc19b3b8dddcb9bf",
+                    "outputPlanFingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                    "exactResult": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional:result",
+                      "encoding": "canonical-json",
+                      "fingerprint": "06bea03a875b85c067a26f45fdb786bd89a86ef878fe5958fc19b3b8dddcb9bf",
+                      "byteLength": 462
+                    }
+                  },
+                  "terminalMintRejection": null,
+                  "proofStorage": {
+                    "storageClass": "pinned-operation-bound-deterministic",
+                    "pinReasons": [],
+                    "lineage": {
+                      "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                      "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+                      "predecessorProofIds": [],
+                      "successorProofIds": [
+                        "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c"
+                      ],
+                      "successorAdmissionMode": "exact",
+                      "selectedSuccessorProofIds": [
+                        "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c"
+                      ],
+                      "successorAdmission": {
+                        "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                        "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+                        "admissionId": "proof-import:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+                        "proofRows": [
+                          {
+                            "proofId": "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c",
+                            "expectedRevision": null,
+                            "admittedRevision": 0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "deliveryKind": "none",
+                    "deliveryId": null,
+                    "exactPayload": null,
+                    "expiresAtMs": null,
+                    "state": "none",
+                    "receipt": null
+                  },
+                  "verification": {
+                    "outputPlanFingerprint": "2c9b19c006dd5cf3cc9350641fd98aaae6a981e18cf69efa7b3dcfe459a99b1e",
+                    "hasOutputs": true,
+                    "keysetBindings": [
+                      {
+                        "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                        "curve": "secp256k1",
+                        "keysetFingerprint": "e148a55578551f767ca6b5bc2821e1b0a021e3cbaf8615c1286744703fedba61",
+                        "requireDleq": false
+                      }
+                    ],
+                    "inputKeysets": [],
+                    "outputKeysets": [
+                      {
+                        "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                        "curve": "secp256k1"
+                      }
+                    ]
+                  },
+                  "retry": {
+                    "attempt": 0,
+                    "nextAttemptAtMs": null,
+                    "reason": "none"
+                  },
+                  "horizon": {
+                    "notBeforeMs": null,
+                    "notAfterMs": null,
+                    "safetyMarginMs": 0,
+                    "keysetExpiryMs": null
+                  }
+                },
+                "terminalTombstone": null
+              }
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "revision": 2,
+              "operationState": "reconciled",
+              "nextAttemptAtMs": null,
+              "estimatedBytes": 5896,
+              "record": {
+                "schemaVersion": 1,
+                "revision": 2,
+                "scope": {
+                  "scopeKind": "wallet",
+                  "walletId": "e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                  "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4"
+                },
+                "operation": {
+                  "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+                  "retainedOperationKey": "completed-proof-import:receive:release4-regular",
+                  "binding": {
+                    "kind": "wallet",
+                    "activityId": "receive:release4-regular",
+                    "stage": "receive"
+                  },
+                  "semanticKind": "generic-receive",
+                  "state": "reconciled",
+                  "terminalReplayEvidenceRequired": false,
+                  "custodyContext": {
+                    "normalizedMint": "https://mint.example",
+                    "unit": "sat",
+                    "inventoryAccountId": null
+                  },
+                  "reservation": {
+                    "reservationId": "reservation:completed-proof-import:receive:release4-regular",
+                    "parentReservationId": null,
+                    "inputs": []
+                  },
+                  "exactRequest": {
+                    "requestId": "request:completed-proof-import:receive:release4-regular",
+                    "requestFingerprint": "e2588ad55723fd92e79c1cbdff0ce87b1f49ea1b30867f10c67de36d1295cbc2",
+                    "payloadHandle": "request-payload:completed-proof-import:receive:release4-regular",
+                    "inputProofIds": [],
+                    "outputPlanFingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                    "method": "POST",
+                    "path": "/internal/custody/completed-proof-import",
+                    "idempotencyKey": "receive:release4-regular",
+                    "body": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:request",
+                      "encoding": "canonical-json",
+                      "fingerprint": "e2588ad55723fd92e79c1cbdff0ce87b1f49ea1b30867f10c67de36d1295cbc2",
+                      "byteLength": 133
+                    }
+                  },
+                  "outputPlan": {
+                    "outputPlanId": "output-plan:completed-proof-import:receive:release4-regular",
+                    "outputPlanFingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                    "outputMaterialHandle": "output-material:completed-proof-import:receive:release4-regular",
+                    "exactOutput": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:output",
+                      "encoding": "canonical-json",
+                      "fingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                      "byteLength": 276
+                    }
+                  },
+                  "privateMaterial": {
+                    "materialHandle": "private-material:completed-proof-import:receive:release4-regular",
+                    "useId": "private-use:completed-proof-import:receive:release4-regular",
+                    "publicFingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                    "exactPrivateMaterial": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:private",
+                      "encoding": "canonical-json",
+                      "fingerprint": "d342ab230647b7d9a3f4493e29e248d537462ffa639e7dcb72b78feb9dfe9783",
+                      "byteLength": 30
+                    }
+                  },
+                  "result": {
+                    "state": "applied",
+                    "resultHandle": "proof-import-result:983deb4ad5e93f9d71f8149d6676bef06b92bdda7c332e0fa2bcb1a61bfe9f94",
+                    "resultFingerprint": "983deb4ad5e93f9d71f8149d6676bef06b92bdda7c332e0fa2bcb1a61bfe9f94",
+                    "outputPlanFingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                    "exactResult": {
+                      "artifactId": "artifact:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular:result",
+                      "encoding": "canonical-json",
+                      "fingerprint": "983deb4ad5e93f9d71f8149d6676bef06b92bdda7c332e0fa2bcb1a61bfe9f94",
+                      "byteLength": 458
+                    }
+                  },
+                  "terminalMintRejection": null,
+                  "proofStorage": {
+                    "storageClass": "pinned-operation-bound-deterministic",
+                    "pinReasons": [],
+                    "lineage": {
+                      "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                      "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+                      "predecessorProofIds": [],
+                      "successorProofIds": [
+                        "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123"
+                      ],
+                      "successorAdmissionMode": "exact",
+                      "selectedSuccessorProofIds": [
+                        "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123"
+                      ],
+                      "successorAdmission": {
+                        "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                        "operationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+                        "admissionId": "proof-import:custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+                        "proofRows": [
+                          {
+                            "proofId": "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123",
+                            "expectedRevision": null,
+                            "admittedRevision": 0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "deliveryKind": "none",
+                    "deliveryId": null,
+                    "exactPayload": null,
+                    "expiresAtMs": null,
+                    "state": "none",
+                    "receipt": null
+                  },
+                  "verification": {
+                    "outputPlanFingerprint": "6dd99077efd0be16daa4331711a4b86685635d36205499f22e9cd1de3b9f9b09",
+                    "hasOutputs": true,
+                    "keysetBindings": [
+                      {
+                        "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+                        "curve": "secp256k1",
+                        "keysetFingerprint": "09e13d3ecd8e184a3120228a34ce8a6aa14d2a735813ed6d7ce7deb01548a526",
+                        "requireDleq": false
+                      }
+                    ],
+                    "inputKeysets": [],
+                    "outputKeysets": [
+                      {
+                        "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+                        "curve": "secp256k1"
+                      }
+                    ]
+                  },
+                  "retry": {
+                    "attempt": 0,
+                    "nextAttemptAtMs": null,
+                    "reason": "none"
+                  },
+                  "horizon": {
+                    "notBeforeMs": null,
+                    "notAfterMs": null,
+                    "safetyMarginMs": 0,
+                    "keysetExpiryMs": null
+                  }
+                },
+                "terminalTombstone": null
+              }
+            }
+          ]
+        },
+        {
+          "name": "custodyProofBackupAuthorities",
+          "schema": "[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "schemaVersion": 4,
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "proofId": "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c",
+              "proofFingerprint": "aabd35689e77c716ec41c4070c94b04d2f7e5d539105a4963eba05c0a2d08271",
+              "proofRevision": 0,
+              "proofState": "selectable",
+              "terminalOperationId": null,
+              "terminalAuthority": null,
+              "recordCreatedAtUnixSeconds": 0,
+              "recordUpdatedAtUnixSeconds": 0,
+              "derivationLocator": {
+                "schemaVersion": 1,
+                "kind": "nut13",
+                "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                "counter": 0
+              },
+              "updatedAtMs": 10,
+              "admissionOperationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-conditional:receive:completed-proof-import%3Areceive%3Arelease4-conditional",
+              "backupState": "local-only",
+              "backupRecordId": null,
+              "backupRecordCommitment": null
+            },
+            {
+              "schemaVersion": 4,
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "proofId": "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123",
+              "proofFingerprint": "3d2f34427ca7250bef0eb0293856a7da7fb51e4c59ae17eb7fecc676612aeb61",
+              "proofRevision": 0,
+              "proofState": "selectable",
+              "terminalOperationId": null,
+              "terminalAuthority": null,
+              "recordCreatedAtUnixSeconds": 0,
+              "recordUpdatedAtUnixSeconds": 0,
+              "derivationLocator": {
+                "schemaVersion": 1,
+                "kind": "nut13",
+                "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+                "counter": 7
+              },
+              "updatedAtMs": 10,
+              "admissionOperationId": "custody-operation:custody%3Awallet%3Ae860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4:wallet:receive%3Arelease4-regular:receive:completed-proof-import%3Areceive%3Arelease4-regular",
+              "backupState": "local-only",
+              "backupRecordId": null,
+              "backupRecordCommitment": null
+            }
+          ]
+        },
+        {
+          "name": "custodyProofs",
+          "schema": "[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+conditionId+selectability+proofId]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "normalizedMint": "https://mint.example",
+              "unit": "msat",
+              "assetKind": "conditional",
+              "conditionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "outcomeCollection": "YES",
+              "baseAsset": "sat",
+              "proofId": "1dc5e1f3ee397818dcdd41661790d7d853460bfffacbd4fe5ebadfc554e16c4c",
+              "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+              "amount": 1,
+              "proofBody": {
+                "$uint8array": "eyJDIjoiMDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIiwiYW1vdW50IjoiMSIsImRsZXEiOm51bGwsImlkIjoiMDE5NGU0MDJhNWY4NmUzMWRkYWQzY2EzZjkzYjkwODJjYzlkYzI5YzYzZDc1ZTkyNjc0MjAzYjRkMjVlNjQ3OGY5IiwicDJwa0UiOm51bGwsInNjaGVtYVZlcnNpb24iOjEsInNlY3JldCI6InJlbGVhc2U0LWNvbmRpdGlvbmFsLXByb29mIiwid2l0bmVzcyI6bnVsbH0="
+              },
+              "proofFingerprint": "aabd35689e77c716ec41c4070c94b04d2f7e5d539105a4963eba05c0a2d08271",
+              "curve": "secp256k1",
+              "dleqPresence": "not-present",
+              "revision": 0,
+              "selectability": "selectable",
+              "reservationOperationId": null,
+              "receivedAtMs": 10
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "normalizedMint": "https://mint.example",
+              "unit": "sat",
+              "assetKind": "regular",
+              "conditionId": null,
+              "outcomeCollection": null,
+              "baseAsset": "sat",
+              "proofId": "8624d22bf3c7129380176befedda641bd2f9a9e1e5be4d54d9b303acad743123",
+              "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+              "amount": 8,
+              "proofBody": {
+                "$uint8array": "eyJDIjoiMDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIiwiYW1vdW50IjoiOCIsImRsZXEiOm51bGwsImlkIjoiMDEzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzIiwicDJwa0UiOm51bGwsInNjaGVtYVZlcnNpb24iOjEsInNlY3JldCI6InJlbGVhc2U0LXJlZ3VsYXItcHJvb2YiLCJ3aXRuZXNzIjpudWxsfQ=="
+              },
+              "proofFingerprint": "3d2f34427ca7250bef0eb0293856a7da7fb51e4c59ae17eb7fecc676612aeb61",
+              "curve": "secp256k1",
+              "dleqPresence": "not-present",
+              "revision": 0,
+              "selectability": "selectable",
+              "reservationOperationId": null,
+              "receivedAtMs": 10
+            }
+          ]
+        },
+        {
+          "name": "custodyReservations",
+          "schema": "[scopeId+proofId], [scopeId+operationId], &[scopeId+operationId+inputPosition]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "proofId": "reserved-proof-release4",
+              "operationId": "send:release4",
+              "inputPosition": 0
+            }
+          ]
+        },
+        {
+          "name": "custodyScopes",
+          "schema": "scopeId",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "state": {
+                "schemaVersion": 1,
+                "scope": {
+                  "scopeKind": "wallet",
+                  "walletId": "e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+                  "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4"
+                },
+                "fencingEpoch": 1,
+                "owner": {
+                  "incarnationId": "browser-release4-fixture",
+                  "leaseExpiresAtMs": 10000
+                },
+                "effectiveClock": {
+                  "highWaterMarkMs": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerAcceptedHeads",
+          "schema": "[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "headVersion": 2,
+              "activeBundleCount": 1,
+              "activeObjectCount": 1,
+              "activeSetDigest": "abababababababababababababababababababababababababababababababab",
+              "canonicalCurrentHead": {
+                "$uint8array": "AQIDBA=="
+              },
+              "localRecoveryStatus": "ready",
+              "localRecoveryReason": "none",
+              "localRecoveryVersion": 0
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerActiveDescriptors",
+          "schema": "[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "bundleId": "bundle-release4",
+              "assetLocator": "asset",
+              "declaredAmount": "8",
+              "custodyRevision": "1",
+              "payloadCommitment": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+              "objectCount": 1,
+              "canonicalDescriptor": {
+                "$uint8array": "AQIDBA=="
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerAssetReceipts",
+          "schema": "[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch+localAssetKey], [scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "bundleId": "bundle-release4",
+              "bundleDescriptorDigest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+              "canonicalSignedMutation": {
+                "$uint8array": "AQIDBA=="
+              },
+              "canonicalSignedReceipt": {
+                "$uint8array": "AQIDBA=="
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerDesiredAssets",
+          "schema": "[scopeId+ownerScopeId+localAssetKey], [scopeId+ownerScopeId+syncState+localAssetKey]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "desiredAction": "replace",
+              "activeProofCount": 1,
+              "syncState": "acknowledged",
+              "lastObservedHeadVersion": 2,
+              "receiptDigest": "1212121212121212121212121212121212121212121212121212121212121212"
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerEnrollmentResults",
+          "schema": "[scopeId+ownerScopeId+realm+walletId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "record": {
+                "lifecycle": "active"
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerPreparedMutations",
+          "schema": "[scopeId+ownerScopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "mutationId": "mutation-release4",
+              "requestDigest": "3434343434343434343434343434343434343434343434343434343434343434",
+              "canonicalUploadGroup": {
+                "$uint8array": "AQIDBA=="
+              },
+              "createdAtUnixMilliseconds": 20,
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "desiredAction": "replace",
+              "activeProofCount": 1
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerProofCoverage",
+          "schema": "[scopeId+ownerScopeId+proofId], [scopeId+ownerScopeId+localAssetKey], [scopeId+ownerScopeId+headVersion]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "proofId": "covered-proof-release4",
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "bundleId": "bundle-release4",
+              "bundleDescriptorDigest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+              "headVersion": 2,
+              "sourceKind": "head-restore",
+              "receiptDigest": null
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupOwnerRetrySchedulers",
+          "schema": "[scopeId+ownerScopeId+realm+walletId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "ownerScopeId": "custody:owner:release4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "attemptId": "retry-release4",
+              "retryStreak": 1,
+              "retryNotBeforeUnixMilliseconds": 40
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupV2DesiredAssets",
+          "schema": "[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "localAssetKey": "[\"https://mint.example\",\"msat\",\"ctf:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e\"]",
+              "mintUrl": "https://mint.example",
+              "unit": "msat",
+              "assetIdentity": "ctf:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e",
+              "custodyRevision": "1",
+              "activeProofCount": 1,
+              "desiredAction": "replace",
+              "syncState": "pending",
+              "terminalCtfContext": {
+                "conditionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "outcomeLabel": "YES",
+                "outcomeCollectionId": "def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e",
+                "registeredAt": 0,
+                "finalExpiry": 100
+              },
+              "removalIntent": null
+            },
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "localAssetKey": "[\"https://mint.example\",\"sat\",\"cashu:ordinary\"]",
+              "mintUrl": "https://mint.example",
+              "unit": "sat",
+              "assetIdentity": "cashu:ordinary",
+              "custodyRevision": "2",
+              "activeProofCount": 1,
+              "desiredAction": "replace",
+              "syncState": "pending",
+              "terminalCtfContext": null,
+              "removalIntent": null
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupV2WalletAcceptedHeads",
+          "schema": "[scopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "headVersion": 2,
+              "activeBundleCount": 1,
+              "activeObjectCount": 1,
+              "activeSetDigest": "abababababababababababababababababababababababababababababababab",
+              "canonicalCurrentHead": {
+                "$uint8array": "AQIDBA=="
+              },
+              "localRecoveryStatus": "ready",
+              "localRecoveryReason": "none",
+              "localRecoveryVersion": 0
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupV2WalletActiveDescriptors",
+          "schema": "[scopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "bundleId": "bundle-release4",
+              "assetLocator": "asset",
+              "declaredAmount": "8",
+              "custodyRevision": "1",
+              "payloadCommitment": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+              "objectCount": 1,
+              "canonicalDescriptor": {
+                "$uint8array": "AQIDBA=="
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupV2WalletAssetReceipts",
+          "schema": "[scopeId+realm+walletId+enrollmentEpoch+localAssetKey], [scopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "bundleId": "bundle-release4",
+              "bundleDescriptorDigest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+              "canonicalSignedMutation": {
+                "$uint8array": "AQIDBA=="
+              },
+              "canonicalSignedReceipt": {
+                "$uint8array": "AQIDBA=="
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupV2WalletPreparedMutations",
+          "schema": "[scopeId+realm+walletId+enrollmentEpoch]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "enrollmentEpoch": 1,
+              "mutationId": "mutation-release4",
+              "requestDigest": "3434343434343434343434343434343434343434343434343434343434343434",
+              "canonicalUploadGroup": {
+                "$uint8array": "AQIDBA=="
+              },
+              "createdAtUnixMilliseconds": 20,
+              "localAssetKey": "asset-key",
+              "assetLocator": "asset",
+              "custodyRevision": "1",
+              "desiredAction": "replace",
+              "activeProofCount": 1
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupWalletEnrollmentResults",
+          "schema": "[realm+walletId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "record": {
+                "lifecycle": "active"
+              }
+            }
+          ]
+        },
+        {
+          "name": "encryptedWalletBackupWalletRetrySchedulers",
+          "schema": "[scopeId+realm+walletId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "realm": "mainnet",
+              "walletId": "release4-backup-wallet",
+              "attemptId": "retry-release4",
+              "retryStreak": 1,
+              "retryNotBeforeUnixMilliseconds": 40
+            }
+          ]
+        },
+        {
+          "name": "marketCreations",
+          "schema": "[walletScopeId+creationId], [walletScopeId+creatorId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "walletScopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "creationId": "creation-release4",
+              "creatorId": "5656565656565656565656565656565656565656565656565656565656565656",
+              "mintConfirmed": true,
+              "engineResult": null
+            }
+          ]
+        },
+        {
+          "name": "marketFundingHeads",
+          "schema": "[scopeId+recipientBinding], [scopeId+transferId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "recipientBinding": "funding-binding-release4",
+              "transferId": "transfer-release4"
+            }
+          ]
+        },
+        {
+          "name": "mintQuotes",
+          "schema": "[scopeId+paymentMethod+quoteRecordId], [scopeId+paymentMethod+observedState+quoteRecordId], [scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "paymentMethod": "bolt11",
+              "quoteRecordId": "quote-release4",
+              "observedState": "PAID",
+              "recoveryState": "idle",
+              "lastRecoveryAttemptAtMs": 0
+            }
+          ]
+        },
+        {
+          "name": "outgoingCashuTransferAdmissions",
+          "schema": "[scopeId+transferId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "transferId": "transfer-release4"
+            }
+          ]
+        },
+        {
+          "name": "outgoingCashuTransfers",
+          "schema": "[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+bearerMintUrl+localAuthorityState+transferId], [scopeId+recipientBinding+transferId], &[scopeId+recipientBinding+predecessorKey]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "transferId": "transfer-release4",
+              "mintUrl": "https://mint.example",
+              "mintRecoveryState": "idle",
+              "dueAtMs": 50,
+              "localAuthorityState": "sent",
+              "bearerMintUrl": null,
+              "recipientBinding": "funding-binding-release4",
+              "predecessorKey": "predecessor-release4"
+            }
+          ]
+        },
+        {
+          "name": "participationScoreDeliveryPointers",
+          "schema": "[scopeId+mintUrl+accountSubject], [scopeId+deliveryId]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "accountSubject": "7878787878787878787878787878787878787878787878787878787878787878",
+              "deliveryId": "delivery-release4",
+              "purchaseEpoch": 1,
+              "revision": 1
+            }
+          ]
+        },
+        {
+          "name": "proofOperations",
+          "schema": "operationId, state, kind, mintUrl, updatedAt",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "operationId": "release4-send-operation",
+              "kind": "wallet-send",
+              "state": "prepared",
+              "mintUrl": "https://mint.example",
+              "inputs": [
+                {
+                  "id": "013333333333333333333333333333333333333333333333333333333333333333",
+                  "amount": 4,
+                  "secret": "release4-legacy-proof",
+                  "C": "022222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "outputs": {},
+              "metadata": {
+                "source": "release4-fixture"
+              },
+              "resultProofs": {
+                "$undefined": true
+              },
+              "resultProofsDigest": {
+                "$undefined": true
+              },
+              "lastError": null,
+              "failureCode": {
+                "$undefined": true
+              },
+              "createdAt": 1794230406667,
+              "updatedAt": 1794230406667
+            }
+          ]
+        },
+        {
+          "name": "proofs",
+          "schema": "secret, mintUrl, marketId, conditionId, outcomeCollection, reservedBy, terminalOperationId, [mintUrl+unit+id], [mintUrl+unit+id+amount+secret]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "id": "013333333333333333333333333333333333333333333333333333333333333333",
+              "amount": 4,
+              "secret": "release4-legacy-proof",
+              "C": "022222222222222222222222222222222222222222222222222222222222222222",
+              "mintUrl": "https://mint.example",
+              "baseAsset": "sat",
+              "unit": "sat",
+              "receivedAt": 12
+            }
+          ]
+        },
+        {
+          "name": "targetedAssetRecoveryAttempts",
+          "schema": "[scopeId+assetLocator+backupHeadVersion+monitoringFactVersion], scopeId, [scopeId+completedAtUnixMilliseconds+assetLocator+backupHeadVersion+monitoringFactVersion]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "assetLocator": "asset",
+              "backupHeadVersion": 2,
+              "monitoringFactVersion": 3,
+              "outcome": "restored",
+              "completedAtUnixMilliseconds": 60
+            }
+          ]
+        },
+        {
+          "name": "walletCounterAssociations",
+          "schema": "[scopeId+normalizedMint+unit+keysetId], scopeId, [scopeId+keysetId], [scopeId+normalizedMint+unit]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "normalizedMint": "https://mint.example",
+              "unit": "sat",
+              "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+              "recoveryComplete": false
+            }
+          ]
+        },
+        {
+          "name": "walletCounterCursors",
+          "schema": "[scopeId+keysetId], scopeId",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+              "next": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bitcaster-seed-restore-e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+      "version": 2,
+      "tables": [
+        {
+          "name": "conditions",
+          "schema": "[scopeId+mintUrl+conditionId], [scopeId+mintUrl]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "conditionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "outcomes": ["NO", "YES"],
+              "priority": 1,
+              "order": 0,
+              "listed": true,
+              "foreign": 0,
+              "failures": 0,
+              "nextAttemptAtMs": 0
+            }
+          ]
+        },
+        {
+          "name": "keysets",
+          "schema": "[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
+          "writer": "shape row of the shipped row interface",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "keysetId": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+              "descriptor": {
+                "id": "0194e402a5f86e31ddad3ca3f93b9082cc9dc29c63d75e92674203b4d25e6478f9",
+                "unit": "msat",
+                "active": true,
+                "inputFeePpk": 100,
+                "finalExpiry": 100,
+                "conditionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "outcomeCollection": "YES",
+                "outcomeCollectionId": "def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e",
+                "registeredAt": 0
+              },
+              "priority": 1,
+              "order": 1,
+              "state": "restored",
+              "failures": 0,
+              "nextAttemptAtMs": 0
+            }
+          ]
+        },
+        {
+          "name": "origins",
+          "schema": "scopeId",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "origin": "generated",
+              "recordedAtMs": 13
+            }
+          ]
+        },
+        {
+          "name": "resync",
+          "schema": "[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "keysetId": "013333333333333333333333333333333333333333333333333333333333333333",
+              "condition": null,
+              "findings": 1,
+              "lastFoundAtMs": 14,
+              "lastHighestCounter": 9,
+              "pendingFromCounter": 5,
+              "waitReason": null,
+              "failures": 0,
+              "nextAttemptAtMs": 0
+            }
+          ]
+        },
+        {
+          "name": "resyncSchedules",
+          "schema": "[scopeId+mintUrl]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "evidence": 1,
+              "handledEvidence": 0,
+              "probeFailures": 0,
+              "nextProbeAtMs": 0
+            }
+          ]
+        },
+        {
+          "name": "states",
+          "schema": "[scopeId+mintUrl]",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "scopeId": "custody:wallet:e860541e1cc18cde01ef315ff8b626ab61a1460c1c88971cd1f22d8d351c52e4",
+              "mintUrl": "https://mint.example",
+              "schemaVersion": 2,
+              "initialCompletedAtMs": null,
+              "hintsDone": false,
+              "hintFailures": 0,
+              "catalogueSource": null,
+              "catalogueCursor": null,
+              "catalogueDone": false,
+              "nextOrder": 0,
+              "failures": 0,
+              "nextAttemptAtMs": 0,
+              "lastFailure": null,
+              "itemFailures": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bitcaster-market-draft-images",
+      "version": 1,
+      "tables": [
+        {
+          "name": "images",
+          "schema": "slot",
+          "writer": "bitCaster 52d412a1 writer",
+          "rows": [
+            {
+              "slot": "current",
+              "selectionId": "release4-selection",
+              "thumbnail": {
+                "data": {
+                  "$uint8array": "iVBORw0KGgo="
+                },
+                "filename": "thumb.png",
+                "contentType": "image/png"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
