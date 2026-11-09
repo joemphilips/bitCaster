@@ -100,6 +100,15 @@ export default defineConfig({
           ) {
             return "chart";
           }
+          // Split the Markdown renderer from the entry to retain the per-asset precache
+          // limit. The chunk stays in the static module graph and matches the precache glob.
+          if (
+            /\/node_modules\/(react-markdown|unified|remark-[^/]+|micromark[^/]*|mdast-util-[^/]+|hast-util-[^/]+|unist-util-[^/]+|vfile[^/]*|html-url-attributes)\//.test(
+              id,
+            )
+          ) {
+            return "markdown";
+          }
         },
       },
     },

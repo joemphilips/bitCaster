@@ -183,11 +183,22 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const database of databases.splice(0)) database.close();
   for (const database of databasesToDelete) await database.delete();
   databasesToDelete.clear();
   await disposeFixtures();
 });
+
+function stubBackupConfiguration() {
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", "backup.example");
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+  );
+}
 
 async function useFixture(
   amounts: readonly number[] = [13015],
@@ -277,6 +288,62 @@ function runLosingClaim(
       lockManager: immediateLockManager,
     },
   });
+}
+
+/** Receive NUT-13 derived conditional proofs through the production receive path. */
+async function receiveConditionalPosition(proofCount: number) {
+  const databaseName = browserWalletDatabaseName(browserWalletScope(SEED).scopeId);
+  const entry = await useFixture([1], { databaseName });
+  databasesToDelete.add(entry.database);
+  await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 4 });
+  await entry.database.custodyProofs.clear();
+  await entry.database.custodyProofBackupAuthorities.clear();
+  await entry.database.proofs.clear();
+  await entry.database.walletCounterAssociations.put({
+    scopeId: entry.scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    keysetId: CONDITIONAL_KEYSET_ID,
+    recoveryComplete: true,
+  });
+
+  const inputProofs = Array.from(
+    { length: proofCount },
+    (_, index) =>
+      signOutputs([
+        OutputData.createSingleData(
+          1,
+          CONDITIONAL_KEYSET_ID,
+          `claim-regression-input-${index}`,
+          BigInt(27 + index),
+        ),
+      ])[0]!,
+  );
+  let time = 1_000;
+  let nextId = 0;
+  const received = await receiveBrowserDurableWalletToken({
+    token: "cashuB-conditional-token",
+    mintUrl: MINT,
+    unit: "msat",
+    asset: "conditional",
+    conditionalInputProofs: inputProofs,
+    ensureConditionalCounterReady: async () => undefined,
+    wallet: conditionalReceiveWallet(),
+    context: {
+      seed: entry.seed,
+      database: entry.database,
+      now: () => ++time,
+      randomId: () => `claim-regression-${++nextId}`,
+      lockManager: immediateLockManager,
+      requireCapturedProfile: () => undefined,
+    },
+  });
+  const owner = await entry.adapter.claimScope(entry.scope, {
+    incarnationId: "claim-after-conditional-receive",
+    observedAtMs: 3_000,
+    leaseExpiresAtMs: 100_000,
+  });
+  return { entry, received, owner };
 }
 
 function conditionalReceiveWallet(): BrowserDurableWalletReceiveWallet {
@@ -435,55 +502,7 @@ describe("Portfolio remove entry point", () => {
   it.each([1, 8])(
     "terminalizes a losing claim after a real conditional receive with acknowledged backup intent (%i outputs)",
     async (proofCount) => {
-      const databaseName = browserWalletDatabaseName(browserWalletScope(SEED).scopeId);
-      const entry = await useFixture([1], {
-        databaseName,
-      });
-      databasesToDelete.add(entry.database);
-      await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 4 });
-      await entry.database.custodyProofs.clear();
-      await entry.database.custodyProofBackupAuthorities.clear();
-      await entry.database.proofs.clear();
-      await entry.database.walletCounterAssociations.put({
-        scopeId: entry.scope.scopeId,
-        normalizedMint: MINT,
-        unit: "msat",
-        keysetId: CONDITIONAL_KEYSET_ID,
-        recoveryComplete: true,
-      });
-
-      const inputProofs = Array.from(
-        { length: proofCount },
-        (_, index) =>
-          signOutputs([
-            OutputData.createSingleData(
-              1,
-              CONDITIONAL_KEYSET_ID,
-              `claim-regression-input-${index}`,
-              BigInt(27 + index),
-            ),
-          ])[0]!,
-      );
-      const wallet = conditionalReceiveWallet();
-      let time = 1_000;
-      let nextId = 0;
-      const received = await receiveBrowserDurableWalletToken({
-        token: "cashuB-conditional-token",
-        mintUrl: MINT,
-        unit: "msat",
-        asset: "conditional",
-        conditionalInputProofs: inputProofs,
-        ensureConditionalCounterReady: async () => undefined,
-        wallet,
-        context: {
-          seed: entry.seed,
-          database: entry.database,
-          now: () => ++time,
-          randomId: () => `claim-regression-${++nextId}`,
-          lockManager: immediateLockManager,
-          requireCapturedProfile: () => undefined,
-        },
-      });
+      const { entry, received, owner } = await receiveConditionalPosition(proofCount);
 
       await addProofsIfMissing(
         received.map(
@@ -551,11 +570,6 @@ describe("Portfolio remove entry point", () => {
         syncState: "acknowledged",
       });
 
-      const owner = await entry.adapter.claimScope(entry.scope, {
-        incarnationId: "claim-after-conditional-receive",
-        observedAtMs: 3_000,
-        leaseExpiresAtMs: 100_000,
-      });
       const result = await runLosingClaim(
         entry,
         receivedRows.map(({ proofId, revision, proofFingerprint }) => ({
@@ -817,6 +831,81 @@ describe("Portfolio remove entry point", () => {
       }),
     );
     expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("removes a derivation-backed losing token locally without a backup configuration", async () => {
+    const { entry, received, owner } = await receiveConditionalPosition(2);
+    const receivedRows = await entry.database.custodyProofs.toArray();
+    expect(receivedRows).toHaveLength(received.length);
+    expect(
+      (await entry.database.custodyProofBackupAuthorities.toArray()).map((authority) =>
+        "derivationLocator" in authority ? authority.derivationLocator?.kind : "marker",
+      ),
+    ).toEqual(["nut13", "nut13"]);
+    mocks.realCoordinatorEnabled = true;
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
+      runLosingClaim(entry, targets, owner, 3_001),
+    );
+
+    await expect(removePortfolioPosition({ ...position, observedAtMs: 4_000 })).resolves.toEqual({
+      kind: "completed",
+      committedPayoutAmount: 0,
+      oracleEvidence: verifiedOracleEvidence,
+    });
+
+    const claimOperation = (await entry.database.custodyOperations.toArray()).find(
+      ({ record }) => record.operation.semanticKind === "ctf-redeem",
+    );
+    expect(claimOperation).toBeDefined();
+    expect(await entry.database.custodyProofs.count()).toBe(0);
+    expect(await entry.database.custodyReservations.count()).toBe(0);
+    expect(
+      await entry.database.custodyProofBackupAuthorities.bulkGet(
+        receivedRows.map(({ proofId }) => [entry.scope.scopeId, proofId]),
+      ),
+    ).toEqual(
+      receivedRows.map((row) =>
+        expect.objectContaining({
+          recordKind: "completed-local-removal",
+          proofId: row.proofId,
+          proofFingerprint: row.proofFingerprint,
+          proofRevision: row.revision + 2,
+          terminalOperationId: claimOperation?.operationId,
+        }),
+      ),
+    );
+    expect(await entry.database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
+      expect.objectContaining({
+        activeProofCount: 0,
+        desiredAction: "remove",
+        removalIntent: null,
+      }),
+    ]);
+    expect(mocks.realCoordinatorCalls).toEqual([
+      { faultInjected: false, targetProofIds: receivedRows.map(({ proofId }) => proofId).sort() },
+    ]);
+  });
+
+  it("keeps a derivation-backed losing token when a configured backup has no driver", async () => {
+    const { entry, owner } = await receiveConditionalPosition(1);
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
+      runLosingClaim(entry, targets, owner, 3_001),
+    );
+    stubBackupConfiguration();
+
+    await expect(removePortfolioPosition(position)).resolves.toEqual({
+      kind: "pending",
+      reason: "managed-removal-pending",
+      committedPayoutAmount: 0,
+      oracleEvidence: verifiedOracleEvidence,
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(
+      (await entry.database.custodyProofs.toArray()).map(({ selectability }) => selectability),
+    ).toEqual(["verified-losing"]);
+    expect(await entry.database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
+      expect.objectContaining({ activeProofCount: 1, desiredAction: "replace" }),
+    ]);
   });
 
   it("reports managed-backup refusal without exposing the driver error", async () => {

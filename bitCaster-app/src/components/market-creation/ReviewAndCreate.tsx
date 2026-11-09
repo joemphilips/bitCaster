@@ -1,8 +1,13 @@
+import { useId, useState } from "react";
 import { FileText, Tag, Calendar, BarChart3, Loader2, Image as ImageIcon } from "lucide-react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
 import { categoricalOutcomeColors, normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
+import { MarketMarkdown } from "@/components/shared/MarketMarkdown";
+
+type DescriptionTab = "write" | "preview";
+const DESCRIPTION_TABS: readonly DescriptionTab[] = ["write", "preview"];
 
 interface ReviewAndCreateProps {
   description: string;
@@ -24,6 +29,8 @@ export function ReviewAndCreate({
   onCreateMarket,
 }: ReviewAndCreateProps) {
   const { t } = useTranslation();
+  const [descriptionTab, setDescriptionTab] = useState<DescriptionTab>("write");
+  const tabIdPrefix = useId();
   const canCreate = description.trim().length > 0 && !isSubmitting;
   const colors =
     outcomes?.outcomeType === "categorical"
@@ -36,18 +43,63 @@ export function ReviewAndCreate({
         {t("marketCreation.reviewAndCreate")}
       </h2>
 
-      {/* Description */}
+      {/* Description: Markdown. Preview uses the market detail renderer. */}
       <div className="mb-8">
-        <label className="block text-sm font-medium text-slate-300 mb-2">
-          {t("marketCreation.description")}
-        </label>
-        <textarea
-          value={description}
-          onChange={(e) => onDescriptionChange?.(e.target.value)}
-          placeholder={t("marketCreation.descriptionPlaceholder")}
-          rows={6}
-          className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
-        />
+        <div className="mb-2 flex items-end justify-between gap-3">
+          <label
+            htmlFor={`${tabIdPrefix}-description`}
+            className="block text-sm font-medium text-slate-300"
+          >
+            {t("marketCreation.description")}
+          </label>
+          <div role="tablist" className="flex gap-1">
+            {DESCRIPTION_TABS.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                id={`${tabIdPrefix}-${tab}-tab`}
+                aria-selected={descriptionTab === tab}
+                aria-controls={`${tabIdPrefix}-${tab}-panel`}
+                onClick={() => setDescriptionTab(tab)}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  descriptionTab === tab
+                    ? "bg-slate-800 text-white"
+                    : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                }`}
+              >
+                {t(`marketCreation.${tab}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* The text area stays mounted, so its edit history survives a tab change. */}
+        <div
+          id={`${tabIdPrefix}-write-panel`}
+          role="tabpanel"
+          aria-labelledby={`${tabIdPrefix}-write-tab`}
+          hidden={descriptionTab !== "write"}
+        >
+          <textarea
+            id={`${tabIdPrefix}-description`}
+            value={description}
+            onChange={(e) => onDescriptionChange?.(e.target.value)}
+            placeholder={t("marketCreation.descriptionPlaceholder")}
+            rows={6}
+            className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
+          />
+        </div>
+        {descriptionTab === "preview" && (
+          <div
+            id={`${tabIdPrefix}-preview-panel`}
+            role="tabpanel"
+            aria-labelledby={`${tabIdPrefix}-preview-tab`}
+            tabIndex={0}
+            className="min-h-[9.5rem] w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm leading-relaxed text-slate-300"
+          >
+            <MarketMarkdown source={description} />
+          </div>
+        )}
       </div>
 
       {/* Market summary card */}

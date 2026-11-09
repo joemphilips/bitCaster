@@ -98,7 +98,6 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
       criteria: "Will it happen?",
       source: "oracle",
       resolutionDate: "2030-01-01T00:00:00Z",
-      status: "open",
     },
     priceHistory: { data: [], timeframe: "7d" },
     orderBook: { bids: [], asks: [], spread: 0 },
@@ -584,6 +583,38 @@ describe("MarketDetail", () => {
       noTrades ? "No trades yet" : "",
     );
   });
+
+  it.each([
+    ["without an outcome", undefined, "5.0%"],
+    ["with a known outcome", "Yes", "Resolved: Yes"],
+  ])(
+    "shows a closed market %s as resolved only when the outcome is known",
+    (_case, finalOutcome, display) => {
+      render(
+        <MarketDetail
+          market={makeMarket({
+            state: "closed",
+            closingDate: "2026-01-01T00:00:00Z",
+            resolution: { ...makeMarket().resolution, finalOutcome },
+          })}
+          chartTimeframe="7d"
+          tradeSelection={null}
+          tradeAmount={0}
+          tradePreview={null}
+          tradeSide="Buy"
+        />,
+      );
+
+      expect(screen.getByTestId("chart-current-display").textContent).toBe(display);
+      // A known outcome moves the resolution section above the chart.
+      const resolution = screen.getByTestId("resolution-info-mock");
+      const chart = screen.getByTestId("price-chart-mock");
+      const resolutionFirst = !!(
+        resolution.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING
+      );
+      expect(resolutionFirst).toBe(finalOutcome !== undefined);
+    },
+  );
 
   it("keeps the disabled numeric current value unavailable", () => {
     const numericMarket = {

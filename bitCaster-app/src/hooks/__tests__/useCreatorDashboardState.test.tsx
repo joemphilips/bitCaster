@@ -4,10 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 
-const { mockFetchCreatorMarkets, mockResolveCreatorPubkey } = vi.hoisted(() => ({
-  mockFetchCreatorMarkets: vi.fn(),
-  mockResolveCreatorPubkey: vi.fn(),
-}));
+const { mockFetchCreatorMarkets, mockLoadMarketCatalogue, mockResolveCreatorPubkey } = vi.hoisted(
+  () => ({
+    mockFetchCreatorMarkets: vi.fn(),
+    mockLoadMarketCatalogue: vi.fn(),
+    mockResolveCreatorPubkey: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/markets", async () => {
   const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
@@ -16,6 +19,10 @@ vi.mock("@/lib/markets", async () => {
     fetchCreatorMarkets: (...args: unknown[]) => mockFetchCreatorMarkets(...args),
   };
 });
+
+vi.mock("@/lib/marketCatalogueBatches", () => ({
+  loadMarketCatalogue: (...args: unknown[]) => mockLoadMarketCatalogue(...args),
+}));
 
 vi.mock("@/lib/identityOps", () => ({
   resolveCreatorPubkey: (...args: unknown[]) => mockResolveCreatorPubkey(...args),
@@ -28,9 +35,15 @@ const FAKE_PUBKEY = "a".repeat(64);
 const CONDITION_A = "c".repeat(64);
 const CONDITION_B = "d".repeat(64);
 
+function verifiedOutcome(conditionId: string) {
+  return new Map([[conditionId, { conditionId, state: "closed", finalOutcome: "Yes" }]]);
+}
+
 beforeEach(async () => {
   installCreatorDocumentLocks();
   mockFetchCreatorMarkets.mockReset();
+  mockLoadMarketCatalogue.mockReset();
+  mockLoadMarketCatalogue.mockResolvedValue(new Map());
   mockResolveCreatorPubkey.mockReset();
   await seedCreatorMarkets({ markets: [] });
   useSettingsStore.setState({
@@ -119,7 +132,129 @@ describe("useCreatorDashboardState", () => {
     expect(result.current.stats.totalFeesEarnedSats).toBe(0);
   });
 
-  it("maps engine closed state to a resolved creator-market row", async () => {
+  it.each([
+    ["without a verified outcome", null, "awaitingResolution", 0],
+    ["with a verified outcome", "Yes", "resolved", 1],
+  ] as const)(
+    "maps a past-deadline closed market %s from the engine catalogue",
+    async (_case, finalOutcome, status, resolvedCount) => {
+      useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+      await seedCreatorMarkets({
+        markets: [
+          {
+            conditionId: CONDITION_A,
+            title: "Deadline market",
+            thumbnailUrl: null,
+            createdAt: "2026-04-10T00:00:00.000Z",
+            creatorFeePercent: 0,
+            baseAsset: "sat",
+            divisibility: 1_000,
+            oracle: { type: "self", eventId: "event-1", outcomes: ["Yes", "No"] },
+          },
+          {
+            conditionId: CONDITION_B,
+            title: "Open market",
+            thumbnailUrl: null,
+            createdAt: "2026-04-10T00:00:00.000Z",
+            creatorFeePercent: 0,
+            baseAsset: "sat",
+            divisibility: 1_000,
+          },
+        ],
+      });
+      mockFetchCreatorMarkets.mockResolvedValue({
+        pubkey: FAKE_PUBKEY,
+        markets: [
+          {
+            conditionId: CONDITION_A,
+            totalVolumeSubunits: 0,
+            createdAt: "2026-04-10T00:00:00.000Z",
+            state: "closed",
+          },
+          {
+            conditionId: CONDITION_B,
+            totalVolumeSubunits: 0,
+            createdAt: "2026-04-10T00:00:00.000Z",
+            state: "open",
+          },
+        ],
+      });
+      mockLoadMarketCatalogue.mockResolvedValue(
+        new Map([[CONDITION_A, { conditionId: CONDITION_A, state: "closed", finalOutcome }]]),
+      );
+
+      const { result } = renderHook(() => useCreatorDashboardState());
+
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      // Only the closed market needs the catalogue read for its outcome.
+      expect(mockLoadMarketCatalogue).toHaveBeenCalledWith([CONDITION_A]);
+      expect(result.current.markets[0].status).toBe(status);
+      expect(result.current.markets[1].status).toBe("active");
+      expect(result.current.stats).toMatchObject({
+        activeMarketsCount: 1,
+        resolvedMarketsCount: resolvedCount,
+      });
+    },
+  );
+
+  it("does not read the catalogue when no creator market is closed", async () => {
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+    mockFetchCreatorMarkets.mockResolvedValue({
+      pubkey: FAKE_PUBKEY,
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          totalVolumeSubunits: 0,
+          createdAt: "2026-04-10T00:00:00.000Z",
+          state: "open",
+        },
+      ],
+    });
+    const { result } = renderHook(() => useCreatorDashboardState());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockLoadMarketCatalogue).not.toHaveBeenCalled();
+  });
+
+  it("keeps a verified outcome when a later catalogue read omits the market", async () => {
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+    await seedCreatorMarkets({
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          title: "Resolved market",
+          thumbnailUrl: null,
+          createdAt: "2026-04-10T00:00:00.000Z",
+          creatorFeePercent: 0,
+          baseAsset: "sat",
+          divisibility: 1_000,
+        },
+      ],
+    });
+    mockFetchCreatorMarkets.mockResolvedValue({
+      pubkey: FAKE_PUBKEY,
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          totalVolumeSubunits: 0,
+          createdAt: "2026-04-10T00:00:00.000Z",
+          state: "closed",
+        },
+      ],
+    });
+    mockLoadMarketCatalogue.mockResolvedValueOnce(
+      new Map([[CONDITION_A, { conditionId: CONDITION_A, state: "closed", finalOutcome: "No" }]]),
+    );
+    const { result } = renderHook(() => useCreatorDashboardState());
+    await waitFor(() => expect(result.current.markets[0].status).toBe("resolved"));
+
+    act(() => result.current.refresh());
+    await waitFor(() => expect(mockLoadMarketCatalogue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.markets[0].status).toBe("resolved");
+    expect(result.current.stats.resolvedMarketsCount).toBe(1);
+  });
+
+  it("does not treat a local attestation as the verified outcome of a closed market", async () => {
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
       nsecSecret: "11".repeat(32),
@@ -163,9 +298,9 @@ describe("useCreatorDashboardState", () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(result.current.markets[0].status).toBe("resolved");
+    expect(result.current.markets[0].status).toBe("awaitingResolution");
     expect(result.current.stats.activeMarketsCount).toBe(0);
-    expect(result.current.stats.resolvedMarketsCount).toBe(1);
+    expect(result.current.stats.resolvedMarketsCount).toBe(0);
   });
 
   it("falls back to zero volume on backend error and surfaces the error", async () => {
@@ -254,6 +389,7 @@ describe("useCreatorDashboardState", () => {
         state: "closed" as const,
       };
       mockFetchCreatorMarkets.mockResolvedValueOnce({ pubkey: FAKE_PUBKEY, markets: [closed] });
+      mockLoadMarketCatalogue.mockResolvedValue(verifiedOutcome(CONDITION_A));
       const { result } = renderHook(() => useCreatorDashboardState());
       await waitFor(() => expect(result.current.markets[0].status).toBe("resolved"));
       expect(result.current.markets[0].engineDataStatus).toBe("current");
@@ -312,6 +448,7 @@ describe("useCreatorDashboardState", () => {
         state: "closed" as const,
       };
       mockFetchCreatorMarkets.mockResolvedValueOnce({ pubkey: FAKE_PUBKEY, markets: [closed] });
+      mockLoadMarketCatalogue.mockResolvedValue(verifiedOutcome(CONDITION_A));
       const { result } = renderHook(() => useCreatorDashboardState());
       await waitFor(() => expect(result.current.isLoading).toBe(false));
       expect(result.current.engineDataStatus).toBe("unavailable");
@@ -371,6 +508,7 @@ describe("useCreatorDashboardState", () => {
       state: "closed",
     };
     mockFetchCreatorMarkets.mockResolvedValueOnce({ pubkey: FAKE_PUBKEY, markets: [closed] });
+    mockLoadMarketCatalogue.mockResolvedValue(verifiedOutcome(CONDITION_A));
     const { result } = renderHook(() => useCreatorDashboardState());
     await waitFor(() => expect(result.current.markets[0].status).toBe("resolved"));
     let finishOld!: (response: unknown) => void;

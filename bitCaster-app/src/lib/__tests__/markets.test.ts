@@ -28,6 +28,7 @@ import {
 } from "../markets";
 import { EngineClientError } from "@bitcaster/client-sdk";
 import { applyConfirmedTradeDelta } from "@/lib/marketHub";
+import { marketResolutionState } from "@/lib/marketResolution";
 import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
 import type { MarketCatalogueEntry, MarketCommentsResponse } from "../markets";
 import type { FilterState, Market } from "@/types/market";
@@ -1150,7 +1151,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
 
     expect(detail.title).toBe("Will BTC hit 100K?");
     expect(detail.state).toBe("open");
-    expect(detail.resolution.status).toBe("open");
+    expect(marketResolutionState(detail.state, detail.resolution.finalOutcome)).toBe("open");
     expect(detail.resolution.finalOutcome).toBeUndefined();
   });
 
@@ -1190,10 +1191,11 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     });
     const detail = await fetchMarketDetail("abc123");
     expect(detail.state).toBe("closed");
-    // Mintd attestation is pending → resolution status surfaces as 'open' (a
-    // PENDING resolution, not the engine lifecycle); the engine win is the
-    // load-bearing assertion above.
-    expect(detail.resolution.status).toBe("open");
+    // A closed market without an engine outcome awaits resolution. It is not resolved.
+    expect(detail.resolution.finalOutcome).toBeUndefined();
+    expect(marketResolutionState(detail.state, detail.resolution.finalOutcome)).toBe(
+      "awaitingResolution",
+    );
   });
 
   it("fails closed when the engine query fails instead of reconstructing from mintd keysets", async () => {
@@ -1356,7 +1358,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
 
     const detail = await fetchMarketDetail("abc123");
 
-    expect(detail.resolution.status).toBe("resolved");
+    expect(marketResolutionState(detail.state, detail.resolution.finalOutcome)).toBe("resolved");
     expect(detail.resolution.finalOutcome).toBe("Yes");
   });
 });
@@ -1424,7 +1426,6 @@ describe("market comment mapping", () => {
         criteria: "criteria",
         source: "oracle",
         resolutionDate: null,
-        status: "open",
       },
       priceHistory: { timeframe: "7d", data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
@@ -1518,7 +1519,6 @@ describe("price history normalization", () => {
         criteria: "criteria",
         source: "oracle" as const,
         resolutionDate: "2026-01-01T00:00:00Z",
-        status: "open" as const,
       },
     };
 
@@ -1569,7 +1569,6 @@ describe("price history normalization", () => {
         criteria: "criteria",
         source: "oracle" as const,
         resolutionDate: "2026-01-01T00:00:00Z",
-        status: "open" as const,
       },
     } as unknown as MarketDetail;
 

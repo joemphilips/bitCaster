@@ -21,6 +21,7 @@ import {
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
 import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
+import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
 import i18n from "@/i18n";
 import {
   BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
@@ -171,6 +172,7 @@ const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
   "active-wallet-work": "wallet.replaceBlockedActiveWork",
   "backup-not-current": "wallet.replaceBlockedBackup",
   "browser-lock-unavailable": "wallet.replaceBlockedBrowserLock",
+  "seed-backup-unconfirmed": "wallet.replaceBlockedSeedBackup",
 };
 
 function walletReplacementErrorMessage(error: unknown): string {
@@ -342,6 +344,7 @@ export const useWalletStore = create<WalletState>()(
           const backupDriver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId);
           let replacementCommitted = false;
           try {
+            const backupConfigured = resolveEncryptedWalletBackupConfiguration() !== null;
             const ownerHandoff = await backupDriver?.prepareSeedHandoffOwnerAuthority();
             await backupDriver?.quiesceForSeedHandoff();
             await handoffBrowserEncryptedWalletBackupV2Seed({
@@ -354,6 +357,13 @@ export const useWalletStore = create<WalletState>()(
                     ownerAuthorityStore: ownerHandoff.ownerAuthorityStore,
                     loadCurrentOwnerReachabilityEvidence:
                       ownerHandoff.loadCurrentOwnerReachabilityEvidence,
+                  }),
+              ...(backupConfigured
+                ? {}
+                : {
+                    withoutBackupConfiguration: {
+                      currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
+                    },
                   }),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {

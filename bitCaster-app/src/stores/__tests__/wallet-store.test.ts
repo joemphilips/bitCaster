@@ -51,7 +51,11 @@ vi.mock("@/lib/browserWalletStoragePersistence", () => ({
 vi.mock("@/lib/browserEncryptedWalletBackupV2SeedHandoff", () => ({
   BrowserEncryptedWalletBackupV2SeedHandoffRefusal: class BrowserEncryptedWalletBackupV2SeedHandoffRefusal extends Error {
     constructor(
-      readonly code: "active-wallet-work" | "backup-not-current" | "browser-lock-unavailable",
+      readonly code:
+        | "active-wallet-work"
+        | "backup-not-current"
+        | "browser-lock-unavailable"
+        | "seed-backup-unconfirmed",
       message: string,
     ) {
       super(message);
@@ -121,6 +125,16 @@ async function invokeRealSeedHandoff(
     ...input,
     lockManager,
   });
+}
+
+function stubBackupConfiguration(): void {
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", "backup.example");
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
+  vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
+  vi.stubEnv(
+    "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+    "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+  );
 }
 
 function immediateLockManager(): Pick<LockManager, "request"> {
@@ -413,8 +427,16 @@ describe("useWalletStore", () => {
       seedHandoffMocks.handoff.mockImplementationOnce((input: WalletSeedHandoffInput) =>
         invokeRealSeedHandoff(input),
       );
+      // Without a backup configuration an unconfirmed seed stops the handoff
+      // before the seed write. The backup path keeps the write reachable.
+      stubBackupConfiguration();
 
-      const result = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
+      let result: { valid: boolean; error?: string };
+      try {
+        result = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
+      } finally {
+        vi.unstubAllEnvs();
+      }
       const restoredDatabase = db;
       const persistedState = JSON.parse(
         window.localStorage.getItem("bitcaster-wallet") ?? "{}",
@@ -534,6 +556,67 @@ describe("useWalletStore", () => {
         valid: false,
         error: i18n.t("wallet.replaceBlockedBackup"),
       });
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+      expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+    });
+
+    it.each([
+      ["confirmed", true],
+      ["needs_backup", false],
+    ] as const)(
+      "passes the %s seed state to a handoff without a backup configuration",
+      async (walletBackupState, currentSeedBackupConfirmed) => {
+        const oldMnemonic = bip39.generate().join(" ");
+        useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState });
+        setActiveBrowserWalletProfile(oldMnemonic);
+        seedHandoffMocks.handoff.mockRejectedValueOnce(new Error("stop after capture"));
+
+        await useWalletStore.getState().recoverFromMnemonic(bip39.generate());
+
+        expect(seedHandoffMocks.handoff).toHaveBeenCalledWith(
+          expect.objectContaining({ withoutBackupConfiguration: { currentSeedBackupConfirmed } }),
+        );
+      },
+    );
+
+    it("keeps the backup check for a handoff with a backup configuration", async () => {
+      stubBackupConfiguration();
+      const oldMnemonic = bip39.generate().join(" ");
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      seedHandoffMocks.handoff.mockRejectedValueOnce(new Error("stop after capture"));
+
+      try {
+        await useWalletStore.getState().recoverFromMnemonic(bip39.generate());
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      expect(seedHandoffMocks.handoff).toHaveBeenCalledOnce();
+      expect(seedHandoffMocks.handoff.mock.calls[0]![0]).not.toHaveProperty(
+        "withoutBackupConfiguration",
+      );
+    });
+
+    it("maps the unconfirmed seed refusal to its localized message", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "needs_backup" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      seedHandoffMocks.handoff.mockRejectedValueOnce(
+        new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+          "seed-backup-unconfirmed",
+          "opaque internal seed detail",
+        ),
+      );
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(bip39.generate());
+
+      expect(result).toEqual({
+        valid: false,
+        error: i18n.t("wallet.replaceBlockedSeedBackup"),
+      });
+      expect(i18n.t("wallet.replaceBlockedSeedBackup")).not.toBe("wallet.replaceBlockedSeedBackup");
       expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
       expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
     });

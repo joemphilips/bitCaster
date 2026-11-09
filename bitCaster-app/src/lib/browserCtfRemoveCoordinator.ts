@@ -55,6 +55,7 @@ import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../stores/encrypted-wallet-backup-owner-db";
 import type { BrowserEncryptedWalletBackupOwnerReachabilitySnapshot } from "./browserEncryptedWalletBackupOwnerDeletion";
+import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   deserializeDurableCustodyProofArtifact,
@@ -88,6 +89,13 @@ export interface BrowserCtfRemoveInput {
   readonly targets: readonly BrowserCtfRemoveTarget[];
   /** Local-only losing proofs removed in the same transaction as managed targets. */
   readonly localTargets?: readonly BrowserCtfRemoveTarget[];
+  /**
+   * Set only in a build without an encrypted backup configuration. No backup
+   * head can then exclude a derivation-backed proof, so a verified losing
+   * proof is removed locally, as a local-only proof is (ADR-034 amendment
+   * 2026-11-09).
+   */
+  readonly withoutBackupConfiguration?: boolean;
   readonly observedAtMs?: number;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly signal?: AbortSignal;
@@ -747,7 +755,7 @@ async function completeLocalOnlyRemoval(
     if (authority === undefined) {
       throw new Error("browser CTF local removal authority is missing");
     }
-    if (authority.backupState === "local-only" && authority.derivationLocator === null) {
+    if (isLocalRemovalAuthority(authority, input)) {
       localAuthorityCount += 1;
     }
     authorities.set(proof.proofId, authority);
@@ -778,8 +786,7 @@ async function completeLocalOnlyRemoval(
       throw new Error("browser CTF local removal proof binding is foreign");
     }
     if (
-      authority.backupState !== "local-only" ||
-      authority.derivationLocator !== null ||
+      !isLocalRemovalAuthority(authority, input) ||
       authority.proofState !== "verified-losing" ||
       authority.terminalAuthority?.kind !== "local-operation" ||
       authority.terminalOperationId !== authority.terminalAuthority.operationId
@@ -809,11 +816,57 @@ async function completeLocalOnlyRemoval(
       }),
     ),
   );
+  await retireLocallyRemovedDesiredProofs(
+    input,
+    localAssetKey,
+    proofs.filter((proof) => authorities.get(proof.proofId)!.derivationLocator !== null).length,
+  );
   if (input.fault === "before-commit") {
     throw new Error("browser CTF local removal commit fault");
   }
   requireCurrent(input);
   return { kind: "completed", intentId: "completed-local-removal" };
+}
+
+/** A derivation locator needs backup exclusion only when a backup configuration exists. */
+function isLocalRemovalAuthority(
+  authority: BrowserProofBackupAuthorityRow,
+  input: Pick<BrowserCtfRemoveInput, "withoutBackupConfiguration">,
+): boolean {
+  return (
+    authority.backupState === "local-only" &&
+    (authority.derivationLocator === null || input.withoutBackupConfiguration === true)
+  );
+}
+
+/** Keep the desired asset count equal to the derivation-backed proofs that stay. */
+async function retireLocallyRemovedDesiredProofs(
+  input: BrowserCtfRemoveInput,
+  localAssetKey: string,
+  removedCount: number,
+): Promise<void> {
+  if (removedCount === 0) return;
+  const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    localAssetKey,
+  ]);
+  if (raw === undefined) throw new Error("browser CTF removal desired asset is missing");
+  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+  requireDesiredAsset(desired, input.scopeId, input.asset);
+  if (desired.removalIntent !== null || desired.activeProofCount < removedCount) {
+    throw new Error("browser CTF local removal desired asset is stale");
+  }
+  await input.database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: input.scopeId,
+      asset: input.asset,
+      custodyRevision: incrementEncryptedWalletBackupV2DesiredAssetRevision(
+        BigInt(desired.custodyRevision),
+      ),
+      activeProofCount: desired.activeProofCount - removedCount,
+      terminalCtfContext: desired.terminalCtfContext,
+    }),
+  );
 }
 
 async function completedLocalRemovalReplay(
@@ -1677,6 +1730,12 @@ function requireRemoveIdentity(input: BrowserCtfRemoveInput): void {
     input.enrollmentEpoch !== undefined ||
     input.assetLocator !== undefined ||
     input.ownerScopeId !== undefined;
+  if (
+    input.withoutBackupConfiguration === true &&
+    (hasAnyBackupContext || resolveEncryptedWalletBackupConfiguration() !== null)
+  ) {
+    throw new Error("browser CTF removal without a backup configuration found backup authority");
+  }
   if (hasAnyBackupContext && !hasManagedRemoveContext(input)) {
     throw new Error("browser CTF removal backup context is incomplete");
   }
