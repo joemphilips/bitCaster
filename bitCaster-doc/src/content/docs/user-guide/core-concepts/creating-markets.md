@@ -77,6 +77,8 @@ The end time must be in the future and no later than **7 February 2106,
 ## Write the resolution criteria
 
 The market description is the resolution criteria. Write it in Markdown.
+New oracle announcements retain this same source text. Existing signed
+announcements remain unchanged.
 Character and byte limits apply to the full source, including Markdown syntax.
 Preview keeps the source counts and validation errors visible.
 

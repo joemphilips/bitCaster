@@ -5,6 +5,7 @@ import {
   deriveDlcConditionId,
   normalizeMarketCreationInput,
   normalizeOracleAnnouncementTags,
+  normalizeLegacyOracleAnnouncementTags,
   type MarketCreationInput,
 } from '@bitcaster-market/client-sdk'
 import type { NativeOracleHelper } from './nativeOracleHelper.ts'
@@ -58,6 +59,16 @@ export async function prepareNativeMarketOracle(
   if (saved?.announcement == null) {
     deps.helper.assertAvailable()
   }
+  // Reservations survive a crash before signing. An explicit format marker keeps
+  // new raw descriptions stable; only rows written without it use legacy formatting.
+  const savedTagsVersion: unknown =
+    saved === null
+      ? 2
+      : (JSON.parse(saved.canonicalInput) as { oracleAnnouncementTagsVersion?: unknown })
+          .oracleAnnouncementTagsVersion
+  if (savedTagsVersion !== undefined && savedTagsVersion !== 2)
+    throw new Error('Native oracle announcement tag format is invalid.')
+  const exactDescription = savedTagsVersion === 2
   const canonicalInput = JSON.stringify({
     market: {
       title: market.metadata.title,
@@ -86,6 +97,7 @@ export async function prepareNativeMarketOracle(
             thumbnailContentType: input.destination.thumbnailContentType,
           }),
     },
+    ...(exactDescription ? { oracleAnnouncementTagsVersion: 2 } : {}),
   })
   let record = await deps.store.reserveCreation(
     {
@@ -96,11 +108,9 @@ export async function prepareNativeMarketOracle(
     deriveNostrPublicKey(deps.oracleSecretKeyHex),
   )
   if (record.announcement === null) {
-    const tags = normalizeOracleAnnouncementTags(market.metadata.title, market.metadata.description)
-    // A pre-upgrade reserved row already chose the old announcement formatting.
-    // New admission rejects excess text; retained unsigned reservations keep the
-    // historical 100-code-point title instead of changing the artifact on resume.
-    if (saved !== null) tags.title = Array.from(tags.title).slice(0, 100).join('')
+    const tags = (
+      exactDescription ? normalizeOracleAnnouncementTags : normalizeLegacyOracleAnnouncementTags
+    )(market.metadata.title, market.metadata.description)
     const artifact = await deps.helper.createEnum({
       oracleSecretKeyHex: deps.oracleSecretKeyHex,
       nonceSeedHex: deps.nonceSeedHex,

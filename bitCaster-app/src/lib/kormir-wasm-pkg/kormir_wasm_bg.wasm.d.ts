@@ -44,6 +44,7 @@ export const kormir_list_events: (a: number) => any;
 export const kormir_new: (a: number, b: number) => any;
 export const kormir_prepare_enum_attestation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
 export const kormir_prepare_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
+export const kormir_read_prepared_enum_announcement: (a: number, b: number, c: number) => any;
 export const kormir_restore: (a: number, b: number) => any;
 export const kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => any;
 export const kormir_staged_enum_publication: (a: number, b: number, c: number) => any;

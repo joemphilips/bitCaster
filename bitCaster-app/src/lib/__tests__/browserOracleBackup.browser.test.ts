@@ -6,6 +6,7 @@ import {
 import { creatorMarketFixture } from "@/test/creatorOracleFixture";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  normalizeLegacyOracleAnnouncementTags,
   createOracleBackupEvent,
   decryptOracleBackupEvent,
   deriveDlcConditionId,
@@ -943,7 +944,12 @@ it.each(["relay", "decode", "post-success", "post-failure"] as const)(
       release.resolve();
       await expect(pending).rejects.toMatchObject({ reason: "identity-changed" });
       expect(network.mock.calls.length).toBe(stage.startsWith("post-") ? 1 : 0);
-      expect(read.mock.calls.length).toBe(0);
+      // One fresh-signing admission read precedes the paused delivery stage;
+      // identity invalidation must prevent any later resolution read.
+      expect(read.mock.calls.length).toBe(1);
+      expect(read.mock.invocationCallOrder[0]).toBeLessThan(
+        oracleNetwork.publish.mock.invocationCallOrder[0]!,
+      );
       const saved = await owner.getState().readOraclePublication(f.record.conditionId);
       expect(saved?.relayPublished).toBe(true);
       expect(saved?.binding.oraclePubkey === f.record.oraclePubkey).toBe(true);
@@ -1336,3 +1342,112 @@ it("restores and reloads a full-size compact backup without reapplying the v1 wi
     prepareEnumAttestation([], eventId, outcomes[1], prepared.eventJson),
   ).rejects.toBeDefined();
 });
+
+it.each(["new", "legacy"] as const)(
+  "preserves $0 description and exact signed bytes through real browser preparation, backup and retry",
+  async (format) => {
+    await ensureKormirNsec([], "11".repeat(32));
+    const core = await getKormir([]);
+    const eventId = `description-${format}-${crypto.randomUUID()}`;
+    const title = "  Title\n with spaces ";
+    const description =
+      "  ## 判定条件\r\n\r\n- First  condition  \n\t- Exception\n\n```text\n  keep  spaces\n```\n";
+    let exact: string;
+    let originalSigned: string | undefined;
+    if (format === "legacy") {
+      const legacy = normalizeLegacyOracleAnnouncementTags(title, description);
+      const prepared = await core.prepare_enum_event(
+        eventId,
+        ["YES", "NO"],
+        1_800_000_000,
+        legacy.title,
+        legacy.description,
+      );
+      try {
+        // Imported signed JSON can retain different whitespace/property order.
+        originalSigned = prepared.nostr_event_json;
+        const event = JSON.parse(originalSigned);
+        exact = JSON.stringify({ sig: event.sig, ...event }, null, 2);
+      } finally {
+        prepared.free();
+      }
+    } else {
+      exact = (
+        await prepareEnumAnnouncement([], eventId, ["YES", "NO"], 1_800_000_000, title, description)
+      ).eventJson;
+    }
+    const event = JSON.parse(exact);
+    const expectedDescription =
+      format === "legacy"
+        ? normalizeLegacyOracleAnnouncementTags(title, description).description
+        : description;
+    expect(event.tags.find((tag: string[]) => tag[0] === "description")?.[1]).toBe(
+      expectedDescription,
+    );
+    const authority = JSON.parse(
+      await core.export_enum_authority(eventId, originalSigned ?? exact),
+    );
+    // An external backup can serialize the same signed event differently. Import
+    // validates signed fields, while retention must preserve its original bytes.
+    authority.announcementEventJson = exact;
+    const record: OracleBackupRecord = {
+      schemaVersion: 1,
+      oraclePubkey: event.pubkey,
+      oracleEventId: eventId,
+      conditionId: deriveDlcConditionId({
+        eventId,
+        outcomeCount: 2,
+        oraclePublicKeys: [event.pubkey],
+      }),
+      authority,
+      destinations: {
+        mintUrl: "https://mint.example",
+        engineUrl: "https://engine.example",
+        relayUrls: ["wss://relay.example"],
+      },
+    };
+    const privateKey = new Uint8Array(32).fill(0x11);
+    const envelope = await createOracleBackupEvent({
+      record,
+      privateKey,
+      validator: browserOracleBackupValidator,
+      createdAt: 1_800_000_010,
+    });
+    const restored = await decryptOracleBackupEvent({
+      event: envelope,
+      privateKey,
+      validator: browserOracleBackupValidator,
+    });
+    expect(restored.authority.announcementEventJson === exact).toBe(true);
+    await emptyPrivateTestStore();
+    await ensureKormirNsec([], "11".repeat(32));
+    const reloaded = await getKormir([]);
+    await reloaded.import_enum_authority(JSON.stringify(restored.authority));
+    const retried = await prepareEnumAnnouncement(
+      [],
+      eventId,
+      ["YES", "NO"],
+      1_800_000_000,
+      title,
+      description,
+    );
+    expect(retried.eventJson === exact).toBe(true);
+    const before = await privateOracleSnapshot();
+    await expect(
+      prepareEnumAnnouncement(
+        [],
+        eventId,
+        ["YES", "NO"],
+        1_800_000_000,
+        title,
+        description + "changed",
+      ),
+    ).rejects.toThrow();
+    await expect(
+      prepareEnumAnnouncement([], eventId, ["YES", "OTHER"], 1_800_000_000, title, description),
+    ).rejects.toBeDefined();
+    expect((await privateOracleSnapshot()) === before).toBe(true);
+    core.free();
+    reloaded.free();
+  },
+);

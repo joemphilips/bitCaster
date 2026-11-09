@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { bootstrapFreshDaemonProfile, readProfileSecretAuthority } from '../src/profileBootstrap.ts'
 import { deriveNostrPublicKey } from '../src/profileSecretProtection.ts'
 import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
 import {
@@ -25,7 +25,11 @@ import {
   type NativeOraclePublicationPorts,
 } from '../src/nativeOraclePublicationCoordinator.ts'
 import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
-import { BitcasterEngineClient } from '@bitcaster-market/client-sdk'
+import {
+  BitcasterEngineClient,
+  createOracleBackupEvent,
+  decryptOracleBackupEvent,
+} from '@bitcaster-market/client-sdk'
 
 const input: NativeMarketCreationInput = {
   registration: { requiredFeeMsat: 0 },
@@ -58,7 +62,7 @@ test('native creation stores exact artifacts before returning and retries withou
         request.reservedNonceIndex,
       )
       assert.equal(request.title, 'Title')
-      assert.equal(request.description, 'A description')
+      assert.equal(request.description, input.market.description)
       return original(request)
     }
     const first = await prepareNativeMarketOracle(deps, input)
@@ -200,6 +204,31 @@ test('retained oversized native creations resume and resolve without new writer 
     const resolved = await signNativeMarketOutcome(deps, 'aa'.repeat(32), 'Yes')
     assert.equal(resolved.announcement?.announcementNostrEventJson, exactAnnouncement)
     assert.equal(resolved.chosenOutcome, 'Yes')
+  })
+})
+
+test('new interrupted native reservations retain exact description formatting on cold retry', async () => {
+  await withFixture(async (deps, directory) => {
+    const description = '  ## Rules\r\n\n- First  condition\n\t- Exception\n'
+    const raw = { ...input, market: { ...input.market, description } }
+    const create = deps.helper.createEnum
+    let attempts = 0
+    deps.helper.createEnum = async (request) => {
+      attempts++
+      assert.equal(request.description, description)
+      if (attempts === 1) throw new Error('interrupted before announcement persisted')
+      return create(request)
+    }
+    await assert.rejects(prepareNativeMarketOracle(deps, raw), /interrupted/)
+    const reserved = (await deps.store.readCreation(raw.creationId))!
+    assert.equal(JSON.parse(reserved.canonicalInput).oracleAnnouncementTagsVersion, 2)
+    const resumed = await prepareNativeMarketOracle(
+      { ...deps, store: createNativeOracleCreationStore(directory) },
+      raw,
+    )
+    assert.equal(resumed.record.nonceIndex, reserved.nonceIndex)
+    assert.equal(resumed.market.metadata.description, description)
+    assert.equal(attempts, 2)
   })
 })
 
@@ -348,6 +377,100 @@ const realHelperPath =
   process.env.BITCASTER_TEST_NATIVE_ORACLE_HELPER ??
   (process.platform === 'win32' ? '' : resolveNativeOracleHelperPath())
 const realCrypto = { skip: !existsSync(realHelperPath) }
+
+test(
+  'real native signed description and encrypted backup preserve raw multiline metadata and exact retry',
+  realCrypto,
+  async () => {
+    await withFixture(async (deps, directory) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      deps.nonceSeedHex = secrets.nativeOracleNonceSeedHex
+
+      const description =
+        '  ## 判定条件\r\n\r\n- First  condition  \n\t- Exception\n\n```text\n  keep  spaces\n```\n'
+      const market = { ...input, market: { ...input.market, description } }
+      const helper = createNativeOracleHelperAdapter({ resolveExecutable: () => realHelperPath })
+      const prepared = await prepareNativeMarketOracle({ ...deps, helper }, market)
+      const exact = prepared.record.announcement!.announcementNostrEventJson
+      assert.equal(
+        JSON.parse(exact).tags.find((tag: string[]) => tag[0] === 'description')?.[1],
+        description,
+      )
+      assert.equal(prepared.market.metadata.description, description)
+      const backup = await deps.store.exportBackup(
+        prepared.record.announcement!.conditionId,
+        helper,
+      )
+      assert.equal(backup.authority.announcementEventJson, exact)
+      const envelope = await createOracleBackupEvent({
+        record: backup,
+        privateKey: Buffer.from(deps.oracleSecretKeyHex, 'hex'),
+        validator: helper,
+        createdAt: 1_800_000_000,
+      })
+      const restored = await decryptOracleBackupEvent({
+        event: envelope,
+        privateKey: Buffer.from(deps.oracleSecretKeyHex, 'hex'),
+        validator: helper,
+      })
+      assert.equal(restored.authority.announcementEventJson, exact)
+      const retry = await prepareNativeMarketOracle(
+        { ...deps, helper, store: createNativeOracleCreationStore(directory) },
+        market,
+      )
+      assert.equal(retry.record.announcement!.announcementNostrEventJson, exact)
+    })
+  },
+)
+
+test(
+  'real legacy unsigned reservation keeps its original collapsed description and exact signed retry',
+  realCrypto,
+  async () => {
+    await withFixture(async (deps, directory) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      deps.nonceSeedHex = secrets.nativeOracleNonceSeedHex
+
+      const description = '  ## Legacy\r\n\n- First  condition\n\t- Exception\n'
+      const legacy = { ...input, market: { ...input.market, description } }
+      await deps.store.reserveCreation(
+        {
+          creationId: legacy.creationId,
+          eventId: legacy.eventId,
+          canonicalInput: JSON.stringify({
+            market: legacy.market,
+            registration: legacy.registration,
+            destination: legacy.destination,
+          }),
+        },
+        deriveNostrPublicKey(deps.oracleSecretKeyHex),
+      )
+      const helper = createNativeOracleHelperAdapter({ resolveExecutable: () => realHelperPath })
+      const prepared = await prepareNativeMarketOracle({ ...deps, helper }, legacy)
+      const exact = prepared.record.announcement!.announcementNostrEventJson
+      assert.equal(
+        JSON.parse(exact).tags.find((tag: string[]) => tag[0] === 'description')?.[1],
+        '## Legacy - First condition - Exception',
+      )
+      assert.equal(prepared.market.metadata.description, description)
+      const backup = await deps.store.exportBackup(
+        prepared.record.announcement!.conditionId,
+        helper,
+      )
+      assert.equal(backup.authority.announcementEventJson, exact)
+      const retry = await prepareNativeMarketOracle(
+        { ...deps, helper, store: createNativeOracleCreationStore(directory) },
+        legacy,
+      )
+      assert.equal(retry.record.announcement!.announcementNostrEventJson, exact)
+      assert.equal(JSON.parse(retry.record.canonicalInput).oracleAnnouncementTagsVersion, undefined)
+    })
+  },
+)
 
 interface ResolutionFixture {
   attestedOutcome: string

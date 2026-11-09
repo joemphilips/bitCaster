@@ -156,7 +156,7 @@ function mergeEngineSnapshot(
     // A delayed open snapshot cannot reopen a confirmed closure.
     if (closed && !isEngineClosed(market.state)) return closed;
     currentConditionIds.push(market.conditionId);
-    // A verified outcome cannot change. A failed catalogue read keeps the known outcome.
+    // A missing outcome in this response must not erase a previously known outcome.
     if (closed?.finalOutcome && !market.finalOutcome)
       return { ...market, finalOutcome: closed.finalOutcome };
     return market;

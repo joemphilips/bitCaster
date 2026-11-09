@@ -44,8 +44,8 @@ export class OracleBackupCapacityError extends Error {
  * Real native/WASM lifecycle fixtures must guard any change to those encodings.
  *
  * Fixed-size IDs, signatures and hex/base64 payloads have fixed JSON widths. Raw
- * title/description conservatively include whitespace that announcement formatting
- * can only shorten. U+0000 consumes one explanation UTF-8 byte and the maximum six
+ * description is preserved exactly; raw title bytes conservatively include whitespace
+ * that title formatting can only shorten. U+0000 consumes one explanation UTF-8 byte and the maximum six
  * JSON characters; serializing the actual nested schema accounts for every escape.
  * Full evidence/explanation plus a retained nonce dominates terminal and partial
  * states. False acknowledgments and the largest safe timestamp dominate their widths.

@@ -90,6 +90,10 @@ export class Kormir {
     static new(relays: string[]): Promise<Kormir>;
     prepare_enum_attestation(event_id: string, outcome: string, announcement_event_json: string): Promise<PreparedOracleEvent>;
     prepare_enum_event(event_id: string, outcomes: string[], event_maturity_epoch: number, title: string, description: string): Promise<PreparedOracleEvent>;
+    /**
+     * Read one retained public announcement without allocating, signing, or modifying storage.
+     */
+    read_prepared_enum_announcement(event_id: string): Promise<PreparedOracleEvent | undefined>;
     static restore(str: string): Promise<void>;
     sign_enum_event(event_id: string, outcome: string): Promise<string>;
     staged_enum_publication(event_id: string): Promise<string | undefined>;
@@ -154,6 +158,7 @@ export interface InitOutput {
     readonly kormir_new: (a: number, b: number) => any;
     readonly kormir_prepare_enum_attestation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly kormir_prepare_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
+    readonly kormir_read_prepared_enum_announcement: (a: number, b: number, c: number) => any;
     readonly kormir_restore: (a: number, b: number) => any;
     readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly kormir_staged_enum_publication: (a: number, b: number, c: number) => any;
