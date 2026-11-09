@@ -146,6 +146,11 @@ export function CreatorDashboard() {
   const storedExplanation = useCreatorMarketsStore((state) =>
     resolutionDialog ? retainedResolution(resolutionDialog.marketId, state).explanation : undefined,
   );
+  const restoredOracle = useCreatorMarketsStore((state) =>
+    resolutionDialog
+      ? state.importedOracles.some((row) => row.binding.conditionId === resolutionDialog.marketId)
+      : false,
+  );
   const immutableOutcome = storedOutcome ?? resolutionDialog?.savedOutcome;
   const selectedOutcome = immutableOutcome ?? resolutionDialog?.outcome ?? "";
   const displayedExplanation = immutableOutcome
@@ -396,6 +401,11 @@ export function CreatorDashboard() {
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
                 <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
                 <p className="mt-3 break-words font-medium">{resolutionDialog.title}</p>
+                {restoredOracle && !immutableOutcome && (
+                  <p role="note" className="mt-4 text-sm text-amber-800 dark:text-amber-300">
+                    {t("creator.restoredOracleSigningWarning")}
+                  </p>
+                )}
                 {immutableOutcome ? (
                   <p data-testid="creator-oracle-saved-outcome" className="mt-4 break-words">
                     {t("oracleBackup.savedOutcome", {

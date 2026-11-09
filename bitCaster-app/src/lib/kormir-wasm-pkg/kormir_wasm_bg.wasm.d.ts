@@ -36,6 +36,7 @@ export const kormir_create_enum_event: (a: number, b: number, c: number, d: numb
 export const kormir_decode_announcement: (a: number, b: number) => any;
 export const kormir_decode_attestation: (a: number, b: number) => any;
 export const kormir_export_enum_authority: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+export const kormir_export_enum_authority_v2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
 export const kormir_get_public_key: (a: number) => [number, number];
 export const kormir_import_enum_authority: (a: number, b: number, c: number) => any;
 export const kormir_import_enum_event: (a: number, b: number, c: number) => any;

@@ -10,8 +10,8 @@ test('oracle announcement tags preserve browser whitespace and Unicode title rul
       'Rain tomorrow?',
       'A forecast market.',
     ],
-    ['☀'.repeat(101), 'Long '.repeat(101), '☀'.repeat(100), 'Long '.repeat(101).trim()],
-    ['🌦'.repeat(101), 'No truncation', '🌦'.repeat(100), 'No truncation'],
+    ['☀'.repeat(200), 'Long '.repeat(101), '☀'.repeat(200), 'Long '.repeat(101).trim()],
+    ['🌦'.repeat(200), 'No truncation', '🌦'.repeat(200), 'No truncation'],
     ['', '', '', ''],
   ]) {
     assert.deepEqual(normalizeOracleAnnouncementTags(title, description), {

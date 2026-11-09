@@ -3,6 +3,13 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
 import { categoricalOutcomeColors, normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
+import { useId, useState } from "react";
+import {
+  inspectNewMarketCreationText,
+  MAX_MARKET_DESCRIPTION_CHARACTERS,
+  MAX_MARKET_DESCRIPTION_UTF8_BYTES,
+} from "@bitcaster/client-sdk/marketCreationLimits";
+import { marketCreationTextError, marketCreationTagsError } from "@/lib/marketCreationValidation";
 
 interface ReviewAndCreateProps {
   description: string;
@@ -24,7 +31,25 @@ export function ReviewAndCreate({
   onCreateMarket,
 }: ReviewAndCreateProps) {
   const { t } = useTranslation();
-  const canCreate = description.trim().length > 0 && !isSubmitting;
+  const descriptionId = useId();
+  const descriptionCountId = useId();
+  const descriptionErrorId = useId();
+  const metadataErrorId = useId();
+  const [descriptionBlurred, setDescriptionBlurred] = useState(false);
+  const text = inspectNewMarketCreationText({
+    title: basicInfo?.title ?? "",
+    description,
+    categoryTags: basicInfo?.categoryTags ?? [],
+  });
+  const descriptionError = marketCreationTextError(
+    t,
+    "description",
+    text.description.issue === "required" && !descriptionBlurred ? null : text.description.issue,
+  );
+  const metadataError =
+    marketCreationTextError(t, "title", text.title.issue) ??
+    (text.mintTagsIssue ? marketCreationTagsError(t, text.mintTagsIssue) : null);
+  const canCreate = !text.description.issue && !metadataError && !isSubmitting;
   const colors =
     outcomes?.outcomeType === "categorical"
       ? categoricalOutcomeColors(outcomes.outcomes ?? [])
@@ -38,17 +63,42 @@ export function ReviewAndCreate({
 
       {/* Description */}
       <div className="mb-8">
-        <label className="block text-sm font-medium text-slate-300 mb-2">
+        <label htmlFor={descriptionId} className="block text-sm font-medium text-slate-300 mb-2">
           {t("marketCreation.description")}
         </label>
         <textarea
+          id={descriptionId}
           value={description}
+          onBlur={() => setDescriptionBlurred(true)}
+          aria-invalid={!!descriptionError}
+          aria-describedby={[descriptionCountId, descriptionError ? descriptionErrorId : null]
+            .filter(Boolean)
+            .join(" ")}
           onChange={(e) => onDescriptionChange?.(e.target.value)}
           placeholder={t("marketCreation.descriptionPlaceholder")}
           rows={6}
           className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
         />
+        <p id={descriptionCountId} className="mt-2 text-xs text-slate-400">
+          {t("marketCreation.textCount", {
+            characters: text.description.characters,
+            maxCharacters: MAX_MARKET_DESCRIPTION_CHARACTERS,
+            bytes: text.description.utf8Bytes,
+            maxBytes: MAX_MARKET_DESCRIPTION_UTF8_BYTES,
+          })}
+        </p>
+        {descriptionError && (
+          <p id={descriptionErrorId} role="alert" className="mt-2 text-sm text-red-400">
+            {descriptionError}
+          </p>
+        )}
       </div>
+
+      {metadataError && (
+        <p id={metadataErrorId} role="alert" className="mb-4 text-sm text-red-400">
+          {metadataError}
+        </p>
+      )}
 
       {/* Market summary card */}
       <div className="p-5 rounded-xl bg-slate-900 border border-slate-700 mb-8">
@@ -190,6 +240,7 @@ export function ReviewAndCreate({
       <button
         onClick={() => onCreateMarket?.()}
         disabled={!canCreate}
+        aria-describedby={metadataError ? metadataErrorId : undefined}
         className={`w-full py-3.5 rounded-full font-semibold text-sm transition-colors flex items-center justify-center gap-2 ${
           canCreate
             ? "bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/25"

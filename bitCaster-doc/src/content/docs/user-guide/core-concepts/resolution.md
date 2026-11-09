@@ -169,6 +169,11 @@ and publish it with the original authority and destinations.
 Review and confirm the action in the resolution dialog. Opening or cancelling
 the dialog does not publish an outcome. Automatic recovery does not publish it.
 The first saved outcome on this device cannot change.
+Use only one current oracle copy. Never sign a different outcome for the same
+announcement on another device or from an older backup. Two different outcome
+signatures using the same nonce can reveal the oracle private key. Manual signing
+from a restored record remains available, with a warning in the dialog.
+A missing public result cannot establish that no other copy has signed.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 

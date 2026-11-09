@@ -902,6 +902,9 @@ describe("oracle owner confirmation", () => {
     await user.click(await screen.findByRole("button", { name: "Close market" }));
     let dialog = screen.getByRole("dialog", { name: "Close this market" });
     expect(within(dialog).getByText(row.title, { exact: true })).toBeVisible();
+    expect(within(dialog).getByRole("note")).toHaveTextContent(
+      "Two different outcome signatures made with the same nonce can reveal your oracle private key.",
+    );
     expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeDisabled();
     await user.selectOptions(within(dialog).getByRole("combobox"), "NO");
     await user.type(within(dialog).getByRole("textbox"), "Unsaved explanation.");
@@ -927,6 +930,26 @@ describe("oracle owner confirmation", () => {
       undefined,
       { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
     );
+  });
+
+  it("shows the restored signing warning in Japanese without adding a new confirmation", async () => {
+    await setupImportedDialog();
+    try {
+      await i18n.changeLanguage("ja");
+      renderDashboard();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: i18n.t("creator.closeMarket") }));
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByRole("note")).toHaveTextContent(
+        "同じノンスで異なる結果に2回署名すると",
+      );
+      expect(within(dialog).getByRole("note")).toHaveTextContent("秘密鍵が漏えい");
+      await user.selectOptions(within(dialog).getByRole("combobox"), "NO");
+      expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeEnabled();
+      expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("shows a saved imported outcome without a dialog and keeps its explanation", async () => {

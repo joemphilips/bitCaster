@@ -10,7 +10,8 @@ use kormir::lightning::io::Cursor;
 use kormir::lightning::util::ser::{Readable, Writeable};
 use kormir::nostr::{Event, EventBuilder, EventId, JsonUtil, Kind, Tag};
 use kormir::private_backup::{
-    validate_enum_authority, validate_enum_authority_json, PrivateEnumAuthority,
+    decode_enum_authority_json, encode_enum_authority_json, validate_enum_authority_json,
+    PrivateEnumAuthority,
 };
 use kormir::storage::{same_event, OracleEventData, Storage};
 use kormir::{Oracle, OracleAnnouncement, OracleAttestation};
@@ -50,6 +51,10 @@ impl Failure {
     }
 }
 
+fn legacy_authority_version() -> u32 {
+    1
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
@@ -62,6 +67,8 @@ enum Request {
     },
     ExportEnumAuthority {
         version: u8,
+        #[serde(rename = "authorityVersion", default = "legacy_authority_version")]
+        authority_version: u32,
         #[serde(rename = "oracleSecretKeyHex")]
         oracle_secret_key_hex: String,
         #[serde(rename = "nonceSeedHex")]
@@ -385,6 +392,7 @@ async fn dispatch(request: Request) -> HelperResult<serde_json::Value> {
         }
         Request::ExportEnumAuthority {
             version,
+            authority_version,
             oracle_secret_key_hex,
             nonce_seed_hex,
             reserved_nonce_index,
@@ -423,9 +431,8 @@ async fn dispatch(request: Request) -> HelperResult<serde_json::Value> {
                 .x_only_public_key(&Secp256k1::new())
                 .0
                 .to_string();
-            validate_enum_authority(&dto, Some(&pubkey))
+            let json = encode_enum_authority_json(&dto, Some(&pubkey), authority_version)
                 .map_err(|_| Failure::InvalidAnnouncement)?;
-            let json = serde_json::to_string(&dto).map_err(|_| Failure::InternalFailure)?;
             Ok(
                 serde_json::json!({ "version": 1, "ok": true, "action": "export-enum-authority", "privateDtoJson": json }),
             )
@@ -642,8 +649,8 @@ async fn sign_explicit_enum(
         .to_string();
     let validated = validate_enum_authority_json(private_dto_json, Some(&pubkey))
         .map_err(|_| Failure::InvalidAnnouncement)?;
-    let dto: PrivateEnumAuthority =
-        serde_json::from_str(private_dto_json).map_err(|_| Failure::InvalidAnnouncement)?;
+    let dto = decode_enum_authority_json(private_dto_json, Some(&pubkey))
+        .map_err(|_| Failure::InvalidAnnouncement)?;
     if dto.nonce_scalar_hex.is_none() {
         return Err(Failure::InvalidRequest);
     }
@@ -940,6 +947,59 @@ fn map_sign_error(error: kormir::error::Error) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_compact_export_and_signing_keep_legacy_export_as_default() {
+        let invoke = |request: serde_json::Value| {
+            let (bytes, success) = execute(&serde_json::to_vec(&request).unwrap());
+            (
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                success,
+            )
+        };
+        let (announcement, created) = invoke(serde_json::json!({
+            "version":1,"action":"create-enum","oracleSecretKeyHex":"01".repeat(32),
+            "nonceSeedHex":"02".repeat(32),"reservedNonceIndex":0,
+            "eventId":"compact-helper","outcomes":["YES","NO"],
+            "eventMaturityEpoch":2_000_000_000u32,"title":"日本語","description":"Recovery fixture"
+        }));
+        assert!(created);
+        let export = serde_json::json!({
+            "version":1,"action":"export-enum-authority","oracleSecretKeyHex":"01".repeat(32),
+            "nonceSeedHex":"02".repeat(32),"reservedNonceIndex":0,
+            "announcementTlvHex":announcement["announcementTlvHex"],
+            "announcementEventJson":announcement["announcementNostrEventJson"],
+            "signedOutcome":null,"attestationHex":null,"attestationEventJson":null,"publicationRecordJson":null
+        });
+        let (legacy, success) = invoke(export.clone());
+        assert!(success);
+        let legacy: serde_json::Value =
+            serde_json::from_str(legacy["privateDtoJson"].as_str().unwrap()).unwrap();
+        assert_eq!(legacy["schemaVersion"], 1);
+        let mut compact_request = export;
+        compact_request["authorityVersion"] = serde_json::json!(2);
+        let (compact, success) = invoke(compact_request.clone());
+        assert!(success);
+        let compact_json = compact["privateDtoJson"].as_str().unwrap();
+        let compact: serde_json::Value = serde_json::from_str(compact_json).unwrap();
+        assert_eq!(compact["schemaVersion"], 2);
+        assert!(compact.get("publicationRecordJson").is_none());
+        assert_eq!(
+            compact["announcementEventJson"],
+            legacy["announcementEventJson"]
+        );
+        let (_, success) = invoke(
+            serde_json::json!({"version":1,"action":"validate-authority","privateDtoJson":compact_json,"expectedOraclePubkey":announcement["oraclePublicKeyHex"]}),
+        );
+        assert!(success);
+        let (signed, success) = invoke(
+            serde_json::json!({"version":1,"action":"sign-explicit-enum","oracleSecretKeyHex":"01".repeat(32),"privateDtoJson":compact_json,"chosenOutcome":"YES"}),
+        );
+        assert!(success);
+        assert_eq!(signed["chosenOutcome"], "YES");
+        compact_request["authorityVersion"] = serde_json::json!(3);
+        assert!(!invoke(compact_request).1);
+    }
 
     #[test]
     fn verify_enum_uses_only_public_artifacts_and_rejects_foreign_bindings() {

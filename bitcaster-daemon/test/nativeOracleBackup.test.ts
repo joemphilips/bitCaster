@@ -875,7 +875,8 @@ for (const kind of ['created', 'imported'] as const) {
           },
           accessPorts(store, {
             queryRelay: async (input) => {
-              assert.deepEqual(input.filter.ids, [unknown.id])
+              if (input.filter.ids) assert.deepEqual(input.filter.ids, [unknown.id])
+              else assert.deepEqual(input.filter['#d'], [unknown.tags[0][1]])
               return { events: [unknown], complete: true }
             },
           }),
@@ -941,14 +942,15 @@ test(
         accessPorts(store, {
           queryRelay: async (input) => {
             fetched++
-            assert.deepEqual(input.filter.ids, [event.id])
-            assert.equal(input.relayUrl, 'wss://source.example')
+            if (input.filter.ids) assert.deepEqual(input.filter.ids, [event.id])
+            else assert.deepEqual(input.filter['#d'], [event.tags[0][1]])
+            assert.ok(['wss://source.example', 'wss://discovery.example'].includes(input.relayUrl))
             return { events: [event], complete: true }
           },
         }),
       )
       assert.equal(restored.ok, true)
-      assert.equal(fetched, 1)
+      assert.equal(fetched, 3) // Exact selection plus source/configured-relay identity checks.
       assert.doesNotMatch(JSON.stringify(restored), /nonceScalarHex|eventJson|privateDto|secretKey/)
       const restarted = createNativeOracleCreationStore(directory)
       assert.equal(
@@ -1605,7 +1607,7 @@ test(
             assert.equal(input.relayUrl, 'wss://discovery.example')
             assert.deepEqual(input.filter.kinds, [30078])
             assert.deepEqual(input.filter.authors, [publicKey])
-            assert.deepEqual(input.filter['#v'], ['1'])
+            assert.equal(input.filter['#v'], undefined)
             assert.equal('#d' in input.filter, false)
             return { events: [event], complete: true }
           },
@@ -1635,7 +1637,7 @@ test(
         },
         accessPorts(store, { queryRelay: async () => ({ events: [], complete: true }) }),
       )
-      assert.equal('code' in missing && missing.code, 'oracle-backup-missing-event')
+      assert.equal('code' in missing && missing.code, 'oracle-backup-unavailable')
       const wrong = finalizeEvent(
         {
           kind: event.kind,
@@ -1652,7 +1654,7 @@ test(
         },
         accessPorts(store, { queryRelay: async () => ({ events: [wrong], complete: true }) }),
       )
-      assert.equal('code' in foreign && foreign.code, 'oracle-backup-wrong-owner')
+      assert.equal('code' in foreign && foreign.code, 'oracle-backup-unavailable')
       const invalid = await dispatchNativeOracleAccess(
         {
           method: 'market.oracle-backup-restore',
@@ -1665,7 +1667,7 @@ test(
           }),
         }),
       )
-      assert.equal('code' in invalid && invalid.code, 'oracle-backup-invalid-envelope')
+      assert.equal('code' in invalid && invalid.code, 'oracle-backup-unavailable')
       assert.ok(
         isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), before),
         'Refused access changed owner.',
@@ -1856,7 +1858,8 @@ test(
         },
         accessPorts(store, {
           queryRelay: async (input) => {
-            assert.deepEqual(input.filter.ids, [event.id])
+            if (input.filter.ids) assert.deepEqual(input.filter.ids, [event.id])
+            else assert.deepEqual(input.filter['#d'], [event.tags[0][1]])
             return { events: [event], complete: true }
           },
         }),
@@ -1940,5 +1943,60 @@ test(
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  },
+)
+
+test(
+  'real v2 terminal history rejects a newer stale v1 nonce in discovery and local restore',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      const unresolved = await store.exportBackup(conditionId, helper)
+      await resolve(directory, store, conditionId)
+      const signed = await store.exportBackup(conditionId, helper)
+      const terminal = { ...signed, authority: { ...signed.authority, nonceScalarHex: null } }
+      await store.importBackup(terminal, helper)
+      const known = await createOracleBackupEvent({
+        record: terminal,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 200,
+        validator: helper,
+        writeVersion: 2,
+      })
+      const stale = await createOracleBackupEvent({
+        record: unresolved,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 201,
+        validator: helper,
+      })
+      const ownerBefore = await store.readAuthorityByConditionId(conditionId)
+      const deliveryBefore = await store.readBackupDelivery(conditionId)
+      const ports = accessPorts(store, {
+        queryRelay: async () => ({ events: [stale, known], complete: true }),
+      })
+      const listed = await dispatchNativeOracleAccess(
+        { method: 'market.oracle-backup-list', params: {} },
+        ports,
+      )
+      assert.equal(listed.ok, true)
+      if (listed.ok) {
+        const result = listed.result as { descriptors: unknown[]; partialReasons: string[] }
+        assert.deepEqual(result.descriptors, [])
+        assert.ok(result.partialReasons.includes('lifecycle-regression'))
+      }
+      const refused = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: stale.id, relay: 'wss://source.example' },
+        },
+        ports,
+      )
+      assert.equal(refused.ok, false)
+      assert.equal('code' in refused && refused.code, 'oracle-backup-lifecycle-regression')
+      await assert.rejects(store.importBackupEnvelope(stale, 'wss://source.example', helper))
+      assert.deepEqual(await store.readAuthorityByConditionId(conditionId), ownerBefore)
+      assert.deepEqual(await store.readBackupDelivery(conditionId), deliveryBefore)
+      assert.equal((await store.readImportedAuthorityForSigning(conditionId)).nonceScalarHex, null)
+    })
   },
 )

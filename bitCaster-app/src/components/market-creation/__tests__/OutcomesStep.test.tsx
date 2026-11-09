@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { OutcomesStep } from "../OutcomesStep";
 import type { WizardOutcome } from "@/types/market-creation";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 
 function makeOutcomes(count: number): WizardOutcome[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -133,17 +135,45 @@ describe("OutcomesStep outcome label rule", () => {
     labels.map((label, i) => ({ id: `o${i}`, label, description: "" }));
 
   it.each([
+    ["en", "Next", "Use 1 to 191 ASCII letters or digits, with no spaces or symbols."],
+    ["ja", "次へ", "半角英数字で1〜191文字にしてください。スペースや記号は使えません。"],
+  ] as const)(
+    "explains the unchanged 191-character ASCII boundary in %s",
+    (language, next, error) => {
+      const instance = i18n.cloneInstance({ lng: language });
+      const step = (label: string) => (
+        <I18nextProvider i18n={instance}>
+          <OutcomesStep outcomeType="categorical" outcomes={outcomes(label, "Other")} />
+        </I18nextProvider>
+      );
+      const view = render(step("A".repeat(191)));
+      expect(screen.getByRole("button", { name: next })).toBeEnabled();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      view.rerender(step("A".repeat(192)));
+      expect(screen.getAllByRole("textbox")[0]).toHaveValue("A".repeat(192));
+      expect(screen.getByRole("alert")).toHaveTextContent(error);
+      expect(screen.getByRole("button", { name: next })).toBeDisabled();
+      for (const label of ["東京", "Ａ", "é"]) {
+        view.rerender(step(label));
+        expect(screen.getAllByRole("textbox")[0]).toHaveValue(label);
+        expect(screen.getByRole("alert")).toHaveTextContent(error);
+        expect(screen.getByRole("button", { name: next })).toBeDisabled();
+      }
+    },
+  );
+
+  it.each([
     ["a case variant", ["Red", "red"], "Another outcome already has this name."],
     ["a padded copy", ["Red", " Red "], "Another outcome already has this name."],
     [
       "a space inside",
       ["New York", "Paris"],
-      "Use only letters and digits, with no spaces or symbols.",
+      "Use 1 to 191 ASCII letters or digits, with no spaces or symbols.",
     ],
     [
       "the set separator",
       ["Red|Blue", "Green"],
-      "Use only letters and digits, with no spaces or symbols.",
+      "Use 1 to 191 ASCII letters or digits, with no spaces or symbols.",
     ],
   ])("shows the error at the field and keeps Next disabled for %s", (_case, labels, message) => {
     render(<OutcomesStep outcomeType="categorical" outcomes={outcomes(...labels)} />);

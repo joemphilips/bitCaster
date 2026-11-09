@@ -31,7 +31,8 @@ or reduce the relay list before trying again.
 
 For a yes/no market, the wizard uses Yes and No automatically. It skips the
 outcome-entry step. For a categorical market, enter the outcome names.
-Use only letters and digits. Each name must differ from the others in more
+Use 1–191 ASCII letters or digits per name, with no spaces or symbols.
+Each name must differ from the others in more
 than letter case: "Red" and "red" are the same outcome.
 If a payment needs a wallet, choose Create wallet or Restore wallet.
 Setup and cancellation preserve your draft. Setup does not submit the market
@@ -47,6 +48,31 @@ Colors do not change outcome identity or settlement.
 API clients can set the optional `color` field to a six-digit hexadecimal
 value with a leading `#`. Omit it for automatic assignment. See the
 [Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
+
+## Title and description limits
+
+New markets accept titles up to **100 characters / 400 UTF-8 bytes** and
+descriptions up to **1,024 characters / 1,024 UTF-8 bytes**. Both limits apply.
+The form shows the current character and byte counts while you type.
+If a field exceeds its limit, the form keeps your text, explains the limit,
+and disables the next action until you shorten it. Titles are not silently truncated.
+
+Characters are counted as Unicode code points. Japanese and Chinese text usually
+uses three UTF-8 bytes per character; many emoji use four. An emoji made from
+multiple code points can count as more than one character.
+
+The title, description, and categories also share a **4,096-byte** limit on
+their serialized mint metadata. JSON escaping contributes to this size.
+If the combined data is too large, shorten the text or remove categories.
+These checks run before fee confirmation, signing, and registration.
+The client also checks that the eventual complete resolution record, including
+its explanation and configured destinations, will fit within the backup limit
+before signing or payment. If that combined record would be too large, shorten
+the text or reduce the configured relay URLs. Existing saved creation attempts
+keep their original data when resumed.
+
+The end time must be in the future and no later than **7 February 2106,
+06:28:15 UTC**. The form shows the upper bound in your local time when exceeded.
 
 ## Keep a draft image
 
@@ -175,7 +201,12 @@ Backup preparation needs the original key. A retry of a saved exact backup
 runs without a signer. It uses the original destinations.
 
 Use one current oracle copy. An old restored copy can still sign another
-outcome. After resolution delivery, the client attempts a replacement that
+outcome. Never sign different outcomes for the same announcement from different
+devices or backup copies. Two different outcome signatures using the same nonce
+can reveal the oracle private key. A missing public result does not prove that
+another copy has never signed. Manual signing after restoration remains available;
+the resolution dialog warns about this risk.
+After resolution delivery, the client attempts a replacement that
 retains the exact signed result without fresh signing authority.
 The browser starts it after verified engine evidence or a relay acknowledgment.
 The CLI starts it after a relay acknowledgment.

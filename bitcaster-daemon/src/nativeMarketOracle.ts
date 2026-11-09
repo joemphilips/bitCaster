@@ -1,5 +1,7 @@
 import {
   assertMarketCreationMetadataSize,
+  assertNewMarketCreationInput,
+  assertOracleBackupLifecycleCapacity,
   deriveDlcConditionId,
   normalizeMarketCreationInput,
   normalizeOracleAnnouncementTags,
@@ -48,7 +50,10 @@ export async function prepareNativeMarketOracle(
 ) {
   const saved = await deps.store.readCreation(input.creationId)
   if (saved !== null) assertNativeOracleCreator(saved.creatorPublicKeyHex, deps.oracleSecretKeyHex)
-  const market = normalizeMarketCreationInput(input.market)
+  const market =
+    saved === null
+      ? assertNewNativeMarketCreationInput(input)
+      : normalizeMarketCreationInput(input.market)
   assertMarketCreationMetadataSize(market.metadata)
   if (saved?.announcement == null) {
     deps.helper.assertAvailable()
@@ -92,6 +97,10 @@ export async function prepareNativeMarketOracle(
   )
   if (record.announcement === null) {
     const tags = normalizeOracleAnnouncementTags(market.metadata.title, market.metadata.description)
+    // A pre-upgrade reserved row already chose the old announcement formatting.
+    // New admission rejects excess text; retained unsigned reservations keep the
+    // historical 100-code-point title instead of changing the artifact on resume.
+    if (saved !== null) tags.title = Array.from(tags.title).slice(0, 100).join('')
     const artifact = await deps.helper.createEnum({
       oracleSecretKeyHex: deps.oracleSecretKeyHex,
       nonceSeedHex: deps.nonceSeedHex,
@@ -116,6 +125,26 @@ export async function prepareNativeMarketOracle(
     })
   }
   return { record, market }
+}
+
+/** New admission only: retained paid creations keep their exact historical input. */
+export function assertNewNativeMarketCreationInput(
+  input: Pick<NativeMarketCreationInput, 'market' | 'eventId' | 'destination'>,
+) {
+  const market = assertNewMarketCreationInput(input.market)
+  assertOracleBackupLifecycleCapacity({
+    title: market.metadata.title,
+    description: market.metadata.description,
+    outcomes: market.outcomeLabels,
+    eventId: input.eventId,
+    destinations: {
+      mintUrl: input.destination.mintUrl,
+      engineUrl: input.destination.engineBaseUrl,
+      relayUrls: input.destination.relayUrls,
+    },
+    writeVersion: 1,
+  })
+  return market
 }
 
 export async function signNativeMarketOutcome(

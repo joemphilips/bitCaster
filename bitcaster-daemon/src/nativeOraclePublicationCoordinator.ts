@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
   createOracleExplanationTemplate,
+  encodeOraclePrivateAuthority,
   normalizeMarketCreationInput,
   publishOracleOutcome,
   readSignedOracleEvent,
@@ -168,8 +169,11 @@ export function createNativeOraclePublicationAdapters(
         record.kind === 'imported'
           ? await ports.helper.signExplicitEnum({
               oracleSecretKeyHex: signer.secretKeyHex,
-              privateDtoJson: JSON.stringify(
+              privateDtoJson: await encodeOraclePrivateAuthority(
                 await ports.store.readImportedAuthorityForSigning(binding.conditionId),
+                binding.oraclePubkey,
+                ports.helper,
+                { writeVersion: 2 },
               ),
               chosenOutcome: outcome,
             })

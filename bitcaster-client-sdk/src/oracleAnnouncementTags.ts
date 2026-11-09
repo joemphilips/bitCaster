@@ -1,6 +1,6 @@
 export function normalizeOracleAnnouncementTags(title: string, description: string) {
   return {
-    title: Array.from(plainText(title)).slice(0, 100).join(''),
+    title: plainText(title),
     description: plainText(description),
   }
 }

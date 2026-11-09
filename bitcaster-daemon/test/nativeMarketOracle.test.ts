@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { deriveNostrPublicKey } from '../src/profileSecretProtection.ts'
 import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
 import {
   prepareNativeMarketOracle,
@@ -117,6 +118,132 @@ test('missing native helper refuses a new creation before nonce allocation', asy
     assert.equal(await deps.store.readCreation(input.creationId), null)
     deps.helper.assertAvailable = () => {}
     assert.equal((await prepareNativeMarketOracle(deps, input)).record.nonceIndex, 0)
+  })
+})
+
+test('new native market text overflow refuses before helper or nonce allocation', async () => {
+  await withFixture(async (deps) => {
+    let helperCalls = 0
+    deps.helper.assertAvailable = () => {
+      helperCalls++
+    }
+    for (const market of [
+      { ...input.market, title: '題'.repeat(101) },
+      { ...input.market, description: '説'.repeat(342) },
+      { ...input.market, categoryTags: ['x'.repeat(4_096)] },
+    ]) {
+      await assert.rejects(
+        prepareNativeMarketOracle(deps, { ...input, market }),
+        /must fit within|limit|maximum|exceed|at most/i,
+      )
+      assert.equal(await deps.store.readCreation(input.creationId), null)
+    }
+    assert.equal(helperCalls, 0)
+  })
+})
+
+test('new native creation reserves later backup capacity before helper or nonce allocation', async () => {
+  await withFixture(async (deps) => {
+    let helperCalls = 0
+    deps.helper.assertAvailable = () => {
+      helperCalls++
+    }
+    await assert.rejects(
+      prepareNativeMarketOracle(deps, {
+        ...input,
+        destination: {
+          ...input.destination,
+          relayUrls: Array.from(
+            { length: 24 },
+            (_, index) => `wss://relay-${index}.example/${'x'.repeat(1800)}`,
+          ),
+        },
+      }),
+      /insufficient room for a recoverable oracle resolution/,
+    )
+    assert.equal(helperCalls, 0)
+    assert.equal(await deps.store.readCreation(input.creationId), null)
+  })
+})
+
+test('retained oversized native creations resume and resolve without new writer restrictions', async () => {
+  await withFixture(async (deps) => {
+    const legacy = {
+      ...input,
+      market: { ...input.market, title: '題'.repeat(201), description: '説'.repeat(2001) },
+    }
+    const reserved = await deps.store.reserveCreation(
+      {
+        creationId: legacy.creationId,
+        eventId: legacy.eventId,
+        canonicalInput: JSON.stringify({
+          market: legacy.market,
+          registration: legacy.registration,
+          destination: legacy.destination,
+        }),
+      },
+      deriveNostrPublicKey(deps.oracleSecretKeyHex),
+    )
+    const exactAnnouncement = '{"kind":88,"content":"retained original artifact"}'
+    await deps.store.persistAnnouncement(reserved.creationId, {
+      conditionId: 'aa'.repeat(32),
+      announcementTlvHex: 'aabb',
+      announcementNostrEventJson: exactAnnouncement,
+    })
+    deps.helper.createEnum = async () => {
+      throw new Error('retained announcement must never be recreated')
+    }
+    const resumed = await prepareNativeMarketOracle(deps, legacy)
+    assert.equal(resumed.record.announcement?.announcementNostrEventJson, exactAnnouncement)
+    assert.equal(resumed.market.metadata.title, legacy.market.title)
+    assert.equal(resumed.market.metadata.description, legacy.market.description)
+    const resolved = await signNativeMarketOutcome(deps, 'aa'.repeat(32), 'Yes')
+    assert.equal(resolved.announcement?.announcementNostrEventJson, exactAnnouncement)
+    assert.equal(resolved.chosenOutcome, 'Yes')
+  })
+})
+
+test('saved unsigned reservations keep legacy code-point title formatting while fresh input refuses it', async () => {
+  await withFixture(async (deps) => {
+    const legacy = {
+      ...input,
+      market: { ...input.market, title: ` \n${'😀'.repeat(99)}界Z\t ` },
+    }
+    const expectedTitle = '😀'.repeat(99) + '界'
+    let helperCalls = 0
+    const create = deps.helper.createEnum
+    deps.helper.createEnum = async (request) => {
+      helperCalls++
+      assert.equal(request.title, expectedTitle)
+      assert.equal(Array.from(request.title).length, 100)
+      assert.equal(request.description, 'A description')
+      assert.equal(request.reservedNonceIndex, 0)
+      assert.equal(request.eventId, legacy.eventId)
+      return create(request)
+    }
+    await assert.rejects(prepareNativeMarketOracle(deps, legacy), /must fit within/)
+    assert.equal(helperCalls, 0)
+    assert.equal(await deps.store.readCreation(legacy.creationId), null)
+
+    // Reproduce a pre-upgrade reservation whose helper response was never retained.
+    const canonicalInput = JSON.stringify({
+      market: legacy.market,
+      registration: legacy.registration,
+      destination: legacy.destination,
+    })
+    const reserved = await deps.store.reserveCreation(
+      { creationId: legacy.creationId, eventId: legacy.eventId, canonicalInput },
+      deriveNostrPublicKey(deps.oracleSecretKeyHex),
+    )
+    assert.equal(reserved.announcement, null)
+    const resumed = await prepareNativeMarketOracle(deps, legacy)
+    assert.equal(resumed.record.nonceIndex, reserved.nonceIndex)
+    assert.equal(resumed.record.canonicalInput, canonicalInput)
+    assert.equal(resumed.market.metadata.title, legacy.market.title)
+    assert.ok(resumed.record.announcement)
+    const retry = await prepareNativeMarketOracle(deps, legacy)
+    assert.deepEqual(retry.record.announcement, resumed.record.announcement)
+    assert.equal(helperCalls, 1)
   })
 })
 

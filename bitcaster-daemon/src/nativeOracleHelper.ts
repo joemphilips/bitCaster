@@ -1,9 +1,11 @@
 import { accessSync, constants, lstatSync } from 'node:fs'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import {
   snapshotOraclePrivateAuthority,
+  decodeOraclePrivateAuthority,
   type OracleBackupValidator,
   type OraclePrivateAuthority,
   type OracleEnumAuthoritySummary,
@@ -88,6 +90,7 @@ export interface NativeOracleExportEnumAuthorityRequest extends Omit<
   readonly oracleSecretKeyHex: string
   readonly nonceSeedHex: string
   readonly reservedNonceIndex: number
+  readonly authorityVersion?: 1 | 2
 }
 
 export interface NativeOracleSignExplicitEnumRequest {
@@ -235,32 +238,36 @@ export function createNativeOracleHelperAdapter(
   const resolveExecutable = options.resolveExecutable ?? resolveNativeOracleHelperPath
   const spawnProcess = options.spawnProcess ?? spawn
   const timeoutMs = options.timeoutMs ?? NATIVE_ORACLE_HELPER_TIMEOUT_MS
+  const validateAuthority: OracleBackupValidator['validateAuthority'] = async (
+    privateDtoJson,
+    expectedOraclePubkey,
+  ) => {
+    try {
+      if (
+        !isBoundedString(privateDtoJson, PRIVATE_AUTHORITY_BYTES_MAX) ||
+        !isLowerHex(expectedOraclePubkey, 32)
+      )
+        throw helperError('invalid-request')
+      const payload = encodeRequest({
+        version: 1,
+        action: 'validate-authority',
+        privateDtoJson,
+        expectedOraclePubkey,
+      })
+      const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
+      return validateAuthorityResponse(response, expectedOraclePubkey)
+    } catch (error) {
+      if (error instanceof NativeOracleHelperError)
+        throw new NativeOracleHelperError(error.reason, false, error.helperCode)
+      throw helperError('malformed-response')
+    }
+  }
   return {
     assertAvailable() {
       const executablePath = resolvePath(resolveExecutable)
       assertExecutable(executablePath)
     },
-    async validateAuthority(privateDtoJson, expectedOraclePubkey) {
-      try {
-        if (
-          !isBoundedString(privateDtoJson, PRIVATE_AUTHORITY_BYTES_MAX) ||
-          !isLowerHex(expectedOraclePubkey, 32)
-        )
-          throw helperError('invalid-request')
-        const payload = encodeRequest({
-          version: 1,
-          action: 'validate-authority',
-          privateDtoJson,
-          expectedOraclePubkey,
-        })
-        const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
-        return validateAuthorityResponse(response, expectedOraclePubkey)
-      } catch (error) {
-        if (error instanceof NativeOracleHelperError)
-          throw new NativeOracleHelperError(error.reason, false, error.helperCode)
-        throw helperError('malformed-response')
-      }
-    },
+    validateAuthority,
     async exportEnumAuthority(request) {
       validateSecretRequest(request)
       const pubkey = deriveOraclePublicKey(request.oracleSecretKeyHex)
@@ -270,12 +277,29 @@ export function createNativeOracleHelperAdapter(
         const value = exactRecord(response, ['version', 'ok', 'action', 'privateDtoJson'])
         if (value.version !== 1 || value.ok !== true || value.action !== 'export-enum-authority')
           throw helperError('malformed-response')
-        const dto = readPrivateDto(value.privateDtoJson, 'malformed-response')
+        if (
+          !isBoundedString(value.privateDtoJson, PRIVATE_AUTHORITY_BYTES_MAX) ||
+          JSON.parse(value.privateDtoJson).schemaVersion !== (request.authorityVersion ?? 1)
+        )
+          throw helperError('malformed-response')
+        const dto =
+          request.authorityVersion === 2
+            ? await decodeOraclePrivateAuthority(value.privateDtoJson as string, pubkey, {
+                validateAuthority,
+              })
+            : readPrivateDto(value.privateDtoJson, 'malformed-response')
         if (
           dto.nonceScalarHex === null ||
           (Object.keys(dto) as (keyof OraclePrivateAuthority)[]).some(
             (key) =>
-              key !== 'schemaVersion' && key !== 'nonceScalarHex' && dto[key] !== request[key],
+              key !== 'schemaVersion' &&
+              key !== 'nonceScalarHex' &&
+              (key === 'publicationRecordJson'
+                ? !isDeepStrictEqual(
+                    JSON.parse(dto[key] ?? 'null'),
+                    JSON.parse(request[key] ?? 'null'),
+                  )
+                : dto[key] !== request[key]),
           )
         )
           throw helperError('malformed-response')
@@ -294,20 +318,36 @@ export function createNativeOracleHelperAdapter(
         !isBoundedString(request.chosenOutcome, NATIVE_ORACLE_HELPER_OUTCOME_BYTES_MAX)
       )
         throw helperError('invalid-request')
-      const dto = readPrivateDto(request.privateDtoJson, 'invalid-request')
+      const pubkey = deriveOraclePublicKey(request.oracleSecretKeyHex)
+      if (!isBoundedString(request.privateDtoJson, PRIVATE_AUTHORITY_BYTES_MAX))
+        throw helperError('invalid-request')
+      let dto: OraclePrivateAuthority
+      let summary: OracleEnumAuthoritySummary | undefined
+      try {
+        dto =
+          JSON.parse(request.privateDtoJson)?.schemaVersion === 2
+            ? await decodeOraclePrivateAuthority(request.privateDtoJson, pubkey, {
+                async validateAuthority(json, publicKey) {
+                  summary = await validateAuthority(json, publicKey)
+                  return summary
+                },
+              })
+            : readPrivateDto(request.privateDtoJson, 'invalid-request')
+      } catch {
+        throw helperError('invalid-request')
+      }
       if (
         dto.nonceScalarHex === null ||
         (dto.signedOutcome !== null && dto.signedOutcome !== request.chosenOutcome)
       )
         throw helperError('invalid-request')
-      const pubkey = deriveOraclePublicKey(request.oracleSecretKeyHex)
       const announcement = parseSignedEvent(
         dto.announcementEventJson,
         88,
         pubkey,
         'invalid-request',
       )
-      const summary = await this.validateAuthority(request.privateDtoJson, pubkey)
+      summary ??= await validateAuthority(request.privateDtoJson, pubkey)
       const payload = encodeRequest({ version: 1, action: 'sign-explicit-enum', ...request })
       const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
       const signed = validateSignResponse(

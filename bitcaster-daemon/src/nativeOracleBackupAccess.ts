@@ -1,6 +1,7 @@
 import { getPublicKey } from 'nostr-tools/pure'
 import {
   listOracleBackups,
+  fetchCurrentOracleBackupSelection,
   oracleBackupStatus,
   OracleBackupAccessError,
   type OracleBackupQueryRelay,
@@ -52,29 +53,19 @@ export async function restoreNativeOracleBackup(
   relayUrl: string,
 ) {
   if (!/^[0-9a-f]{64}$/.test(eventId)) throw new OracleBackupAccessError('invalid-envelope')
-  const author = getPublicKey(await ports.readPrivateKey())
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5000)
-  try {
-    const result = await (ports.queryRelay ?? queryNativeOracleBackupRelay)({
-      relayUrl,
-      signal: controller.signal,
-      maxEvents: 32,
-      maxBytes: 32 * 96 * 1024,
-      filter: { kinds: [30078], authors: [author], '#v': ['1'], ids: [eventId], limit: 1 },
-    })
-    const selected = result.events.find(
-      (event) =>
-        typeof event === 'object' && event !== null && 'id' in event && event.id === eventId,
-    )
-    if (selected === undefined) throw new NativeOracleBackupMissingError()
-    // The store obtains its own matching local key and commits authenticated source atomically.
-    const owner = await ports.store.importBackupEnvelope(selected, relayUrl, ports.helper)
-    return nativeOracleBackupStatus(ports.store, owner)
-  } finally {
-    clearTimeout(timer)
-    controller.abort()
-  }
+  const privateKey = await ports.readPrivateKey()
+  const selected = await fetchCurrentOracleBackupSelection({
+    author: getPublicKey(privateKey),
+    privateKey,
+    validator: ports.helper,
+    eventId,
+    sourceRelay: relayUrl,
+    relayUrls: ports.relayUrls,
+    queryRelay: ports.queryRelay ?? queryNativeOracleBackupRelay,
+  })
+  // The store obtains its own matching local key and commits authenticated source atomically.
+  const owner = await ports.store.importBackupEnvelope(selected, relayUrl, ports.helper)
+  return nativeOracleBackupStatus(ports.store, owner)
 }
 
 export async function nativeOracleBackupStatus(

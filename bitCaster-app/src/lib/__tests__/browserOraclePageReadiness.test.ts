@@ -82,6 +82,7 @@ beforeEach(() => {
         get_public_key: () => pubkey,
         staged_enum_publication: staged,
         export_enum_authority: exported,
+        export_enum_authority_v2: exported,
         free,
       }) as unknown as Kormir,
   );

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
-import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
+import { finalizeEvent, getPublicKey, verifiedSymbol, verifyEvent } from 'nostr-tools/pure'
 import { announcementContentFromTlv } from '../src/oracleAnnouncementEncoding.ts'
 import { deriveDlcConditionId } from '../src/managedConditionInventory.ts'
 import {
@@ -11,6 +11,7 @@ import {
 } from '../src/oracleBackup.ts'
 import {
   listOracleBackups,
+  fetchCurrentOracleBackupSelection,
   restoreOracleBackupEnvelope,
   oracleBackupStatus,
   OracleBackupAccessError,
@@ -162,7 +163,7 @@ test('restore authenticates fresh envelope and returns safe metadata separately 
   )
 })
 
-test('short nonempty page scans complete oldest bucket and continues historical discovery', async () => {
+test('discovery scans the oldest bucket but lists only the newest observed identity', async () => {
   const f = fixture()
   const recent = await f.event(20)
   const oldest = await f.event(10)
@@ -183,12 +184,13 @@ test('short nonempty page scans complete oldest bucket and continues historical 
   assert.equal(queries.length, 2)
   assert.equal(queries[0].relayUrl, relay)
   assert.equal(queries[0].filter.limit, 32)
-  assert.equal(queries[0].filter['#v'].join(','), '1')
+  assert.equal(queries[0].filter['#v'], undefined)
   assert.equal('d' in queries[0].filter, false)
   assert.equal(queries[1].filter.since, 10)
   assert.equal(queries[1].filter.until, 10)
   assert.equal(queries[1].filter.limit, 128)
-  assert.equal(page.descriptors.length, 3)
+  assert.equal(page.descriptors.length, 1)
+  assert.equal(page.descriptors[0].backupEventId, recent.id)
   assert.equal(f.validations() - before, 3)
   assert.equal(page.cursor!.until, 9)
   assert.equal(page.observedRelayComplete, false)
@@ -199,6 +201,130 @@ test('short nonempty page scans complete oldest bucket and continues historical 
     queries.every((q) => q.signal.aborted),
     true,
   )
+})
+
+test('unrelated authenticated NIP-78 records do not prevent automatic oracle recovery', async () => {
+  const f = fixture()
+  const backup = await f.event(20)
+  const unrelated = finalizeEvent(
+    {
+      kind: 30078,
+      created_at: 10,
+      tags: [['d', 'bitcaster:creator-markets']],
+      content: 'opaque unrelated application record',
+    },
+    oracleTestKey,
+  )
+  const before = f.validations()
+  const queries: OracleBackupRelayQuery[] = []
+  const page = await listOracleBackups({
+    ...input(f),
+    queryRelay: async (query) => {
+      queries.push(query)
+      return { events: queries.length === 1 ? [backup, unrelated] : [unrelated], complete: true }
+    },
+  })
+  assert.equal(page.descriptors.length, 1)
+  assert.equal(page.descriptors[0].backupEventId, backup.id)
+  assert.deepEqual(page.partialReasons, ['relay-dependent-history'])
+  assert.equal(queries[1].filter.since, 10)
+  assert.equal(queries[1].filter.until, 10)
+  assert.equal(page.cursor?.until, 9)
+  assert.equal(f.validations() - before, 1)
+})
+
+test('unrelated-only NIP-78 page advances to older oracle history without authority validation', async () => {
+  const f = fixture()
+  const unrelated = finalizeEvent(
+    {
+      kind: 30078,
+      created_at: 20,
+      tags: [['d', 'other-app:settings']],
+      content: 'opaque unrelated application record',
+    },
+    oracleTestKey,
+  )
+  const backup = await f.event(10)
+  const before = f.validations()
+  const queries: OracleBackupRelayQuery[] = []
+  const first = await listOracleBackups({
+    ...input(f),
+    queryRelay: async (query) => {
+      queries.push(query)
+      return { events: [unrelated], complete: true }
+    },
+  })
+  assert.deepEqual(first.partialReasons, ['relay-dependent-history'])
+  assert.equal(first.descriptors.length, 0)
+  assert.equal(first.observedRelayComplete, false)
+  assert.equal(first.cursor?.until, 19)
+  assert.equal(queries.length, 2)
+  assert.equal(queries[1].filter.since, 20)
+  assert.equal(f.validations(), before)
+  const next = await listOracleBackups({
+    ...input(f),
+    cursor: first.cursor,
+    queryRelay: async (query) => {
+      if (query.filter.since === undefined) assert.equal(query.filter.until, 19)
+      return { events: [backup], complete: true }
+    },
+  })
+  assert.deepEqual(next.partialReasons, ['relay-dependent-history'])
+  assert.equal(next.descriptors[0].backupEventId, backup.id)
+})
+
+test('authenticated malformed claimed oracle envelopes are not skipped as unrelated records', async () => {
+  const f = fixture()
+  const backup = await f.event(20)
+  const before = f.validations()
+  for (const tags of [
+    [backup.tags[0], backup.tags[1], ['extra', 'value']],
+    [['d', 'other-app:settings'], backup.tags[0], backup.tags[1]],
+    [[backup.tags[0][0], backup.tags[0][1], 'extra'], backup.tags[1]],
+  ]) {
+    const malformed = finalizeEvent({ ...backup, tags }, oracleTestKey)
+    const page = await listOracleBackups({
+      ...input(f),
+      queryRelay: async () => ({ events: [malformed], complete: true }),
+    })
+    assert.equal(page.descriptors.length, 0)
+    assert.equal(page.partialReasons.includes('invalid-candidates'), true)
+    assert.equal(f.validations(), before)
+  }
+})
+
+test('cached verification cannot authenticate forged unrelated timestamps or advance a scan', async () => {
+  const f = fixture()
+  const unrelated = finalizeEvent(
+    { kind: 30078, created_at: 100, tags: [['d', 'other-app:settings']], content: 'unrelated' },
+    oracleTestKey,
+  )
+  const forged = { ...unrelated, created_at: 0 }
+  assert.equal(forged[verifiedSymbol], true)
+  assert.equal(verifyEvent(forged), true, 'The fixture must retain the library verification cache.')
+  const cursor = {
+    schemaVersion: 1 as const,
+    author: f.record.oraclePubkey,
+    relayUrls: [relay],
+    relayIndex: 0,
+    until: 200,
+  }
+  const before = f.validations()
+  let queries = 0
+  const page = await listOracleBackups({
+    ...input(f),
+    cursor,
+    queryRelay: async () => {
+      queries++
+      return { events: [forged], complete: true }
+    },
+  })
+  assert.equal(queries, 1)
+  assert.equal(page.descriptors.length, 0)
+  assert.equal(page.partialReasons.includes('invalid-candidates'), true)
+  assert.equal(page.observedRelayComplete, false)
+  assert.deepEqual(page.cursor, cursor)
+  assert.equal(f.validations(), before)
 })
 
 test('cursor binds author and deterministic relay set; each relay starts with unset time', async () => {
@@ -265,7 +391,7 @@ test('saturated duplicate bucket counts raw replies and refuses timestamp advanc
   assert.equal(page.partialReasons.includes('saturated-bucket'), true)
 })
 
-test('author kind version and time filters are enforced locally before validator work', async () => {
+test('author kind and time filters are enforced locally before validator work', async () => {
   const f = fixture()
   const event = await f.event(100)
   const good = await f.event(90)
@@ -278,7 +404,6 @@ test('author kind version and time filters are enforced locally before validator
   }
   const foreign = finalizeEvent({ ...event }, otherOracleTestKey)
   const wrongKind = finalizeEvent({ ...event, kind: 88 }, oracleTestKey)
-  const wrongVersion = finalizeEvent({ ...event, tags: [event.tags[0], ['v', '2']] }, oracleTestKey)
   const wrongTime = await f.event(101)
   let calls = 0
   const before = f.validations()
@@ -286,7 +411,7 @@ test('author kind version and time filters are enforced locally before validator
     ...input(f),
     cursor,
     queryRelay: async () => ({
-      events: ++calls === 1 ? [foreign, wrongKind, wrongVersion, wrongTime, good] : [event, good],
+      events: ++calls === 1 ? [foreign, wrongKind, wrongTime, good] : [event, good],
       complete: true,
     }),
   })
@@ -294,6 +419,189 @@ test('author kind version and time filters are enforced locally before validator
   assert.equal(f.validations() - before, 1)
   assert.equal(page.cursor!.until, 89)
   assert.equal(page.partialReasons.includes('invalid-candidates'), true)
+})
+
+test('newest authenticated unsupported version suppresses old signing authority', async () => {
+  const f = fixture()
+  const old = await f.event(10)
+  const future = finalizeEvent(
+    { ...old, created_at: 20, tags: [old.tags[0], ['v', '3']] },
+    oracleTestKey,
+  )
+  let calls = 0
+  const page = await listOracleBackups({
+    ...input(f),
+    queryRelay: async (query) => {
+      assert.equal(query.filter['#v'], undefined)
+      return { events: ++calls === 1 ? [old, future] : [old], complete: true }
+    },
+  })
+  assert.equal(page.descriptors.length, 0)
+  assert.equal(page.partialReasons.includes('unsupported-version'), true)
+})
+
+test('terminal compact history blocks newer unresolved legacy authority in either arrival order', async () => {
+  const f = fixture()
+  const terminal = await createOracleBackupEvent({
+    record: f.terminal,
+    privateKey: oracleTestKey,
+    createdAt: 10,
+    validator: f.validator,
+    writeVersion: 2,
+  })
+  const stale = await f.event(20)
+  for (const events of [
+    [terminal, stale],
+    [stale, terminal],
+  ]) {
+    let queries = 0
+    const page = await listOracleBackups({
+      ...input(f),
+      queryRelay: async () => ({ events: ++queries === 1 ? events : [terminal], complete: true }),
+    })
+    assert.equal(page.descriptors.length, 0)
+    assert.equal(page.partialReasons.includes('lifecycle-regression'), true)
+    await assert.rejects(
+      fetchCurrentOracleBackupSelection({
+        ...input(f),
+        author: f.record.oraclePubkey,
+        eventId: stale.id,
+        sourceRelay: relay,
+        queryRelay: async (q) => ({ events: q.filter.ids ? [stale] : events, complete: true }),
+      }),
+      safe('lifecycle-regression'),
+    )
+  }
+})
+
+test('selection rechecks stable identity across relays before importing an exact ID', async () => {
+  const f = fixture()
+  const old = await f.event(10)
+  const recent = await f.event(20)
+  const otherRelay = 'wss://other.example'
+  const queries: OracleBackupRelayQuery[] = []
+  const queryRelay = async (query: OracleBackupRelayQuery) => {
+    queries.push(query)
+    return {
+      events: query.filter.ids ? [old] : query.relayUrl === otherRelay ? [recent] : [old],
+      complete: true,
+    }
+  }
+  await assert.rejects(
+    fetchCurrentOracleBackupSelection({
+      ...input(f),
+      author: f.record.oraclePubkey,
+      eventId: old.id,
+      sourceRelay: relay,
+      relayUrls: [relay, otherRelay],
+      queryRelay,
+    }),
+    safe('stale-source'),
+  )
+  assert.equal(queries[0].filter.ids?.[0], old.id)
+  assert.equal(
+    queries.slice(1).every((q) => q.filter['#d']?.[0] === old.tags[0][1]),
+    true,
+  )
+  assert.equal(
+    queries.every((q) => q.filter['#v'] === undefined),
+    true,
+  )
+})
+
+test('selection refuses authenticated unsupported newest and incomplete observations', async () => {
+  const f = fixture()
+  const selected = await f.event(10)
+  const future = finalizeEvent(
+    { ...selected, created_at: 20, tags: [selected.tags[0], ['v', '3']] },
+    oracleTestKey,
+  )
+  const base = {
+    ...input(f),
+    author: f.record.oraclePubkey,
+    eventId: selected.id,
+    sourceRelay: relay,
+    relayUrls: [relay],
+  }
+  await assert.rejects(
+    fetchCurrentOracleBackupSelection({
+      ...base,
+      queryRelay: async (q) => ({ events: q.filter.ids ? [selected] : [future], complete: true }),
+    }),
+    safe('unsupported-version'),
+  )
+  await assert.rejects(
+    fetchCurrentOracleBackupSelection({
+      ...base,
+      queryRelay: async (q) => ({ events: [selected], complete: q.filter.ids !== undefined }),
+    }),
+    safe('incomplete-query'),
+  )
+  const observed = await fetchCurrentOracleBackupSelection({
+    ...base,
+    queryRelay: async () => ({
+      events: [selected, { ...future, sig: '00'.repeat(64) }],
+      complete: true,
+    }),
+  })
+  assert.equal(observed.id, selected.id)
+})
+
+test('optional offline relays do not block a healthy source, but partial positive evidence does', async () => {
+  const f = fixture()
+  const selected = await f.event(10)
+  const future = finalizeEvent(
+    { ...selected, created_at: 20, tags: [selected.tags[0], ['v', '3']] },
+    oracleTestKey,
+  )
+  const optional = 'wss://optional.example'
+  const base = {
+    ...input(f),
+    author: f.record.oraclePubkey,
+    eventId: selected.id,
+    sourceRelay: relay,
+    relayUrls: [optional, relay],
+  }
+  const observed = await fetchCurrentOracleBackupSelection({
+    ...base,
+    queryRelay: async (q) => {
+      if (q.relayUrl === optional) throw new Error('offline')
+      return { events: [selected], complete: true }
+    },
+  })
+  assert.equal(observed.id, selected.id)
+  await assert.rejects(
+    fetchCurrentOracleBackupSelection({
+      ...base,
+      queryRelay: async (q) =>
+        q.relayUrl === optional
+          ? { events: [future], complete: false }
+          : { events: [selected], complete: true },
+    }),
+    safe('unsupported-version'),
+  )
+})
+
+test('selection bounds aggregate raw replies across optional relays', async () => {
+  const f = fixture()
+  const selected = await f.event(10)
+  await assert.rejects(
+    fetchCurrentOracleBackupSelection({
+      ...input(f),
+      author: f.record.oraclePubkey,
+      eventId: selected.id,
+      sourceRelay: relay,
+      relayUrls: [relay, ...Array.from({ length: 7 }, (_, index) => `wss://r${index}.example`)],
+      queryRelay: async (q) =>
+        q.relayUrl === relay
+          ? { events: [selected], complete: true }
+          : {
+              events: Array.from({ length: 30 }, () => ({ invalid: 'x'.repeat(90_000) })),
+              complete: false,
+            },
+    }),
+    safe('incomplete-query'),
+  )
 })
 
 test('query failures incomplete EOSE bounds and abort preserve the input cursor', async () => {

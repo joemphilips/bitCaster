@@ -61,7 +61,14 @@ export class Kormir {
     create_enum_event(event_id: string, outcomes: string[], event_maturity_epoch: number, title: string, description: string): Promise<string>;
     static decode_announcement(str: string): Promise<Announcement>;
     static decode_attestation(str: string): Promise<Attestation>;
+    /**
+     * Compatibility release: existing callers continue to write v1.
+     */
     export_enum_authority(event_id: string, announcement_event_json: string, publication_record_json?: string | null): Promise<string>;
+    /**
+     * Explicit compact export; activation is separate from deploying its reader.
+     */
+    export_enum_authority_v2(event_id: string, announcement_event_json: string, publication_record_json?: string | null): Promise<string>;
     get_public_key(): string;
     import_enum_authority(private_dto_json: string): Promise<string>;
     /**
@@ -139,6 +146,7 @@ export interface InitOutput {
     readonly kormir_decode_announcement: (a: number, b: number) => any;
     readonly kormir_decode_attestation: (a: number, b: number) => any;
     readonly kormir_export_enum_authority: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly kormir_export_enum_authority_v2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly kormir_get_public_key: (a: number) => [number, number];
     readonly kormir_import_enum_authority: (a: number, b: number, c: number) => any;
     readonly kormir_import_enum_event: (a: number, b: number, c: number) => any;
