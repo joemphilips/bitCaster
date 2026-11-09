@@ -235,11 +235,6 @@ export function CreatorDashboard() {
     setResolvingMarketId(marketId);
     try {
       requireCurrent();
-      if (!chosen)
-        await useCreatorMarketsStore
-          .getState()
-          .saveOracleExplanationDraft(marketId, publicExplanation);
-      if (!isCurrent()) return;
       // The row shows the result state. Automatic retry continues any failed delivery.
       await publishBrowserOracleOutcome(
         marketId,

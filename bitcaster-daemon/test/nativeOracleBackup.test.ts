@@ -188,6 +188,55 @@ function deferred() {
   return { promise, resolve }
 }
 
+test(
+  'restored unsigned authority refuses a known engine result before first signing or retry',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (_directory, store, conditionId) => {
+      let privateOperations = 0
+      let sends = 0
+      const ports = {
+        store,
+        helper: {
+          ...helper,
+          signExplicitEnum: async () => {
+            privateOperations++
+            throw new Error('Must not sign')
+          },
+        },
+        readSigner: async () => {
+          privateOperations++
+          throw new Error('Must not read signer')
+        },
+        publishRelay: async () => {
+          sends++
+          throw new Error('Must not publish')
+        },
+        submitEvent: async () => {
+          sends++
+          throw new Error('Must not submit')
+        },
+        readResolution: async () => ({ conditionId, attestedOutcome: 'No' }),
+      }
+      await assert.rejects(
+        publishNativeMarketOutcome(ports, conditionId, 'Yes', 'New draft'),
+        /not signed/,
+      )
+      const unchosen = (await store.readAuthorityByConditionId(conditionId))!
+      assert.equal(unchosen.chosenOutcome, null)
+      assert.equal(unchosen.explanationDraft, null)
+      await store.chooseAuthorityOutcome(conditionId, 'Yes', 'Original draft')
+      await assert.rejects(retryNativeMarketPublication(ports, conditionId), /not signed/)
+      const saved = (await store.readAuthorityByConditionId(conditionId))!
+      assert.equal(saved.chosenOutcome, 'Yes')
+      assert.equal(saved.explanationDraft, 'Original draft')
+      assert.equal(saved.attestation, null)
+      assert.equal(privateOperations, 0)
+      assert.equal(sends, 0)
+    })
+  },
+)
+
 for (const kind of ['created', 'imported'] as const) {
   test(
     `real SQLite ${kind} exact backup reopens and merges partial relay progress without exposing envelopes`,
@@ -1189,8 +1238,10 @@ test(
           return { eventId: JSON.parse(bytes).id }
         },
         submitEvent: async () => ({ result: 'Closed' }),
-        readResolution: async (id: string) =>
-          engineResolution((await store.readAuthorityByConditionId(id))!),
+        readResolution: async (id: string) => {
+          const record = (await store.readAuthorityByConditionId(id))!
+          return record.attestation === null ? null : engineResolution(record)
+        },
       }
       const engineOnly = await publishNativeMarketOutcome(ports, conditionId, 'Yes')
       assert.deepEqual(engineOnly.failures, ['relay'])

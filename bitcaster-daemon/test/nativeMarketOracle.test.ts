@@ -409,8 +409,9 @@ async function withPublication(
       },
       async readResolution(id) {
         const saved = (await createNativeOracleCreationStore(directory).readByConditionId(id))!
+        if (saved.attestation === null) return null
         const announcement = saved.announcement!
-        const attestation = saved.attestation!
+        const attestation = saved.attestation
         const verified = await helper.verifyEnum({
           eventId: saved.eventId,
           oraclePublicKeyHex: saved.creatorPublicKeyHex,
@@ -523,6 +524,113 @@ test(
 )
 
 test(
+  'native first signing and unsigned retry refuse observed results or read failure before effects',
+  realCrypto,
+  async () => {
+    await withPublication(async (ports, conditionId, _directory, calls) => {
+      const observations = [
+        async () => ({ conditionId, attestedOutcome: 'Yes' }),
+        async () => ({ conditionId, attestedOutcome: 'No' }),
+        async () => {
+          throw new Error('engine unavailable')
+        },
+      ]
+      let choices = 0
+      let signerReads = 0
+      const guarded = {
+        ...ports,
+        store: {
+          ...ports.store,
+          chooseAuthorityOutcome: async (
+            ...args: Parameters<typeof ports.store.chooseAuthorityOutcome>
+          ) => {
+            choices++
+            return ports.store.chooseAuthorityOutcome(...args)
+          },
+        },
+        readSigner: async () => {
+          signerReads++
+          return ports.readSigner()
+        },
+      }
+      for (const readResolution of observations) {
+        await assert.rejects(
+          publishNativeMarketOutcome(
+            { ...guarded, readResolution },
+            conditionId,
+            'Yes',
+            'New draft',
+          ),
+          /not signed/,
+        )
+        const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
+        assert.equal(saved.chosenOutcome, null)
+        assert.equal(saved.explanationDraft, null)
+      }
+      await ports.store.chooseAuthorityOutcome(conditionId, 'Yes', 'Original draft')
+      for (const readResolution of observations) {
+        await assert.rejects(
+          retryNativeMarketPublication({ ...guarded, readResolution }, conditionId),
+          /not signed/,
+        )
+        const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
+        assert.equal(saved.chosenOutcome, 'Yes')
+        assert.equal(saved.explanationDraft, 'Original draft')
+        assert.equal(saved.attestation, null)
+      }
+      assert.equal(choices, 0)
+      assert.equal(signerReads, 0)
+      assert.equal(calls.signed, 0)
+      assert.equal(calls.submitted, 0)
+      assert.deepEqual(calls.relayed, [])
+    })
+  },
+)
+
+test(
+  'native explicit relay-only first signing stays offline and exact retries never sign again',
+  realCrypto,
+  async () => {
+    await withPublication(async (ports, conditionId, _directory, calls) => {
+      let reads = 0
+      const offline = {
+        ...ports,
+        readResolution: async () => {
+          reads++
+          throw new Error('engine unavailable')
+        },
+      }
+      const signed = await publishNativeMarketOutcome(offline, conditionId, 'Yes', undefined, {
+        engineDelivery: 'relay-only',
+      })
+      assert.equal(reads, 0)
+      assert.equal(calls.signed, 1)
+      assert.equal(calls.submitted, 0)
+      assert.equal(signed.record.relayPublished, true)
+      await assert.rejects(
+        publishNativeMarketOutcome(offline, conditionId, 'No', undefined, {
+          engineDelivery: 'relay-only',
+        }),
+        /conflicts/,
+      )
+      const retried = await retryNativeMarketPublication(
+        {
+          ...offline,
+          readSigner: async () => {
+            throw new Error('Exact retry must not read the signer')
+          },
+        },
+        conditionId,
+      )
+      assert.deepEqual(retried.record.attestation, signed.record.attestation)
+      assert.deepEqual(retried.failures, ['engine'])
+      assert.equal(calls.signed, 1)
+      assert.equal(reads, 1)
+    })
+  },
+)
+
+test(
   'native engine evidence reuses verification without another helper process',
   realCrypto,
   async () => {
@@ -549,7 +657,10 @@ test(
     await withPublication(async (ports, conditionId) => {
       const client = new BitcasterEngineClient({
         baseUrl: 'https://engine.example',
-        fetchImpl: async () => Response.json(await ports.readResolution(conditionId)),
+        fetchImpl: async () => {
+          const result = await ports.readResolution(conditionId)
+          return result === null ? new Response(null, { status: 404 }) : Response.json(result)
+        },
       })
       const result = await publishNativeMarketOutcome(
         { ...ports, readResolution: (id) => client.getConditionAttestation(id) },
@@ -569,7 +680,13 @@ test(
   async () => {
     await withPublication(async (ports, conditionId, directory, calls) => {
       const failed = await publishNativeMarketOutcome(
-        { ...ports, readResolution: async () => ({ result: 'Closed' }) },
+        {
+          ...ports,
+          readResolution: async () =>
+            (await ports.store.readAuthorityByConditionId(conditionId))?.attestation === null
+              ? null
+              : { result: 'Closed' },
+        },
         conditionId,
         'Yes',
       )
@@ -840,7 +957,7 @@ test(
             ...ports,
             readResolution: async (id) => {
               const value = await ports.readResolution(id)
-              mutate(value as ResolutionFixture)
+              if (value !== null) mutate(value as ResolutionFixture)
               return value
             },
           },

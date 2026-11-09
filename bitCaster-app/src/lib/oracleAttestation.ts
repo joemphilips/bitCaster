@@ -9,6 +9,7 @@ import {
   type ConditionAttestationResponse,
 } from "@bitcaster/client-sdk";
 import {
+  assertOracleFirstSigningAllowed,
   oraclePublicationTerminal,
   publishOracleOutcome,
   retryOraclePublication,
@@ -424,7 +425,7 @@ export async function publishBrowserOracleOutcome(
   read?: OracleAttestationReadPort,
   options: OraclePublicationOptions & {
     requireCurrent?: () => void;
-    /** An automatic retry, not a user action. It signs only when the engine shows no result. */
+    /** Identifies an automatic retry. Synchronized first signatures require a fresh absent engine result. */
     automatic?: boolean;
   } = {
     engineDelivery: "synchronize",
@@ -506,30 +507,24 @@ export async function publishBrowserOracleOutcome(
   let retained = await publicationStore.read(conditionId);
   if (retained && retained.chosenOutcome !== outcome)
     throw new Error("The saved oracle outcome cannot change.");
-  if (retained === null && explanation !== undefined)
-    await store.getState().saveOracleExplanationDraft(conditionId, explanation);
-  const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
   const exactRetry = retained?.attestation !== null && retained?.attestation !== undefined;
   let privateAdmission: BrowserOracleMutation | undefined;
   options.requireCurrent?.();
-  if (!exactRetry && options.automatic === true) {
-    // This profile has no signature yet. Another profile with the same key can have published
-    // another outcome. Two outcomes with the committed nonce expose the oracle key. The GUI has
-    // no engine-down path, so a failed read also stops the automatic signature.
-    let published: Awaited<ReturnType<OracleAttestationReadPort>> | undefined;
+  if (!exactRetry && options.engineDelivery === "synchronize") {
+    // A dialog or a saved unsigned choice can predate another profile's public result.
+    // Recheck before retaining new intent or opening the private signing core.
     try {
-      published = await readOriginal(conditionId);
-    } catch {
-      published = undefined;
+      await assertOracleFirstSigningAllowed(() => readOriginal(conditionId));
+    } catch (error) {
+      options.requireCurrent?.();
+      await store.getState().saveOraclePublicationFailures(conditionId, ["engine"]);
+      throw error;
     }
     options.requireCurrent?.();
-    if (published !== null) {
-      await store.getState().saveOraclePublicationFailures(conditionId, ["engine"]);
-      throw new Error(
-        "The engine shows a result or is unavailable. The saved outcome was not signed.",
-      );
-    }
   }
+  if (retained === null && explanation !== undefined)
+    await store.getState().saveOracleExplanationDraft(conditionId, explanation);
+  const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
   if (!exactRetry) {
     privateAdmission = await prepareBrowserOracleMutation(binding.oraclePubkey);
     const admission = privateAdmission;

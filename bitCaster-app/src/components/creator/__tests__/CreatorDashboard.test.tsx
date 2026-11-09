@@ -424,9 +424,8 @@ describe("CreatorDashboard", () => {
         undefined,
         { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
       );
-      expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBe(
-        "Official final result.",
-      );
+      // The publication adapter owns durable intent after first-signing admission.
+      expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBeUndefined();
     },
   );
 
@@ -727,7 +726,7 @@ describe("oracle owner confirmation", () => {
           },
         };
   }
-  /** The first choice saves its explanation draft, so the owner must exist in the store. */
+  /** Retained choice checks read the durable owner while confirmation stays local. */
   async function setup(ownerKind: "created" | "imported" = "imported") {
     if (ownerKind === "imported") {
       await useCreatorMarketsStore.getState().retainImportedOracleMetadata(creatorOracleMetadata);
@@ -797,6 +796,29 @@ describe("oracle owner confirmation", () => {
         undefined,
         { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
       );
+    },
+  );
+  it.each(["created", "imported"] as const)(
+    "keeps %s choice and draft unwritten when signing admission refuses confirmation",
+    async (kind) => {
+      await setup(kind);
+      const user = userEvent.setup();
+      renderDashboard();
+      const dialog = await chooseOutcome(user);
+      await user.type(within(dialog).getByRole("textbox"), "Unadmitted draft.");
+      mockPublishOracleOutcome.mockRejectedValueOnce(
+        new Error("Public result arrived after dialog opened"),
+      );
+      await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
+      await waitFor(() => expect(mockPublishOracleOutcome).toHaveBeenCalledOnce());
+      expect(screen.getByRole("dialog")).toBeVisible();
+      const state = useCreatorMarketsStore.getState();
+      const draft =
+        kind === "created"
+          ? state.markets[0].oracle?.explanationDraft
+          : state.importedOracles[0].explanationDraft;
+      expect(draft).toBeUndefined();
+      expect(await state.readOraclePublication(ownerId)).toBeNull();
     },
   );
   it.each(["created", "imported"] as const)(

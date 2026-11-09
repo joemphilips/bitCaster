@@ -99,6 +99,26 @@ export interface OraclePublicationOptions {
   readonly republishAttestation?: boolean
 }
 
+/**
+ * Recheck the original public result immediately before an unsigned local intent may sign.
+ * Only an explicit absent result permits signing. This is a refusal guard, not adoption of
+ * unverified public artifacts or proof that another profile has not used the nonce.
+ */
+export async function assertOracleFirstSigningAllowed(
+  readResolution: () => Promise<unknown>,
+): Promise<void> {
+  let observed: unknown
+  try {
+    observed = await readResolution()
+  } catch {
+    observed = undefined
+  }
+  if (observed !== null)
+    throw new Error(
+      'The engine shows a result or is unavailable. The saved outcome was not signed.',
+    )
+}
+
 /** The user-visible result of a saved choice. Relay copies continue after engine evidence. */
 export type OraclePublicationState = 'publishing' | 'published' | 'failed'
 

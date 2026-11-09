@@ -173,6 +173,10 @@ Use only one current oracle copy. Never sign a different outcome for the same
 announcement on another device or from an older backup. Two different outcome
 signatures using the same nonce can reveal the oracle private key. Manual signing
 from a restored record remains available, with a warning in the dialog.
+Before a first signature in the browser or an ordinary CLI close, the client reads
+that market's original engine again. An existing result, including the same outcome,
+or a failed read stops signing before a new choice is saved. This also applies to
+retrying an unsigned saved choice; an exact signed retry remains available.
 A missing public result cannot establish that no other copy has signed.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
@@ -194,6 +198,9 @@ bitcaster-cli market close --condition-id <condition-id> --retry --republish --r
 ```
 
 `--relay-only` performs no engine request or engine availability check.
+For a first signature, you are responsible for confirming that no other copy has
+already used this announcement's nonce. This offline mode cannot consult the
+engine for that result and still refuses a conflicting outcome already saved locally.
 It applies only to `--outcome` or `--retry`.
 `--republish` requires `--retry`. It sends the exact saved attestation even
 if a relay previously acknowledged it. It does not change saved progress
