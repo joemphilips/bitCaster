@@ -18,13 +18,17 @@ node --experimental-strip-types --test --test-concurrency=2 \
   test/marketCreationLimits.test.ts test/marketCreationInput.test.ts \
   test/marketCreationTextBoundaries.test.ts test/oracleAnnouncementTags.test.ts \
   test/oracleBackupCapacity.test.ts test/oracleBackup.test.ts \
-  test/oracleBackupAccess.test.ts
+  test/oracleBackupAccess.test.ts test/oraclePublication.test.ts
 ```
 
 These checks cover Unicode code points, UTF-8 bytes, malformed surrogates,
 serialized metadata, exact boundaries, old-format fixtures, strict compact
 schemas, version selection, and observed lifecycle regression. They also check
 the conservative reservation for future signing and publication.
+New announcement descriptions must preserve the full Markdown source. Retained
+announcements must preserve their exact signed bytes, including older whitespace
+formatting. A fresh synchronized signature must refuse an observed public result
+or an unavailable result read. An exact signed retry remains available.
 
 `fixtures/oracle-backup-v1.json` is a synthetic test fixture. Its test key is
 public and must never hold real authority or funds.
