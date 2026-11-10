@@ -24,7 +24,8 @@ settlement group.
 Both systems use complementary, mint, and merge conversion concepts. In a
 merge conversion, a sell matches a sell of the complementary outcome set, and
 the mint merges the two positions into collateral. bitCaster groups one or more
-fills and submits one multi-party mint conversion. The mint returns exact result entries when it confirms the group.
+fills and submits one multi-party mint conversion. The mint returns exact
+result entries when it confirms the group.
 
 bitCaster does not require a public blockchain transaction, gas token, or
 bridge. Its ecash model improves transaction privacy, but it does not give the
