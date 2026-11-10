@@ -182,8 +182,11 @@ Each matched quantity creates one fill. `fillId` identifies that real fill.
 
 The engine can group one or more fills into one atomic settlement group.
 `groupId` identifies the settlement group. The mint receives one multi-party
-conversion for the group. The current product supports complementary and mint
-conversion. It does not expose merge conversion in this release.
+conversion for the group. The current product supports complementary, mint,
+and merge conversion. A merge match pairs a sell with a sell of the
+complementary outcome set, and the mint merges the two positions into
+collateral. This API version reports a merge match as `Complementary`, with the
+taker's token side and execution price. A later engine version reports `Merge`.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
@@ -242,8 +245,8 @@ The mint performs the conversion. Wallets control their proof material. A
 ## Comparison with on-chain CTF exchanges
 
 The names complementary, mint, and merge also appear in on-chain CTF systems.
-The implementation differs. bitCaster currently exposes complementary and mint
-conversion only. It uses one mint conversion for an atomic settlement group. It
+The implementation differs. bitCaster exposes complementary, mint, and merge
+conversion. It uses one mint conversion for an atomic settlement group. It
 does not use a peer-to-peer settlement exchange or an on-chain operator
 transaction.
 

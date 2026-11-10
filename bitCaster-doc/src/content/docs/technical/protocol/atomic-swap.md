@@ -225,9 +225,9 @@ The engine can coalesce compatible fills until the bounded group deadline. It
 freezes the group before it submits the conversion.
 
 The engine submits one multi-party conversion to the mint for the group. The
-current product supports complementary and mint conversion. The mint decides
-the result of that conversion. The NUT defines merge conversion, but bitCaster
-does not expose it in this release.
+current product supports complementary, mint, and merge conversion. A merge
+conversion turns a sell and a sell of the complementary outcome set into
+collateral. The mint decides the result of that conversion.
 
 ## Confirmation and recovery
 

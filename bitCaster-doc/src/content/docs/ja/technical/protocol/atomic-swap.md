@@ -207,7 +207,7 @@ API の構造化エラー形式とは別です。
 
 エンジンは、期限が来るまで互換性がある fill をグループに追加できます。conversion を送信する前にグループを確定します。
 
-エンジンはグループに対して 1 件の複数当事者 conversion をミントに送信します。現在のプロダクトは complementary conversion と mint conversion をサポートします。ミントが conversion の結果を決定します。NUT は merge conversion も定義しますが、bitCaster はこのリリースで提供しません。
+エンジンはグループに対して 1 件の複数当事者 conversion をミントに送信します。現在のプロダクトは complementary conversion、mint conversion、merge conversion をサポートします。merge conversion は、売り注文と補集合のアウトカムの売り注文を担保に変換します。ミントが conversion の結果を決定します。
 
 ## 確定と回復
 
