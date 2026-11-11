@@ -93,6 +93,7 @@ import {
   DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
+  type DurableCustodyOwnerAuthorization,
 } from "@bitcaster/client-sdk/durableCustody";
 import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import {
@@ -774,15 +775,26 @@ export class WalletKeysetCounterPendingError extends WalletKeysetCounterReadines
 
 const walletKeysetCounterReadiness = new Map<string, Promise<void>>();
 
+/**
+ * The wallet-profile lock state of a counter readiness caller. A caller that
+ * holds the lock names the custody owner that it claimed, or null when it
+ * claimed none. Recovered proofs are then admitted under that owner, because a
+ * second claim inside the same lock hold refuses a live owner of this page.
+ */
+export type WalletKeysetCounterReadinessLock =
+  | { profileLockHeld?: false; custodyOwner?: never }
+  | { profileLockHeld: true; custodyOwner: DurableCustodyOwnerAuthorization | null };
+
 /** Ensure one preparation-selected keyset has completed counter recovery. */
-export function ensureWalletKeysetCounterReady(input: {
-  scopeId: string;
-  mintUrl: string;
-  unit: "msat";
-  keyset: ActiveCtfRangeMintKeyset;
-  conditionalAsset?: { conditionId: string; outcomeCollection: string };
-  profileLockHeld?: boolean;
-}): Promise<void> {
+export function ensureWalletKeysetCounterReady(
+  input: {
+    scopeId: string;
+    mintUrl: string;
+    unit: "msat";
+    keyset: ActiveCtfRangeMintKeyset;
+    conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  } & WalletKeysetCounterReadinessLock,
+): Promise<void> {
   let url: string;
   let conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   try {
@@ -803,6 +815,8 @@ export function ensureWalletKeysetCounterReady(input: {
     conditionalKeyset?.outcomeCollectionId ?? null,
     conditionalKeyset?.registeredAt ?? null,
     input.profileLockHeld === true,
+    input.custodyOwner?.incarnationId ?? null,
+    input.custodyOwner?.fencingEpoch ?? null,
   ]);
   const pending = walletKeysetCounterReadiness.get(coalescingKey);
   if (pending !== undefined) return pending;
@@ -814,6 +828,7 @@ export function ensureWalletKeysetCounterReady(input: {
     keysetId: input.keyset.id,
     conditionalKeyset,
     profileLockHeld: input.profileLockHeld === true,
+    custodyOwner: input.custodyOwner ?? null,
   }).catch((error: unknown) => {
     throw error instanceof WalletKeysetCounterPendingError
       ? error
@@ -1023,6 +1038,7 @@ async function recoverSelectedKeysetCounterReadiness(input: {
   keysetId: string;
   conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   profileLockHeld: boolean;
+  custodyOwner: DurableCustodyOwnerAuthorization | null;
 }): Promise<void> {
   if (input.conditionalKeyset !== undefined) {
     // A later deferral of this keyset can then find its keyset authority
@@ -1042,6 +1058,7 @@ async function recoverSelectedKeysetCounterReadiness(input: {
     keysetId: input.keysetId,
     conditionalKeyset: input.conditionalKeyset,
     profileLockHeld: input.profileLockHeld,
+    custodyOwner: input.custodyOwner,
   });
   // A scan that stopped at its counter budget continues in a later pass.
   if (result.continuedKeysets?.includes(input.keysetId) === true) {
@@ -1511,6 +1528,8 @@ async function recoverKeysetCountersForMintCore(
     keysetId?: string;
     conditionalKeyset?: ConditionalCounterRecoveryKeyset;
     profileLockHeld?: boolean;
+    /** The custody owner of a lock holder. Recovered proofs are admitted under it. */
+    custodyOwner?: DurableCustodyOwnerAuthorization | null;
     /** The first counter to scan. A deferral scan starts at its marker. */
     startCounter?: number;
   } = {},
@@ -1826,6 +1845,9 @@ async function recoverKeysetCountersForMintCore(
                   derivationAuthority: null,
                   proofLocators: freshLocators,
                   database: db,
+                  ...(opts.profileLockHeld === true && opts.custodyOwner
+                    ? { custodyOwner: opts.custodyOwner }
+                    : {}),
                 });
               }
             }
@@ -2092,7 +2114,7 @@ export async function receiveAndStoreTokenRecoverably(
       unit,
       asset: "conditional",
       conditionalInputProofs,
-      ensureConditionalCounterReady: async (authority) => {
+      ensureConditionalCounterReady: async (authority, owner) => {
         const keyset: CtfRangeConditionalMintKeyset = {
           canonicalMintUrl: authority.normalizedMint,
           id: authority.keysetId,
@@ -2116,6 +2138,7 @@ export async function receiveAndStoreTokenRecoverably(
             outcomeCollection: authority.outcomeCollection,
           },
           profileLockHeld: true,
+          custodyOwner: owner,
         });
       },
       wallet,

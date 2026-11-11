@@ -50,9 +50,18 @@ import {
   serializeDurableWalletReceiveOperation,
   serializeDurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  deriveDurableCustodyArtifactFingerprint,
+  type DurableCustodyOwnerAuthorization,
+} from "@bitcaster/client-sdk/durableCustody";
 import { browserOutgoingCashuTransferRow } from "../browserDurableOutgoingCashuTransfer";
-import { addProofs, addProofsIfMissing, BitcasterDB } from "../../stores/proof-db";
+import {
+  addProofs,
+  addProofsIfMissing,
+  BitcasterDB,
+  type StoredProof,
+} from "../../stores/proof-db";
+import { admitBrowserReceivedProofsWithHeldProfileLock } from "../browserCustodyProofReceive";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
@@ -226,6 +235,62 @@ describe("browser durable ordinary receive", () => {
         CONDITIONAL_KEYSET_ID,
       ]),
     ).toMatchObject({ next: 2 });
+  });
+
+  it("admits recovered counter proofs under the receive owner and completes the receive", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    await markConditionalCounterReady(database);
+    // Counter readiness can find unrecorded proofs, for example after a seed
+    // restore. It admits them while the receive holds the profile lock and
+    // the custody scope.
+    const recovered: StoredProof = {
+      ...proofForOutput(
+        OutputData.createSingleData(8, CONDITIONAL_KEYSET_ID, "recovered-counter-proof", 29n),
+      ),
+      mintUrl: MINT,
+      baseAsset: "sat",
+      unit: "msat",
+      conditionId: CONDITION_ID,
+      outcomeCollection: OUTCOME_COLLECTION,
+    };
+    const readiness = vi.fn(
+      async (_keyset: unknown, owner: DurableCustodyOwnerAuthorization | null) => {
+        await admitBrowserReceivedProofsWithHeldProfileLock({
+          seed,
+          sourceOperationId: "counter-recovery:test",
+          mintUrl: MINT,
+          unit: "msat",
+          wallet: receiveWallet as never,
+          proofs: [recovered],
+          derivationAuthority: null,
+          database,
+          ...(owner === null ? {} : { custodyOwner: owner }),
+        });
+      },
+    );
+
+    const received = await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: [inputProof],
+      ensureConditionalCounterReady: readiness,
+      wallet: receiveWallet,
+      context: receiveContext(database),
+    });
+
+    expect(readiness).toHaveBeenCalledOnce();
+    expect(readiness.mock.calls[0]![1]).toMatchObject({
+      incarnationId: expect.stringMatching(/^browser-wallet-receive:/),
+    });
+    expect(received).toHaveLength(2);
+    expect(await database.custodyProofs.count()).toBe(3);
+    const scopeRow = await database.custodyScopes.get(browserWalletScope(seed).scopeId);
+    expect(scopeRow?.state.owner).toBeNull();
+    expect(scopeRow?.state.fencingEpoch).toBe(1);
   });
 
   it("rejects a self-consistent conditional fee plan that conflicts with the verified keyset fee", async () => {

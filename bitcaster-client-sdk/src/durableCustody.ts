@@ -1348,6 +1348,17 @@ export function isDurableCustodyActiveRecoveryRecord(record: DurableCustodyRecor
   )
 }
 
+/**
+ * Claim the scope for a new owner incarnation. The claim always replaces a
+ * recorded owner, also inside its lease.
+ *
+ * Call this only when the recorded owner cannot run. A caller can prove this
+ * when every owner holds an exclusive owner lock of the scope until its
+ * release, the caller holds that lock, and the caller refuses a recorded
+ * owner that runs in its own process. A recorded owner then ended without a
+ * release, for example in a page that reloaded. Its lease does not prove that
+ * it runs. The new fencing epoch refuses every later transition of that owner.
+ */
 export function claimDurableCustodyScope(
   state: DurableCustodyScopeState,
   input: {
@@ -1362,9 +1373,6 @@ export function claimDurableCustodyScope(
   safeTime(input.leaseExpiresAtMs, 'lease expiry')
   if (input.leaseExpiresAtMs <= input.observedAtMs) {
     throw new Error('custody scope clock or lease is invalid')
-  }
-  if (state.owner !== null && state.owner.leaseExpiresAtMs > input.observedAtMs) {
-    throw new Error('custody scope is already owned')
   }
   return {
     ...structuredClone(state),

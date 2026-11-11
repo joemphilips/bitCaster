@@ -112,6 +112,7 @@ export async function claimPortfolioPosition(input: {
                     finalExpiry: regularKeyset.final_expiry ?? null,
                   },
                   profileLockHeld: true,
+                  custodyOwner: owner,
                 });
               } catch (error) {
                 if (error instanceof WalletKeysetCounterReadinessError) {

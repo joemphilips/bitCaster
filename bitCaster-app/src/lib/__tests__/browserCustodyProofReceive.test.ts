@@ -6,6 +6,8 @@ import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/cl
 import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
 import { requireBrowserLiveProofBackupAuthorityTableRow } from "../../stores/browser-proof-backup-authority";
+import { BrowserDurableCustodyAdapter } from "../../stores/durable-custody-db";
+import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -142,6 +144,40 @@ describe("browser custody proof receive", () => {
     expect(await database.custodyOperations.count()).toBe(0);
     expect(await database.custodyProofs.count()).toBe(0);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
+  it("imports under the custody owner that the lock holder already claimed", async () => {
+    database = new BitcasterDB(`proof-receive-held-owner-${crypto.randomUUID()}`);
+    const seed = new Uint8Array(32).fill(7);
+    const scope = browserWalletScope(seed);
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const outer = await adapter.claimScope(scope, {
+      incarnationId: "browser-outer-owner",
+      observedAtMs: 10,
+      leaseExpiresAtMs: 600_010,
+    });
+
+    await admitBrowserReceivedProofsWithHeldProfileLock({
+      seed,
+      sourceOperationId: "receive:held-owner",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      wallet: wallet(),
+      proofs: [proof(0), proof(1)],
+      derivationAuthority: null,
+      database,
+      now: () => 20,
+      custodyOwner: outer,
+    });
+
+    expect(await database.custodyProofs.count()).toBe(2);
+    expect((await database.custodyScopes.get(scope.scopeId))?.state).toMatchObject({
+      fencingEpoch: outer.fencingEpoch,
+      owner: { incarnationId: "browser-outer-owner" },
+    });
+    await expect(
+      adapter.releaseScope(scope, { ...outer, observedAtMs: 30 }),
+    ).resolves.toBeUndefined();
   });
 
   it("maps a reordered subset from the verified modern range to exact counters", async () => {

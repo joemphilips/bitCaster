@@ -152,6 +152,31 @@ describe("useBrowserCtfRangeOrderRecovery pass summary", () => {
     );
   });
 
+  it("reports a failed wallet stage with its error class name only", async () => {
+    class MintTransportError extends Error {
+      override name = "MintTransportError";
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      mocks.recoverBrowserCtfRangeOrders.mockRejectedValue(
+        new MintTransportError("cashuBsecret-token 1234 sat"),
+      );
+      mocks.recoverBrowserDurableOutgoingCashuTransfersInPass.mockRejectedValue(
+        Object.assign(new Error("proof secret"), { name: "proof secret 1234" }),
+      );
+      const passEnded = nextPassEnd();
+      mountRecovery(MINT_1);
+      await act(() => passEnded);
+
+      const labels = warn.mock.calls.map((call) => String(call[0]));
+      expect(labels).toContain("wallet-recovery-stage-error=rangeOrders error=MintTransportError");
+      expect(labels).toContain("wallet-recovery-stage-error=outgoing error=unknown");
+      expect(labels.join("\n")).not.toMatch(/secret|cashuB|1234/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("keeps the counter deferral: one counter run, and its keysets in the summary", async () => {
     mocks.recoverKeysetCountersForMint.mockResolvedValue({
       scannedKeysets: ["k1"],

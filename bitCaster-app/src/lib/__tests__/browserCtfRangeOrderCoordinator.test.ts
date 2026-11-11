@@ -69,6 +69,7 @@ import {
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
 import { deriveDurableCustodyProofId } from "@bitcaster/client-sdk/durableCustody";
+import { claimScopeForEndedPage } from "@/test/endedPageCustodyOwner";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   encryptedWalletBackupV2LocalAssetKey,
@@ -2853,6 +2854,31 @@ describe("browser CTF range order coordinator", () => {
       { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
       { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
     ]);
+  });
+
+  it("recovers after a page ended while it owned the custody scope", async () => {
+    const database = createDatabase();
+    // A page that reloads or navigates while it owns the scope never releases
+    // it. The browser then releases the page's profile Web Lock only. The
+    // scope row keeps the owner that the ended page wrote.
+    // The fixture clock starts at 20 000 ms, inside the lease.
+    const observedAtMs = 19_000;
+    const ended = await claimScopeForEndedPage(database, walletScope(), {
+      incarnationId: "browser-range:ended-page",
+      observedAtMs,
+      leaseExpiresAtMs: observedAtMs + 600_000,
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+
+    await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [],
+      pending: [],
+      nextCursor: null,
+    });
+
+    const scopeRow = await database.custodyScopes.get(walletScopeId());
+    expect(scopeRow?.state.owner).toBeNull();
+    expect(scopeRow?.state.fencingEpoch).toBe(ended.fencingEpoch + 1);
   });
 
   it("rejects an invalid recovery page limit", async () => {
@@ -6588,7 +6614,8 @@ it("ordinary browser refund refuses owner takeover between draft and commit", as
       before = await browserRefundMoneyRows(fixture.database);
       const scopeRow = (await fixture.database.custodyScopes.get(walletScopeId()))!;
       const takeoverAt = scopeRow.state.owner!.leaseExpiresAtMs + 1;
-      await new BrowserDurableCustodyAdapter(fixture.database).claimScope(walletScope(), {
+      // Another page writes its claim. This page refuses a nested claim.
+      await claimScopeForEndedPage(fixture.database, walletScope(), {
         incarnationId: "competing-refund-owner",
         observedAtMs: takeoverAt,
         leaseExpiresAtMs: takeoverAt + 600000,

@@ -78,13 +78,22 @@ export function admitBrowserReceivedProofs(input: AdmitBrowserReceivedProofsInpu
   }
 }
 
+export interface AdmitBrowserReceivedProofsWithHeldProfileLockInput extends AdmitBrowserReceivedProofsInput {
+  /**
+   * The custody owner that the lock holder claimed. The import then uses its
+   * authorization, and does not claim or release the scope. Without it, the
+   * import claims the scope and releases it.
+   */
+  readonly custodyOwner?: DurableCustodyOwnerAuthorization;
+}
+
 /** Call only when the caller owns the exact wallet-profile lock. */
 export function admitBrowserReceivedProofsWithHeldProfileLock(
-  input: AdmitBrowserReceivedProofsInput,
+  input: AdmitBrowserReceivedProofsWithHeldProfileLockInput,
   authority?: BrowserCustodyProofImportAtomicAuthority,
 ): Promise<void> {
   try {
-    return admitBrowserReceivedProofsInternal(input, true, authority);
+    return admitBrowserReceivedProofsInternal(input, true, authority, input.custodyOwner);
   } catch (error) {
     return Promise.reject(error);
   }
@@ -94,6 +103,7 @@ function admitBrowserReceivedProofsInternal(
   input: AdmitBrowserReceivedProofsInput,
   profileLockHeld: boolean,
   authority?: BrowserCustodyProofImportAtomicAuthority,
+  custodyOwner?: DurableCustodyOwnerAuthorization,
 ): Promise<void> {
   requireProductMsatUnit(input.unit);
   if (input.proofs.some(({ unit }) => unit !== "msat")) {
@@ -124,6 +134,29 @@ function admitBrowserReceivedProofsInternal(
     input.proofs.length / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
   );
 
+  const importPages = async (owner: DurableCustodyOwnerAuthorization): Promise<void> => {
+    const atomicPages: BrowserCustodyProofImportInput[] = [];
+    const batchObservedAtMs = now();
+    const batchOwner = ownerAt(owner, batchObservedAtMs);
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const observedAtMs = profileLockHeld ? batchObservedAtMs : now();
+      const page = prepareImportPage({
+        input,
+        database,
+        scope,
+        owner: profileLockHeld ? batchOwner : ownerAt(owner, observedAtMs),
+        keysets,
+        pageIndex,
+        pageCount,
+        proofSetFingerprint,
+        derivationLocators,
+        receivedAtMs: observedAtMs,
+      });
+      if (profileLockHeld) atomicPages.push(page);
+      else await commitBrowserCustodyProofImport(page);
+    }
+    if (profileLockHeld) await commitBrowserCustodyProofImportsAtomic(atomicPages, authority);
+  };
   const commit = async (): Promise<void> => {
     const adapter = new BrowserDurableCustodyAdapter(database);
     const claimedAtMs = now();
@@ -134,27 +167,7 @@ function admitBrowserReceivedProofsInternal(
     });
     let importFailure: unknown;
     try {
-      const atomicPages: BrowserCustodyProofImportInput[] = [];
-      const batchObservedAtMs = now();
-      const batchOwner = ownerAt(owner, batchObservedAtMs);
-      for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-        const observedAtMs = profileLockHeld ? batchObservedAtMs : now();
-        const page = prepareImportPage({
-          input,
-          database,
-          scope,
-          owner: profileLockHeld ? batchOwner : ownerAt(owner, observedAtMs),
-          keysets,
-          pageIndex,
-          pageCount,
-          proofSetFingerprint,
-          derivationLocators,
-          receivedAtMs: observedAtMs,
-        });
-        if (profileLockHeld) atomicPages.push(page);
-        else await commitBrowserCustodyProofImport(page);
-      }
-      if (profileLockHeld) await commitBrowserCustodyProofImportsAtomic(atomicPages, authority);
+      await importPages(owner);
     } catch (error) {
       importFailure = error;
       throw error;
@@ -166,6 +179,7 @@ function admitBrowserReceivedProofsInternal(
       }
     }
   };
+  if (custodyOwner !== undefined) return importPages(custodyOwner);
   return profileLockHeld
     ? commit()
     : withWalletProfileLock(scope.scopeId, commit, input.lockManager);

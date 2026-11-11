@@ -31,7 +31,11 @@ import {
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "../browserWalletProfile";
-import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+} from "../../stores/durable-custody-db";
+import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import {
   createBrowserCompletedProofRemovalMarkerRow,
   requireBrowserLiveProofBackupAuthorityTableRow,
@@ -159,6 +163,7 @@ import {
   recoverKeysetCountersForMint,
   rescanBrowserRegularKeyset,
   WalletKeysetCounterReadinessError,
+  type WalletKeysetCounterReadinessLock,
 } from "../cashu";
 import { retryBrowserSeedPositionRestore } from "../browserSeedPositionRestore";
 import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
@@ -436,7 +441,9 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     mintSigned(range(0, 2), CONDITIONAL_KEYSET_ID);
 
     await withWalletProfileLock(scopeId(), () =>
-      ensureWalletKeysetCounterReady(conditionalReadinessInput({ profileLockHeld: true })),
+      ensureWalletKeysetCounterReady(
+        conditionalReadinessInput({ profileLockHeld: true, custodyOwner: null }),
+      ),
     );
 
     expect(walletLockState.calls).toBe(1);
@@ -446,6 +453,46 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     ).toMatchObject({
       next: 3,
     });
+  });
+
+  it("admits recovered proofs under the custody owner that its lock holder claimed", async () => {
+    mintSigned(range(0, 2));
+    mintStates(
+      new Map([
+        [0, "unspent"],
+        [1, "unspent"],
+        [2, "unspent"],
+      ]),
+    );
+    const scope = browserWalletScope(SEED);
+    const adapter = new BrowserDurableCustodyAdapter(database!);
+    const observedAtMs = Date.now();
+    const outer = await adapter.claimScope(scope, {
+      incarnationId: "browser-outer-owner",
+      observedAtMs,
+      leaseExpiresAtMs: observedAtMs + 600_000,
+    });
+
+    await withWalletProfileLock(scopeId(), () =>
+      ensureWalletKeysetCounterReady({
+        ...regularReadinessInput(),
+        profileLockHeld: true,
+        custodyOwner: outer,
+      }),
+    );
+
+    expect(walletLockState.calls).toBe(1);
+    expect(await database!.custodyProofs.count()).toBe(3);
+    expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
+      next: 3,
+    });
+    expect((await database!.custodyScopes.get(scope.scopeId))?.state).toMatchObject({
+      fencingEpoch: outer.fencingEpoch,
+      owner: { incarnationId: "browser-outer-owner" },
+    });
+    await expect(
+      adapter.releaseScope(scope, { ...outer, observedAtMs: Date.now() }),
+    ).resolves.toBeUndefined();
   });
 
   it("fails closed when the wallet profile changes during selected recovery", async () => {
@@ -1073,7 +1120,10 @@ function regularPreparationKeyset(): ActiveCtfRangeMintKeyset {
 }
 
 function conditionalReadinessInput(
-  overrides: Partial<Parameters<typeof ensureWalletKeysetCounterReady>[0]> = {},
+  overrides: Partial<
+    Pick<Parameters<typeof ensureWalletKeysetCounterReady>[0], "keyset" | "conditionalAsset">
+  > &
+    WalletKeysetCounterReadinessLock = {},
 ): Parameters<typeof ensureWalletKeysetCounterReady>[0] {
   return {
     scopeId: scopeId(),

@@ -96,6 +96,17 @@ const ROW_TEXT_BYTES_MAX = 64 * 1_024;
 const TRANSACTION_PROOF_ROW_LIMIT_MAX =
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX + DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX;
 
+/**
+ * The custody owners of this page that claimed a scope and did not release it.
+ * A page that ends loses this set, so a recorded owner that is not in it ended
+ * without a release.
+ */
+const livePageOwners = new Set<string>();
+
+function pageOwnerKey(scopeId: string, incarnationId: string): string {
+  return JSON.stringify([scopeId, incarnationId]);
+}
+
 export type BrowserCustodyProofAsset =
   | {
       readonly kind: "regular";
@@ -288,32 +299,61 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     });
   }
 
+  /**
+   * Call only while you hold the wallet profile Web Lock of the scope. Every
+   * owner holds that lock until it releases the scope, so another page cannot
+   * run a recorded owner. The claim replaces an owner of a page that ended
+   * without a release, for example in a reload (ADR-033). It refuses a
+   * recorded owner that is live in this page: a nested claim must use the
+   * authorization of that owner.
+   */
   async claimScope(
     scope: DurableCustodyScope,
     input: { incarnationId: string; observedAtMs: number; leaseExpiresAtMs: number },
   ): Promise<DurableCustodyOwnerAuthorization> {
     await this.ensureScope(scope, input.observedAtMs);
-    return this.#database.transaction("rw", this.#database.custodyScopes, async () => {
-      const current = await this.#requiredScope(scope.scopeId);
-      const next = claimDurableCustodyScope(current.state, input);
-      await this.#database.custodyScopes.put({ scopeId: scope.scopeId, state: next });
-      return {
-        incarnationId: input.incarnationId,
-        fencingEpoch: next.fencingEpoch,
-        observedAtMs: input.observedAtMs,
-      };
-    });
+    const authorization = await this.#database.transaction(
+      "rw",
+      this.#database.custodyScopes,
+      async () => {
+        const current = await this.#requiredScope(scope.scopeId);
+        const recorded = current.state.owner;
+        if (
+          recorded !== null &&
+          livePageOwners.has(pageOwnerKey(scope.scopeId, recorded.incarnationId))
+        ) {
+          throw new Error("custody scope is already owned");
+        }
+        const next = claimDurableCustodyScope(current.state, input);
+        await this.#database.custodyScopes.put({ scopeId: scope.scopeId, state: next });
+        return {
+          incarnationId: input.incarnationId,
+          fencingEpoch: next.fencingEpoch,
+          observedAtMs: input.observedAtMs,
+        };
+      },
+    );
+    livePageOwners.add(pageOwnerKey(scope.scopeId, authorization.incarnationId));
+    return authorization;
   }
 
+  /**
+   * The owner stops when it calls this method. A failed release therefore
+   * also ends the owner in this page, and a later claim replaces it.
+   */
   async releaseScope(
     scope: DurableCustodyScope,
     authorization: DurableCustodyOwnerAuthorization,
   ): Promise<void> {
-    await this.#database.transaction("rw", this.#database.custodyScopes, async () => {
-      const current = await this.#requiredScope(scope.scopeId);
-      const next = releaseDurableCustodyScope(current.state, authorization);
-      await this.#database.custodyScopes.put({ scopeId: scope.scopeId, state: next });
-    });
+    try {
+      await this.#database.transaction("rw", this.#database.custodyScopes, async () => {
+        const current = await this.#requiredScope(scope.scopeId);
+        const next = releaseDurableCustodyScope(current.state, authorization);
+        await this.#database.custodyScopes.put({ scopeId: scope.scopeId, state: next });
+      });
+    } finally {
+      livePageOwners.delete(pageOwnerKey(scope.scopeId, authorization.incarnationId));
+    }
   }
 
   async transact<T>(

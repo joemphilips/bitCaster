@@ -26,6 +26,7 @@ import {
   walletRecoveryTag,
   type WalletRecoveryPassWriter,
   type WalletRecoveryStageOutcome,
+  type WalletRecoveryWalletStage,
 } from "@/lib/walletRecoveryPassSummary";
 import { useToastStore, type Toast } from "@/stores/toast";
 import i18n from "@/i18n";
@@ -58,6 +59,34 @@ const stageFailed = (): WalletRecoveryStageOutcome => ({
   state: "failed",
   retryAtMs: Date.now() + RANGE_RECOVERY_RETRY_MS,
 });
+
+/** An error class name. A name of another form is not reported. */
+const SAFE_ERROR_NAME = /^(?:[A-Z][A-Za-z0-9]{0,62})?(?:Error|Exception)$/;
+
+/**
+ * The label of a failed wallet stage. It holds only the stage and the error
+ * class name, never the error message, so it cannot expose a proof, a secret,
+ * or an amount.
+ */
+function walletRecoveryStageErrorLabel(stage: WalletRecoveryWalletStage, error: unknown): string {
+  let name = "unknown";
+  try {
+    const candidate =
+      typeof error === "object" && error !== null ? (error as { name?: unknown }).name : null;
+    if (typeof candidate === "string" && SAFE_ERROR_NAME.test(candidate)) name = candidate;
+  } catch {
+    // A diagnostic must not invoke an untrusted error getter again.
+  }
+  return `wallet-recovery-stage-error=${stage} error=${name}`;
+}
+
+function stageFailedWith(
+  stage: WalletRecoveryWalletStage,
+  error: unknown,
+): WalletRecoveryStageOutcome {
+  console.warn(walletRecoveryStageErrorLabel(stage, error));
+  return stageFailed();
+}
 
 const activationEpoch = () => activeBrowserWalletActivation().epoch;
 
@@ -144,9 +173,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               "receives",
               receivesRecovered ? STAGE_COMPLETED : stageWaits("operation"),
             );
-          } catch {
+          } catch (error) {
             retryRequired = true;
-            pass.walletStage("receives", stageFailed());
+            pass.walletStage("receives", stageFailedWith("receives", error));
           }
         }
         if (!isCurrent()) return;
@@ -156,9 +185,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             mintsRecovered = result.pending === 0;
             retryRequired ||= !mintsRecovered;
             pass.walletStage("mints", mintsRecovered ? STAGE_COMPLETED : stageWaits("operation"));
-          } catch {
+          } catch (error) {
             retryRequired = true;
-            pass.walletStage("mints", stageFailed());
+            pass.walletStage("mints", stageFailedWith("mints", error));
           }
         }
         if (!isCurrent()) return;
@@ -176,9 +205,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               "rangeOrders",
               result.pending.length > 0 ? stageWaits("operation") : STAGE_COMPLETED,
             );
-          } catch {
+          } catch (error) {
             retryRequired = true;
-            pass.walletStage("rangeOrders", stageFailed());
+            pass.walletStage("rangeOrders", stageFailedWith("rangeOrders", error));
           }
         }
         if (!isCurrent()) return;
@@ -196,9 +225,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
                 ? stageWaits("scan-continues")
                 : STAGE_COMPLETED,
           );
-        } catch {
+        } catch (error) {
           retryRequired = true;
-          pass.walletStage("outgoing", stageFailed());
+          pass.walletStage("outgoing", stageFailedWith("outgoing", error));
         }
         if (!isCurrent()) return;
         if (!countersRecovered) {

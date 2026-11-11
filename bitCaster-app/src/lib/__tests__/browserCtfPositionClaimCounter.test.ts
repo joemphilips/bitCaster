@@ -373,6 +373,39 @@ describe("Claim with the browser's durable NUT-13 counter", () => {
     expect(await counters.snapshot()).toEqual({ [REGULAR_KEYSET.id]: 6 });
   });
 
+  it("admits recovered regular proofs under the claim owner, then pays the leg", async () => {
+    const entry = await createRealCounterFixture();
+    await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 4 });
+    // A seed restore in a new browser: the mint signed counters 0 to 4 for
+    // this seed, their proofs are unspent, and this browser has no record of
+    // them. The claim admits them in its counter readiness step.
+    testWallet.groupProofsByState.mockImplementation(async (proofs: Proof[]) => ({
+      unspent: proofs,
+      pending: [],
+      spent: [],
+    }));
+
+    const claimed = await claimPortfolioPosition({
+      mintUrl: MINT,
+      conditionId: CONDITION,
+      outcomeCollection: OUTCOME,
+    });
+
+    expect(claimed, JSON.stringify(claimed)).toMatchObject({
+      kind: "completed",
+      committedPayoutAmount: 1,
+      committedLegs: 1,
+    });
+    expect(testWallet.redeemOutcomeProofs).toHaveBeenCalledOnce();
+    const regular = (await entry.database.custodyProofs.toArray()).filter(
+      (row) => row.keysetId === REGULAR_KEYSET.id && row.selectability === "selectable",
+    );
+    // Five recovered proofs and one payout proof.
+    expect(regular).toHaveLength(EARLIER_COUNTERS.length + 1);
+    expect(await counterStore(entry).snapshot()).toEqual({ [REGULAR_KEYSET.id]: 6 });
+    expect((await entry.database.custodyScopes.get(entry.scope.scopeId))?.state.owner).toBeNull();
+  });
+
   it("replays a retained payout after keyset rotation without reserving a new cursor", async () => {
     const entry = await createRealCounterFixture();
     const counters = counterStore(entry);

@@ -59,6 +59,7 @@ import {
 } from "../proof-db";
 
 import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
+import { claimScopeForEndedPage } from "../../test/endedPageCustodyOwner";
 import { prepareBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import { issueBrowserCtfTerminalSealFixture } from "../../test/browserEncryptedWalletBackupV2TerminalSealFixture";
 import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
@@ -1001,6 +1002,65 @@ describe("browser durable custody adapter", () => {
     } as DurableCustodyScope;
 
     await expect(adapter.ensureScope(reordered, 2)).resolves.toBeUndefined();
+  });
+
+  it("refuses a nested claim while an owner of this page is live", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const outer = await claim(adapter, scope, 10);
+
+    // An expired lease does not end an owner of this page. Only its release does.
+    await expect(
+      new BrowserDurableCustodyAdapter(database).claimScope(scope, {
+        incarnationId: "browser-nested",
+        observedAtMs: 20_000,
+        leaseExpiresAtMs: 30_000,
+      }),
+    ).rejects.toThrow("custody scope is already owned");
+    expect((await database.custodyScopes.get(scope.scopeId))?.state).toMatchObject({
+      fencingEpoch: outer.fencingEpoch,
+      owner: { incarnationId: outer.incarnationId },
+    });
+
+    await adapter.releaseScope(scope, observedOwner(outer, 20_001));
+    await expect(claim(adapter, scope, 20_002)).resolves.toMatchObject({
+      fencingEpoch: outer.fencingEpoch + 1,
+    });
+  });
+
+  it("replaces the owner of a page that ended without a release", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    // Another page claimed the scope and ended inside its lease without a release.
+    const ended = await claimScopeForEndedPage(database, scope, {
+      incarnationId: "browser-ended-page",
+      observedAtMs: 10,
+      leaseExpiresAtMs: 600_010,
+    });
+
+    const next = await claim(adapter, scope, 20);
+
+    expect(next.fencingEpoch).toBe(ended.fencingEpoch + 1);
+    expect((await database.custodyScopes.get(scope.scopeId))?.state.owner).toMatchObject({
+      incarnationId: next.incarnationId,
+    });
+  });
+
+  it("ends an owner of this page when its release fails", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const outer = await claim(adapter, scope, 10);
+
+    await expect(
+      adapter.releaseScope(scope, { ...observedOwner(outer, 11), fencingEpoch: 99 }),
+    ).rejects.toThrow(/fencing/);
+
+    await expect(claim(adapter, scope, 12)).resolves.toMatchObject({
+      fencingEpoch: outer.fencingEpoch + 1,
+    });
   });
 
   it("does not create a backup target for a local-only predecessor", async () => {

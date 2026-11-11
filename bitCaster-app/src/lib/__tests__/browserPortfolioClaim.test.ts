@@ -118,6 +118,7 @@ describe("Portfolio claim entry point", () => {
         finalExpiry: null,
       },
       profileLockHeld: true,
+      custodyOwner: mocks.owner,
     });
     expect(mocks.claim).toHaveBeenCalledWith(
       expect.objectContaining({

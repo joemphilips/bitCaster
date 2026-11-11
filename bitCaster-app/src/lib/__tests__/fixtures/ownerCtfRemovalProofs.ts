@@ -15,6 +15,7 @@ import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableC
 import { deriveEncryptedWalletBackupOwnerScope } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerScope";
 import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { commitBrowserCtfTerminalOperation } from "@/test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
+import { claimScopeForEndedPage } from "@/test/endedPageCustodyOwner";
 import {
   createBrowserCustodyProofRow,
   BrowserDurableCustodyAdapter,
@@ -93,7 +94,8 @@ export async function ownerCtfRemovalFixture(
   try {
     const scope = { scopeKind: "wallet" as const, walletId: keyHandle.walletId, scopeId };
     const adapter = new BrowserDurableCustodyAdapter(database);
-    const custodyOwner = await adapter.claimScope(scope, {
+    // The fixture writes earlier wallet history. A later claim replaces its owner.
+    const custodyOwner = await claimScopeForEndedPage(database, scope, {
       incarnationId: "owner-removal-fixture",
       observedAtMs: 1000,
       leaseExpiresAtMs: 10000,
@@ -411,7 +413,7 @@ export async function addLocalCompanion(
     walletId: f.keyHandle.walletId,
     scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: f.keyHandle.walletId }),
   };
-  const owner = await adapter.claimScope(scope, {
+  const owner = await claimScopeForEndedPage(f.database, scope, {
     incarnationId: `local-companion-${suffix}`,
     observedAtMs: 20_000,
     leaseExpiresAtMs: 30_000,

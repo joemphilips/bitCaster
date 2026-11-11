@@ -92,7 +92,8 @@ interface BrowserReceiveCounterPreparation {
   readonly transcript: SpeculativeCounterTranscript;
   readonly counterStore: BrowserWalletCounterDexieStore;
   readonly counterContext: { readonly mintUrl: string; readonly unit: "msat" };
-  readonly rebuild: () => Promise<BrowserReceiveDraft>;
+  /** Prepare again under the custody owner that binds the draft. */
+  readonly rebuild: (owner: DurableCustodyOwnerAuthorization) => Promise<BrowserReceiveDraft>;
 }
 
 interface BrowserReceiveDraft {
@@ -182,9 +183,14 @@ export interface BrowserDurableWalletReceiveInput {
   readonly asset?: "regular" | "conditional";
   /** The decoded token proofs for conditional import. */
   readonly conditionalInputProofs?: readonly Proof[];
-  /** Run conditional keyset counter recovery while the profile lock is held. */
+  /**
+   * Run conditional keyset counter recovery while the profile lock is held.
+   * The owner is the custody owner that the receive claimed, or null when the
+   * preparation runs without one. Recovery admits recovered proofs under it.
+   */
   readonly ensureConditionalCounterReady?: (
     keyset: BrowserCustodyConditionalKeysetAuthority,
+    owner: DurableCustodyOwnerAuthorization | null,
   ) => Promise<void>;
   readonly wallet: BrowserDurableWalletReceiveWallet;
   readonly context: BrowserDurableWalletReceiveContext;
@@ -239,7 +245,7 @@ export async function receiveBrowserDurableWalletToken(
         }
         let draft: BrowserReceiveDraft | undefined;
         if (operation === undefined) {
-          draft = await prepareBrowserReceiveDraft(input, randomId);
+          draft = await prepareBrowserReceiveDraft(input, randomId, owner);
           operation = draft.operation;
         } else {
           draft = receiveDrafts.get(operation);
@@ -317,12 +323,13 @@ export async function prepareBrowserDurableWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
 ): Promise<DurableWalletReceiveOperation> {
-  return (await prepareBrowserReceiveDraft(input, randomId)).operation;
+  return (await prepareBrowserReceiveDraft(input, randomId, null)).operation;
 }
 
 async function prepareBrowserReceiveDraft(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
+  owner: DurableCustodyOwnerAuthorization | null,
 ): Promise<BrowserReceiveDraft> {
   requireProductMsatUnit(input.unit);
   input.context.requireCapturedProfile();
@@ -331,7 +338,7 @@ async function prepareBrowserReceiveDraft(
     operationId: input.operationId ?? `wallet-receive:${randomId()}`,
   };
   if (input.asset === "conditional") {
-    return prepareBrowserConditionalWalletReceiveOperation(operationInput, randomId);
+    return prepareBrowserConditionalWalletReceiveOperation(operationInput, randomId, owner);
   }
   const selected = input.wallet.getKeyset();
   if (
@@ -419,8 +426,12 @@ async function prepareBrowserReceiveDraft(
       counterCount: range.count,
     },
   });
-  const draft = makeReceiveDraft(operation, transcript, counterStore, counterContext, () =>
-    prepareBrowserReceiveDraft(operationInput, randomId),
+  const draft = makeReceiveDraft(
+    operation,
+    transcript,
+    counterStore,
+    counterContext,
+    (bindingOwner) => prepareBrowserReceiveDraft(operationInput, randomId, bindingOwner),
   );
   receiveDrafts.set(operation, draft);
   return draft;
@@ -429,6 +440,7 @@ async function prepareBrowserReceiveDraft(
 async function prepareBrowserConditionalWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
+  owner: DurableCustodyOwnerAuthorization | null,
 ): Promise<BrowserReceiveDraft> {
   const proofs = input.conditionalInputProofs;
   if (
@@ -495,7 +507,7 @@ async function prepareBrowserConditionalWalletReceiveOperation(
     throw new Error("browser conditional wallet receive output plan is unsupported");
   }
   const appAuthority = conditionalReceiveKeysetAuthority(input.mintUrl, keyset);
-  await input.ensureConditionalCounterReady(appAuthority);
+  await input.ensureConditionalCounterReady(appAuthority, owner);
   input.context.requireCapturedProfile();
   const scope = browserWalletScope(input.context.seed);
   const database = input.context.database ?? db;
@@ -539,8 +551,13 @@ async function prepareBrowserConditionalWalletReceiveOperation(
     },
   });
   const fixedInput = { ...input, operationId: operation.operationId };
-  const draft = makeReceiveDraft(operation, transcript, counterStore, counterContext, () =>
-    prepareBrowserConditionalWalletReceiveOperation(fixedInput, randomId),
+  const draft = makeReceiveDraft(
+    operation,
+    transcript,
+    counterStore,
+    counterContext,
+    (bindingOwner) =>
+      prepareBrowserConditionalWalletReceiveOperation(fixedInput, randomId, bindingOwner),
   );
   receiveDrafts.set(operation, draft);
   return draft;
@@ -618,7 +635,7 @@ function makeReceiveDraft(
   transcript: SpeculativeCounterTranscript,
   counterStore: BrowserWalletCounterDexieStore,
   counterContext: { readonly mintUrl: string; readonly unit: "msat" },
-  rebuild: () => Promise<BrowserReceiveDraft>,
+  rebuild: (owner: DurableCustodyOwnerAuthorization) => Promise<BrowserReceiveDraft>,
 ): BrowserReceiveDraft {
   return { operation, counterPreparation: { transcript, counterStore, counterContext, rebuild } };
 }
@@ -1098,7 +1115,7 @@ async function bindReceiveDraftWithRetry(
       ) {
         throw error;
       }
-      draft = await draft.counterPreparation.rebuild();
+      draft = await draft.counterPreparation.rebuild(owner);
     }
   }
   throw new Error("browser receive counter preparation did not commit");
