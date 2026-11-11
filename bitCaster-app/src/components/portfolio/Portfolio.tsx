@@ -11,7 +11,8 @@ import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
-import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import { seedPositionRestoreNoticeState } from "@/components/shared/SeedPositionRestoreNotice";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -125,8 +126,8 @@ function LoadMoreAssets({
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
   const [mainTab, setMainTab] = useState<MainTab>("positions");
-  // While a seed restore runs or failed, the position totals are not known.
-  const positionsRestoring = useSeedPositionRestoreStatus().kind !== "idle";
+  // While the wallet recovery checks, waits or failed, the position totals are not known.
+  const positionsRestoring = seedPositionRestoreNoticeState(useWalletRecoveryStatus()) !== "none";
   const positionsRequestKey = props.positionsRequest?.key;
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");

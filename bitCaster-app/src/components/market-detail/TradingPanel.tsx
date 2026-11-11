@@ -36,8 +36,11 @@ import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
-import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
-import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import {
+  SeedPositionRestoreNotice,
+  seedPositionRestoreNoticeState,
+} from "@/components/shared/SeedPositionRestoreNotice";
+import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
 
 function formatNullablePrice(
   price: number | null,
@@ -1033,8 +1036,9 @@ export function TradingPanel({
   );
   const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
   // One status read keeps the notice and the Sell availability consistent.
-  const restoreStatus = useSeedPositionRestoreStatus();
-  const positionsRestoring = restoreStatus.kind !== "idle";
+  const restoreStatus = useWalletRecoveryStatus();
+  const restoreNoticeState = seedPositionRestoreNoticeState(restoreStatus);
+  const positionsRestoring = restoreNoticeState !== "none";
   const selectedSellAvailability =
     isSell && tradeSelection !== null
       ? sellOutcomeAvailability(market, sellHoldings, tradeSelection, positionsRestoring)
@@ -1137,7 +1141,7 @@ export function TradingPanel({
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (isSell && selectedSellAvailability?.status === "restoring") {
       // A failed restore does not run, so its holdings are unavailable.
-      return restoreStatus.kind === "failed"
+      return restoreNoticeState === "failed"
         ? t("trade.sellHoldingsUnavailable")
         : t("portfolio.restoringPositions");
     }

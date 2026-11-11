@@ -1,30 +1,53 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  useSeedPositionRestoreStatus,
-  type SeedPositionRestoreStatus,
-} from "@/hooks/useSeedPositionRestoreStatus";
+import type { WalletRecoveryStatus } from "@bitcaster/client-sdk/walletRecoveryStatus";
 import { retryBrowserSeedPositionRestore } from "@/lib/browserSeedPositionRestore";
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 
+export type SeedPositionRestoreNoticeState = "none" | "restoring" | "failed";
+
 /**
- * Shows the automatic seed restore while it runs, and a retry after a
- * failure. A parent that hides empty states passes its own status, so both
- * use one read.
+ * How the restore notice shows a wallet recovery status. A recovery that is
+ * checking or pending shows the restoring notice. A failed recovery or a
+ * failed status read shows the error with Retry. Without an active wallet
+ * profile, the page shows its own wallet setup, so the notice shows nothing.
+ */
+export function seedPositionRestoreNoticeState(
+  status: WalletRecoveryStatus,
+): SeedPositionRestoreNoticeState {
+  switch (status.kind) {
+    case "completed":
+      return "none";
+    case "checking":
+    case "pending":
+      return "restoring";
+    case "unavailable":
+      return status.reason === "profile-unavailable" ? "none" : "failed";
+    default:
+      throw new Error(
+        `unknown wallet recovery status: ${JSON.stringify((status as { kind: unknown }).kind)}`,
+      );
+  }
+}
+
+/**
+ * Shows the automatic wallet recovery while it runs, and a retry after a
+ * failure. The parent passes the status that also hides its empty states, so
+ * both use one read.
  */
 export function SeedPositionRestoreNotice({
   className = "",
-  status: parentStatus,
+  status,
 }: {
   className?: string;
-  status?: SeedPositionRestoreStatus;
+  status: WalletRecoveryStatus;
 }) {
   const { t } = useTranslation();
-  const ownStatus = useSeedPositionRestoreStatus();
-  const status = parentStatus ?? ownStatus;
   const [retrying, setRetrying] = useState(false);
-  if (status.kind === "idle") return null;
-  if (status.kind === "restoring") {
+  const state = seedPositionRestoreNoticeState(status);
+  const scopeId = status.tag?.activation.scopeId ?? null;
+  if (state === "none" || scopeId === null) return null;
+  if (state === "restoring") {
     return (
       <p
         role="status"
@@ -42,8 +65,8 @@ export function SeedPositionRestoreNotice({
   const retry = async () => {
     setRetrying(true);
     try {
-      await retryBrowserSeedPositionRestore(status.scopeId);
-      publishBrowserCtfRangeRecoveryWake({ scopeId: status.scopeId });
+      await retryBrowserSeedPositionRestore(scopeId);
+      publishBrowserCtfRangeRecoveryWake({ scopeId });
     } finally {
       setRetrying(false);
     }

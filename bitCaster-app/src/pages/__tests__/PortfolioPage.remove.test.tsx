@@ -84,14 +84,20 @@ vi.mock("@/stores/wallet", () => ({
   },
 }));
 
-vi.mock("@/lib/browserWalletProfile", () => ({
-  activeBrowserWalletScopeId: () => cashuMocks.walletState.mnemonic,
-  browserWalletIdFromMnemonic: (mnemonic: string) =>
-    mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64),
-  isActiveBrowserWalletId: (walletId: string, mnemonic: string) =>
-    mnemonic === cashuMocks.walletState.mnemonic &&
-    walletId === (mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64)),
-}));
+vi.mock("@/lib/browserWalletProfile", () => {
+  // The wallet recovery status reads the activation. No profile is active here.
+  const noActivation = Object.freeze({ scopeId: null, epoch: 0 });
+  return {
+    activeBrowserWalletScopeId: () => cashuMocks.walletState.mnemonic,
+    activeBrowserWalletActivation: () => noActivation,
+    subscribeBrowserWalletActivation: () => () => {},
+    browserWalletIdFromMnemonic: (mnemonic: string) =>
+      mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64),
+    isActiveBrowserWalletId: (walletId: string, mnemonic: string) =>
+      mnemonic === cashuMocks.walletState.mnemonic &&
+      walletId === (mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64)),
+  };
+});
 
 // usePortfolioState is heavy (Dexie live queries + fetch); supply fixed state.
 let mockPositions: Position[] = [];

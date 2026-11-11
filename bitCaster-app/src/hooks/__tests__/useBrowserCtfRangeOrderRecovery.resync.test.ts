@@ -131,7 +131,7 @@ import {
   advanceWalletKeysetCounterPastMint,
   ensureWalletKeysetCounterReady,
 } from "@/lib/cashu";
-import { readSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
 import { useBrowserCtfRangeOrderRecovery } from "../useBrowserCtfRangeOrderRecovery";
 
 // The passes derive and verify real NUT-13 outputs. Under CPU load they can
@@ -461,9 +461,11 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await resync(start + 2 * HOUR_MS);
     expect(mint.restoredOutputs()).toHaveLength(probes);
     expect((await resyncRow(market.yes.id))?.failures).toBe(3);
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "failed",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: "recovery-failed",
     });
 
     // Retry clears the backoff, and the deferral is admitted.
@@ -471,7 +473,9 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await retryBrowserSeedPositionRestore(scopeId());
     await resync(start + 2 * HOUR_MS + 1_000);
     expect(await selectableHoldings()).toContainEqual(position(market.yes, 2));
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({ kind: "idle" });
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({ kind: "completed" });
   });
 
   it("advances the cursor and keeps found outputs for a later pass when admission fails", async () => {

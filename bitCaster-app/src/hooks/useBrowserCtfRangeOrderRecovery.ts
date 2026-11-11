@@ -21,6 +21,12 @@ import {
   resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass,
 } from "@/lib/browserSeedPositionRestore";
+import {
+  beginWalletRecoveryPass,
+  walletRecoveryTag,
+  type WalletRecoveryPassWriter,
+  type WalletRecoveryStageOutcome,
+} from "@/lib/walletRecoveryPassSummary";
 import { useToastStore, type Toast } from "@/stores/toast";
 import i18n from "@/i18n";
 
@@ -40,6 +46,18 @@ function earliest(left: number | null, right: number | null): number | null {
 }
 
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+const STAGE_COMPLETED: WalletRecoveryStageOutcome = { state: "completed" };
+/** A stage that waits is retried with the pass. */
+const stageWaits = (reason: "operation" | "scan-continues"): WalletRecoveryStageOutcome => ({
+  state: "pending",
+  reason,
+  retryAtMs: Date.now() + RANGE_RECOVERY_RETRY_MS,
+});
+const stageFailed = (): WalletRecoveryStageOutcome => ({
+  state: "failed",
+  retryAtMs: Date.now() + RANGE_RECOVERY_RETRY_MS,
+});
 
 const activationEpoch = () => activeBrowserWalletActivation().epoch;
 
@@ -65,6 +83,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
     if (scopeId === null) return;
     const mintUrls = walletMintUrls.split("\n").filter(Boolean);
+    // The display-only pass summary of the recovery status (issue #161).
+    const summaryTag = walletRecoveryTag({ scopeId, epoch }, mintUrls);
+    let summary: WalletRecoveryPassWriter | null = null;
     let cancelled = false;
     let running = false;
     let rerunRequested = false;
@@ -101,6 +122,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         return;
       }
       running = true;
+      const pass = beginWalletRecoveryPass(summaryTag, isCurrent);
+      summary = pass;
+      let passRan = false;
       let retryRequired = false;
       let restoreMore = false;
       // The re-sync and the restore keep their own durable backoffs.
@@ -116,8 +140,13 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             receiveRecoveryAfterOperationId = result.lastAttemptedOperationId;
             receivesRecovered = result.pending === 0;
             retryRequired ||= !receivesRecovered;
+            pass.walletStage(
+              "receives",
+              receivesRecovered ? STAGE_COMPLETED : stageWaits("operation"),
+            );
           } catch {
             retryRequired = true;
+            pass.walletStage("receives", stageFailed());
           }
         }
         if (!isCurrent()) return;
@@ -126,13 +155,16 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             const result = await recoverPendingWalletMints();
             mintsRecovered = result.pending === 0;
             retryRequired ||= !mintsRecovered;
+            pass.walletStage("mints", mintsRecovered ? STAGE_COMPLETED : stageWaits("operation"));
           } catch {
             retryRequired = true;
+            pass.walletStage("mints", stageFailed());
           }
         }
         if (!isCurrent()) return;
         if (deferBrowserCtfRangeOrderRecovery(scopeId)) {
           retryRequired = true;
+          pass.walletStage("rangeOrders", stageWaits("operation"));
         } else {
           try {
             const result = await recoverBrowserCtfRangeOrders({
@@ -140,8 +172,13 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               mintUrls,
             });
             retryRequired ||= result.pending.length > 0;
+            pass.walletStage(
+              "rangeOrders",
+              result.pending.length > 0 ? stageWaits("operation") : STAGE_COMPLETED,
+            );
           } catch {
             retryRequired = true;
+            pass.walletStage("rangeOrders", stageFailed());
           }
         }
         if (!isCurrent()) return;
@@ -151,16 +188,28 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             passCutoffMs: Date.now(),
           });
           retryRequired ||= result.pending > 0 || result.hasMore;
+          pass.walletStage(
+            "outgoing",
+            result.pending > 0
+              ? stageWaits("operation")
+              : result.hasMore
+                ? stageWaits("scan-continues")
+                : STAGE_COMPLETED,
+          );
         } catch {
           retryRequired = true;
+          pass.walletStage("outgoing", stageFailed());
         }
         if (!isCurrent()) return;
         if (!countersRecovered) {
+          let counterMintUrl: string | null = null;
           try {
             let complete = true;
             for (const mintUrl of mintUrls) {
+              counterMintUrl = mintUrl;
               const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
               if (!isCurrent()) return;
+              pass.regularCounters(mintUrl, result, Date.now() + RANGE_RECOVERY_RETRY_MS);
               // A PENDING proof waits in its deferral marker, which the
               // re-sync retries with a backoff. Only a failure retries here.
               complete &&= result.complete || result.failed === false;
@@ -169,14 +218,19 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             retryRequired ||= !complete;
           } catch {
             retryRequired = true;
+            if (counterMintUrl !== null) {
+              pass.regularCounters(counterMintUrl, "error", Date.now() + RANGE_RECOVERY_RETRY_MS);
+            }
           }
         }
         if (!isCurrent()) return;
         // Another client with this seed can sign outputs above the local
         // cursors. The re-sync probes only after evidence of another client,
         // and admits deferred outputs when their backoff ends (ADR-033).
+        let resyncMintUrl: string | null = null;
         try {
           for (const mintUrl of mintUrls) {
+            resyncMintUrl = mintUrl;
             const result = await resyncBrowserKeysetsInUse({
               scopeId,
               mnemonic: walletMnemonic,
@@ -184,6 +238,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               yieldControl: yieldToBrowser,
             });
             if (!isCurrent()) return;
+            // The re-sync rows show its deferrals and probes.
+            pass.resyncPass(mintUrl, STAGE_COMPLETED);
             retryAtMs = earliest(retryAtMs, result.retryAtMs);
             if (result.usedElsewhere && !usedElsewhereShown) {
               usedElsewhereShown = true;
@@ -192,12 +248,15 @@ export function useBrowserCtfRangeOrderRecovery(input: {
           }
         } catch {
           retryRequired = true;
+          if (resyncMintUrl !== null) pass.resyncPass(resyncMintUrl, stageFailed());
         }
         if (!isCurrent()) return;
         // The automatic seed restore event (ADR-039, amendment 2026-11-04).
         let hintsSettled = true;
+        let restoreMintUrl: string | null = null;
         try {
           for (const mintUrl of mintUrls) {
+            restoreMintUrl = mintUrl;
             const result = await runBrowserSeedPositionRestorePass({
               scopeId,
               mnemonic: walletMnemonic,
@@ -205,6 +264,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               yieldControl: yieldToBrowser,
             });
             if (!isCurrent()) return;
+            pass.seedRestorePass(mintUrl, result, Date.now() + SEED_RESTORE_CONTINUE_MS);
             restoreMore ||= result.status === "more";
             retryAtMs = earliest(retryAtMs, result.retryAtMs);
             hintsSettled &&= result.hintsSettled;
@@ -212,11 +272,19 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         } catch {
           hintsSettled = false;
           retryRequired = true;
+          if (restoreMintUrl !== null) {
+            pass.seedRestorePass(restoreMintUrl, "error", Date.now() + RANGE_RECOVERY_RETRY_MS);
+          }
         }
+        passRan = true;
         // The first asset-monitoring report waits for the earlier report's hints.
         if (hintsSettled) releaseBrowserSeedPositionRestoreGate(scopeId);
       } finally {
         running = false;
+        // A pass that stopped early is dropped with every summary write.
+        if (passRan) pass.complete();
+        else pass.discard();
+        if (summary === pass) summary = null;
         if (!isCurrent()) return;
         resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
         if (rerunRequested) {
@@ -240,6 +308,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     return () => {
       cancelled = true;
       rerunRequested = false;
+      summary?.discard();
       clearRetry();
       window.removeEventListener("online", onOnline);
       stopRecoveryWake();

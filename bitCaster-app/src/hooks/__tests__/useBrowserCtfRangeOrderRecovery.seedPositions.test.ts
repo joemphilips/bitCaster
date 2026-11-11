@@ -143,7 +143,7 @@ import {
   retryBrowserSeedPositionRestore,
   runBrowserSeedPositionRestorePass,
 } from "@/lib/browserSeedPositionRestore";
-import { readSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
 import { useBrowserCtfRangeOrderRecovery } from "../useBrowserCtfRangeOrderRecovery";
 
 // The pass derives and verifies real NUT-13 outputs. Under CPU load it can
@@ -417,18 +417,21 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(first.status).not.toBe("complete");
     expect(first.retryAtMs).not.toBeNull();
     expect((await restoreState())?.initialCompletedAtMs).toBeNull();
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "restoring",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "pending",
     });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       nowMs += HOUR_MS;
       await restorePass(now);
     }
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "failed",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: "recovery-failed",
     });
 
     // Retry clears the failed listing at once.
@@ -438,7 +441,9 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect((await restorePass(now)).status).toBe("complete");
 
     expect(await selectableHoldings()).toEqual([position(failing.no, 4)]);
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({ kind: "idle" });
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({ kind: "completed" });
   });
 
   it("keeps restoring while a keyset scan fails", async () => {
@@ -510,9 +515,16 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(mint.requests).toHaveLength(requests);
     // A denied start leaves no restore record, so the next pass claims again.
     expect(await restoreState()).toBeUndefined();
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "restoring",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({
+        scopeId: scopeId(),
+        mintUrls: [MINT_URL],
+        seedRestore: capped,
+      }),
+    ).toMatchObject({
+      kind: "pending",
+      reason: "start-limit",
+      retryAtMs: firstStart + DAY_MS,
     });
 
     nowMs = firstStart + DAY_MS;
@@ -618,9 +630,11 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
       await restorePass(now);
     }
     // The saved cursor is stale, so every pass fails.
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "failed",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: "recovery-failed",
     });
 
     await retryBrowserSeedPositionRestore(scopeId());

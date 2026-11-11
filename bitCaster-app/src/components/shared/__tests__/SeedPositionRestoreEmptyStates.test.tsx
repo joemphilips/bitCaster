@@ -4,19 +4,39 @@ import { PositionsList } from "@/components/portfolio/PositionsList";
 import { StatsRow } from "@/components/portfolio/StatsRow";
 import { Portfolio } from "@/components/portfolio/Portfolio";
 import { TradingPanel } from "@/components/market-detail/TradingPanel";
-import type { SeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import type { WalletRecoveryStatus } from "@bitcaster/client-sdk/walletRecoveryStatus";
 import type { SellHoldingsState, YesNoMarketDetail } from "@/types/market-detail";
 import type { PortfolioStats } from "@/types/portfolio";
 
-// While the automatic seed restore runs or failed (ADR-039), a zero holding is
-// not known to be zero. The restore notice replaces the empty states.
+// While the wallet recovery checks, waits or failed (issue #161), a zero
+// holding is not known to be zero. The restore notice replaces the empty states.
+
+const TAG = { activation: { scopeId: "scope", epoch: 1 }, mintSetTag: "[]" };
+const COMPLETED: WalletRecoveryStatus = {
+  kind: "completed",
+  tag: TAG,
+  passSeq: 1,
+  coverage: "full",
+};
+const PENDING: WalletRecoveryStatus = {
+  kind: "pending",
+  tag: TAG,
+  reason: "scan-continues",
+  retryAtMs: null,
+};
+const FAILED: WalletRecoveryStatus = {
+  kind: "unavailable",
+  tag: TAG,
+  reason: "recovery-failed",
+  retryable: true,
+};
 
 const restore = vi.hoisted(() => ({
-  status: { kind: "idle" } as SeedPositionRestoreStatus,
+  status: null as unknown as WalletRecoveryStatus,
 }));
 
-vi.mock("@/hooks/useSeedPositionRestoreStatus", () => ({
-  useSeedPositionRestoreStatus: () => restore.status,
+vi.mock("@/hooks/useWalletRecoveryStatus", () => ({
+  useWalletRecoveryStatus: () => restore.status,
 }));
 
 const market: YesNoMarketDetail = {
@@ -83,13 +103,19 @@ function renderSell() {
 
 describe("empty states during the seed restore", () => {
   beforeEach(() => {
-    restore.status = { kind: "idle" };
+    restore.status = COMPLETED;
   });
 
   it.each([
-    { kind: "restoring", scopeId: "scope", text: "Restoring positions…" },
-    { kind: "failed", scopeId: "scope", text: "Positions could not be restored from the mint." },
-  ] as const)("shows the $kind notice instead of an empty position list", ({ text, ...status }) => {
+    { name: "checking", status: { kind: "checking", tag: TAG }, text: "Restoring positions…" },
+    { name: "pending", status: PENDING, text: "Restoring positions…" },
+    { name: "failed", status: FAILED, text: "Positions could not be restored from the mint." },
+    {
+      name: "read-failed",
+      status: { kind: "unavailable", tag: TAG, reason: "read-failed", retryable: true },
+      text: "Positions could not be restored from the mint.",
+    },
+  ] as const)("shows the $name notice instead of an empty position list", ({ status, text }) => {
     restore.status = status;
 
     render(<PositionsList positions={[]} positionsTab="active" />);
@@ -100,11 +126,26 @@ describe("empty states during the seed restore", () => {
     expect(screen.getByRole("tab", { name: "Closed" })).toBeInTheDocument();
   });
 
-  it("shows the empty list and its zero counts after the restore", () => {
+  it.each([
+    { name: "after the restore", status: COMPLETED },
+    {
+      name: "without an active wallet profile",
+      status: {
+        kind: "unavailable",
+        tag: null,
+        reason: "profile-unavailable",
+        retryable: false,
+      } as const,
+    },
+  ])("shows the empty list and its zero counts $name", ({ status }) => {
+    restore.status = status;
+
     render(<PositionsList positions={[]} positionsTab="active" />);
 
     expect(screen.getByText("No active positions")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Active (0)" })).toBeInTheDocument();
+    expect(screen.queryByTestId("seed-restore-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("seed-restore-error")).not.toBeInTheDocument();
   });
 
   it("does not show zero position totals while the restore runs", () => {
@@ -125,7 +166,7 @@ describe("empty states during the seed restore", () => {
   });
 
   it("does not report zero held shares in the Sell panel while the restore runs", () => {
-    restore.status = { kind: "restoring", scopeId: "scope" };
+    restore.status = PENDING;
 
     renderSell();
 
@@ -136,7 +177,7 @@ describe("empty states during the seed restore", () => {
   });
 
   it("does not show a partial total on the Portfolio page while the restore runs", () => {
-    restore.status = { kind: "restoring", scopeId: "scope" };
+    restore.status = PENDING;
 
     render(
       <Portfolio
@@ -159,7 +200,7 @@ describe("empty states during the seed restore", () => {
   });
 
   it("names unavailable holdings in the Sell panel after the restore failed", () => {
-    restore.status = { kind: "failed", scopeId: "scope" };
+    restore.status = FAILED;
 
     renderSell();
 

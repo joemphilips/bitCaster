@@ -161,7 +161,7 @@ import {
   WalletKeysetCounterReadinessError,
 } from "../cashu";
 import { retryBrowserSeedPositionRestore } from "../browserSeedPositionRestore";
-import { readSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
 
 describe("recoverKeysetCountersForMint — canonical custody", () => {
   let database: BitcasterDB | null = null;
@@ -831,9 +831,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       pendingFromCounter: capped,
       waitReason: "scan-budget",
     });
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "failed",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: "recovery-failed",
     });
 
     // The deferral pass sends no mint request for a capped continuation.
@@ -855,7 +857,9 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       nextAttemptAtMs: 0,
       scanContinuations: 0,
     });
-    expect((await readSeedPositionRestoreStatus(scopeId())).kind).not.toBe("failed");
+    expect(
+      (await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] })).kind,
+    ).not.toBe("unavailable");
     await recoverKeysetCountersForMint(MINT_URL, { unit: "msat", keysetId: KEYSET_ID });
     expect(requestedOutputs(0)[0]!.B_).toBe(outputOf(KEYSET_ID, capped));
   }, 30_000);

@@ -4,8 +4,11 @@ import type { Position, PortfolioProps } from "@/types/portfolio";
 import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
-import { SeedPositionRestoreNotice } from "@/components/shared/SeedPositionRestoreNotice";
-import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import {
+  SeedPositionRestoreNotice,
+  seedPositionRestoreNoticeState,
+} from "@/components/shared/SeedPositionRestoreNotice";
+import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
 
 interface PositionsListProps {
   positions: Position[];
@@ -43,9 +46,9 @@ export function PositionsList({
   onPositionsRequestHandled,
 }: PositionsListProps) {
   const { t } = useTranslation();
-  // While a seed restore runs or failed, an empty list is not known to be empty.
-  const restoreStatus = useSeedPositionRestoreStatus();
-  const restoring = restoreStatus.kind !== "idle";
+  // While the wallet recovery checks, waits or failed, an empty list is not known to be empty.
+  const restoreStatus = useWalletRecoveryStatus();
+  const restoring = seedPositionRestoreNoticeState(restoreStatus) !== "none";
   const filtered = positions.filter((p) => p.status === positionsTab);
   // One row for each market ID owns the anchor. The same collection can be
   // held at more than one mint, and a DOM ID must be unique.
