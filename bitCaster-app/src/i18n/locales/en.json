@@ -90,7 +90,18 @@
     "replaceBlockedBackup": "The current wallet lacks a current backup for every asset. Complete and acknowledge the backup before replacing it.",
     "replaceBlockedActiveWork": "A wallet operation is unfinished. Finish or recover it before replacing the wallet.",
     "replaceBlockedBrowserLock": "This browser cannot safely lock the wallet. Keep this wallet and retry in a browser that supports wallet locking.",
-    "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept."
+    "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept.",
+    "recovery": {
+      "checking": "Checking wallet…",
+      "restoring": "Restoring wallet…",
+      "waitingForMint": "Waiting for the mint…",
+      "resumesAt": "Recovery resumes at {{time}}",
+      "failed": "Wallet recovery failed.",
+      "readFailed": "Wallet data could not be read.",
+      "profileUnavailable": "The wallet is not open.",
+      "reload": "Reload",
+      "restoreFromSeed": "Restore from seed"
+    }
   },
   "walletBackupRecovery": {
     "changeAccount": "Open ID settings",
@@ -462,9 +473,6 @@
     "predictions": "Predictions",
     "noPositions": "No {{tab}} positions",
     "noActivePositions": "No active positions",
-    "restoringPositions": "Restoring positions…",
-    "restorePositionsFailed": "Positions could not be restored from the mint.",
-    "restorePositionsRetry": "Retry",
     "noClosedPositions": "No closed positions",
     "won": "Won",
     "lost": "Lost",

@@ -22,6 +22,7 @@ vi.mock("../usePortfolioState", async () => {
         stats: { positionsValueSats: 0, totalValueSats: 0, predictionsCount: 0 },
         positions: controlled.positions,
         funds: [],
+        holdings: { funds: { kind: "unhydrated" }, positions: { kind: "unhydrated" } },
         activity: [],
         createdMarkets: [],
         positionsTab,

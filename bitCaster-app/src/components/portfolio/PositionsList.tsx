@@ -4,14 +4,17 @@ import type { Position, PortfolioProps } from "@/types/portfolio";
 import { portfolioPositionAnchorId } from "@/lib/portfolioRoute";
 import { PositionRow } from "./PositionRow";
 import { ClaimCelebrationRow } from "./ClaimCelebrationRow";
-import {
-  SeedPositionRestoreNotice,
-  seedPositionRestoreNoticeState,
-} from "@/components/shared/SeedPositionRestoreNotice";
-import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import type {
+  WalletRecoveryHoldingsRead,
+  WalletRecoveryStatus,
+} from "@bitcaster/client-sdk/walletRecoveryStatus";
+import { walletRecoveryRowsEmptyIsTerminal } from "@/lib/walletRecoveryDisplay";
 
 interface PositionsListProps {
   positions: Position[];
+  /** The local read behind `positions`. */
+  read: WalletRecoveryHoldingsRead<Position>;
+  recoveryStatus: WalletRecoveryStatus;
   positionsTab: "active" | "closed";
   onPositionsTabChange?: (tab: "active" | "closed") => void;
   onSellPosition?: (positionId: string) => void;
@@ -31,6 +34,8 @@ interface PositionsListProps {
 
 export function PositionsList({
   positions,
+  read,
+  recoveryStatus,
   positionsTab,
   onPositionsTabChange,
   onSellPosition,
@@ -46,10 +51,9 @@ export function PositionsList({
   onPositionsRequestHandled,
 }: PositionsListProps) {
   const { t } = useTranslation();
-  // While the wallet recovery checks, waits or failed, an empty list is not known to be empty.
-  const restoreStatus = useWalletRecoveryStatus();
-  const restoring = seedPositionRestoreNoticeState(restoreStatus) !== "none";
-  const filtered = positions.filter((p) => p.status === positionsTab);
+  // An empty tab is known to be empty only after the recovery and a later read.
+  const tabRows = (tab: "active" | "closed") => positions.filter((p) => p.status === tab);
+  const filtered = tabRows(positionsTab);
   // One row for each market ID owns the anchor. The same collection can be
   // held at more than one mint, and a DOM ID must be unique.
   const anchoredMarketIds = new Set<string>();
@@ -71,7 +75,7 @@ export function PositionsList({
       {/* Sub-tabs */}
       <div className="flex gap-1 mb-3" role="tablist">
         {(["active", "closed"] as const).map((tab) => {
-          const count = positions.filter((p) => p.status === tab).length;
+          const rows = tabRows(tab);
           return (
             <button
               key={tab}
@@ -85,20 +89,20 @@ export function PositionsList({
               }`}
             >
               {t(`common.${tab}`)}
-              {restoring && count === 0 ? null : ` (${count})`}
+              {rows.length === 0 && !walletRecoveryRowsEmptyIsTerminal(recoveryStatus, read, rows)
+                ? null
+                : ` (${rows.length})`}
             </button>
           );
         })}
       </div>
-
-      <SeedPositionRestoreNotice className="mb-3" status={restoreStatus} />
 
       {/* Position List */}
       {claimCelebrations.map((celebration) => (
         <ClaimCelebrationRow key={celebration.id} celebration={celebration} />
       ))}
       {filtered.length === 0 && claimCelebrations.length === 0 ? (
-        restoring ? null : (
+        !walletRecoveryRowsEmptyIsTerminal(recoveryStatus, read, filtered) ? null : (
           <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
             {positionsTab === "active"
               ? t("portfolio.noActivePositions")

@@ -16,6 +16,25 @@ import type {
   CreatedMarket,
 } from "@/types/portfolio";
 
+// The wallet recovery completed, and each local read began after it. An
+// empty list is then final (issue #161).
+const recovery = vi.hoisted(() => {
+  const tag = { activation: { scopeId: "scope", epoch: 1 }, mintSetTag: "[]" };
+  return {
+    tag,
+    status: { kind: "completed", tag, passSeq: 1, coverage: "full" } as const,
+  };
+});
+
+vi.mock("@/hooks/useWalletRecoveryStatus", () => ({
+  useWalletRecoveryStatus: () => recovery.status,
+  useWalletProfileExpected: () => true,
+}));
+
+function currentRead<T>(value: readonly T[]) {
+  return { kind: "ok", tag: recovery.tag, afterPassSeq: 1, value } as const;
+}
+
 const mockProfile: UserProfile = {
   displayName: "SatoshiTrader",
   avatarUrl: null,
@@ -165,6 +184,8 @@ const mockCreatedMarkets: CreatedMarket[] = [
 ];
 
 function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
+  const positions = overrides.positions ?? mockPositions;
+  const funds = overrides.funds ?? mockFunds;
   const defaultProps: PortfolioProps = {
     walletState: "ready",
     baseCurrency: "BTC",
@@ -172,8 +193,9 @@ function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
     profile: mockProfile,
     plChartData: mockPLData,
     stats: mockStats,
-    positions: mockPositions,
-    funds: mockFunds,
+    positions,
+    funds,
+    holdings: { funds: currentRead(funds), positions: currentRead(positions) },
     activity: mockActivity,
     createdMarkets: mockCreatedMarkets,
     positionsTab: "active",

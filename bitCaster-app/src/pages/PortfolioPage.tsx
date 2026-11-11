@@ -533,6 +533,7 @@ export function PortfolioPage() {
         stats={state.stats}
         positions={state.positions}
         funds={state.funds}
+        holdings={state.holdings}
         activity={state.activity}
         createdMarkets={state.createdMarkets}
         positionsTab={state.positionsTab}

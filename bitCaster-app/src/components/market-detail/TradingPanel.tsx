@@ -36,11 +36,9 @@ import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
 import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
-import {
-  SeedPositionRestoreNotice,
-  seedPositionRestoreNoticeState,
-} from "@/components/shared/SeedPositionRestoreNotice";
-import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
+import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import { walletRecoveryDisplay, walletRecoveryHoldingsUnknown } from "@/lib/walletRecoveryDisplay";
 
 function formatNullablePrice(
   price: number | null,
@@ -1035,10 +1033,12 @@ export function TradingPanel({
     tradeAmount > 0 ? String(tradeAmount) : "",
   );
   const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
-  // One status read keeps the notice and the Sell availability consistent.
-  const restoreStatus = useWalletRecoveryStatus();
-  const restoreNoticeState = seedPositionRestoreNoticeState(restoreStatus);
-  const positionsRestoring = restoreNoticeState !== "none";
+  // One status read keeps the status row and the Sell availability consistent.
+  const recoveryDisplay = walletRecoveryDisplay({
+    status: useWalletRecoveryStatus(),
+    profileExpected: useWalletProfileExpected(),
+  });
+  const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
   const selectedSellAvailability =
     isSell && tradeSelection !== null
       ? sellOutcomeAvailability(market, sellHoldings, tradeSelection, positionsRestoring)
@@ -1140,10 +1140,12 @@ export function TradingPanel({
     if (!walletReady) return t("wallet.startTrading");
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (isSell && selectedSellAvailability?.status === "restoring") {
-      // A failed restore does not run, so its holdings are unavailable.
-      return restoreNoticeState === "failed"
+      // An unavailable recovery does not run, so its holdings are unavailable.
+      return recoveryDisplay.state === "unavailable"
         ? t("trade.sellHoldingsUnavailable")
-        : t("portfolio.restoringPositions");
+        : recoveryDisplay.state === "checking"
+          ? t("wallet.recovery.checking")
+          : t("wallet.recovery.restoring");
     }
     if (isSell && selectedSellAmountUnavailable) {
       return selectedSellStatusMessage ?? t("trade.sellHoldingsUnavailable");
@@ -1286,7 +1288,7 @@ export function TradingPanel({
       ) : (
         <>
           {activeTradeSide === "Sell" && (
-            <SeedPositionRestoreNotice className="mb-3" status={restoreStatus} />
+            <WalletRecoveryStatusRow className="mb-3" display={recoveryDisplay} />
           )}
           {/* Outcomes based on market type */}
           {market.type === "yesno" && (

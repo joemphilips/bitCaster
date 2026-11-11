@@ -1,3 +1,4 @@
+import type { WalletRecoveryHoldingsRead } from "@bitcaster/client-sdk/walletRecoveryStatus";
 import type { NostrProfileFetchStatus } from "./settings";
 
 // =============================================================================
@@ -65,6 +66,16 @@ export interface PortfolioMonitoringState {
   hasMoreAssets: boolean;
   loadingMoreAssets: boolean;
   liveUpdateCoverageLimited: boolean;
+}
+
+/**
+ * The local wallet reads behind the Funds and Positions lists (issue #161).
+ * An empty list is final only for a read that the wallet recovery status
+ * permits. The shown rows can also hold the display-only projection.
+ */
+export interface PortfolioHoldingsReads {
+  funds: WalletRecoveryHoldingsRead<Fund>;
+  positions: WalletRecoveryHoldingsRead<Position>;
 }
 
 // =============================================================================
@@ -249,8 +260,14 @@ export interface PortfolioProps {
   /** Activity feed (deposits, withdrawals, trades, payouts, fees) */
   activity: ActivityDisplayItem[];
 
-  /** Base ecash fund balances */
+  /**
+   * Base ecash fund balances. While the local read is not `ok`, these rows
+   * are the display-only projection.
+   */
   funds: Fund[];
+
+  /** The local reads behind `funds` and `positions`. */
+  holdings: PortfolioHoldingsReads;
 
   /** Markets created by the user */
   createdMarkets: CreatedMarket[];

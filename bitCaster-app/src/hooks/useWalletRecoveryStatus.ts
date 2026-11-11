@@ -373,8 +373,19 @@ function activeWalletScopeId(mnemonic: string, activeScopeId: string | null): st
   }
 }
 
+/**
+ * True when this browser holds a set-up wallet. Then a missing wallet profile
+ * is an error that the status row reports. A visitor without a wallet sees
+ * the wallet setup instead.
+ */
+export function useWalletProfileExpected(): boolean {
+  return useSyncExternalStore(subscribeToWallet, readWalletExpected, readWalletExpected);
+}
+
 type WalletStoreLike = {
-  getState?: () => { mnemonic?: string; mints?: readonly { url: string }[] } | undefined;
+  getState?: () =>
+    | { mnemonic?: string; setupComplete?: boolean; mints?: readonly { url: string }[] }
+    | undefined;
   subscribe?: (listener: () => void) => () => void;
 };
 
@@ -386,4 +397,9 @@ function readWalletKey(): string {
   const state = (useWalletStore as unknown as WalletStoreLike).getState?.();
   const mints = (state?.mints ?? []).map(({ url }) => url).join("\n");
   return `${state?.mnemonic ?? ""}\u0000${mints}`;
+}
+
+function readWalletExpected(): boolean {
+  const state = (useWalletStore as unknown as WalletStoreLike).getState?.();
+  return state?.setupComplete === true && (state.mnemonic ?? "") !== "";
 }

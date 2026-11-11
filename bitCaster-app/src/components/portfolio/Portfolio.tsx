@@ -11,8 +11,9 @@ import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
-import { useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
-import { seedPositionRestoreNoticeState } from "@/components/shared/SeedPositionRestoreNotice";
+import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
+import { walletRecoveryDisplay, walletRecoveryHoldingsUnknown } from "@/lib/walletRecoveryDisplay";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -126,8 +127,16 @@ function LoadMoreAssets({
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
   const [mainTab, setMainTab] = useState<MainTab>("positions");
-  // While the wallet recovery checks, waits or failed, the position totals are not known.
-  const positionsRestoring = seedPositionRestoreNoticeState(useWalletRecoveryStatus()) !== "none";
+  // One status read gates the status row, the empty states and the totals.
+  const recoveryStatus = useWalletRecoveryStatus();
+  const profileExpected = useWalletProfileExpected();
+  const recoveryDisplay = walletRecoveryDisplay({
+    status: recoveryStatus,
+    profileExpected,
+    reads: [props.holdings.funds, props.holdings.positions],
+  });
+  // While the wallet recovery checks, waits or failed, the totals are not known.
+  const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
   const positionsRequestKey = props.positionsRequest?.key;
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");
@@ -223,6 +232,8 @@ export function Portfolio(props: PortfolioProps) {
         </button>
       </div>
 
+      <WalletRecoveryStatusRow display={recoveryDisplay} />
+
       {/* Main Tabs: Positions | Funds | Activity */}
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
         <div className="flex border-b border-slate-200 dark:border-slate-700" role="tablist">
@@ -251,6 +262,8 @@ export function Portfolio(props: PortfolioProps) {
             <>
               <PositionsList
                 positions={props.positions}
+                read={props.holdings.positions}
+                recoveryStatus={recoveryStatus}
                 positionsTab={props.positionsTab}
                 onPositionsTabChange={props.onPositionsTabChange}
                 onSellPosition={props.onSellPosition}
@@ -278,7 +291,11 @@ export function Portfolio(props: PortfolioProps) {
           )}
           {mainTab === "funds" && (
             <>
-              <FundsList funds={props.funds} />
+              <FundsList
+                funds={props.funds}
+                read={props.holdings.funds}
+                recoveryStatus={recoveryStatus}
+              />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
             </>
           )}

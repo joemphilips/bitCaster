@@ -1,4 +1,4 @@
-import { playwright } from "@vitest/browser-playwright";
+import { defineBrowserCommand, playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
@@ -20,6 +20,16 @@ export default mergeConfig(
           contextOptions: { viewport: { width: 1600, height: 2600 } },
         }),
         headless: true,
+        commands: {
+          // A component test checks its prefers-reduced-motion style.
+          setReducedMotion: defineBrowserCommand(
+            async ({ page }, reducedMotion: "reduce" | "no-preference") => {
+              if (reducedMotion !== "reduce" && reducedMotion !== "no-preference")
+                throw new Error("Invalid motion preference");
+              await page.emulateMedia({ reducedMotion });
+            },
+          ),
+        },
         instances: [{ browser: "chromium" }],
       },
     },

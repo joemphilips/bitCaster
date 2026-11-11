@@ -116,6 +116,7 @@ vi.mock("../usePortfolioState", () => ({
     },
     positions: mockPositions,
     funds: [],
+    holdings: { funds: { kind: "unhydrated" }, positions: { kind: "unhydrated" } },
     activity: [],
     createdMarkets: [],
     positionsTab: "closed" as const,

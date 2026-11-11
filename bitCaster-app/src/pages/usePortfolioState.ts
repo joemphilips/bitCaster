@@ -41,6 +41,7 @@ import type {
   ActivityDisplayItem,
   CreatedMarket,
   PortfolioMonitoringState,
+  PortfolioHoldingsReads,
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
@@ -66,6 +67,11 @@ import { observePortfolioValuations } from "@/lib/marketHub";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
 import { loadMarketCatalogue } from "@/lib/marketCatalogueBatches";
+import { useWalletRecoveryReadPosition } from "@/hooks/useWalletRecoveryReadPosition";
+import type {
+  WalletRecoveryHoldingsRead,
+  WalletRecoveryTag,
+} from "@bitcaster/client-sdk/walletRecoveryStatus";
 
 /**
  * A price or closure notice arrives before the engine valuation view applies
@@ -153,14 +159,39 @@ function mergeAutomaticPortfolioReadKinds(
   return pending === null || pending === requested ? requested : "notification";
 }
 
-type PortfolioPositionSnapshot = {
+/** Where a local holdings read began (issue #161). */
+type LocalHoldingsReadStart = {
   scopeId: string;
-  positions: Position[];
+  tag: WalletRecoveryTag;
+  /** The latest completed recovery pass when the read began. */
+  afterPassSeq: number;
+};
+
+type PortfolioPositionSnapshot = LocalHoldingsReadStart & {
+  /** Null when the canonical custody read was unavailable or failed. */
+  positions: Position[] | null;
   marketCatalogue: Map<string, MarketCatalogueEntry>;
   /** Conditions whose catalogue read completed. A missing market is still read. */
   catalogueConditionIds: ReadonlySet<string>;
 };
+type PortfolioFundsSnapshot = LocalHoldingsReadStart & {
+  /** Null when the canonical custody read was unavailable or failed. */
+  funds: (Fund & { mintName: string })[] | null;
+};
 const EMPTY_MARKET_CATALOGUE = new Map<string, MarketCatalogueEntry>();
+
+/**
+ * The typed read of one local holdings snapshot. A missing snapshot is not
+ * read yet. A null value is a failed read, never an empty list.
+ */
+function localHoldingsRead<T>(
+  snapshot: LocalHoldingsReadStart | undefined,
+  value: readonly T[] | null | undefined,
+): WalletRecoveryHoldingsRead<T> {
+  if (snapshot === undefined) return { kind: "unhydrated" };
+  if (value == null) return { kind: "failed" };
+  return { kind: "ok", tag: snapshot.tag, afterPassSeq: snapshot.afterPassSeq, value };
+}
 
 interface PortfolioState {
   walletState: WalletState;
@@ -175,6 +206,7 @@ interface PortfolioState {
   createdMarkets: CreatedMarket[];
   positionsTab: "active" | "closed";
   monitoring: PortfolioMonitoringState;
+  holdings: PortfolioHoldingsReads;
 }
 
 const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
@@ -674,6 +706,9 @@ export function usePortfolioState(): PortfolioState & {
       walletId === null ? null : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
     [walletId],
   );
+  const storeMintUrls = useMemo(() => storeMints.map(({ url }) => url), [storeMints]);
+  // Each holdings read records this position, and a new one starts a new read.
+  const recoveryRead = useWalletRecoveryReadPosition(walletScopeId, storeMintUrls);
   const displayScopeKey =
     walletState === "ready" && walletId !== null
       ? `${walletId}:${signerRevision}:${nostrProfile?.pubkey ?? ""}`
@@ -1230,81 +1265,96 @@ export function usePortfolioState(): PortfolioState & {
   }, [loadingMoreAssets, visibleAssets, walletId, signerRevision, walletScopeId]);
 
   const positionsFromDb = useLiveQuery(
-    async () => {
+    async (): Promise<PortfolioPositionSnapshot | undefined> => {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
-      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
-      const proofs = await readCanonicalPortfolioCustody(scopeId);
-      if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
-      const entries = summarizeHeldPositions(proofs);
-      const displayMonitoringConditionIds = displayMonitoringConditionIdsKey
-        ? displayMonitoringConditionIdsKey.split(",")
-        : [];
-      // The catalogue read waits for the monitor so that one read covers its rows.
-      const catalogueRead = monitoringUnavailable || monitoringReady || monitoringRateLimited;
-      const catalogueConditionIds = new Set(
-        catalogueRead
-          ? [...entries.map((entry) => entry.conditionId), ...displayMonitoringConditionIds]
-          : [],
-      );
-      const catalogue = catalogueRead
-        ? await loadMarketCatalogue([...catalogueConditionIds])
-        : new Map<string, MarketCatalogueEntry>();
-      if (activeBrowserWalletScopeId() !== scopeId) return undefined;
-      const positions = entries.map((entry): Position => {
-        const market = catalogue.get(entry.conditionId);
-        const divisibility = parseMarketDivisibility(market?.divisibility);
-        // Closure alone does not prove a loss. Only mint classification or an
-        // attested outcome can classify this display row.
-        const classification = classifyHeldPosition(entry, market);
-        const historyOnly = classification.result === "history";
-        const isClosed = classification.closed;
-        const isWinner = classification.result === "winner";
-        const isLoser = classification.result === "loser";
-        const isPending = classification.result === "pending";
-        const status = isClosed ? "closed" : "active";
-        const currentValueSats = isClosed && isWinner ? classification.claimableAmount : 0;
-        const position: Position = {
-          id: JSON.stringify([
-            entry.mintUrl,
-            entry.conditionId,
-            entry.outcomeCollection,
-            entry.baseAsset,
-          ]),
-          marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
-          marketTitle: market?.title ?? conditionLabel(entry.conditionId),
-          marketLoading: !catalogueRead,
-          marketImageUrl: market?.thumbnailUrl ?? "",
-          side: "Outcome",
-          outcomeId: entry.outcomeCollection,
-          outcomeLabel: entry.outcomeCollection,
-          canClaimPayout: !historyOnly && (isWinner || entry.claimRecoveryPending),
-          canSell: !historyOnly,
-          retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmount,
-          claimRecoveryPending: entry.claimRecoveryPending,
-          removalPending: entry.removalPending,
-          canDiscard: !historyOnly && isLoser,
-          monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
-          baseAsset: entry.baseAsset,
-          divisibility: divisibility ?? undefined,
-          shares: divisibility === null ? undefined : entry.amount / divisibility,
-          currentValueSats,
-          // Local proof rows have no current market valuation until an
-          // authoritative attestation or the exact display-only asset monitor
-          // supplies one. Face amount is not a current value and must not enter
-          // portfolio totals.
-          valueKnown: !historyOnly && divisibility !== null && isClosed && !isPending,
-          status,
-          isWinner,
-          isLoser,
-          isPending,
-          finalOutcome: market?.finalOutcome ?? null,
-          closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
-          acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
-          mintUrl: entry.mintUrl,
-        };
-        return enrichPositionWithCatalogue(position, market);
-      });
-      return { scopeId, positions, marketCatalogue: catalogue, catalogueConditionIds };
+      const { tag, passSeq: afterPassSeq } = recoveryRead;
+      if (scopeId === null || tag === null || activeBrowserWalletScopeId() !== scopeId)
+        return undefined;
+      const start = { scopeId, tag, afterPassSeq };
+      const failed = {
+        ...start,
+        positions: null,
+        marketCatalogue: EMPTY_MARKET_CATALOGUE,
+        catalogueConditionIds: new Set<string>(),
+      };
+      // A failed read is a state of the read. It never reaches an error boundary.
+      try {
+        const proofs = await readCanonicalPortfolioCustody(scopeId);
+        if (activeBrowserWalletScopeId() !== scopeId) return undefined;
+        if (proofs === null) return failed;
+        const entries = summarizeHeldPositions(proofs);
+        const displayMonitoringConditionIds = displayMonitoringConditionIdsKey
+          ? displayMonitoringConditionIdsKey.split(",")
+          : [];
+        // The catalogue read waits for the monitor so that one read covers its rows.
+        const catalogueRead = monitoringUnavailable || monitoringReady || monitoringRateLimited;
+        const catalogueConditionIds = new Set(
+          catalogueRead
+            ? [...entries.map((entry) => entry.conditionId), ...displayMonitoringConditionIds]
+            : [],
+        );
+        const catalogue = catalogueRead
+          ? await loadMarketCatalogue([...catalogueConditionIds])
+          : new Map<string, MarketCatalogueEntry>();
+        if (activeBrowserWalletScopeId() !== scopeId) return undefined;
+        const positions = entries.map((entry): Position => {
+          const market = catalogue.get(entry.conditionId);
+          const divisibility = parseMarketDivisibility(market?.divisibility);
+          // Closure alone does not prove a loss. Only mint classification or an
+          // attested outcome can classify this display row.
+          const classification = classifyHeldPosition(entry, market);
+          const historyOnly = classification.result === "history";
+          const isClosed = classification.closed;
+          const isWinner = classification.result === "winner";
+          const isLoser = classification.result === "loser";
+          const isPending = classification.result === "pending";
+          const status = isClosed ? "closed" : "active";
+          const currentValueSats = isClosed && isWinner ? classification.claimableAmount : 0;
+          const position: Position = {
+            id: JSON.stringify([
+              entry.mintUrl,
+              entry.conditionId,
+              entry.outcomeCollection,
+              entry.baseAsset,
+            ]),
+            marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
+            marketTitle: market?.title ?? conditionLabel(entry.conditionId),
+            marketLoading: !catalogueRead,
+            marketImageUrl: market?.thumbnailUrl ?? "",
+            side: "Outcome",
+            outcomeId: entry.outcomeCollection,
+            outcomeLabel: entry.outcomeCollection,
+            canClaimPayout: !historyOnly && (isWinner || entry.claimRecoveryPending),
+            canSell: !historyOnly,
+            retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmount,
+            claimRecoveryPending: entry.claimRecoveryPending,
+            removalPending: entry.removalPending,
+            canDiscard: !historyOnly && isLoser,
+            monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
+            baseAsset: entry.baseAsset,
+            divisibility: divisibility ?? undefined,
+            shares: divisibility === null ? undefined : entry.amount / divisibility,
+            currentValueSats,
+            // Local proof rows have no current market valuation until an
+            // authoritative attestation or the exact display-only asset monitor
+            // supplies one. Face amount is not a current value and must not enter
+            // portfolio totals.
+            valueKnown: !historyOnly && divisibility !== null && isClosed && !isPending,
+            status,
+            isWinner,
+            isLoser,
+            isPending,
+            finalOutcome: market?.finalOutcome ?? null,
+            closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
+            acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
+            mintUrl: entry.mintUrl,
+          };
+          return enrichPositionWithCatalogue(position, market);
+        });
+        return { ...start, positions, marketCatalogue: catalogue, catalogueConditionIds };
+      } catch {
+        return activeBrowserWalletScopeId() === scopeId ? failed : undefined;
+      }
     },
     [
       monitoringReady,
@@ -1312,6 +1362,7 @@ export function usePortfolioState(): PortfolioState & {
       monitoringRateLimited,
       displayMonitoringConditionIdsKey,
       walletMnemonic,
+      recoveryRead,
     ],
     undefined as PortfolioPositionSnapshot | undefined,
   );
@@ -1322,21 +1373,33 @@ export function usePortfolioState(): PortfolioState & {
     walletId,
     currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE,
   );
+  const positionsRead = localHoldingsRead(currentLocalPositions, currentLocalPositions?.positions);
   const positions: Position[] = currentLocalPositions?.positions ?? [];
-  const localPositionsUnavailable = currentLocalPositions === undefined;
+  const localPositionsUnavailable = positionsRead.kind !== "ok";
   const fundsFromDb = useLiveQuery(
-    async () => {
+    async (): Promise<PortfolioFundsSnapshot | undefined> => {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
-      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
-      const funds = await readCanonicalLocalFunds(scopeId, storeMints);
-      return activeBrowserWalletScopeId() === scopeId ? { scopeId, funds } : undefined;
+      const { tag, passSeq: afterPassSeq } = recoveryRead;
+      if (scopeId === null || tag === null || activeBrowserWalletScopeId() !== scopeId)
+        return undefined;
+      let funds: PortfolioFundsSnapshot["funds"];
+      // A failed read is a state of the read. It never reaches an error boundary.
+      try {
+        funds = await readCanonicalLocalFunds(scopeId, storeMints);
+      } catch {
+        funds = null;
+      }
+      return activeBrowserWalletScopeId() === scopeId
+        ? { scopeId, tag, afterPassSeq, funds }
+        : undefined;
     },
-    [storeMints, walletMnemonic],
-    undefined as { scopeId: string; funds: (Fund & { mintName: string })[] | null } | undefined,
+    [storeMints, walletMnemonic, recoveryRead],
+    undefined as PortfolioFundsSnapshot | undefined,
   );
-  const currentLocalFunds = fundsFromDb?.scopeId === walletScopeId ? fundsFromDb.funds : undefined;
-  const localFunds: Fund[] = currentLocalFunds ?? [];
-  const localFundsUnavailable = currentLocalFunds == null;
+  const currentLocalFunds = fundsFromDb?.scopeId === walletScopeId ? fundsFromDb : undefined;
+  const fundsRead = localHoldingsRead(currentLocalFunds, currentLocalFunds?.funds);
+  const localFunds: Fund[] = currentLocalFunds?.funds ?? [];
+  const localFundsUnavailable = fundsRead.kind !== "ok";
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
     monitoringResponse?.key === monitoringKey && visibleAssets
@@ -1365,8 +1428,9 @@ export function usePortfolioState(): PortfolioState & {
     ? mapMonitoringPortfolio(cachedDisplay.value)
     : visibleMonitoring;
   // Funds are wallet-local custody. The projection is a fallback only while
-  // the local custody read is loading or unavailable.
-  const funds = currentLocalFunds ?? displayMonitoring?.funds ?? [];
+  // the local custody read is loading or unavailable. The typed read tells
+  // the list that the projection rows are not final.
+  const funds = currentLocalFunds?.funds ?? displayMonitoring?.funds ?? [];
   const currentStats = displayMonitoring?.stats
     ? displayMonitoring.stats
     : localFundsUnavailable || localPositionsUnavailable
@@ -1420,11 +1484,8 @@ export function usePortfolioState(): PortfolioState & {
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
     liveUpdateCoverageLimited,
-    error:
-      monitoringError ??
-      (!visibleMonitoring && (localFundsUnavailable || localPositionsUnavailable)
-        ? "unavailable"
-        : null),
+    // The shared wallet recovery status reports a failed local read.
+    error: monitoringError,
     assetPageError: visibleAssetPageError ? "unavailable" : null,
     hasMoreAssets:
       visibleAssets?.nextCursor != null &&
@@ -1448,6 +1509,7 @@ export function usePortfolioState(): PortfolioState & {
     createdMarkets,
     positionsTab,
     monitoring,
+    holdings: { funds: fundsRead, positions: positionsRead },
     setSelectedTimeRange: selectTimeRange,
     setPositionsTab,
     dismissMonitoringError: () => setMonitoringError(null),

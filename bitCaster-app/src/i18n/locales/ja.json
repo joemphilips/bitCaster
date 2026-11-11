@@ -90,7 +90,18 @@
     "replaceBlockedBackup": "現在のウォレットのすべての資産に最新のバックアップがありません。切り替える前にバックアップを完了し、確認してください。",
     "replaceBlockedActiveWork": "未完了のウォレット操作があります。切り替える前に完了または復旧してください。",
     "replaceBlockedBrowserLock": "このブラウザーではウォレットを安全にロックできません。現在のウォレットを保持し、ロックに対応したブラウザーで再試行してください。",
-    "replaceBlockedSafetyChecks": "バックアップまたは復旧の安全確認に通らなかったため、ウォレットを切り替えませんでした。現在のウォレットは保持されています。"
+    "replaceBlockedSafetyChecks": "バックアップまたは復旧の安全確認に通らなかったため、ウォレットを切り替えませんでした。現在のウォレットは保持されています。",
+    "recovery": {
+      "checking": "ウォレットを確認しています…",
+      "restoring": "ウォレットを復元しています…",
+      "waitingForMint": "ミントの応答を待っています…",
+      "resumesAt": "{{time}}に復元を再開します",
+      "failed": "ウォレットを復元できませんでした。",
+      "readFailed": "ウォレットのデータを読み込めませんでした。",
+      "profileUnavailable": "ウォレットが開かれていません。",
+      "reload": "再読み込み",
+      "restoreFromSeed": "シードから復元"
+    }
   },
   "walletBackupRecovery": {
     "changeAccount": "ID 設定を開く",
@@ -459,9 +470,6 @@
     "predictions": "予測数",
     "noPositions": "{{tab}}ポジションはありません",
     "noActivePositions": "アクティブなポジションはありません",
-    "restoringPositions": "ポジションを復元しています…",
-    "restorePositionsFailed": "ミントからポジションを復元できませんでした。",
-    "restorePositionsRetry": "再試行",
     "noClosedPositions": "クローズ済みポジションはありません",
     "won": "当たり",
     "lost": "ハズレ",
