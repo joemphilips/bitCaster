@@ -93,14 +93,13 @@
     "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept.",
     "recovery": {
       "checking": "Checking wallet…",
-      "restoring": "Restoring wallet…",
+      "recovering": "Recovering wallet…",
       "waitingForMint": "Waiting for the mint…",
       "resumesAt": "Recovery resumes at {{time}}",
       "failed": "Wallet recovery failed.",
       "readFailed": "Wallet data could not be read.",
       "profileUnavailable": "The wallet is not open.",
-      "reload": "Reload",
-      "restoreFromSeed": "Restore from seed"
+      "reload": "Reload"
     }
   },
   "walletBackupRecovery": {

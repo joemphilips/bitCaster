@@ -12,7 +12,7 @@ import { InlineAmount } from "@/components/shared/InlineAmount";
 export interface AppShellProps {
   children: React.ReactNode;
   navigationItems: Array<{ label: string; href: string; isActive?: boolean }>;
-  user?: { name: string; avatarUrl?: string; balance?: number };
+  user?: { name: string; avatarUrl?: string; balance?: number | null };
   /** A Nostr signer is connected. The account item offers log out, not log in. */
   isLoggedIn: boolean;
   onNavigate?: (href: string) => void;
@@ -217,7 +217,12 @@ export function AppShell({
                   {user.name}
                 </div>
                 <div className="text-sm text-amber-400 font-mono">
-                  <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
+                  {/* Null: the wallet recovery has not settled the balance. */}
+                  {user.balance === null ? (
+                    "—"
+                  ) : (
+                    <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
+                  )}
                 </div>
               </div>
             </div>

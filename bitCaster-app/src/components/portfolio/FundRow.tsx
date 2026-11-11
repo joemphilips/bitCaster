@@ -4,11 +4,13 @@ import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface FundRowProps {
   fund: Fund;
-  /** The amount is the display-only projection while the wallet recovery checks. */
+  /** The amount is the display-only projection, not the local wallet. */
   provisional?: boolean;
+  /** The local read that replaces the projection is loading. */
+  busy?: boolean;
 }
 
-export function FundRow({ fund, provisional = false }: FundRowProps) {
+export function FundRow({ fund, provisional = false, busy = false }: FundRowProps) {
   const mintHostname = new URL(fund.mintUrl).hostname;
 
   return (
@@ -30,9 +32,9 @@ export function FundRow({ fund, provisional = false }: FundRowProps) {
       <div className="text-right shrink-0">
         <div
           data-testid="fund-amount"
-          aria-busy={provisional ? true : undefined}
+          aria-busy={busy ? true : undefined}
           className={`text-sm font-mono font-medium transition-colors duration-300 motion-reduce:transition-none ${
-            provisional ? "text-slate-400 dark:text-slate-500" : "text-slate-900 dark:text-white"
+            provisional ? "text-slate-500 dark:text-slate-400" : "text-slate-900 dark:text-white"
           }`}
         >
           <InlineAmount amountSubunits={fund.amount} baseAsset="sat" />

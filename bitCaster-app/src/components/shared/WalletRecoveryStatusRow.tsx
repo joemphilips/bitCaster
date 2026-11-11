@@ -4,8 +4,11 @@ import { retryBrowserSeedPositionRestore } from "@/lib/browserSeedPositionRestor
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import type { WalletRecoveryDisplay } from "@/lib/walletRecoveryDisplay";
 
-/** The Settings section that holds the seed restore ("Replace wallet"). */
+/** The Settings section that holds "Replace Wallet", which takes a seed phrase. */
 const SEED_RESTORE_SETTINGS_HREF = "/settings?category=cashu";
+
+/** Every visible state has one height, so the card below does not move. */
+const ROW_CLASS = "flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-sm";
 
 /**
  * The resume time of a wait: the time alone on the same day, else the date
@@ -23,11 +26,11 @@ export function formatWalletRecoveryResumeTime(
     at.getMonth() === now.getMonth() &&
     at.getDate() === now.getDate();
   return sameDay
-    ? at.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })
+    ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
     : at.toLocaleString(locale, {
         month: "short",
         day: "numeric",
-        hour: "2-digit",
+        hour: "numeric",
         minute: "2-digit",
       });
 }
@@ -46,6 +49,23 @@ export function WalletRecoveryStatusRow({
 }) {
   const { t, i18n } = useTranslation();
   const [retrying, setRetrying] = useState(false);
+  const statusText = (
+    display: Extract<WalletRecoveryDisplay, { state: "checking" | "pending" }>,
+  ) => {
+    if (display.state === "checking") return t("wallet.recovery.checking");
+    switch (display.text) {
+      case "recovering":
+        return t("wallet.recovery.recovering");
+      case "waitingForMint":
+        return t("wallet.recovery.waitingForMint");
+      case "resumesAt":
+        return t("wallet.recovery.resumesAt", {
+          time: formatWalletRecoveryResumeTime(display.retryAtMs!, Date.now(), i18n.language),
+        });
+      default:
+        throw new Error(`unknown wallet recovery wait: ${JSON.stringify(display.text)}`);
+    }
+  };
   const attributes = {
     "data-testid": "wallet-recovery-status",
     "data-state": display.state,
@@ -56,43 +76,26 @@ export function WalletRecoveryStatusRow({
     case "complete":
       return <div {...attributes} hidden />;
     case "checking":
+    case "pending": {
+      // A scheduled wait does not work now, so it has no spinner.
+      const working = display.state === "checking" || display.text !== "resumesAt";
       return (
         <div {...attributes} className={className}>
           <p
             role="status"
-            className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400"
+            className={`${ROW_CLASS} bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300`}
           >
-            <span
-              aria-hidden="true"
-              className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500 motion-reduce:animate-none"
-            />
-            {t("wallet.recovery.checking")}
+            {working && (
+              <span
+                aria-hidden="true"
+                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500 motion-reduce:animate-none"
+              />
+            )}
+            {statusText(display)}
           </p>
         </div>
       );
-    case "pending":
-      return (
-        <div {...attributes} className={className}>
-          <p
-            role="status"
-            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-          >
-            {display.text === "resumesAt" && display.retryAtMs !== null
-              ? t("wallet.recovery.resumesAt", {
-                  time: formatWalletRecoveryResumeTime(
-                    display.retryAtMs,
-                    Date.now(),
-                    i18n.language,
-                  ),
-                })
-              : t(
-                  display.text === "waitingForMint"
-                    ? "wallet.recovery.waitingForMint"
-                    : "wallet.recovery.restoring",
-                )}
-          </p>
-        </div>
-      );
+    }
     case "unavailable":
       break;
     default:
@@ -110,11 +113,15 @@ export function WalletRecoveryStatusRow({
       // Retry resets the backoff, then wakes the coordinator. It does not start a restore.
       await retryBrowserSeedPositionRestore(scopeId);
       publishBrowserCtfRangeRecoveryWake({ scopeId });
+    } catch {
+      // The reset did not happen. The status still shows the failure, so Retry stays.
     } finally {
       setRetrying(false);
     }
   };
-  const actionClass = "shrink-0 font-medium underline disabled:opacity-50";
+  // The padding enlarges the touch target on mobile. The margin keeps the row height.
+  const actionClass =
+    "-my-2 shrink-0 py-2 font-medium underline disabled:opacity-50 md:my-0 md:py-0";
   const message =
     display.action === "retry"
       ? t("wallet.recovery.failed")
@@ -125,7 +132,7 @@ export function WalletRecoveryStatusRow({
     <div {...attributes} className={className}>
       <div
         role="alert"
-        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300"
+        className={`${ROW_CLASS} flex-wrap justify-between gap-x-3 gap-y-1 border border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300`}
       >
         <span>{message}</span>
         <span className="flex shrink-0 items-center gap-3">
@@ -145,7 +152,7 @@ export function WalletRecoveryStatusRow({
           )}
           {display.action === "reload-or-restore" && (
             <a href={SEED_RESTORE_SETTINGS_HREF} className={actionClass}>
-              {t("wallet.recovery.restoreFromSeed")}
+              {t("wallet.replaceWallet")}
             </a>
           )}
         </span>

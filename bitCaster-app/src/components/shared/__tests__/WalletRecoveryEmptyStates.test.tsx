@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -323,7 +323,8 @@ describe("empty states during the wallet recovery", () => {
 
     const projected = screen.getByTestId("fund-amount");
     expect(projected).toHaveAttribute("aria-busy", "true");
-    expect(projected).toHaveClass("text-slate-400");
+    // The muted token keeps 4.5:1 contrast in both themes.
+    expect(projected).toHaveClass("text-slate-500", "dark:text-slate-400");
     expect(projected).not.toHaveClass("text-slate-900");
 
     rerender(<FundsList funds={[fund]} read={okRead([fund])} recoveryStatus={CHECKING} />);
@@ -335,11 +336,23 @@ describe("empty states during the wallet recovery", () => {
     expect(real).toHaveClass("text-slate-900");
   });
 
-  it("shows a projected balance in the normal style after the recovery", () => {
+  it("mutes a projection after the recovery when the local read failed, without busy state", () => {
     render(<FundsList funds={[fund]} read={{ kind: "failed" }} recoveryStatus={COMPLETED} />);
 
-    expect(screen.getByTestId("fund-amount")).not.toHaveAttribute("aria-busy");
-    expect(screen.getByTestId("fund-amount")).toHaveClass("text-slate-900");
+    const amount = screen.getByTestId("fund-amount");
+    expect(amount).toHaveClass("text-slate-500");
+    expect(amount).not.toHaveClass("text-slate-900");
+    // A failed read is not loading.
+    expect(amount).not.toHaveAttribute("aria-busy");
+    expect(screen.queryByText("No funds")).not.toBeInTheDocument();
+  });
+
+  it("mutes a projection after the recovery while the local read loads", () => {
+    render(<FundsList funds={[fund]} read={{ kind: "unhydrated" }} recoveryStatus={COMPLETED} />);
+
+    const amount = screen.getByTestId("fund-amount");
+    expect(amount).toHaveClass("text-slate-500");
+    expect(amount).toHaveAttribute("aria-busy", "true");
   });
 
   it("does not show zero position totals while the recovery runs", () => {
@@ -393,6 +406,31 @@ describe("empty states during the wallet recovery", () => {
     expect(statusRow()).toBeEmptyDOMElement();
   });
 
+  it("keeps an empty wallet checking across a later pass, with no blank state", async () => {
+    const afterPass = (passSeq: number) =>
+      ({ kind: "completed", tag: TAG, passSeq, coverage: "full" }) as const;
+    const reads = (afterPassSeq: number): PortfolioHoldingsReads => ({
+      funds: okRead([], afterPassSeq),
+      positions: okRead([], afterPassSeq),
+    });
+    restore.status = afterPass(1);
+    const { rerender } = render(<Portfolio {...portfolioProps({ holdings: reads(1) })} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Funds" }));
+    expect(screen.getByText("No funds")).toBeInTheDocument();
+
+    // A second pass completes before the follow-up read. Each render commits
+    // at once, so each step below is a state that the user can see.
+    restore.status = afterPass(2);
+    rerender(<Portfolio {...portfolioProps({ holdings: reads(1) })} />);
+    expect(statusRow()).toHaveAttribute("data-state", "checking");
+    expect(within(statusRow()).getByRole("status")).toHaveTextContent("Checking wallet…");
+    expect(screen.queryByText("No funds")).not.toBeInTheDocument();
+
+    rerender(<Portfolio {...portfolioProps({ holdings: reads(2) })} />);
+    expect(statusRow()).toHaveAttribute("data-state", "complete");
+    expect(screen.getByText("No funds")).toBeInTheDocument();
+  });
+
   it("does not report zero held shares in the Sell panel while the recovery runs", () => {
     restore.status = PENDING;
 
@@ -401,8 +439,11 @@ describe("empty states during the wallet recovery", () => {
     expect(screen.queryByText("No selectable shares")).not.toBeInTheDocument();
     expect(screen.queryByText(/Held: 0 shares/)).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
-    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Restoring wallet…");
+    // The status row states the recovery. The disabled button keeps its action label.
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Sell YES for 2 shares");
     expect(statusRow()).toHaveAttribute("data-state", "pending");
+    expect(within(statusRow()).getByRole("status")).toHaveTextContent("Recovering wallet…");
   });
 
   it("names the check in the Sell panel while the recovery checks", () => {
@@ -410,7 +451,9 @@ describe("empty states during the wallet recovery", () => {
 
     renderSell();
 
-    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Checking wallet…");
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Sell YES for 2 shares");
+    expect(screen.getAllByText("Checking wallet…")).toHaveLength(1);
     expect(statusRow()).toHaveAttribute("data-state", "checking");
   });
 
@@ -462,22 +505,40 @@ describe("the wallet recovery status row", () => {
   });
 
   it.each([
-    [{ ...PENDING, reason: "proof-pending" } as const, "Waiting for the mint…"],
-    [PENDING, "Restoring wallet…"],
-  ])("shows a neutral pending row", (status, text) => {
+    ["checking", CHECKING, "Checking wallet…", true],
+    ["recovering", PENDING, "Recovering wallet…", true],
+    [
+      "waiting for the mint",
+      { ...PENDING, reason: "proof-pending" } as const,
+      "Waiting for the mint…",
+      true,
+    ],
+    [
+      "resuming at a time",
+      { ...PENDING, reason: "backoff", retryAtMs: Date.now() + 60_000 } as const,
+      "Recovery resumes at",
+      false,
+    ],
+  ])("shows %s in the one neutral form", (_name, status, text, spinner) => {
     restore.status = status;
 
     render(<Portfolio {...portfolioProps()} />);
 
-    expect(statusRow()).toHaveAttribute("data-state", "pending");
-    expect(within(statusRow()).getByRole("status")).toHaveTextContent(text);
+    const line = within(statusRow()).getByRole("status");
+    expect(line).toHaveTextContent(text);
+    // No input-like border. Checking and every wait use the same surface.
+    expect(line.className).not.toMatch(/\bborder\b/);
+    expect(line).toHaveClass("rounded-xl", "bg-slate-100", "dark:bg-slate-900", "min-h-10");
+    const spin = line.querySelector(".animate-spin");
+    if (spinner) expect(spin).toHaveClass("motion-reduce:animate-none");
+    else expect(spin).toBeNull();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it.each([
-    ["en", new Date(2026, 10, 11, 14, 5), "Recovery resumes at 02:05 PM"],
-    ["en", new Date(2026, 10, 12, 14, 5), "Recovery resumes at Nov 12, 02:05 PM"],
-    ["ja", new Date(2026, 10, 11, 14, 5), "14:05に復元を再開します"],
+    ["en", new Date(2026, 10, 11, 14, 5), "Recovery resumes at 2:05 PM"],
+    ["en", new Date(2026, 10, 12, 14, 5), "Recovery resumes at Nov 12, 2:05 PM"],
+    ["ja", new Date(2026, 10, 11, 14, 5), "14:05に復旧を再開します"],
   ] as const)(
     "names the resume time of a start-limit wait in %s at %s",
     async (locale, at, text) => {
@@ -509,6 +570,37 @@ describe("the wallet recovery status row", () => {
     );
   });
 
+  it("keeps the error row when Retry cannot reset the backoff", async () => {
+    restore.status = FAILED;
+    restore.retry.mockRejectedValueOnce(new Error("IndexedDB is unavailable"));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      render(<Portfolio {...portfolioProps()} />);
+      const retry = within(statusRow()).getByRole("button", { name: "Retry" });
+      await userEvent.click(retry);
+
+      await waitFor(() => expect(retry).toBeEnabled());
+      expect(restore.wake).not.toHaveBeenCalled();
+      expect(within(statusRow()).getByRole("alert")).toHaveTextContent("Wallet recovery failed.");
+      // Let a rejection that nothing handled reach the process handler.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("gives the row actions a larger vertical hit area on mobile", () => {
+    restore.status = FAILED;
+
+    render(<Portfolio {...portfolioProps()} />);
+
+    const retry = within(statusRow()).getByRole("button", { name: "Retry" });
+    expect(retry).toHaveClass("py-2", "-my-2", "md:py-0", "md:my-0");
+  });
+
   it.each([
     ["a failed status read", READ_FAILED, emptyReads],
     ["a failed custody read", COMPLETED, { ...emptyReads, funds: { kind: "failed" } as const }],
@@ -523,7 +615,7 @@ describe("the wallet recovery status row", () => {
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
-  it("offers Reload and the seed restore in Settings without an active wallet profile", () => {
+  it("offers Reload and Replace Wallet in Settings without an active wallet profile", () => {
     restore.status = NO_PROFILE;
 
     render(<Portfolio {...portfolioProps()} />);
@@ -531,7 +623,7 @@ describe("the wallet recovery status row", () => {
     const alert = within(statusRow()).getByRole("alert");
     expect(alert).toHaveTextContent("The wallet is not open.");
     expect(within(alert).getByRole("button", { name: "Reload" })).toBeInTheDocument();
-    expect(within(alert).getByRole("link", { name: "Restore from seed" })).toHaveAttribute(
+    expect(within(alert).getByRole("link", { name: "Replace Wallet" })).toHaveAttribute(
       "href",
       "/settings?category=cashu",
     );

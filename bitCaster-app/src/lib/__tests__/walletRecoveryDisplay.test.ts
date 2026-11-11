@@ -48,12 +48,12 @@ describe("walletRecoveryDisplay", () => {
     ).toEqual({ state: "complete" });
   });
 
-  it("keeps a read of an earlier pass of the same tag complete", () => {
-    // Its rows stay known. Only an empty state needs a read after the pass.
+  it("is checking for a read that began before the latest completed pass", () => {
+    // The follow-up read decides. The row does not go blank in between.
     const earlier = { ...OK_CURRENT, afterPassSeq: 2 };
     expect(
       walletRecoveryDisplay({ status: COMPLETED, profileExpected: true, reads: [earlier] }),
-    ).toEqual({ state: "complete" });
+    ).toEqual({ state: "checking" });
   });
 
   it.each([
@@ -72,15 +72,15 @@ describe("walletRecoveryDisplay", () => {
   });
 
   it.each([
-    ["operation", null, "restoring"],
-    ["scan-continues", 5_000, "restoring"],
-    ["probe-due", 5_000, "restoring"],
+    ["operation", null, "recovering"],
+    ["scan-continues", 5_000, "recovering"],
+    ["probe-due", 5_000, "recovering"],
     ["proof-pending", null, "waitingForMint"],
     ["start-limit", 9_000, "resumesAt"],
     ["backoff", 9_000, "resumesAt"],
-    // Without a known time, a wait shows as a restore in progress.
-    ["start-limit", null, "restoring"],
-    ["backoff", null, "restoring"],
+    // Without a known time, a wait shows as recovery in progress.
+    ["start-limit", null, "recovering"],
+    ["backoff", null, "recovering"],
   ] as const)("shows a %s wait at %s as %s", (reason, retryAtMs, text) => {
     expect(
       walletRecoveryDisplay({
@@ -132,7 +132,7 @@ describe("walletRecoveryHoldingsUnknown", () => {
   it.each([
     [{ state: "complete" }, false],
     [{ state: "checking" }, true],
-    [{ state: "pending", text: "restoring", retryAtMs: null }, true],
+    [{ state: "pending", text: "recovering", retryAtMs: null }, true],
     [{ state: "unavailable", reason: "read-failed", action: "reload", scopeId: "scope" }, true],
     [{ state: "unavailable", reason: "profile-unavailable", action: "none", scopeId: null }, false],
   ] as const)("is %j -> %s", (display, unknown) => {

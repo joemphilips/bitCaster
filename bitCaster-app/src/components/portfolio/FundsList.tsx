@@ -27,9 +27,10 @@ export function FundsList({ funds, read, recoveryStatus }: FundsListProps) {
     );
   }
 
-  // Projection rows show while the read is not ok. Before the recovery
-  // completes, their amounts are provisional.
-  const provisional = read.kind !== "ok" && recoveryStatus.kind !== "completed";
+  // Projection rows show while the read is not ok. Their amounts are never
+  // final, also after the recovery. They are busy only while the read loads.
+  const provisional = read.kind !== "ok";
+  const busy = read.kind === "unhydrated";
   // A row keeps its key when the real read replaces the projection, so its
   // amount can fade to the normal style.
   const seen = new Map<string, number>();
@@ -39,7 +40,14 @@ export function FundsList({ funds, read, recoveryStatus }: FundsListProps) {
         const mint = normalizeUrl(fund.mintUrl);
         const index = seen.get(mint) ?? 0;
         seen.set(mint, index + 1);
-        return <FundRow key={`${mint}\u0000${index}`} fund={fund} provisional={provisional} />;
+        return (
+          <FundRow
+            key={`${mint}\u0000${index}`}
+            fund={fund}
+            provisional={provisional}
+            busy={busy}
+          />
+        );
       })}
     </ul>
   );

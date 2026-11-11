@@ -13,6 +13,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Portfolio } from "@/components/portfolio/Portfolio";
 import { TradingPanel } from "@/components/market-detail/TradingPanel";
 import { ToastContainer } from "@/components/ui/Toast";
+import { useWalletHeaderBalance } from "@/hooks/useWalletHeaderBalance";
 import { formatWalletRecoveryResumeTime } from "@/components/shared/WalletRecoveryStatusRow";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { listenForBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
@@ -77,7 +78,7 @@ let observer: MutationObserver | undefined;
 
 const STATUSES = {
   checking: { kind: "checking", tag: TAG },
-  restoring: { kind: "pending", tag: TAG, reason: "scan-continues", retryAtMs: null },
+  recovering: { kind: "pending", tag: TAG, reason: "scan-continues", retryAtMs: null },
   "waiting-for-mint": { kind: "pending", tag: TAG, reason: "proof-pending", retryAtMs: null },
   "resumes-at": {
     kind: "pending",
@@ -98,7 +99,7 @@ const STATUSES = {
 type StateName = keyof typeof STATUSES;
 const DATA_STATE: Record<StateName, string> = {
   checking: "checking",
-  restoring: "pending",
+  recovering: "pending",
   "waiting-for-mint": "pending",
   "resumes-at": "pending",
   failed: "unavailable",
@@ -210,28 +211,66 @@ const layouts = [
   { name: "mobile", width: 390, height: 844 },
 ] as const;
 
-function shell(children: ReactNode): ReactNode[] {
-  return [
-    createElement(AppShell, {
-      key: "shell",
-      navigationItems: [
-        { label: i18n.t("nav.markets"), href: "/markets", isActive: false },
-        { label: i18n.t("nav.portfolio"), href: "/portfolio", isActive: true },
-      ],
-      user: { name: "Anonymous", balance: 12 },
-      isLoggedIn: true,
-      onNavigate: () => undefined,
-      children,
-    }),
-    createElement(ToastContainer, { key: "toasts" }),
-  ];
+/** The app shell with the header balance that the app derives from the same status. */
+function ShellWithHeader({ balance, children }: { balance: number; children?: ReactNode }) {
+  return createElement(AppShell, {
+    navigationItems: [
+      { label: i18n.t("nav.markets"), href: "/markets", isActive: false },
+      { label: i18n.t("nav.portfolio"), href: "/portfolio", isActive: true },
+    ],
+    user: { name: "Anonymous", balance: useWalletHeaderBalance(balance) },
+    isLoggedIn: true,
+    onNavigate: () => undefined,
+    children,
+  });
 }
 
-function renderInShell(children: ReactNode): void {
+/** Renders the page. `balance` is the wallet balance that the fixture holds. */
+function renderInShell(children: ReactNode, balance = 0): void {
   host ??= document.body.appendChild(document.createElement("div"));
   root ??= createRoot(host);
   const current = root;
-  flushSync(() => current.render(shell(children)));
+  flushSync(() =>
+    current.render([
+      createElement(ShellWithHeader, { key: "shell", balance }, children),
+      createElement(ToastContainer, { key: "toasts" }),
+    ]),
+  );
+}
+
+function headerBalance(): string {
+  return host!.querySelector('[data-testid="user-menu-name"]')!.nextElementSibling!.textContent!;
+}
+
+function useLightTheme(): void {
+  document.documentElement.classList.remove("dark");
+  document.documentElement.style.background = "rgb(248 250 252)";
+}
+
+/** The WCAG contrast ratio of an element's text color on the nearest opaque background. */
+function textContrast(element: HTMLElement): number {
+  let surface: HTMLElement | null = element;
+  let background = "rgba(0, 0, 0, 0)";
+  while (surface !== null) {
+    background = getComputedStyle(surface).backgroundColor;
+    if (!/rgba\(.*,\s*0\)$/.test(background)) break;
+    surface = surface.parentElement;
+  }
+  const luminance = (color: string) => {
+    const [r, g, b] = color
+      .match(/[\d.]+/g)!
+      .slice(0, 3)
+      .map(Number);
+    const linear = (value: number) => {
+      const channel = value / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * linear(r!) + 0.7152 * linear(g!) + 0.0722 * linear(b!);
+  };
+  const [light, dark] = [luminance(getComputedStyle(element).color), luminance(background)].sort(
+    (a, b) => b - a,
+  );
+  return (light! + 0.05) / (dark! + 0.05);
 }
 
 function sellPanel(): ReactNode {
@@ -274,8 +313,8 @@ function rowText(state: StateName): string {
   switch (state) {
     case "checking":
       return i18n.t("wallet.recovery.checking");
-    case "restoring":
-      return i18n.t("wallet.recovery.restoring");
+    case "recovering":
+      return i18n.t("wallet.recovery.recovering");
     case "waiting-for-mint":
       return i18n.t("wallet.recovery.waitingForMint");
     case "resumes-at":
@@ -327,7 +366,10 @@ for (const locale of ["en", "ja"] as const) {
           if (state === "complete") {
             expect(row.hidden).toBe(true);
             expect(host!.textContent).toContain(empty);
+            expect(headerBalance()).toMatch(/^0\s*sats$/);
           } else {
+            // The header does not show a balance that the recovery has not settled.
+            expect(headerBalance()).toBe("—");
             expect(row.hidden).toBe(false);
             // No empty-list text and no zero counts until the recovery completes.
             expect(host!.textContent).not.toContain(empty);
@@ -338,7 +380,7 @@ for (const locale of ["en", "ja"] as const) {
       }
     }
 
-    for (const state of ["checking", "restoring", "failed", "complete"] as const) {
+    for (const state of ["checking", "recovering", "failed", "complete"] as const) {
       it(`shows the ${state} row on the Sell tab in ${locale} on ${layout.name}`, async () => {
         await page.viewport(layout.width, layout.height);
         await i18n.changeLanguage(locale);
@@ -382,6 +424,11 @@ for (const locale of ["en", "ja"] as const) {
         await wake;
         const state = await seedRestoreDatabase(scopeId).states.get([scopeId, MINT_URL]);
         expect(state).toMatchObject({ failures: 0, nextAttemptAtMs: 0 });
+        // The woken coordinator starts a new pass, so the status checks again.
+        recovery.set(STATUSES.checking);
+        await frame();
+        expect(statusRow().dataset.state).toBe("checking");
+        await capture("portfolio-after-retry", layout);
       } finally {
         stopListening();
       }
@@ -408,6 +455,7 @@ for (const locale of ["en", "ja"] as const) {
           Portfolio,
           portfolio({ funds: [fund], holdings: { ...emptyReads, funds: okRead([fund]) } }),
         ),
+        fund.amount,
       );
       await frame();
 
@@ -419,7 +467,7 @@ for (const locale of ["en", "ja"] as const) {
     it(`goes from pending to settled in ${locale} on ${layout.name}`, async () => {
       await page.viewport(layout.width, layout.height);
       await i18n.changeLanguage(locale);
-      recovery.set(STATUSES.restoring);
+      recovery.set(STATUSES.recovering);
       renderInShell(createElement(Portfolio, portfolio()));
       expect(statusRow().dataset.state).toBe("pending");
       expect(host!.textContent).not.toContain(i18n.t("portfolio.noActivePositions"));
@@ -442,6 +490,7 @@ for (const locale of ["en", "ja"] as const) {
           Portfolio,
           portfolio({ funds: [fund], holdings: { ...emptyReads, funds: okRead([fund]) } }),
         ),
+        fund.amount,
       );
       flushSync(() => tab("funds").click());
 
@@ -467,6 +516,7 @@ for (const locale of ["en", "ja"] as const) {
       const mutedColor = getComputedStyle(amount).color;
       expect(amount.getAttribute("aria-busy")).toBe("true");
       expect(getComputedStyle(amount).animationName).toBe("none");
+      expect(textContrast(amount)).toBeGreaterThanOrEqual(4.5);
       await capture("funds-projected-while-checking", layout);
 
       renderInShell(
@@ -474,6 +524,7 @@ for (const locale of ["en", "ja"] as const) {
           Portfolio,
           portfolio({ funds: [fund], holdings: { ...emptyReads, funds: okRead([fund]) } }),
         ),
+        fund.amount,
       );
       const real = host!.querySelector<HTMLElement>('[data-testid="fund-amount"]')!;
       expect(real).toBe(amount);
@@ -497,6 +548,7 @@ for (const locale of ["en", "ja"] as const) {
           Portfolio,
           portfolio({ funds: [fund], holdings: { ...emptyReads, funds: { kind: "unhydrated" } } }),
         ),
+        fund.amount,
       );
       flushSync(() => tab("funds").click());
       const amount = host!.querySelector<HTMLElement>('[data-testid="fund-amount"]')!;
@@ -507,6 +559,7 @@ for (const locale of ["en", "ja"] as const) {
           Portfolio,
           portfolio({ funds: [fund], holdings: { ...emptyReads, funds: okRead([fund]) } }),
         ),
+        fund.amount,
       );
 
       const style = getComputedStyle(amount);
@@ -515,6 +568,64 @@ for (const locale of ["en", "ja"] as const) {
       ).toBe(true);
       // The normal style applies at once.
       expect(style.color).not.toBe(mutedColor);
+    });
+
+    it(`keeps one row height from checking through each wait in ${locale} on ${layout.name}`, async () => {
+      await page.viewport(layout.width, layout.height);
+      await i18n.changeLanguage(locale);
+      const states = ["checking", "recovering", "waiting-for-mint", "resumes-at"] as const;
+      const geometry: { row: number; card: number }[] = [];
+      renderInShell(createElement(Portfolio, portfolio()));
+      for (const state of states) {
+        recovery.set(STATUSES[state]);
+        await frame();
+        const row = statusRow();
+        expect(row.dataset.state).toBe(DATA_STATE[state]);
+        const card = tab("positions").closest<HTMLElement>("div.rounded-xl")!;
+        geometry.push({
+          row: row.getBoundingClientRect().height,
+          card: card.getBoundingClientRect().top,
+        });
+      }
+      // The tab card does not move while the row changes its text.
+      expect(new Set(geometry.map(({ row }) => row)).size).toBe(1);
+      expect(new Set(geometry.map(({ card }) => card)).size).toBe(1);
+    });
+
+    it(`shows the row above the Activity tab in ${locale} on ${layout.name}`, async () => {
+      await page.viewport(layout.width, layout.height);
+      await i18n.changeLanguage(locale);
+      recovery.set(STATUSES.recovering);
+      renderInShell(createElement(Portfolio, portfolio()));
+      const activity = [...host!.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+        (button) => button.textContent === i18n.t("portfolio.activity"),
+      )!;
+      flushSync(() => activity.click());
+
+      expect(statusRow().dataset.state).toBe("pending");
+      expect(statusRow().textContent).toContain(i18n.t("wallet.recovery.recovering"));
+      await capture("portfolio-activity-recovering", layout);
+    });
+
+    it(`shows the wait and a muted projected amount in light mode in ${locale} on ${layout.name}`, async () => {
+      useLightTheme();
+      await page.viewport(layout.width, layout.height);
+      await i18n.changeLanguage(locale);
+      recovery.set(STATUSES["resumes-at"]);
+      renderInShell(
+        createElement(
+          Portfolio,
+          portfolio({ funds: [fund], holdings: { ...emptyReads, funds: { kind: "unhydrated" } } }),
+        ),
+        fund.amount,
+      );
+      flushSync(() => tab("funds").click());
+
+      const amount = host!.querySelector<HTMLElement>('[data-testid="fund-amount"]')!;
+      expect(amount.getAttribute("aria-busy")).toBe("true");
+      expect(textContrast(amount)).toBeGreaterThanOrEqual(4.5);
+      expect(headerBalance()).toBe("—");
+      await capture("light-funds-projected-and-wait", layout);
     });
 
     it(`shows the used-in-another-browser toast in ${locale} on ${layout.name}`, async () => {

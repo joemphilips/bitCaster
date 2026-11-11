@@ -13,7 +13,7 @@ import {
  */
 
 /** The text group of a pending recovery. */
-export type WalletRecoveryPendingText = "restoring" | "waitingForMint" | "resumesAt";
+export type WalletRecoveryPendingText = "recovering" | "waitingForMint" | "resumesAt";
 
 /** What the user can do about an unavailable recovery or holdings read. */
 export type WalletRecoveryAction =
@@ -21,7 +21,7 @@ export type WalletRecoveryAction =
   | "retry"
   /** Reload the page. */
   | "reload"
-  /** Reload the page, or restore the wallet from its seed in Settings. */
+  /** Reload the page, or replace the wallet with its seed phrase in Settings. */
   | "reload-or-restore"
   /** Show nothing: the visitor has no wallet, and the page shows its wallet setup. */
   | "none";
@@ -47,7 +47,9 @@ export type WalletRecoveryDisplay =
  * The display of one surface. The order is the SDK precedence: an
  * unavailable status, then a failed holdings read, then checking, then
  * pending. A completed recovery is still checking until each holdings read
- * of the surface has the current tag.
+ * of the surface has the current tag and began after the latest pass. So
+ * the row goes from checking straight to the final content, also after a
+ * later pass.
  */
 export function walletRecoveryDisplay(input: {
   readonly status: WalletRecoveryStatus;
@@ -75,10 +77,12 @@ export function walletRecoveryDisplay(input: {
     case "pending":
       return pendingDisplay(status.reason, status.retryAtMs);
     case "completed":
-      // A read of an earlier pass of this tag keeps its rows. Only an empty
-      // state waits for a read after the pass.
+      // The rows of an earlier read stay on screen while the follow-up read runs.
       return reads.every(
-        (read) => read.kind === "ok" && sameWalletRecoveryTag(read.tag, status.tag),
+        (read) =>
+          read.kind === "ok" &&
+          sameWalletRecoveryTag(read.tag, status.tag) &&
+          read.afterPassSeq >= status.passSeq,
       )
         ? { state: "complete" }
         : { state: "checking" };
@@ -113,14 +117,14 @@ function pendingDisplay(
     case "operation":
     case "scan-continues":
     case "probe-due":
-      return { state: "pending", text: "restoring", retryAtMs: null };
+      return { state: "pending", text: "recovering", retryAtMs: null };
     case "proof-pending":
       return { state: "pending", text: "waitingForMint", retryAtMs: null };
     case "start-limit":
     case "backoff":
-      // Without a known time, the wait shows as a restore in progress.
+      // Without a known time, the wait shows as recovery in progress.
       return retryAtMs === null
-        ? { state: "pending", text: "restoring", retryAtMs: null }
+        ? { state: "pending", text: "recovering", retryAtMs: null }
         : { state: "pending", text: "resumesAt", retryAtMs };
     default:
       throw new Error(`unknown wallet recovery pending reason: ${JSON.stringify(reason)}`);

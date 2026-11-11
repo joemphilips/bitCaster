@@ -93,14 +93,13 @@
     "replaceBlockedSafetyChecks": "バックアップまたは復旧の安全確認に通らなかったため、ウォレットを切り替えませんでした。現在のウォレットは保持されています。",
     "recovery": {
       "checking": "ウォレットを確認しています…",
-      "restoring": "ウォレットを復元しています…",
+      "recovering": "ウォレットを復旧しています…",
       "waitingForMint": "ミントの応答を待っています…",
-      "resumesAt": "{{time}}に復元を再開します",
-      "failed": "ウォレットを復元できませんでした。",
+      "resumesAt": "{{time}}に復旧を再開します",
+      "failed": "ウォレットを復旧できませんでした。",
       "readFailed": "ウォレットのデータを読み込めませんでした。",
-      "profileUnavailable": "ウォレットが開かれていません。",
-      "reload": "再読み込み",
-      "restoreFromSeed": "シードから復元"
+      "profileUnavailable": "ウォレットが開いていません。",
+      "reload": "再読み込み"
     }
   },
   "walletBackupRecovery": {

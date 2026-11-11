@@ -1136,16 +1136,17 @@ export function TradingPanel({
 
   // Build confirm button text
   const getConfirmText = () => {
+    const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
+    const amountLabel = shareCountLabel(tradeAmount);
     if (isTradeSubmitting) return t("trade.submittingOrder");
     if (!walletReady) return t("wallet.startTrading");
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (isSell && selectedSellAvailability?.status === "restoring") {
       // An unavailable recovery does not run, so its holdings are unavailable.
+      // The status row states a running recovery. The disabled button keeps its label.
       return recoveryDisplay.state === "unavailable"
         ? t("trade.sellHoldingsUnavailable")
-        : recoveryDisplay.state === "checking"
-          ? t("wallet.recovery.checking")
-          : t("wallet.recovery.restoring");
+        : t("trade.confirmSell", { side: sideLabel, amount: amountLabel });
     }
     if (isSell && selectedSellAmountUnavailable) {
       return selectedSellStatusMessage ?? t("trade.sellHoldingsUnavailable");
@@ -1163,8 +1164,6 @@ export function TradingPanel({
     }
     if (previewNeedsAttention && !buyNeedsTopUp && !previewRefused)
       return t("trade.previewLoading");
-    const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
-    const amountLabel = shareCountLabel(tradeAmount);
 
     if (isSell) return t("trade.confirmSell", { side: sideLabel, amount: amountLabel });
     return t("trade.confirmBuy", { side: sideLabel, amount: amountLabel });

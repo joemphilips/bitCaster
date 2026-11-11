@@ -114,6 +114,10 @@ vi.mock("@/lib/cashu", () => ({ captureBrowserMintPersistenceContext: () => ({})
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: (mnemonic: string) => (mnemonic ? `scope:${mnemonic}` : null),
 }));
+// App.headerBalance.test.tsx covers the header balance during the wallet recovery.
+vi.mock("@/hooks/useWalletHeaderBalance", () => ({
+  useWalletHeaderBalance: (balance: number) => balance,
+}));
 vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
   recoverBrowserDurableBolt11MintQuotesInPass: mocks.recoverBolt11,
   watchPendingBrowserDurableBolt11MintQuotes: mocks.watchBolt11,

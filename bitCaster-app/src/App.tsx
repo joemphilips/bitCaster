@@ -48,6 +48,7 @@ import {
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
+import { useWalletHeaderBalance } from "@/hooks/useWalletHeaderBalance";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
@@ -110,7 +111,9 @@ export function ShellRoutes({
   );
   const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
   const openNostrSettings = useOpenNostrSettings();
-  const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
+  const totalBalance = useWalletHeaderBalance(
+    useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET }),
+  );
 
   const navigationItems = [
     {
