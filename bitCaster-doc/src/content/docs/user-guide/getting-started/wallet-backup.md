@@ -67,14 +67,38 @@ Do not clear browser storage to resolve an uncertain payment or trade.
 When you restore a wallet with its recovery phrase in a browser that did not
 create it, the app restores your funds and your market positions from the mint
 at once. It does this automatically. It does not need a Nostr identity or a
-backup. Portfolio and the Sell tab show **Restoring positions…** while the app
-checks the mint. With many markets, this can take some minutes. If the check
-fails, the app shows an error with **Retry**.
+backup. With many markets, this can take some minutes.
+
+Each time the app opens a wallet, it checks the wallet. While the app checks
+or recovers the wallet, one status row shows above the Positions, Funds, and
+Activity tabs of Portfolio, and on the Sell tab. The row shows one of these
+states:
+
+- **Checking wallet…**: the app checks the wallet.
+- **Recovering wallet…**: the app recovers funds or positions, or completes a
+  wallet operation.
+- **Waiting for the mint…**: the mint reports some funds as pending.
+- **Recovery resumes at** and a time: the recovery waits until that time. The
+  row shows the date too when the time is not today.
+
+The row disappears when the check finishes. Portfolio shows **No funds** or
+**No active positions** only after the check finishes. Until then, balances
+that the app already knows stay visible. Funds that the app did not read from
+the wallet in this browser show in gray. The balance in the header shows
+**—** while the holdings are unknown.
+
+After an error, the recovery waits and then tries again. If the recovery fails
+again and again, the row shows **Wallet recovery failed.** and **Retry**. If
+the app cannot read the wallet data in this browser, the row shows **Wallet
+data could not be read.** and **Reload**. If the wallet does not open, the row
+shows **The wallet is not open.**, **Reload**, and a link to **Replace Wallet**
+in Cashu Settings. There you can enter the recovery phrase of the wallet.
 
 A browser starts at most 4 such restores in 24 hours. When it reaches this
 limit, the next restore waits until the oldest of the 4 is 24 hours old.
-Portfolio shows **Restoring positions…** while it waits. A restore that
-continues after an error, and **Retry**, do not count as a new restore.
+The status row shows **Recovery resumes at** and the time while it waits. A
+restore that continues after an error, and **Retry**, do not count as a new
+restore.
 
 Let your trades finish before you move to a new browser. An order in progress
 locks funds that only the old browser can complete or refund. After the order
@@ -167,7 +191,8 @@ not from asset monitoring. It groups them by mint and asset and shows money in
 sats. Different mints remain separate. Funds that an unfinished trade or
 payment reserves do not appear. The tab updates as soon as a deposit, trade,
 or payment changes the wallet. If the app cannot read the local wallet yet,
-the tab can show the funds that asset monitoring reports.
+the tab can show the funds that asset monitoring reports. These amounts show
+in gray.
 
 **Positions Value** and **Total Value** come from asset monitoring. The app
 reads them again after the service accepts a wallet update or a trade settles.
