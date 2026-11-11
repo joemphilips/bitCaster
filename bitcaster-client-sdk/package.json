@@ -415,6 +415,10 @@
       "types": "./dist/seedPositionRestore.d.ts",
       "import": "./dist/seedPositionRestore.js"
     },
+    "./walletRecoveryStatus": {
+      "types": "./dist/walletRecoveryStatus.d.ts",
+      "import": "./dist/walletRecoveryStatus.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"

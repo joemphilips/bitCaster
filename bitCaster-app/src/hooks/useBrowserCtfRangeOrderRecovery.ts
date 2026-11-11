@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   recoverKeysetCountersForMint,
   recoverBrowserDurableOutgoingCashuTransfersInPass,
@@ -7,8 +7,9 @@ import {
 } from "@/lib/cashu";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import {
-  activeBrowserWalletScopeId,
+  activeBrowserWalletActivation,
   browserWalletScopeIdFromMnemonic,
+  subscribeBrowserWalletActivation,
 } from "@/lib/browserWalletProfile";
 import {
   deferBrowserCtfRangeOrderRecovery,
@@ -40,12 +41,21 @@ function earliest(left: number | null, right: number | null): number | null {
 
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const activationEpoch = () => activeBrowserWalletActivation().epoch;
+
 export function useBrowserCtfRangeOrderRecovery(input: {
   readonly nostrSignerReady: boolean;
   readonly walletMnemonic: string;
   readonly walletMintUrls: string;
 }): void {
   const { nostrSignerReady, walletMnemonic, walletMintUrls } = input;
+  // Each activation restarts the coordinator, also an activation of the same
+  // wallet after the failed handoff of a replacement (A -> "" -> A).
+  const epoch = useSyncExternalStore(
+    subscribeBrowserWalletActivation,
+    activationEpoch,
+    activationEpoch,
+  );
 
   // Another device can advance the shared seed's cursor. Recover default msat
   // keysets before reuse, re-sync the keysets in use (ADR-033), and run the
@@ -66,7 +76,12 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     let usedElsewhereShown = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const isCurrent = () => !cancelled && activeBrowserWalletScopeId() === scopeId;
+    // A late result of an earlier activation of this wallet (A -> B -> A) is
+    // not current, also before React renders the new activation.
+    const isCurrent = () => {
+      const activation = activeBrowserWalletActivation();
+      return !cancelled && activation.scopeId === scopeId && activation.epoch === epoch;
+    };
     const clearRetry = () => {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
@@ -229,5 +244,5 @@ export function useBrowserCtfRangeOrderRecovery(input: {
       window.removeEventListener("online", onOnline);
       stopRecoveryWake();
     };
-  }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
+  }, [epoch, nostrSignerReady, walletMnemonic, walletMintUrls]);
 }

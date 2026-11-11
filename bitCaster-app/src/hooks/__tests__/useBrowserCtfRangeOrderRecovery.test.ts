@@ -47,6 +47,8 @@ vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: (mnemonic: string) =>
     mnemonic === "wallet B mnemonic" ? "wallet-scope-b" : "wallet-scope-a",
   activeBrowserWalletScopeId: () => mocks.activeScope,
+  activeBrowserWalletActivation: () => ({ scopeId: mocks.activeScope, epoch: 0 }),
+  subscribeBrowserWalletActivation: () => () => {},
 }));
 
 describe("useBrowserCtfRangeOrderRecovery", () => {
