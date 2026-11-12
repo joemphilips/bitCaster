@@ -519,6 +519,22 @@
       "types": "./dist/seedCounterAdmissionScan.d.ts",
       "import": "./dist/seedCounterAdmissionScan.js"
     },
+    "./recoveryIndexDocument": {
+      "types": "./dist/recoveryIndexDocument.d.ts",
+      "import": "./dist/recoveryIndexDocument.js"
+    },
+    "./recoveryIndexEngine": {
+      "types": "./dist/recoveryIndexEngine.d.ts",
+      "import": "./dist/recoveryIndexEngine.js"
+    },
+    "./recoveryIndexSync": {
+      "types": "./dist/recoveryIndexSync.d.ts",
+      "import": "./dist/recoveryIndexSync.js"
+    },
+    "./recoveryIndexRestore": {
+      "types": "./dist/recoveryIndexRestore.d.ts",
+      "import": "./dist/recoveryIndexRestore.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"
@@ -611,6 +627,7 @@
     "@scure/bip39": "2.0.1",
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@ngraveio/bc-ur": "1.1.13",
+    "@noble/ciphers": "2.1.1",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "cborg": "5.1.7",

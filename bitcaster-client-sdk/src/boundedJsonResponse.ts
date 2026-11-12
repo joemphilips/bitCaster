@@ -34,6 +34,19 @@ export async function readAllocationBoundedTextResponse(
   response: AllocationBoundedJsonResponse,
   maximumBytes: number,
 ): Promise<string> {
+  const bytes = await readAllocationBoundedBytesResponse(response, maximumBytes)
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new Error('text response returned invalid UTF-8')
+  }
+}
+
+/** Reads one response body as bytes without allocating more than `maximumBytes`. */
+export async function readAllocationBoundedBytesResponse(
+  response: AllocationBoundedJsonResponse,
+  maximumBytes: number,
+): Promise<Uint8Array> {
   if (
     !Number.isSafeInteger(maximumBytes) ||
     maximumBytes <= 0 ||
@@ -51,15 +64,9 @@ export async function readAllocationBoundedTextResponse(
     await response.body?.cancel().catch(() => {})
     throw error
   }
-  const bytes =
-    response.body === null
-      ? await readBoundedFallbackResponse(response, maximumBytes)
-      : await readBoundedResponseStream(response.body, maximumBytes)
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    throw new Error('text response returned invalid UTF-8')
-  }
+  return response.body === null
+    ? await readBoundedFallbackResponse(response, maximumBytes)
+    : await readBoundedResponseStream(response.body, maximumBytes)
 }
 
 function parseDeclaredResponseBytes(value: string | null): number | null {

@@ -14,6 +14,7 @@ import {
   SEED_COUNTER_PROBE_BATCH_MAX,
   SEED_COUNTER_SCAN_COUNTERS_MAX,
 } from './seedCounterGapScan.ts'
+import { SEED_RECOVERY_MAX_GAP_LIMIT } from './seedRecoveryScanPolicy.ts'
 
 /**
  * An admitting NUT-09 scan of one seed and keyset (ADR-033). It restores the
@@ -36,6 +37,8 @@ export type SeedAdmissionScanStop = 'gap-limit' | 'counter-budget'
 export interface SeedAdmissionScanResult {
   /** The restored proofs in counter order. Their states are not checked yet. */
   readonly proofs: readonly Proof[]
+  /** The seed counter of each restored proof, in the same order. */
+  readonly proofCounters: readonly number[]
   readonly lastCounterWithSignature: number | null
   /** The first counter that this scan did not ask about. A later scan starts here. */
   readonly nextCounter: number
@@ -88,6 +91,14 @@ export async function scanSeedCountersForAdmission(input: {
   readonly keyset: HasKeysetKeys
   readonly startCounter: number
   readonly maxScannedCounters?: number
+  /** Consecutive unsigned counters that end the scan. The CLI can pass a larger gap. */
+  readonly gapLimit?: number
+  /**
+   * Unsigned counters just before `startCounter` that an earlier scan of the
+   * keyset already saw. They count into the gap, so a resumed scan ends where
+   * one long scan would end.
+   */
+  readonly trailingUnsignedCounters?: number
 }): Promise<SeedAdmissionScanResult> {
   const budget = input.maxScannedCounters ?? SEED_ADMISSION_SCAN_COUNTERS_MAX
   if (!Number.isSafeInteger(budget) || budget < 1 || budget > SEED_ADMISSION_SCAN_COUNTERS_MAX) {
@@ -97,17 +108,27 @@ export async function scanSeedCountersForAdmission(input: {
   if (!Number.isSafeInteger(start) || start < 0 || start > DURABLE_SEED_DERIVED_COUNTER_MAX) {
     throw new Error('seed admission scan start counter is invalid')
   }
+  const gapLimit = input.gapLimit ?? SEED_COUNTER_GAP_LIMIT
+  if (!Number.isSafeInteger(gapLimit) || gapLimit < 1 || gapLimit > SEED_RECOVERY_MAX_GAP_LIMIT) {
+    throw new Error('seed admission scan gap limit is invalid')
+  }
+  const trailing = input.trailingUnsignedCounters ?? 0
+  if (!Number.isSafeInteger(trailing) || trailing < 0 || trailing >= gapLimit || trailing > start) {
+    throw new Error('seed admission scan trailing gap is invalid')
+  }
   const proofs: Proof[] = []
+  const proofCounters: number[] = []
   let total = 0n
   let last: number | null = null
   let next = start
   for (;;) {
     // The last counter that the current gap still covers.
-    const gapEnd = (last ?? start - 1) + SEED_COUNTER_GAP_LIMIT
+    const gapEnd = (last ?? start - 1 - trailing) + gapLimit
     const end = Math.min(gapEnd, start + budget - 1, DURABLE_SEED_DERIVED_COUNTER_MAX)
     if (next > end) {
       return {
         proofs,
+        proofCounters,
         lastCounterWithSignature: last,
         nextCounter: next,
         // The end of the counter space also ends the keyset: no later output exists.
@@ -134,6 +155,7 @@ export async function scanSeedCountersForAdmission(input: {
       total,
     })
     for (const { candidate, signature } of matches) {
+      proofCounters.push(candidate.counter)
       proofs.push(
         candidate.outputData.toProof(
           { ...signature, amount: Amount.from(signature.amount) },

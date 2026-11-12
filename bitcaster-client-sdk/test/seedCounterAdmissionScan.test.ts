@@ -140,6 +140,7 @@ test('an empty scan from a counter stops after the gap limit with no signature',
 
   assert.deepEqual(result, {
     proofs: [],
+    proofCounters: [],
     lastCounterWithSignature: null,
     nextCounter: 40 + SEED_COUNTER_GAP_LIMIT,
     stop: 'gap-limit',
@@ -193,4 +194,56 @@ test('a scan refuses a counter budget above the bound', async () => {
     /counter budget is invalid/,
   )
   assert.equal(requests.length, 0)
+})
+
+test('a scan with a larger gap limit passes a run that the default gap stops at', async () => {
+  const { restore } = mintThatSigned([0, 301])
+
+  const gui = await scanSeedCountersForAdmission({
+    restore,
+    seed: SEED,
+    keyset: KEYSET,
+    startCounter: 0,
+  })
+  assert.equal(gui.lastCounterWithSignature, 0)
+  assert.deepEqual(gui.proofCounters, [0])
+
+  const cli = await scanSeedCountersForAdmission({
+    restore,
+    seed: SEED,
+    keyset: KEYSET,
+    startCounter: 0,
+    gapLimit: 400,
+  })
+  assert.equal(cli.lastCounterWithSignature, 301)
+  assert.deepEqual(cli.proofCounters, [0, 301])
+  assert.equal(cli.nextCounter, 702)
+  assert.equal(cli.stop, 'gap-limit')
+})
+
+test('a resumed scan counts the unsigned counters before its start into the gap', async () => {
+  const { restore, requests } = mintThatSigned([10])
+
+  // An earlier scan saw counters 0 to 199 with no signature after counter 10:
+  // 189 unsigned counters precede the start, so 111 counters remain in the gap.
+  const resumed = await scanSeedCountersForAdmission({
+    restore,
+    seed: SEED,
+    keyset: KEYSET,
+    startCounter: 200,
+    trailingUnsignedCounters: 189,
+  })
+  assert.equal(resumed.stop, 'gap-limit')
+  assert.equal(resumed.nextCounter, 311)
+  assert.equal(requests.flat().length, 111)
+  await assert.rejects(
+    scanSeedCountersForAdmission({
+      restore,
+      seed: SEED,
+      keyset: KEYSET,
+      startCounter: 200,
+      trailingUnsignedCounters: SEED_COUNTER_GAP_LIMIT,
+    }),
+    /gap/,
+  )
 })

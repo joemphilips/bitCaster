@@ -1,0 +1,733 @@
+{
+  "description": "ADR-051 recovery index v1 and ADR-034 request signature golden vectors. scripts/generate-recovery-index-v1-vectors.py produces them with an independent implementation.",
+  "seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "keys": [
+    {
+      "context": "bitcaster-production",
+      "encryptionKey": "f490d3fdbc5a4a86d2af9b4fc3147c07db05f4579ecaf1afe74f4c3440e9594d",
+      "locatorSecretKey": "43fd316b4889585de4629795b55cfc34d254be1a6aad4d6878598234b5643d57",
+      "locatorPublicKey": "caca21ccb631c6bb8a0143e8fda297cfe2bb97ef080c98eee0c585c1b03465d2"
+    },
+    {
+      "context": "bitcaster-staging",
+      "encryptionKey": "68ed0f0efeef6002efd9e408bfc4af9803cca32c2762aefdbbd6e096d3f8f19e",
+      "locatorSecretKey": "950b35322f946a73421f5d5c743267132ff60b9ea3c1c46abee8291485a77a9d",
+      "locatorPublicKey": "43284a716e823b7534a8a79a20276e3cc5933d651313c312470635c680375aef"
+    },
+    {
+      "context": "bitcaster-local",
+      "encryptionKey": "7fb02e70606b32ca1392befa31d3a8cd95eb9fd88150f41bab78fdacdb91abdc",
+      "locatorSecretKey": "84eec1fbbd4aa0d9d7dbf902273421a8f765e6935a99712d2204c87c505ac12f",
+      "locatorPublicKey": "c7a7a4ccc8b1fffaa6e90e2d67f44d0c1c80800b6d72ddfe7d72ad3cde186b6f"
+    },
+    {
+      "context": "bitcaster-test",
+      "encryptionKey": "eec1e12c353e6d57fe39d30484ca0408dce6789e79ff5f2251a52013b061d7dd",
+      "locatorSecretKey": "80356e78555c5b7735b0bb220e3b310909b8645cf4860830ddd7262887d9d1e4",
+      "locatorPublicKey": "8eee246233366f5f5ca0fcb16e56804bd978c728b23922ad2a6b3faf5fc0287a"
+    }
+  ],
+  "documents": [
+    {
+      "name": "one mint with a regular and a conditional keyset",
+      "context": "bitcaster-test",
+      "writtenVersion": 7,
+      "nonce": "000102030405060708090a0b",
+      "mints": ["https://mint.example.com"],
+      "entries": [
+        {
+          "kind": "conditional",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "016929adae851d8522fccccc1cd3059119748cc66eeb8168ce7e5e7c79b98d7d63",
+          "conditionId": "596d40a4ed24c02a31b19d6e633f46f64304a672b40f793d8c6deab868beb0e2",
+          "outcomeCollectionId": "6de33fd36f2cbca3e0745900849081205c09a86745b815b69fb92ccb84209d75"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01667937c3e7a68ea374716edae34173e66dc54f380cffaccceaf15dfbfad22f99"
+        }
+      ],
+      "cborLength": 193,
+      "plaintextLength": 4096,
+      "documentLength": 4133,
+      "cborSha256": "46d3c0d72f7f3a3790c67d7c437daac5c224f02da5696b52a96e77cefe172ba5",
+      "documentSha256": "cf4895e1862d811895ecb9c9161de0c97b2ec5e8945ebdc667cd91a93dc606b6",
+      "cbor": "a46176016376657207656d696e747381781868747470733a2f2f6d696e742e6578616d706c652e636f6d67656e7472696573828200582101667937c3e7a68ea374716edae34173e66dc54f380cffaccceaf15dfbfad22f9984005821016929adae851d8522fccccc1cd3059119748cc66eeb8168ce7e5e7c79b98d7d635820596d40a4ed24c02a31b19d6e633f46f64304a672b40f793d8c6deab868beb0e258206de33fd36f2cbca3e0745900849081205c09a86745b815b69fb92ccb84209d75",
+      "document": "434153485552490101000102030405060708090a0b1d23b468439f448353e4901c557ae0dab17fe06c009938fa14599ceca0dae723d887f6dad1ed2457de52b248668f26581d64207dbe7ea9c1bce9ad9f833e1787e50658cb62166e91b17ac21517a7f94d882b1e4375aaeeeff8926cb71ca649fdf6c8d7a2bfa09ddb8a4ba0cd65fbfec2ee7414fd62607a6817695e3243e3bfcde222072cb90708363c3421fe5e72530d8c315ef72869eed6e1627fb7e7154b661beb6f5d040cb062cfbe6093238d4efc424883aad43d9520f7e4c53bb756eb831be03b20f44dbf87e1c751533bb9da757a90c1afd257c61ffdde544fa1dbf82fbe130036864f0eff664af9a554f0fabdd4990abb1fb35b9b8725177fe6178aa81e3f878cad160c75bdcfb62e32e51b5e011d068cf258b759acc4a56f1e033ef6f81ec25bfdd07e3ca509bf12d0f271a6a1bfd9b6c286e7a8c6ff06e9e60339e40fcb0a7f422c4c0df219754dddb47a13f6f9b79150366b8c3122bbfd54be7572fe824e70ea97454c2c32c06591f5dc53ae8e3a4eb0b9f94fe8d5f16848884e0028411d3e71f2b62c5f3880736c3175591f2f008e9a80fc0778120a1ce036736fa5895e2dc2d92a47840f477c87e01d33d8aa07d0ce549eb18dde959d41f063ceddc06c471ea9d3420a9f185785adb122225d7c1947f02981470c09c8df799bb8c81a360917d1b99eee250c88413ab600ecd0e0b4f2db024f04260963a9050e46952b9ed266146e8f764eb789db5e37645b12f14f52899bee358b209deaeafa3ca140de0270bf579f5b1c96e3bcb1b80e3145feca2deaba9678df4c31f918d84fedb7a008063c861009fb466eb328e14551970304fc671c6fc810a3ccc15b8adf0efca776b938d33094156b3757044bbf4c628363ee33a2518b09f39872206b45d1d4182d468c73d3df52b8b8fc2eda2665aabf35c6b0c7f4d375ef072e4b5358ae5affa701fe6b270f5fe7fefa12ecb868f3c7e3c5d929b85893301182b8fea8192b749778ea52834f405a51921481fb5683d8783e311fd33d50e8dee59532187f2e0154785f0c5f852301ba459a4de759fad7e9e915dfb9235c35712b150a0655807ede376bd8ee0f9aa7aebeed29f23faf42f45cb9e762ac758c3db129611c935d321b872a2577be06960d7f68c1dba4cf07d23a06f82de5f8e49fdbc7d43a932ef209318a8a1c78a0bc8e80c11c9ff9b7bd31f7ac23f337aa9b58e75670e8c5e5c4eba6194e7e3ac2ad7990a2cde6dfc4eb426b4af402c2973cb1ea14b8fa6d52eceb3f03d7ae1c10cda49ac51c07bc6c257e61b35238c741dfebc5e9e60e4f5e34d941e32319cc8d4d70dba4f0486b67ff034612aed859b4e3d306714c9c2e89149a35ef329644072079aa0e7781981e476ddc68bb2e468af645993001d9069020a902fe046b81d69775dd35b02407ee1711b372cd98c64740bdd76eab7d7171be66a3ca6223f4c8ed9a244ec3eaa181f02dc3126a29f9a3f724e765f5c3d50e6d49e3c16c9486f31855d23939ef6a4919f399d649797e2fcbc2e7d49c77e1aaa8be78aee9e5f6c05f2d758524c96b90257a8bdd221afdf99b29e7f3b0543b70ec950a8a0bfd78c8458001b8a394b31e91ea742aa3eb3105f5a87bbfba7391220784306e580e6c8a9cf5525b1d9bf98b124c97696963ae3160d27799dcf7d34d46c57dc64eebcabbaeba1de42c021192bbe6aab14ad09c890e49cffcc9468c40fea8d73948bb2e797f5ace11aa8dba04049d7881a24d17b5bd33f7accb89dd679ba12abecbc6ea11c7e3b961d0751583184d6a6c23222e39a24bc5586628578c868599401ddab4a96109d55c662874bbb9a7621a2b95a6eb3c64cc9913e34394a59f0957f6a456f639fd2c97145324b9ad4aba4290477755ce6b295c6aeec43d71b8421a90ba397b0e0c536275d277227ecb44b276af2fe8b5070129727ced3587849114cb4d2572ece6961dbc3c819afb926ddc24251d1801410b9f58c062580524157e0ecf858cc90fb7abafcc878401317af21e64082460369f4424ec3f9d81dd9e0120dc83cc9b7c46d21ab71d5acd97b8d8b2234e3e975b0d578063ce82cdd42ab2690ffaf6a511f9ed295b0d269000c6288be8674c9349be3d453ead0901689a5057c73ca01155f5a730276ba3676d788a129373cc683b2b1c04403dbc20884fe7f594b23109e35516d76d9c454244752daae0afeab7cad5387ed38401c51373224c0d4128a1a8adc720ed19a3b071204d433eddf18fb7cf36bc16b67549508c94e6501a647f1ebd6901c9e811de4986af82ee4ba74aa894532b950fc0dc3218c23aec34d227969dd87b01558eaa65c52ad0304f71cc6371c624cf9635b78744e89504898b259571ac507a294547a4d0e7665196e619a88a4f81a0189f665a98c7ed7c14a53f095cd76dc7b48f6e11f3056b7a769de36a3e36904f111ddb5a5ca00fb8d5e07ac7cdeff4bb8562ef5cc6d52c280d2bbbf6afbd3a34ba5736229948bdd13c32a02bd76d7e3d87c044c4e59761eb9d7c52555e180da4ae5297cbc1d9c60d21759abefe6ffe0420e94ae424bd6daddfe463a7075e2bdefcaa5a390efbf81d6b26186114098d9748d80dca29724658c269658b6373afd5cead7619e74c8b9f13258b585bfff344ca0649faca31b15d5fd9be6c646ac8e5c1b0bc9d6e52f6092982e9e4582031e0649932baf55af5032aa6358e3f353996cf880d2750ce83a9b0cd13e56f2284e02b9ff87b26cf502e38304b05718919992ead48c25cf906e465c2ff464a9be7e80cb564f6c7ec335284ce579a5b5e414a38065fa5f88b500aed5009a2702acd06a84850ecc714843c388ea7eded149e7020ebb10c4ad07d4739c158b357506ebf80c882c5a018a5e1c30f1bb1bcedf8166d9e4c6fe98cc9b252f8bc928bb4b4d1ee9ac1294a2a7deff02b06f9001d2d4c9998f2f4c6b3bdb394d27eb700f0ffcef28a996f9a3f978122e2ab783b1798b807d6a2716e314c4be69435e279690d53a9ca81e18009108fbaf0cd07dc6f03898e6efd4c1e3762f0f9bdb8a9dbbe95e53b6df3393f6bf1ac79772e14504d4e5b018f7229f9c031f8af9ec36e1830db7ee769da03e4241c63c87bbc30daa397b8db76c0837b6fc7e6c3511b518034651ed1d565c5f5efa61eec04a4b7e4c20a3fd4169522409f6dc26d4f571107b929e746f4d61983dfe693cc97f604c44986ba5eb2ba1138377e7cbfd2b5eabe935e069cd4354ce4816a6205ed573b6537c09a8dc0801ab1eed40517e90862c658fca967fe00c3913527411febdcd15f6f224be8039ec89a88c5cd9abf8cc1462fb52675074a974c0fc2de5224181cfcbfabe8902b42694f8d15614315694fa707353655edbc946948a3b97d24500f50ffc4c4e7b6ca36ecc5bfe930264930385fcaff8e43974d59a38f7265fac3bbab9d8fe2b0a8b13c757af24f75d1adeb19f8c0c01745166d8b84bb007ac757a15d1cc0fc12436d636cca854b6064a53b16831d4e7a61f552cb31bca5c03c01467ec8734bb1c893e4afef48c75b52ecf7b2b0d3f7a0def1888965e68d4153b0cece98eea261c1dcaa118d511870176633b738997dba3cb224132a262f7bd4233c8ae40af13304df62b433602760efcda1a52900130e95661d6cb276be7e4979cd385c6cb64fa01ad476573e80fe162e6e88ea46317dc3a792bca10b2e854bbb4cc41de55c88bd2130175758c07dfab9d022d3c2c2e4df13c4d96279bdb3bfceb903ec7523c07c907a0957517a3b9eb7cc2b7347486e9df60c3adcb70fa870b139c3e0488b95e4b47e10e8fe049ee66eca6f6427f47f0ece72cc9aaeab28894f6963cd379bc7610404e031ec09ba28db773640f48e3f4faa883e6522e8ec6fb6c2043ff1a3f089f05e713039b99ee86a9413ae8569e845d9c9648d885bc6858a0ce4538ab1c55c1c68bbb139158e4b7505f2b1612addb2def3e77ff60025cbdb0d3b26eccebdc22447e42bb894c7f671b11f9711ab3d1df7fdb142c9cc445584a83d92c0fb245f15a25128cce1e91128e458bcc89d917f8e8b50bb3d699905a652d8e5097a8724661bceefb3e1abaea659cee0167dbb5947475beb64e83b0746cb8bf2a4d938fac3f0b61672a8acc74398dea096c70534b9dd547a34882cd3465d9e1f8f86be684a97606a60a1713a4e4179a61262b481395c92c9eb5f656c2e46aad410f262a007961e48dd62cc274e60ee40cf013fbdbe03a25bf13db3bc19d132b991a7dcd8ed3ea0524195b00d3c63cf41aeed3231cafc9de80bedfdc43c62471a75818591938f55444b26172de282f2c182ebc488c525e9a173b8c1c944f7a02c4f8bbe68e60936c1318af66ea6cda8e63d10d197c79b9d77b6259b57946389a76af40ffb0c11f3fd9621006b5caa9ff622f0818cbe3c2a320d884c6ad5a7529b91f6f84096da65006f50cabec453328d3dc410a15896531e32e75185f40a423bd2290fdbe5979ff0329d1b8133e55eb581bb978ea3ccdbbcb5d68d04b85bd2f54d198475a72415db7d3a9b5ea4532745e3f5796f437ddda89c27c69a0902b75319550ac7a74a5f891375a477118a22dc1c35e15ee0166c4796463b5374ffd9f4cdedc8e331a1c4ec7ec8e05072f2464501b754a4386be3fcabb49705c7ecc520cee2f793ec8fc2a95f23065b3afbafb9a07c02b793f3e97c8f26681204d293b5a49c461ac889af3432746af00f200b4d25ee6fc30d9ca6db74e92d355d53bd5ae1acb76edd6aaa15faa0fe0e7cd2658ac95725452fc57d46c8cd029c71b412df7ac9511447ed3e5b28a87c3eab4f2a793fbd1b84ddafc6286a1cc1be9cfce4ea1a3fa0431a1b9ce4f4cfd7f6056521ac7d3657b11066f1f81e812c8e727b8309936e649fd0b1c15431e677bdc1b57fb58b72f86f6d2980e7b5da22f20b3dae4ce9bae0d6c3fc3d344d2e0ba68f85083678b4bb30126ca2e3e27cd923be100652637767af94561a48efa1cdebda26c687f2cac0270b7c69ff343842abb1f476ff7de048f08960c73794eb5185fa7727e00008c536735c8aaa73b4fdfb10918ea0c0b10f94ffa57cbf21634eab6d0f4c87b30a51bb9f5a8af8c58d8011baefeb62f7286bf8ec4a077016c317e01b035d21a57b91a8c5caf05294ed544fe63b8d2db868122a1b1d1c2d08b08cf296a6838e3891ae71a8e34723093027a5302215203dae271e48953f5d3ace019dc0614c1c5358537719a3e3a28e472080cb75b23c7936b90ed7c615e007c1a2d8021be3a4aeff98ebc0cf285b8cdb5f30c0fd8bdce49d3a5802967eb66b8b4ce1f4cf2e813b1422a081e27341a3acbdfad1c7b0678846acb7a203a7ffb7c89195ff99902cd6b9983956fb5b885314e2b5a53761e40c716e387d6b78faae627b53b57ae321571f111aab5e36fae97266058f7f5c3d637577c4cb2d5781d0e3bc0f5f724bf65fa0d681c1f0bab518659d860e0f0e524d874b34ab2b063bd71d510182ffd0574fccc82582fe4d0b4e5e753a76cfcc5f085c4ea10ae781fec34626ef9ed037d69c82ae476e1342a69f39587c112330b0c2039f7112daf015a99163de10d412bf10147c6615c999a434c6f79dec195508f63a079cc63b82e0602db90f47334d4f2e5aaa0f0a3da5a335c0c4e05a8653967a8df74dfe227d7411e76185830d714b006135f968128287b30aa803167c11aa37d8c819f4212ec193597d83353c3c171246762c9dddc1681a40795d86ab5c1d5c96341382023efa116c6cfd95cb779f9a1bd036d18015792aef814274ba9544cc518e101f87cba80ad2d77f9380a4f40bff"
+    },
+    {
+      "name": "two mints",
+      "context": "bitcaster-local",
+      "writtenVersion": 1,
+      "nonce": "0c0b0a090807060504030201",
+      "mints": ["http://127.0.0.1:3338", "https://mint.example.com/cashu"],
+      "entries": [
+        {
+          "kind": "conditional",
+          "mintUrl": "https://mint.example.com/cashu",
+          "keysetId": "016929adae851d8522fccccc1cd3059119748cc66eeb8168ce7e5e7c79b98d7d63",
+          "conditionId": "596d40a4ed24c02a31b19d6e633f46f64304a672b40f793d8c6deab868beb0e2",
+          "outcomeCollectionId": "6de33fd36f2cbca3e0745900849081205c09a86745b815b69fb92ccb84209d75"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "http://127.0.0.1:3338",
+          "keysetId": "0148ca4b661f3bb8b9956ce6d6f5185e51619a14a66e46367ae2548ecb83d597c8"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com/cashu",
+          "keysetId": "01e6355c3e386e04c4ff7f5208e1f5ab1e8355d4a92f430ac2af27f256e8c26067"
+        }
+      ],
+      "cborLength": 258,
+      "plaintextLength": 4096,
+      "documentLength": 4133,
+      "cborSha256": "bf3b1bc303b6bdb4c1ce271ad28ba51a44b8b15f8eb4aa0d78140addf42f312f",
+      "documentSha256": "224b8733cd38dc4fcd3c5fae5ff66119d00107f2103453020232a6c1ec9ba747",
+      "cbor": "a46176016376657201656d696e74738275687474703a2f2f3132372e302e302e313a33333338781e68747470733a2f2f6d696e742e6578616d706c652e636f6d2f636173687567656e747269657383820058210148ca4b661f3bb8b9956ce6d6f5185e51619a14a66e46367ae2548ecb83d597c884015821016929adae851d8522fccccc1cd3059119748cc66eeb8168ce7e5e7c79b98d7d635820596d40a4ed24c02a31b19d6e633f46f64304a672b40f793d8c6deab868beb0e258206de33fd36f2cbca3e0745900849081205c09a86745b815b69fb92ccb84209d758201582101e6355c3e386e04c4ff7f5208e1f5ab1e8355d4a92f430ac2af27f256e8c26067",
+      "document": "4341534855524901010c0b0a090807060504030201c8bc8a12b27d8ad704993bc31f285c83417b1a31e4ee4a1707b47c3c090477697321c48cda9360d27c6d1aec47a7d66c82bc14c102b5181096f4a1866c1458b3894b0bd334a65590136976a5520ca4254b9e8c39d71e6c8358af408f53a83fb7a686fa4d2170ad81474743a9439950dec9781b493c6d2530df0162a80c3f10d53fcab4232b1c09374546f11eaae87eaa4e50a0f07551df07f2878a5c794d1bdb7081cf3114c1d2c7135bc48c4d41c6bc65d9659e832b17438aba6f64f99e49361ca746f688698560a01b29b37d9fe366a266b99494b3961042e58aed353e3362818e907b0a89ace2c3c9b55f919b09bca47d52020962f23fe319ce11aa42a1c8c81bdad6c76643189ea3f84ea622c2a37fc8c5efdbaf058916c9dc1b72acd008af219e2bf3f7ffc482ad3f2e97326df7baa7e2c4bdd35808ac034e40766865a78f9aabbce45b4990caf443cf280c0e71d9caf97bde2fdd0a0dec48c12d0f0aa4db7eda20ffea88ea5136e129fe9b5e0d3b81919f9198443592d253319d1e1b6a252755a1d96e9f1412669367220d9c6d327db530df8497833c330faa4e3a5d45800d57a15308de180fdb9c1b98ab4f70a690f2b3d1f9812a56875fd43d5bcda97fd5bf9f6f5017a047263a10fab514f28f54b3c36895a3b6d1a25e36f140432c41e614a985729cde89a837e99377ebd6a2baedb20318755710ea83b920c60b549171e12a0972dc8eee0257fb459598e2c6326a200168230318cdd43d8db3411811bbca4c8e2ab3b798522f08c1a5abccbd8e929d742cbe65455edf97c7f17e2d0d8249c7bf429c3b9e8526e448124e842af21c2de6d2ae3e8cbc6aa219316c693c78e95fe3c852dfecbc7171310362c90006a36528e6f63972a122626e438f40c99fcedae0d7afd5f88dec286e264f27849b9ebe87f8e1d273e70325e77a29f52f0d70c1784073a5c57676dd0acd8d277391c7cc326900c508bc2b7e23581035e98eb6b78fe81adf3a580572582f35d2162f2a95540d800f0ddd322972f6dec95c804a09970e2d4e1158b75cf27cfb5a7cd8f0deeedcc91b1e7a046286572ddd2d713529a5ee874d7906a0b071d1540a038ae4f0b1f30abfa1a7777b7d58f98f8b204d59f9a66a85ed0c2cec8557dab80a90c3ad823b1feb98c275b034faeceb89244786372b7c0d6d348694392bb864b50c58b7309e0ab3dda211372a1dff9f7a8d610bf8b7880fb86c1312c875d3ddfbd2e86df07cbf925bcb357ec9d3bba7160a438c06ba6082e8c097963acbefc435ad43bbbd465d87dd57fee888dd76a5f340acebc910664ef31a4055e065ee0c6920a2edb3d81d92f06397ba1b077a7e76a4a5a8d7e4f3b10efa61750cb21250272a063c703360ed38010e6d693109c6aaf4300b43bef0d35de9a9522c09ebad58e1274da517da8ead24d49a0e3e12691656ae2f768836205f351289c45615e379ba7e23884813e06a0bc8a21e697b1946374ab97e349ed70f343615728556dbbca2926cb993aa487406107ad48c48d2a28561bb4040ad0638c68421f45aea740d755b12ab69ff1808d0618acc3aeae8dabefe413c7611d71661a98a0b02a3b2975c0fe7c52145d2e08f9bed7f970b04548b57aa0ac00c3eb9e483ce83a8d1bb2541922dbbbb2e22a3d443d37993a40650394ea306b2f155e69d922926c887fd7b96870a6fa2e6c911f7ff5492098f79c5faa31ac18399266c23299e62a31cd90354a038306f9873dcb99996fccc4dca7fd0565077c63993127719eb759383569fc475aab07a4bccf893a26a4e5e9680b98c0fd7229a4ccccbee81d0933050dfcea0c3754f775b10ac01c24b5a444e866fd240babde9ed944c395ca3611d764bcd7826d1178f7750e1b97415c5a6156085a60ff8727055c31f688f021173f1854df17e5ba99620b9aa68c9b5e4cdca98d0ab90cad98ff0135e916a365be04b444a7bdb8a3f25d6eb7f9b44acfd600802525346feeaac08edee0a8faf4e34e8ad35d5a4154dad649589788fdc309c2a1679d0a68b64f6ef4a52226a901d0539fdb06c40af8322270e8a5c35404815c3148afe5b8225f6b990cc0d24f3b0cd3e13547f15309f1e76a2dc7e0e388e6e45c4ca18620a34def136d511db47498246b2f8029a82852dc263ec22c6ae872717f27aee784cac41d6948100b91b35c274fc345c9b641d35eaa3681476610dee9b9b4017599ac0458fd2fb4c015c8c6e5d6dca942cafc4d64d940886235e94fbc598386391c98c4942e3293e30825fdb42b41adfa42c66d00ebf0fdc269231976ad1ed444db83569913c15663aa36117b193ece1fb2d93513170c273d7576942288694b18e3247d6b1bf944c0604d5fd944c0d9d9813794d9895a564138b7b708e811be91932c3facc87acb93eb56efc2ba60a4b79d02160dccf8c297cbb26504194dd80e14e2db46f88f0bb0b6a4c6bb54d3755d21aacf5aa7c15637abd829761ecedea938881ca7fa48bb1c410b7811764b99d91546571c5951611b78a54af5f5ec8f50adac6dacd4105c526852889b1ce8242d488f1c842ff5e46a9319ab3726903c87973c8f71891030383236e8e139457c11b97c13bcf703daafab0adc075065526b3f1ddf66dead62cf2eccd598b5e1e4fac378d3d7133e42a06b2f8c66e5e40054ca9f050a959db506aa8eaafe9b54cbefbad5fae2f0fbfbf8a8f78afefe7bb3a745c768372bcb180c9f39fb53d049a52c348206b0b484e7f794f33b9093d7180bb3440336463b5e06a5949498fbdac4a84c20660b901e7fd8a23c7708753efd31ef718b5ac0ad9712d2a04722af23166ac1cd4f348fb5759d11599d92911af799928146102715f083980db4135658a9e6b802d1b4f477174751c3cb576eea98e8fceb54a1525b4473adb0f3a6d9ad251c4ddedd3a1f1299269291c8165db1c309677f745468705e88be9c8c9e8ae6189259131792bae57685f98a90f02dd0166d5054c2ab135cba0e4671a1ef8a186b25348ee69ae03523ae192e00c9356d946ebf4c57650619a136540512aa7fe20fc12c47b8ae9aed94f752ef4a736bac98322cb513704d97402f32e0ffcb79b8fc3ca302e626b9512b418c78e81540842de9b0c5729448b0d927b76197556c753c571d4e47d958400184b848709cfd54fb8de423a5a3de299f009319f6552611b2629c2d692d255e1eae90cca6d78a5cd885ddf6d4822960b9dfe784990b3dd84377ca349ef6bfbc875e611ab7a774ac2d2cf79c8c659bcdab0f2201096c3be46e54b884ed66a3db6522f6450312b6ee365964babc7e3cc7173e1c50d17f4961678ad1ef7e8a1b422cdab53bdf8a67d0b82f35b4ddd64d1090e8f882c367b8c448b8fdec08022bec6a0c0a6e2eea008fd7cbfd07416429065e240ce74e5463b4be46fb5d2e94938a19be799f7c3a0ffcd477847b73ec396def397a3d3ac23335abcfae5a796ea370029970b21a7c0ebd32d6baa55fb655f8f2276004c52e8c7b49093085fc9f5ba61717d59efe0f1504eb153c5d353519d96b7ed43ecd4db5b41d905f92e7495d89ccbde589e8856e14de6c45a6404dc205ca26ea11230d494280604cd301a080d9e889b39e8eb89c854747f7a449c026ad4934e7788ea211ef9084a2f7e05b3ec2bb61124449065ae4fa5114f5676c9c5527bf96f4e0c9916ce9679d58d48ec040420eaa2b566f6bf8819958af26005cd3ab45d7d172acc5a280abf9b5c36e01c010484bdc61e933899fc41840b0474542559e0e8ea134241bd1ce1333ecb4d1254ce9f94e7db7b288aeac094b6fbedfb8a4e11eec5f6c5456365f7eb3074b51fea4b9b68a48b2ce8c0bb43e88a887b2a094d8f363a22d9c634b8f60fd15f8731143065e7fb6435a2606c6bdcea085a3f06e01b2d45ed6fd8f03135a76e700ae78f786f84b1e2ed7d481ab1a2a55ae677b32c827ed752838f1248307a978f977bd83f9bb58bfcd6bc02356f1e976e831f5e421efe397862c3a277bc972e13cff27f4e2bb55dae758149fc8214e3207556b38c2f81222bd20ace1868619bbee08712c3a7e7a71cd1b06a1d7df0b8891d443a24e98d904680ac5296a16edc0baa58543a953f71afe5c71803fbae0a3ea2b77ab8f3044d8c9cc7726baef1d32f8b7c44bdb4a2ca5b769fc8080d206e976bc7be13d3284988f5c74c8a8eb1fce5f94e7eef31db98d7387ef5748e6a4bccc6b08455727171e448286e0c2f81c5260fc16c2fa0b3a9271999871cf2c866657f31839593f907cea27d7733e4150888aa76acc55ee121909e6ac258561781007bf85c2decdc5a113abd4f4ff848d434f11fd504c663438282457427d6ac9dba28f5e78a9c5e7a48f8097019ae4febbd59b9ab44ddf70509c2b81740c51aa14705c18b4aeea9e6fb4930cf2711bd37b8bc3bab247d4d202557a1d760adad500f586af988718f5b216125a23c232ad48905a734bafa5aafa22e8feb8bcc31157be23eef2ec2a6892f0f4c7d5bca2c07e13cf97fead45772063995571d8d6cf11b742840c0e6e00debb81e89075c87bf4ea55adbbe832a1f27d8e7fa5b2b8e4efbfbd29611ba43475956597a9de7c90e8c88bfbc5d62714455e49a41f8e3b4d425c3e74afc83da8f936fa0324820dc351d7530c4bff21a125d88864f811b2347ee5a2df4c0afcd8b7078cb2352866b6575530fde440eaaca504814162230c5b2eec4fd4574b8f1fbdbd97a11fc28ad430ec286602085a4d3357ac51b69aa151de2d741f029667e6c54019fd376d469b6d3d3f062b1b5cef93dd77535fbfa3f78f0d60211f3a1847e8c52570f78a6bd299ad426bf9a93518a7347926030d554b5e679b7cc379de355167c1aa019f55599ac59f613e55594c11ac2beebc5f7dcbb8c70e0dec37e74fa6f0144be2e279618146b4a61b6321fde53db53c3a3a2352d0e05552fa693a63c8f7fb639499c3c83e897b08c08428580902db831c0fd82e3e4bc8a6309fead20ea8d9d86dd20f87a302b6c2380347e4ec97374886550433578053ebcfa807a005555c8b6810e69e485043b5f2b8d179d6cf739dc820aacc8ed1ea8d1415270173d7cc04fb43ac76af46c772fec227ccc47c760fdc9963d8b7971d64450c9825c4e0f84d306935bdc2cb3d4535b3c054ef6c55a21a7d2ea200bae139d1b90e873af04e0b5b98cb8e0178acc7bb3ff41f25e072e15c44f2d50e788b47b94f237f344a698653f38f9a1cbe4b7f380c5530e67ffeb538ac9382fe7f9337f5ad23a908cb9d951a5a6cb5cbd19624a961800bba1fbc554579f0afe5d993774ba0004239b7ab7520340b7ca04dd9dad28a621ff7b7cd2a43454baa0767df43485ef935930932814d86bb57927934f9260405113a007fb3a3b95d1fb616db438db910843b3dca5b1759150bf8f11e3ac6976a146d41d68dd4e90fd61075c2a9f4cf837edfde9cb5262adf584bc40bf7808fd46adc7b78b8bc988180d011a915f2fd3242f4949dbd145a68bd6d9cb518a1bb2baad31c1465b67a82bfc5aea319dbecb6e25b75414732267b98a0caed2dcc551adfe4866671dda1d93b3c9996aa95368cd791923ad7f05c0b8a05abf8ede9d16f16c530f7df6e75cfe7cc1bf9266bba8293f96db1e5ff3a0c9bace8402f27ee1e7e9c554059b043c8f4bc4dc2bce0bc5464ef3839fc416f53c73a127940b111cab5ca20986d44146074e21e1f45b15ca5740d89e29a52ce3e7da38b3290b9f55841938b90e0b700c453c7e61e736ba5eca337c554e340ec9e6861bc24a34186d93c7f2afd5e62793f0758df72b23bc203184839a2e"
+    },
+    {
+      "name": "120 entries at the 8 KiB step with the largest version",
+      "context": "bitcaster-production",
+      "writtenVersion": 9007199254740991,
+      "nonce": "ffffffffffffffffffffffff",
+      "mints": ["https://mint.example.com"],
+      "entries": [
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "011cd2f981c4e220c8ea6e914720f1d6f5968ba5644ef6a340d158fced1a0a216d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01372022bc147ac22eb77dafed332d7b5fc6e1bfb95c8f001095a68e96409abcc1"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0165dd2b31b992ed1ec9701315a32e34daedb21ca96fdeaed979e99f11a39cdac1"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bee107ad41ea0553ecd905bc0b410df79ae03a6511a0f193e47e7a58bb1d8e4a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d2de438dda19269b824745d5beb4fc1bd7285154fee84b810483e9d4a20a1862"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c39022ff520ea9cf1b2443987857fce173757b61846c34cd6ac04567b8bf7c0f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bef7541a5ec4de6436c879b3f57cb321e7abdc4f2dea3e1ad72a3e464db9c5aa"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "016b800a0158652f867c2e0a04ceed30b2e2aa99d5d63c6823d223fdcd35edac92"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0192438af95e88829929b0651dd99cf89bf60349500d568319e1ed220f81ecbbf9"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017ddd5d8e49acd07dc49db387e82a26ca4e10064fd8f2b073706f65a42a7ae3ba"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01f5c0400c98780861717f164b20f6c05b732eeaa0ba727bf339eeee2efbc84e04"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01797160212f35fdaf1f88919a1463654a2fede943bb96e84e01a3e1d714b8fdd2"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c3180e6eedb9c83d201d7d7e0ca7fbaf7f11d5ce1d5f3a945c7867dcca21c486"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01173f7935fec40abfc5bc445b504592c0b36350a0c30eb66dcf16ca31f0212eb3"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01225fd5432f364722c03757660277440ec390397515968d571ead59be718c7944"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01ca1d1b12a25742fdbac5c290d835a45c0f87af8fdbfe791a20ab2d7ea7d4689a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017fd019b2110d5f64b084823fce8dc40d5382d2a95f876b253970f68c2cc15d94"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c691a83be5f0784ec83d03a1d96fa426c411b2f700080f0cd7f8fcfcb9d65dbc"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01f36dbde4e6fdacf6176d100afc9cc7860f8c276589c878f12010a0fdc8c35fb4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bce45d473b13431923af7ac95aacb7500b98c3ea282ba1351bd7c1f826ffcfb7"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "015b4f8d137c51442ba81a2e7116b17228dac79dbb4612d09e4118952dd134f50f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018c1a9d330361dd19e88863d1d329be10e4cdda09e7efc855bb078a8cca074d41"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "013c73bade11e0193cb94b0a8e0bdc8dae19445af2335f625655992a8f6ee935eb"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c5fa7af649d9cd8135b482ef4dd00f64cb008ce52ac5e84b65b593f7bd4af47e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "011f6b757b9d1d11ca33dfc0d7ebbb1d68e72a0ff634075afd9c3fc06eee2a175d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0110e3f27b560ecf86a6bde18ff2a2546074f96d70d14a3da399802e2c761dfe44"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c0ad84e96df4e651f20210f5f645d0ca9a796acf5520fa83d5c0ae7a9cf97c70"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018871f88dfa209cf44800af20a8a23c8325ad17ae34642c49e3bdf65ea864a420"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0167daf6ed3fb542c36be68e97c346ef040643b53eb6ceb9972f913bfea94e313d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01b7eb72cdfb416b467c1143a85b21bf38f1c0e8b08f9b761dc1745920b7b96d48"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "012725e0b53b527fc938ff1cbf85542dc8b6cdd59fa8270fbb03144951815fd30d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "016e90d0f8c5b85510cddbba0768f303b8679aff91384e58d9361cfc73295e2af6"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01b5ade3fc97efc14007e9dd354e1d132707d34cec1b648bcb2d8787ec0f3b5781"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "016ac2e2100dbbd545aa046be30160798c6908d70b8dd6a91a61a41b2d18b07970"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "015e754ed196628f0dc1e9ced8a54b667095ef2fbe05c5afaa5c3a3933828e6008"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d9bb240b69f197d26d6586526b43634c6d54213b8922d8eec10b8b43172b71b4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "013353af38871f0f105c63ca50aa3bf5572791e7aedd3c270946b43848239141af"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01f505a81f6d64691df907ad2d23cfe3bbbb0ab8a40e6dc879b6c02888c31eedd8"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0190dc0575af91b0ce063c0f98959b91c0a4dc341a60c32671694947ebfaf32ef4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "014a8d7e0748a789848e5634600c87de69f7d15eb8e5d4dae11ff70aae090b641d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "014f41fb859f93a8568664bdf628129ebca9e0a1bde06ec67d3d9a88d89a2dc610"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01020ef281112c424e2840b1d36ff6ac0b260e8323723b8b29652461d71f351c47"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "012eba84027399ce7a5ce8264383ce303ba3155c444cf8b499756d29b8de8fb934"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01915d3f6f71a5fdcb070e630e7d26e8037f404d43dcc5d8d47eb9173dcd3d43ac"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "019e24183d34f33f941ebe5abc1baa28e3b72c98d1860fc76b11cc0d385b8d0028"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01548afc5ab28b8a58d7ed065f640a14c37304f82f27b4c5f7887831680d38f299"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0197a7cfc3b33ad914287752527dbdc5e9d55876f103e1f3a11bde1d8857c5445f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0175aac8f72382acbfda0be4ecfdc6e756edac147aafc07ea2a9acbea851ce8d40"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017e70c10df222090db08b63733faab2775d762e63ac0d0d8a4de3bacdeff8b0f5"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c36058a92677e25f27f7f250ae97350733ea1e5b5682b4bbdd9576d8e4367437"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01dbfc50ccb3812801e04d79ac10515da9ec3d3687ff2362a4fe880ed54b5acb42"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bd63c17eb4d442c1f269770de17a8b49ec8e28b87f36976411270af556e30ca8"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017ad2e75526309ec868995254dde3cfe18efb60f3eec73b27f266117251f75495"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01b268945cabb68b8cbbdf9a1202075e805cbbe89e6d205565b2b02d0877b82617"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d158fd96ac1d2f6607363e5f2d8d63986e0f9fa78a1652f026756f7e9ff5b57a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0142ebb6aac5a309ac047e5f44e43b5a5c6685fbd6ac7a8b3fbe79206ebf9672ac"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01893257b97ecab57091dd86540f099e212b38d3d3895f7ce0f69de211e80cd174"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01c28f489966c1d00430f860f1d677aaa933d15f0216ddeefa755afba8bb867c2d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0184e20b5b134d7a4b9c2a7714f87d1e1c009c9a0f15022f60e8c7d81249e96243"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01ab169a073590fbe36b31f27b63ac5aafe85d0a5f0f01b5905184da4d7b09306e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01ce5062397215f864a39a1415d9844264a0590caba7aceb222cd398cd403356c5"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01537de5f5a5f2598a56b2ac30dab829f1889b0dfd9602d62eed5c19477b95723e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01591668689bc2909538ce2494401402098b9f98da4f12ca2191a4b52d9cf59d5a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0198343eac06494c4a1ec2c8eb65e1e19ea6ae7b59dbb6376ad44057b5a9149cf4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d3c185f6a348c11e323114ef16bf3664dab6283d4120e09b091be3834d2accea"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01b02c9811edf94ab28d4eb3c0c8a99a9ef9a17723739b3792a596071a1718de15"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "015ea70987389141ea1f63d239afef491324dd287d163fa0973022cf314c1119ff"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01530d17deaf7f8829eee7ffb5e3e4bca9a2d966e3b5509a6657af73949eccd0cc"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bf4ddb5880db74592b167ded4bd1493d8f07224cbe1bed2932f0cb8c05f81666"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0133e647705bf6398552c224f546550ff94891d97def3b5a37f7188c97c1765db8"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018b9d8845071633f3150c841d746bb652338a2849739c8219c6cc13f3632be380"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01574adb812918ff0797dd98189700447eb3e7154c3bb1af7734e509d281a38e0a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01bfae78bb9445367a420793379f24cfdacb5b2078ac5694de679c8d6479fc8ca4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01995b5e1fb167260ee2376e4463a5e7949f4a289c3389461c1275d93eb87e8074"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017bbbab05abc49502778dd54ee0bb4f035c97703b6ae34570bf919fe2c2c41113"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01dbe775e7802567fbb19114b2a5de0e8d992a9d37d3021389cac2c749c88f87ae"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d96b89f0e9d69de38712bc0a60d164a4d38bac8169f201a158b3cc8555281d41"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018cac2d55d528bb14a5653dbbdd543c11a266cab3cbe379217e47e722167bbcb1"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "014b3e1cab7d9230d4cf89a8ba17b3d875186650135a6767d9c5f70960e93b2040"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "014bb2b319c5ed3117118cc00ddd1de747a8293d35169057bc38a8d0128ecfe509"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "010c7126fbeff09c1f9b4e0c784166dc44d569c198f40bc92cf26cbc998ebbd873"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0134572618537dfa96833317678c657f73977f4eef0da75393b7c14d3f3a806612"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01a61f69844e98c8d2eb8c13ab071d414343949de903de5e880bf3188ee6eb61ea"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01e4ee3f8f1f171dfa957db15e0e93be1f9ae2a38481b039e3c946e7f67e3c0ca7"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0160c68e22a11a1dc1549df230c4b37d8f0b649af6ad8afb91e7f5cd4b4bd9f09b"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "019c50007670d6be52de51f5642261dbbb9153d80969b0ca5df6471730679911b9"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "013b8c640b1e7c1cb85c3c1314f8dba445947e8924f5f2576cfc1fb4a9cecc394e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01338d34343ebd482ae324f43e8661955fcea8c7db920e435e7e4217b383b9fc2d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0186ce0f012fcbf4a4de25e8cf4e11f2e1094916fcac8436be3c4358288bfe016f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01e77345af72fcbb1de716ce0e1336a57acbbc76bfd3efbaefef78b3c3d9e4178a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "010342450adacbf125421d8aafbc08b643b44de5233da3c0294055fdd05c1249ef"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01fe460b8423dff768f0ef5edcb740b9d16d88145c511dd977904ca7ea9b4db55f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0163f2ba74f6d11e92be7c52f858cb0676ecb4919fdf66d9e307389de7ad6c1ecf"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01f7a8ff24dc2269201c0469469c44f81eadbd7657f977287e8ff6dadfaffdfcb4"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01558752633c923b41def92a83855945f7ff8621d69d4da16f9e48a53a00f1703c"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "019d90fb35f79eba7bb8fda79567a749a2ce35e0c2b1361acf1672491e7bebc014"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017f79ee93f83b44e2cf61834f6e36f29c005f7c9e5e48bd5e195c4150c36b5ca9"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01ce6f96d46a706855fb09f9ff6f831a7805909e1036a4f65e0a79718944c86246"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01d91b23fd8b7c5b2d650a57b705fc061e36cffad19ef9ce27c4dd3e6842cb2047"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01305c4ddf67c72a828f65c644d3cb98b908533e8581682534337fad64fc36eb1e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01394f8836abe36a024b1530fe98c83876427f4eff113cd07230011a4c7aec6c4e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01cda344a6f9a1c3dec9c49b34c5b1aff7e0aeb7a8f0bf7d488099920d21b04f21"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "012b9b843762627d88079af51af44d715f6e9c002838e9192510120b4a23530886"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01adb393bddbd7e6863cef3b2b2c3a379ae2578042d5ac000569dcca056c4433a7"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01b406dfb3d7de281f392a23fcaace822827642a73fda69214dfc5214a2ae1999e"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "013baaca0dd941150ac25a21011bbc70ffac50b321b0951609fccccfc20238a579"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "016a3b1925a5d9c89e715ec2d852200439e7d5e9d22b8d0ba8e1553dbcd7044034"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0120e5ddd9339491c03609c7f0c08ea739a164f5dc123803e010fdb8163c213d3f"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01a7f3cf85ded3a7605d6d04dcf6c2aebb9cd7b6b076ca9c2005061932c31a3d91"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017f9ee3f839c7e04930f5c86c1f8815777f2d7642eee9557c761d6c83a597f67d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "017ab1dcc271b314306cb2fe0d675318e964715e087499033de6429c6ecea4d34b"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01a3e8638fe1d2139e0b92ad3ea774c1177799c5702fd9ada67d7a72bd69fc5002"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0131a08587f8f4566e616934dd45d367f1e642ca89d8d0e0fc7734e512173aef9d"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018868f49ad3b0d81915cfc9ef80c0aba35ab2c2b37158d18c9b85c8bf8caef8ab"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0125dc257b5b06de07f8c592d6a4b371df700afc23825467b812a39e468389d641"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "012f2994c2b3355ec5d255b403da99f0314764144d5f97ffab0c22035813452a3a"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "018de718ab684804e8c4892536ccd1e40fba381359812f94bdcf7e09c5cda28229"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "011aff59932963b487d3ed374ac0baf5abebaec10c17ca021ed757c29437a556d2"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "0100a99626af3b6c58359d6afef527a1daf8993c58809740631992f1f6d2166558"
+        },
+        {
+          "kind": "regular",
+          "mintUrl": "https://mint.example.com",
+          "keysetId": "01470b091d837e16d8767a48689e2724c9781f7c23c8b8f74803a818e31301057b"
+        }
+      ],
+      "cborLength": 4500,
+      "plaintextLength": 8192,
+      "documentLength": 8229,
+      "cborSha256": "9ec1c629bb216dfd53a5268098cc0348623080ac891cf6f02985ad5ba25964ea",
+      "documentSha256": "72e413308b3699192ae7ab1d1eed15540ba5098086b4ef0d3c31ce62cd184fc0"
+    }
+  ],
+  "requests": [
+    {
+      "name": "ADR-034 pinned engine vector",
+      "realm": "bitcaster-test",
+      "method": "PUT",
+      "requestPublicKey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "body": "7265636f7665727920696e64657820626f6479",
+      "expectedVersion": 7,
+      "issuedAt": 1700000000,
+      "digest": "ff7eaaee71d3d049480402306d5dc9317e736f922f67b4aabeef7ef4a7270a1d",
+      "auxRand": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signature": "67a895009031fb16fe22bebc1200c2632aeddcae709daa0687a7769941c9d9b004eae643128761ad59ab4911932089a080087509dfe8f1f3e729584c3855f406"
+    },
+    {
+      "name": "seed-derived read",
+      "realm": "bitcaster-local",
+      "method": "GET",
+      "requestPublicKey": "c7a7a4ccc8b1fffaa6e90e2d67f44d0c1c80800b6d72ddfe7d72ad3cde186b6f",
+      "body": "",
+      "expectedVersion": 0,
+      "issuedAt": 1800000000,
+      "digest": "bc187cb7325ba591661cf48427c84214ac3f409d116a8a20327290d3e9c63409",
+      "auxRand": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signature": "27d50046ed3d009e756e558a11a9610a14c08071fb2d4130d82814d11960f3196b8c508608b8484c0106c7e26c3dc5e5bbf26926315e1f434cf3bad4a8a4739e"
+    }
+  ]
+}

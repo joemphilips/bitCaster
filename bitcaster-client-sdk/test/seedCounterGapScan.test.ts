@@ -7,6 +7,7 @@ import {
   SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
   findLastSignedSeedCounter,
   findSignedSeedOutputs,
+  nextSeedCounterAfterLastSigned,
   skipPastSignedSeedOutputs,
   type SeedCounterRestoreClient,
 } from '../src/seedCounterGapScan.ts'
@@ -180,4 +181,12 @@ test('a gap scan returns null when the mint signed nothing after the start', asy
     await findLastSignedSeedCounter({ mint, seed: SEED, keysetId: KEYSET_ID, startCounter: 5 }),
     null,
   )
+})
+
+test('the ADR-051 cursor rule continues 151 counters after the last signed counter, or at 150', () => {
+  // The cursor is the last counter treated as used; the next output uses the cursor plus 1.
+  assert.equal(nextSeedCounterAfterLastSigned(null), SEED_COUNTER_SKIP_AFTER_LAST_SIGNED)
+  assert.equal(nextSeedCounterAfterLastSigned(0), 151)
+  assert.equal(nextSeedCounterAfterLastSigned(169), 320)
+  assert.throws(() => nextSeedCounterAfterLastSigned(-1), /counter/)
 })

@@ -35,6 +35,19 @@ export const SEED_COUNTER_SCAN_COUNTERS_MAX = 3_000
  */
 export const SEED_COUNTER_SKIP_AFTER_LAST_SIGNED = 150
 
+/**
+ * The ADR-051 cursor rule as the first counter that the wallet uses next.
+ * After a scan, the cursor is the last counter that the wallet treats as
+ * used: the last signed counter plus 150, or 149 with no signed counter. The
+ * next output uses the cursor plus 1.
+ */
+export function nextSeedCounterAfterLastSigned(lastSignedCounter: number | null): number {
+  if (lastSignedCounter !== null) requireCounterRange(lastSignedCounter, 1)
+  const nextCounter = (lastSignedCounter ?? -1) + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED
+  requireCounterRange(nextCounter, 1)
+  return nextCounter
+}
+
 /** One output that the wallet plans to send, and the highest seed counter that it uses. */
 export interface PlannedSeedOutput {
   readonly keysetId: string
@@ -112,8 +125,7 @@ export async function skipPastSignedSeedOutputs(input: {
     startCounter: input.fromCounter,
   })
   const lastSignedCounter = Math.max(...input.signedCounters, scanned ?? -1)
-  const nextCounter = lastSignedCounter + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED
-  requireCounterRange(nextCounter, 1)
+  const nextCounter = nextSeedCounterAfterLastSigned(lastSignedCounter)
   return {
     keysetId: input.keysetId,
     fromCounter: input.fromCounter,
