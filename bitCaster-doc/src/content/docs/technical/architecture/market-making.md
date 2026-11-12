@@ -107,17 +107,20 @@ bot can split collateral into complete sets of outcome tokens, or merge
 complete sets back into collateral. It reserves only the amounts that the
 trade needs on balance. For example, a sale of NO can merge with YES that the
 bot holds. The bot can then use that collateral to pay for the rest of the
-same sale. So the bot's buying capacity depends on its funding, its LMSR
-position, and fees. It does not depend on how the bot's value is split
-between cash and outcome tokens. The bot can buy back a position that it sold.
-It pays its current LMSR price, less its spread.
+same sale. So the bot's buying capacity depends mainly on its funding, its
+LMSR position, and fees, and much less on how the bot's value is split between
+cash and outcome tokens. The bot can buy back a position that it sold. It pays
+its LMSR bid prices: at each price level, its LMSR price less its spread. A
+sale larger than one level fills level by level at falling prices.
 
-Some limits remain. One public FOK order has a limited number of matches, so
-a large sale can need several orders. The preview reports `request_too_large`
-for an order above that limit. The bot does not use the expected proceeds of
-a trade that is still settling. While an earlier bot trade of the same market
-settles, the bot can buy less. Whole-share rounding, the bot's price levels,
-fees, and mint limits also apply.
+Some limits remain. The bot's custody can refuse a trade that needs too many
+proofs, whose proof input fees exceed the bot's spread on the trade, or whose
+split tokens exceed the custody limit of the market. One public FOK order has a
+limited number of matches, so a large sale can need several orders. The
+preview reports `request_too_large` for an order above that limit. The bot
+does not use the expected proceeds of a trade that is still settling. While an
+earlier bot trade of the same market settles, the bot can buy less.
+Whole-share rounding, the bot's price levels, fees, and mint limits also apply.
 
 For the human and professional market-maker trading model, see
 [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
