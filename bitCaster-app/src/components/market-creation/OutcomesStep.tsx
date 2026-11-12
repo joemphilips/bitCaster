@@ -1,7 +1,11 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { validateMarketOutcomeLabels, type MarketOutcomeLabelProblem } from "@bitcaster/client-sdk";
+import {
+  MAX_MARKET_OUTCOME_LABEL_CHARACTERS,
+  validateMarketOutcomeLabels,
+  type MarketOutcomeLabelProblem,
+} from "@bitcaster/client-sdk";
 import { assertNever } from "@/lib/enumDiscipline";
 import type { WizardOutcome, OutcomeType } from "@/types/market-creation";
 import { MAX_MARKET_OUTCOMES } from "@/hooks/useMarketCreationState";
@@ -226,7 +230,9 @@ export function OutcomesStep({
                   />
                   {outcomeLabelErrorKey(labelProblems.get(index)) !== null && (
                     <p role="alert" className="text-xs text-red-400 mt-1.5">
-                      {t(outcomeLabelErrorKey(labelProblems.get(index))!)}
+                      {t(outcomeLabelErrorKey(labelProblems.get(index))!, {
+                        max: MAX_MARKET_OUTCOME_LABEL_CHARACTERS,
+                      })}
                     </p>
                   )}
                 </div>

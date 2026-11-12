@@ -1,5 +1,6 @@
 import {
   listOracleBackups,
+  fetchCurrentOracleBackupSelection,
   oracleBackupStatus,
   type OracleBackupScanCursor,
 } from "@bitcaster/client-sdk/oracleBackupAccess";
@@ -163,28 +164,27 @@ export async function restoreBrowserOracleBackup(
   admission.requireCurrent();
   options.requireCurrent?.();
   const relayUrl = normalizeNostrRelayUrl(sourceRelay);
-  const result = await (options.queryRelay ?? queryBrowserOracleBackupRelay)({
-    relayUrl,
-    filter: {
-      ids: [eventId],
-      kinds: [30078],
-      authors: [identity.publicKey],
-      "#v": ["1"],
-      limit: 2,
+  const selected = await fetchCurrentOracleBackupSelection({
+    author: identity.publicKey,
+    privateKey: hexToBytes(identity.privateKeyHex),
+    validator: browserOracleBackupValidator,
+    eventId,
+    sourceRelay: relayUrl,
+    relayUrls: options.relayUrls ?? effectiveRelayUrls(useSettingsStore.getState().relays),
+    queryRelay: async (query) => {
+      const result = await (options.queryRelay ?? queryBrowserOracleBackupRelay)(query);
+      admission.requireCurrent();
+      options.requireCurrent?.();
+      return result;
     },
-    signal: options.signal
-      ? AbortSignal.any([options.signal, AbortSignal.timeout(8_000)])
-      : AbortSignal.timeout(8_000),
-    maxEvents: 2,
-    maxBytes: 256 * 1024,
+    signal: options.signal,
+  }).catch((error: unknown) => {
+    admission.requireCurrent();
+    options.requireCurrent?.();
+    throw error;
   });
   admission.requireCurrent();
   options.requireCurrent?.();
-  if (!result.complete) throw new Error("Oracle backup relay query is incomplete.");
-  const selected = result.events.find(
-    (event) => typeof event === "object" && event !== null && "id" in event && event.id === eventId,
-  );
-  if (!selected) throw new Error("The selected oracle backup is unavailable on this relay.");
   return importBrowserOracleBackupEnvelope(
     selected,
     relayUrl,

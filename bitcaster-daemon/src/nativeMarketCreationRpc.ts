@@ -19,7 +19,10 @@ import {
   createNativeOracleCreationStore,
   NativeOracleSignerUnavailableError,
 } from './nativeOracleCreationStore.ts'
-import { NativeOracleSignerRequiredError } from './nativeMarketOracle.ts'
+import {
+  NativeOracleSignerRequiredError,
+  assertNewNativeMarketCreationInput,
+} from './nativeMarketOracle.ts'
 import { createNativeOracleHelperAdapter } from './nativeOracleHelper.ts'
 import { normalizeOracleRelayUrls } from './nativeOraclePublication.ts'
 import type { NativeMarketCreationInput } from './nativeMarketOracle.ts'
@@ -154,8 +157,20 @@ async function runNativeMarketCreationCommand(
       return { ok: false, error: 'Resume requires the original engine and mint configuration.' }
     }
   } else {
-    const normalized = normalizeMarketCreationInput(command.params.market)
     const saved = await getStore().readCreation(command.params.creationId)
+    const destination = {
+      engineBaseUrl: profile.engineBaseUrl,
+      mintUrl: profile.mintUrl,
+      relayUrls: normalizeOracleRelayUrls(command.params.relayUrls),
+    }
+    const normalized =
+      saved === null
+        ? assertNewNativeMarketCreationInput({
+            market: command.params.market,
+            eventId: command.params.eventId,
+            destination,
+          })
+        : normalizeMarketCreationInput(command.params.market)
     thumbnail ??= saved?.marketCreation?.thumbnail ?? undefined
     const registration =
       saved === null
@@ -167,9 +182,7 @@ async function runNativeMarketCreationCommand(
       market: command.params.market,
       registration,
       destination: {
-        engineBaseUrl: profile.engineBaseUrl,
-        mintUrl: profile.mintUrl,
-        relayUrls: normalizeOracleRelayUrls(command.params.relayUrls),
+        ...destination,
         ...(thumbnail === undefined
           ? {}
           : {

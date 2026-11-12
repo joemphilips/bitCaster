@@ -27,6 +27,7 @@ import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWallet
 import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
+  advanceBrowserV2DesiredAssetsForProofChanges,
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
 } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
@@ -798,6 +799,165 @@ describe("browser CTF explicit removal coordinator", () => {
     ).not.toMatchObject({ recordKind: "completed-local-removal" });
   });
 
+  it("removes derivation-backed losing proofs locally without a backup configuration", async () => {
+    const fixture = await createLocalFixture(2, false, 0, { derivationBacked: true });
+    const desiredBefore = await readDesiredAsset(fixture);
+    expect(desiredBefore).toMatchObject({ activeProofCount: 2, removalIntent: null });
+    const input = {
+      ...fixture.localInput(fixture.proofs.map(({ proofId }) => fixture.target(proofId))),
+      withoutBackupConfiguration: true,
+    };
+
+    await expect(startBrowserCtfRemove(input)).resolves.toEqual({
+      kind: "completed",
+      intentId: "completed-local-removal",
+    });
+    expect(await fixture.database.custodyProofs.count()).toBe(0);
+    for (const proof of fixture.proofs) {
+      expect(
+        await fixture.database.proofs.get(storedProofFromCustodyRow(proof).secret),
+      ).toBeUndefined();
+      expect(
+        await fixture.database.custodyProofBackupAuthorities.get([fixture.scopeId, proof.proofId]),
+      ).toMatchObject({
+        recordKind: "completed-local-removal",
+        proofFingerprint: proof.proofFingerprint,
+        proofRevision: proof.revision,
+        localAssetKey: fixture.localAssetKey,
+      });
+    }
+    const desiredAfter = await readDesiredAsset(fixture);
+    expect(desiredAfter).toEqual({
+      ...desiredBefore,
+      custodyRevision: (BigInt(desiredBefore.custodyRevision) + 1n).toString(),
+      activeProofCount: 0,
+      desiredAction: "remove",
+      syncState: "pending",
+    });
+
+    // A retry replays the completed removal without another desired revision.
+    await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "completed" });
+    expect(await readDesiredAsset(fixture)).toEqual(desiredAfter);
+  });
+
+  it("keeps derivation-backed proofs on the backup path without the unconfigured flag", async () => {
+    const fixture = await createLocalFixture(1, false, 0, { derivationBacked: true });
+    const proof = fixture.proofs[0]!;
+    const desiredBefore = await readDesiredAsset(fixture);
+
+    await expect(
+      startBrowserCtfRemove(fixture.localInput([fixture.target(proof.proofId)])),
+    ).rejects.toThrow(/managed removal backup context is missing/);
+    expect(
+      await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]),
+    ).toMatchObject({ selectability: "verified-losing" });
+    expect(await readDesiredAsset(fixture)).toEqual(desiredBefore);
+  });
+
+  it("refuses unconfigured local removal of a reserved derivation-backed proof", async () => {
+    const fixture = await createLocalFixture(1, false, 0, { derivationBacked: true });
+    const proof = fixture.proofs[0]!;
+    const desiredBefore = await readDesiredAsset(fixture);
+    await fixture.database.custodyReservations.put({
+      scopeId: fixture.scopeId,
+      proofId: proof.proofId,
+      operationId: "01".repeat(32),
+      reservationId: "02".repeat(32),
+      inputPosition: 0,
+    });
+
+    await expect(
+      startBrowserCtfRemove({
+        ...fixture.localInput([fixture.target(proof.proofId)]),
+        withoutBackupConfiguration: true,
+      }),
+    ).rejects.toThrow(/reservation/);
+    expect(
+      await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]),
+    ).toMatchObject({ selectability: "verified-losing" });
+    expect(
+      await fixture.database.custodyProofBackupAuthorities.get([fixture.scopeId, proof.proofId]),
+    ).not.toMatchObject({ recordKind: "completed-local-removal" });
+    expect(await readDesiredAsset(fixture)).toEqual(desiredBefore);
+  });
+
+  it("refuses unconfigured local removal of a derivation-backed proof that is not terminal", async () => {
+    const fixture = await createLocalFixture(1, false, 0, { derivationBacked: true });
+    const open = createBrowserCustodyProofRow({
+      scopeId: fixture.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: { id: KEYSET, amount: 1 as never, secret: "open-derivation-backed", C: PUBLIC_KEY },
+      asset: { kind: "conditional", conditionId: CONDITION_ID, outcomeCollection: OUTCOME },
+      receivedAtMs: 900,
+    });
+    await fixture.database.custodyProofs.put(open);
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserProofBackupAuthorityRow(
+        open,
+        1_000,
+        { schemaVersion: 1, kind: "nut13", keysetId: KEYSET, counter: 9 },
+        "admission-open",
+      ),
+    );
+
+    await expect(
+      startBrowserCtfRemove({
+        ...fixture.localInput([removeTarget(open)]),
+        withoutBackupConfiguration: true,
+      }),
+    ).rejects.toThrow(/local removal proof binding is foreign/);
+    expect(await fixture.database.custodyProofs.get([fixture.scopeId, open.proofId])).toMatchObject(
+      { selectability: "selectable" },
+    );
+  });
+
+  it("keeps a remote-backed proof out of unconfigured local removal", async () => {
+    const fixture = await createLocalFixture(2, false, 0, { derivationBacked: true });
+    const remoteProof = fixture.proofs[1]!;
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof: remoteProof,
+        observedAtMs: 3_000,
+        derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId: KEYSET, counter: 1 },
+        restoreProofId: remoteProof.proofId,
+        restoreProofCommitment: "55".repeat(32),
+        terminalSeal: remoteSealFixture(remoteProof, 1),
+      }),
+    );
+
+    await expect(
+      startBrowserCtfRemove({
+        ...fixture.localInput(fixture.proofs.map(({ proofId }) => fixture.target(proofId))),
+        withoutBackupConfiguration: true,
+      }),
+    ).rejects.toThrow(/mixed completion paths/);
+    expect(await fixture.database.custodyProofs.count()).toBe(2);
+  });
+
+  it("refuses the unconfigured removal flag with a backup configuration or backup context", async () => {
+    const fixture = await createLocalFixture(1, false, 0, { derivationBacked: true });
+    const proof = fixture.proofs[0]!;
+    const targets = [fixture.target(proof.proofId)];
+
+    await expect(
+      startBrowserCtfRemove({ ...fixture.input(targets), withoutBackupConfiguration: true }),
+    ).rejects.toThrow(/without a backup configuration/);
+    vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", REALM);
+    vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
+    vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
+    vi.stubEnv(
+      "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
+      "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+    );
+    await expect(
+      startBrowserCtfRemove({ ...fixture.localInput(targets), withoutBackupConfiguration: true }),
+    ).rejects.toThrow(/without a backup configuration/);
+    expect(
+      await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]),
+    ).toMatchObject({ selectability: "verified-losing" });
+  });
+
   it("refuses a new removal before creating an intent or pending proof", async () => {
     const fixture = await createFixture(1);
     const proof = fixture.proofs[0]!;
@@ -1236,7 +1396,12 @@ describe("browser CTF explicit removal coordinator", () => {
   );
 });
 
-async function createLocalFixture(count = 1, sharedTerminalOperation = false, timeBase = 0) {
+async function createLocalFixture(
+  count = 1,
+  sharedTerminalOperation = false,
+  timeBase = 0,
+  options: { readonly derivationBacked?: boolean } = {},
+) {
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: SEED,
     realm: REALM,
@@ -1292,10 +1457,20 @@ async function createLocalFixture(count = 1, sharedTerminalOperation = false, ti
       receivedAtMs: 900,
     }),
   );
+  const locators = proofs.map((_, index) =>
+    options.derivationBacked
+      ? { schemaVersion: 1 as const, kind: "nut13" as const, keysetId: KEYSET, counter: index }
+      : null,
+  );
   await database.custodyProofs.bulkPut(proofs);
   await database.custodyProofBackupAuthorities.bulkPut(
     proofs.map((proof, index) =>
-      createBrowserProofBackupAuthorityRow(proof, 1_000, null, `admission-local-${index}`),
+      createBrowserProofBackupAuthorityRow(
+        proof,
+        1_000,
+        locators[index]!,
+        `admission-local-${index}`,
+      ),
     ),
   );
   await database.proofs.bulkPut(
@@ -1316,6 +1491,20 @@ async function createLocalFixture(count = 1, sharedTerminalOperation = false, ti
     finalExpiryUnixSeconds: 2,
     curve: "secp256k1",
   });
+  if (options.derivationBacked) {
+    // The receive writer counts each derivation-backed proof in the desired asset.
+    await advanceBrowserV2DesiredAssetsForProofChanges(
+      database,
+      scopeId,
+      proofs.map((proof, index) => ({
+        beforeProof: null,
+        beforeLocator: null,
+        afterProof: proof,
+        afterLocator: locators[index]!,
+        payloadChanged: true,
+      })),
+    );
+  }
   let terminalOperationId = "";
   const groups = sharedTerminalOperation ? [proofs] : proofs.map((proof) => [proof]);
   for (const [index, group] of groups.entries()) {
@@ -1572,6 +1761,19 @@ async function createLegacyFixture(count: number, localClassification = false) {
       isCurrentProfile: () => true,
     }),
   };
+}
+
+async function readDesiredAsset(fixture: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly localAssetKey: string;
+}) {
+  return decodeEncryptedWalletBackupV2DesiredAssetRow(
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+      fixture.scopeId,
+      fixture.localAssetKey,
+    ]),
+  );
 }
 
 function removeTarget(

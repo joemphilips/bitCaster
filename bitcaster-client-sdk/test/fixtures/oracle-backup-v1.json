@@ -1,0 +1,90 @@
+{
+  "syntheticOnly": true,
+  "testPrivateKeyHex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "records": {
+    "unsigned": {
+      "schemaVersion": 1,
+      "conditionId": "c320fff700e51c31a0e0c2062840e6d7fc7ad8d9e8a256b413abe2dd1ce541d1",
+      "oraclePubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "oracleEventId": "00000000-0000-4000-8000-000000000001",
+      "authority": {
+        "schemaVersion": 1,
+        "announcementTlvHex": "fdd824bc45e5cf031f78bdc730cad8eadc57c3f1c49b21b04efd476c5ca304cc27b4709a13a8c5321e7623317e861ea3824c7f24afcba3457749c5e488f4b8f010985d351b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078ffdd822580001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dce6b49d200fdd80609000203596573024e6f2430303030303030302d303030302d343030302d383030302d303030303030303030303031",
+        "announcementEventJson": "{\"id\":\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\",\"pubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"created_at\":1794219255,\"kind\":88,\"tags\":[[\"title\",\"Fixture title\"],[\"description\",\"Fixture description 日本語\"]],\"content\":\"ReXPAx94vccwytjq3FfD8cSbIbBO/UdsXKMEzCe0cJoTqMUyHnYjMX6GHqOCTH8kr8ujRXdJxeSI9LjwEJhdNRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QeP/dgiWAABiI8uPfNB0hJA92mv2Dk4/cGHg1Z2mq5kFBiA2BDGHc5rSdIA/dgGCQACA1llcwJObyQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=\",\"sig\":\"f419de382d96536d79a8f4a7a9b2ab2eb3bad611486fec7a8858890463453562adf9232aebf324bddcd1e2873fc9b29cf4eae1924cb7153bdce2e85ad87f7481\"}",
+        "nonceScalarHex": "ebdf3c697c20232e2adfad12ad33b5eda9a9f74d728b1b48664b93763939f912",
+        "signedOutcome": null,
+        "attestationHex": null,
+        "attestationEventJson": null,
+        "publicationRecordJson": null
+      },
+      "destinations": {
+        "mintUrl": "https://mint.example",
+        "engineUrl": "https://engine.example",
+        "relayUrls": [
+          "wss://nos.lol",
+          "wss://nostr.bitcoiner.social",
+          "wss://relay.primal.net",
+          "wss://relay.nostr.net",
+          "wss://relay.damus.io",
+          "wss://purplepag.es"
+        ]
+      }
+    },
+    "signed": {
+      "schemaVersion": 1,
+      "conditionId": "c320fff700e51c31a0e0c2062840e6d7fc7ad8d9e8a256b413abe2dd1ce541d1",
+      "oraclePubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "oracleEventId": "00000000-0000-4000-8000-000000000001",
+      "authority": {
+        "schemaVersion": 1,
+        "announcementTlvHex": "fdd824bc45e5cf031f78bdc730cad8eadc57c3f1c49b21b04efd476c5ca304cc27b4709a13a8c5321e7623317e861ea3824c7f24afcba3457749c5e488f4b8f010985d351b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078ffdd822580001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dce6b49d200fdd80609000203596573024e6f2430303030303030302d303030302d343030302d383030302d303030303030303030303031",
+        "announcementEventJson": "{\"id\":\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\",\"pubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"created_at\":1794219255,\"kind\":88,\"tags\":[[\"title\",\"Fixture title\"],[\"description\",\"Fixture description 日本語\"]],\"content\":\"ReXPAx94vccwytjq3FfD8cSbIbBO/UdsXKMEzCe0cJoTqMUyHnYjMX6GHqOCTH8kr8ujRXdJxeSI9LjwEJhdNRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QeP/dgiWAABiI8uPfNB0hJA92mv2Dk4/cGHg1Z2mq5kFBiA2BDGHc5rSdIA/dgGCQACA1llcwJObyQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=\",\"sig\":\"f419de382d96536d79a8f4a7a9b2ab2eb3bad611486fec7a8858890463453562adf9232aebf324bddcd1e2873fc9b29cf4eae1924cb7153bdce2e85ad87f7481\"}",
+        "nonceScalarHex": "ebdf3c697c20232e2adfad12ad33b5eda9a9f74d728b1b48664b93763939f912",
+        "signedOutcome": "Yes",
+        "attestationHex": "2430303030303030302d303030302d343030302d383030302d3030303030303030303030311b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dcec42f186e3973d6071c89b3d705b7e6f3fa5e35f9c3eb07b193d3c908e2bc8bc8000103596573",
+        "attestationEventJson": "{\"id\":\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\",\"pubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"created_at\":1794219255,\"kind\":89,\"tags\":[[\"e\",\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\"]],\"content\":\"JDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QePAAGIjy4980HSEkD3aa/YOTj9wYeDVnaarmQUGIDYEMYdzsQvGG45c9YHHImz1wW35vP6XjX5w+sHsZPTyQjivIvIAAEDWWVz\",\"sig\":\"546b8c280965e4ecbe08eddb753baae4c3074a86a8bdac0e8d9782f26e591fb6704b313026f6fc39aa658d9f64c64c2f2c070f4e68125336a2cd4e20f07a66f3\"}",
+        "publicationRecordJson": "{\"binding\":{\"conditionId\":\"c320fff700e51c31a0e0c2062840e6d7fc7ad8d9e8a256b413abe2dd1ce541d1\",\"oracleEventId\":\"00000000-0000-4000-8000-000000000001\",\"oraclePubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"outcomes\":[\"Yes\",\"No\"],\"announcementEventJson\":\"{\\\"id\\\":\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\",\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"created_at\\\":1794219255,\\\"kind\\\":88,\\\"tags\\\":[[\\\"title\\\",\\\"Fixture title\\\"],[\\\"description\\\",\\\"Fixture description 日本語\\\"]],\\\"content\\\":\\\"ReXPAx94vccwytjq3FfD8cSbIbBO/UdsXKMEzCe0cJoTqMUyHnYjMX6GHqOCTH8kr8ujRXdJxeSI9LjwEJhdNRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QeP/dgiWAABiI8uPfNB0hJA92mv2Dk4/cGHg1Z2mq5kFBiA2BDGHc5rSdIA/dgGCQACA1llcwJObyQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=\\\",\\\"sig\\\":\\\"f419de382d96536d79a8f4a7a9b2ab2eb3bad611486fec7a8858890463453562adf9232aebf324bddcd1e2873fc9b29cf4eae1924cb7153bdce2e85ad87f7481\\\"}\"},\"chosenOutcome\":\"Yes\",\"attestation\":{\"attestationHex\":\"2430303030303030302d303030302d343030302d383030302d3030303030303030303030311b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dcec42f186e3973d6071c89b3d705b7e6f3fa5e35f9c3eb07b193d3c908e2bc8bc8000103596573\",\"eventJson\":\"{\\\"id\\\":\\\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\\\",\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"created_at\\\":1794219255,\\\"kind\\\":89,\\\"tags\\\":[[\\\"e\\\",\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\"]],\\\"content\\\":\\\"JDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QePAAGIjy4980HSEkD3aa/YOTj9wYeDVnaarmQUGIDYEMYdzsQvGG45c9YHHImz1wW35vP6XjX5w+sHsZPTyQjivIvIAAEDWWVz\\\",\\\"sig\\\":\\\"546b8c280965e4ecbe08eddb753baae4c3074a86a8bdac0e8d9782f26e591fb6704b313026f6fc39aa658d9f64c64c2f2c070f4e68125336a2cd4e20f07a66f3\\\"}\"},\"relayPublished\":true,\"engineEvidence\":null,\"explanationEventJson\":\"{\\\"kind\\\":1111,\\\"created_at\\\":1800000001,\\\"content\\\":\\\"Verified fixture explanation 日本語\\\",\\\"tags\\\":[[\\\"E\\\",\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\",\\\"\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"K\\\",\\\"88\\\"],[\\\"P\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"e\\\",\\\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\\\",\\\"\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"k\\\",\\\"89\\\"],[\\\"p\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"]],\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"id\\\":\\\"5756b1ede25e4f7b3ee8eff5470325cbf4ef17654b641f0bdceffa3a0a94313b\\\",\\\"sig\\\":\\\"ece000cb3815709611b076592cbd11519e6ef87971c8db8fa8d879731f6b2185d24d9942b4583dec53d4bc598bdb2d8f7189130f997bbf9e724a78c73ebbdb68\\\"}\",\"explanationRelayPublished\":true}"
+      },
+      "destinations": {
+        "mintUrl": "https://mint.example",
+        "engineUrl": "https://engine.example",
+        "relayUrls": [
+          "wss://nos.lol",
+          "wss://nostr.bitcoiner.social",
+          "wss://relay.primal.net",
+          "wss://relay.nostr.net",
+          "wss://relay.damus.io",
+          "wss://purplepag.es"
+        ]
+      }
+    },
+    "terminal": {
+      "schemaVersion": 1,
+      "conditionId": "c320fff700e51c31a0e0c2062840e6d7fc7ad8d9e8a256b413abe2dd1ce541d1",
+      "oraclePubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "oracleEventId": "00000000-0000-4000-8000-000000000001",
+      "authority": {
+        "schemaVersion": 1,
+        "announcementTlvHex": "fdd824bc45e5cf031f78bdc730cad8eadc57c3f1c49b21b04efd476c5ca304cc27b4709a13a8c5321e7623317e861ea3824c7f24afcba3457749c5e488f4b8f010985d351b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078ffdd822580001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dce6b49d200fdd80609000203596573024e6f2430303030303030302d303030302d343030302d383030302d303030303030303030303031",
+        "announcementEventJson": "{\"id\":\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\",\"pubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"created_at\":1794219255,\"kind\":88,\"tags\":[[\"title\",\"Fixture title\"],[\"description\",\"Fixture description 日本語\"]],\"content\":\"ReXPAx94vccwytjq3FfD8cSbIbBO/UdsXKMEzCe0cJoTqMUyHnYjMX6GHqOCTH8kr8ujRXdJxeSI9LjwEJhdNRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QeP/dgiWAABiI8uPfNB0hJA92mv2Dk4/cGHg1Z2mq5kFBiA2BDGHc5rSdIA/dgGCQACA1llcwJObyQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=\",\"sig\":\"f419de382d96536d79a8f4a7a9b2ab2eb3bad611486fec7a8858890463453562adf9232aebf324bddcd1e2873fc9b29cf4eae1924cb7153bdce2e85ad87f7481\"}",
+        "nonceScalarHex": null,
+        "signedOutcome": "Yes",
+        "attestationHex": "2430303030303030302d303030302d343030302d383030302d3030303030303030303030311b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dcec42f186e3973d6071c89b3d705b7e6f3fa5e35f9c3eb07b193d3c908e2bc8bc8000103596573",
+        "attestationEventJson": "{\"id\":\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\",\"pubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"created_at\":1794219255,\"kind\":89,\"tags\":[[\"e\",\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\"]],\"content\":\"JDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QePAAGIjy4980HSEkD3aa/YOTj9wYeDVnaarmQUGIDYEMYdzsQvGG45c9YHHImz1wW35vP6XjX5w+sHsZPTyQjivIvIAAEDWWVz\",\"sig\":\"546b8c280965e4ecbe08eddb753baae4c3074a86a8bdac0e8d9782f26e591fb6704b313026f6fc39aa658d9f64c64c2f2c070f4e68125336a2cd4e20f07a66f3\"}",
+        "publicationRecordJson": "{\"binding\":{\"conditionId\":\"c320fff700e51c31a0e0c2062840e6d7fc7ad8d9e8a256b413abe2dd1ce541d1\",\"oracleEventId\":\"00000000-0000-4000-8000-000000000001\",\"oraclePubkey\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"outcomes\":[\"Yes\",\"No\"],\"announcementEventJson\":\"{\\\"id\\\":\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\",\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"created_at\\\":1794219255,\\\"kind\\\":88,\\\"tags\\\":[[\\\"title\\\",\\\"Fixture title\\\"],[\\\"description\\\",\\\"Fixture description 日本語\\\"]],\\\"content\\\":\\\"ReXPAx94vccwytjq3FfD8cSbIbBO/UdsXKMEzCe0cJoTqMUyHnYjMX6GHqOCTH8kr8ujRXdJxeSI9LjwEJhdNRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QeP/dgiWAABiI8uPfNB0hJA92mv2Dk4/cGHg1Z2mq5kFBiA2BDGHc5rSdIA/dgGCQACA1llcwJObyQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=\\\",\\\"sig\\\":\\\"f419de382d96536d79a8f4a7a9b2ab2eb3bad611486fec7a8858890463453562adf9232aebf324bddcd1e2873fc9b29cf4eae1924cb7153bdce2e85ad87f7481\\\"}\"},\"chosenOutcome\":\"Yes\",\"attestation\":{\"attestationHex\":\"2430303030303030302d303030302d343030302d383030302d3030303030303030303030311b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0001888f2e3df341d21240f769afd83938fdc1878356769aae64141880d810c61dcec42f186e3973d6071c89b3d705b7e6f3fa5e35f9c3eb07b193d3c908e2bc8bc8000103596573\",\"eventJson\":\"{\\\"id\\\":\\\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\\\",\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"created_at\\\":1794219255,\\\"kind\\\":89,\\\"tags\\\":[[\\\"e\\\",\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\"]],\\\"content\\\":\\\"JDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMRuExVZ7EmRAmV0+1aq6BWXXHhg0YEgZ/5wX9enV3QePAAGIjy4980HSEkD3aa/YOTj9wYeDVnaarmQUGIDYEMYdzsQvGG45c9YHHImz1wW35vP6XjX5w+sHsZPTyQjivIvIAAEDWWVz\\\",\\\"sig\\\":\\\"546b8c280965e4ecbe08eddb753baae4c3074a86a8bdac0e8d9782f26e591fb6704b313026f6fc39aa658d9f64c64c2f2c070f4e68125336a2cd4e20f07a66f3\\\"}\"},\"relayPublished\":true,\"engineEvidence\":null,\"explanationEventJson\":\"{\\\"kind\\\":1111,\\\"created_at\\\":1800000001,\\\"content\\\":\\\"Verified fixture explanation 日本語\\\",\\\"tags\\\":[[\\\"E\\\",\\\"5451ecfeab62fcdee7c008ef46d26c8f863f8c299114f81db9b58ff6f5cbcd89\\\",\\\"\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"K\\\",\\\"88\\\"],[\\\"P\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"e\\\",\\\"0851d174190f559d8428b5be5d35a3b041a73d46c7ce3aac9e015c720c197d4a\\\",\\\"\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"],[\\\"k\\\",\\\"89\\\"],[\\\"p\\\",\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\"]],\\\"pubkey\\\":\\\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\\\",\\\"id\\\":\\\"5756b1ede25e4f7b3ee8eff5470325cbf4ef17654b641f0bdceffa3a0a94313b\\\",\\\"sig\\\":\\\"ece000cb3815709611b076592cbd11519e6ef87971c8db8fa8d879731f6b2185d24d9942b4583dec53d4bc598bdb2d8f7189130f997bbf9e724a78c73ebbdb68\\\"}\",\"explanationRelayPublished\":true}"
+      },
+      "destinations": {
+        "mintUrl": "https://mint.example",
+        "engineUrl": "https://engine.example",
+        "relayUrls": [
+          "wss://nos.lol",
+          "wss://nostr.bitcoiner.social",
+          "wss://relay.primal.net",
+          "wss://relay.nostr.net",
+          "wss://relay.damus.io",
+          "wss://purplepag.es"
+        ]
+      }
+    }
+  }
+}

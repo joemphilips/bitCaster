@@ -1,6 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 import { MarketCard } from "../MarketCard";
 import type { YesNoMarket, CategoricalMarket } from "@/types/market";
 
@@ -84,10 +86,42 @@ describe("MarketCard", () => {
     expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["binary", yesNoMarket],
+    ["categorical", categoricalMarket],
+  ] as const)(
+    "shows a past-deadline %s market without an outcome as awaiting resolution",
+    (_type, market) => {
+      render(
+        <MarketCard market={{ ...market, state: "closed", closingDate: "2026-01-01T00:00:00Z" }} />,
+      );
+
+      expect(screen.getByText("Awaiting resolution")).toBeInTheDocument();
+      expect(screen.queryByText(/resolved/i)).not.toBeInTheDocument();
+      expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+      expect(screen.queryByText("Buy YES")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Yes" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("labels both closed states with the Japanese resolution terms", () => {
+    const ja = i18n.cloneInstance({ lng: "ja" });
+    render(
+      <I18nextProvider i18n={ja}>
+        <MarketCard market={{ ...yesNoMarket, state: "closed", finalOutcome: "Yes" }} />
+        <MarketCard market={{ ...categoricalMarket, state: "closed" }} />
+      </I18nextProvider>,
+    );
+    expect(screen.getByText("結果判定済み")).toBeInTheDocument();
+    expect(screen.getByText("結果判定待ち")).toBeInTheDocument();
+  });
+
   it("renders resolved YES for a closed binary market without Chance or trade buttons", () => {
     render(<MarketCard market={{ ...yesNoMarket, state: "closed", finalOutcome: "Yes" }} />);
 
     expect(screen.getByText("Will BTC reach 100K?")).toBeInTheDocument();
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByText("Awaiting resolution")).not.toBeInTheDocument();
     expect(screen.getByText("YES")).toBeInTheDocument();
     expect(screen.queryByText("Chance")).not.toBeInTheDocument();
     expect(screen.queryByText("65.0%")).not.toBeInTheDocument();

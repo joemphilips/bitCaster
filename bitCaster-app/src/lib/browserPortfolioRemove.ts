@@ -32,6 +32,7 @@ import {
   type BrowserCtfRemoveTarget,
 } from "./browserCtfRemoveCoordinator";
 import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "./encryptedWalletBackupDriver";
+import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
 import { normalizeUrl } from "./url";
 import { toSeed } from "./bip39";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -206,17 +207,12 @@ export async function removePortfolioPosition(
       };
     }
 
-    if (terminal.managedTargets.length > 0) {
+    const driver =
+      terminal.managedTargets.length === 0
+        ? null
+        : activeBrowserEncryptedWalletBackupV2RuntimeDriver(scope.scopeId);
+    if (driver !== null) {
       stage = "managed-backup-removal";
-      const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(scope.scopeId);
-      if (driver === null) {
-        return {
-          kind: "pending",
-          reason: "managed-removal-pending",
-          committedPayoutAmount,
-          ...oracleEvidenceResult(oracleEvidence),
-        };
-      }
       const managedResult = await removeManagedProofsInChunks(
         driver,
         asset,
@@ -256,7 +252,25 @@ export async function removePortfolioPosition(
       return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
     }
 
-    if (terminal.localTargets.length === 0) {
+    let localTargets = terminal.localTargets;
+    let withoutBackupConfiguration = false;
+    if (terminal.managedTargets.length > 0) {
+      stage = "managed-backup-removal";
+      if (resolveEncryptedWalletBackupConfiguration() !== null) {
+        return {
+          kind: "pending",
+          reason: "managed-removal-pending",
+          committedPayoutAmount,
+          ...oracleEvidenceResult(oracleEvidence),
+        };
+      }
+      // Without a backup configuration no backup head can exclude a
+      // derivation-backed proof. The local path removes it (ADR-034
+      // amendment 2026-11-09).
+      localTargets = [...terminal.managedTargets, ...terminal.localTargets];
+      withoutBackupConfiguration = true;
+    }
+    if (localTargets.length === 0) {
       return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
     }
     stage = "local-commit";
@@ -264,7 +278,8 @@ export async function removePortfolioPosition(
       database,
       scopeId: scope.scopeId,
       asset,
-      targets: terminal.localTargets,
+      targets: localTargets,
+      withoutBackupConfiguration,
       committedPayoutAmount,
       attemptRef,
       observedAtMs: input.observedAtMs,
@@ -593,6 +608,7 @@ async function completeLocalRemoval(input: {
   readonly scopeId: string;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly targets: readonly BrowserCtfRemoveTarget[];
+  readonly withoutBackupConfiguration: boolean;
   readonly committedPayoutAmount: number;
   readonly attemptRef: string;
   readonly observedAtMs: number | undefined;
@@ -606,6 +622,7 @@ async function completeLocalRemoval(input: {
         scopeId: input.scopeId,
         asset: input.asset,
         targets,
+        ...(input.withoutBackupConfiguration ? { withoutBackupConfiguration: true } : {}),
         observedAtMs: input.observedAtMs,
         isCurrentProfile: () => {
           input.requireProfile();

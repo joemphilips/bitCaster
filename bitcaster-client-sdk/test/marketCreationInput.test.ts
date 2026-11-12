@@ -122,6 +122,28 @@ test('the outcome label validator reports each problem at its index', () => {
   assert.deepEqual(validateMarketOutcomeLabels(['Yes', 'No']), [])
 })
 
+test('outcome labels preserve the trimmed 1-to-191 ASCII letters and digits boundary', () => {
+  assert.deepEqual(validateMarketOutcomeLabels(['A'.repeat(191), 'Other']), [])
+  assert.deepEqual(validateMarketOutcomeLabels([` ${'A'.repeat(191)} `, 'Other']), [])
+  assert.deepEqual(validateMarketOutcomeLabels(['A'.repeat(192), 'Other']), [
+    { index: 0, problem: 'invalid' },
+  ])
+  for (const value of ['東京', 'Ａ', 'é', 'A B', 'A-B']) {
+    assert.deepEqual(validateMarketOutcomeLabels([value, 'Other']), [
+      { index: 0, problem: 'invalid' },
+    ])
+  }
+})
+
+test('preserves the exact U32 maturity maximum without rounding or clamping', () => {
+  assert.equal(MAX_MARKET_CREATION_MATURITY_EPOCH, 0xffff_ffff)
+  assert.equal(
+    normalizeMarketCreationInput(validInput({ maturityEpoch: MAX_MARKET_CREATION_MATURITY_EPOCH }))
+      .maturityEpoch,
+    0xffff_ffff,
+  )
+})
+
 test('rejects unsupported, malformed, or out-of-range creation inputs', () => {
   const invalidInputs: Array<[string, Partial<MarketCreationInput>]> = [
     ['blank title', { title: '   ' }],

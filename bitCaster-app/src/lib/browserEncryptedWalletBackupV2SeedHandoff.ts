@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import {
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
@@ -53,7 +54,17 @@ const PRODUCT_MSAT_ERROR = "browser V2 product seed handoff requires msat";
 export type BrowserEncryptedWalletBackupV2SeedHandoffRefusalCode =
   | "active-wallet-work"
   | "backup-not-current"
-  | "browser-lock-unavailable";
+  | "browser-lock-unavailable"
+  | "seed-backup-unconfirmed";
+
+/**
+ * A build without an encrypted backup configuration has no backup to cover the
+ * old wallet. The confirmed written seed then replaces the backup check, and the
+ * user restores the old wallet from that seed (ADR-034 amendment 2026-11-09).
+ */
+export interface BrowserSeedHandoffWithoutBackupConfiguration {
+  readonly currentSeedBackupConfirmed: boolean;
+}
 
 export class BrowserEncryptedWalletBackupV2SeedHandoffRefusal extends Error {
   constructor(
@@ -643,6 +654,8 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
   readonly loadCurrentOwnerReachabilityEvidence?: (
     candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
   ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
+  /** Present only without a backup configuration. Absent, the backup check applies. */
+  readonly withoutBackupConfiguration?: BrowserSeedHandoffWithoutBackupConfiguration;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly invalidateOldProfile: () => void;
   readonly activateNewProfile: () => Promise<void>;
@@ -680,11 +693,15 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
           ],
           async () => {
             requireCapturedDatabase(input);
-            await requireExactActiveProofCoverage(
-              input.database,
-              input.scopeId,
-              authorized.map(({ candidate }) => candidate),
-            );
+            if (input.withoutBackupConfiguration !== undefined) {
+              await requireNoReservedOrUnverifiedProofs(input.database, input.scopeId);
+            } else {
+              await requireExactActiveProofCoverage(
+                input.database,
+                input.scopeId,
+                authorized.map(({ candidate }) => candidate),
+              );
+            }
             for (const item of authorized) {
               await input.ownerAuthorityStore!.assertCurrentBackupReceiptInTransaction({
                 snapshot: item.snapshot.backupReceiptSnapshot!,
@@ -860,6 +877,7 @@ async function requireWholeWalletSeedHandoffEligibility(
     readonly loadCurrentOwnerReachabilityEvidence?: (
       candidate: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset,
     ) => Promise<BrowserEncryptedWalletBackupOwnerReachabilitySnapshot>;
+    readonly withoutBackupConfiguration?: BrowserSeedHandoffWithoutBackupConfiguration;
   },
 ): Promise<
   readonly {
@@ -867,6 +885,10 @@ async function requireWholeWalletSeedHandoffEligibility(
     readonly snapshot: BrowserEncryptedWalletBackupOwnerReachabilitySnapshot;
   }[]
 > {
+  if (input.withoutBackupConfiguration !== undefined) {
+    await requireSeedHandoffWithoutBackupConfiguration(input, input.withoutBackupConfiguration);
+    return [];
+  }
   await requireNoActiveLocalWork(input.database, input.scopeId);
   const desiredRows = await readDesiredRows(input.database, input.scopeId);
   desiredRows
@@ -922,6 +944,62 @@ async function requireWholeWalletSeedHandoffEligibility(
   }
   requireCapturedDatabase(input);
   return Object.freeze(authorized);
+}
+
+/**
+ * Keep every handoff gate except backup coverage. The seed restores the old
+ * wallet, so the user must confirm the written seed first.
+ */
+async function requireSeedHandoffWithoutBackupConfiguration(
+  input: BrowserEncryptedWalletBackupV2CacheEligibilityInput,
+  authority: BrowserSeedHandoffWithoutBackupConfiguration,
+): Promise<void> {
+  if (!authority.currentSeedBackupConfirmed) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "seed-backup-unconfirmed",
+      "browser seed handoff without a backup configuration requires a confirmed written seed",
+    );
+  }
+  await requireNoActiveLocalWork(input.database, input.scopeId);
+  // An unfinished deposit has no signed proof yet. The seed restore cannot
+  // recover it after the old database is deleted.
+  const pendingDeposit = await input.database.mintQuotes
+    .where("[scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]")
+    .between(
+      [input.scopeId, "bolt11", "pending", Dexie.minKey, Dexie.minKey],
+      [input.scopeId, "bolt11", "pending", Dexie.maxKey],
+    )
+    .limit(1)
+    .first();
+  if (pendingDeposit !== undefined) {
+    throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+      "active-wallet-work",
+      "browser seed handoff has an unfinished deposit",
+    );
+  }
+  (await readDesiredRows(input.database, input.scopeId))
+    .map(decodeEncryptedWalletBackupV2DesiredAssetRow)
+    .forEach(({ unit }) => requireProductMsatUnit(unit));
+}
+
+/** A reserved or unverified proof can still settle, so the handoff must wait. */
+async function requireNoReservedOrUnverifiedProofs(
+  database: BitcasterDB,
+  scopeId: string,
+): Promise<void> {
+  for (const selectability of ["locked", "retained-unverified"] as const) {
+    const proof = await database.custodyProofs
+      .where("[scopeId+selectability]")
+      .equals([scopeId, selectability])
+      .limit(1)
+      .first();
+    if (proof !== undefined) {
+      throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+        "active-wallet-work",
+        "browser seed handoff has a reserved or unverified proof",
+      );
+    }
+  }
 }
 
 function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {

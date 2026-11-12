@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { formatBtc } from "@/lib/format";
 import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { OracleFirstSigningRefusedError } from "@bitcaster/client-sdk/oraclePublication";
 import { publishBrowserOracleOutcome } from "@/lib/oracleAttestation";
 import { ORACLE_EXPLANATION_UTF8_BYTES_MAX } from "@bitcaster/client-sdk/oracleResolutionExplanation";
 import { NativeDialog } from "@/components/shared/NativeDialog";
@@ -93,9 +94,9 @@ export function CreatorDashboard() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<ActiveTab>("overview");
   const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null);
-  const [resolutionError, setResolutionError] = useState<"creator.oracleRecoveryRequired" | null>(
-    null,
-  );
+  const [resolutionError, setResolutionError] = useState<
+    "creator.oracleRecoveryRequired" | "creator.oracleFirstSigningRefused" | null
+  >(null);
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
   const generation = useRef(0);
@@ -145,6 +146,11 @@ export function CreatorDashboard() {
   );
   const storedExplanation = useCreatorMarketsStore((state) =>
     resolutionDialog ? retainedResolution(resolutionDialog.marketId, state).explanation : undefined,
+  );
+  const restoredOracle = useCreatorMarketsStore((state) =>
+    resolutionDialog
+      ? state.importedOracles.some((row) => row.binding.conditionId === resolutionDialog.marketId)
+      : false,
   );
   const immutableOutcome = storedOutcome ?? resolutionDialog?.savedOutcome;
   const selectedOutcome = immutableOutcome ?? resolutionDialog?.outcome ?? "";
@@ -230,11 +236,6 @@ export function CreatorDashboard() {
     setResolvingMarketId(marketId);
     try {
       requireCurrent();
-      if (!chosen)
-        await useCreatorMarketsStore
-          .getState()
-          .saveOracleExplanationDraft(marketId, publicExplanation);
-      if (!isCurrent()) return;
       // The row shows the result state. Automatic retry continues any failed delivery.
       await publishBrowserOracleOutcome(
         marketId,
@@ -248,8 +249,13 @@ export function CreatorDashboard() {
       if (!isCurrent()) return;
       setResolutionDialog(null);
       refresh();
-    } catch {
-      if (isCurrent()) setResolutionError("creator.oracleRecoveryRequired");
+    } catch (error) {
+      if (isCurrent())
+        setResolutionError(
+          error instanceof OracleFirstSigningRefusedError
+            ? "creator.oracleFirstSigningRefused"
+            : "creator.oracleRecoveryRequired",
+        );
     } finally {
       if (publication.current === operation) publication.current = null;
       if (isCurrent()) setResolvingMarketId(null);
@@ -396,6 +402,11 @@ export function CreatorDashboard() {
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
                 <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
                 <p className="mt-3 break-words font-medium">{resolutionDialog.title}</p>
+                {restoredOracle && !immutableOutcome && (
+                  <p role="note" className="mt-4 text-sm text-amber-800 dark:text-amber-300">
+                    {t("creator.restoredOracleSigningWarning")}
+                  </p>
+                )}
                 {immutableOutcome ? (
                   <p data-testid="creator-oracle-saved-outcome" className="mt-4 break-words">
                     {t("oracleBackup.savedOutcome", {

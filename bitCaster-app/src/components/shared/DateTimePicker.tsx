@@ -16,6 +16,8 @@ interface DateTimePickerProps {
   id?: string;
   /** Optional aria-label for the trigger button. */
   "aria-label"?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }
 
 /** Parse YYYY-MM-DDTHH:mm local string to Date, or undefined. */
@@ -53,6 +55,8 @@ export function DateTimePicker({
   placeholder = "Select date & time",
   id,
   "aria-label": ariaLabel,
+  "aria-invalid": ariaInvalid,
+  "aria-describedby": ariaDescribedBy,
 }: DateTimePickerProps) {
   const parsed = parseLocalString(value);
   const [open, setOpen] = useState(false);
@@ -148,6 +152,8 @@ export function DateTimePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
       >

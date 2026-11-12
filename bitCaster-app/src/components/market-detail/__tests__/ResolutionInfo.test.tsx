@@ -20,7 +20,6 @@ describe("ResolutionInfo", () => {
           criteria: "Rule",
           source: "oracle",
           resolutionDate: null,
-          status: "resolved",
           finalOutcome: "YES",
         }}
       />,
@@ -29,7 +28,9 @@ describe("ResolutionInfo", () => {
     expect(await screen.findByText(/<b>Official result<\/b>/)).toBeVisible();
     // Oracle text keeps normal line breaking in Japanese.
     expect(screen.getByText(/<b>Official result<\/b>/)).toHaveAttribute("data-user-content");
-    expect(screen.getByText("Rule")).toHaveAttribute("data-user-content");
+    expect(screen.getByText("Rule").closest("[data-user-content]")).toBe(
+      screen.getByTestId("market-markdown"),
+    );
     expect(container.querySelector("b")).toBeNull();
     expect(screen.getByRole("region", { name: "Verified oracle explanation" })).toBeVisible();
   });
@@ -44,7 +45,6 @@ describe("ResolutionInfo", () => {
           criteria: "Rule",
           source: "oracle",
           resolutionDate: null,
-          status: "resolved",
           finalOutcome: "YES",
         }}
       />,
@@ -66,7 +66,6 @@ describe("ResolutionInfo", () => {
           criteria: "Rule",
           source: "oracle",
           resolutionDate: null,
-          status: "resolved",
           finalOutcome: "NO",
         }}
       />,
@@ -79,17 +78,13 @@ describe("ResolutionInfo", () => {
     expect(screen.getByText("NO")).toBeVisible();
     expect(readExplanation).toHaveBeenCalledTimes(2);
   });
-  it.each([
-    { status: "open" as const, finalOutcome: undefined },
-    { status: "resolved" as const, finalOutcome: "Yes" },
-  ])(
-    "keeps $status resolution details visible without a missing date",
-    ({ status, finalOutcome }) => {
+  it.each([{ finalOutcome: undefined }, { finalOutcome: "Yes" }])(
+    "keeps resolution details with outcome $finalOutcome visible without a missing date",
+    ({ finalOutcome }) => {
       const resolution: ResolutionDetails = {
         criteria: "Use the official final result.",
         source: "oracle",
         resolutionDate: null,
-        status,
         finalOutcome,
       };
 
@@ -115,7 +110,6 @@ describe("ResolutionInfo", () => {
           criteria: "Use the official final result.",
           source: "oracle",
           resolutionDate: null,
-          status: "resolved",
           finalOutcome: "Alpha",
         }}
         outcomes={[
@@ -132,5 +126,27 @@ describe("ResolutionInfo", () => {
     ).toHaveStyle({
       backgroundColor: "#BADA55",
     });
+  });
+
+  it("renders the resolution criteria as safe Markdown", () => {
+    render(
+      <ResolutionInfo
+        resolution={{
+          criteria:
+            "Resolves **Yes** per [the source](https://example.com).\n\n<img src=x onerror=alert(1)>",
+          source: "oracle",
+          resolutionDate: null,
+        }}
+      />,
+    );
+
+    const criteria = screen.getByTestId("market-markdown");
+    expect(criteria.querySelector("strong")).toHaveTextContent("Yes");
+    expect(criteria.querySelector("img")).toBeNull();
+    expect(screen.getByRole("link", { name: "the source" })).toHaveAttribute(
+      "rel",
+      "noopener noreferrer nofollow ugc",
+    );
+    expect(readExplanation).not.toHaveBeenCalled();
   });
 });

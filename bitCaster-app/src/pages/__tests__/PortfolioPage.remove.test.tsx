@@ -159,7 +159,7 @@ const removalConfirmation = () => screen.getByTestId("position-removal-confirmat
 const actionDialog = () => screen.getByRole("dialog", { name: "Position action" });
 async function startAction(operation: Operation, confirm = true) {
   await userEvent.click(
-    screen.getByLabelText(operation === "claim" ? /^cash out /i : /remove losing position for/i),
+    screen.getByLabelText(operation === "claim" ? /^cash out /i : /remove losing token for/i),
   );
   if (operation === "remove" && confirm) {
     await userEvent.click(within(removalConfirmation()).getByRole("button", { name: "Remove" }));
@@ -218,11 +218,11 @@ describe("PortfolioPage position action dialogs", () => {
       const view = render(<PortfolioPage />);
       await startAction(operation);
       expect(screen.getByRole("status")).toHaveTextContent(
-        operation === "claim" ? "Claiming your payout" : "Removing the position",
+        operation === "claim" ? "Claiming your payout" : "Removing the token",
       );
       // A repeated action must not start another coordinator.
       if (operation === "claim") await userEvent.click(screen.getByLabelText(/^cash out /i));
-      else expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
+      else expect(screen.queryByLabelText(/remove losing token for/i)).not.toBeInTheDocument();
       expect(coordinator(operation)).toHaveBeenCalledOnce();
       cashuMocks.walletState.mnemonic = "other fake wallet seed";
       view.rerender(<PortfolioPage />);
@@ -253,7 +253,7 @@ describe("PortfolioPage position action dialogs", () => {
     });
     expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Removing the position");
+    expect(screen.getByRole("status")).toHaveTextContent("Removing the token");
     await act(async () => finish({ kind: "completed", committedPayoutAmount: 0 }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -289,7 +289,7 @@ describe("PortfolioPage position action dialogs", () => {
       await act(async () => finish[0]({ kind: "pending", committedPayoutAmount: 0 }));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent(
-        kind === "claim" ? "Claiming your payout" : "Removing the position",
+        kind === "claim" ? "Claiming your payout" : "Removing the token",
       );
       await act(async () => finish[1]({ kind: "completed", committedPayoutAmount: 0 }));
       expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -507,11 +507,11 @@ describe("PortfolioPage position action dialogs", () => {
         <PortfolioPage />
       </I18nextProvider>,
     );
-    await userEvent.click(screen.getByLabelText(/ハズレのポジションを削除/));
+    await userEvent.click(screen.getByLabelText(/ハズレのトークンを削除/));
     const dialog = removalConfirmation();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(dialog).toHaveTextContent("このハズレのポジションをウォレットから削除しますか？");
-    expect(dialog).toHaveTextContent("ローカルの CTF プルーフは削除され、元に戻せません。");
+    expect(dialog).toHaveTextContent("このハズレのトークンをウォレットから削除しますか？");
+    expect(dialog).toHaveTextContent("元に戻せません。");
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
     expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
@@ -821,7 +821,7 @@ describe("PortfolioPage position action dialogs", () => {
       }),
     ];
     render(<PortfolioPage />);
-    expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/remove losing token for/i)).not.toBeInTheDocument();
     if (kind === "winner") {
       expect(screen.getByText("Won")).toBeInTheDocument();
       expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();

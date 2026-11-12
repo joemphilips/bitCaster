@@ -20,15 +20,22 @@ import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { requestBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
 import {
   MAX_MARKET_CREATION_OUTCOMES,
+  MAX_MARKET_CREATION_MATURITY_EPOCH,
   MarketCreationThumbnailMismatchError,
   assertMarketCreationMetadataSize,
-  normalizeMarketCreationInput,
   type MarketCreationRecord,
   type MarketCreationInput,
   prepareMarketCreationRequest,
 } from "@bitcaster/client-sdk";
 import {
+  inspectNewMarketCreationText,
+  assertNewMarketCreationInput,
+} from "@bitcaster/client-sdk/marketCreationLimits";
+import { marketCreationTextError, marketCreationTagsError } from "@/lib/marketCreationValidation";
+import { OracleBackupCapacityError } from "@bitcaster/client-sdk/oracleBackupCapacity";
+import {
   MarketAnnouncementRelayError,
+  assertBrowserMarketCreationCapacity,
   browserMarketCreationSession,
   completeBrowserMarketCreation,
   prepareBrowserMarketCreation,
@@ -738,8 +745,22 @@ export function useMarketCreationState() {
           throw new Error(t("marketCreation.creationResumeRequired"));
         if (record === null) {
           const market = wizardMarketInput(draft);
-          const normalized = normalizeMarketCreationInput(market);
+          const text = inspectNewMarketCreationText(market);
+          const textError =
+            marketCreationTextError(t, "title", text.title.issue) ??
+            marketCreationTextError(t, "description", text.description.issue) ??
+            (text.mintTagsIssue ? marketCreationTagsError(t, text.mintTagsIssue) : null);
+          if (textError) throw new Error(textError);
+          if (market.maturityEpoch > MAX_MARKET_CREATION_MATURITY_EPOCH)
+            throw new Error(
+              t("marketCreation.endTimeTooLate", {
+                maxDate: new Date(MAX_MARKET_CREATION_MATURITY_EPOCH * 1000).toLocaleString(),
+              }),
+            );
+          const normalized = assertNewMarketCreationInput(market);
           assertMarketCreationMetadataSize(normalized.metadata);
+          const relayUrls = effectiveRelayUrls(relays);
+          const eventId = assertBrowserMarketCreationCapacity(session, normalized, relayUrls);
           if (nostrSignerMode !== "nsec" || !useSettingsStore.getState().nsecSecret)
             throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE);
           if (thumbnailPending || thumbnailError)
@@ -805,7 +826,8 @@ export function useMarketCreationState() {
           record = await prepareBrowserMarketCreation(session, {
             creationId: pointer.creationId,
             market,
-            relayUrls: effectiveRelayUrls(relays),
+            eventId,
+            relayUrls,
             feeAmount,
             outcomeCollections:
               settings.defaultKeysetCreation === "none"
@@ -868,6 +890,10 @@ export function useMarketCreationState() {
         setCreatedMarketDivisibility(snapshotDivisibility);
         setCreatedMarketConditionId(result.conditionId);
       } catch (error) {
+        const capacityError =
+          error instanceof OracleBackupCapacityError
+            ? t("marketCreation.oracleCapacityExceeded")
+            : null;
         const failureCode =
           error instanceof MarketCreationThumbnailMismatchError
             ? "thumbnail-presence-mismatch"
@@ -893,19 +919,21 @@ export function useMarketCreationState() {
           }
           if (!dismissed)
             setSubmitError(
-              retained === null &&
+              capacityError ??
+                (retained === null &&
                 error instanceof Error &&
                 /^(Market metadata|Market creation exceeds|Market thumbnail)/.test(error.message)
-                ? error.message
-                : t(creationFailureMessage(failureCode)),
+                  ? error.message
+                  : t(creationFailureMessage(failureCode))),
             );
         } else
           setSubmitError(
-            error instanceof DraftImageRetentionError
-              ? t(draftImageErrorKey(error))
-              : error instanceof Error
-                ? error.message
-                : "Failed to create market",
+            capacityError ??
+              (error instanceof DraftImageRetentionError
+                ? t(draftImageErrorKey(error))
+                : error instanceof Error
+                  ? error.message
+                  : "Failed to create market"),
           );
       } finally {
         setIsSubmitting(false);

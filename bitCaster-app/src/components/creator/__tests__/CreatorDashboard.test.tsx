@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within, waitFor } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OracleFirstSigningRefusedError } from "@bitcaster/client-sdk/oraclePublication";
 import type { CreatedMarket } from "@/types/portfolio";
 import type { DashboardStats } from "@/types/market-management";
 
@@ -424,9 +425,8 @@ describe("CreatorDashboard", () => {
         undefined,
         { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
       );
-      expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBe(
-        "Official final result.",
-      );
+      // The publication adapter owns durable intent after first-signing admission.
+      expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBeUndefined();
     },
   );
 
@@ -727,7 +727,7 @@ describe("oracle owner confirmation", () => {
           },
         };
   }
-  /** The first choice saves its explanation draft, so the owner must exist in the store. */
+  /** Retained choice checks read the durable owner while confirmation stays local. */
   async function setup(ownerKind: "created" | "imported" = "imported") {
     if (ownerKind === "imported") {
       await useCreatorMarketsStore.getState().retainImportedOracleMetadata(creatorOracleMetadata);
@@ -797,6 +797,29 @@ describe("oracle owner confirmation", () => {
         undefined,
         { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
       );
+    },
+  );
+  it.each(["created", "imported"] as const)(
+    "keeps %s choice and draft unwritten when signing admission refuses confirmation",
+    async (kind) => {
+      await setup(kind);
+      const user = userEvent.setup();
+      renderDashboard();
+      const dialog = await chooseOutcome(user);
+      await user.type(within(dialog).getByRole("textbox"), "Unadmitted draft.");
+      mockPublishOracleOutcome.mockRejectedValueOnce(
+        new Error("Public result arrived after dialog opened"),
+      );
+      await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
+      await waitFor(() => expect(mockPublishOracleOutcome).toHaveBeenCalledOnce());
+      expect(screen.getByRole("dialog")).toBeVisible();
+      const state = useCreatorMarketsStore.getState();
+      const draft =
+        kind === "created"
+          ? state.markets[0].oracle?.explanationDraft
+          : state.importedOracles[0].explanationDraft;
+      expect(draft).toBeUndefined();
+      expect(await state.readOraclePublication(ownerId)).toBeNull();
     },
   );
   it.each(["created", "imported"] as const)(
@@ -902,6 +925,9 @@ describe("oracle owner confirmation", () => {
     await user.click(await screen.findByRole("button", { name: "Close market" }));
     let dialog = screen.getByRole("dialog", { name: "Close this market" });
     expect(within(dialog).getByText(row.title, { exact: true })).toBeVisible();
+    expect(within(dialog).getByRole("note")).toHaveTextContent(
+      "Two different outcome signatures made with the same nonce can reveal your oracle private key.",
+    );
     expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeDisabled();
     await user.selectOptions(within(dialog).getByRole("combobox"), "NO");
     await user.type(within(dialog).getByRole("textbox"), "Unsaved explanation.");
@@ -927,6 +953,26 @@ describe("oracle owner confirmation", () => {
       undefined,
       { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
     );
+  });
+
+  it("shows the restored signing warning in Japanese without adding a new confirmation", async () => {
+    await setupImportedDialog();
+    try {
+      await i18n.changeLanguage("ja");
+      renderDashboard();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: i18n.t("creator.closeMarket") }));
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByRole("note")).toHaveTextContent(
+        "同じノンスで異なる結果に2回署名すると",
+      );
+      expect(within(dialog).getByRole("note")).toHaveTextContent("秘密鍵が漏えい");
+      await user.selectOptions(within(dialog).getByRole("combobox"), "NO");
+      expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeEnabled();
+      expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("shows a saved imported outcome without a dialog and keeps its explanation", async () => {
@@ -1051,33 +1097,72 @@ describe("oracle owner confirmation", () => {
     },
   );
 
-  it("retranslates a retained publication error when the language changes without publishing again", async () => {
-    await setup();
-    mockPublishOracleOutcome.mockRejectedValueOnce(new Error("Unavailable"));
-    const english = i18n.t("creator.oracleRecoveryRequired", { lng: "en" });
-    const japanese = i18n.t("creator.oracleRecoveryRequired", { lng: "ja" });
-    const user = userEvent.setup();
-    renderDashboard();
-    try {
-      await chooseOutcome(user);
-      await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
-      expect((await screen.findAllByText(english)).length).toBeGreaterThan(0);
-      await act(async () => {
-        await i18n.changeLanguage("ja");
-      });
-      expect(screen.queryByText(english)).toBeNull();
-      expect(screen.getAllByText(japanese).length).toBeGreaterThan(0);
-      expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        await i18n.changeLanguage("en");
-      });
-      expect(screen.getAllByText(english).length).toBeGreaterThan(0);
-      expect(screen.queryByText(japanese)).toBeNull();
-      expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
-    } finally {
-      await act(async () => {
-        await i18n.changeLanguage("en");
-      });
-    }
-  });
+  it.each(["created", "imported"] as const)(
+    "explains a %s first-sign refusal without requesting key restoration in either language",
+    async (kind) => {
+      await setup(kind);
+      const retainedOwners = await useCreatorMarketsStore.getState().readOracleOwners();
+      mockPublishOracleOutcome.mockRejectedValueOnce(new OracleFirstSigningRefusedError());
+      const user = userEvent.setup();
+      renderDashboard();
+      try {
+        const dialog = await chooseOutcome(user);
+        await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
+        for (const language of ["en", "ja"] as const) {
+          await act(async () => {
+            await i18n.changeLanguage(language);
+          });
+          await waitFor(() =>
+            expect(within(dialog).getByRole("alert")).toHaveTextContent(
+              i18n.t("creator.oracleFirstSigningRefused", { lng: language }),
+            ),
+          );
+          expect(
+            screen.queryByText(i18n.t("creator.oracleRecoveryRequired", { lng: language })),
+          ).toBeNull();
+          expect(dialog).toBeVisible();
+          expect(within(dialog).getByTestId("creator-oracle-confirm")).toBeEnabled();
+        }
+        expect(await useCreatorMarketsStore.getState().readOracleOwners()).toEqual(retainedOwners);
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+      }
+    },
+  );
+
+  it.each(["Unavailable", new OracleFirstSigningRefusedError().message])(
+    "keeps generic recovery guidance for an untyped error (%s)",
+    async (message) => {
+      await setup();
+      mockPublishOracleOutcome.mockRejectedValueOnce(new Error(message));
+      const english = i18n.t("creator.oracleRecoveryRequired", { lng: "en" });
+      const japanese = i18n.t("creator.oracleRecoveryRequired", { lng: "ja" });
+      const user = userEvent.setup();
+      renderDashboard();
+      try {
+        await chooseOutcome(user);
+        await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
+        expect((await screen.findAllByText(english)).length).toBeGreaterThan(0);
+        await act(async () => {
+          await i18n.changeLanguage("ja");
+        });
+        expect(screen.queryByText(english)).toBeNull();
+        expect(screen.getAllByText(japanese).length).toBeGreaterThan(0);
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+        expect(screen.getAllByText(english).length).toBeGreaterThan(0);
+        expect(screen.queryByText(japanese)).toBeNull();
+        expect(mockPublishOracleOutcome).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage("en");
+        });
+      }
+    },
+  );
 });

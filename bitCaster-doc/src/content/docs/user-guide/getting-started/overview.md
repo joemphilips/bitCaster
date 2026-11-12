@@ -78,8 +78,8 @@ provides the exact ratio. Older records without the required amounts show no
 execution price.
 
 Positions with a confirmed result show “Won😋” or “Lost😭”. The text identifies the result;
-the emoji is decorative. Activity labels a received payout as “Payout Claimed”. Removing a losing position permanently deletes its
-local tokens. The confirmation warns that this action cannot be undone.
+the emoji is decorative. Activity labels a received payout as “Payout Claimed”. Removing a losing token permanently deletes it
+from this browser. The confirmation warns that this action cannot be undone.
 Confirm or cancel in the position row. During removal, a spinner replaces the
 action. Routine success needs no extra dialog. Pending results and recovery
 problems remain visible.
@@ -186,9 +186,13 @@ Closing setup after creation starts does not remove an already saved recovery ph
 
 To use another wallet, open the wallet section in Settings and import its
 recovery phrase. This replaces the active wallet; it does not add a second
-named profile. Save the current recovery phrase first. Unfinished wallet work
-or an incomplete backup can block replacement. Your Nostr account does not
-change. Activity stays associated with the wallet that performed it.
+named profile. First, back up the current recovery phrase in Seed Backup.
+Replacement waits until no order, refund, send, deposit, or withdrawal is
+unfinished. When encrypted backup is configured, the backup must also be
+complete. To use the old wallet again, restore it from its recovery phrase.
+Local records that the mint cannot restore, such as completed order history,
+do not come back. Your Nostr account does not change. Activity stays
+associated with the wallet that performed it.
 
 Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr
@@ -298,6 +302,15 @@ without relay or catalogue requests. These preferences can be public on relays.
 See [Liked markets and live watches](/technical/#keep-liked-markets) for command details.
 
 ## Market detail pages
+
+After trading closes, the market header shows **Awaiting resolution** until
+the engine has the verified result. Then it shows **Resolved** and the final
+outcome. A closed trading status alone does not resolve a market. Market cards,
+Portfolio, the creator dashboard, and profile pages use the same two terms.
+
+The **Resolution Criteria** section shows the creator's text as Markdown.
+A link in the criteria opens in a new tab. The page does not load images from
+the criteria. It shows each image as a link.
 
 The market chart shows recorded trades for each primitive outcome. If only one
 outcome has traded, only that line is shown; bitCaster does not invent prices

@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import {
-  encodeOracleBackup,
+  validateOracleBackupModel,
+  encodeOraclePrivateAuthority,
+  decodeOraclePrivateAuthority,
   restoreOracleBackupEnvelope,
   readOracleBackupEnvelope,
   OracleBackupAccessError,
@@ -157,11 +159,14 @@ export function createNativeOracleCreationStore(
   ): Promise<NativeOracleAuthorityRecord> {
     await session.read(() => undefined)
     // Validate the complete portable record before opening a mutation transaction.
-    const backup = JSON.parse(await encodeOracleBackup(input, helper)) as OracleBackupRecord
-    const summary = await helper.validateAuthority(
-      JSON.stringify(backup.authority),
+    const backup = await validateOracleBackupModel(input, helper)
+    const privateDto = await encodeOraclePrivateAuthority(
+      backup.authority,
       backup.oraclePubkey,
+      helper,
+      { writeVersion: 2 },
     )
+    const summary = await helper.validateAuthority(privateDto, backup.oraclePubkey)
     const observed = await store.readByConditionId(backup.conditionId)
     let createdScalar: string | null = null
     if (observed !== null && backup.authority.nonceScalarHex !== null) {
@@ -532,11 +537,11 @@ export function createNativeOracleCreationStore(
           ),
         }
       })
-      const encoded = await encodeOracleBackup(snapshot.backup, helper)
+      const validated = await validateOracleBackupModel(snapshot.backup, helper)
       const latest = await this.readAuthorityByConditionId(conditionId)
       if (JSON.stringify(latest) !== JSON.stringify(snapshot.record))
         throw new NativeOracleStoreError('conflict')
-      return JSON.parse(encoded) as OracleBackupRecord
+      return validated
     },
 
     /** Private backup port. Created authorities keep the retained hardened index. */
@@ -567,14 +572,17 @@ export function createNativeOracleCreationStore(
           ),
         )
         const { schemaVersion: _version, nonceScalarHex: _nonce, ...retained } = authority
-        authority = JSON.parse(
+        authority = await decodeOraclePrivateAuthority(
           await helper.exportEnumAuthority({
+            authorityVersion: 2,
             ...retained,
             oracleSecretKeyHex: signer.secretKeyHex,
             nonceSeedHex: secrets.nativeOracleNonceSeedHex,
             reservedNonceIndex: record.nonceIndex,
           }),
-        ) as OraclePrivateAuthority
+          record.creatorPublicKeyHex,
+          helper,
+        )
       }
       const canonical = JSON.parse(record.canonicalInput) as {
         destination: { mintUrl: string; engineBaseUrl: string; relayUrls: readonly string[] }
@@ -594,12 +602,12 @@ export function createNativeOracleCreationStore(
           relayUrls: normalizeNostrRelayUrls(canonical.destination.relayUrls),
         },
       }
-      const encoded = await encodeOracleBackup(backup, helper)
+      const validated = await validateOracleBackupModel(backup, helper)
       // Do not export a stale choice or artifact while the helper was running.
       const latest = await this.readAuthorityByConditionId(conditionId)
       if (JSON.stringify(latest) !== JSON.stringify(record))
         throw new NativeOracleStoreError('conflict')
-      return JSON.parse(encoded) as OracleBackupRecord
+      return validated
     },
 
     /** Internal portable-record import for trusted core callers and provider tests. */

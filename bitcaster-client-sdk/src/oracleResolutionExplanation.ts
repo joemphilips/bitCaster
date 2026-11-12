@@ -1,4 +1,5 @@
 import { verifyEvent, type Event, type EventTemplate } from 'nostr-tools/pure'
+import { COMPACT_MARKET_CREATION_TEXT_POLICY } from './marketCreationLimits.ts'
 
 export const ORACLE_EXPLANATION_UTF8_BYTES_MAX = 4_096
 export const ORACLE_EVENT_JSON_BYTES_MAX = 256 * 1_024
@@ -38,7 +39,15 @@ export function readSignedOracleEvent(eventJson: string, kind: 88 | 89 | 1111): 
   for (const tag of value.tags) {
     if (!Array.isArray(tag) || tag.length === 0 || tag.length > TAG_ITEMS_MAX)
       throw new Error('Oracle event tags are invalid.')
-    for (const item of tag) boundedText(item, TAG_VALUE_BYTES_MAX, 'Oracle event tag is invalid.')
+    for (const [index, item] of tag.entries()) {
+      // Read-compatible before larger new-market writers are activated. Other
+      // tag positions and event kinds retain their existing resource bound.
+      const max =
+        kind === 88 && tag[0] === 'description' && index === 1
+          ? COMPACT_MARKET_CREATION_TEXT_POLICY.descriptionUtf8Bytes
+          : TAG_VALUE_BYTES_MAX
+      boundedText(item, max, 'Oracle event tag is invalid.')
+    }
   }
   const event = value as unknown as Event
   if (!verifyEvent(event)) throw new Error('Oracle event signature is invalid.')

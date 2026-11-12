@@ -99,6 +99,31 @@ export interface OraclePublicationOptions {
   readonly republishAttestation?: boolean
 }
 
+/** A safe first-signing refusal; never retains transport errors or unverified result payloads. */
+export class OracleFirstSigningRefusedError extends Error {
+  constructor() {
+    super('The engine shows a result or is unavailable. No new outcome was signed.')
+    this.name = 'OracleFirstSigningRefusedError'
+  }
+}
+
+/**
+ * Recheck the original public result immediately before an unsigned local intent may sign.
+ * Only an explicit absent result permits signing. This is a refusal guard, not adoption of
+ * unverified public artifacts or proof that another profile has not used the nonce.
+ */
+export async function assertOracleFirstSigningAllowed(
+  readResolution: () => Promise<unknown>,
+): Promise<void> {
+  let observed: unknown
+  try {
+    observed = await readResolution()
+  } catch {
+    observed = undefined
+  }
+  if (observed !== null) throw new OracleFirstSigningRefusedError()
+}
+
 /** The user-visible result of a saved choice. Relay copies continue after engine evidence. */
 export type OraclePublicationState = 'publishing' | 'published' | 'failed'
 

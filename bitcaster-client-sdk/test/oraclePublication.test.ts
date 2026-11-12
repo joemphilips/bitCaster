@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
+  assertOracleFirstSigningAllowed,
+  OracleFirstSigningRefusedError,
   oraclePublicationDeliveryPending,
   oraclePublicationState,
   oraclePublicationTerminal,
@@ -18,6 +20,30 @@ import {
   otherOracleTestKey,
   signedExplanation,
 } from './fixtures/oraclePublication.ts'
+
+test('first signing accepts only an explicit absent result and masks read errors', async () => {
+  await assertOracleFirstSigningAllowed(async () => null)
+  for (const observed of [undefined, {}, { attestedOutcome: 'YES' }, { attestedOutcome: 'NO' }])
+    await assert.rejects(
+      assertOracleFirstSigningAllowed(async () => observed),
+      OracleFirstSigningRefusedError,
+    )
+  await assert.rejects(
+    assertOracleFirstSigningAllowed(async () => {
+      throw new Error('private transport details')
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof OracleFirstSigningRefusedError)
+      assert.equal(error.name, 'OracleFirstSigningRefusedError')
+      assert.equal(error.cause, undefined)
+      assert.equal(
+        (error as Error).message,
+        'The engine shows a result or is unavailable. No new outcome was signed.',
+      )
+      return true
+    },
+  )
+})
 
 test('restore merges complementary delivery evidence and preserves exact artifacts', () => {
   const fixture = oracleFixture()

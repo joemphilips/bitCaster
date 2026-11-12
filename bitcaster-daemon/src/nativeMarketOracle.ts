@@ -1,8 +1,11 @@
 import {
   assertMarketCreationMetadataSize,
+  assertNewMarketCreationInput,
+  assertOracleBackupLifecycleCapacity,
   deriveDlcConditionId,
   normalizeMarketCreationInput,
   normalizeOracleAnnouncementTags,
+  normalizeLegacyOracleAnnouncementTags,
   type MarketCreationInput,
 } from '@bitcaster-market/client-sdk'
 import type { NativeOracleHelper } from './nativeOracleHelper.ts'
@@ -48,11 +51,24 @@ export async function prepareNativeMarketOracle(
 ) {
   const saved = await deps.store.readCreation(input.creationId)
   if (saved !== null) assertNativeOracleCreator(saved.creatorPublicKeyHex, deps.oracleSecretKeyHex)
-  const market = normalizeMarketCreationInput(input.market)
+  const market =
+    saved === null
+      ? assertNewNativeMarketCreationInput(input)
+      : normalizeMarketCreationInput(input.market)
   assertMarketCreationMetadataSize(market.metadata)
   if (saved?.announcement == null) {
     deps.helper.assertAvailable()
   }
+  // Reservations survive a crash before signing. An explicit format marker keeps
+  // new raw descriptions stable; only rows written without it use legacy formatting.
+  const savedTagsVersion: unknown =
+    saved === null
+      ? 2
+      : (JSON.parse(saved.canonicalInput) as { oracleAnnouncementTagsVersion?: unknown })
+          .oracleAnnouncementTagsVersion
+  if (savedTagsVersion !== undefined && savedTagsVersion !== 2)
+    throw new Error('Native oracle announcement tag format is invalid.')
+  const exactDescription = savedTagsVersion === 2
   const canonicalInput = JSON.stringify({
     market: {
       title: market.metadata.title,
@@ -81,6 +97,7 @@ export async function prepareNativeMarketOracle(
             thumbnailContentType: input.destination.thumbnailContentType,
           }),
     },
+    ...(exactDescription ? { oracleAnnouncementTagsVersion: 2 } : {}),
   })
   let record = await deps.store.reserveCreation(
     {
@@ -91,7 +108,9 @@ export async function prepareNativeMarketOracle(
     deriveNostrPublicKey(deps.oracleSecretKeyHex),
   )
   if (record.announcement === null) {
-    const tags = normalizeOracleAnnouncementTags(market.metadata.title, market.metadata.description)
+    const tags = (
+      exactDescription ? normalizeOracleAnnouncementTags : normalizeLegacyOracleAnnouncementTags
+    )(market.metadata.title, market.metadata.description)
     const artifact = await deps.helper.createEnum({
       oracleSecretKeyHex: deps.oracleSecretKeyHex,
       nonceSeedHex: deps.nonceSeedHex,
@@ -116,6 +135,26 @@ export async function prepareNativeMarketOracle(
     })
   }
   return { record, market }
+}
+
+/** New admission only: retained paid creations keep their exact historical input. */
+export function assertNewNativeMarketCreationInput(
+  input: Pick<NativeMarketCreationInput, 'market' | 'eventId' | 'destination'>,
+) {
+  const market = assertNewMarketCreationInput(input.market)
+  assertOracleBackupLifecycleCapacity({
+    title: market.metadata.title,
+    description: market.metadata.description,
+    outcomes: market.outcomeLabels,
+    eventId: input.eventId,
+    destinations: {
+      mintUrl: input.destination.mintUrl,
+      engineUrl: input.destination.engineBaseUrl,
+      relayUrls: input.destination.relayUrls,
+    },
+    writeVersion: 1,
+  })
+  return market
 }
 
 export async function signNativeMarketOutcome(

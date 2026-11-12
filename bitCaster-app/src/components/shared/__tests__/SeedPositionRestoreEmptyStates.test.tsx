@@ -40,7 +40,6 @@ const market: YesNoMarketDetail = {
     criteria: "Will it happen?",
     source: "oracle",
     resolutionDate: "2030-01-01T00:00:00Z",
-    status: "open",
   },
   priceHistory: { data: [], timeframe: "7d" },
   orderBook: {

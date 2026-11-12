@@ -7,9 +7,11 @@ import type { MarketCatalogueEntry, MarketCatalogueResponse } from "@/lib/market
  */
 export async function loadMarketCatalogue(
   conditionIds: readonly string[],
+  options: { signal?: AbortSignal } = {},
 ): Promise<Map<string, MarketCatalogueEntry>> {
   const catalogue = new Map<string, MarketCatalogueEntry>();
   for (const batch of marketCatalogueIdBatches(conditionIds)) {
+    if (options.signal?.aborted) break;
     try {
       const search = new URLSearchParams({
         ids: batch.join(","),
@@ -18,14 +20,17 @@ export async function loadMarketCatalogue(
       });
       const response = await fetch(`/api/v1/markets/query?${search}`, {
         headers: { Accept: "application/json" },
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       if (!response.ok) continue;
       const body = (await response.json()) as MarketCatalogueResponse;
+      if (options.signal?.aborted) break;
       const requestedIds = new Set(batch);
       for (const market of body.markets ?? []) {
         if (requestedIds.has(market.conditionId)) catalogue.set(market.conditionId, market);
       }
     } catch {
+      if (options.signal?.aborted) break;
       // Keep successful sibling batches when one catalogue page is unavailable.
     }
   }

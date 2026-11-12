@@ -2,8 +2,10 @@ import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
 import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
 import { currentBrowserMarketCreationBinding } from "@/lib/browserMarketCreation";
+import * as oracleBackupCapacity from "@bitcaster/client-sdk/oracleBackupCapacity";
 import { marketDraftImages } from "@/stores/marketDraftImage";
-import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import { ReviewAndCreate } from "@/components/market-creation/ReviewAndCreate";
 import Dexie from "dexie";
 import { Blob as NativeBlob, File as NativeFile } from "node:buffer";
 import { webcrypto } from "node:crypto";
@@ -1243,6 +1245,116 @@ describe("durable browser market creation", () => {
     expect(() => useMarketDraftStore.getState().completeCreation("wrong-id")).toThrow();
   });
 
+  it.each([
+    "title",
+    "description",
+    "tags",
+    "maturity",
+    "unicode-title",
+    "unicode-description",
+    "unicode-tags",
+  ] as const)(
+    "rejects invalid %s before fee consent, signing, or durable creation",
+    async (field) => {
+      const result = await setupDraftForSubmission();
+      await act(async () => {
+        if (field === "title") result.current.onTitleChange("🌦".repeat(101));
+        if (field === "description") result.current.onDescriptionChange("界".repeat(342));
+        if (field === "tags") result.current.onCategoryTagsChange(["x".repeat(4096)]);
+        if (field === "maturity") result.current.onClosingDateChange("2200-01-01T00:00");
+        if (field === "unicode-title") result.current.onTitleChange("Question \ud800");
+        if (field === "unicode-description")
+          result.current.onDescriptionChange("Description \udc00");
+        if (field === "unicode-tags") result.current.onCategoryTagsChange(["category\ud800"]);
+      });
+      await act(async () => {
+        await result.current.onCreateMarket();
+      });
+      expect(result.current.submitError).not.toBeNull();
+      expect(result.current.registrationFeePrompt).toBeNull();
+      expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+      expect(runtime.feeOperations).toHaveLength(0);
+      expect(runtime.published).toHaveLength(0);
+      expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+      expect(mockCreateMarket).not.toHaveBeenCalled();
+      expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    },
+  );
+
+  it.each(["en", "ja"] as const)(
+    "renders the %s lifecycle capacity refusal before fee consent or nonce allocation",
+    async (language) => {
+      try {
+        await i18n.changeLanguage(language);
+        const result = await setupDraftForSubmission();
+        mockWalletState.mints[0].info.nuts.CTF.registration_fees[0].registration_fee_base = 7;
+        await act(async () => {
+          useSettingsStore.setState({
+            relays: [
+              {
+                url: `wss://relay.example.test/${"a".repeat(40000)}`,
+                connectionStatus: "disconnected",
+              },
+            ],
+          });
+        });
+        await act(async () => {
+          await result.current.onCreateMarket();
+        });
+        expect(result.current.submitError).toBe(i18n.t("marketCreation.oracleCapacityExceeded"));
+        render(
+          <MemoryRouter>
+            <ReviewAndCreate
+              description={result.current.draft.stepReviewAndCreate!.description}
+              basicInfo={result.current.draft.stepBasicInfo}
+              outcomes={result.current.draft.stepOutcomes}
+              isSubmitting={result.current.isSubmitting}
+              submitError={result.current.submitError}
+            />
+          </MemoryRouter>,
+        );
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          language === "ja"
+            ? "このマーケットとリレー設定では、最終結果のバックアップに必要な容量が足りません。"
+            : "This market and its relay settings leave too little room to back up the final result.",
+        );
+        if (language === "ja")
+          expect(screen.getByRole("alert")).toHaveTextContent(
+            "設定でリレーの URL を減らしてから再試行してください。",
+          );
+        expect(result.current.registrationFeePrompt).toBeNull();
+        expect(mockWithBrowserOracleMutation).not.toHaveBeenCalled();
+        expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
+        expect(runtime.feeOperations).toHaveLength(0);
+        expect(runtime.published).toHaveLength(0);
+        expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+        expect(mockCreateMarket).not.toHaveBeenCalled();
+        expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+      } finally {
+        await i18n.changeLanguage("en");
+      }
+    },
+  );
+
+  it("uses the exact measured event ID and destinations for actual preparation", async () => {
+    const capacity = vi.spyOn(oracleBackupCapacity, "assertOracleBackupLifecycleCapacity");
+    const result = await setupDraftForSubmission();
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(result.current.submitError).toBeNull();
+    expect(capacity).toHaveBeenCalledTimes(2);
+    const measured = capacity.mock.calls[0]![0];
+    expect(capacity.mock.calls[1]![0]).toEqual(measured);
+    expect(measured.writeVersion).toBe(1);
+    expect(measured.destinations).toEqual({
+      mintUrl: "https://mint.example.test",
+      engineUrl: window.location.origin,
+      relayUrls: ["ws://localhost:7777"],
+    });
+    expect(mockPrepareEnumAnnouncement.mock.calls[0]![0]).toBe(measured.eventId);
+  });
+
   it.each(["thumbnail", "metadata", "multipart"] as const)(
     "rejects the %s limit before fee and signing",
     async (limit) => {
@@ -1279,7 +1391,9 @@ describe("durable browser market creation", () => {
       await act(async () => {
         await result.current.onCreateMarket();
       });
-      expect(result.current.submitError).toMatch(/Market (metadata|creation)/);
+      expect(result.current.submitError).toMatch(
+        limit === "metadata" ? /description/ : /Market creation/,
+      );
       expect(mockPrepareEnumAnnouncement).not.toHaveBeenCalled();
       expect(runtime.feeOperations).toHaveLength(0);
       expect(runtime.published).toHaveLength(0);

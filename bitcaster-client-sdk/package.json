@@ -7,6 +7,14 @@
     "node": ">=22"
   },
   "exports": {
+    "./oracleBackupCapacity": {
+      "types": "./dist/oracleBackupCapacity.d.ts",
+      "import": "./dist/oracleBackupCapacity.js"
+    },
+    "./marketCreationLimits": {
+      "types": "./dist/marketCreationLimits.d.ts",
+      "import": "./dist/marketCreationLimits.js"
+    },
     "./assetMonitoring": {
       "types": "./dist/assetMonitoring.d.ts",
       "import": "./dist/assetMonitoring.js"

@@ -1,8 +1,12 @@
 import {
   encodeOracleBackup,
+  validateOracleBackupModel,
+  decodeOraclePrivateAuthority,
+  encodeOraclePrivateAuthority,
   readOracleBackupEnvelope,
   OracleBackupError,
   type OracleBackupRecord,
+  type OracleEnumAuthoritySummary,
   type MarketCreationPreparation,
 } from "@bitcaster/client-sdk";
 import type {
@@ -59,12 +63,14 @@ export async function preflightLockedBrowserOracleCreation(
   core: Kormir,
 ) {
   await core.import_enum_event(preparation.announcement.announcementTlvHex);
-  const authority = JSON.parse(
-    await core.export_enum_authority(
+  const authority = await decodeOraclePrivateAuthority(
+    await core.export_enum_authority_v2(
       preparation.eventId,
       preparation.announcement.announcementNostrEventJson,
     ),
-  ) as OracleBackupRecord["authority"];
+    preparation.creatorId,
+    browserOracleBackupValidator,
+  );
   await encodeOracleBackup(
     {
       schemaVersion: 1,
@@ -168,10 +174,15 @@ async function importBrowserOracleBackupRecord(
 ) {
   try {
     const admission = capturedAdmission ?? (await prepareBrowserOracleMutation());
-    const encoded = await encodeOracleBackup(input, browserOracleBackupValidator);
-    const record = JSON.parse(encoded) as OracleBackupRecord;
+    const record = await validateOracleBackupModel(input, browserOracleBackupValidator);
+    const privateDto = await encodeOraclePrivateAuthority(
+      record.authority,
+      record.oraclePubkey,
+      browserOracleBackupValidator,
+      { writeVersion: 2 },
+    );
     const summary = await browserOracleBackupValidator.validateAuthority(
-      JSON.stringify(record.authority),
+      privateDto,
       record.oraclePubkey,
     );
     const binding: OraclePublicationBinding = {
@@ -193,7 +204,7 @@ async function importBrowserOracleBackupRecord(
           },
           authenticatedEnvelope,
         );
-        await core.import_enum_authority(JSON.stringify(record.authority));
+        await core.import_enum_authority(privateDto);
         await reconcileBrowserOraclePublication({
           binding,
           core: browserOraclePrivateAuthorityPort(core),
@@ -250,9 +261,7 @@ export async function exportLockedBrowserOracleBackup(
       destinations,
     };
   }
-  return JSON.parse(
-    await encodeOracleBackup(record, browserOracleBackupValidator),
-  ) as OracleBackupRecord;
+  return validateOracleBackupModel(record, browserOracleBackupValidator);
 }
 
 /** Terminal public authority needs neither a private core nor a connected signer. */
@@ -283,10 +292,7 @@ export async function exportBrowserOracleBackup(
     const terminal = await store
       .getState()
       .withOracleMutation((locked) => readLockedTerminalBackup(conditionId, locked));
-    if (terminal)
-      return JSON.parse(
-        await encodeOracleBackup(terminal, browserOracleBackupValidator),
-      ) as OracleBackupRecord;
+    if (terminal) return validateOracleBackupModel(terminal, browserOracleBackupValidator);
     const owner = await store.getState().readOracleOwner(conditionId);
     if (!owner) throw new OracleBackupError("invalid-record");
     const admission = await prepareBrowserOracleMutation(
@@ -407,14 +413,20 @@ async function readLockedBrowserOracleAuthorityReadiness(
   guard();
   const publication = await locked.read(conditionId);
   guard();
-  const dto = await core.export_enum_authority(
+  const dto = await core.export_enum_authority_v2(
     binding.oracleEventId,
     binding.announcementEventJson,
     publication ? JSON.stringify(publication) : undefined,
   );
   guard();
-  const authority = JSON.parse(dto);
-  await encodeOracleBackup(
+  let summary: OracleEnumAuthoritySummary | undefined;
+  const authority = await decodeOraclePrivateAuthority(dto, binding.oraclePubkey, {
+    async validateAuthority(json, publicKey) {
+      summary = await browserOracleBackupValidator.validateAuthority(json, publicKey);
+      return summary;
+    },
+  });
+  await validateOracleBackupModel(
     {
       schemaVersion: 1,
       conditionId,
@@ -426,7 +438,7 @@ async function readLockedBrowserOracleAuthorityReadiness(
     browserOracleBackupValidator,
   );
   guard();
-  const summary = await browserOracleBackupValidator.validateAuthority(dto, binding.oraclePubkey);
+  if (!summary) throw new OracleBackupError("invalid-record");
   guard();
   if (
     authority.announcementTlvHex !== announcementHex ||

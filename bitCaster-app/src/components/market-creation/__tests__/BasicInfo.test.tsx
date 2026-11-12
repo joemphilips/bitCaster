@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { BasicInfo } from "../BasicInfo";
 import type { WizardStepBasicInfo } from "@/types/market-creation";
+import i18n from "@/i18n";
+import { MAX_MARKET_CREATION_MATURITY_EPOCH } from "@bitcaster/client-sdk/marketCreationInput";
 
 function futureDate(): string {
   const d = new Date();
@@ -24,6 +26,113 @@ const defaultData: WizardStepBasicInfo = {
 const categoryTags = ["politics", "sports", "crypto"];
 
 describe("BasicInfo", () => {
+  it("renders the Japanese title limit and preserves all pasted characters", async () => {
+    try {
+      await i18n.changeLanguage("ja");
+      const title = "界".repeat(101);
+      render(
+        <BasicInfo
+          data={{ ...defaultData, title, closingDate: futureDate() }}
+          categoryTags={categoryTags}
+        />,
+      );
+      const input = screen.getByRole("textbox", { name: "タイトル" });
+      expect(input).toHaveValue(title);
+      expect(screen.getByText("101 / 100 文字（303 / 400 UTF-8 バイト）")).toBeVisible();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "タイトルは 100 文字・UTF-8 で 400 バイト以内にしてください。",
+      );
+      expect(input).toHaveAttribute("aria-invalid", "true");
+      expect(input).toHaveAccessibleDescription(/タイトルは 100 文字/);
+      expect(screen.getByRole("button", { name: "次へ" })).toBeDisabled();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("accepts the exact U32 maturity maximum and rejects one second later", () => {
+    const data = {
+      ...defaultData,
+      title: "Future market",
+      closingDate: new Date(MAX_MARKET_CREATION_MATURITY_EPOCH * 1000).toISOString(),
+    };
+    const view = render(<BasicInfo data={data} categoryTags={categoryTags} />);
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    view.rerender(
+      <BasicInfo
+        data={{
+          ...data,
+          closingDate: new Date((MAX_MARKET_CREATION_MATURITY_EPOCH + 1) * 1000).toISOString(),
+        }}
+        categoryTags={categoryTags}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose an end time on or before");
+  });
+
+  it("reports incomplete Unicode without confusing it with a character limit", () => {
+    render(
+      <BasicInfo
+        data={{ ...defaultData, title: "Question \ud800", closingDate: futureDate() }}
+        categoryTags={categoryTags}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("incomplete characters in the title");
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
+  it("shows a missing title only after blur and clears the error when corrected", () => {
+    const view = render(<BasicInfo data={defaultData} categoryTags={categoryTags} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.blur(screen.getByPlaceholderText("Type title..."));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a market title.");
+    view.rerender(
+      <BasicInfo data={{ ...defaultData, title: "日本語の質問" }} categoryTags={categoryTags} />,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Type title...")).toHaveAttribute("aria-invalid", "false");
+  });
+
+  it("explains an end time beyond the oracle's supported range", () => {
+    render(
+      <BasicInfo
+        data={{ ...defaultData, title: "Future market", closingDate: "2200-01-01T00:00" }}
+        categoryTags={categoryTags}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose an end time on or before");
+    expect(screen.getByRole("button", { name: "End Time" })).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "End Time" })).toHaveAccessibleDescription(
+      /Choose an end time/,
+    );
+  });
+
+  it("counts Unicode characters and UTF-8 bytes and preserves an over-limit title", () => {
+    const onTitleChange = vi.fn();
+    const props = { categoryTags, onTitleChange };
+    const data = { ...defaultData, title: "🌦".repeat(100), closingDate: futureDate() };
+    const view = render(<BasicInfo {...props} data={data} />);
+    expect(screen.getByText(/100\s*\/\s*100/)).toHaveTextContent(/400\s*\/\s*400/);
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+
+    const tooLong = "🌦".repeat(101);
+    fireEvent.change(screen.getByPlaceholderText("Type title..."), { target: { value: tooLong } });
+    expect(onTitleChange).toHaveBeenCalledWith(tooLong);
+    view.rerender(<BasicInfo {...props} data={{ ...data, title: tooLong }} />);
+    const input = screen.getByPlaceholderText("Type title...");
+    expect(input).toHaveValue(tooLong);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(/100/);
+    expect(input).toHaveAccessibleDescription(/100/);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
   it("sends a dropped image through the same thumbnail callback", () => {
     const onThumbnailUpload = vi.fn();
     render(

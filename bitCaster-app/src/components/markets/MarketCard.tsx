@@ -3,7 +3,8 @@ import { Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from
 import { useTranslation } from "react-i18next";
 import { getMarketThumbnail } from "@/lib/markets";
 import { useBookmarkStore } from "@/stores/bookmarks";
-import { useMarketState } from "@/hooks/useMarketState";
+import { assertNever } from "@/lib/enumDiscipline";
+import { marketResolutionState } from "@/lib/marketResolution";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { MetricExplanation } from "@/components/shared/MetricExplanation";
@@ -251,7 +252,7 @@ export function MarketCard({
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false);
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id));
   const toggleBookmark = useBookmarkStore((s) => s.toggle);
-  const marketState = useMarketState(market.state);
+  const resolutionState = marketResolutionState(market.state, market.finalOutcome);
 
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest("a")) return;
@@ -288,8 +289,16 @@ export function MarketCard({
     toggleBookmark(market.id);
   };
 
-  const renderClosedView = () => {
-    const resolvedOutcome = normalizeResolvedOutcome(market.finalOutcome) ?? "Closed";
+  const renderAwaitingResolutionView = () => (
+    <div className="flex-1 flex items-center justify-center py-6 text-center">
+      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+        {t("marketStatus.awaitingResolution")}
+      </div>
+    </div>
+  );
+
+  const renderResolvedView = () => {
+    const resolvedOutcome = normalizeResolvedOutcome(market.finalOutcome) ?? "";
     const matchedCategoricalOutcome =
       market.type === "categorical"
         ? market.outcomes.find((outcome) => outcome.label === market.finalOutcome?.trim())
@@ -305,7 +314,7 @@ export function MarketCard({
     return (
       <div className="flex-1 flex flex-col items-center justify-center py-6 text-center">
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 mb-2">
-          Resolved
+          {t("marketStatus.resolved")}
         </div>
         {market.type === "categorical" ? (
           <OutcomeLabel
@@ -327,7 +336,16 @@ export function MarketCard({
   };
 
   const renderNormalView = () => {
-    if (marketState === "Closed") return renderClosedView();
+    switch (resolutionState) {
+      case "resolved":
+        return renderResolvedView();
+      case "awaitingResolution":
+        return renderAwaitingResolutionView();
+      case "open":
+        break;
+      default:
+        return assertNever(resolutionState);
+    }
 
     if (market.type === "yesno") {
       const yesNoMarket = market as YesNoMarket;

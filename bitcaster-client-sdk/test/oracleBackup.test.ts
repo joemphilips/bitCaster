@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { test } from 'node:test'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
@@ -7,6 +8,8 @@ import {
   createOracleBackupEvent,
   decryptOracleBackupEvent,
   encodeOracleBackup,
+  decodeOracleBackup,
+  encodeOraclePrivateAuthority,
   readOracleBackupEnvelope,
   ORACLE_BACKUP_TAG_PREFIX,
   OracleBackupError,
@@ -170,7 +173,7 @@ test('version, extra tags, ciphertext bounds and extra private fields are reject
     {
       tags: [
         ['d', valid.tags[0][1]],
-        ['v', '2'],
+        ['v', '02'],
       ],
     },
     { tags: [...valid.tags, ['extra', 'tag']] },
@@ -399,4 +402,251 @@ test('terminal backup accepts verified engine evidence without a relay copy', as
   await assert.rejects(encodeOracleBackup(unconfirmed, f.validator), (error) =>
     assertSafeError(error, 'invalid-record'),
   )
+})
+
+function resolvedFixture(large = false) {
+  const f = fixture()
+  const announcement = finalizeEvent(
+    {
+      kind: 88,
+      created_at: 1_800_000_000,
+      tags: large ? Array.from({ length: 8 }, () => ['x', '"'.repeat(1_024)]) : [],
+      content: announcementContentFromTlv(tlv)!,
+    },
+    oracleTestKey,
+  )
+  const announcementEventJson = JSON.stringify(announcement)
+  const attestation = finalizeEvent(
+    {
+      kind: 89,
+      created_at: 1_800_000_001,
+      tags: [['e', announcement.id]],
+      content: 'qrs=',
+    },
+    oracleTestKey,
+  )
+  const attestationEventJson = JSON.stringify(attestation)
+  const publication = {
+    binding: {
+      conditionId: f.record.conditionId,
+      oracleEventId: f.record.oracleEventId,
+      oraclePubkey: f.record.oraclePubkey,
+      outcomes: ['YES', 'NO'],
+      announcementEventJson,
+    },
+    chosenOutcome: 'YES',
+    attestation: { attestationHex: 'aabb', eventJson: attestationEventJson },
+    relayPublished: true,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  return {
+    ...f,
+    announcement,
+    record: {
+      ...f.record,
+      authority: {
+        ...f.record.authority,
+        announcementEventJson,
+        nonceScalarHex: null,
+        signedOutcome: 'YES',
+        attestationHex: 'aabb',
+        attestationEventJson,
+        publicationRecordJson: JSON.stringify(publication),
+      },
+    },
+  }
+}
+
+test('v2 compact wire preserves exact signed artifacts and v1 remains the default writer', async () => {
+  const f = resolvedFixture()
+  const defaultWire = JSON.parse(await encodeOracleBackup(f.record, f.validator))
+  assert.equal(defaultWire.schemaVersion, 1)
+  assert.equal(
+    defaultWire.authority.publicationRecordJson,
+    f.record.authority.publicationRecordJson,
+  )
+  const encoded = await encodeOracleBackup(f.record, f.validator, { writeVersion: 2 })
+  const wire = JSON.parse(encoded)
+  assert.equal(wire.schemaVersion, 2)
+  assert.equal(wire.authority.schemaVersion, 2)
+  assert.equal('publicationRecordJson' in wire.authority, false)
+  assert.equal('binding' in wire.authority.publication, false)
+  assert.equal('attestation' in wire.authority.publication, false)
+  assert.equal(wire.authority.announcementEventJson, f.record.authority.announcementEventJson)
+  assert.equal(wire.authority.attestationEventJson, f.record.authority.attestationEventJson)
+  assert.deepEqual(await decodeOracleBackup(encoded, f.validator), f.record)
+  const event = await createOracleBackupEvent({
+    record: f.record,
+    validator: f.validator,
+    privateKey: oracleTestKey,
+    createdAt: 1_800_000_003,
+    writeVersion: 2,
+  })
+  assert.deepEqual(event.tags, [
+    ['d', ORACLE_BACKUP_TAG_PREFIX + f.announcement.id],
+    ['v', '2'],
+  ])
+  assert.deepEqual(
+    await decryptOracleBackupEvent({ event, privateKey: oracleTestKey, validator: f.validator }),
+    f.record,
+  )
+})
+
+test('compact decoding sends original v2 authority to crypto before bounded model expansion', async () => {
+  const f = resolvedFixture(true)
+  assert.ok(new TextEncoder().encode(JSON.stringify(f.record)).length > 65_535)
+  await assert.rejects(encodeOracleBackup(f.record, f.validator), (error) =>
+    assertSafeError(error, 'oversized'),
+  )
+  const encoded = await encodeOracleBackup(f.record, f.validator, { writeVersion: 2 })
+  assert.ok(new TextEncoder().encode(encoded).length <= 65_535)
+  const validator = {
+    async validateAuthority(value: string) {
+      assert.equal(JSON.parse(value).schemaVersion, 2)
+      assert.equal('publicationRecordJson' in JSON.parse(value), false)
+      assert.ok(new TextEncoder().encode(value).length <= 65_535)
+      return f.validator.validateAuthority(value, f.record.oraclePubkey)
+    },
+  }
+  const restored = await decodeOracleBackup(encoded, validator)
+  assert.deepEqual(restored, f.record)
+  const privateWire = await encodeOraclePrivateAuthority(
+    restored.authority,
+    restored.oraclePubkey,
+    validator,
+    { writeVersion: 2 },
+  )
+  assert.equal(JSON.parse(privateWire).schemaVersion, 2)
+})
+
+test('v2 wire rejects unknown/missing fields, version mismatches and inconsistent progress', async () => {
+  const f = resolvedFixture()
+  const wire = JSON.parse(await encodeOracleBackup(f.record, f.validator, { writeVersion: 2 }))
+  const variants = [
+    { ...wire, schemaVersion: 3 },
+    { ...wire, schemaVersion: 1 },
+    { ...wire, unexpected: true },
+    { ...wire, authority: { ...wire.authority, schemaVersion: 1 } },
+    { ...wire, authority: { ...wire.authority, publicationRecordJson: null } },
+    { ...wire, authority: { ...wire.authority, signedOutcome: 'FOREIGN' } },
+    { ...wire, authority: { ...wire.authority, attestationEventJson: null } },
+    {
+      ...wire,
+      authority: {
+        ...wire.authority,
+        publication: { ...wire.authority.publication, relayPublished: false },
+      },
+    },
+    {
+      ...wire,
+      authority: {
+        ...wire.authority,
+        publication: { ...wire.authority.publication, explanationRelayPublished: true },
+      },
+    },
+    {
+      ...wire,
+      authority: {
+        ...wire.authority,
+        publication: { ...wire.authority.publication, unexpected: true },
+      },
+    },
+  ]
+  const missing = structuredClone(wire)
+  delete missing.authority.publication.engineEvidence
+  variants.push(missing)
+  for (const invalid of variants)
+    await assert.rejects(decodeOracleBackup(JSON.stringify(invalid), f.validator), (error) =>
+      assertSafeError(error, 'invalid-record'),
+    )
+})
+
+test('authenticated future envelopes remain visible but unsupported and mismatched bodies never decode', async () => {
+  const f = fixture()
+  const event = await createOracleBackupEvent({
+    record: f.record,
+    validator: f.validator,
+    privateKey: oracleTestKey,
+    createdAt: 1_800_000_001,
+  })
+  for (const version of ['2', '3']) {
+    const changed = finalizeEvent(
+      { ...event, tags: [event.tags[0], ['v', version]] },
+      oracleTestKey,
+    )
+    assert.equal(readOracleBackupEnvelope(changed, f.record.oraclePubkey).id, changed.id)
+    await assert.rejects(
+      decryptOracleBackupEvent({
+        event: changed,
+        privateKey: oracleTestKey,
+        validator: f.validator,
+      }),
+      (error) => assertSafeError(error, 'invalid-envelope'),
+    )
+  }
+})
+
+test('real deployed-format golden artifacts survive v1 read, compact write and encrypted reload', async () => {
+  const golden = JSON.parse(
+    readFileSync(new URL('./fixtures/oracle-backup-v1.json', import.meta.url), 'utf8'),
+  ) as {
+    syntheticOnly: boolean
+    testPrivateKeyHex: string
+    records: Record<string, OracleBackupRecord>
+  }
+  assert.equal(golden.syntheticOnly, true)
+  const privateKey = Uint8Array.from(Buffer.from(golden.testPrivateKeyHex, 'hex'))
+  for (const record of Object.values(golden.records)) {
+    // The daemon harness validates these same frozen artifacts through the real Rust core.
+    const validator: OracleBackupValidator = {
+      async validateAuthority() {
+        return {
+          eventId: record.oracleEventId,
+          oraclePubkey: record.oraclePubkey,
+          outcomes: ['Yes', 'No'],
+          noncePoint: getPublicKey(
+            Uint8Array.from(Buffer.from(golden.records.unsigned.authority.nonceScalarHex!, 'hex')),
+          ),
+        }
+      },
+    }
+    const decoded = await decodeOracleBackup(JSON.stringify(record), validator)
+    assert.deepEqual(decoded, record)
+    const compact = await createOracleBackupEvent({
+      record: decoded,
+      privateKey,
+      createdAt: 1_800_000_001,
+      validator,
+      writeVersion: 2,
+    })
+    const reloaded = await decryptOracleBackupEvent({ event: compact, privateKey, validator })
+    assert.equal(reloaded.authority.announcementEventJson, record.authority.announcementEventJson)
+    assert.equal(reloaded.authority.attestationEventJson, record.authority.attestationEventJson)
+    assert.deepEqual(
+      JSON.parse(reloaded.authority.publicationRecordJson ?? 'null'),
+      JSON.parse(record.authority.publicationRecordJson ?? 'null'),
+    )
+    assert.equal(reloaded.authority.nonceScalarHex, record.authority.nonceScalarHex)
+  }
+})
+
+test('compact wire rejects duplicate object keys before Rust DTO normalization', async () => {
+  const f = resolvedFixture()
+  const wire = await encodeOracleBackup(f.record, f.validator, { writeVersion: 2 })
+  for (const duplicate of [
+    wire.replace('"schemaVersion":2', '"schemaVersion":2,"schemaVersion":2'),
+    wire.replace(
+      '"authority":{"schemaVersion":2',
+      '"authority":{"schemaVersion":2,"schemaVersion":2',
+    ),
+    wire.replace('"relayPublished":true', '"relayPublished":true,"relayPublished":true'),
+    wire.replace('"relayPublished":true', '"relayPublished":true,"relayPublished":false'),
+    wire.replace('"engineUrl":', '"engineUrl":"https://other.example","engineUrl":'),
+  ]) {
+    await assert.rejects(decodeOracleBackup(duplicate, f.validator), (error) =>
+      assertSafeError(error, 'invalid-record'),
+    )
+  }
 })
