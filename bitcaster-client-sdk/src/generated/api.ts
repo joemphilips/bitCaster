@@ -657,7 +657,7 @@ export interface paths {
     get: operations['getRecoveryIndex']
     /**
      * Write the encrypted recovery index with compare-and-swap
-     * @description Stores the document when the expected version equals the current version of the document or of its tombstone, and increments the version. Expected version 0 creates version 1 when the key has no document and no tombstone. When the current version is the expected version plus 1 and the stored document is byte-identical, the write is an exact retry and succeeds with the current version. Every other write gets 409 with the current version. The engine refuses a body whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16, before it reads the body. A minimum interval separates two accepted writes of one key. A refusal of a recovery index request never refuses a trade.
+     * @description Stores the document when the expected version equals the current version of the document or of its tombstone, and increments the version. Expected version 0 creates version 1 when the key has no document and no tombstone. When the current version is the expected version plus 1 and the stored document is byte-identical, the write is an exact retry and succeeds with the current version. Every other write gets 409 with the current version. The engine refuses a body whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16, before it reads the body. One client address can send one write at a time. The engine reads the body at a minimum rate (16 KiB per second after 2 seconds by default) and within a deadline (10 seconds by default). A body that is slower gets 408 or a closed connection. A minimum interval separates two accepted writes of one key. A refusal of a recovery index request never refuses a trade.
      */
     put: operations['putRecoveryIndex']
     post?: never
@@ -2009,7 +2009,7 @@ export interface components {
     }
   }
   responses: {
-    /** @description A header is missing or malformed, a body has a length that is not permitted, or a read or delete has a body. Application code: recovery-index-invalid-request. */
+    /** @description A header is missing or malformed, a body has a length that is not permitted or is shorter than its `Content-Length`, or a read or delete has a body. Application code: recovery-index-invalid-request. */
     RecoveryIndexInvalidRequest: {
       headers: {
         [name: string]: unknown
@@ -2047,7 +2047,7 @@ export interface components {
         'application/problem+json': components['schemas']['RecoveryIndexProblemDetails']
       }
     }
-    /** @description A recovery index limit refused the request. Retry after the `Retry-After` seconds. `limitCode` names the limit: recovery-index-ip-requests, recovery-index-ip-writes, recovery-index-ip-new-keys, recovery-index-global-new-keys, recovery-index-write-bytes, recovery-index-read-bytes, recovery-index-write-concurrency, recovery-index-write-interval, or recovery-index-storage-budget. The storage budget refuses only writes that create or grow a document. Reads, deletes, and writes that do not grow a document continue. */
+    /** @description A recovery index limit refused the request. Retry after the `Retry-After` seconds. `limitCode` names the limit: recovery-index-ip-requests, recovery-index-ip-writes, recovery-index-ip-write-concurrency, recovery-index-ip-new-keys, recovery-index-global-new-keys, recovery-index-write-bytes, recovery-index-read-bytes, recovery-index-write-concurrency, recovery-index-write-interval, or recovery-index-storage-budget. The storage budget refuses only writes that create or grow a document. Reads, deletes, and writes that do not grow a document continue. A write can also get 429 from the shared request body bound, with `limitCode` request-body-concurrency and no `code`. Treat every other `limitCode` as a temporary refusal and retry after `Retry-After`. */
     RecoveryIndexLimited: {
       headers: {
         /** @description Seconds before a retry can succeed. */
@@ -3988,6 +3988,15 @@ export interface operations {
       }
       400: components['responses']['RecoveryIndexInvalidRequest']
       401: components['responses']['RecoveryIndexUnauthenticated']
+      /** @description The body did not arrive within the deadline. Application code: recovery-index-body-timeout. Send the write again. */
+      408: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['RecoveryIndexProblemDetails']
+        }
+      }
       409: components['responses']['RecoveryIndexConflict']
       /** @description The request has no `Content-Length`. Application code: recovery-index-length-required. */
       411: {

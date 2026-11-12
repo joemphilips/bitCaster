@@ -1739,9 +1739,12 @@ paths:
         an exact retry and succeeds with the current version. Every other
         write gets 409 with the current version. The engine refuses a body
         whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16,
-        before it reads the body. A minimum interval separates two accepted
-        writes of one key. A refusal of a recovery index request never
-        refuses a trade.
+        before it reads the body. One client address can send one write at a
+        time. The engine reads the body at a minimum rate (16 KiB per second
+        after 2 seconds by default) and within a deadline (10 seconds by
+        default). A body that is slower gets 408 or a closed connection. A
+        minimum interval separates two accepted writes of one key. A refusal
+        of a recovery index request never refuses a trade.
       parameters:
         - $ref: '#/components/parameters/RecoveryIndexKey'
         - $ref: '#/components/parameters/RecoveryIndexIssuedAt'
@@ -1770,6 +1773,12 @@ paths:
           $ref: '#/components/responses/RecoveryIndexInvalidRequest'
         '401':
           $ref: '#/components/responses/RecoveryIndexUnauthenticated'
+        '408':
+          description: "The body did not arrive within the deadline. Application code: recovery-index-body-timeout. Send the write again."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexProblemDetails'
         '409':
           $ref: '#/components/responses/RecoveryIndexConflict'
         '411':
@@ -1960,8 +1969,8 @@ components:
     RecoveryIndexInvalidRequest:
       description: >
         A header is missing or malformed, a body has a length that is not
-        permitted, or a read or delete has a body. Application code:
-        recovery-index-invalid-request.
+        permitted or is shorter than its `Content-Length`, or a read or delete
+        has a body. Application code: recovery-index-invalid-request.
       content:
         application/problem+json:
           schema:
@@ -2006,12 +2015,15 @@ components:
         A recovery index limit refused the request. Retry after the
         `Retry-After` seconds. `limitCode` names the limit:
         recovery-index-ip-requests, recovery-index-ip-writes,
-        recovery-index-ip-new-keys, recovery-index-global-new-keys,
-        recovery-index-write-bytes, recovery-index-read-bytes,
-        recovery-index-write-concurrency, recovery-index-write-interval, or
-        recovery-index-storage-budget. The storage budget refuses only writes
-        that create or grow a document. Reads, deletes, and writes that do not
-        grow a document continue.
+        recovery-index-ip-write-concurrency, recovery-index-ip-new-keys,
+        recovery-index-global-new-keys, recovery-index-write-bytes,
+        recovery-index-read-bytes, recovery-index-write-concurrency,
+        recovery-index-write-interval, or recovery-index-storage-budget. The
+        storage budget refuses only writes that create or grow a document.
+        Reads, deletes, and writes that do not grow a document continue. A
+        write can also get 429 from the shared request body bound, with
+        `limitCode` request-body-concurrency and no `code`. Treat every other
+        `limitCode` as a temporary refusal and retry after `Retry-After`.
       headers:
         Retry-After:
           description: Seconds before a retry can succeed.
