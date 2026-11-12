@@ -100,5 +100,24 @@ separately labeled reference for the current two-sided book. It is not a
 confirmed trade price or a guaranteed execution price. An empty or one-sided
 book has no displayed midpoint.
 
+## Selling to the bot
+
+The bot's bids do not depend only on its cash. In one atomic settlement, the
+bot can split collateral into complete sets of outcome tokens, or merge
+complete sets back into collateral. It reserves only the amounts that the
+trade needs on balance. For example, a sale of NO can merge with YES that the
+bot holds. The bot can then use that collateral to pay for the rest of the
+same sale. So the bot's buying capacity depends on its funding, its LMSR
+position, and fees. It does not depend on how the bot's value is split
+between cash and outcome tokens. The bot can buy back a position that it sold.
+It pays its current LMSR price, less its spread.
+
+Some limits remain. One public FOK order has a limited number of matches, so
+a large sale can need several orders. The preview reports `request_too_large`
+for an order above that limit. The bot does not use the expected proceeds of
+a trade that is still settling. While an earlier bot trade of the same market
+settles, the bot can buy less. Whole-share rounding, the bot's price levels,
+fees, and mint limits also apply.
+
 For the human and professional market-maker trading model, see
 [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
