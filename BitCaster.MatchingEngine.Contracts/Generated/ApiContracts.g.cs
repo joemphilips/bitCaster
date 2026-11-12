@@ -4094,6 +4094,51 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RecoveryIndexVersionResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RecoveryIndexVersionResponse(long @version)
+        {
+            this.Version = @version;
+        }
+
+        /// <summary>
+        /// The version after the write, or the tombstone version after a delete.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("version")]
+        public long Version { get; }
+
+    }
+
+    /// <summary>
+    /// Problem details of a recovery index refusal.
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RecoveryIndexProblemDetails : ProblemDetails
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RecoveryIndexProblemDetails(string? @code, long? @currentVersion, string? @detail, string? @instance, string? @limitCode, long? @serverTime, int? @status, string? @title, string? @traceId, string? @type)
+            : base(code, detail, instance, limitCode, status, title, traceId, type)
+        {
+            this.CurrentVersion = @currentVersion;
+            this.ServerTime = @serverTime;
+        }
+
+        /// <summary>
+        /// The current version for a conflict or a missing document. 0 means no document and no tombstone.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("currentVersion")]
+        public long? CurrentVersion { get; }
+
+        /// <summary>
+        /// The engine clock in Unix seconds, for an issue-time refusal.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("serverTime")]
+        public long? ServerTime { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum Timeframe
     {
 

@@ -643,6 +643,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recovery-index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the encrypted recovery index of one request key
+         * @description The engine stores one client-encrypted recovery index document for each seed-derived request key. The route path is fixed. The request key goes in a header. The route takes no account, Nostr key, or wallet id, and it has no fee. A BIP340 signature by the request key authenticates each request (see `RecoveryIndexSignature`). A read signs version 0 and the SHA-256 digest of an empty body. The client can send `If-None-Match` with the version that it holds. The engine then returns 304 when that version is current. The client must refuse a document whose embedded version differs from the returned version. A refusal of a recovery index request never refuses a trade.
+         */
+        get: operations["getRecoveryIndex"];
+        /**
+         * Write the encrypted recovery index with compare-and-swap
+         * @description Stores the document when the expected version equals the current version of the document or of its tombstone, and increments the version. Expected version 0 creates version 1 when the key has no document and no tombstone. When the current version is the expected version plus 1 and the stored document is byte-identical, the write is an exact retry and succeeds with the current version. Every other write gets 409 with the current version. The engine refuses a body whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16, before it reads the body. A minimum interval separates two accepted writes of one key. A refusal of a recovery index request never refuses a trade.
+         */
+        put: operations["putRecoveryIndex"];
+        post?: never;
+        /**
+         * Delete the encrypted recovery index with compare-and-swap
+         * @description Replaces the document with a tombstone when the expected version is the current version. The tombstone keeps the key and gets the next version. The engine never removes a tombstone. A key with no document gets 404, which the client treats as a completed delete. The request has no body, and the signature covers the SHA-256 digest of an empty body.
+         */
+        delete: operations["deleteRecoveryIndex"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1910,9 +1938,96 @@ export interface components {
             /** @description Diagnostic correlation identifier, when provided. */
             traceId?: string;
         };
+        RecoveryIndexVersionResponse: {
+            /**
+             * Format: int64
+             * @description The version after the write, or the tombstone version after a delete.
+             */
+            version: number;
+        };
+        /** @description Problem details of a recovery index refusal. */
+        RecoveryIndexProblemDetails: components["schemas"]["ProblemDetails"] & {
+            /**
+             * Format: int64
+             * @description The current version for a conflict or a missing document. 0 means no document and no tombstone.
+             */
+            currentVersion?: number;
+            /**
+             * Format: int64
+             * @description The engine clock in Unix seconds, for an issue-time refusal.
+             */
+            serverTime?: number;
+        };
     };
-    responses: never;
+    responses: {
+        /** @description A header is missing or malformed, a body has a length that is not permitted, or a read or delete has a body. Application code: recovery-index-invalid-request. */
+        RecoveryIndexInvalidRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The signature does not verify (application code recovery-index-unauthenticated), or the issue time is more than 60 seconds from the engine clock (application code recovery-index-stale-request, with `serverTime`). */
+        RecoveryIndexUnauthenticated: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The key has no document. `currentVersion` is the tombstone version, or 0 when the key has no tombstone. The `X-Recovery-Index-Version` header holds the same value. Application code: recovery-index-not-found. */
+        RecoveryIndexNotFound: {
+            headers: {
+                "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The expected version is not current. `currentVersion` is the current version. Read the document, merge, and write again. Application code: recovery-index-version-conflict. */
+        RecoveryIndexConflict: {
+            headers: {
+                "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description A recovery index limit refused the request. Retry after the `Retry-After` seconds. `limitCode` names the limit: recovery-index-ip-requests, recovery-index-ip-writes, recovery-index-ip-new-keys, recovery-index-global-new-keys, recovery-index-write-bytes, recovery-index-read-bytes, recovery-index-write-concurrency, recovery-index-write-interval, or recovery-index-storage-budget. The storage budget refuses only writes that create or grow a document. Reads, deletes, and writes that do not grow a document continue. */
+        RecoveryIndexLimited: {
+            headers: {
+                /** @description Seconds before a retry can succeed. */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The recovery index is temporarily unavailable. Application code: recovery-index-unavailable. */
+        RecoveryIndexUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+    };
     parameters: {
+        /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+        RecoveryIndexKey: string;
+        /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+        RecoveryIndexIssuedAt: string;
+        /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+        RecoveryIndexSignature: string;
+        /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+        RecoveryIndexExpectedVersion: string;
         /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
@@ -1924,6 +2039,12 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description The version of the document, of its tombstone, or 0 when the key has neither. */
+        RecoveryIndexVersion: number;
+        /** @description The current version as a strong entity tag, for example `"3"`. */
+        RecoveryIndexEntityTag: string;
+        /** @description The response must not be stored. */
+        RecoveryIndexNoStore: "no-store";
         /** @description The authenticated private response must not be stored. */
         AssetMonitoringNoStore: "no-store";
     };
@@ -3736,6 +3857,145 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
+        };
+    };
+    getRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The strong entity tag of the version that the client holds, for example `"3"`. */
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document and its version. The body is 2^k + 37 bytes, with k from 12 to 16. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["RecoveryIndexEntityTag"];
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    "Cache-Control": components["headers"]["RecoveryIndexNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description The version in `If-None-Match` is current. */
+            304: {
+                headers: {
+                    ETag: components["headers"]["RecoveryIndexEntityTag"];
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            404: components["responses"]["RecoveryIndexNotFound"];
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
+        };
+    };
+    putRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+                "X-Recovery-Index-Expected-Version": components["parameters"]["RecoveryIndexExpectedVersion"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The document is stored, or the request is an exact retry. */
+            200: {
+                headers: {
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryIndexVersionResponse"];
+                };
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            409: components["responses"]["RecoveryIndexConflict"];
+            /** @description The request has no `Content-Length`. Application code: recovery-index-length-required. */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+                };
+            };
+            /** @description The body is larger than 65,573 bytes. Application code: recovery-index-document-too-large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+                };
+            };
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
+        };
+    };
+    deleteRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+                "X-Recovery-Index-Expected-Version": components["parameters"]["RecoveryIndexExpectedVersion"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document is deleted. The response holds the tombstone version. */
+            200: {
+                headers: {
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryIndexVersionResponse"];
+                };
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            404: components["responses"]["RecoveryIndexNotFound"];
+            409: components["responses"]["RecoveryIndexConflict"];
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
         };
     };
 }
