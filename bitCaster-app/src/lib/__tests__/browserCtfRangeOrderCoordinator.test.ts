@@ -4540,6 +4540,100 @@ describe("browser CTF range output reuse and second sells", () => {
     expect(await database.ctfRangePreparations.count()).toBe(0);
   });
 
+  /** A Buy whose keep output goes to regular counter 1, as the real counter store holds it. */
+  async function keepOutputFixture(name: string) {
+    vi.spyOn(Date, "now").mockReturnValue(20_000);
+    const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
+    const preparation = persistedPreparation(name);
+    const seeded = await admitDeterministicRegularProof(database, 8);
+    await new BrowserWalletCounterDexieStore({
+      database,
+      scopeId: walletScopeId(),
+    }).restoreInContext(
+      { mintUrl: MINT_URL, unit: "msat" },
+      REGULAR_KEYSET_ID,
+      1,
+      false,
+      () => undefined,
+    );
+    return { database, preparation, seeded };
+  }
+
+  it("checks the keep output of a buy source and rebuilds it past an output that another browser signed", async () => {
+    const { database, preparation, seeded } = await keepOutputFixture("range-source-output-check");
+    // Another browser of this seed signed regular counter 1, where this source
+    // puts its keep output.
+    const signed = OutputData.createSingleDeterministicData(1, SEED, 1, REGULAR_KEYSET_ID)
+      .blindedMessage.B_;
+    const restores: string[][] = [];
+    let now = 20_000;
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      now: () => ++now,
+      sourceOutputCheck: {
+        mint: () => ({
+          restore: async ({ outputs }: { outputs: Array<{ B_: string }> }) => {
+            restores.push(outputs.map(({ B_ }) => B_));
+            return { outputs: outputs.filter(({ B_ }) => B_ === signed) };
+          },
+        }),
+      },
+    });
+
+    await coordinator.prepareAndSubmit({ seed: SEED, preparation, candidates: [seeded] });
+
+    const snapshot = await new BrowserDurableCustodyAdapter(database).readOperationSnapshot(
+      walletScope(),
+      sourceCustodyOperationId(preparation.sourceOperationId),
+    );
+    const saved = browserSourceOperationFromSnapshot(snapshot!.record, snapshot!.artifacts);
+    // Counter 1 is signed; the 150 counters 2 to 151 stay unused.
+    expect((saved.metadata?.keepPlan as { counterStart: number }).counterStart).toBe(152);
+    expect(saved.outputs.keep!.some(({ blindedMessage }) => blindedMessage.B_ === signed)).toBe(
+      false,
+    );
+    expect(restores[0]).toEqual([signed]);
+    expect(restores.at(-1)).toContain(
+      OutputData.createSingleDeterministicData(1, SEED, 152, REGULAR_KEYSET_ID).blindedMessage.B_,
+    );
+    // The real counter store holds the rebuilt keep output.
+    expect(
+      (await database.walletCounterCursors.get([walletScopeId(), REGULAR_KEYSET_ID]))?.next,
+    ).toBe(153);
+  });
+
+  it("ends the attempt with no source request when the mint cannot check the source outputs", async () => {
+    const { database, preparation, seeded } = await keepOutputFixture("range-source-check-failed");
+    const wallet = sourceWallet();
+    let now = 20_000;
+    const coordinator = createCoordinator(database, wallet, engineMock(), {
+      now: () => ++now,
+      sourceOutputCheck: {
+        mint: () => ({
+          restore: async () => {
+            throw new TypeError("fetch failed");
+          },
+        }),
+      },
+    });
+
+    await expect(
+      coordinator.prepareAndSubmit({ seed: SEED, preparation, candidates: [seeded] }),
+    ).rejects.toMatchObject({
+      code: "order-attempt-ended",
+      message:
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+    });
+    expect(
+      await new BrowserDurableCustodyAdapter(database).readOperationSnapshot(
+        walletScope(),
+        sourceCustodyOperationId(preparation.sourceOperationId),
+      ),
+    ).toBeNull();
+    expect(
+      (await database.walletCounterCursors.get([walletScopeId(), REGULAR_KEYSET_ID]))?.next,
+    ).toBe(1);
+  });
+
   it("refuses a second sell of the market while the first holds an unresolved source", async () => {
     const fixture = partialSellFixture("first-unresolved-sell");
     const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
@@ -5289,11 +5383,30 @@ function createCoordinator(
     executeSourceConvert?: BrowserCtfRangeOrderCoordinatorDependencies["executeSourceConvert"];
     recoverOutputCounters?: BrowserCtfRangeOrderCoordinatorDependencies["recoverOutputCounters"];
     recoverySchedule?: BrowserCtfRangeOrderCoordinatorDependencies["recoverySchedule"];
+    sourceOutputCheck?: Partial<BrowserCtfRangeOrderCoordinatorDependencies["sourceOutputCheck"]>;
     now?: () => number;
   } = {},
 ): TestCoordinator {
   const coordinator = new BrowserCtfRangeOrderCoordinator({
     database,
+    sourceOutputCheck: {
+      // The mint signed no output of the order unless a test says so.
+      mint: options.sourceOutputCheck?.mint ?? (() => ({ restore: async () => ({ outputs: [] }) })),
+      // A skip moves the real wallet counter of this database.
+      skipSignedCounters:
+        options.sourceOutputCheck?.skipSignedCounters ??
+        (async (keyset, skip) => {
+          await new BrowserWalletCounterDexieStore({
+            database,
+            scopeId: walletScopeId(),
+          }).advanceToAtLeastInContext(
+            { mintUrl: keyset.canonicalMintUrl, unit: "msat" },
+            keyset.id,
+            skip.nextCounter,
+            true,
+          );
+        }),
+    },
     isCurrentRefundProfile: options.isCurrentRefundProfile,
     observeRefundPrepared: options.observeRefundPrepared,
     injectRefundPreparationFault: options.injectRefundPreparationFault,

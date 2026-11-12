@@ -3,6 +3,14 @@ import {
   type SpeculativeCounterTranscript,
 } from "@bitcaster/client-sdk/speculativeCounterTranscript";
 import {
+  CtfRangeOrderOutputCheckError,
+  prepareCheckedCtfRangeSourceOperation,
+} from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
+import type {
+  SeedCounterRestoreClient,
+  SeedCounterSkip,
+} from "@bitcaster/client-sdk/seedCounterGapScan";
+import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
   decodeDurableSeedDerivedOutputPlan,
   reconstructDurableSeedDerivedOutputs,
@@ -281,11 +289,54 @@ interface BrowserCtfRangeSourceInputs {
   readonly currentFeeFacts: CtfRangeOrderFeeFacts;
 }
 
+/** The order output check of a new source request (ADR-037 reused-output amendment, decision 14). */
+export interface BrowserCtfRangeSourceOutputCheck {
+  /** The NUT-09 client of one mint. */
+  readonly mint: (mintUrl: string) => SeedCounterRestoreClient;
+  /**
+   * Move the durable counter of one order keyset to `skip.nextCounter`, and
+   * record the deferral that admits the skipped outputs later (ADR-033). The
+   * coordinator calls it under the wallet profile lock and the custody scope.
+   */
+  readonly skipSignedCounters: (
+    keyset: PersistedCtfRangeOrderPreparation["offerKeyset"],
+    skip: SeedCounterSkip,
+  ) => Promise<void>;
+}
+
+/** The inputs that build one exact source request. */
+interface BrowserRangeSourceDraftInput {
+  readonly seed: Uint8Array;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
+  readonly candidates: readonly Proof[];
+  readonly collateralCandidates: readonly Proof[];
+  readonly maxOutputs: number;
+}
+
+/** The order keyset that a skip names. A foreign keyset is refused. */
+function orderKeysetFor(
+  preparation: PersistedCtfRangeOrderPreparation,
+  keysetId: string,
+): PersistedCtfRangeOrderPreparation["offerKeyset"] {
+  const keyset = [
+    preparation.offerKeyset,
+    preparation.receiveKeyset,
+    preparation.complementKeyset,
+  ].find((candidate) => candidate.id === keysetId);
+  if (keyset === undefined) throw new Error("the skipped keyset is not an order keyset");
+  return keyset;
+}
+
+/** The text of an order that the mint output check refused before any mint request. */
+export const BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE =
+  "The wallet could not finish preparing this order. No order was submitted. Please try again.";
+
 export interface BrowserCtfRangeOrderCoordinatorDependencies {
   readonly wallet:
     | BrowserCtfRangeWallet
     | ((mintUrl: string) => BrowserCtfRangeWallet | Promise<BrowserCtfRangeWallet>);
   readonly engine: BrowserCtfRangeEngine;
+  readonly sourceOutputCheck: BrowserCtfRangeSourceOutputCheck;
   readonly beforeCreateCapability?: (input: {
     mintUrl: string;
     requiredScore: number;
@@ -588,6 +639,7 @@ export class BrowserCtfRangeOrderCoordinator {
     BrowserCtfRangeOrderCoordinatorDependencies["executeSourceConvert"]
   >;
   readonly #recoverOutputCounters: BrowserCtfRangeOrderCoordinatorDependencies["recoverOutputCounters"];
+  readonly #sourceOutputCheck: BrowserCtfRangeSourceOutputCheck;
   readonly #recoverySchedule: BrowserCtfRangeRecoverySchedule | undefined;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
@@ -606,6 +658,7 @@ export class BrowserCtfRangeOrderCoordinator {
         }
       });
     this.#recoverOutputCounters = input.recoverOutputCounters;
+    this.#sourceOutputCheck = input.sourceOutputCheck;
     this.#recoverySchedule = input.recoverySchedule;
     this.#beforeCreateCapability = input.beforeCreateCapability ?? (async () => {});
     this.#database = input.database ?? db;
@@ -1699,63 +1752,13 @@ export class BrowserCtfRangeOrderCoordinator {
       if (saved !== null) return saved;
       let transcript: SpeculativeCounterTranscript;
       try {
-        let operation: DurableCustodyProofOperationInput | null;
-        try {
-          const authorization = planPersistedCtfRangeOrderAuthorization(input.preparation);
-          const plan = planCtfRangeCapabilitySource({
-            side: input.preparation.side,
-            authorizationAmounts: authorization.authorizationAmounts,
-            offeredKeyset: input.preparation.offerKeyset,
-            collateralKeyset:
-              input.preparation.side === "Sell"
-                ? input.preparation.receiveKeyset
-                : input.preparation.offerKeyset,
-            complementKeyset: input.preparation.complementKeyset,
-            offeredCandidates: input.candidates,
-            collateralCandidates: input.collateralCandidates,
-            maxInputs: input.preparation.maxInputs,
-            maxOutputs: input.maxOutputs,
-          });
-          const keysetIds = [
-            ...new Set(
-              plan.kind === "mixed-source-ctf-convert"
-                ? [input.preparation.offerKeyset.id, input.preparation.receiveKeyset.id]
-                : [input.preparation.offerKeyset.id],
-            ),
-          ];
-          transcript = createSpeculativeCounterTranscript(
-            await Promise.all(keysetIds.map((id) => counters.readSnapshotInContext(context, id))),
-          );
-          const counterSource = transcript.counterSource;
-          switch (plan.kind) {
-            case "mixed-source-ctf-convert":
-              operation = await prepareCtfRangeMixedSourceOperation({
-                preparation: input.preparation,
-                seed: input.seed,
-                counterSource,
-                plan,
-              });
-              break;
-            case "same-keyset-swap":
-              operation = await prepareCtfRangeSourceOperation({
-                preparation: input.preparation,
-                seed: input.seed,
-                counterSource,
-                wallet: await this.#walletForMint(input.preparation.mintUrl),
-                candidates: plan.inputs,
-              });
-              break;
-            case "collateral-ctf-convert":
-            case "consolidation-required":
-            case "source-unavailable":
-              throw rangeError("insufficient-funds");
-            default:
-              return assertNever(plan);
-          }
-        } catch (error) {
-          throw rangeError("source-preparation-failed", error);
-        }
-        if (operation === null) throw rangeError("insufficient-funds");
+        let operation: DurableCustodyProofOperationInput;
+        ({ operation, transcript } = await this.#prepareCheckedSourceDraft(
+          input,
+          scope,
+          counters,
+          context,
+        ));
         try {
           const currentFeeFacts = normalizeCurrentFeeFacts(
             input.preparation,
@@ -1837,6 +1840,116 @@ export class BrowserCtfRangeOrderCoordinator {
       }
     }
     throw rangeError("custody-commit-failed");
+  }
+
+  /**
+   * Build the source request at the current counters, and check its own
+   * seed-derived outputs with the mint before it is persisted and sent
+   * (ADR-037 reused-output amendment, decision 14). A hit moves the durable
+   * counter, and the SDK builds the request again. When the check cannot end
+   * with a clean request, the attempt ends: it sent no mint request and holds
+   * no funds.
+   */
+  async #prepareCheckedSourceDraft(
+    input: BrowserRangeSourceDraftInput,
+    scope: DurableCustodyScope,
+    counters: BrowserWalletCounterDexieStore,
+    context: { readonly mintUrl: string; readonly unit: "msat" },
+  ): Promise<{
+    operation: DurableCustodyProofOperationInput;
+    transcript: SpeculativeCounterTranscript;
+  }> {
+    try {
+      return await prepareCheckedCtfRangeSourceOperation({
+        mint: this.#sourceOutputCheck.mint(input.preparation.mintUrl),
+        seed: input.seed,
+        prepare: () => this.#prepareSourceDraft(input, counters, context),
+        skipSignedCounters: (skip) =>
+          this.#sourceOutputCheck.skipSignedCounters(
+            orderKeysetFor(input.preparation, skip.keysetId),
+            skip,
+          ),
+      });
+    } catch (error) {
+      if (error instanceof BrowserCtfRangeOrderError) throw error;
+      if (!(error instanceof CtfRangeOrderOutputCheckError)) {
+        throw rangeError("source-preparation-failed", error);
+      }
+      await this.#endUnfundedPreparation(scope, input.preparation);
+      throw rangeError("order-attempt-ended", undefined, {
+        message: BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
+      });
+    }
+  }
+
+  /** Build the exact source request from a fresh counter snapshot. It sends nothing. */
+  async #prepareSourceDraft(
+    input: BrowserRangeSourceDraftInput,
+    counters: BrowserWalletCounterDexieStore,
+    context: { readonly mintUrl: string; readonly unit: "msat" },
+  ): Promise<{
+    operation: DurableCustodyProofOperationInput;
+    transcript: SpeculativeCounterTranscript;
+  }> {
+    let transcript: SpeculativeCounterTranscript;
+    let operation: DurableCustodyProofOperationInput | null;
+    try {
+      const authorization = planPersistedCtfRangeOrderAuthorization(input.preparation);
+      const plan = planCtfRangeCapabilitySource({
+        side: input.preparation.side,
+        authorizationAmounts: authorization.authorizationAmounts,
+        offeredKeyset: input.preparation.offerKeyset,
+        collateralKeyset:
+          input.preparation.side === "Sell"
+            ? input.preparation.receiveKeyset
+            : input.preparation.offerKeyset,
+        complementKeyset: input.preparation.complementKeyset,
+        offeredCandidates: input.candidates,
+        collateralCandidates: input.collateralCandidates,
+        maxInputs: input.preparation.maxInputs,
+        maxOutputs: input.maxOutputs,
+      });
+      const keysetIds = [
+        ...new Set(
+          plan.kind === "mixed-source-ctf-convert"
+            ? [input.preparation.offerKeyset.id, input.preparation.receiveKeyset.id]
+            : [input.preparation.offerKeyset.id],
+        ),
+      ];
+      transcript = createSpeculativeCounterTranscript(
+        await Promise.all(keysetIds.map((id) => counters.readSnapshotInContext(context, id))),
+      );
+      const counterSource = transcript.counterSource;
+      switch (plan.kind) {
+        case "mixed-source-ctf-convert":
+          operation = await prepareCtfRangeMixedSourceOperation({
+            preparation: input.preparation,
+            seed: input.seed,
+            counterSource,
+            plan,
+          });
+          break;
+        case "same-keyset-swap":
+          operation = await prepareCtfRangeSourceOperation({
+            preparation: input.preparation,
+            seed: input.seed,
+            counterSource,
+            wallet: await this.#walletForMint(input.preparation.mintUrl),
+            candidates: plan.inputs,
+          });
+          break;
+        case "collateral-ctf-convert":
+        case "consolidation-required":
+        case "source-unavailable":
+          throw rangeError("insufficient-funds");
+        default:
+          return assertNever(plan);
+      }
+    } catch (error) {
+      throw rangeError("source-preparation-failed", error);
+    }
+    if (operation === null) throw rangeError("insufficient-funds");
+    return { operation, transcript };
   }
 
   async #persistPreparedSource(

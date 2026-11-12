@@ -520,6 +520,13 @@ it("native source consolidation commits counters and exact custody only together
   const coordinator = new BrowserCtfRangeOrderCoordinator({
     database,
     wallet,
+    // This file checks counter atomicity; the mint signed no order output.
+    sourceOutputCheck: {
+      mint: () => ({ restore: async () => ({ outputs: [] }) }),
+      skipSignedCounters: async () => {
+        throw new Error("no order output is signed in this test");
+      },
+    },
     engine: {
       createSettlementCapability: unexpected,
       submitOrder: unexpected,

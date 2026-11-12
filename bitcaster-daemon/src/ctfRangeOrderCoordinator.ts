@@ -143,9 +143,12 @@ import {
 } from '@bitcaster-market/client-sdk/ctfRangeRefundReplacedPlans'
 import {
   findLastSignedSeedCounter,
+  SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
   type SeedCounterRestoreClient,
 } from '@bitcaster-market/client-sdk/seedCounterGapScan'
 import {
+  CtfRangeOrderOutputCheckError,
+  prepareCheckedCtfRangeSourceOperation,
   reserveCheckedCtfRangeOrderPreparation,
   type CtfRangeOrderCounterStarts,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
@@ -2419,6 +2422,11 @@ export class DaemonCtfRangeOrderCoordinator {
       if (error instanceof ProofConsolidationRequiredError) {
         await this.#markTerminal(authority.preparationInput.operationId)
       }
+      if (error instanceof CtfRangeOrderOutputCheckError) {
+        // The source request was not sent and holds no funds, so the attempt
+        // ends here and leaves no recovery work.
+        await this.#endUnfundedPreparation(authority.preparationInput.operationId)
+      }
       if (error instanceof UnresolvedRangeSellError) {
         await this.#endUnfundedPreparation(authority.preparationInput.operationId)
         const blocking = error.blockingOperationId
@@ -3055,7 +3063,7 @@ async function completeNewSource(
     if (existing !== null) {
       return resumeExistingSource(existing, authority, walletSeedHex, wallet, dependencies)
     }
-    source = await prepare()
+    source = await prepareCheckedSource(authority, walletSeedHex, prepare)
     let wasAlreadyCommitted: boolean
     try {
       wasAlreadyCommitted = await persistPreparedSource(authority, source, dependencies)
@@ -3095,6 +3103,28 @@ async function completeNewSource(
   }
   await stageSourceResult(authority, result)
   return result
+}
+
+/**
+ * Check the seed-derived outputs of the new source request with the mint
+ * before it is persisted and sent (ADR-037 reused-output amendment, decision
+ * 14). An output that another client of this seed already signed moves the
+ * durable counter past the signed outputs, and `prepare` builds the request
+ * again from a fresh counter snapshot.
+ */
+function prepareCheckedSource(
+  authority: PreparedMintAuthority,
+  walletSeedHex: string,
+  prepare: () => Promise<PreparedSource>,
+): Promise<PreparedSource> {
+  const binding = { normalizedMint: authority.preparation.mintUrl, unit: 'msat' as const }
+  return prepareCheckedCtfRangeSourceOperation({
+    mint: authority.mint,
+    seed: walletSeed(walletSeedHex),
+    prepare,
+    skipSignedCounters: (skip) =>
+      advanceDaemonKeysetCounter(skip.keysetId, skip.nextCounter, authority.mutation(), binding),
+  })
 }
 
 async function stageSourceResult(
@@ -4276,8 +4306,9 @@ function rangeRequestOutputKeysetIds(
 /**
  * Advance each counter past the outputs that the mint already signed for this
  * seed, with a NUT-09 gap scan that admits no proof (ADR-037 mint refusal
- * settlement). Another client with the same seed can hold funds in the
- * skipped outputs; `wallet recover-seed` restores them.
+ * settlement). The ADR-051 cursor rule then leaves the next 150 counters
+ * unused. Another client with the same seed can hold funds in the skipped
+ * outputs; `wallet recover-seed` restores them.
  */
 async function advanceCountersPastMint(input: {
   readonly storage: DaemonStateSqliteSession
@@ -4302,7 +4333,12 @@ async function advanceCountersPastMint(input: {
       startCounter: snapshot?.nextCounter ?? 0,
     })
     if (last !== null) {
-      await advanceDaemonKeysetCounter(keysetId, last + 1, input.mutation(), binding)
+      await advanceDaemonKeysetCounter(
+        keysetId,
+        last + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
+        input.mutation(),
+        binding,
+      )
     }
   }
 }

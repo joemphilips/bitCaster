@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { OutputData, type SerializedBlindedMessage } from '@cashu/cashu-ts'
+import {
+  Amount,
+  OutputData,
+  type CounterSource,
+  type Proof,
+  type SerializedBlindedMessage,
+} from '@cashu/cashu-ts'
 import {
   CTF_RANGE_ORDER_OUTPUT_CHECK_ATTEMPTS_MAX,
   CtfRangeOrderOutputCheckError,
+  plannedCtfRangeOrderOutputs,
+  prepareCheckedCtfRangeSourceOperation,
   reserveCheckedCtfRangeOrderPreparation,
   type CtfRangeOrderCounterStarts,
 } from '../src/ctfRangeOrderOutputCheck.ts'
+import { prepareCtfRangeSourceOperation } from '../src/ctfRangeSourceOperation.ts'
+import type { DurableCustodyProofOperationInput } from '../src/durableCustodyProofOperation.ts'
+import type { DurableSeedDerivedOutputPlan } from '../src/durableSeedDerivedOutputs.ts'
 import {
   createCounterCtfRangePreparation,
   createCtfRangePreparationIntent,
@@ -281,6 +292,9 @@ test('a gap scan finds the last output that another client signed after the plan
       nextCounter: lastSigned + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
     },
   ])
+  // Receive counters 7 to 16 are the order range, and the run ends 50 later
+  // at counter 67. The 150 counters 68 to 217 stay unused.
+  assert.equal(store.skips[0]!.nextCounter, 218)
   assert.deepEqual(store.reserved, [
     { offer: OFFER_START, receive: lastSigned + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED },
   ])
@@ -424,4 +438,265 @@ test('a storage failure of the reservation keeps its own error', async () => {
     }),
     (error: unknown) => error === refused,
   )
+})
+
+test('a mint failure in the gap scan after a hit refuses the order before it reserves', async () => {
+  const fixture = order('Buy')
+  const signed = plainOutput(fixture.seed, fixture.receiveKeysetId, RECEIVE_START)
+  let requests = 0
+  const mint: SeedCounterRestoreClient = {
+    restore: async ({ outputs }) => {
+      requests += 1
+      // The first request is the order check. The gap scan that follows fails.
+      if (requests > 1) throw new TypeError('fetch failed')
+      return { outputs: outputs.filter(({ B_ }) => B_ === signed) }
+    },
+  }
+  const store = counterStore(fixture, STARTS)
+
+  await assert.rejects(
+    check(fixture, mint, store),
+    (error: unknown) =>
+      error instanceof CtfRangeOrderOutputCheckError && error.reason === 'mint-check-failed',
+  )
+  assert.equal(requests, 2)
+  assert.deepEqual(store.skips, [])
+  assert.deepEqual(store.reserved, [])
+})
+
+test('a manifest output that is not the plain output at its counter refuses the check', () => {
+  const fixture = order('Buy')
+  const prepared = reconstructCtfRangePreparation(
+    createCounterCtfRangePreparation({
+      preparation: fixture.preparation,
+      intent: fixture.intent,
+      seed: fixture.seed,
+      offerCounterStart: OFFER_START,
+      receiveCounterStart: RECEIVE_START,
+    }),
+    fixture.seed,
+  )
+  const input = {
+    seed: fixture.seed,
+    prepared,
+    starts: STARTS,
+    offerCount: fixture.counts.offerCount,
+    receiveCount: fixture.counts.receiveCount,
+  }
+  assert.equal(
+    plannedCtfRangeOrderOutputs(input).length,
+    fixture.counts.offerCount + fixture.counts.receiveCount + fixture.authorizationCount,
+  )
+  const [first, ...rest] = prepared.manifest.serialized
+  // A manifest output from a counter outside the order ranges.
+  const foreign = { ...first!, B_: plainOutput(fixture.seed, fixture.receiveKeysetId, 999) }
+
+  assert.throws(
+    () =>
+      plannedCtfRangeOrderOutputs({
+        ...input,
+        prepared: {
+          ...prepared,
+          manifest: { ...prepared.manifest, serialized: [foreign, ...rest] },
+        },
+      }),
+    /manifest outputs differ from their counters/,
+  )
+})
+
+/** The offer keyset counter after the fixture order range [23, 29). */
+const KEEP_START = 29
+
+function keepPlan(
+  operation: DurableCustodyProofOperationInput,
+): DurableSeedDerivedOutputPlan | null {
+  return operation.metadata?.keepPlan as DurableSeedDerivedOutputPlan | null
+}
+
+/**
+ * A Buy whose reserved order range ends at counter 29 of the offer keyset.
+ * `prepare` builds the exact source request at the current counter, as a
+ * coordinator does from a fresh counter snapshot. It sends nothing.
+ */
+function sourceFixture(sourceAmount = 16) {
+  const fixture = signedOwnerRangeFixture({ side: 'Buy' })
+  const offerKeysetId = fixture.preparation.offerKeyset.id
+  const store = { next: KEEP_START }
+  const prepared: DurableCustodyProofOperationInput[] = []
+  const skips: SeedCounterSkip[] = []
+  const candidate: Proof = {
+    id: offerKeysetId,
+    amount: Amount.from(sourceAmount),
+    secret: 'source-proof',
+    C: '02'.padEnd(66, '1'),
+  }
+  const prepare = async () => {
+    let next = store.next
+    const counterSource: CounterSource = {
+      reserve: async (_keysetId, count) => {
+        const range = { start: next, count }
+        next += count
+        return range
+      },
+      advanceToAtLeast: async () => {
+        throw new Error('the source check must not advance a speculative counter')
+      },
+    }
+    const operation = await prepareCtfRangeSourceOperation({
+      preparation: fixture.preparation,
+      seed: fixture.seed,
+      counterSource,
+      candidates: [candidate],
+      wallet: {
+        prepareSwapToSend: async (amount, proofs, config, outputs) => ({
+          amount: Amount.from(amount),
+          fees: Amount.from(1),
+          keysetId: config.keysetId,
+          inputs: proofs,
+          sendOutputs: outputs.send.data,
+          keepOutputs: outputs.keep.data,
+          unselectedProofs: [],
+        }),
+        completeSwap: async () => ({ keep: [], send: [] }),
+        prepareConditionalSwap: async () => {
+          throw new Error('unexpected conditional source')
+        },
+        completeConditionalSwap: async () => ({}),
+      },
+    })
+    if (operation === null) throw new Error('the source fixture is underfunded')
+    prepared.push(operation)
+    return { operation }
+  }
+  const checkSource = (mint: SeedCounterRestoreClient) =>
+    prepareCheckedCtfRangeSourceOperation({
+      mint,
+      seed: fixture.seed,
+      prepare,
+      skipSignedCounters: async (skip) => {
+        skips.push(skip)
+        // The caller moves its durable counter; the next `prepare` reads it.
+        store.next = Math.max(store.next, skip.nextCounter)
+      },
+    })
+  return { fixture, offerKeysetId, prepared, skips, checkSource }
+}
+
+test('a clean source request sends its keep outputs in one restore request', async () => {
+  const source = sourceFixture()
+  const { mint, requests } = signingMint([])
+
+  const { operation } = await source.checkSource(mint)
+
+  const plan = keepPlan(operation)!
+  assert.equal(plan.counterStart, KEEP_START)
+  assert.equal(source.prepared.length, 1)
+  assert.equal(requests.length, 1)
+  assert.deepEqual(
+    requests[0]!.map(({ B_ }) => B_),
+    Array.from({ length: plan.counterCount }, (_, index) =>
+      plainOutput(source.fixture.seed, source.offerKeysetId, KEEP_START + index),
+    ),
+  )
+  assert.ok(requests[0]!.every(({ amount }) => amount.toBigInt() === 1n))
+  assert.deepEqual(source.skips, [])
+})
+
+test('a keep output that another client signed is skipped and the source request is rebuilt', async () => {
+  const source = sourceFixture()
+  const signed = plainOutput(source.fixture.seed, source.offerKeysetId, KEEP_START)
+  const { mint, requests } = signingMint([signed])
+
+  const { operation } = await source.checkSource(mint)
+
+  // Counter 29 is signed; the 150 counters 30 to 179 stay unused.
+  assert.deepEqual(source.skips, [
+    { keysetId: source.offerKeysetId, fromCounter: 29, lastSignedCounter: 29, nextCounter: 180 },
+  ])
+  assert.equal(source.prepared.length, 2)
+  assert.equal(keepPlan(operation)!.counterStart, 180)
+  assert.equal(
+    operation.outputs.keep!.some(({ blindedMessage }) => blindedMessage.B_ === signed),
+    false,
+  )
+  const last = requests.at(-1)!.map(({ B_ }) => B_)
+  assert.ok(last.includes(plainOutput(source.fixture.seed, source.offerKeysetId, 180)))
+  assert.equal(last.includes(signed), false)
+})
+
+test('a signed run after the order range is scanned to its end before the rebuild', async () => {
+  const source = sourceFixture()
+  const run = Array.from({ length: 20 }, (_, index) =>
+    plainOutput(source.fixture.seed, source.offerKeysetId, KEEP_START + index),
+  )
+  const { mint } = signingMint(run)
+
+  const { operation } = await source.checkSource(mint)
+
+  assert.deepEqual(source.skips, [
+    { keysetId: source.offerKeysetId, fromCounter: 29, lastSignedCounter: 48, nextCounter: 199 },
+  ])
+  assert.equal(keepPlan(operation)!.counterStart, 199)
+})
+
+test('a source request without seed-derived outputs sends no restore request', async () => {
+  const exact = signedOwnerRangeFixture({ side: 'Buy' })
+  const target = reconstructCtfRangePreparation(exact.preparation, exact.seed)
+    .authorizationOutputs.map(({ blindedMessage }) => Number(blindedMessage.amount.toBigInt()))
+    .reduce((sum, amount) => sum + amount, 0)
+  // The input pays the authorization and a fee of 1, so the request keeps no change.
+  const source = sourceFixture(target + 1)
+  const { mint, requests } = signingMint([])
+
+  const { operation } = await source.checkSource(mint)
+
+  assert.equal(keepPlan(operation), null)
+  assert.equal(requests.length, 0)
+})
+
+for (const failure of MINT_FAILURES) {
+  test(`${failure.name} refuses the source request before it is sent`, async () => {
+    const source = sourceFixture()
+
+    await assert.rejects(
+      source.checkSource({ restore: failure.restore }),
+      (error: unknown) =>
+        error instanceof CtfRangeOrderOutputCheckError && error.reason === 'mint-check-failed',
+    )
+    assert.equal(source.prepared.length, 1)
+    assert.deepEqual(source.skips, [])
+  })
+}
+
+test('a mint failure in the gap scan after a source hit refuses the source request', async () => {
+  const source = sourceFixture()
+  const signed = plainOutput(source.fixture.seed, source.offerKeysetId, KEEP_START)
+  let requests = 0
+  const mint: SeedCounterRestoreClient = {
+    restore: async ({ outputs }) => {
+      requests += 1
+      if (requests > 1) throw new TypeError('fetch failed')
+      return { outputs: outputs.filter(({ B_ }) => B_ === signed) }
+    },
+  }
+
+  await assert.rejects(
+    source.checkSource(mint),
+    (error: unknown) =>
+      error instanceof CtfRangeOrderOutputCheckError && error.reason === 'mint-check-failed',
+  )
+  assert.deepEqual(source.skips, [])
+})
+
+test('source outputs that stay signed stop after bounded attempts', async () => {
+  const source = sourceFixture()
+  const mint: SeedCounterRestoreClient = { restore: async ({ outputs }) => ({ outputs }) }
+
+  await assert.rejects(
+    source.checkSource(mint),
+    (error: unknown) =>
+      error instanceof CtfRangeOrderOutputCheckError && error.reason === 'attempts-exhausted',
+  )
+  assert.equal(source.prepared.length, CTF_RANGE_ORDER_OUTPUT_CHECK_ATTEMPTS_MAX)
+  assert.equal(source.skips.length, CTF_RANGE_ORDER_OUTPUT_CHECK_ATTEMPTS_MAX)
 })

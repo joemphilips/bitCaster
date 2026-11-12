@@ -159,6 +159,8 @@ vi.mock("@/stores/seed-restore-db", () => ({
 }));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
+  BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE:
+    "The wallet could not finish preparing this order. No order was submitted. Please try again.",
   buildBrowserCtfRangeOrderPreparation: mocks.buildPreparation,
   browserCtfRangeOrderErrorMessage: (code: string) => `message for ${code}`,
   BrowserCtfRangeOrderError: class extends Error {
@@ -1779,6 +1781,35 @@ describe("submitBrowserCtfRangeOrder", () => {
         fromCounter: 7,
         lastSignedCounter: 11,
         nextCounter: 162,
+      }),
+    );
+  });
+
+  it("gives the coordinator the same mint check and counter skip for the source request", async () => {
+    await submitRangeOrder("client-source-check");
+
+    const { sourceOutputCheck } = mocks.coordinatorInput as {
+      sourceOutputCheck: {
+        mint: (mintUrl: string) => unknown;
+        skipSignedCounters: (keyset: unknown, skip: unknown) => Promise<void>;
+      };
+    };
+    expect(sourceOutputCheck.mint("https://mint.example")).toBe(mocks.checkMint);
+    const offerKeyset = preparationFor(sellRequest()).offerKeyset;
+    await sourceOutputCheck.skipSignedCounters(offerKeyset, {
+      keysetId: offerKeyset.id,
+      fromCounter: 29,
+      lastSignedCounter: 29,
+      nextCounter: 180,
+    });
+    expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+        keyset: offerKeyset,
+        fromCounter: 29,
+        lastSignedCounter: 29,
+        nextCounter: 180,
       }),
     );
   });

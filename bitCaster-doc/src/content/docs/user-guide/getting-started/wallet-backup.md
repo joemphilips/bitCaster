@@ -139,11 +139,11 @@ checks each keyset (the mint keys of one asset) that it uses for outputs that
 another browser signed after its own last output. When the app finds such
 outputs, it adds the funds and positions to this browser.
 
-Each check sends to the mint the next 100 outputs of each keyset that this
-browser uses. These outputs are not signed yet. The mint can link them to this
-recovery phrase when another browser uses them later. A future version
-replaces this check with the encrypted backup, which stores the highest used
-output of each keyset.
+When the browser checks the keysets that it uses, it sends to the mint the next
+100 outputs of each keyset. These outputs are not signed yet. The mint can link
+them to this recovery phrase when another browser uses them later. A future
+version replaces this keyset check with the encrypted backup, which stores the
+highest used output of each keyset.
 
 If the app cannot add the outputs that it found, it shows
 **Positions could not be restored from the mint.** with **Retry**. The funds

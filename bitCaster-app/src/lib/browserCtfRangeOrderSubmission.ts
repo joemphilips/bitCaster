@@ -46,6 +46,7 @@ import type { MarketDetail } from "@/types/market-detail";
 import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
+  BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
@@ -61,6 +62,7 @@ import {
   reserveCheckedBrowserCtfRangePreparation,
 } from "./browserCtfRangeOrderOutputCheck";
 import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
+import type { SeedCounterSkip } from "@bitcaster/client-sdk/seedCounterGapScan";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
   readCtfRangePreparation,
@@ -1354,6 +1356,14 @@ function createBrowserCtfRangeCoordinator(
   return new BrowserCtfRangeOrderCoordinator({
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
+    sourceOutputCheck: {
+      mint: browserSeedCounterRestoreClient,
+      skipSignedCounters: (keyset, skip) => {
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+        return skipSignedBrowserCounters(scopeId, keyset.canonicalMintUrl)(keyset, skip);
+      },
+    },
     allowInsecureLoopbackHttp,
     recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
     // The coordinator holds the profile lock and the custody scope here. The
@@ -1434,17 +1444,7 @@ async function reserveCheckedRangePreparation(
       seed,
       mint: browserSeedCounterRestoreClient(preparation.mintUrl),
       createdAtMs: Date.now(),
-      skipSignedCounters: (keyset, skip) =>
-        advanceWalletKeysetCounterPastSignedOutputs({
-          scopeId,
-          mintUrl: preparation.mintUrl,
-          unit: "msat",
-          keyset,
-          ...conditionalCounterAsset(keyset),
-          fromCounter: skip.fromCounter,
-          lastSignedCounter: skip.lastSignedCounter,
-          nextCounter: skip.nextCounter,
-        }),
+      skipSignedCounters: skipSignedBrowserCounters(scopeId, preparation.mintUrl),
     });
   } catch (error) {
     if (
@@ -1453,11 +1453,37 @@ async function reserveCheckedRangePreparation(
     ) {
       throw new BrowserCtfRangeOrderError(
         "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+        BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
       );
     }
     throw error;
   }
+}
+
+/**
+ * Move one order keyset past outputs that another client of this seed signed.
+ * The checked range starts the deferral, so a later pass admits the skipped
+ * outputs (ADR-033). It admits no proof, so it can run while the caller holds
+ * the profile lock and the custody scope.
+ */
+function skipSignedBrowserCounters(
+  scopeId: string,
+  mintUrl: string,
+): (
+  keyset: PersistedCtfRangeOrderPreparation["offerKeyset"],
+  skip: SeedCounterSkip,
+) => Promise<void> {
+  return (keyset, skip) =>
+    advanceWalletKeysetCounterPastSignedOutputs({
+      scopeId,
+      mintUrl,
+      unit: "msat",
+      keyset,
+      ...conditionalCounterAsset(keyset),
+      fromCounter: skip.fromCounter,
+      lastSignedCounter: skip.lastSignedCounter,
+      nextCounter: skip.nextCounter,
+    });
 }
 
 function isLoopbackMint(mintUrl: string): boolean {

@@ -110,6 +110,8 @@ test('a skip passes the last signed output and the 150 counters after it', async
     lastSignedCounter: 40,
     nextCounter: 40 + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
   })
+  // Counters 41 to 190 stay unused.
+  assert.equal(skip.nextCounter, 191)
 })
 
 test('a skip passes a signed output that no gap scan sees', async () => {

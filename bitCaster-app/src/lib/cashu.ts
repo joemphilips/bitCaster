@@ -68,7 +68,10 @@ import {
   seedRestoreDatabase,
   settleSeedRestoreDeferral,
 } from "@/stores/seed-restore-db";
-import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
+import {
+  SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
+  findLastSignedSeedCounter,
+} from "@bitcaster/client-sdk/seedCounterGapScan";
 import { scanSeedCountersForAdmission } from "@bitcaster/client-sdk/seedCounterAdmissionScan";
 import {
   admitBrowserReceivedProofs,
@@ -847,7 +850,8 @@ export function ensureWalletKeysetCounterReady(
 
 /**
  * Advance one selected keyset's counter past every output that the mint
- * signed for this seed, even after an earlier scan completed. Use it after
+ * signed for this seed and the 150 counters after it (ADR-051 cursor rule),
+ * even after an earlier scan completed. Use it after
  * the mint reports a reused output: another client with the same seed signed
  * outputs past this browser's cursor. It admits no proof, so it claims no
  * custody scope and can run while the caller owns that scope. The scan has a
@@ -902,7 +906,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
       counters,
       fromCounter: Math.min(input.plannedFromCounter ?? start, start),
       lastSigned,
-      nextCounter: lastSigned === null ? null : lastSigned + 1,
+      // ADR-051 cursor rule: the next 150 counters stay unused.
+      nextCounter:
+        lastSigned === null ? null : lastSigned + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
       deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
     });
   } catch {
