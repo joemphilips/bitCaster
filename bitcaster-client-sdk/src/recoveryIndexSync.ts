@@ -46,7 +46,9 @@ export const RECOVERY_INDEX_READ_MINT_REFUSAL_CODES: ReadonlySet<number> = new S
 
 /**
  * The events that read the index (ADR-033 and ADR-039). The client never reads
- * the index on a timer or when a page becomes visible again.
+ * the index on a timer or when a page becomes visible again. A
+ * `restore-retry` reads only after the last read found the engine unreachable
+ * (ADR-039 "Restore order"); otherwise it returns the known document.
  */
 export type RecoveryIndexReadTrigger =
   | 'wallet-open'
@@ -85,6 +87,13 @@ export type RecoveryIndexReadOutcome =
       readonly status: 'failed'
       readonly trigger: RecoveryIndexReadTrigger
       readonly error: RecoveryIndexEngineError
+    }
+  /** A Retry with no unreachable engine before it sends nothing. It lists the known document. */
+  | {
+      readonly status: 'skipped'
+      readonly trigger: 'restore-retry'
+      readonly document: RecoveryIndexKnownDocument
+      readonly scan: readonly RecoveryIndexEntry[]
     }
 
 export type RecoveryIndexUploadRetryReason =
@@ -185,6 +194,8 @@ export class RecoveryIndexSync {
   /** The local keysets at the last read or write. A keyset outside it needs a read first. */
   private readKeys = new Set<string>()
   private mustRead = false
+  /** The last read failed with a network failure or a server outage. */
+  private engineUnreachable = false
   private failureStreak = 0
   private retryAtMs = 0
   private lastWriteAtMs: number | null = null
@@ -203,16 +214,19 @@ export class RecoveryIndexSync {
   read(trigger: RecoveryIndexReadTrigger): Promise<RecoveryIndexReadOutcome> {
     return this.exclusive(async () => {
       const local = await this.options.localEntries()
+      if (trigger === 'restore-retry' && !this.engineUnreachable) {
+        // Each read is an engine presence observation (ADR-034 "Engine privacy").
+        return { status: 'skipped', trigger, document: this.known, scan: this.scanList(local) }
+      }
       const error = await this.readNow(local)
       if (error !== null) return { status: 'failed', trigger, error }
-      const listed = this.known.status === 'listed' ? this.known.entries : []
-      return {
-        status: 'read',
-        trigger,
-        document: this.known,
-        scan: listedRecoveryIndexEntriesWithoutCursor(listed, local, this.options.walletMints()),
-      }
+      return { status: 'read', trigger, document: this.known, scan: this.scanList(local) }
     })
+  }
+
+  private scanList(local: readonly RecoveryIndexEntry[]): readonly RecoveryIndexEntry[] {
+    const listed = this.known.status === 'listed' ? this.known.entries : []
+    return listedRecoveryIndexEntriesWithoutCursor(listed, local, this.options.walletMints())
   }
 
   /** Upload the pending keysets. Concurrent calls share one upload. */
@@ -346,8 +360,10 @@ export class RecoveryIndexSync {
     } catch (error) {
       const failure = engineError(error)
       this.recordFailure(failure)
+      this.engineUnreachable = failure.kind === 'network' || failure.kind === 'unavailable'
       return failure
     }
+    this.engineUnreachable = false
     switch (result.status) {
       case 'not-modified':
         if (this.known.status !== 'listed' || this.known.version !== result.version) {

@@ -369,3 +369,38 @@ test('the next write resolves a listed entry whose form conflicts with the local
   assert.deepEqual(await sync.upload(), { status: 'written', version: 2 })
   assert.ok(isDeepStrictEqual(stored(fake), [conditional, entry('new')].sort(byKeyset)))
 })
+
+test('a restore Retry reads the index again only after the engine was unreachable', async () => {
+  const fake = engine()
+  const { sync } = client(fake, [])
+
+  // After a successful read, a Retry sends nothing and returns the known document.
+  assert.equal((await sync.read('wallet-open')).status, 'read')
+  const requests = fake.requests.length
+  const skipped = await sync.read('restore-retry')
+  assert.ok(skipped.status === 'skipped' && skipped.document.status === 'absent')
+  assert.equal(fake.requests.length, requests)
+
+  // A 503 or a network failure makes the engine unreachable: the next Retry reads.
+  for (const unreachable of [
+    () => problem(503, 'recovery-index-unavailable'),
+    () => {
+      throw new TypeError('fetch failed')
+    },
+  ]) {
+    fake.interruptions.push(unreachable)
+    assert.equal((await sync.read('wallet-open')).status, 'failed')
+    const before = fake.requests.length
+    assert.equal((await sync.read('restore-retry')).status, 'read')
+    assert.equal(fake.requests.length, before + 1)
+  }
+
+  // A limit refusal is not an unreachable engine.
+  fake.interruptions.push(() =>
+    problem(429, 'recovery-index-ip-requests', { limitCode: 'recovery-index-ip-requests' }),
+  )
+  assert.equal((await sync.read('mint-refusal')).status, 'failed')
+  const before = fake.requests.length
+  assert.equal((await sync.read('restore-retry')).status, 'skipped')
+  assert.equal(fake.requests.length, before)
+})

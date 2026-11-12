@@ -84,7 +84,7 @@ function outputOf(counter: number, keysetId = KEYSET.id): string {
  */
 function fakeMint(
   signedCounters: Iterable<number> = [],
-  options: { readonly keysetId?: string; readonly amount?: number } = {},
+  options: { readonly keysetId?: string; readonly amount?: number; readonly dleq?: boolean } = {},
 ) {
   const keysetId = options.keysetId ?? KEYSET.id
   const amount = options.amount ?? 1
@@ -118,6 +118,7 @@ function fakeMint(
       signatures: hits.map((output) => {
         const blinded = pointFromHex(output.B_)
         const C_ = createBlindSignature(blinded, PRIVATE_KEY, keysetId).C_.toHex(true)
+        if (options.dleq === false) return { id: keysetId, amount, C_ }
         const dleq = createDLEQProof(blinded, PRIVATE_KEY)
         return {
           id: keysetId,
@@ -262,27 +263,33 @@ test('a restore admits only verified UNSPENT proofs and marks the lowest PENDING
   assert.equal(result.pendingFromCounter, 7)
   assert.equal(result.nextOutputCounter, 160)
 
+  // A state that is not known, or a signature without a valid DLEQ, admits nothing of the keyset.
   const unknown = fakeMint([3])
   unknown.setState(3, 'UNKNOWN')
-  await assert.rejects(scan(unknown), /state/)
-
-  // A signature without a valid DLEQ admits nothing.
-  const noDleq = fakeMint([3])
-  const restore = async (outputs: SerializedBlindedMessage[]) => {
-    const response = await noDleq.restore(outputs)
-    return { ...response, signatures: response.signatures.map(({ dleq: _dleq, ...rest }) => rest) }
-  }
+  assert.deepEqual(await scan(unknown), {
+    status: 'implausible',
+    reason: 'proof-state',
+    scannedCounters: 304,
+  })
+  assert.deepEqual(await scan(fakeMint([3], { dleq: false })), {
+    status: 'implausible',
+    reason: 'dleq',
+    scannedCounters: 304,
+  })
+  // A failed NUT-07 request is not a refusal of the keyset: the pass stops and retries later.
   await assert.rejects(
     scanRecoveryIndexKeyset({
       seed: SEED,
       entry: ENTRY,
       keyset: KEYSET,
-      restore,
-      checkProofStates: noDleq.checkProofStates,
+      restore: fakeMint([3]).restore,
+      checkProofStates: async () => {
+        throw new Error('mint state request failed')
+      },
       progress: RECOVERY_INDEX_KEYSET_PROGRESS_START,
       maxScannedCounters: 1_000,
     }),
-    /DLEQ/,
+    /mint state request failed/,
   )
 })
 
@@ -378,7 +385,11 @@ test('a pass stops at its counter budget and the next pass continues with the sa
 function restoreHost(
   targets: ReadonlyMap<
     string,
-    { readonly entry: RecoveryIndexEntry; readonly keyset: RecoveryIndexKeysetAuthority }
+    {
+      readonly entry: RecoveryIndexEntry
+      readonly keyset: RecoveryIndexKeysetAuthority
+      readonly mint?: ReturnType<typeof fakeMint>
+    }
   >,
   mint: ReturnType<typeof fakeMint>,
   gapLimit = RECOVERY_INDEX_RESTORE_GAP_LIMIT,
@@ -389,6 +400,7 @@ function restoreHost(
   const admitted: Proof[] = []
   const windows: number[] = []
   const committed: RecoveryIndexKeysetScan['status'][] = []
+  const pendingMarkers: (number | null)[] = []
   const runPass = (counterBudget = RECOVERY_INDEX_RESTORE_COUNTER_BUDGET) =>
     runRecoveryIndexRestorePass({
       keysets: [...progress].map(([target, keysetProgress]) => ({
@@ -398,11 +410,13 @@ function restoreHost(
       counterBudget,
       scan: (target, request) => {
         windows.push(request.maxScannedCounters)
+        const { entry, keyset, mint: targetMint = mint } = targets.get(target)!
         return scanRecoveryIndexKeyset({
           seed: SEED,
-          ...targets.get(target)!,
-          restore: mint.restore,
-          checkProofStates: mint.checkProofStates,
+          entry,
+          keyset,
+          restore: targetMint.restore,
+          checkProofStates: targetMint.checkProofStates,
           gapLimit,
           ...request,
         })
@@ -412,10 +426,12 @@ function restoreHost(
         switch (result.status) {
           case 'complete':
             admitted.push(...result.unspent)
+            pendingMarkers.push(result.pendingFromCounter)
             progress.delete(target)
             break
           case 'incomplete':
             admitted.push(...result.unspent)
+            pendingMarkers.push(result.pendingFromCounter)
             progress.set(target, result.progress)
             break
           case 'unverifiable':
@@ -424,8 +440,60 @@ function restoreHost(
         }
       },
     })
-  return { runPass, progress, admitted, windows, committed }
+  return { runPass, progress, admitted, windows, committed, pendingMarkers }
 }
+
+test('the lowest PENDING counter carries across windows to the complete result', async () => {
+  const signed = Array.from({ length: 18 }, (_, index) => index * 200)
+  const mint = fakeMint(signed)
+  mint.setState(200, 'PENDING')
+  const host = restoreHost(new Map([['k', { entry: ENTRY, keyset: KEYSET }]]), mint)
+
+  assert.equal((await host.runPass()).status, 'complete')
+  assert.deepEqual(host.committed, ['incomplete', 'complete'])
+  // ADR-033 completion: the final result still names the PENDING proof of the first window.
+  assert.deepEqual(host.pendingMarkers, [200, 200])
+  assert.equal(host.admitted.length, signed.length - 1)
+})
+
+test('a proof without a valid DLEQ refuses its keyset, and the pass scans the next keyset', async () => {
+  const conditionId = hash('condition')
+  const outcomeCollectionId = hash('collection')
+  const conditionalId = deriveConditionalKeysetId({
+    keys: KEYS,
+    unit: 'msat',
+    conditionId,
+    outcomeCollectionId,
+  })
+  const conditional: RecoveryIndexEntry = {
+    kind: 'conditional',
+    mintUrl: MINT,
+    keysetId: conditionalId,
+    conditionId,
+    outcomeCollectionId,
+  }
+  const host = restoreHost(
+    new Map([
+      ['no dleq', { entry: ENTRY, keyset: KEYSET, mint: fakeMint([0], { dleq: false }) }],
+      [
+        'conditional',
+        {
+          entry: conditional,
+          keyset: { ...KEYSET, id: conditionalId },
+          mint: fakeMint([0, 1], { keysetId: conditionalId }),
+        },
+      ],
+    ]),
+    fakeMint(),
+  )
+
+  const result = await host.runPass()
+  assert.equal(result.status, 'complete')
+  assert.deepEqual(result.refused, ['no dleq'])
+  assert.deepEqual(host.committed, ['implausible', 'complete'])
+  assert.equal(host.admitted.length, 2)
+  assert.deepEqual(host.progress.get('no dleq'), RECOVERY_INDEX_KEYSET_PROGRESS_START)
+})
 
 test('a keyset longer than one window commits each window, and the next pass resumes after a failure', async () => {
   const signed = Array.from({ length: 26 }, (_, index) => index * 200)

@@ -56,13 +56,25 @@ export interface RecoveryIndexKeysetProgress {
   readonly lastSignedCounter: number | null
   /** The total amount that the mint restored in this keyset so far. It stays a safe integer. */
   readonly restoredAmount: number
+  /** The lowest counter of a `PENDING` proof in any window so far: the ADR-033 deferral marker. */
+  readonly pendingFromCounter: number | null
 }
 
 export const RECOVERY_INDEX_KEYSET_PROGRESS_START: RecoveryIndexKeysetProgress = Object.freeze({
   nextCounter: 0,
   lastSignedCounter: null,
   restoredAmount: 0,
+  pendingFromCounter: null,
 })
+
+/** Why a keyset scan admitted nothing of its window. */
+export type RecoveryIndexKeysetRefusal =
+  /** An amount that the keyset cannot sign, or a keyset total that is not a safe integer. */
+  | 'amount'
+  /** A restored proof without a valid DLEQ. */
+  | 'dleq'
+  /** A NUT-07 answer that is not one known state for each proof. */
+  | 'proof-state'
 
 /**
  * The result of one keyset scan. A window reads counters. The two refusals
@@ -70,13 +82,17 @@ export const RECOVERY_INDEX_KEYSET_PROGRESS_START: RecoveryIndexKeysetProgress =
  *
  * - `unverifiable`: the mint keys do not derive the keyset id of the entry
  *   with its identity. The entry stays in the index.
- * - `implausible`: the mint restored an amount that the keyset cannot sign,
- *   or the keyset total would not be a safe integer.
+ * - `implausible`: the mint answer fails a check (`reason`). The window admits
+ *   nothing. A failed mint request is not a refusal: the scan rejects.
  */
 export type RecoveryIndexKeysetScan =
   | RecoveryIndexKeysetWindow
   | { readonly status: 'unverifiable'; readonly scannedCounters: 0 }
-  | { readonly status: 'implausible'; readonly scannedCounters: number }
+  | {
+      readonly status: 'implausible'
+      readonly reason: RecoveryIndexKeysetRefusal
+      readonly scannedCounters: number
+    }
 
 export interface RecoveryIndexKeysetWindow {
   /** `complete`: the gap rule ended the scan. `incomplete`: the window ended first. */
@@ -86,7 +102,11 @@ export interface RecoveryIndexKeysetWindow {
   /** The verified `UNSPENT` proofs of this scan, in counter order. Admit only these. */
   readonly unspent: readonly Proof[]
   readonly unspentCounters: readonly number[]
-  /** The lowest counter of a `PENDING` proof: the ADR-033 deferral marker. */
+  /**
+   * The lowest counter of a `PENDING` proof of the keyset so far, in this or
+   * an earlier window: the ADR-033 deferral marker. A complete keyset with a
+   * marker is not complete under the ADR-033 completion rule.
+   */
   readonly pendingFromCounter: number | null
   readonly spentCount: number
   /**
@@ -201,19 +221,27 @@ export async function scanRecoveryIndexKeyset(input: {
   } catch (error) {
     // The window admits nothing; the mint was asked about at most the window.
     if (error instanceof SeedAdmissionScanImplausibleError) {
-      return Object.freeze({ status: 'implausible', scannedCounters: window })
+      return Object.freeze({ status: 'implausible', reason: 'amount', scannedCounters: window })
     }
     throw error
   }
+  const scannedCounters = scan.nextCounter - progress.nextCounter
   const states = await checkStates(scan.proofs, keyset, input.checkProofStates)
+  if (typeof states === 'string') {
+    return Object.freeze({ status: 'implausible', reason: states, scannedCounters })
+  }
+  const pending = scan.proofCounters.filter((_, index) => states[index] === 'retain-nonselectable')
   return windowResult({
     complete: scan.stop === 'gap-limit',
     progress: Object.freeze({
       nextCounter: scan.nextCounter,
       lastSignedCounter: scan.lastCounterWithSignature ?? progress.lastSignedCounter,
       restoredAmount: scan.restoredAmountTotal,
+      pendingFromCounter: lowest(
+        progress.pendingFromCounter === null ? pending : [progress.pendingFromCounter, ...pending],
+      ),
     }),
-    scannedCounters: scan.nextCounter - progress.nextCounter,
+    scannedCounters,
     proofs: scan.proofs,
     counters: scan.proofCounters,
     states,
@@ -322,28 +350,35 @@ export function seedCounterGapWarning(
   return longestRun < gapLimit ? null : { longestRun, cliGapLimit: longestRun + 1 }
 }
 
+/**
+ * Verify the DLEQ of each restored proof, then ask NUT-07 for the states.
+ * Return the disposition of each proof, or the check that the mint answer
+ * failed. A failed NUT-07 request rejects.
+ */
 async function checkStates(
   proofs: readonly Proof[],
   keyset: HasKeysetKeys,
   checkProofStates: (proofs: readonly Proof[]) => Promise<readonly unknown[]>,
-): Promise<readonly ReturnType<typeof classifySeedRecoveryMintState>[]> {
+): Promise<
+  readonly ReturnType<typeof classifySeedRecoveryMintState>[] | RecoveryIndexKeysetRefusal
+> {
   if (proofs.length === 0) return []
-  requireValidCashuProofs(proofs, (id) => {
-    if (id !== keyset.id) throw new Error('recovery index restore proof keyset is foreign')
-    return keyset
-  })
+  try {
+    requireValidCashuProofs(proofs, (id) => {
+      if (id !== keyset.id) throw new Error('recovery index restore proof keyset is foreign')
+      return keyset
+    })
+  } catch {
+    return 'dleq'
+  }
   const dispositions: ReturnType<typeof classifySeedRecoveryMintState>[] = []
   for (let offset = 0; offset < proofs.length; offset += PROOF_STATE_BATCH_MAX) {
     const batch = proofs.slice(offset, offset + PROOF_STATE_BATCH_MAX)
     const states = await checkProofStates(batch)
-    if (!Array.isArray(states) || states.length !== batch.length) {
-      throw new Error('recovery index restore proof states are incomplete')
-    }
+    if (!Array.isArray(states) || states.length !== batch.length) return 'proof-state'
     for (const state of states) {
       const disposition = classifySeedRecoveryMintState(state)
-      if (disposition === 'fail-closed') {
-        throw new Error('recovery index restore proof state is not known')
-      }
+      if (disposition === 'fail-closed') return 'proof-state'
       dispositions.push(disposition)
     }
   }
@@ -367,7 +402,9 @@ function windowResult(input: {
     scannedCounters: input.scannedCounters,
     unspent: Object.freeze(input.proofs.filter(where('selectable'))),
     unspentCounters: Object.freeze(input.counters.filter(where('selectable'))),
-    pendingFromCounter: lowest(input.counters.filter(where('retain-nonselectable'))),
+    // Every window reports the lowest PENDING counter of the keyset so far, so a
+    // complete result still names a PENDING proof of an earlier window (ADR-033).
+    pendingFromCounter: input.progress.pendingFromCounter,
     spentCount: input.states.filter((state) => state === 'spent').length,
     nextOutputCounter: input.complete
       ? nextSeedCounterAfterLastSigned(input.progress.lastSignedCounter)
@@ -382,7 +419,11 @@ function requireProgress(value: RecoveryIndexKeysetProgress): RecoveryIndexKeyse
     value.nextCounter < 0 ||
     (last !== null && (!Number.isSafeInteger(last) || last < 0 || last >= value.nextCounter)) ||
     !Number.isSafeInteger(value.restoredAmount) ||
-    value.restoredAmount < 0
+    value.restoredAmount < 0 ||
+    (value.pendingFromCounter !== null &&
+      (!Number.isSafeInteger(value.pendingFromCounter) ||
+        value.pendingFromCounter < 0 ||
+        value.pendingFromCounter >= value.nextCounter))
   ) {
     throw new Error('recovery index restore progress is invalid')
   }
