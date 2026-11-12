@@ -90,7 +90,6 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
-  planCounterCtfRangePreparation,
   planPersistedCtfRangeOrderAuthorization,
   settlementCapabilityWorkFacts,
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
@@ -144,9 +143,12 @@ import {
 } from '@bitcaster-market/client-sdk/ctfRangeRefundReplacedPlans'
 import {
   findLastSignedSeedCounter,
-  probeSeedCounterRangeBeforeReservation,
   type SeedCounterRestoreClient,
 } from '@bitcaster-market/client-sdk/seedCounterGapScan'
+import {
+  reserveCheckedCtfRangeOrderPreparation,
+  type CtfRangeOrderCounterStarts,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   classifyCtfRangeSourceRecovery,
   type CtfRangeSourceRecoveryDecision,
@@ -1177,12 +1179,12 @@ export class DaemonCtfRangeOrderCoordinator {
       )
     }
     const { preparationInput, metadata, mint } = await this.#buildNewMintAuthority(request, client)
-    await this.#probeBuyReceiveCounters(preparationInput, request.walletSeedHex, mint)
-    const durablePreparation = await this.#persistPreparation(
+    const durablePreparation = await this.#reserveCheckedPreparation(
       preparationInput,
       request.walletSeedHex,
       request.consolidateProofs,
       consentBytes,
+      mint,
     )
     return preparedMintAuthority(
       durablePreparation,
@@ -1244,40 +1246,6 @@ export class DaemonCtfRangeOrderCoordinator {
     }
   }
 
-  /**
-   * Before a buy reserves its receive counters, ask the mint with NUT-09
-   * whether another client with this seed already signed those outputs. The
-   * engine signs receive outputs in a group convert, where one reused output
-   * rejects the whole group. On a hit, advance the counter past the signed
-   * range. Sells, consolidations, and refunds recover from the mint error.
-   */
-  async #probeBuyReceiveCounters(
-    preparation: PersistedCtfRangeOrderPreparationV2,
-    walletSeedHex: string,
-    mint: CtfRangeMintLike,
-  ): Promise<void> {
-    if (preparation.side !== 'Buy') return
-    const keysetId = preparation.receiveKeyset.id
-    const binding = { normalizedMint: preparation.mintUrl, unit: 'msat' as const }
-    await probeSeedCounterRangeBeforeReservation({
-      mint,
-      seed: walletSeed(walletSeedHex),
-      keysetId,
-      count: planCounterCtfRangePreparation(preparation).receiveCount,
-      readNextCounter: async () =>
-        (
-          await readDaemonCounterSnapshots({
-            storage: this.#storage,
-            mutation: this.#mutation(),
-            keysetIds: [keysetId],
-            binding,
-          })
-        )[0]?.nextCounter ?? 0,
-      advanceCounterTo: (nextCounter) =>
-        advanceDaemonKeysetCounter(keysetId, nextCounter, this.#mutation(), binding),
-    })
-  }
-
   async #readActivePreparation(
     request: PrepareSettlementCapabilityInput,
     consentBytes: Uint8Array | null,
@@ -1309,25 +1277,53 @@ export class DaemonCtfRangeOrderCoordinator {
     )
   }
 
-  async #persistPreparation(
+  /**
+   * Check every output of the new order with the mint before the order
+   * reserves its counters (ADR-037 reused-output amendment, decision 14). An
+   * output that another client of this seed already signed moves its counter
+   * past the signed outputs, and the SDK plans the order again. The skipped
+   * outputs can hold funds of this seed; `wallet recover-seed` restores them.
+   */
+  async #reserveCheckedPreparation(
     input: PersistedCtfRangeOrderPreparationV2,
     walletSeedHex: string,
     consolidateProofs: boolean,
     consentBytes: Uint8Array | null,
+    mint: SeedCounterRestoreClient,
   ): Promise<PersistedPreparationInput> {
-    const mutation = this.#mutation()
     const { intent } = createCtfRangePreparationIntent({
-      scopeId: mutation.fence.scopeId,
+      scopeId: this.#getFence().scopeId,
       request: input.request,
       feeConsentBytes: consentBytes,
       consolidateProofs,
     })
-    const record = await reserveDaemonCtfPreparation({
-      storage: this.#storage,
-      mutation,
+    const seed = walletSeed(walletSeedHex)
+    const binding = { normalizedMint: input.mintUrl, unit: 'msat' as const }
+    const record = await reserveCheckedCtfRangeOrderPreparation({
+      mint,
+      seed,
+      preparation: input,
       intent,
-      candidate: input,
-      seed: walletSeed(walletSeedHex),
+      readCounterStarts: async (): Promise<CtfRangeOrderCounterStarts> => {
+        const [offer, receive] = await readDaemonCounterSnapshots({
+          storage: this.#storage,
+          mutation: this.#mutation(),
+          keysetIds: [input.offerKeyset.id, input.receiveKeyset.id],
+          binding,
+        })
+        return { offer: offer?.nextCounter ?? 0, receive: receive?.nextCounter ?? 0 }
+      },
+      skipSignedCounters: (skip) =>
+        advanceDaemonKeysetCounter(skip.keysetId, skip.nextCounter, this.#mutation(), binding),
+      reserve: (counterStarts) =>
+        reserveDaemonCtfPreparation({
+          storage: this.#storage,
+          mutation: this.#mutation(),
+          intent,
+          candidate: input,
+          seed,
+          counterStarts,
+        }),
     })
     if (record.lifecycleState === 'terminal')
       throw new Error('CTF preparation has already completed')

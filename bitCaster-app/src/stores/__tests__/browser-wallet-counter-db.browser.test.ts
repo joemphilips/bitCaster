@@ -233,6 +233,8 @@ function reservationInput(requestValue = request()) {
     intent: intent(requestValue),
     seed,
     createdAtMs: 100,
+    // Each reservation in this file starts at fresh counters.
+    counterStarts: { offer: 0, receive: 0 },
   } as const;
 }
 
@@ -302,7 +304,7 @@ describe("browser CTF counter reservation in Chromium IndexedDB", () => {
     await markCountersReady(database);
     const counters = openCounters(database);
     const input = reservationInput();
-    const first = await counters.reserveCtfPreparationInContext(input);
+    const first = (await counters.reserveCtfPreparationInContext(input))!;
     const decoded = decodeCounterCtfRangePreparationBytes(first.record.preparationBytes);
     expect(first.replayed).toBe(false);
     expect(decoded.version).toBe(3);
@@ -336,7 +338,7 @@ describe("browser CTF counter reservation in Chromium IndexedDB", () => {
       counters.reserveCtfPreparationInContext(input),
       counters.reserveCtfPreparationInContext(input),
     ]);
-    expect(results.map(({ replayed }) => replayed).sort()).toEqual([false, true]);
+    expect(results.map((result) => result!.replayed).sort()).toEqual([false, true]);
     expect(results[0]!.record).toEqual(results[1]!.record);
     expect(await database.ctfRangePreparations.count()).toBe(1);
     const decoded = decodeCounterCtfRangePreparationBytes(results[0]!.record.preparationBytes);

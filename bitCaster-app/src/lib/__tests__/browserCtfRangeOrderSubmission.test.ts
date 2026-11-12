@@ -13,6 +13,7 @@ import {
   type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
 import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
 import { BrowserCtfRangeRecoverySchedule } from "../browserCtfRangeRecoverySchedule";
 import {
   listenForBrowserCtfRangeRecoveryWake,
@@ -61,9 +62,8 @@ const mocks = vi.hoisted(() => ({
   advanceCounterPastMint: vi.fn(),
   advanceCounterPastSignedOutputs: vi.fn(),
   requestResync: vi.fn(),
-  probePreparation: vi.fn(),
-  probeMint: { kind: "test-probe-mint" },
-  probeCache: { kind: "test-probe-cache" },
+  reserveChecked: vi.fn(),
+  checkMint: { kind: "test-check-mint" },
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
@@ -151,6 +151,7 @@ vi.mock("../cashu", () => ({
   advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
   advanceWalletKeysetCounterPastSignedOutputs: mocks.advanceCounterPastSignedOutputs,
   WalletKeysetCounterPendingError: class extends Error {},
+  WalletKeysetCounterReadinessError: class extends Error {},
 }));
 
 vi.mock("@/stores/seed-restore-db", () => ({
@@ -181,10 +182,9 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   },
 }));
 
-vi.mock("../browserCtfRangeCounterProbe", () => ({
-  createBuyReceiveProbeCache: () => mocks.probeCache,
-  probeBuyReceiveRange: mocks.probePreparation,
-  browserSeedCounterRestoreClient: () => mocks.probeMint,
+vi.mock("../browserCtfRangeOrderOutputCheck", () => ({
+  reserveCheckedBrowserCtfRangePreparation: mocks.reserveChecked,
+  browserSeedCounterRestoreClient: () => mocks.checkMint,
 }));
 
 vi.mock("../browserFundedAssetRecovery", () => ({
@@ -239,7 +239,10 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.advanceCounterPastMint.mockResolvedValue(undefined);
     mocks.advanceCounterPastSignedOutputs.mockResolvedValue(undefined);
     mocks.requestResync.mockResolvedValue(undefined);
-    mocks.probePreparation.mockResolvedValue(undefined);
+    mocks.reserveChecked.mockImplementation(async ({ preparation }: { preparation: unknown }) => ({
+      record: preparation,
+      replayed: false,
+    }));
     mocks.recordMessage.mockResolvedValue(undefined);
     mocks.raiseMessage.mockResolvedValue(undefined);
     mocks.resolveMessages.mockResolvedValue(undefined);
@@ -1724,7 +1727,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
   });
 
-  it("probes a buy receive range during the preview and again before it reserves counters", async () => {
+  it("checks the order outputs with the mint only at submit, before it reserves counters", async () => {
     await previewBrowserCtfRangeOrderFees({
       market: market(),
       ticket: {
@@ -1742,35 +1745,82 @@ describe("submitBrowserCtfRangeOrder", () => {
       },
       mintUrl: "https://mint.example",
     }).catch(() => undefined);
-    expect(mocks.probePreparation).toHaveBeenCalledTimes(1);
+    // A preview reserves nothing, so it shows the mint no output.
+    expect(mocks.reserveChecked).not.toHaveBeenCalled();
 
-    await submitRangeOrder("client-probed-preparation");
+    await submitRangeOrder("client-checked-preparation");
 
-    // The submit call reuses the preview probe through the shared cache unless the cursor moved.
-    expect(mocks.probePreparation).toHaveBeenCalledTimes(2);
-    for (const [input] of mocks.probePreparation.mock.calls) {
-      expect(input).toMatchObject({
+    expect(mocks.reserveChecked).toHaveBeenCalledTimes(1);
+    const [input] = mocks.reserveChecked.mock.calls[0]!;
+    expect(input).toMatchObject({
+      mint: mocks.checkMint,
+      preparation: expect.objectContaining({ operationId: "range-operation" }),
+      intent: expect.objectContaining({
         scopeId: mocks.scopeId,
-        cache: mocks.probeCache,
-        mint: mocks.probeMint,
-        preparation: expect.objectContaining({ operationId: "range-operation" }),
-      });
-    }
-    expect(mocks.probePreparation.mock.invocationCallOrder[1]!).toBeLessThan(
+        request: expect.objectContaining({ clientOrderId: "client-checked-preparation" }),
+      }),
+    });
+    expect(mocks.reserveChecked.mock.invocationCallOrder[0]!).toBeLessThan(
       mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
     );
     const receiveKeyset = preparationFor(sellRequest()).receiveKeyset;
-    await mocks.probePreparation.mock.calls[1]![0].advancePastSignedOutputs(receiveKeyset, 7, 12);
-    // The probed range starts the deferral, so a later pass admits its outputs.
+    await input.skipSignedCounters(receiveKeyset, {
+      keysetId: receiveKeyset.id,
+      fromCounter: 7,
+      lastSignedCounter: 11,
+      nextCounter: 162,
+    });
+    // The checked range starts the deferral, so a later pass admits the signed outputs.
     expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
       expect.objectContaining({
         scopeId: mocks.scopeId,
         unit: "msat",
         keyset: receiveKeyset,
         fromCounter: 7,
-        nextCounter: 12,
+        lastSignedCounter: 11,
+        nextCounter: 162,
       }),
     );
+  });
+
+  it("checks the outputs of a sell before it reserves counters", async () => {
+    await submitSellOrder("client-checked-sell");
+
+    expect(mocks.reserveChecked).toHaveBeenCalledTimes(1);
+    expect(mocks.reserveChecked.mock.calls[0]![0]).toMatchObject({
+      mint: mocks.checkMint,
+      preparation: expect.objectContaining({ side: "Sell" }),
+    });
+    expect(mocks.reserveChecked.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it.each([
+    ["the mint check cannot finish", () => new CtfRangeOrderOutputCheckError("mint-check-failed")],
+    [
+      "the outputs stay signed after bounded checks",
+      () => new CtfRangeOrderOutputCheckError("attempts-exhausted"),
+    ],
+  ])("refuses the order before any mint request when %s", async (_name, failure) => {
+    mocks.reserveChecked.mockRejectedValueOnce(failure());
+
+    await expect(submitRangeOrder("client-unchecked")).rejects.toMatchObject({
+      code: "source-preparation-failed",
+      message:
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+    });
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    // Nothing was reserved, so no durable order alert is written.
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a counter store error of the checked reservation", async () => {
+    const refused = new Error("wallet counter recovery is incomplete");
+    mocks.reserveChecked.mockRejectedValueOnce(refused);
+
+    await expect(submitRangeOrder("client-store-refused")).rejects.toBe(refused);
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
   });
 
   it.each([11001, 11003, 11008])(

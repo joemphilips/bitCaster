@@ -1,4 +1,4 @@
-import { OutputData, type SerializedBlindedMessage } from '@cashu/cashu-ts'
+import { Amount, OutputData, type SerializedBlindedMessage } from '@cashu/cashu-ts'
 import { DURABLE_SEED_DERIVED_COUNTER_MAX } from './durableSeedDerivedPolicy.ts'
 
 /**
@@ -7,9 +7,8 @@ import { DURABLE_SEED_DERIVED_COUNTER_MAX } from './durableSeedDerivedPolicy.ts'
  * It admits no proof, so it claims no custody scope. The caller advances its
  * counter past the result.
  *
- * A NUT-13 blinded output does not depend on its amount, so each scan output
- * uses amount 1. The mint sees the same outputs in the real request, so a
- * probe adds no new privacy exposure.
+ * A NUT-13 blinded output does not depend on its amount, so each request
+ * output uses amount 1. The request then shows the mint no amount.
  */
 
 /** The NUT-09 part of a mint client. */
@@ -23,38 +22,104 @@ export interface SeedCounterRestoreClient {
 export const SEED_COUNTER_GAP_LIMIT = 300
 /** The most outputs in one NUT-09 request. */
 export const SEED_COUNTER_PROBE_BATCH_MAX = 100
-/** Gap scans before a receive-range probe stops. */
-export const SEED_COUNTER_PROBE_ATTEMPTS_MAX = 8
 /**
  * Counters that one gap scan asks about. The bound limits the mint load when
  * a mint reports every output as signed. A later scan continues from the
  * advanced counter.
  */
 export const SEED_COUNTER_SCAN_COUNTERS_MAX = 3_000
+/**
+ * ADR-051 cursor rule: after a scan, the wallet never uses the counters just
+ * after the last signed output. The authorization outputs of the recent
+ * orders of another client sit there, and NUT-09 does not show them.
+ */
+export const SEED_COUNTER_SKIP_AFTER_LAST_SIGNED = 150
 
-/** Return the counters in [start, start + count) whose outputs the mint signed. */
-export async function probeSignedSeedCounters(input: {
+/** One output that the wallet plans to send, and the highest seed counter that it uses. */
+export interface PlannedSeedOutput {
+  readonly keysetId: string
+  readonly counter: number
+  readonly B_: string
+}
+
+/** A counter advance past outputs that the mint already signed for this seed. */
+export interface SeedCounterSkip {
+  readonly keysetId: string
+  /** The first checked counter. A later admission scan starts here (ADR-033). */
+  readonly fromCounter: number
+  readonly lastSignedCounter: number
+  /** The first counter that the wallet uses after the skip (ADR-051 cursor rule). */
+  readonly nextCounter: number
+}
+
+/**
+ * Return the planned outputs that the mint already signed. The outputs go in
+ * NUT-09 requests of at most `SEED_COUNTER_PROBE_BATCH_MAX` outputs each.
+ */
+export async function findSignedSeedOutputs(
+  mint: SeedCounterRestoreClient,
+  planned: readonly PlannedSeedOutput[],
+): Promise<PlannedSeedOutput[]> {
+  const byOutput = new Map<string, PlannedSeedOutput>()
+  for (const output of planned) {
+    requireCounterRange(output.counter, 1)
+    if (typeof output.B_ !== 'string' || byOutput.has(output.B_)) {
+      throw new Error('planned seed outputs are invalid')
+    }
+    byOutput.set(output.B_, output)
+  }
+  const signed: PlannedSeedOutput[] = []
+  for (let offset = 0; offset < planned.length; offset += SEED_COUNTER_PROBE_BATCH_MAX) {
+    const batch = planned.slice(offset, offset + SEED_COUNTER_PROBE_BATCH_MAX)
+    const requested = new Set(batch.map(({ B_ }) => B_))
+    const response = await mint.restore({
+      outputs: batch.map(({ keysetId, B_ }) => ({ amount: Amount.from(1), id: keysetId, B_ })),
+    })
+    if (!Array.isArray(response?.outputs) || response.outputs.length > batch.length) {
+      throw new Error('mint restore response is invalid')
+    }
+    const found = new Set<string>()
+    for (const output of response.outputs) {
+      // A restore response may only name outputs from this request.
+      const blinded = typeof output?.B_ === 'string' ? output.B_ : undefined
+      if (blinded === undefined || !requested.has(blinded)) {
+        throw new Error('mint restore returned a foreign output')
+      }
+      found.add(blinded)
+    }
+    for (const blinded of found) signed.push(byOutput.get(blinded)!)
+  }
+  return signed
+}
+
+/**
+ * Scan past the outputs that the mint signed in one keyset, and apply the
+ * ADR-051 cursor rule. `signedCounters` are the counters of the signed planned
+ * outputs, so the skip also passes a signed output that no gap scan sees.
+ */
+export async function skipPastSignedSeedOutputs(input: {
   readonly mint: SeedCounterRestoreClient
   readonly seed: Uint8Array
   readonly keysetId: string
-  readonly startCounter: number
-  readonly count: number
-}): Promise<number[]> {
-  requireCounterRange(input.startCounter, input.count)
-  const signed: number[] = []
-  for (let offset = 0; offset < input.count; offset += SEED_COUNTER_PROBE_BATCH_MAX) {
-    const size = Math.min(SEED_COUNTER_PROBE_BATCH_MAX, input.count - offset)
-    signed.push(
-      ...(await probeBatch(
-        input.mint,
-        input.seed,
-        input.keysetId,
-        input.startCounter + offset,
-        size,
-      )),
-    )
+  readonly fromCounter: number
+  readonly signedCounters: readonly number[]
+}): Promise<SeedCounterSkip> {
+  if (input.signedCounters.length === 0) throw new Error('seed counter skip needs a signed output')
+  const scanned = await findLastSignedSeedCounter({
+    mint: input.mint,
+    seed: input.seed,
+    keysetId: input.keysetId,
+    startCounter: input.fromCounter,
+  })
+  const lastSignedCounter = Math.max(...input.signedCounters, scanned ?? -1)
+  const nextCounter = lastSignedCounter + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED
+  requireCounterRange(nextCounter, 1)
+  return {
+    keysetId: input.keysetId,
+    fromCounter: input.fromCounter,
+    lastSignedCounter,
+    nextCounter,
   }
-  return signed
 }
 
 /**
@@ -100,31 +165,6 @@ export async function findLastSignedSeedCounter(input: {
   }
 }
 
-/**
- * Probe a counter range before the caller reserves it. On a hit, scan past
- * the mint's signed range, advance the counter, and probe the new range. Use
- * it for a buy receive range: the engine signs receive outputs in a group
- * convert, where one reused output rejects the whole group.
- */
-export async function probeSeedCounterRangeBeforeReservation(input: {
-  readonly mint: SeedCounterRestoreClient
-  readonly seed: Uint8Array
-  readonly keysetId: string
-  readonly count: number
-  readonly readNextCounter: () => Promise<number>
-  readonly advanceCounterTo: (nextCounter: number) => Promise<void>
-}): Promise<void> {
-  for (let attempt = 0; attempt < SEED_COUNTER_PROBE_ATTEMPTS_MAX; attempt += 1) {
-    const startCounter = await input.readNextCounter()
-    const signed = await probeSignedSeedCounters({ ...input, startCounter })
-    if (signed.length === 0) return
-    const last =
-      (await findLastSignedSeedCounter({ ...input, startCounter })) ?? Math.max(...signed)
-    await input.advanceCounterTo(last + 1)
-  }
-  throw new Error('receive counters stay signed after repeated scans')
-}
-
 async function probeBatch(
   mint: SeedCounterRestoreClient,
   seed: Uint8Array,
@@ -132,25 +172,14 @@ async function probeBatch(
   startCounter: number,
   size: number,
 ): Promise<number[]> {
-  const counters = new Map<string, number>()
-  const outputs = Array.from({ length: size }, (_, index) => {
+  const planned = Array.from({ length: size }, (_, index) => {
     const counter = startCounter + index
     const output = OutputData.createSingleDeterministicData(1, seed, counter, keysetId)
-    counters.set(output.blindedMessage.B_, counter)
-    return output.blindedMessage
+    return { keysetId, counter, B_: output.blindedMessage.B_ }
   })
-  const response = await mint.restore({ outputs })
-  if (!Array.isArray(response?.outputs) || response.outputs.length > outputs.length) {
-    throw new Error('mint restore response is invalid')
-  }
-  const signed = new Set<number>()
-  for (const output of response.outputs) {
-    // A restore response may only name outputs from this request.
-    const counter = typeof output?.B_ === 'string' ? counters.get(output.B_) : undefined
-    if (counter === undefined) throw new Error('mint restore returned a foreign output')
-    signed.add(counter)
-  }
-  return [...signed].sort((left, right) => left - right)
+  return (await findSignedSeedOutputs(mint, planned))
+    .map(({ counter }) => counter)
+    .sort((left, right) => left - right)
 }
 
 function requireCounterRange(startCounter: number, count: number): void {

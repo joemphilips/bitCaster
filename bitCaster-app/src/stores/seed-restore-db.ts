@@ -505,7 +505,7 @@ export async function recordSeedRestoreDeferralFailure(input: {
 
 /**
  * Records evidence that another client used the seed (a mint refusal of
- * reused outputs or spent inputs, or a buy probe hit) at one mint, and wakes
+ * reused outputs or spent inputs, or a hit of the order output check) at one mint, and wakes
  * the recovery pass. The next pass probes the keysets in use at that mint at
  * once (ADR-033). It creates the re-sync row when the mint has none yet.
  */

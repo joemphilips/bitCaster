@@ -6,6 +6,7 @@ import {
   type CtfRangePreparationIntent,
   type PersistedCtfRangeOrderPreparationV2,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import type { CtfRangeOrderCounterStarts } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyWalletId,
@@ -583,14 +584,20 @@ export async function reserveDaemonKeysetCounter(
   )
 }
 
-/** Commits both counter authorities and the actual preparation receipt under one fence. */
+/**
+ * Commits both counter authorities and the actual preparation receipt under one fence.
+ * It reserves only at the counter starts whose outputs the SDK checked with the mint,
+ * and returns null when a counter moved after that check. A replay of the same
+ * intent returns its retained record.
+ */
 export async function reserveDaemonCtfPreparation(input: {
   storage: DaemonStateSqliteSession
   mutation: FencedStateMutation
   intent: CtfRangePreparationIntent
   candidate: PersistedCtfRangeOrderPreparationV2
   seed: Uint8Array
-}): Promise<RangePreparationRecord> {
+  counterStarts: CtfRangeOrderCounterStarts
+}): Promise<RangePreparationRecord | null> {
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: 'wallet',
     walletId: deriveDurableCustodyWalletId(input.seed),
@@ -621,6 +628,8 @@ export async function reserveDaemonCtfPreparation(input: {
         candidate.receiveKeyset.id,
         binding,
       )
+      if (offerStart !== input.counterStarts.offer || receiveStart !== input.counterStarts.receive)
+        return null
       const preparation = createCounterCtfRangePreparation({
         preparation: candidate,
         intent: input.intent,

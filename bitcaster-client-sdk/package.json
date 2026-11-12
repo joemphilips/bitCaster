@@ -511,6 +511,10 @@
       "types": "./dist/seedCounterGapScan.d.ts",
       "import": "./dist/seedCounterGapScan.js"
     },
+    "./ctfRangeOrderOutputCheck": {
+      "types": "./dist/ctfRangeOrderOutputCheck.d.ts",
+      "import": "./dist/ctfRangeOrderOutputCheck.js"
+    },
     "./seedCounterAdmissionScan": {
       "types": "./dist/seedCounterAdmissionScan.d.ts",
       "import": "./dist/seedCounterAdmissionScan.js"

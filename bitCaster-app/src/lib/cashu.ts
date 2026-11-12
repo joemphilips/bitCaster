@@ -902,6 +902,7 @@ export async function advanceWalletKeysetCounterPastMint(input: {
       counters,
       fromCounter: Math.min(input.plannedFromCounter ?? start, start),
       lastSigned,
+      nextCounter: lastSigned === null ? null : lastSigned + 1,
       deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
     });
   } catch {
@@ -913,10 +914,11 @@ export async function advanceWalletKeysetCounterPastMint(input: {
 }
 
 /**
- * Advance one selected keyset's counter to `nextCounter` after a probe found
- * outputs that the mint signed from `fromCounter`. The caller already ran the
- * bounded gap scan. It admits no proof. It first writes the deferral marker,
- * so a later pass admits the skipped outputs (ADR-033).
+ * Advance one selected keyset's counter to `nextCounter` after the order
+ * output check found outputs that the mint signed from `fromCounter` to
+ * `lastSignedCounter`. The SDK already ran the bounded gap scan and the
+ * ADR-051 cursor rule. It admits no proof. It first writes the deferral
+ * marker, so a later pass admits the skipped outputs (ADR-033).
  */
 export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   scopeId: string;
@@ -925,14 +927,20 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   keyset: ActiveCtfRangeMintKeyset;
   conditionalAsset?: { conditionId: string; outcomeCollection: string };
   fromCounter: number;
+  lastSignedCounter: number;
   nextCounter: number;
 }): Promise<void> {
   let selected: ReturnType<typeof requireSelectedCounterRecovery>;
   try {
     selected = requireSelectedCounterRecovery(input);
     requireCounter(input.fromCounter);
-    if (!Number.isSafeInteger(input.nextCounter) || input.nextCounter <= input.fromCounter) {
-      throw new Error("next counter is invalid");
+    if (
+      !Number.isSafeInteger(input.lastSignedCounter) ||
+      input.lastSignedCounter < input.fromCounter ||
+      !Number.isSafeInteger(input.nextCounter) ||
+      input.nextCounter <= input.lastSignedCounter
+    ) {
+      throw new Error("signed counter range is invalid");
     }
   } catch {
     throw new WalletKeysetCounterReadinessError();
@@ -942,7 +950,8 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
       ...input,
       url: selected.url,
       counters: selectedCounterStore(input.scopeId),
-      lastSigned: input.nextCounter - 1,
+      lastSigned: input.lastSignedCounter,
+      nextCounter: input.nextCounter,
       deferred: true,
     });
   } catch {
@@ -980,6 +989,8 @@ async function deferAndAdvanceSelectedKeyset(input: {
   counters: BrowserWalletCounterDexieStore;
   fromCounter: number;
   lastSigned: number | null;
+  /** The counter after the skipped outputs, or null when nothing is skipped. */
+  nextCounter: number | null;
   deferred: boolean;
 }): Promise<void> {
   if (input.deferred) {
@@ -994,11 +1005,11 @@ async function deferAndAdvanceSelectedKeyset(input: {
       nowMs: Date.now(),
     });
   }
-  if (input.lastSigned !== null) {
+  if (input.nextCounter !== null) {
     await input.counters.advanceToAtLeastInContext(
       { mintUrl: input.url, unit: input.unit },
       input.keyset.id,
-      input.lastSigned + 1,
+      input.nextCounter,
       true,
     );
   }
