@@ -274,11 +274,7 @@ async function preflightMarketFundingAsset(input: {
   readonly unit: "sat" | "msat";
 }): Promise<void> {
   const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.context.scopeId,
-    seed: input.context.seed,
-    mnemonic: input.context.mnemonic,
     asset: input.asset,
-    requiredAmount: BigInt(input.requiredAmount),
     loadPlan: async () =>
       sumProofs(await readMarketFundingCandidates({ ...input, scopeId: input.context.scopeId })) >=
       Number(input.requiredAmount)
@@ -291,7 +287,6 @@ async function preflightMarketFundingAsset(input: {
   });
   switch (recovery.kind) {
     case "ready":
-    case "recovered":
       return;
     case "unavailable":
       throw new BrowserMarketFundingInsufficientBalanceError();

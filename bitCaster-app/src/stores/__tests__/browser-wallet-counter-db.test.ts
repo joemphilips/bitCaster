@@ -23,11 +23,8 @@ import {
   BROWSER_WALLET_COUNTER_ASSOCIATION_MAX,
   BROWSER_WALLET_COUNTER_SNAPSHOT_MAX,
 } from "../browser-wallet-counter-db";
-import { createBrowserProofBackupAuthorityRow } from "../browser-proof-backup-authority";
-import { createBrowserCustodyProofRow } from "../durable-custody-db";
-import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
-import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { BitcasterDB } from "../proof-db";
+import { RECOVERY_INDEX_ENTRIES_GUARANTEED } from "@bitcaster/client-sdk/recoveryIndexDocument";
 import { insertCtfRangePreparation, readCtfRangePreparationForIntent } from "../ctf-range-order-db";
 
 const scopeId = deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "11".repeat(32) });
@@ -296,6 +293,33 @@ describe("browser wallet counter authority", () => {
     await reopened.open();
     expect(await readCtfRangePreparationForIntent(intent, reopened)).toEqual(first.record);
     reopened.close();
+  });
+
+  it("records the NUT-CTF identity of an order keyset for the recovery index entry", async () => {
+    const { database, counters } = createCtfStore();
+    await markCtfCountersReady(database);
+    const preparation = ctfBasePreparation();
+    await counters.reserveCtfPreparationInContext({
+      context: { mintUrl: ctfMintUrl, unit: "msat" },
+      preparation,
+      intent: ctfIntent(preparation.request),
+      seed: ctfSeed,
+      createdAtMs: 100,
+      counterStarts: { offer: 0, receive: 0 },
+    });
+
+    const association = (keysetId: string) =>
+      database.walletCounterAssociations.get([ctfScopeId, ctfMintUrl, "msat", keysetId]);
+    expect(await association(ctfReceiveKeysetId)).toEqual({
+      scopeId: ctfScopeId,
+      normalizedMint: ctfMintUrl,
+      unit: "msat",
+      keysetId: ctfReceiveKeysetId,
+      recoveryComplete: true,
+      conditional: { conditionId: ctfConditionId, outcomeCollection: ctfOutcome },
+    });
+    // The regular offer keyset keeps the release 4 row form.
+    expect(await association(ctfOfferKeysetId)).not.toHaveProperty("conditional");
   });
 
   it("reserves nothing when a CTF counter moved after the output check", async () => {
@@ -680,106 +704,6 @@ describe("browser wallet counter authority", () => {
     ).toEqual({ start: 5, count: 0 });
   });
 
-  it("advances only the active asset intent when a relevant counter moves", async () => {
-    const counters = createStore();
-    const database = databases.at(-1)!;
-    const proof = createBrowserCustodyProofRow({
-      scopeId,
-      normalizedMint: "https://mint.example",
-      unit: "sat",
-      proof: {
-        id: keysetId,
-        amount: 1 as never,
-        secret: "counter-active-proof",
-        C: `02${"22".repeat(32)}`,
-      },
-      asset: { kind: "regular" },
-      receivedAtMs: 1,
-    });
-    await database.custodyProofs.add(proof);
-    await database.custodyProofBackupAuthorities.add(
-      createBrowserProofBackupAuthorityRow(
-        proof,
-        2,
-        { schemaVersion: 1, kind: "nut13", keysetId, counter: 0 },
-        "receive:counter",
-      ),
-    );
-    await database.encryptedWalletBackupV2DesiredAssets.add(
-      createEncryptedWalletBackupV2DesiredAssetRow({
-        scopeId,
-        asset: createEncryptedWalletBackupV2AssetIdentity({
-          mintUrl: "https://mint.example",
-          unit: "sat",
-          asset: { kind: "ordinary" },
-        }),
-        custodyRevision: 1n,
-        activeProofCount: 1,
-      }),
-    );
-    const fullProofScan = vi.spyOn(database.custodyProofs, "toArray");
-
-    await counters.advanceToAtLeastInContext(
-      { mintUrl: "https://mint.example", unit: "sat" },
-      keysetId,
-      3,
-      false,
-    );
-    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
-      {
-        scopeId,
-        assetIdentity: "cashu:ordinary",
-        custodyRevision: "2",
-        activeProofCount: 1,
-        desiredAction: "replace",
-      },
-    ]);
-    await counters.advanceToAtLeastInContext(
-      { mintUrl: "https://mint.example", unit: "sat" },
-      keysetId,
-      3,
-      false,
-    );
-    expect(
-      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
-    ).toBe("2");
-    expect(fullProofScan).not.toHaveBeenCalled();
-    const context = { mintUrl: "https://mint.example", unit: "sat" };
-    await counters.restoreInContext(context, keysetId, 3, false, () => undefined);
-    const tables = [
-      database.walletCounterAssociations,
-      database.walletCounterCursors,
-      database.custodyProofs,
-      database.custodyProofBackupAuthorities,
-      database.custodyConditionalKeysets,
-      database.encryptedWalletBackupV2DesiredAssets,
-    ];
-    await database.transaction("rw", tables, (tx) =>
-      counters.compareAndAdvanceInCurrentTransaction(tx, context, {
-        keysetId,
-        expectedNextCounter: 3,
-        nextCounter: 4,
-      }),
-    );
-    expect(
-      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
-    ).toBe("3");
-    await expect(
-      database.transaction("rw", tables, async (tx) => {
-        await counters.compareAndAdvanceInCurrentTransaction(tx, context, {
-          keysetId,
-          expectedNextCounter: 4,
-          nextCounter: 5,
-        });
-        throw new Error("counter journal abort");
-      }),
-    ).rejects.toThrow("counter journal abort");
-    expect(
-      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
-    ).toBe("3");
-    expect(await counters.snapshot()).toEqual({ [keysetId]: 4 });
-  });
-
   it("rejects stale profiles and foreign databases", async () => {
     const stale = createStore({ current: false });
     const foreign = new BitcasterDB(`foreign-${crypto.randomUUID()}`);
@@ -791,6 +715,35 @@ describe("browser wallet counter authority", () => {
     expect(() => new BrowserWalletCounterDexieStore({ database: foreign, scopeId })).toThrow(
       /database is foreign/,
     );
+  });
+
+  it("admits a new market keyset past the release 4 limit of 256 associations", async () => {
+    // Release 4 refused the 257th keyset with association_limit. Each local
+    // keyset is one recovery index entry, and the 64 KiB step of the index
+    // holds every entry up to the cap (ADR-051).
+    expect(BROWSER_WALLET_COUNTER_ASSOCIATION_MAX).toBe(RECOVERY_INDEX_ENTRIES_GUARANTEED);
+    expect(BROWSER_WALLET_COUNTER_SNAPSHOT_MAX).toBe(RECOVERY_INDEX_ENTRIES_GUARANTEED);
+    const counters = createStore();
+    const database = databases.at(-1)!;
+    await database.walletCounterAssociations.bulkPut(
+      Array.from({ length: 256 }, (_, index) => ({
+        scopeId,
+        normalizedMint: "https://mint.example",
+        unit: "msat" as const,
+        keysetId: `01${index.toString(16).padStart(64, "0")}`,
+        recoveryComplete: true,
+      })),
+    );
+
+    await expect(
+      counters.reserveInContext(
+        { mintUrl: "https://mint.example", unit: "msat" },
+        keysetId,
+        1,
+        false,
+      ),
+    ).resolves.toEqual({ start: 0, count: 1 });
+    expect(await database.walletCounterAssociations.count()).toBe(257);
   });
 
   it("bounds association and snapshot rows with typed failures", async () => {
@@ -912,7 +865,6 @@ it("scoped speculative counter CAS requires exact current transaction and preser
     database.custodyProofs,
     database.custodyProofBackupAuthorities,
     database.custodyConditionalKeysets,
-    database.encryptedWalletBackupV2DesiredAssets,
   ];
   await expect(
     database.transaction("rw", tables, async (tx) => {

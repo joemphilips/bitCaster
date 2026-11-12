@@ -192,11 +192,7 @@ async function preflightParticipationScoreAsset(input: {
 }): Promise<void> {
   let localBalanceMsat: number | null = null;
   const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.context.scopeId,
-    seed: input.context.seed,
-    mnemonic: input.context.mnemonic,
     asset: input.asset,
-    requiredAmount: BigInt(input.requiredAmount),
     loadPlan: async () => {
       const proofs = await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId);
       localBalanceMsat = sumProofs(proofs);
@@ -212,7 +208,6 @@ async function preflightParticipationScoreAsset(input: {
   input.context.requireCapturedProfile();
   switch (recovery.kind) {
     case "ready":
-    case "recovered":
       return;
     case "unavailable":
       throw new BrowserParticipationScoreInsufficientBalanceError(localBalanceMsat);

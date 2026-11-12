@@ -57,7 +57,6 @@ import {
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
@@ -222,12 +221,6 @@ export async function receiveBrowserDurableWalletToken(
   return withWalletProfileLock(
     scope.scopeId,
     async () => {
-      if (input.preparedOperation === undefined) {
-        await requireBrowserWalletNewWritePermission({
-          database: context.database ?? db,
-          scopeId: scope.scopeId,
-        });
-      }
       const owner = await claimOwner(adapter, scope, now, randomId);
       return withReceiveScope(adapter, scope, owner, now, async () => {
         let operation = input.preparedOperation;
@@ -269,11 +262,6 @@ export async function receiveBrowserDurableWalletToken(
             assertSavedReceiveWinner(operation, selected);
             operation = selected;
             alreadyPersisted = true;
-          } else if (input.preparedOperation !== undefined) {
-            await requireBrowserWalletNewWritePermission({
-              database: context.database ?? db,
-              scopeId: scope.scopeId,
-            });
           }
         }
         if (!input.skipBind && !alreadyPersisted) {
@@ -657,17 +645,6 @@ export async function bindPreparedBrowserDurableWalletReceiveOperation(input: {
   return await withWalletProfileLock(
     scope.scopeId,
     async () => {
-      const binding = createReceiveBinding(scope, input.operation, input.wallet);
-      const existing = await adapter.readOperationSnapshot(
-        scope,
-        binding.record.operation.operationId,
-      );
-      if (existing === null) {
-        await requireBrowserWalletNewWritePermission({
-          database: input.context.database ?? db,
-          scopeId: scope.scopeId,
-        });
-      }
       const owner = await claimOwner(adapter, scope, now, randomId);
       return await withReceiveScope(adapter, scope, owner, now, async () => {
         return bindReceiveDraftWithRetry(

@@ -83,9 +83,10 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: vi.fn(async () => ({ recovered: 0, pending: [] })),
 }));
 
-// The hook calls this once at the end of each recovery pass.
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: vi.fn(() => {
+// The hook asks for an index upload once at the end of each recovery pass.
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: vi.fn(() => {
     mocks.passCompleted.shift()?.();
   }),
 }));
@@ -350,7 +351,8 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
       unit: "msat",
       keyset: activeKeyset(regular),
     });
-    expect(await cursor(regular.id)).toBe(3);
+    // ADR-051 cursor rule: the next 150 counters after the last signed output stay unused.
+    expect(await cursor(regular.id)).toBe(3 + 150);
     expect(await selectableHoldings()).toEqual([]);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
 
@@ -726,7 +728,7 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
 
     // One scan asks about 3,000 counters in requests of 100, then stops.
     expect(mint.requestsTo("/v1/restore").length - requests).toBe(30);
-    expect(await cursor(regular.id)).toBe(3_001);
+    expect(await cursor(regular.id)).toBe(3_001 + 150);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
   });
 });

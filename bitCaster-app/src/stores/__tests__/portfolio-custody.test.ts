@@ -147,7 +147,6 @@ describe("canonical Portfolio custody reader", () => {
     expect(result?.every((row) => !Object.hasOwn(row, "proofBody"))).toBe(true);
     expect(result?.every((row) => !Object.hasOwn(row, "secret"))).toBe(true);
     expect(await database.custodyConditionalKeysets.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("isolates the scope and excludes spent canonical rows", async () => {

@@ -29,9 +29,8 @@ Use `bitcaster-cli --help` to check the available commands.
 
 The browser app and protocol specifications are public. The matching engine
 is closed source. Your wallet stores Cashu ecash tokens in your browser.
-The web app can store an encrypted recovery copy that the server cannot
-decrypt. See [Encrypted wallet backup](/user-guide/getting-started/wallet-backup/)
-for its limits.
+The web app keeps an encrypted wallet backup that the server cannot decrypt.
+See [Wallet backup](/user-guide/getting-started/wallet-backup/) for its limits.
 
 For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
 
@@ -151,18 +150,18 @@ can be delayed. Holding your wallet keys does not remove this mint risk.
 
 Cashu protects token ownership from the mint at the protocol level. It does
 not make all app activity anonymous. The matching engine can associate your
-authenticated activity with your account. Encrypted backup protects wallet
-contents; it does not hide all account or activity metadata.
+authenticated activity with your account. The wallet backup is encrypted, but
+it does not hide all activity metadata.
 
 ## Your assets, your responsibility[^1]
 
 Your tokens are just signed data. The live wallet database is in your browser's
-local storage. The default web app also keeps an encrypted recovery copy whose
-contents the server cannot read.
+local storage. The web app also keeps an encrypted wallet backup at the matching
+engine. It lists the keysets that the wallet used and holds no ecash.
 
-This minimizes the wallet information held by the server. The encrypted-backup
-service can still observe limited account, size, and activity metadata. It
-cannot decrypt or spend your funds.
+This minimizes the wallet information held by the server. The matching engine
+can still observe the size of the backup and when the wallet reads or writes it.
+It cannot decrypt the backup or spend your funds.
 
 Like any other cryptocurrency wallet, you are responsible for managing your own
 keys. Back up your recovery phrase and keep it safe.
@@ -191,8 +190,8 @@ To use another wallet, open the wallet section in Settings and import its
 recovery phrase. This replaces the active wallet; it does not add a second
 named profile. First, back up the current recovery phrase in Seed Backup.
 Replacement waits until no order, refund, send, deposit, or withdrawal is
-unfinished. When encrypted backup is configured, the backup must also be
-complete. To use the old wallet again, restore it from its recovery phrase.
+unfinished. It also waits until the matching engine confirms the wallet
+backup. To use the old wallet again, restore it from its recovery phrase.
 Local records that the mint cannot restore, such as completed order history,
 do not come back. Your Nostr account does not change. Activity stays
 associated with the wallet that performed it.
@@ -389,7 +388,7 @@ display information, not proof of identity.
 ## Getting started
 
 Before you fund a wallet, read
-[Encrypted wallet backup](/user-guide/getting-started/wallet-backup/).
+[Wallet backup](/user-guide/getting-started/wallet-backup/).
 Keep your recovery phrase safe. Then review the market's question, oracle,
 and resolution rules before your first trade. Optional market creation and
 bot funding can wait until you understand the trading flow.

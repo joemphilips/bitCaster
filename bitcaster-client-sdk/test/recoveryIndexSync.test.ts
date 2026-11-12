@@ -19,6 +19,7 @@ import {
   RECOVERY_INDEX_RETRY_BASE_MS,
   RECOVERY_INDEX_RETRY_MAX_MS,
   RecoveryIndexSync,
+  deleteRecoveryIndexDocument,
   isRecoveryIndexReadMintRefusal,
   planRecoveryIndexRetryDelayMs,
 } from '../src/recoveryIndexSync.ts'
@@ -403,4 +404,52 @@ test('a restore Retry reads the index again only after the engine was unreachabl
   const before = fake.requests.length
   assert.equal((await sync.read('restore-retry')).status, 'skipped')
   assert.equal(fake.requests.length, before)
+})
+
+test('a delete leaves a tombstone, and a later upload writes the index again', async () => {
+  const fake = engine()
+  const browser = client(fake, [entry('first')])
+  assert.equal((await browser.sync.upload()).status, 'written')
+  const store = createRecoveryIndexEngineStore({
+    engineBaseUrl: fake.baseUrl,
+    realm: REALM,
+    keys: KEYS,
+    fetchImpl: fake.fetch,
+    nowMs: () => START_MS,
+  })
+
+  assert.deepEqual(await deleteRecoveryIndexDocument(store), { status: 'deleted', version: 2 })
+  assert.deepEqual(fake.rows.get(KEYS.locatorPublicKey), { version: 2, document: null })
+  assert.deepEqual(await deleteRecoveryIndexDocument(store), { status: 'absent', version: 2 })
+
+  // The delete does not stop a browser with the same seed (ADR-034 "Client upload").
+  browser.clock.nowMs += RECOVERY_INDEX_MINIMUM_WRITE_INTERVAL_MS
+  assert.equal((await browser.sync.read('wallet-open')).status, 'read')
+  assert.equal((await browser.sync.upload()).status, 'written')
+  assert.equal(fake.rows.get(KEYS.locatorPublicKey)?.version, 3)
+})
+
+test('a delete reads the version again after another client wrote', async () => {
+  const fake = engine()
+  const browser = client(fake, [entry('first')])
+  assert.equal((await browser.sync.upload()).status, 'written')
+  let interleaved = false
+  fake.onRequest = (request) => {
+    // Another client writes between the read and the delete of the CLI.
+    if (request.method === 'DELETE' && !interleaved) {
+      interleaved = true
+      const row = fake.rows.get(KEYS.locatorPublicKey)!
+      row.version += 1
+    }
+  }
+  const store = createRecoveryIndexEngineStore({
+    engineBaseUrl: fake.baseUrl,
+    realm: REALM,
+    keys: KEYS,
+    fetchImpl: fake.fetch,
+    nowMs: () => START_MS,
+  })
+
+  assert.deepEqual(await deleteRecoveryIndexDocument(store), { status: 'deleted', version: 3 })
+  assert.equal(fake.count('DELETE'), 2)
 })

@@ -19,7 +19,7 @@ import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { listenForBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { initialSeedRestoreState, seedRestoreDatabase } from "@/stores/seed-restore-db";
 import { useToastStore } from "@/stores/toast";
-import { usedInAnotherBrowserToast } from "@/hooks/useBrowserCtfRangeOrderRecovery";
+import { usedInAnotherBrowserToast } from "@/lib/browserWalletUsedElsewhere";
 import type { YesNoMarketDetail } from "@/types/market-detail";
 import type { Fund, PortfolioHoldingsReads, PortfolioProps } from "@/types/portfolio";
 

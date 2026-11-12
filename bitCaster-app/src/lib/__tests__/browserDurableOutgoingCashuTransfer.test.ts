@@ -32,7 +32,6 @@ import {
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import { createSpeculativeCounterTranscript } from "@bitcaster/client-sdk/speculativeCounterTranscript";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { BrowserWalletRecoveryRequiredError } from "../browserWalletNewWritePermission";
 import {
   listBrowserDurableOutgoingCashuDue,
   listBrowserDurableOutgoingCashuDueMints,
@@ -62,16 +61,6 @@ import {
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
 import { bindBrowserOutgoingCounterPreparation } from "../browserOutgoingCounterPreparation";
 
-const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
-
-vi.mock("../browserWalletNewWritePermission", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../browserWalletNewWritePermission")>();
-  return {
-    ...actual,
-    requireBrowserWalletNewWritePermission: requireNewWritePermission,
-  };
-});
-
 const MINT = "https://mint.example";
 const SCOPE = "wallet-scope";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
@@ -92,8 +81,6 @@ const MARKET_BINDING = deriveMarketFundingProductBinding({
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
-  requireNewWritePermission.mockClear();
-  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -603,13 +590,12 @@ describe("browser durable outgoing Cashu store", () => {
     expect(exact.nextCursor).toBeNull();
   });
 
-  it("keeps pending token authority out of encrypted proof backup tables", async () => {
+  it("keeps pending token authority out of the proof authority table", async () => {
     const database = createDatabase();
     await database.outgoingCashuTransfers.put(row(transfer("pending", 0)));
 
     expect(await database.outgoingCashuTransfers.count()).toBe(1);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("rejects a due record that exceeds the requested byte bound", async () => {
@@ -833,34 +819,7 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
   });
 
-  it("refuses a new transfer before wallet-send preparation", async () => {
-    const fixture = await executionFixture();
-    const permissionError = new Error("permission-refusal-sentinel");
-    requireNewWritePermission.mockRejectedValueOnce(permissionError);
-
-    await expect(executeBrowserDurableOutgoingCashuTransfer(fixture.input)).rejects.toBe(
-      permissionError,
-    );
-
-    expect(fixture.prepareWalletSendOperation).not.toHaveBeenCalled();
-    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
-    expect(await fixture.database.custodyOperations.count()).toBe(0);
-  });
-
-  it("refuses market funding before wallet-send preparation", async () => {
-    const fixture = marketFundingFixture();
-    const input = await marketFundingInput(fixture, "permission-refused", null, 1_000);
-    const permissionError = new BrowserWalletRecoveryRequiredError("genuine-conflict");
-    requireNewWritePermission.mockRejectedValueOnce(permissionError);
-
-    await expect(executeBrowserDurableOutgoingCashuTransfer(input)).rejects.toBe(permissionError);
-
-    expect(input.prepareWalletSendOperation).not.toHaveBeenCalled();
-    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
-    expect(await fixture.database.custodyOperations.count()).toBe(0);
-  });
-
-  it("uses one fresh post-mint time for successor admission and backup revision", async () => {
+  it("uses one fresh post-mint time for successor admission", async () => {
     const fixture = await executionFixture(undefined, true);
     let nowMs = 1_000;
     fixture.wallet.completeSwap.mockImplementation(async () => {
@@ -879,13 +838,6 @@ describe("browser durable outgoing Cashu store", () => {
       ({ selectability }) => selectability === "selectable",
     );
     expect(successor).toMatchObject({ receivedAtMs: 2_000 });
-    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
-      expect.objectContaining({
-        custodyRevision: "1",
-        activeProofCount: 1,
-        desiredAction: "replace",
-      }),
-    ]);
     expect(
       (await fixture.database.custodyOperations.toArray())[0]?.record.operation.result.state,
     ).toBe("applied");
@@ -909,7 +861,6 @@ describe("browser durable outgoing Cashu store", () => {
     expect(
       (await fixture.database.custodyOperations.toArray())[0]?.record.operation.result.state,
     ).toBe("none");
-    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("runs the required funded preflight before the final outgoing lock", async () => {
@@ -1165,12 +1116,6 @@ describe("browser durable outgoing Cashu store", () => {
     );
     const preparedCalls = fixture.prepareWalletSendOperation.mock.calls.length;
     const mintCalls = fixture.wallet.completeSwap.mock.calls.length;
-    requireNewWritePermission.mockClear();
-    requireNewWritePermission.mockRejectedValue(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: "execute",
       wallet: fixture.wallet,
@@ -1179,7 +1124,6 @@ describe("browser durable outgoing Cashu store", () => {
     });
 
     expect(recovered?.deliveryState).toBe("delivery-pending");
-    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(fixture.prepareWalletSendOperation).toHaveBeenCalledTimes(preparedCalls);
     expect(fixture.wallet.completeSwap).toHaveBeenCalledTimes(mintCalls);
     expect(
@@ -1253,7 +1197,6 @@ describe("browser durable outgoing Cashu store", () => {
         counter: 2,
       },
     });
-    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
   });
 
   it("rejects a keep locator with the wrong counter before post-mint admission", async () => {
@@ -1270,7 +1213,6 @@ describe("browser durable outgoing Cashu store", () => {
     expect(fixture.wallet.completeSwap).not.toHaveBeenCalled();
     expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
-    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("rejects reordered keep locators before post-mint admission", async () => {
@@ -1288,7 +1230,6 @@ describe("browser durable outgoing Cashu store", () => {
     expect(fixture.wallet.completeSwap).not.toHaveBeenCalled();
     expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
-    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("converges concurrent market-funding starts on the first successor", async () => {

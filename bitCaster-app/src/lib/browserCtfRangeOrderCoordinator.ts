@@ -179,7 +179,6 @@ import {
   type CtfRangeOrderPreparationPageCursor,
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import type { BrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
@@ -714,10 +713,6 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
-          await requireBrowserWalletNewWritePermission({
-            database: this.#database,
-            scopeId: scope.scopeId,
-          });
           const resumed = await this.#resumePreparedSourceForSubmit(
             input.preparation,
             input.seed,
@@ -739,10 +734,6 @@ export class BrowserCtfRangeOrderCoordinator {
         scope.scopeId,
         () =>
           this.#withScopeOwner(scope, async (owner) => {
-            await requireBrowserWalletNewWritePermission({
-              database: this.#database,
-              scopeId: scope.scopeId,
-            });
             const resumed = await this.#resumePreparedSourceForSubmit(
               input.preparation,
               input.seed,
@@ -792,10 +783,6 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async () => {
-          await requireBrowserWalletNewWritePermission({
-            database: this.#database,
-            scopeId: scope.scopeId,
-          });
           return this.#createCapabilityAndSubmit(
             scope,
             input.preparation,
@@ -822,10 +809,6 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
-          await requireBrowserWalletNewWritePermission({
-            database: this.#database,
-            scopeId: scope.scopeId,
-          });
           await this.#requireNoUnresolvedSell(scope, input.preparation);
           const selected = await this.#prepareAndPersistConsolidation(input, scope, owner);
           const binding = selected.binding;
@@ -4159,7 +4142,6 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyProofs,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
     ] as const;

@@ -102,7 +102,6 @@ const mocks = vi.hoisted(() => {
   const markProofOperationFailed = vi.fn(async () => undefined);
   const getProofOperations = vi.fn(async () => []);
   const admitBrowserReceivedProofs = vi.fn(async () => undefined);
-  const requireNewWritePermission = vi.fn(async () => undefined);
   const requireValidCashuProofs = vi.fn();
   const scanSeedCountersForAdmission = vi.fn();
   const profileLock = {
@@ -126,7 +125,6 @@ const mocks = vi.hoisted(() => {
     markProofOperationFailed,
     getProofOperations,
     admitBrowserReceivedProofs,
-    requireNewWritePermission,
     requireValidCashuProofs,
     scanSeedCountersForAdmission,
     profileLock,
@@ -163,10 +161,6 @@ vi.mock("@/lib/walletProfileLock", () => ({
       mocks.profileLock.held = false;
     }
   },
-}));
-
-vi.mock("@/lib/browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
 }));
 
 vi.mock("@/stores/wallet", () => ({
@@ -328,8 +322,6 @@ beforeEach(() => {
   mocks.getProofOperations.mockResolvedValue([]);
   mocks.admitBrowserReceivedProofs.mockReset();
   mocks.admitBrowserReceivedProofs.mockResolvedValue(undefined);
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
   mocks.profileLock.held = false;
   mocks.profileLock.events.length = 0;
   mocks.requireValidCashuProofs.mockReset();
@@ -382,28 +374,6 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledOnce();
     expect(mocks.profileLock.events).toEqual(["lock-enter", "lock-exit", "proof-admission"]);
-  });
-
-  it("refuses a new mint before deterministic outputs are prepared", async () => {
-    mocks.requireNewWritePermission.mockRejectedValueOnce(new Error("recovery required"));
-
-    await expect(cashu.mintProofs(13, QUOTE, "https://mint.test", "sat")).rejects.toThrow(
-      "recovery required",
-    );
-
-    expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
-    expect(mocks.prepareProofOperation).not.toHaveBeenCalled();
-    expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
-  });
-
-  it("refuses a melt quote before the mint creates external work", async () => {
-    mocks.requireNewWritePermission.mockRejectedValueOnce(new Error("recovery required"));
-
-    await expect(cashu.createMeltQuote("lnbc1invoice", "https://mint.test")).rejects.toThrow(
-      "recovery required",
-    );
-
-    expect(mocks.wallet.createMeltQuote).not.toHaveBeenCalled();
   });
 
   it("sends regular sat proofs through the explicit sat wallet", async () => {

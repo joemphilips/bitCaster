@@ -22,7 +22,7 @@ redeemed for sats. Losing tokens have no payout.
 
 The first release uses one mint operated by bitCaster. You rely on it to honor
 redemptions. If it stops service, token operations can be delayed. Local wallet
-keys and encrypted backups do not remove this dependency.
+keys and the wallet backup do not remove this dependency.
 
 ## bitCaster App
 
@@ -32,9 +32,10 @@ data and trading. Some payments and trade settlements use the engine as part
 of the flow. Not every token operation goes directly from your browser to the
 mint.
 
-An encrypted backup can help restore the wallet. The backup service cannot
-read its contents, but it can observe limited account and activity metadata.
-See [Encrypted wallet backup](/user-guide/getting-started/wallet-backup/).
+An encrypted wallet backup helps a new browser restore the wallet. The matching
+engine stores it but cannot read it. It can observe when and from which network
+address the wallet reads or writes the backup.
+See [Wallet backup](/user-guide/getting-started/wallet-backup/).
 
 ## Matching Engine
 

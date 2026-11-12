@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   recoverKeysetCountersForMint: vi.fn(),
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
-  resumeBackupAfterRecovery: vi.fn(),
+  uploadIndexAfterRecovery: vi.fn(),
   resyncBrowserKeysetsInUse: vi.fn(),
   runBrowserSeedPositionRestorePass: vi.fn(),
   activeScope: "wallet-scope-a" as string | null,
@@ -39,8 +39,9 @@ vi.mock("@/lib/browserSeedPositionRestore", () => ({
   runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));
 
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: mocks.resumeBackupAfterRecovery,
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: mocks.uploadIndexAfterRecovery,
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
@@ -103,7 +104,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
 
     await completeInitialPass();
     expect(mocks.recoverBrowserCtfRangeOrders).not.toHaveBeenCalled();
-    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
+    expect(mocks.uploadIndexAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
 
     const recoveryResolvers: Array<(value: { recovered: number; pending: never[] }) => void> = [];
     mocks.recoverBrowserCtfRangeOrders.mockImplementation(
@@ -153,7 +154,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     unmount = mounted.unmount;
     await completeInitialPass();
     expect(mocks.recoverBrowserCtfRangeOrders).not.toHaveBeenCalled();
-    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
+    expect(mocks.uploadIndexAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
 
     endBrowserCtfRangeOrderAttempt({
       scopeId: "wallet-scope-a",
@@ -288,7 +289,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
       await flush();
       for (const helper of helpers.slice(index + 1)) expect(helper).not.toHaveBeenCalled();
       if (stage === "counter") expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
-      expect(mocks.resumeBackupAfterRecovery).not.toHaveBeenCalled();
+      expect(mocks.uploadIndexAfterRecovery).not.toHaveBeenCalled();
     },
   );
 
@@ -313,7 +314,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
         expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).not.toHaveBeenCalled();
       if (stage !== "counter") expect(mocks.recoverKeysetCountersForMint).not.toHaveBeenCalled();
       else expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
-      expect(mocks.resumeBackupAfterRecovery).not.toHaveBeenCalled();
+      expect(mocks.uploadIndexAfterRecovery).not.toHaveBeenCalled();
     },
   );
 
@@ -339,7 +340,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     await flush();
     expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
     expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).toHaveBeenCalledOnce();
-    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledExactlyOnceWith("wallet-scope-b");
+    expect(mocks.uploadIndexAfterRecovery).toHaveBeenCalledExactlyOnceWith("wallet-scope-b");
   });
 
   it("does not resume a cancelled StrictMode pass after its replacement completes", async () => {

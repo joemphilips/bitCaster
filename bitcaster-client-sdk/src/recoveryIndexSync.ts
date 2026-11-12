@@ -439,6 +439,50 @@ export class RecoveryIndexSync {
   }
 }
 
+export type RecoveryIndexDeleteOutcome =
+  | { readonly status: 'deleted'; readonly version: number }
+  /** No document: no row or a tombstone. */
+  | { readonly status: 'absent'; readonly version: number }
+
+/**
+ * Delete the document of one seed: the CLI command `wallet backup delete`,
+ * the only client of the delete route (ADR-034 recovery index amendment). A
+ * delete keeps the version in a tombstone. After a compare-and-swap
+ * conflict, the client reads the current version and deletes again, at most
+ * 3 times in a row. A browser with the same seed writes the index again at
+ * its next upload.
+ */
+export async function deleteRecoveryIndexDocument(
+  store: RecoveryIndexStore,
+): Promise<RecoveryIndexDeleteOutcome> {
+  for (let conflicts = 0; ; conflicts += 1) {
+    const read = await store.read()
+    switch (read.status) {
+      case 'absent':
+        return { status: 'absent', version: read.version }
+      case 'found':
+        break
+      case 'not-modified':
+        throw new RecoveryIndexEngineError('invalid-response')
+      default:
+        return assertNever(read)
+    }
+    const result = await store.remove(read.version)
+    switch (result.status) {
+      case 'deleted':
+      case 'absent':
+        return { status: result.status, version: result.version }
+      case 'conflict':
+        if (conflicts === RECOVERY_INDEX_CONFLICT_RETRIES_MAX) {
+          throw new Error('recovery index delete conflicted with other writers')
+        }
+        break
+      default:
+        return assertNever(result)
+    }
+  }
+}
+
 function keysOf(entries: readonly RecoveryIndexEntry[]): Set<string> {
   return new Set(entries.map(recoveryIndexEntryKey))
 }

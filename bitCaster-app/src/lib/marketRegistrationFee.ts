@@ -391,11 +391,7 @@ async function preflightRegistrationFeeAsset(input: {
   readonly unit: CashuProofUnit;
 }): Promise<void> {
   const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.context.scopeId,
-    seed: input.context.seed,
-    mnemonic: input.context.mnemonic,
     asset: input.asset,
-    requiredAmount: BigInt(input.requiredAmount),
     loadPlan: async () =>
       sumProofs(
         await readRegistrationFeeCandidates({
@@ -413,7 +409,6 @@ async function preflightRegistrationFeeAsset(input: {
   });
   switch (recovery.kind) {
     case "ready":
-    case "recovered":
       return;
     case "unavailable":
       throw insufficientRegistrationFeeError(input.requiredAmount, input.unit);

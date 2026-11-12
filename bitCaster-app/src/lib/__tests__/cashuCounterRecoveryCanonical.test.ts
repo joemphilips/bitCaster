@@ -160,6 +160,7 @@ vi.mock("@/lib/walletProfileLock", () => ({
 import {
   ensureWalletKeysetCounterReady,
   advanceWalletKeysetCounterPastMint,
+  advanceWalletKeysetCounterPastSignedOutputs,
   recoverKeysetCountersForMint,
   rescanBrowserRegularKeyset,
   WalletKeysetCounterReadinessError,
@@ -167,6 +168,13 @@ import {
 } from "../cashu";
 import { retryBrowserSeedPositionRestore } from "../browserSeedPositionRestore";
 import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
+import { useToastStore } from "@/stores/toast";
+import i18n from "@/i18n";
+
+const usedInAnotherBrowser = () =>
+  useToastStore
+    .getState()
+    .toasts.filter(({ message }) => message === i18n.t("wallet.usedInAnotherBrowser"));
 
 describe("recoverKeysetCountersForMint — canonical custody", () => {
   let database: BitcasterDB | null = null;
@@ -194,6 +202,7 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     scanBudget.counters = undefined;
     walletLockState.held = false;
     walletLockState.calls = 0;
+    useToastStore.setState({ toasts: [] });
   });
 
   afterEach(async () => {
@@ -423,6 +432,28 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     // so the caller's profile lock and custody scope are not taken again.
     expect(await database!.custodyProofs.count()).toBe(custodyProofs);
     expect(walletLockState.calls).toBe(locks);
+    // ADR-033: a mint refusal that finds another client's output shows the
+    // notice, also though the deferral marker keeps the re-sync off the keyset.
+    expect(usedInAnotherBrowser()).toHaveLength(1);
+  });
+
+  it("shows that another browser used the wallet when the order output check has a hit", async () => {
+    mintSigned(range(0, 4), CONDITIONAL_KEYSET_ID);
+    await ensureWalletKeysetCounterReady(conditionalReadinessInput());
+    expect(usedInAnotherBrowser()).toEqual([]);
+    const { profileLockHeld: _held, ...input } = conditionalReadinessInput();
+
+    await advanceWalletKeysetCounterPastSignedOutputs({
+      ...input,
+      fromCounter: 5,
+      lastSignedCounter: 9,
+      nextCounter: 160,
+    });
+
+    expect(
+      await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
+    ).toMatchObject({ next: 160 });
+    expect(usedInAnotherBrowser()).toEqual([expect.objectContaining({ type: "info", lines: 3 })]);
   });
 
   it("reports a failed counter advance", async () => {

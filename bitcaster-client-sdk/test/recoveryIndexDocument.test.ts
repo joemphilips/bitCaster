@@ -8,6 +8,7 @@ import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/
 import { decode, decodeFirst, encode, rfc8949EncodeOptions } from 'cborg'
 import {
   RECOVERY_INDEX_DOCUMENT_BYTES_MAX,
+  RECOVERY_INDEX_ENTRIES_GUARANTEED,
   RECOVERY_INDEX_MINTS_MAX,
   RecoveryIndexCapacityError,
   RecoveryIndexFormatError,
@@ -545,13 +546,14 @@ test('the reader refuses wrong mints and entries', () => {
   }
 })
 
-test('the 64 KiB step holds 467 conditional entries with eight mints of the largest size', () => {
+test('the 64 KiB step holds the guaranteed entry count with eight mints of the largest size', () => {
   const mints = Array.from(
     { length: RECOVERY_INDEX_MINTS_MAX },
     (_, index) => `https://m${index}.example/${'p'.repeat(2048 - 'https://m0.example/'.length)}`,
   )
   assert.ok(mints.every((mint) => utf8ToBytes(mint).length === 2048))
-  const entries = Array.from({ length: 467 }, (_, index) =>
+  assert.equal(RECOVERY_INDEX_ENTRIES_GUARANTEED, 467)
+  const entries = Array.from({ length: RECOVERY_INDEX_ENTRIES_GUARANTEED }, (_, index) =>
     conditional(`entry ${index}`, mints[index % mints.length]),
   )
   const document = sealRecoveryIndexDocument({
@@ -563,7 +565,7 @@ test('the 64 KiB step holds 467 conditional entries with eight mints of the larg
   assert.equal(
     openRecoveryIndexDocument({ keys: KEYS, document, storeVersion: Number.MAX_SAFE_INTEGER })
       .length,
-    467,
+    RECOVERY_INDEX_ENTRIES_GUARANTEED,
   )
 })
 

@@ -1,10 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  useWalletBackupPresentation,
-  walletBackupPausesNewChanges,
-  walletBackupWriteErrorMessage,
-} from "@/hooks/WalletBackupPresentation";
+import { walletOperationErrorMessage } from "@/lib/walletOperationError";
 import type {
   DepositWithdrawMode,
   DepositWithdrawView,
@@ -151,7 +147,6 @@ export function useDepositWithdrawState(
   onDismiss: () => void,
 ): DepositWithdrawState {
   const { t } = useTranslation();
-  const walletBackup = useWalletBackupPresentation();
   const storeMints = useWalletStore((s) => s.mints);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
@@ -460,7 +455,6 @@ export function useDepositWithdrawState(
   const onCreateInvoice = useCallback(async () => {
     if (amountSats <= 0) return;
     if (depositAmountError !== null) return;
-    if (walletBackupPausesNewChanges(walletBackup)) return;
     if (inflightRef.current) return;
     inflightRef.current = true;
     setIsLoading(true);
@@ -554,7 +548,7 @@ export function useDepositWithdrawState(
           setCurrentView("deposit-lightning");
         } else {
           setInvoiceStatus("error");
-          setError(walletBackupWriteErrorMessage(e, t));
+          setError(walletOperationErrorMessage(e, t));
         }
       }
       inflightRef.current = false;
@@ -574,7 +568,6 @@ export function useDepositWithdrawState(
     selectedMintId,
     handleInvoiceWaitResult,
     recordDepositRefusal,
-    walletBackup,
     t,
   ]);
 

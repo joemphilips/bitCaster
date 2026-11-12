@@ -1,12 +1,5 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import {
-  createEncryptedWalletBackupOwnerCurrentHead,
-  collectEncryptedWalletBackupOwnerDescriptorPages,
-  enumerateEncryptedWalletBackupOwnerDescriptorPages,
-} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
-import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "@/stores/encrypted-wallet-backup-owner-db";
-
 import Dexie from "dexie";
 import {
   OutputData,
@@ -28,14 +21,6 @@ import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { useActivityLogStore } from "@/stores/activity-log";
-
-const requireNewWritePermission = vi.hoisted(() =>
-  vi.fn(async (_input: { database: BitcasterDB; scopeId: string }): Promise<void> => undefined),
-);
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: requireNewWritePermission,
-}));
 
 const mocks = vi.hoisted(() => {
   const wallet = {
@@ -128,8 +113,6 @@ const databases: BitcasterDB[] = [];
 
 beforeEach(async () => {
   useActivityLogStore.setState({ items: [] });
-  requireNewWritePermission.mockReset();
-  requireNewWritePermission.mockResolvedValue(undefined);
   mocks.privateFactory.mockClear();
   mocks.privateFactory.mockImplementation(async (input) => {
     mocks.attachSource(input.counterSource);
@@ -205,22 +188,6 @@ afterEach(async () => {
 });
 
 describe("browser durable BOLT11 mint quote coordinator", () => {
-  it("refuses a new quote before invoice or output preparation", async () => {
-    requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(
-      createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT }),
-    ).rejects.toThrow("Another browser changed this wallet");
-
-    expect(mocks.wallet.createMintQuote).not.toHaveBeenCalled();
-    expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
-    expect(await mocks.context().database.mintQuotes.count()).toBe(0);
-  });
-
   it("passes a mint refusal for an amount outside the limits to the caller unchanged", async () => {
     const refusal = new MintOperationError(
       11006,
@@ -240,90 +207,6 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
     expect(await mocks.context().database.mintQuotes.count()).toBe(0);
     expect(await mocks.context().database.proofOperations.count()).toBe(0);
   });
-
-  it("checks actual owner-enabled permission inside the joint readwrite transaction", async () => {
-    const permission = await vi.importActual<typeof import("../browserWalletNewWritePermission")>(
-      "../browserWalletNewWritePermission",
-    );
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", "backup.example");
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
-    vi.stubEnv(
-      "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
-      "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
-    );
-    const context = mocks.context();
-    const session = permission.beginBrowserWalletBackupAuthenticationSession({
-      database: context.database,
-      scopeId: SCOPE,
-      realm: "backup.example",
-    });
-    expect(session.markOwnerAuthenticated("aa".repeat(32), 1, "bb".repeat(32))).toBe(true);
-    await acceptEmptyOwnerHead();
-    requireNewWritePermission.mockImplementation(permission.requireBrowserWalletNewWritePermission);
-    const table = context.database.encryptedWalletBackupOwnerAcceptedHeads;
-    const original = table.get.bind(table);
-    const modes: string[] = [];
-    const spy = vi.spyOn(table, "get").mockImplementation((...args: unknown[]) => {
-      modes.push(Dexie.currentTransaction!.idbtrans.mode);
-      return original(...(args as [never]));
-    });
-    try {
-      await createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT });
-      expect(modes).toContain("readwrite");
-    } finally {
-      spy.mockRestore();
-      session.stop();
-    }
-  });
-
-  it.each(["draft", "quote-add"])(
-    "refuses an owner authentication session switch during %s",
-    async (stage) => {
-      const permission = await vi.importActual<typeof import("../browserWalletNewWritePermission")>(
-        "../browserWalletNewWritePermission",
-      );
-      vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", "backup.example");
-      vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
-      vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
-      vi.stubEnv(
-        "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
-        "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
-      );
-      const context = mocks.context();
-      const session = permission.beginBrowserWalletBackupAuthenticationSession({
-        database: context.database,
-        scopeId: SCOPE,
-        realm: "backup.example",
-      });
-      session.markOwnerAuthenticated("aa".repeat(32), 1, "bb".repeat(32));
-      await acceptEmptyOwnerHead();
-      requireNewWritePermission.mockImplementation(
-        permission.requireBrowserWalletNewWritePermission,
-      );
-      const before = await quoteFacts();
-      const prepare = mocks.wallet.prepareMint.getMockImplementation()!;
-      const suspend = () => {
-        session.markPending();
-      };
-      if (stage === "draft")
-        mocks.wallet.prepareMint.mockImplementationOnce(async (...args) => {
-          const preview = await prepare(...args);
-          suspend();
-          return preview;
-        });
-      else context.database.mintQuotes.hook("creating", suspend);
-      try {
-        await expect(
-          createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT }),
-        ).rejects.toThrow("authenticating");
-        expect(await quoteFacts()).toEqual(before);
-      } finally {
-        context.database.mintQuotes.hook("creating").unsubscribe(suspend);
-        session.stop();
-      }
-    },
-  );
 
   it("constructs real default NUT13 outputs at zero and nonzero without touching durable counters before commit", async () => {
     const database = mocks.context().database as BitcasterDB;
@@ -581,15 +464,8 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
       unit: UNIT,
     });
     mocks.wallet.checkMintQuote.mockResolvedValueOnce({ state: "PAID" });
-    requireNewWritePermission.mockClear();
-    requireNewWritePermission.mockRejectedValue(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
 
     expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 0, hasMore: false });
-    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
     const replayed = mocks.wallet.completeMint.mock.calls[0]?.[0];
     const persisted = await getProofOperation(
@@ -1344,7 +1220,6 @@ async function quoteFacts() {
     database.proofOperations,
     database.walletCounterAssociations,
     database.walletCounterCursors,
-    database.encryptedWalletBackupV2DesiredAssets,
   ];
   return database.transaction("r", tables, async () =>
     Object.fromEntries(
@@ -1356,32 +1231,6 @@ async function quoteFacts() {
       ),
     ),
   );
-}
-
-async function acceptEmptyOwnerHead() {
-  const context = {
-    ownerScopeId: "aa".repeat(32),
-    realm: "backup.example",
-    walletId: SCOPE.slice("custody:wallet:".length),
-    enrollmentEpoch: 1,
-  };
-  const head = createEncryptedWalletBackupOwnerCurrentHead({
-    ...context,
-    headVersion: 0,
-    bundles: [],
-  });
-  const evidence = collectEncryptedWalletBackupOwnerDescriptorPages(
-    enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
-    context,
-  );
-  const store = new EncryptedWalletBackupOwnerDexieAuthorityStore({
-    database: mocks.context().database,
-    scopeId: SCOPE,
-    ...context,
-    requestAuthPublicKey: "bb".repeat(32),
-    isCurrent: () => true,
-  });
-  expect(await store.acceptCurrentHead({ expectedHeadVersion: null, evidence })).toBe("accepted");
 }
 
 function useRealPrivateWallet() {

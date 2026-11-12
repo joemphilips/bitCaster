@@ -73,6 +73,7 @@ export const DRY_RUN_MODES: Readonly<Record<string, DryRunMode>> = {
   'wallet pay execute': 'supported',
   'wallet pay status': 'read-only',
   'wallet receive': 'supported',
+  'wallet backup delete': 'supported',
   'wallet recover-seed': 'supported',
   'wallet send': 'supported',
   'wallet reclaim': 'supported',

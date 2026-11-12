@@ -3,7 +3,6 @@ import Dexie, { type Table, type Transaction } from "dexie";
 import {
   applyDurableCustodyTransaction,
   assertDurableCustodyArtifactMatchesReference,
-  classifyDurableCustodyActiveWork,
   claimDurableCustodyScope,
   createDurableCustodyArtifactReference,
   decodeCanonicalMintOrigin,
@@ -57,12 +56,10 @@ import {
   BrowserCompletedProofRemovalError,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
-  retireBrowserProofBackupAuthorityRowAsMintSpent,
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofDerivationLocator,
   requireBrowserProofBackupAuthorityForProof,
   sameBrowserProofDerivationLocator,
-  type BrowserProofBackupAuthorityRow,
   type BrowserProofDerivationLocatorAuthority,
 } from "./browser-proof-backup-authority";
 import type {
@@ -79,16 +76,6 @@ import type {
 import { decodeBrowserCustodyConditionalKeysetAuthority } from "./durable-custody-types";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
-import {
-  advanceBrowserV2DesiredAssetsForProofChanges,
-  createEncryptedWalletBackupV2DesiredAssetRow,
-  decodeEncryptedWalletBackupV2DesiredAssetRow,
-  incrementEncryptedWalletBackupV2DesiredAssetRevision,
-  requireBrowserV2DesiredAssetForProof,
-  requireBrowserV2KeysetFreeTerminalContextForProof,
-  sameEncryptedWalletBackupV2RemovalIntent,
-  type EncryptedWalletBackupV2DesiredAssetRow,
-} from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
 export { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 
@@ -146,13 +133,6 @@ interface BrowserCustodyProofBackupAuthorityState {
   readonly proofs: ReadonlyMap<string, BrowserCustodyProofRow>;
 }
 
-interface BrowserCustodyProofBackupPayloadChange {
-  readonly beforeProof: BrowserCustodyProofRow | null;
-  readonly beforeLocator: BrowserProofDerivationLocatorAuthority;
-  readonly afterProof: BrowserCustodyProofRow;
-  readonly afterLocator: BrowserProofDerivationLocatorAuthority;
-}
-
 interface BrowserTerminalProofClassification {
   readonly operationId: string;
   readonly classifiedAtMs: number;
@@ -170,11 +150,6 @@ interface ConditionalKeysetWriteResult {
   readonly authorities: ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>;
 }
 
-interface BrowserCustodyProofPersistenceResult {
-  readonly changes: readonly BrowserCustodyProofBackupPayloadChange[];
-  readonly conditionalKeysets: ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>;
-}
-
 export interface BrowserCustodyTransactionOptions {
   readonly predecessorProofs?: Readonly<Record<string, readonly BrowserCustodyProofRow[]>>;
   readonly requirePersistedPredecessors?: boolean;
@@ -190,11 +165,6 @@ export interface BrowserCustodyTransactionOptions {
   /** Include browser counter authority in this physical custody commit. */
   readonly walletCounterAuthority?: {
     readonly beforePersist?: () => void | Promise<void>;
-    readonly afterPersist: () => void | Promise<void>;
-  };
-  /** Recheck selected-owner restore authority in the same physical import commit. */
-  readonly ownerRestoreAuthority?: {
-    readonly validate: () => void | Promise<void>;
     readonly afterPersist: () => void | Promise<void>;
   };
   /** Atomically update the legacy proof cache with the canonical custody commit. */
@@ -222,19 +192,6 @@ export type BrowserCustodyCurrentTransactionOptions = Omit<
 > & {
   readonly injectFault?: "before-commit";
 };
-
-export interface BrowserMintSpentProofRetirementCandidate {
-  readonly proof: BrowserCustodyProofRow;
-  readonly authority: BrowserProofBackupAuthorityRow;
-}
-
-export interface BrowserMintSpentProofRetirementInput {
-  readonly scopeId: string;
-  readonly candidates: readonly BrowserMintSpentProofRetirementCandidate[];
-  readonly expectedDesiredAsset: EncryptedWalletBackupV2DesiredAssetRow;
-  readonly observedAtMs: number;
-  readonly injectFault?: "before-commit" | "after-commit";
-}
 
 type ApplyVerifiedResultInput = Parameters<DurableCustodyTransaction["applyVerifiedResult"]>[0];
 
@@ -394,8 +351,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       (options.outgoingTransfer !== undefined ||
         options.outgoingAdmission !== undefined ||
         options.marketFundingHead !== undefined ||
-        options.walletCounterAuthority !== undefined ||
-        options.ownerRestoreAuthority !== undefined)
+        options.walletCounterAuthority !== undefined)
     ) {
       throw new Error("browser custody extension requires atomic transaction");
     }
@@ -421,8 +377,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       options.outgoingTransfer !== undefined ||
       options.outgoingAdmission !== undefined ||
       options.marketFundingHead !== undefined ||
-      options.walletCounterAuthority !== undefined ||
-      options.ownerRestoreAuthority !== undefined
+      options.walletCounterAuthority !== undefined
     ) {
       throw new Error("browser current custody transaction cannot run external extensions");
     }
@@ -458,9 +413,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<T> {
     if (options.walletCounterAuthority?.beforePersist !== undefined) {
       await options.walletCounterAuthority.beforePersist();
-    }
-    if (options.ownerRestoreAuthority !== undefined) {
-      await options.ownerRestoreAuthority.validate();
     }
     const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
     const operations = await this.#loadSelectedOperations(selection);
@@ -512,9 +464,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     }
     if (options.walletCounterAuthority?.afterPersist !== undefined) {
       await options.walletCounterAuthority.afterPersist();
-    }
-    if (options.ownerRestoreAuthority !== undefined) {
-      await options.ownerRestoreAuthority.afterPersist();
     }
     if (options.injectFault === "before-commit") {
       throw new Error("injected browser custody fault before commit");
@@ -627,26 +576,17 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     ) {
       throw new Error("browser refund proof authority is invalid");
     }
-    const retiredPersistence = await this.#persistProofRowsWithBackupAuthority(
+    await this.#persistProofRowsWithBackupAuthority(
       retired.map((proof) => ({ proof, derivationLocator: undefined })),
       input.observedAtMs,
     );
     await this.#database.custodyReservations.bulkDelete(
       expectedProofIds.map((proofId) => [input.scopeId, proofId]),
     );
-    const refundsPersisted = await this.#persistProofRowsWithBackupAuthority(
+    await this.#persistProofRowsWithBackupAuthority(
       refunds,
       input.observedAtMs,
       () => input.operationId,
-    );
-    await advanceBrowserV2DesiredAssetsForProofChanges(
-      this.#database,
-      input.scopeId,
-      [...retiredPersistence.changes, ...refundsPersisted.changes].map(desiredAssetProofChange),
-      conditionalKeysetLookup(
-        retiredPersistence.conditionalKeysets,
-        refundsPersisted.conditionalKeysets,
-      ),
     );
     if (input.injectFault === "before-commit") {
       throw new Error("injected browser refund custody fault before commit");
@@ -725,211 +665,10 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         reservationOperationId: null,
       });
     });
-    const persisted = await this.#persistProofRowsWithBackupAuthority(
+    await this.#persistProofRowsWithBackupAuthority(
       retired.map((proof) => ({ proof, derivationLocator: undefined })),
       input.observedAtMs,
     );
-    await advanceBrowserV2DesiredAssetsForProofChanges(
-      this.#database,
-      input.scopeId,
-      persisted.changes.map(desiredAssetProofChange),
-      conditionalKeysetLookup(persisted.conditionalKeysets),
-    );
-  }
-
-  /** Retire a bounded exact batch only after its caller obtains exact mint-SPENT evidence. */
-  async retireExactMintSpentProofs(
-    input: BrowserMintSpentProofRetirementInput,
-  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
-    const result = await this.#database.transaction(
-      "rw",
-      this.#mintSpentRetirementTransactionTables(),
-      async () => this.#retireExactMintSpentProofs(input),
-    );
-    if (input.injectFault === "after-commit") {
-      throw new Error("injected browser mint-spent retirement fault after commit");
-    }
-    return result;
-  }
-
-  /** Use only inside an explicit active Dexie readwrite transaction. */
-  async retireExactMintSpentProofsInCurrentTransaction(
-    dexieTransaction: Transaction,
-    input: Omit<BrowserMintSpentProofRetirementInput, "injectFault"> & {
-      readonly injectFault?: "before-commit";
-    },
-  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
-    assertCurrentReadwriteTransaction(
-      dexieTransaction,
-      this.#database,
-      this.#mintSpentRetirementTransactionTables(),
-      "browser mint-spent retirement",
-    );
-    try {
-      return await this.#retireExactMintSpentProofs(input);
-    } catch (error) {
-      abortActiveTransaction(dexieTransaction);
-      throw error;
-    }
-  }
-
-  async #retireExactMintSpentProofs(
-    input: BrowserMintSpentProofRetirementInput,
-  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
-    const scopeId = decodeDurableCustodyScopeId(input.scopeId);
-    const observedAtMs = requireTime(input.observedAtMs, "mint-spent retirement time");
-    if (
-      input.candidates.length < 1 ||
-      input.candidates.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
-    ) {
-      throw new Error("browser mint-spent retirement proof limit is invalid");
-    }
-    const expectedDesired = decodeEncryptedWalletBackupV2DesiredAssetRow(
-      input.expectedDesiredAsset,
-    );
-    if (expectedDesired.scopeId !== scopeId || expectedDesired.removalIntent !== null) {
-      throw new Error("browser mint-spent retirement desired asset is invalid");
-    }
-    const candidates = input.candidates.map((candidate) => {
-      const proof = decodeBrowserCustodyProofRow(candidate.proof);
-      if (
-        proof.scopeId !== scopeId ||
-        (proof.selectability !== "selectable" && proof.selectability !== "verified-losing") ||
-        proof.reservationOperationId !== null
-      ) {
-        throw new Error("browser mint-spent retirement predecessor is invalid");
-      }
-      return {
-        proof,
-        authority: requireBrowserProofBackupAuthorityForProof(candidate.authority, proof),
-      };
-    });
-    const identities = new Set(candidates.map(({ proof }) => proof.proofId));
-    if (identities.size !== candidates.length) {
-      throw new Error("browser mint-spent retirement duplicates a proof");
-    }
-    const keys = candidates.map(({ proof }) => [scopeId, proof.proofId] as [string, string]);
-    const [rawProofs, rawAuthorities, reservations] = await Promise.all([
-      this.#database.custodyProofs.bulkGet(keys),
-      this.#database.custodyProofBackupAuthorities.bulkGet(keys),
-      this.#database.custodyReservations.bulkGet(keys),
-    ]);
-    const currentAuthorities: BrowserProofBackupAuthorityRow[] = [];
-    for (const [index, candidate] of candidates.entries()) {
-      const rawProof = rawProofs[index];
-      if (rawProof === undefined) throw new Error("browser mint-spent retirement proof is missing");
-      const currentProof = decodeBrowserCustodyProofRow(rawProof);
-      if (!sameProofRow(currentProof, candidate.proof)) {
-        throw new Error("browser mint-spent retirement proof CAS is stale");
-      }
-      const currentAuthority = requireBrowserProofBackupAuthorityForProof(
-        requireBrowserLiveProofBackupAuthorityTableRow(rawAuthorities[index], keys[index]!),
-        currentProof,
-      );
-      if (!sameProofBackupAuthority(currentAuthority, candidate.authority)) {
-        throw new Error("browser mint-spent retirement authority CAS is stale");
-      }
-      if (reservations[index] !== undefined) {
-        throw new Error("browser mint-spent retirement proof is reserved");
-      }
-      currentAuthorities.push(currentAuthority);
-    }
-    await this.#requireMintSpentRetirementOperationsResolved(scopeId, currentAuthorities);
-
-    let currentDesired: EncryptedWalletBackupV2DesiredAssetRow | undefined;
-    for (const [index, candidate] of candidates.entries()) {
-      const desired = await requireBrowserV2DesiredAssetForProof({
-        database: this.#database,
-        proof: candidate.proof,
-        authority: currentAuthorities[index]!,
-      });
-      if (currentDesired === undefined) currentDesired = desired;
-      else if (!sameDesiredAssetRow(currentDesired, desired)) {
-        throw new Error("browser mint-spent retirement spans multiple assets");
-      }
-    }
-    if (
-      currentDesired === undefined ||
-      !sameDesiredAssetRow(currentDesired, expectedDesired) ||
-      currentDesired.removalIntent !== null
-    ) {
-      throw new Error("browser mint-spent retirement desired asset CAS is stale");
-    }
-    if (currentDesired.activeProofCount < candidates.length) {
-      throw new Error("browser mint-spent retirement proof count is stale");
-    }
-
-    const spentProofs = candidates.map(({ proof }) =>
-      decodeBrowserCustodyProofRow({
-        ...proof,
-        revision: proof.revision + 1,
-        selectability: "spent",
-        reservationOperationId: null,
-      }),
-    );
-    const nextAuthorities = spentProofs.map((proof, index) =>
-      retireBrowserProofBackupAuthorityRowAsMintSpent(
-        currentAuthorities[index]!,
-        candidates[index]!.proof,
-        proof,
-        observedAtMs,
-      ),
-    );
-    const nextDesired = createEncryptedWalletBackupV2DesiredAssetRow({
-      scopeId,
-      asset: {
-        mintUrl: currentDesired.mintUrl,
-        unit: currentDesired.unit,
-        assetIdentity: currentDesired.assetIdentity,
-      },
-      terminalCtfContext: currentDesired.terminalCtfContext,
-      custodyRevision: incrementEncryptedWalletBackupV2DesiredAssetRevision(
-        BigInt(currentDesired.custodyRevision),
-      ),
-      activeProofCount: currentDesired.activeProofCount - candidates.length,
-      removalIntent: null,
-    });
-    await Promise.all([
-      this.#database.custodyProofs.bulkPut(spentProofs),
-      this.#database.custodyProofBackupAuthorities.bulkPut(nextAuthorities),
-      this.#database.encryptedWalletBackupV2DesiredAssets.put(nextDesired),
-    ]);
-    if (input.injectFault === "before-commit") {
-      throw new Error("injected browser mint-spent retirement fault before commit");
-    }
-    return nextDesired;
-  }
-
-  async #requireMintSpentRetirementOperationsResolved(
-    scopeId: string,
-    authorities: readonly BrowserProofBackupAuthorityRow[],
-  ): Promise<void> {
-    const operationIds = [
-      ...new Set(
-        authorities.flatMap((authority) => [
-          ...(authority.admissionOperationId === null ? [] : [authority.admissionOperationId]),
-          ...(authority.terminalAuthority?.kind === "local-operation"
-            ? [authority.terminalAuthority.operationId]
-            : []),
-        ]),
-      ),
-    ];
-    const keys = operationIds.map((operationId) => [scopeId, operationId] as [string, string]);
-    const [operations, activeWork] = await Promise.all([
-      this.#database.custodyOperations.bulkGet(keys),
-      this.#database.custodyActiveWork.bulkGet(keys),
-    ]);
-    for (const [index, row] of operations.entries()) {
-      if (activeWork[index] !== undefined) {
-        throw new Error("browser mint-spent retirement has active custody work");
-      }
-      if (
-        row !== undefined &&
-        classifyDurableCustodyActiveWork(decodeOperationRow(row).record) !== "none"
-      ) {
-        throw new Error("browser mint-spent retirement has an unresolved custody operation");
-      }
-    }
   }
 
   async readOperation(
@@ -1102,7 +841,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyActiveWork,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
       ...(atomic
         ? [
             this.#database.outgoingCashuTransfers,
@@ -1113,16 +851,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ...(options.walletCounterAuthority === undefined
         ? []
         : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
-      ...(options.ownerRestoreAuthority === undefined
-        ? []
-        : [
-            this.#database.encryptedWalletBackupOwnerAcceptedHeads,
-            this.#database.encryptedWalletBackupOwnerActiveDescriptors,
-            this.#database.encryptedWalletBackupOwnerProofCoverage,
-            this.#database.encryptedWalletBackupOwnerDesiredAssets,
-            this.#database.encryptedWalletBackupOwnerAssetReceipts,
-            this.#database.encryptedWalletBackupOwnerPreparedMutations,
-          ]),
       ...(options.legacyProofCache === undefined ? [] : [this.#database.proofs]),
     ];
   }
@@ -1134,19 +862,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyReservations,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
-    ];
-  }
-
-  #mintSpentRetirementTransactionTables(): readonly Table[] {
-    return [
-      this.#database.custodyOperations,
-      this.#database.custodyProofs,
-      this.#database.custodyReservations,
-      this.#database.custodyActiveWork,
-      this.#database.custodyProofBackupAuthorities,
-      this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
     ];
   }
 
@@ -1265,18 +980,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<void> {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
-    const proofPersistence = await this.#persistChangedProofs(
-      transaction,
-      selection.owner.observedAtMs,
-    );
-    if (proofPersistence.changes.length > 0) {
-      await advanceBrowserV2DesiredAssetsForProofChanges(
-        this.#database,
-        selection.scope.scopeId,
-        proofPersistence.changes.map(desiredAssetProofChange),
-        conditionalKeysetLookup(proofPersistence.conditionalKeysets),
-      );
-    }
+    await this.#persistChangedProofs(transaction, selection.owner.observedAtMs);
     await this.#persistLegacyProofCache(selection, legacyProofCache);
     await this.#persistTerminalLegacyProofCache(transaction);
     await this.#persistReservations(selection.scope.scopeId, transaction);
@@ -1493,7 +1197,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async #persistChangedProofs(
     transaction: StagedBrowserCustodyTransaction,
     observedAtMs: number,
-  ): Promise<BrowserCustodyProofPersistenceResult> {
+  ): Promise<void> {
     const changed: PersistedBrowserCustodyProof[] = [];
     for (const proofId of transaction.changedProofIds) {
       const proof = transaction.proofs.get(proofId);
@@ -1503,7 +1207,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         derivationLocator: transaction.derivationLocatorForProof(proofId),
       });
     }
-    return this.#persistProofRowsWithBackupAuthority(
+    await this.#persistProofRowsWithBackupAuthority(
       changed,
       observedAtMs,
       (proofId) => transaction.successorAdmissionOperationIdForProof(proofId),
@@ -1525,14 +1229,14 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     terminalClassificationForProof: (
       proofId: string,
     ) => BrowserTerminalProofClassification | undefined = () => undefined,
-  ): Promise<BrowserCustodyProofPersistenceResult> {
+  ): Promise<void> {
     const requests = persistedProofRequests(
       proofs,
       admissionOperationIdForProof,
       predecessorFallbackOperationIdForProof,
       conditionalKeysetForProof,
     );
-    if (requests.length === 0) return { changes: [], conditionalKeysets: new Map() };
+    if (requests.length === 0) return;
     const current = await this.#readCurrentProofBackupAuthorities(requests);
     const authorities = requests.map((request) =>
       nextProofBackupAuthority(
@@ -1550,21 +1254,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ? Promise.resolve()
         : this.#database.custodyConditionalKeysets.bulkAdd(keysets.additions),
     ]);
-    const changes = requests.map((request, index) => {
-      const before = current.authorities.get(proofIdentity(request.key));
-      const after = authorities[index];
-      if (before === undefined || after === undefined) {
-        throw new Error("browser custody proof backup authority is missing");
-      }
-      return {
-        beforeProof: current.proofs.get(proofIdentity(request.key)) ?? null,
-        beforeLocator:
-          before === null ? null : requireBrowserProofDerivationLocator(before.derivationLocator),
-        afterProof: request.proof,
-        afterLocator: requireBrowserProofDerivationLocator(after.derivationLocator),
-      };
-    });
-    return { changes, conditionalKeysets: keysets.authorities };
   }
 
   async #readCurrentProofBackupAuthorities(
@@ -1620,24 +1309,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     const additions: BrowserCustodyConditionalKeysetRow[] = [];
     const authorities = new Map<string, BrowserCustodyConditionalKeysetRow>();
     for (const [index, plan] of plans.entries()) {
-      if (
-        persisted[index] === undefined &&
-        plan.requested === undefined &&
-        keysetFreeTerminalPlan(plan, current.authorities)
-      ) {
-        for (const request of plan.proofs) {
-          const authority = current.authorities.get(proofIdentity(request.key));
-          if (authority === undefined || authority === null) {
-            throw new Error("browser custody proof authority is missing");
-          }
-          await requireBrowserV2KeysetFreeTerminalContextForProof({
-            database: this.#database,
-            proof: request.proof,
-            authority,
-          });
-        }
-        continue;
-      }
       const result = validateConditionalKeysetWritePlan(plan, persisted[index]);
       if (result.add) additions.push(result.authority);
       authorities.set(conditionalKeysetIdentity(plan.key), result.authority);
@@ -1845,25 +1516,6 @@ function conditionalKeysetWritePlans(
   return [...plans.values()];
 }
 
-function keysetFreeTerminalPlan(
-  plan: ConditionalKeysetWritePlan,
-  authorities: ReadonlyMap<
-    string,
-    ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
-  >,
-): boolean {
-  return plan.proofs.every((request) => {
-    const authority = authorities.get(proofIdentity(request.key));
-    return (
-      request.proof.selectability === "verified-losing" &&
-      authority !== undefined &&
-      authority !== null &&
-      authority.backupState === "remote-backed" &&
-      authority.terminalAuthority?.kind === "remote-seal"
-    );
-  });
-}
-
 function validateConditionalKeysetWritePlan(
   plan: ConditionalKeysetWritePlan,
   persisted: BrowserCustodyConditionalKeysetRow | undefined,
@@ -1887,25 +1539,6 @@ function validateConditionalKeysetWritePlan(
   }
   verifyBrowserConditionalKeysetAuthority(current);
   return { authority: current, add: false };
-}
-
-function conditionalKeysetLookup(
-  ...sources: readonly ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>[]
-) {
-  return (proof: BrowserCustodyProofRow): BrowserCustodyConditionalKeysetRow | undefined => {
-    if (proof.assetKind === "regular") return undefined;
-    const identity = conditionalKeysetIdentity([
-      proof.scopeId,
-      proof.normalizedMint,
-      proof.unit,
-      proof.keysetId,
-    ]);
-    for (const source of sources) {
-      const keyset = source.get(identity);
-      if (keyset !== undefined) return keyset;
-    }
-    return undefined;
-  };
 }
 
 function proofIdentity(key: readonly [string, string]): string {
@@ -2901,130 +2534,6 @@ function sameProofRow(
     left.reservationOperationId === right.reservationOperationId &&
     left.receivedAtMs === right.receivedAtMs
   );
-}
-
-function sameProofBackupAuthority(
-  left: BrowserProofBackupAuthorityRow,
-  right: BrowserProofBackupAuthorityRow,
-): boolean {
-  return (
-    left.schemaVersion === right.schemaVersion &&
-    left.scopeId === right.scopeId &&
-    left.proofId === right.proofId &&
-    left.proofFingerprint === right.proofFingerprint &&
-    left.proofRevision === right.proofRevision &&
-    left.proofState === right.proofState &&
-    left.admissionOperationId === right.admissionOperationId &&
-    left.terminalOperationId === right.terminalOperationId &&
-    sameTerminalAuthority(left.terminalAuthority, right.terminalAuthority) &&
-    left.recordCreatedAtUnixSeconds === right.recordCreatedAtUnixSeconds &&
-    left.recordUpdatedAtUnixSeconds === right.recordUpdatedAtUnixSeconds &&
-    left.backupState === right.backupState &&
-    sameBrowserProofDerivationLocator(authorityLocator(left), authorityLocator(right)) &&
-    left.backupRecordId === right.backupRecordId &&
-    left.backupRecordCommitment === right.backupRecordCommitment &&
-    left.updatedAtMs === right.updatedAtMs
-  );
-}
-
-function sameTerminalAuthority(
-  left: BrowserProofBackupAuthorityRow["terminalAuthority"],
-  right: BrowserProofBackupAuthorityRow["terminalAuthority"],
-): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "remote-seal" || left.kind === "remote-refusal-history") {
-    return (
-      right.kind === left.kind &&
-      JSON.stringify(left.terminalSeal) === JSON.stringify(right.terminalSeal)
-    );
-  }
-  return right.kind === "local-operation" && left.operationId === right.operationId;
-}
-
-function sameDesiredAssetRow(
-  left: EncryptedWalletBackupV2DesiredAssetRow,
-  right: EncryptedWalletBackupV2DesiredAssetRow,
-): boolean {
-  return (
-    left.scopeId === right.scopeId &&
-    left.localAssetKey === right.localAssetKey &&
-    left.mintUrl === right.mintUrl &&
-    left.unit === right.unit &&
-    left.assetIdentity === right.assetIdentity &&
-    left.custodyRevision === right.custodyRevision &&
-    left.activeProofCount === right.activeProofCount &&
-    left.desiredAction === right.desiredAction &&
-    left.syncState === right.syncState &&
-    sameTerminalCtfContext(left.terminalCtfContext, right.terminalCtfContext) &&
-    sameEncryptedWalletBackupV2RemovalIntent(left.removalIntent, right.removalIntent)
-  );
-}
-
-function sameTerminalCtfContext(
-  left: EncryptedWalletBackupV2DesiredAssetRow["terminalCtfContext"],
-  right: EncryptedWalletBackupV2DesiredAssetRow["terminalCtfContext"],
-): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.conditionId === right.conditionId &&
-      left.outcomeLabel === right.outcomeLabel &&
-      left.outcomeCollectionId === right.outcomeCollectionId &&
-      left.registeredAt === right.registeredAt &&
-      left.finalExpiry === right.finalExpiry)
-  );
-}
-
-function proofPayloadChanged(change: BrowserCustodyProofBackupPayloadChange): boolean {
-  const beforeActive =
-    change.beforeProof !== null &&
-    (change.beforeProof.selectability === "selectable" ||
-      change.beforeProof.selectability === "locked" ||
-      change.beforeProof.selectability === "verified-losing");
-  const afterActive =
-    change.afterProof.selectability === "selectable" ||
-    change.afterProof.selectability === "locked" ||
-    change.afterProof.selectability === "verified-losing";
-  if (beforeActive !== afterActive) return true;
-  if (!beforeActive) return false;
-  if (change.beforeProof === null) return true;
-  if (
-    change.beforeProof.selectability !== change.afterProof.selectability &&
-    change.afterProof.selectability === "verified-losing"
-  )
-    return true;
-  return !(
-    change.beforeProof.proofId === change.afterProof.proofId &&
-    sameBytes(change.beforeProof.proofBody, change.afterProof.proofBody) &&
-    change.beforeProof.normalizedMint === change.afterProof.normalizedMint &&
-    change.beforeProof.unit === change.afterProof.unit &&
-    change.beforeProof.assetKind === change.afterProof.assetKind &&
-    change.beforeProof.conditionId === change.afterProof.conditionId &&
-    change.beforeProof.outcomeCollection === change.afterProof.outcomeCollection &&
-    sameNullableBrowserProofDerivationLocator(change.beforeLocator, change.afterLocator)
-  );
-}
-
-function sameNullableBrowserProofDerivationLocator(
-  left: BrowserProofDerivationLocatorAuthority,
-  right: BrowserProofDerivationLocatorAuthority,
-): boolean {
-  if (left === null || right === null) return left === right;
-  return sameBrowserProofDerivationLocator(left, right);
-}
-
-function desiredAssetProofChange(
-  change: BrowserCustodyProofBackupPayloadChange,
-): import("./browser-encrypted-wallet-backup-v2-desired-asset").BrowserV2DesiredAssetProofChange {
-  return {
-    beforeProof: change.beforeProof,
-    beforeLocator: change.beforeLocator,
-    afterProof: change.afterProof,
-    afterLocator: change.afterLocator,
-    payloadChanged: proofPayloadChanged(change),
-  };
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

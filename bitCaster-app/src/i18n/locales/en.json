@@ -87,7 +87,8 @@
     "replaceWalletWarning": "Back up your current seed phrase before replacing this wallet.",
     "replaceBlockedPendingOrders": "This wallet has unfinished orders. Finish or recover them before replacing the wallet.",
     "replaceBlockedUnscopedOrders": "An older order has no wallet identity. Resolve it before replacing the wallet.",
-    "replaceBlockedBackup": "The current wallet lacks a current backup for every asset. Complete and acknowledge the backup before replacing it.",
+    "replaceBlockedBackup": "The wallet backup could not be confirmed. Try again later. The current wallet was kept.",
+    "replaceBackupPartial": "The backup of the previous wallet is incomplete. To restore that wallet fully, use bitcaster wallet recover-seed.",
     "replaceBlockedSeedBackup": "Back up your current seed phrase in Seed Backup before replacing this wallet.",
     "replaceBlockedActiveWork": "A wallet operation is unfinished. Finish or recover it before replacing the wallet.",
     "replaceBlockedBrowserLock": "This browser cannot safely lock the wallet. Keep this wallet and retry in a browser that supports wallet locking.",
@@ -101,49 +102,14 @@
       "readFailed": "Wallet data could not be read.",
       "profileUnavailable": "The wallet is not open.",
       "reload": "Reload"
-    }
+    },
+    "operationFailed": "The wallet operation could not start. Try again."
   },
-  "walletBackupRecovery": {
-    "changeAccount": "Open ID settings",
-    "localWalletKept": "Your local wallet, funds, and unfinished work are unchanged.",
+  "walletBackup": {
     "blocked": {
-      "wrong-account": {
-        "title": "This backup uses a different ID",
-        "description": "Sign in with the ID that first enabled backup for this recovery phrase."
-      },
-      "inactive": {
-        "title": "This backup is inactive",
-        "description": "Backup cannot continue for this ID. Keep your local wallet. CLI seed recovery is available for supported regular-msat funds within the scanned range."
-      },
-      "incompatible-discovery": {
-        "title": "This backup needs compatibility support",
-        "description": "The backup records cannot be used safely. Keep your local wallet. Do not create a replacement backup for this recovery phrase."
-      }
-    },
-    "preparingTitle": "Preparing wallet backup",
-    "preparingDescription": "Wait for wallet backup before adding funds or making other wallet changes.",
-    "failedTitle": "Wallet backup stopped",
-    "failedDescription": "Your local wallet keeps your funds and unfinished work. Retry wallet backup before making a new wallet change.",
-    "retryStartup": "Retry wallet backup",
-    "topUpNotReady": "Wallet backup is not ready. Wait for it to finish, or use Retry wallet backup if it has stopped.",
-    "topUpRecoveryRequired": "This wallet needs recovery before you can add funds. Follow the wallet recovery message.",
-    "topUpFailed": "The wallet operation could not start. Try again.",
-    "preparingReasons": {
-      "authentication": "Checking this wallet's backup.",
-      "leadership-wait": "This wallet is open in another tab. Close that tab if you no longer need it.",
-      "retry": "Wallet backup will try again. Keep this page open and wait.",
-      "driver-unavailable": "Sign in to start this wallet's backup. If you are already signed in, reload this page."
-    },
-    "title": "Wallet actions are paused",
-    "description": "New wallet actions stay paused until recovery completes.",
-    "retry": "Retry recovery",
-    "reasons": {
-      "remote-unavailable": "The backup service or mint is unavailable.",
-      "remote-head-changed": "Another browser changed the backup again. Retry to check its latest state.",
-      "local-predecessor-unspent": "Some funds stored in this browser remain unspent. This browser keeps them while recovery is incomplete.",
-      "local-predecessor-unknown": "The mint has not confirmed the state of funds stored in this browser.",
-      "submitted-work-unresolved": "An earlier wallet operation is unresolved. An unpaid invoice can also block recovery. Retrying may not clear it.",
-      "local-state-changed": "Wallet state changed during recovery."
+      "undecodable": "The wallet backup cannot be read, so it is not updated. Your funds in this browser are unchanged.",
+      "unsupported-version": "The wallet backup uses a newer format. Update the app to keep the backup current.",
+      "over-cap": "The wallet backup is full. New markets are not in the backup. Your funds in this browser are unchanged."
     }
   },
   "auth": {

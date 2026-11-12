@@ -1,31 +1,10 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
-import { ownerTargetedRangeFixture } from "./ownerTargetedRangeFixture";
-import {
-  ownerTargetedRecoveryFixture,
-  disposeOwnerTargetedRecoveryFixtures,
-} from "./ownerTargetedRecoveryFixture";
-import { recoverBrowserTargetedAsset } from "../browserTargetedAssetRecovery";
 import {
   createCtfRangePreparationIntent,
   createCounterCtfRangePreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderCounterPreparation";
-import { webcrypto } from "node:crypto";
-import { schnorr } from "@noble/curves/secp256k1.js";
-import { createEncryptedWalletBackupV2KeyHandle } from "@bitcaster/client-sdk/encryptedWalletBackupV2Keys";
-import {
-  createEncryptedWalletBackupOwnerCurrentHead,
-  collectEncryptedWalletBackupOwnerDescriptorPages,
-  enumerateEncryptedWalletBackupOwnerDescriptorPages,
-} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
-import { deriveEncryptedWalletBackupOwnerScope } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerScope";
-import {
-  issueEncryptedWalletBackupOwnerBundleSupersessionReceipt,
-  verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt,
-} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerReceipt";
-import { decodeEncryptedWalletBackupOwnerUploadGroup } from "@bitcaster/client-sdk/encryptedWalletBackupOwnerUpload";
-import { runBrowserEncryptedWalletBackupOwnerWorkerCycle } from "../browserEncryptedWalletBackupOwnerWorker";
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -73,7 +52,6 @@ import { claimScopeForEndedPage } from "@/test/endedPageCustodyOwner";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   encryptedWalletBackupV2LocalAssetKey,
-  verifyEncryptedWalletBackupV2RestoredProofSet,
 } from "@bitcaster/client-sdk";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
@@ -127,11 +105,6 @@ import {
   BrowserCtfRangeRecoverySchedule,
 } from "../browserCtfRangeRecoverySchedule";
 import { reserveCheckedBrowserCtfRangePreparation } from "../browserCtfRangeOrderOutputCheck";
-import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
-import {
-  readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
-  type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
-} from "../browserEncryptedWalletBackupV2Restore";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { readBrowserTradeRecoveryObservation } from "../browserTradeRecoveryObservation";
 import {
@@ -213,19 +186,9 @@ const COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
 });
 const SEED = new Uint8Array(64).fill(7);
 const openDatabases: BitcasterDB[] = [];
-const mocks = vi.hoisted(() => ({
-  requireNewWritePermission: vi.fn(),
-}));
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
-}));
-
 let fixtureNow = 20_000;
 beforeEach(() => {
   fixtureNow = 20_000;
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -530,83 +493,6 @@ describe("browser CTF range order coordinator", () => {
       expect(regular.every(({ reservedBy }) => reservedBy === undefined)).toBe(true);
     },
   );
-
-  it("refuses a new range source before preparation", async () => {
-    const preparation = persistedPreparation("range-write-refused-source");
-    const database = createDatabase();
-    let prepareCalls = 0;
-    const engine = engineMock();
-    const coordinator = createCoordinator(
-      database,
-      sourceWallet({ onPrepare: () => void (prepareCalls += 1) }),
-      engine,
-    );
-    mocks.requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(
-      coordinator.prepareAndSubmit({
-        seed: SEED,
-        preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
-      }),
-    ).rejects.toThrow("Another browser changed this wallet");
-
-    expect(prepareCalls).toBe(0);
-    expect(engine.createCalls).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-  });
-
-  it("refuses a new consolidation before preparation", async () => {
-    const preparation = persistedPreparation("range-write-refused-consolidation");
-    const proof = sourceProof(preparation.offerKeyset.id, 2);
-    const database = createDatabase([storedSourceProof(proof)]);
-    let prepareCalls = 0;
-    const coordinator = createCoordinator(
-      database,
-      sourceWallet({ onPrepare: () => void (prepareCalls += 1) }),
-      engineMock(),
-    );
-    mocks.requireNewWritePermission.mockRejectedValueOnce(new Error("new writes are refused"));
-
-    await expect(
-      coordinator.consolidateRound({
-        seed: SEED,
-        preparation,
-        round: 0,
-        inputs: [proof],
-        plannedRound: { inputs: ["2"], outputs: ["1"], fee: "1" },
-        consentedFeeFacts: coordinatorFeeFacts(preparation),
-      }),
-    ).rejects.toThrow("new writes are refused");
-
-    expect(prepareCalls).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-  });
-
-  it("rechecks permission before capability and order submission", async () => {
-    const preparation = persistedPreparation("range-write-refused-submission");
-    const engine = engineMock();
-    const coordinator = createCoordinator(createDatabase(), sourceWallet(), engine);
-    mocks.requireNewWritePermission
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("new writes are refused"));
-
-    await expect(
-      coordinator.prepareAndSubmit({
-        seed: SEED,
-        preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
-      }),
-    ).rejects.toThrow("new writes are refused");
-
-    expect(mocks.requireNewWritePermission).toHaveBeenCalledTimes(2);
-    expect(engine.createCalls).toBe(0);
-    expect(engine.submitCalls).toBe(0);
-  });
 
   // The mint observes at 20 and advertises a 86,400-second ceiling, far above
   // five minutes. The SDK subtracts a 300-second refund margin from the
@@ -1642,7 +1528,7 @@ describe("browser CTF range order coordinator", () => {
     },
   );
 
-  it("keeps Buy source authorization out of local backup availability", async () => {
+  it("keeps Buy source authorization out of the selectable locatored proofs", async () => {
     vi.spyOn(Date, "now").mockReturnValue(20_000);
     const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
     const preparation = persistedPreparation("range-buy-local-custody-count");
@@ -1712,21 +1598,11 @@ describe("browser CTF range order coordinator", () => {
             selectableLocatored: 1,
             selectableNullLocator: 0,
           });
-          const desired = await database.encryptedWalletBackupV2DesiredAssets.get([
-            walletScopeId(),
-            encryptedWalletBackupV2LocalAssetKey(localAvailabilityInput(database).asset),
-          ]);
-          expect(desired?.activeProofCount).toBe(1);
           expect(await database.walletCounterCursors.toArray()).toEqual(
             expect.arrayContaining([
               expect.objectContaining({ keysetId: preparation.offerKeyset.id, next: 2 }),
             ]),
           );
-
-          const localAmount = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
-            localAvailabilityInput(database),
-          );
-          expect(localAmount).toBe(4n);
         },
       },
     );
@@ -2900,8 +2776,6 @@ describe("browser CTF range order coordinator", () => {
     };
     await bindJournalCapability(database, target, "44444444-4444-4444-8444-444444444444");
     await bindJournalCapability(database, other, "55555555-5555-4555-8555-555555555555");
-    mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
-
     await expect(
       coordinator.recoverClientOrder({
         seed: SEED,
@@ -2915,7 +2789,6 @@ describe("browser CTF range order coordinator", () => {
     expect(
       await readCtfRangePreparation(walletScopeId(), other.operationId, database),
     ).toMatchObject({ lifecycleState: "capability-bound" });
-    expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
   });
 
   it("does nothing when no active preparation has the pending client order ID", async () => {
@@ -3601,7 +3474,6 @@ describe("browser CTF range order coordinator", () => {
           requireLiveProofBackupAuthority(authority, [walletScopeId(), id]).derivationLocator?.kind,
         ).toBe(ordinary ? "nut13" : "ctf-range-manifest");
       }
-      await assertSettlementBackupWorkerCommits(database);
     },
   );
 
@@ -6360,63 +6232,24 @@ async function admitDeterministicRegularProof(
     unit: "msat",
     receivedAt: 1,
   };
-  const asset = createEncryptedWalletBackupV2AssetIdentity({
+  await admitBrowserReceivedProofs({
+    seed: SEED,
+    sourceOperationId: "deterministic-regular-seed",
     mintUrl: MINT_URL,
     unit: "msat",
-    asset: { kind: "ordinary" },
-  });
-  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
-    seed: SEED,
-    expectedAsset: asset,
-    unverified: {
-      proofs: [
-        {
-          mintUrl: MINT_URL,
-          unit: "msat",
-          asset: { kind: "ordinary" },
-          locator,
-          proof,
-          proofId: deriveDurableCustodyProofId({
-            scopeId: walletScopeId(),
-            normalizedMint: MINT_URL,
-            unit: "msat",
-            keysetId: REGULAR_KEYSET_ID,
-            secret: proof.secret,
-          }),
-        },
-      ],
-      counterHighWaterMarks: [
-        { mintUrl: MINT_URL, unit: "msat", keysetId: REGULAR_KEYSET_ID, nextCounter: 1 },
-      ],
-    },
-    port: {
-      async resolveKeyset({ mintUrl, unit, keysetId }) {
-        return {
-          mintUrl,
-          unit,
-          keysetId,
-          keyset: {},
-          requireDleq: false,
-          verify: () => true,
-        };
-      },
-      verifyProofs: () => undefined,
-      checkProofStates: async ({ proofs }) =>
-        proofs.map(({ proofId }) => ({ proofId, state: "UNSPENT" as const })),
-    },
-  });
-  await admitBrowserEncryptedWalletBackupV2Asset({
-    seed: SEED,
-    verified,
-    asset,
-    custodyRevision: 1n,
-    sourceOperationId: "backup-v2-test-seed",
     wallet: deterministicRegularWallet(),
+    proofs: [proof],
+    derivationAuthority: { keysetId: REGULAR_KEYSET_ID, counterStart: 0, counterCount: 1 },
     database,
-    scopeId: walletScopeId(),
-    isCurrentProfile: () => true,
     lockManager: immediateLockManager(),
   });
+  await new BrowserWalletCounterDexieStore({ database, scopeId: walletScopeId() }).restoreInContext(
+    { mintUrl: MINT_URL, unit: "msat" },
+    REGULAR_KEYSET_ID,
+    1,
+    false,
+    () => undefined,
+  );
   return proof;
 }
 
@@ -6430,30 +6263,7 @@ function deterministicRegularWallet() {
       expiry: FINAL_EXPIRY,
       verify: () => true,
     }),
-  } as Parameters<typeof admitBrowserEncryptedWalletBackupV2Asset>[0]["wallet"];
-}
-
-function localAvailabilityInput(
-  database: BitcasterDB,
-): BrowserEncryptedWalletBackupV2TargetedRestoreInput {
-  return {
-    database,
-    scopeId: walletScopeId(),
-    seed: SEED,
-    keyHandle: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["keyHandle"],
-    enrollmentEpoch: 1,
-    asset: createEncryptedWalletBackupV2AssetIdentity({
-      mintUrl: MINT_URL,
-      unit: "msat",
-      asset: { kind: "ordinary" },
-    }),
-    remote: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["remote"],
-    requestUrl: () => "",
-    nowUnixSeconds: () => 1,
-    runtime: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["runtime"],
-    signal: new AbortController().signal,
-    isCurrentProfile: () => true,
-  };
+  } as unknown as Parameters<typeof admitBrowserReceivedProofs>[0]["wallet"];
 }
 
 async function expiredOrdinaryBrowserRefund(options: Parameters<typeof createCoordinator>[3] = {}) {
@@ -6494,7 +6304,6 @@ async function browserRefundMoneyRows(database: BitcasterDB) {
     database.custodyProofs,
     database.custodyProofBackupAuthorities,
     database.custodyConditionalKeysets,
-    database.encryptedWalletBackupV2DesiredAssets,
     database.custodyReservations,
     database.custodyActiveWork,
   ];
@@ -6918,201 +6727,4 @@ it("ordinary browser refund selects different committed winner outputs and locat
       { mintUrl: fixture.preparation.mintUrl, unit: "msat" },
     ).snapshot(),
   ).toMatchObject({ [plan.keysetId]: winningStart + plan.counterCount });
-});
-
-async function assertSettlementBackupWorkerCommits(database: BitcasterDB) {
-  const runtime = {
-    subtle: webcrypto.subtle as unknown as SubtleCrypto,
-    getRandomValues(bytes: Uint8Array) {
-      bytes.set(webcrypto.getRandomValues(new Uint8Array(bytes.length)));
-      return bytes;
-    },
-  };
-  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
-    seed: SEED,
-    realm: "mainnet",
-    runtime,
-  });
-  const owner = {
-    ...deriveEncryptedWalletBackupOwnerScope({
-      authorizationScheme: "test",
-      ownerSubject: "settlement-owner",
-    }),
-    enrollmentEpoch: 1,
-  };
-  const context = {
-    ownerScopeId: owner.ownerScopeId,
-    realm: keyHandle.realm,
-    walletId: keyHandle.walletId,
-    enrollmentEpoch: 1,
-  };
-  let head = createEncryptedWalletBackupOwnerCurrentHead({
-    ...context,
-    headVersion: 0,
-    bundles: [],
-  });
-  let bundles: Parameters<typeof createEncryptedWalletBackupOwnerCurrentHead>[0]["bundles"] = [];
-  const evidence = () =>
-    collectEncryptedWalletBackupOwnerDescriptorPages(
-      enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles }),
-      context,
-    );
-  const signingKey = new Uint8Array(32).fill(0x44);
-  const signingKeyId = "cc".repeat(16);
-  const pinnedSigningKeys = [
-    { keyId: signingKeyId, publicKey: bytesToHex(schnorr.getPublicKey(signingKey)) },
-  ];
-  const mutateHead = vi.fn(
-    async ({ canonicalUploadGroup }: { canonicalUploadGroup: Uint8Array }) => {
-      const group = decodeEncryptedWalletBackupOwnerUploadGroup({
-        bytes: canonicalUploadGroup,
-        expectedContext: context,
-        expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
-      });
-      const mutation = group.mutationEvidence.envelope.mutation;
-      const nextBundles = bundles.filter(
-        (bundle) => !mutation.supersededBundleIds.includes(bundle.bundleId),
-      );
-      if (mutation.addedBundle !== null) nextBundles.push(mutation.addedBundle);
-      const resultHead = createEncryptedWalletBackupOwnerCurrentHead({
-        ...context,
-        headVersion: head.headVersion + 1,
-        bundles: nextBundles,
-      });
-      const receipt = await issueEncryptedWalletBackupOwnerBundleSupersessionReceipt({
-        mutationEvidence: group.mutationEvidence,
-        expectedContext: context,
-        resultHead,
-        signingKeyId,
-        signingPublicKey: pinnedSigningKeys[0]!.publicKey,
-        signDigest: async (digest) =>
-          schnorr.sign(digest, signingKey, new Uint8Array(32).fill(0x55)),
-      });
-      const verified = verifyEncryptedWalletBackupOwnerBundleSupersessionReceipt({
-        receipt,
-        mutationEvidence: group.mutationEvidence,
-        expectedContext: context,
-        pinnedSigningKeys,
-      });
-      head = resultHead;
-      bundles = nextBundles;
-      return verified;
-    },
-  );
-  const input = {
-    database,
-    scopeId: walletScopeId(),
-    seed: SEED,
-    keyHandle,
-    owner,
-    enrollmentEpoch: 1,
-    remote: { readCurrentHead: async () => evidence(), mutateHead },
-    runtime,
-    signal: new AbortController().signal,
-    isCurrentProfile: () => true,
-  };
-  expect(await runBrowserEncryptedWalletBackupOwnerWorkerCycle(input)).toEqual({
-    kind: "head-accepted",
-  });
-  let idle = false;
-  for (let cycle = 0; cycle < 8; cycle++) {
-    const result = await runBrowserEncryptedWalletBackupOwnerWorkerCycle(input);
-    expect(["committed", "idle"]).toContain(result.kind);
-    if (result.kind === "idle") {
-      idle = true;
-      break;
-    }
-  }
-  expect(idle).toBe(true);
-  expect(mutateHead.mock.calls.length).toBeGreaterThanOrEqual(1);
-  expect(bundles.length).toBeGreaterThanOrEqual(1);
-}
-
-it("uses an owner-rehydrated conditional Buy successor for a later real Sell preparation and submission", async () => {
-  vi.spyOn(Date, "now").mockReturnValue(20_000);
-  const source = await ownerTargetedRangeFixture("Buy");
-  const f = await ownerTargetedRecoveryFixture(source);
-  try {
-    expect(await recoverBrowserTargetedAsset(f.input)).toEqual({ kind: "restored-backup" });
-    // An independently received signed top-up pays the subsequent order and source fees.
-    const topup = source.signOutput(
-      OutputData.createSingleDeterministicData(
-        512,
-        new Uint8Array(64).fill(99),
-        0,
-        source.proof.id,
-      ),
-    );
-    await admitBrowserReceivedProofs({
-      seed: source.seed,
-      sourceOperationId: "owner-targeted-topup",
-      mintUrl: MINT_URL,
-      unit: "msat",
-      wallet: f.wallet,
-      proofs: [
-        {
-          ...topup,
-          mintUrl: MINT_URL,
-          unit: "msat",
-          conditionId: source.asset.conditionId,
-          outcomeCollection: source.asset.outcomeLabel,
-        },
-      ],
-      derivationAuthority: null,
-      proofConditionalAssets: new Map([[topup.secret, source.asset]]),
-      database: f.database,
-      lockManager: immediateLockManager(),
-    });
-    const restored = await getBoundedCanonicalRangeProofsForKeyset(
-      MINT_URL,
-      {
-        scopeId: f.input.scopeId,
-        unit: "msat",
-        keysetId: source.proof.id,
-        asset: {
-          kind: "conditional",
-          conditionId: source.asset.conditionId,
-          outcomeCollection: source.asset.outcomeLabel,
-        },
-      },
-      f.database,
-    );
-    expect(restored.map((p) => p.secret).sort()).toEqual(
-      [source.proof.secret, topup.secret].sort(),
-    );
-    const preparation = persistedPreparation("owner-rehydrated-next-sell", "FOK", {
-      side: "Sell",
-      tokenSide: "Outcome",
-      amountSubunits: 1000,
-      minimumFillAmountSubunits: 1000,
-    });
-    expect(preparation.offerKeyset.id).toBe(source.proof.id);
-    const counters = new BrowserWalletCounterSource(
-      { database: f.database, scopeId: f.input.scopeId },
-      { mintUrl: MINT_URL, unit: "msat" },
-    );
-    expect((await counters.snapshot())[source.proof.id]).toBe(source.nextCounter);
-    const wallet = sourceWallet();
-    const swap = vi.spyOn(wallet, "prepareConditionalSwap");
-    const engine = engineMock();
-    const coordinator = createCoordinator(f.database, wallet, engine, {});
-    await expect(
-      coordinator.prepareAndSubmit({ seed: source.seed, preparation, candidates: restored }),
-    ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
-    expect(swap.mock.calls[0]?.[0].inputs.map((p) => p.secret).sort()).toEqual(
-      [source.proof.secret, topup.secret].sort(),
-    );
-    expect((await counters.snapshot())[source.proof.id]).toBeGreaterThan(source.nextCounter);
-    expect(engine.createCalls).toBe(1);
-    expect(engine.submitCalls).toBe(1);
-    expect(
-      (await f.database.custodyProofs.get([f.input.scopeId, f.local.proofId]))?.selectability,
-    ).toBe("spent");
-    expect(
-      await readCtfRangePreparation(f.input.scopeId, preparation.operationId, f.database),
-    ).not.toBeNull();
-    expect(await f.database.custodyReservations.count()).toBeGreaterThan(0);
-  } finally {
-    await disposeOwnerTargetedRecoveryFixtures();
-  }
 });

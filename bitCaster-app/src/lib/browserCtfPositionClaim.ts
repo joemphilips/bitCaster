@@ -409,7 +409,7 @@ async function claimWhileLocked(
     for (const proofId of exact.targets.keys()) {
       if (
         !exact.covered.has(proofId) &&
-        !(await isTerminalTarget(context.database, exact.rows.get(proofId), context.seed))
+        !(await isTerminalTarget(context.database, exact.rows.get(proofId)))
       ) {
         failure = new BrowserCtfClaimBoundaryError("profile-ownership");
         break;
@@ -641,12 +641,11 @@ function markTargetCovered(exact: ExactTargetState | null, proofIds: readonly st
 async function isTerminalTarget(
   database: BitcasterDB,
   row: BrowserCustodyProofRow | undefined,
-  seed: Uint8Array,
 ): Promise<boolean> {
   if (row?.selectability === "spent") return true;
   if (row?.selectability !== "verified-losing") return false;
   try {
-    await requireBrowserCtfVerifiedLosingProofAuthority(database, row, seed);
+    await requireBrowserCtfVerifiedLosingProofAuthority(database, row);
     return true;
   } catch {
     return false;

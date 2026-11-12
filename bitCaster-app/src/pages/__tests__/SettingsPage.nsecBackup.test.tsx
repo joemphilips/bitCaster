@@ -2,10 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter } from "react-router";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey } from "nostr-tools/pure";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import * as bip39 from "@/lib/bip39";
+import {
+  registerBrowserRecoveryIndex,
+  type BrowserRecoveryIndex,
+} from "@/lib/browserRecoveryIndex";
 import {
   activeBrowserWalletScopeId,
   browserWalletIdFromMnemonic,
@@ -636,6 +640,12 @@ describe("SettingsPage wallet replacement", () => {
         },
       },
     });
+
+    // The engine acknowledged the index of this wallet, which used no keyset.
+    const unregisterIndex = registerBrowserRecoveryIndex(oldScopeId!, {
+      prepareSeedHandoff: async () => ({ kind: "acknowledged", listed: [] }),
+    } as unknown as BrowserRecoveryIndex);
+    onTestFinished(unregisterIndex);
 
     await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));

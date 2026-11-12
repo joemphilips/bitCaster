@@ -70,7 +70,6 @@ import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 
-const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
 const receiveDraftFactory = vi.hoisted(() => ({
   counterSource: undefined as CounterSource | undefined,
   wallet: undefined as BrowserDurableWalletReceiveWallet | undefined,
@@ -86,10 +85,6 @@ vi.mock("../../stores/wallet", () => ({
     }
     return receiveDraftFactory.wallet;
   },
-}));
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: requireNewWritePermission,
 }));
 
 const MINT = "https://mint.example";
@@ -120,8 +115,6 @@ const seed = new Uint8Array(64).fill(1);
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
-  requireNewWritePermission.mockClear();
-  requireNewWritePermission.mockResolvedValue(undefined);
   receiveDraftFactory.counterSource = undefined;
   receiveDraftFactory.wallet = undefined;
   receiveDraftFactory.afterPrepare = undefined;
@@ -200,17 +193,6 @@ describe("browser durable ordinary receive", () => {
     expect(receiveOperation.record.operation.semanticKind).toBe("generic-receive");
     expect(receiveOperation.record.operation.proofStorage.pinReasons).toEqual([]);
     expect(receiveOperation.operationId).toBe(receiveOperation.record.operation.operationId);
-
-    const desiredRows = await database.encryptedWalletBackupV2DesiredAssets.toArray();
-    expect(desiredRows).toHaveLength(1);
-    expect(desiredRows[0]).toMatchObject({
-      mintUrl: MINT,
-      unit: "msat",
-      assetIdentity: `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`,
-      activeProofCount: 2,
-      desiredAction: "replace",
-      syncState: "pending",
-    });
 
     const receivedProofIds = new Set(rows.map((row) => row.proofId));
     const authorities = await database.custodyProofBackupAuthorities.toArray();
@@ -497,31 +479,6 @@ describe("browser durable ordinary receive", () => {
     expect(await database.proofs.count()).toBe(0);
   });
 
-  it("refuses a new receive before deterministic output preparation", async () => {
-    const database = createDatabase();
-    const preview = receivePreview();
-    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
-    requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(
-      receiveBrowserDurableWalletToken({
-        token: "cashuB-token",
-        mintUrl: MINT,
-        unit: "msat",
-        wallet: receiveWallet,
-        context: receiveContext(database),
-      }),
-    ).rejects.toThrow("Another browser changed this wallet");
-
-    expect(receiveWallet.prepareSwapToReceive).not.toHaveBeenCalled();
-    expect(await database.custodyScopes.count()).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-  });
-
   it("persists the exact preview before mint completion and replays it after an all-UNSPENT restart", async () => {
     const database = createDatabase();
     const preview = receivePreview();
@@ -547,19 +504,12 @@ describe("browser durable ordinary receive", () => {
     vi.mocked(restarted.checkProofsStates).mockResolvedValue(
       statesFor(preview, CheckStateEnum.UNSPENT) as never,
     );
-    requireNewWritePermission.mockClear();
-    requireNewWritePermission.mockRejectedValue(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
     const recovered = await recoverBrowserDurableWalletReceives({
       context,
       walletForMint: async () => restarted,
     });
 
     expect(recovered.pending).toBe(0);
-    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(first.prepareSwapToReceive).toHaveBeenCalledOnce();
     expect(restarted.prepareSwapToReceive).not.toHaveBeenCalled();
     expect(restarted.completeSwap).toHaveBeenCalledWith(
@@ -655,7 +605,6 @@ describe("browser durable ordinary receive", () => {
     }
 
     expect(await database.walletCounterCursors.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
     expect(await database.custodyOperations.count()).toBe(0);
     expect(await database.custodyArtifacts.count()).toBe(0);
     expect(await database.custodyProofs.count()).toBe(0);
@@ -845,7 +794,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual(["active-reservation"]);
     expect(await database.custodyProofs.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
 
     const restarted = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
     const recovered = await recoverBrowserDurableWalletReceives({
@@ -867,7 +815,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
   });
 
   it("repairs the display cache from current inventory after an after-commit failure", async () => {
@@ -890,7 +837,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
 
     const restarted = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
     const recovered = await recoverBrowserDurableWalletReceives({
@@ -1032,7 +978,6 @@ describe("browser durable ordinary receive", () => {
     expect(second.operationId).toBe(first.operationId);
     expect(vi.mocked(receiveWallet.prepareSwapToReceive)).toHaveBeenCalledOnce();
     expect(outgoingTransfer).toHaveBeenCalledOnce();
-    expect(requireNewWritePermission).toHaveBeenCalledOnce();
     expect(await database.walletCounterCursors.get([scopeId, KEYSET_ID])).toMatchObject({
       next: 22,
     });

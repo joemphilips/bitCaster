@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   recoverKeysetCountersForMint: vi.fn(),
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
-  resumeBackupAfterRecovery: vi.fn(),
+  uploadIndexAfterRecovery: vi.fn(),
   resyncBrowserKeysetsInUse: vi.fn(),
   runBrowserSeedPositionRestorePass: vi.fn(),
 }));
@@ -37,8 +37,9 @@ vi.mock("@/lib/browserSeedPositionRestore", () => ({
   runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));
 
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: mocks.resumeBackupAfterRecovery,
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: mocks.uploadIndexAfterRecovery,
 }));
 
 const MNEMONIC_A =
@@ -83,7 +84,7 @@ describe("useBrowserCtfRangeOrderRecovery wallet activation", () => {
     const firstRange = blockedRange();
     const secondRange = blockedRange();
     const passEnded = deferred<void>();
-    mocks.resumeBackupAfterRecovery.mockImplementation(() => passEnded.resolve());
+    mocks.uploadIndexAfterRecovery.mockImplementation(() => passEnded.resolve());
     mountRecovery();
     await act(() => firstRange.started);
 
@@ -103,13 +104,13 @@ describe("useBrowserCtfRangeOrderRecovery wallet activation", () => {
     await act(() => passEnded.promise);
     expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
     expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).toHaveBeenCalledOnce();
-    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledExactlyOnceWith(SCOPE_A);
+    expect(mocks.uploadIndexAfterRecovery).toHaveBeenCalledExactlyOnceWith(SCOPE_A);
   });
 
   it("restarts recovery when a failed handoff activates the same wallet again (A -> '' -> A)", async () => {
     const firstRange = blockedRange();
     const passEnded = deferred<void>();
-    mocks.resumeBackupAfterRecovery.mockImplementation(() => passEnded.resolve());
+    mocks.uploadIndexAfterRecovery.mockImplementation(() => passEnded.resolve());
     mountRecovery();
     await act(() => firstRange.started);
 
@@ -120,7 +121,7 @@ describe("useBrowserCtfRangeOrderRecovery wallet activation", () => {
       await drainMicrotasks();
     });
     expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).not.toHaveBeenCalled();
-    expect(mocks.resumeBackupAfterRecovery).not.toHaveBeenCalled();
+    expect(mocks.uploadIndexAfterRecovery).not.toHaveBeenCalled();
 
     // The handoff fails and restores the same wallet. The props do not change.
     await act(async () => {
@@ -133,7 +134,7 @@ describe("useBrowserCtfRangeOrderRecovery wallet activation", () => {
     expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).toHaveBeenCalledOnce();
     expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
     expect(mocks.runBrowserSeedPositionRestorePass).toHaveBeenCalledOnce();
-    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledExactlyOnceWith(SCOPE_A);
+    expect(mocks.uploadIndexAfterRecovery).toHaveBeenCalledExactlyOnceWith(SCOPE_A);
   });
 
   function mountRecovery() {

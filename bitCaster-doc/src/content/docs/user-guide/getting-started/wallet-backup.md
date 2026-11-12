@@ -1,21 +1,21 @@
 ---
-title: 'Encrypted wallet backup'
-description: 'What to keep safe, what wallet backup can restore, and what remains private'
+title: 'Wallet backup'
+description: 'What to keep safe, what the wallet backup can restore, and what remains private'
 sidebar:
   order: 3
 ---
 
 Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
-data while a trade, payment, or refund is unresolved. Encrypted backup helps
-you recover wallet assets. It does not replace the phrase or every local record.
+data while a trade, payment, or refund is unresolved. The wallet backup helps a
+new browser find your funds and positions. It does not replace the phrase or
+every local record.
 
-:::caution
-The limited beta at bitcaster.market does not run the encrypted backup service
-yet. Your recovery phrase is the only backup of your wallet. A new browser
-with the phrase restores funds and positions from the mint, as
-[Open your wallet in a new browser](#open-your-wallet-in-a-new-browser)
-describes. Do not clear the site data of a browser while one of its trades,
-payments, or refunds is unresolved.
+:::note
+The wallet backup is always on. It is an encrypted list of the keysets that
+the wallet used: one keyset for each asset and market outcome. The matching
+engine stores it. Only your recovery phrase can read it. It holds no ecash,
+no amounts, and no spending keys. There is no setting that turns it off. The
+backup needs no sign-in.
 :::
 
 ## Seed reminder for deposits
@@ -23,8 +23,8 @@ payments, or refunds is unresolved.
 Top-up and deposit screens show a non-blocking reminder until you view the
 wallet's recovery phrase in Settings, then Cashu. The reminder appears again
 each time you open one of these screens. Viewing the phrase acknowledges the
-reminder for the current wallet. It does not confirm the encrypted backup or
-prove that you made an external backup. A different wallet starts with a new
+reminder for the current wallet. It does not prove that you made an external
+backup. A different wallet starts with a new
 reminder.
 
 ## Back up your Nostr key separately
@@ -46,9 +46,10 @@ bitCaster cannot display its private key.
 
 ## What you must keep
 
-The backup service can be unavailable, refuse an upload, or lose its data.
-A failed upload leaves the affected ecash records, called proofs, in local
-storage. The web app must not discard them as backed up.
+The matching engine can be unavailable or refuse a backup upload. Trading
+continues, and the app tries the upload again later. Your ecash records, called
+proofs, stay only in local storage: the backup holds no proofs. A failed upload
+removes nothing from the browser.
 
 CLI recovery from your phrase scans deterministic regular `msat` proofs by
 default. This includes new ordinary refund outputs after the mint signs them,
@@ -141,9 +142,13 @@ outputs, it adds the funds and positions to this browser.
 
 When the browser checks the keysets that it uses, it sends to the mint the next
 100 outputs of each keyset. These outputs are not signed yet. The mint can link
-them to this recovery phrase when another browser uses them later. A future
-version replaces this keyset check with the encrypted backup, which stores the
-highest used output of each keyset.
+them to this recovery phrase when another browser uses them later. The wallet
+backup holds no output positions, so this keyset check stays.
+
+When the check before an order finds outputs of another browser, or the mint
+refuses outputs that another browser already used, the app shows **This wallet
+was used in another browser. Use one browser at a time.** It also reads the
+wallet backup again.
 
 If the app cannot add the outputs that it found, it shows
 **Positions could not be restored from the mint.** with **Retry**. The funds
@@ -155,27 +160,34 @@ still pending at the mint. No order was submitted. Try again later.**
 
 The web app has two independent wallet features. It enables both by default.
 
-- Encrypted proof backup stores an encrypted copy of recoverable proofs.
-- Display-only asset monitoring helps the app identify an exact asset that may
-  be missing from the local wallet.
+- The wallet backup lists the keysets that the wallet used. It is always on.
+- Display-only asset monitoring shows your portfolio. You can turn it off.
 
-The live wallet database remains in your browser. These features help if the
-browser removes stored data or you reopen a previously used wallet.
+The live wallet database remains in your browser. The backup helps when the
+browser removes stored data or you open the wallet in a new browser.
 
-## Encrypted proof backup
+## Wallet backup
 
-Only keys derived from your 12-word recovery phrase can decrypt the backup.
-The backup service can associate an authenticated account with a wallet id. It
-receives an opaque asset locator, a declared amount, approximate stored size,
-object count, update timing, and network metadata. It does not receive raw mint
-URLs, condition or market ids, trade ids, proof bodies, proof secrets, or
-spending keys. It cannot spend your funds or read the encrypted proof contents.
+Only keys derived from your 12-word recovery phrase can read or change the
+backup. The app writes it when the wallet first uses a new keyset, for example
+in a new market. A trade in a market that the backup already lists writes
+nothing, and a failed order writes nothing. A trade never waits for the backup.
+When the matching engine is unavailable, the app tries again later.
 
-Encryption protects spending authority. It does not make wallet activity
-anonymous from the matching engine. Asset monitoring separately lets the
-matching engine associate an authenticated user and wallet id with approved
-asset, amount, condition, and activity metadata. The matching engine and backup
-service can correlate the shared wallet id.
+At each read and each write, the matching engine sees a request key that
+belongs to your recovery phrase, the time, and network metadata such as your IP
+address. So it can see when you open the wallet. It also sees the approximate
+size of the backup. It does not see mint URLs, markets, outputs, amounts, or
+spending keys. The backup cannot spend your funds. Encryption protects your
+funds. It does not make wallet activity anonymous from the matching engine.
+
+If the app cannot read the backup, or the backup is full, the app shows a
+persistent message and does not change the backup. Trading continues. If the
+backup uses a newer format, update the app.
+
+To delete the backup, use the CLI command `wallet backup delete`. It needs the
+recovery phrase. A browser that still holds the phrase writes the backup again
+at its next upload.
 
 The mint receives neither your matching-engine identity nor asset-monitoring
 data. The mint only receives the Cashu requests that are required for wallet
@@ -228,20 +240,12 @@ the saved estimate.
 
 ## Web app restore order
 
-When the web app needs proofs for one asset, it uses this order:
-
-1. It uses proofs in local browser storage.
-2. If the validated backup inventory contains the asset, it restores that
-   asset's current encrypted bundle.
-3. It makes one bounded targeted recovery attempt only when monitoring
-   identifies an exact missing asset.
+When the web app needs proofs for one asset, it uses the proofs in local
+browser storage. The wallet backup holds no proofs.
 
 The restore in a new browser and the check for use in another browser above
-are the only automatic broad checks of the mint. The web app makes no other
-broad keyset scan when monitoring does not identify an exact missing asset. If
-the backup service is unavailable, the web app shows a persistent error. Unavailability does not prove that an asset is absent and does not
-authorize automatic mint recovery. Broad recovery remains available through
-the CLI.
+are the only automatic broad checks of the mint. Broad recovery remains
+available through the CLI.
 
 If a trade needs Participation Score and locally available funds are insufficient,
 the app checks wallet recovery. If recovery is unavailable, it offers Retry
@@ -258,82 +262,34 @@ keysets before a full recovery. It is not full recovery by itself.
 
 ## Multiple wallets
 
-Use the ID that first enabled backup for a recovery phrase. This release does
-not transfer that binding to another ID and has no backup-owner selector.
-The recovery phrase and backup realm derive the encryption keys. Your Nostr
-secret key is not the encryption key.
-
-If the app reports a different ID, sign in with the original ID. The app keeps
-your local funds and unfinished work. It does not create an empty replacement
-backup. A revoked or deleted backup does not release the original ID binding.
-CLI seed recovery remains available for supported regular-msat funds within
-the scanned range. It does not restore the complete wallet operation history.
-
-One authenticated account can retain several independent wallet ids. Each
-wallet id belongs to one wallet seed. Funds never move between wallet ids. The
-web app displays only the wallet for the recovery phrase currently open:
+Each recovery phrase has its own wallet and its own backup. The backup belongs
+to the phrase, not to a Nostr ID. Funds never move between wallets. The web app
+shows only the wallet of the phrase that is open:
 
 - entering a new recovery phrase starts a new, empty wallet;
-- entering a previously used recovery phrase downloads and opens that wallet's
-  latest encrypted backup again.
+- entering a previously used recovery phrase opens that wallet and restores
+  it from the mint.
 
-The service retains one current head and the current per-asset bundles for each
-wallet id. It does not provide old wallet states as recoverable versions. Old
-versions could contain proofs that have since been spent.
-
-Browsers that use the same recovery phrase belong to the same wallet. The
-latest authenticated backup can tell another browser that an exact conditional
-proof belongs to a losing outcome, even if that browser missed intermediate
-backup updates. The browser keeps that proof complete and visible, but does not
-select it for spending. Synchronization does not silently delete the proof or
-overwrite an unfinished local wallet operation.
-
-The initial 64 MiB encrypted-storage allowance is shared by all wallet ids under
-the same authenticated account. An account may create at most 256 distinct
-seed-derived wallet ids over its lifetime. Reopening a previously used seed
-does not consume another slot. Revoking or deleting a wallet id does not return
-its slot. If a recovery phrase is permanently lost, its encrypted data cannot
-be identified or deleted in this release. It continues to use part of the
-storage allowance. Keep every phrase for a wallet you may want to reopen.
+Keep every phrase for a wallet that you may want to open again.
 
 ## Use the same wallet in another browser
 
-The app shows **Preparing wallet backup** while it checks your backup.
-The deposit and top-up screens show this message where you enter an amount.
-Wait for the check to finish before you create an invoice or add ecash.
-You do not need to keep clicking the action button.
-If another tab uses the wallet, close that tab when you no longer need it.
-
-If backup stops, select **Retry wallet backup** in the same screen.
-Retry keeps your amount, local funds, and unfinished work.
-It does not create or submit an invoice.
-After backup is ready, select the action button to continue.
-If the message asks you to sign in, sign in or reload the page if you are already signed in.
-This check does not require sign-in when backup is disabled. When backup is enabled, sign in before the app checks or creates its backup.
-Retry does not guarantee that backup or recovery can finish.
-
-A fresh browser restores and checks the wallet's current encrypted backup
-before it enables wallet actions or uploads new backup data. You can read the
-app while recovery runs. If recovery cannot finish, wallet actions stay paused.
-
 Use one browser at a time for wallet actions. Another open browser can still
-run background work. When another browser changes the wallet backup, this
-browser can stop new wallet actions and automatic backup uploads.
+run background work. The backup does not keep the outputs of two browsers in
+step. The app checks each order with the mint before it submits the order, so
+a move to another browser does not lose funds.
 
-The app keeps local proofs and unresolved operations. It does not
-automatically merge different browser states. Reload starts recovery. It does
-not delete local data or guarantee that wallet actions can resume.
+**Replace Wallet** in Cashu Settings reads the backup again first. It uploads
+the keysets that the backup does not list yet. It replaces the wallet only when
+the matching engine confirms a backup that lists every keyset of the wallet, or
+when the matching engine refuses to store a larger backup. In that case, the
+app shows that the backup of the previous wallet is incomplete. Use
+`bitcaster wallet recover-seed` to restore that wallet fully. While the matching
+engine is unavailable, the app keeps the current wallet. Try again later.
 
-The recovery message explains what remains unresolved. Use its retry action
-to check recovery again. Keep browser storage while recovery is incomplete.
-The app resumes new wallet actions only after it has checked the current
-backup and resolved the local state that blocks recovery.
-
-An unpaid invoice can still block recovery if the wallet has already prepared
-its ecash outputs. This can happen even if you no longer intend to pay the
-invoice. The app keeps the invoice and its prepared outputs. It does not
-replace them automatically. Reloading or retrying does not guarantee that this
-browser can resume wallet actions.
+Removing a resolved losing position is local to this browser. A later restore
+of the wallet in another browser can show the position again. It has no value,
+and you can remove it again.
 
 ## CLI privacy and emergency recovery
 
@@ -348,12 +304,16 @@ profile identity. A replaced profile,
 invalid permissions, or an invalid schema still causes refusal. This does not
 retry a command or repair the profile.
 
-The command-line wallet can use complete-local privacy mode. This mode can
-omit both encrypted backup and asset monitoring. It keeps complete wallet
-state in its local durable store.
+The command-line wallet keeps complete wallet state in its local durable store.
+It does not write the wallet backup yet. Markets that only the CLI used are
+not in the backup.
 
-Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when the backup
-service is unavailable. Without an option, the command scans regular `msat`
+`wallet backup delete` deletes the wallet backup at the matching engine. Supply
+`--wallet-seed-hex-file` or `--recovery-phrase-file`. `--realm` selects the
+environment: `bitcaster-production` by default, or `bitcaster-staging`.
+
+Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when a browser
+restore is incomplete. Without an option, the command scans regular `msat`
 keysets only. Add `--all-conditions` to restore market positions too: the
 command checks the first 128 counters of each market in the public catalogue,
 and it recovers each market where the mint signed an output of this seed. The

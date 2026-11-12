@@ -393,36 +393,6 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
   });
 
-  it("fails durably when the single post-recovery replan remains insufficient", async () => {
-    mocks.candidates = [];
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "recovered" });
-    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-
-    await expect(submitRangeOrder("client-recovery-replan")).rejects.toMatchObject({
-      code: "asset-recovery-failed",
-    });
-
-    expect(mocks.planConsolidation).toHaveBeenCalledOnce();
-    expect(mocks.recordMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: 0, code: "asset-recovery-failed", kind: "funds" }),
-    );
-  });
-
-  it("uses the one post-recovery replan when it becomes ready", async () => {
-    mocks.candidates = [];
-    mocks.recoverFundedAsset.mockImplementation(async () => {
-      mocks.candidates = [{ id: "regular-keyset", amount: 10_000, secret: "recovered", C: "02" }];
-      return { kind: "recovered" };
-    });
-
-    await expect(submitRangeOrder("client-recovery-ready")).resolves.toEqual({
-      orderId: "order-1",
-    });
-
-    expect(mocks.planConsolidation).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
-  });
-
   it("submits a durable FOK ticket as GUI FOK", async () => {
     const ticket: TradeTicket = {
       marketId: "condition-1-YES",
@@ -612,41 +582,6 @@ describe("submitBrowserCtfRangeOrder", () => {
       expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
     },
   );
-
-  it("reselects mixed Sell sources after funded recovery restores an exact held position", async () => {
-    const held = {
-      id: "conditional-keyset",
-      amount: ONE_SHARE_FACE_SUBUNITS,
-      secret: "recovered-held-share",
-      C: "held-C",
-    };
-    const cash = { id: "regular-keyset", amount: 1, secret: "fee-cash", C: "cash-C" };
-    let restored = false;
-    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.getBoundedCanonicalRangeProofsForKeyset.mockImplementation((_mintUrl, { keysetId }) =>
-      keysetId === "conditional-keyset" ? (restored ? [held] : []) : [cash],
-    );
-    mocks.recoverFundedAsset.mockImplementation(async () => {
-      restored = true;
-      return { kind: "recovered" };
-    });
-
-    await expect(
-      submitSellOrder(
-        "client-recovered-mixed-sell",
-        feeFacts("Sell"),
-        "condition-recovered-mixed-sell",
-      ),
-    ).resolves.toEqual({ orderId: "order-1" });
-
-    expect(mocks.recoverFundedAsset).toHaveBeenCalledOnce();
-    expect(mocks.consolidateRound).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        loadSourceInputs: expect.any(Function),
-      }),
-    );
-  });
 
   it("keeps the consented fee-funded Sell mode after consolidating fragmented shares", async () => {
     const actualSourceOperation = await vi.importActual<

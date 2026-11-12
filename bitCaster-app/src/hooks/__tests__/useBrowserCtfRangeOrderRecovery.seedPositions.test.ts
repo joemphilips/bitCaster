@@ -87,9 +87,10 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: vi.fn(async () => ({ recovered: 0, pending: [] })),
 }));
 
-// The hook calls this once at the end of each recovery pass.
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: vi.fn(() => {
+// The hook asks for an index upload once at the end of each recovery pass.
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: vi.fn(() => {
     mocks.passCompleted.shift()?.();
   }),
 }));
@@ -658,9 +659,9 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(mint.requests.filter(({ url }) => url.pathname === "/api/v1/markets/query")).toEqual([]);
   });
 
-  it("restores positions into a wallet database of the deployed release 3 schema", async () => {
-    // Release 3 writes schema version 21. The restore keeps its state in its own
-    // database, so the wallet schema and its rows stay as the previous release wrote them.
+  it("restores positions without a change to the wallet database schema", async () => {
+    // Release 5b writes schema version 22. The restore keeps its state in its own
+    // database, so the wallet schema and its rows stay as the release wrote them.
     const regular = regularKeyset();
     const market = binaryMarket("ab".repeat(32));
     const mint = new FakeMint(regular, [market.yes, market.no]);
@@ -677,17 +678,17 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
       receivedAt: 1,
     } as StoredProofRow;
     await db.proofs.put(legacyRow);
-    expect(db.verno).toBe(21);
+    expect(db.verno).toBe(22);
 
     await runStartupPass();
 
     expect(await selectableHoldings()).toContainEqual(position(market.yes, 4));
-    expect(db.verno).toBe(21);
+    expect(db.verno).toBe(22);
     expect(await db.proofs.get("legacy-secret")).toEqual(legacyRow);
     const reopened = new BitcasterDB(db.name);
     try {
       await reopened.open();
-      expect(reopened.verno).toBe(21);
+      expect(reopened.verno).toBe(22);
     } finally {
       reopened.close();
     }

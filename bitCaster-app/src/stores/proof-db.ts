@@ -40,98 +40,10 @@ import type {
 } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 import type { BrowserProofBackupAuthorityTableRow } from "./browser-proof-backup-authority";
-import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 import {
   BrowserWalletCounterDexieStore,
   type BrowserWalletCounterAdvanceResult,
 } from "./browser-wallet-counter-db";
-import type { EncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
-import type {
-  TargetedAssetRecoveryAttemptKey,
-  TargetedAssetRecoveryCompletedOutcome,
-} from "@bitcaster/client-sdk/targetedAssetRecovery";
-
-/** The latest authenticated enrollment lifecycle receipt for one wallet. */
-export interface EncryptedWalletBackupDexieEnrollmentResultRow {
-  realm: string;
-  walletId: string;
-  record: EncryptedWalletBackupAccountOperationResultRecord;
-}
-
-/** One durable retry schedule for one wallet scope and encrypted-backup wallet. */
-export interface EncryptedWalletBackupDexieRetrySchedulerRow {
-  scopeId: string;
-  realm: string;
-  walletId: string;
-  attemptId: string;
-  retryStreak: number;
-  retryNotBeforeUnixMilliseconds: number;
-}
-
-export type EncryptedWalletBackupOwnerEnrollmentResultRow =
-  EncryptedWalletBackupDexieEnrollmentResultRow & { scopeId: string; ownerScopeId: string };
-export type EncryptedWalletBackupOwnerRetrySchedulerRow =
-  EncryptedWalletBackupDexieRetrySchedulerRow & { ownerScopeId: string };
-export type EncryptedWalletBackupOwnerPreparedMutationRow =
-  EncryptedWalletBackupV2PreparedMutationRow & {
-    removalBinding?: { readonly intentId: string; readonly proofSetCommitment: string };
-    ownerScopeId: string;
-    realm: string;
-    walletId: string;
-    enrollmentEpoch: number;
-  };
-export type EncryptedWalletBackupOwnerAcceptedHeadRow = EncryptedWalletBackupV2AcceptedHeadRow & {
-  ownerScopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-};
-export type EncryptedWalletBackupOwnerAssetReceiptRow = EncryptedWalletBackupV2AssetReceiptRow & {
-  ownerScopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-};
-export type EncryptedWalletBackupOwnerActiveDescriptorRow =
-  EncryptedWalletBackupV2ActiveDescriptorRow & {
-    ownerScopeId: string;
-    realm: string;
-    walletId: string;
-    enrollmentEpoch: number;
-  };
-
-export interface EncryptedWalletBackupOwnerDesiredAssetRow {
-  scopeId: string;
-  ownerScopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  localAssetKey: string;
-  assetLocator: string;
-  custodyRevision: string;
-  desiredAction: "replace" | "remove";
-  activeProofCount: number;
-  syncState: "pending" | "acknowledged" | "conflict" | "recovery-required";
-  lastObservedHeadVersion: number | null;
-  receiptDigest: string | null;
-}
-
-export interface EncryptedWalletBackupOwnerProofCoverageRow {
-  scopeId: string;
-  ownerScopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  proofId: string;
-  localAssetKey: string;
-  assetLocator: string;
-  custodyRevision: string;
-  bundleId: string;
-  bundleDescriptorDigest: string;
-  headVersion: number;
-  sourceKind: "head-restore" | "mutation-receipt";
-  receiptDigest: string | null;
-}
 
 /** One authoritative NUT-13 allocation cursor for one wallet scope and keyset. */
 export interface BrowserWalletCounterCursorRow {
@@ -147,75 +59,18 @@ export interface BrowserWalletCounterAssociationRow {
   unit: CashuProofUnit;
   keysetId: string;
   recoveryComplete: boolean;
+  /**
+   * The NUT-CTF identity of a conditional keyset, recorded when an order
+   * reserves its counters, so that the recovery index lists the keyset in
+   * its conditional form (ADR-051). Absent for a regular keyset and for a
+   * row that release 4 wrote.
+   */
+  conditional?: BrowserWalletCounterConditionalIdentity;
 }
 
-/** One immutable prepared V2 mutation for one scoped wallet authority. */
-export interface EncryptedWalletBackupV2PreparedMutationRow {
-  scopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  mutationId: string;
-  requestDigest: string;
-  canonicalUploadGroup: Uint8Array;
-  createdAtUnixMilliseconds: number;
-  localAssetKey: string;
-  assetLocator: string;
-  custodyRevision: string;
-  desiredAction: "replace" | "remove";
-  activeProofCount: number;
-}
-
-/** One accepted V2 current head for one scoped wallet authority. */
-export interface EncryptedWalletBackupV2AcceptedHeadRow {
-  scopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  headVersion: number;
-  activeBundleCount: number;
-  activeObjectCount: number;
-  activeSetDigest: string;
-  canonicalCurrentHead: Uint8Array;
-  localRecoveryStatus: "ready" | "recovery-required";
-  localRecoveryReason: "none" | "genuine-conflict";
-  localRecoveryVersion: number;
-}
-
-/** One current verified V2 receipt for one opaque local asset. */
-export interface EncryptedWalletBackupV2AssetReceiptRow {
-  scopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  localAssetKey: string;
-  assetLocator: string;
-  custodyRevision: string;
-  bundleId: string;
-  bundleDescriptorDigest: string;
-  canonicalSignedMutation: Uint8Array;
-  canonicalSignedReceipt: Uint8Array;
-}
-
-/** One active V2 bundle descriptor for one scoped wallet authority. */
-export interface EncryptedWalletBackupV2ActiveDescriptorRow {
-  scopeId: string;
-  realm: string;
-  walletId: string;
-  enrollmentEpoch: number;
-  bundleId: string;
-  assetLocator: string;
-  declaredAmount: string;
-  custodyRevision: string;
-  payloadCommitment: string;
-  objectCount: number;
-  canonicalDescriptor: Uint8Array;
-}
-
-/** One completed automatic recovery attempt for one exact authority tuple. */
-export interface BrowserTargetedAssetRecoveryAttemptRow extends TargetedAssetRecoveryAttemptKey {
-  outcome: TargetedAssetRecoveryCompletedOutcome;
-  completedAtUnixMilliseconds: number;
+export interface BrowserWalletCounterConditionalIdentity {
+  conditionId: string;
+  outcomeCollection: string;
 }
 
 interface StoredProofMetadata {
@@ -668,42 +523,10 @@ export class BitcasterDB extends Dexie {
     import("./durable-custody-types").BrowserCustodyConditionalKeysetRow,
     [string, string, string, string]
   >;
-  encryptedWalletBackupEnrollmentResults!: Table<
-    EncryptedWalletBackupDexieEnrollmentResultRow,
-    [string, string]
-  >;
-  encryptedWalletBackupRetrySchedulers!: Table<
-    EncryptedWalletBackupDexieRetrySchedulerRow,
-    [string, string, string]
-  >;
-  encryptedWalletBackupV2DesiredAssets!: Table<
-    EncryptedWalletBackupV2DesiredAssetRow,
-    [string, string]
-  >;
   walletCounterCursors!: Table<BrowserWalletCounterCursorRow, [string, string]>;
   walletCounterAssociations!: Table<
     BrowserWalletCounterAssociationRow,
     [string, string, CashuProofUnit, string]
-  >;
-  encryptedWalletBackupV2PreparedMutations!: Table<
-    EncryptedWalletBackupV2PreparedMutationRow,
-    [string, string, string, number]
-  >;
-  encryptedWalletBackupV2AcceptedHeads!: Table<
-    EncryptedWalletBackupV2AcceptedHeadRow,
-    [string, string, string, number]
-  >;
-  encryptedWalletBackupV2AssetReceipts!: Table<
-    EncryptedWalletBackupV2AssetReceiptRow,
-    [string, string, string, number, string]
-  >;
-  encryptedWalletBackupV2ActiveDescriptors!: Table<
-    EncryptedWalletBackupV2ActiveDescriptorRow,
-    [string, string, string, number, string]
-  >;
-  targetedAssetRecoveryAttempts!: Table<
-    BrowserTargetedAssetRecoveryAttemptRow,
-    [string, string, number, string]
   >;
   mintQuotes!: Table<BrowserMintQuoteRow, [string, "bolt11", string]>;
   outgoingCashuTransfers!: Table<BrowserOutgoingCashuTransferRow, [string, string]>;
@@ -714,38 +537,6 @@ export class BitcasterDB extends Dexie {
   >;
   participationScoreDeliveryPointers!: Table<
     BrowserParticipationScoreDeliveryPointerRow,
-    [string, string, string]
-  >;
-  encryptedWalletBackupOwnerEnrollmentResults!: Table<
-    EncryptedWalletBackupOwnerEnrollmentResultRow,
-    [string, string, string, string]
-  >;
-  encryptedWalletBackupOwnerRetrySchedulers!: Table<
-    EncryptedWalletBackupOwnerRetrySchedulerRow,
-    [string, string, string, string]
-  >;
-  encryptedWalletBackupOwnerPreparedMutations!: Table<
-    EncryptedWalletBackupOwnerPreparedMutationRow,
-    [string, string, string, string, number]
-  >;
-  encryptedWalletBackupOwnerAcceptedHeads!: Table<
-    EncryptedWalletBackupOwnerAcceptedHeadRow,
-    [string, string, string, string, number]
-  >;
-  encryptedWalletBackupOwnerAssetReceipts!: Table<
-    EncryptedWalletBackupOwnerAssetReceiptRow,
-    [string, string, string, string, number, string]
-  >;
-  encryptedWalletBackupOwnerActiveDescriptors!: Table<
-    EncryptedWalletBackupOwnerActiveDescriptorRow,
-    [string, string, string, string, number, string]
-  >;
-  encryptedWalletBackupOwnerDesiredAssets!: Table<
-    EncryptedWalletBackupOwnerDesiredAssetRow,
-    [string, string, string]
-  >;
-  encryptedWalletBackupOwnerProofCoverage!: Table<
-    EncryptedWalletBackupOwnerProofCoverageRow,
     [string, string, string]
   >;
 
@@ -951,54 +742,33 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupOwnerProofCoverage:
         "&[scopeId+ownerScopeId+proofId], [scopeId+ownerScopeId+localAssetKey], [scopeId+ownerScopeId+headVersion]",
     });
-    this.encryptedWalletBackupEnrollmentResults = this.table(
-      "encryptedWalletBackupWalletEnrollmentResults",
-    );
-    this.encryptedWalletBackupRetrySchedulers = this.table(
-      "encryptedWalletBackupWalletRetrySchedulers",
-    );
-    this.encryptedWalletBackupV2PreparedMutations = this.table(
-      "encryptedWalletBackupV2WalletPreparedMutations",
-    );
-    this.encryptedWalletBackupV2AcceptedHeads = this.table(
-      "encryptedWalletBackupV2WalletAcceptedHeads",
-    );
-    this.encryptedWalletBackupV2AssetReceipts = this.table(
-      "encryptedWalletBackupV2WalletAssetReceipts",
-    );
-    this.encryptedWalletBackupV2ActiveDescriptors = this.table(
-      "encryptedWalletBackupV2WalletActiveDescriptors",
-    );
-    this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
+    // Release 5b: the engine recovery index (ADR-051) replaces the encrypted
+    // proof backup. Drop its tables in one forward-only version (ADR-034
+    // recovery index amendment, "No data migration"). An older app build then
+    // cannot open this database.
+    this.version(22).stores({
+      encryptedWalletBackupV2DesiredAssets: null,
+      encryptedWalletBackupWalletEnrollmentResults: null,
+      encryptedWalletBackupWalletRetrySchedulers: null,
+      encryptedWalletBackupV2WalletPreparedMutations: null,
+      encryptedWalletBackupV2WalletAcceptedHeads: null,
+      encryptedWalletBackupV2WalletAssetReceipts: null,
+      encryptedWalletBackupV2WalletActiveDescriptors: null,
+      targetedAssetRecoveryAttempts: null,
+      encryptedWalletBackupOwnerEnrollmentResults: null,
+      encryptedWalletBackupOwnerRetrySchedulers: null,
+      encryptedWalletBackupOwnerPreparedMutations: null,
+      encryptedWalletBackupOwnerAcceptedHeads: null,
+      encryptedWalletBackupOwnerAssetReceipts: null,
+      encryptedWalletBackupOwnerActiveDescriptors: null,
+      encryptedWalletBackupOwnerDesiredAssets: null,
+      encryptedWalletBackupOwnerProofCoverage: null,
+    });
     this.mintQuotes = this.table("mintQuotes");
     this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
     this.marketFundingHeads = this.table("marketFundingHeads");
     this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
     this.participationScoreDeliveryPointers = this.table("participationScoreDeliveryPointers");
-    this.encryptedWalletBackupOwnerEnrollmentResults = this.table(
-      "encryptedWalletBackupOwnerEnrollmentResults",
-    );
-    this.encryptedWalletBackupOwnerRetrySchedulers = this.table(
-      "encryptedWalletBackupOwnerRetrySchedulers",
-    );
-    this.encryptedWalletBackupOwnerPreparedMutations = this.table(
-      "encryptedWalletBackupOwnerPreparedMutations",
-    );
-    this.encryptedWalletBackupOwnerAcceptedHeads = this.table(
-      "encryptedWalletBackupOwnerAcceptedHeads",
-    );
-    this.encryptedWalletBackupOwnerAssetReceipts = this.table(
-      "encryptedWalletBackupOwnerAssetReceipts",
-    );
-    this.encryptedWalletBackupOwnerActiveDescriptors = this.table(
-      "encryptedWalletBackupOwnerActiveDescriptors",
-    );
-    this.encryptedWalletBackupOwnerDesiredAssets = this.table(
-      "encryptedWalletBackupOwnerDesiredAssets",
-    );
-    this.encryptedWalletBackupOwnerProofCoverage = this.table(
-      "encryptedWalletBackupOwnerProofCoverage",
-    );
   }
 
   override open(): PromiseExtended<this> {

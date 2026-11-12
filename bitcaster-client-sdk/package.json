@@ -207,14 +207,6 @@
       "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
       "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
     },
-    "./encryptedWalletBackupOwnerHttpAdapter": {
-      "types": "./dist/encryptedWalletBackupOwnerHttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerHttpAdapter.js"
-    },
-    "./encryptedWalletBackupOwnerClient": {
-      "types": "./dist/encryptedWalletBackupOwnerClient.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerClient.js"
-    },
     "./encryptedWalletBackupOwnerDiscovery": {
       "types": "./dist/encryptedWalletBackupOwnerDiscovery.d.ts",
       "import": "./dist/encryptedWalletBackupOwnerDiscovery.js"
@@ -226,10 +218,6 @@
     "./encryptedWalletBackupOwnerServiceCodec": {
       "types": "./dist/encryptedWalletBackupOwnerServiceCodec.d.ts",
       "import": "./dist/encryptedWalletBackupOwnerServiceCodec.js"
-    },
-    "./encryptedWalletBackupOwnerDeletionAuthority": {
-      "types": "./dist/encryptedWalletBackupOwnerDeletionAuthority.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerDeletionAuthority.js"
     },
     "./encryptedWalletBackupV2RequestProof": {
       "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
@@ -258,10 +246,6 @@
     "./encryptedWalletBackupNip98AccountAuthorization": {
       "types": "./dist/encryptedWalletBackupNip98AccountAuthorization.d.ts",
       "import": "./dist/encryptedWalletBackupNip98AccountAuthorization.js"
-    },
-    "./encryptedWalletBackupRetrySchedule": {
-      "types": "./dist/encryptedWalletBackupRetrySchedule.d.ts",
-      "import": "./dist/encryptedWalletBackupRetrySchedule.js"
     },
     "./encryptedWalletBackupServerCodec": {
       "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
@@ -550,10 +534,6 @@
     "./assetMonitoringReporter": {
       "types": "./dist/assetMonitoringReporter.d.ts",
       "import": "./dist/assetMonitoringReporter.js"
-    },
-    "./targetedAssetRecovery": {
-      "types": "./dist/targetedAssetRecovery.d.ts",
-      "import": "./dist/targetedAssetRecovery.js"
     },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",

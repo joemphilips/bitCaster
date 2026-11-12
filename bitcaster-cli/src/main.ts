@@ -2,6 +2,13 @@
 import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { seedRecoveryMnemonicBytes } from '@bitcaster-market/client-sdk/seedRecoveryMnemonic'
 import { readOwnerPrivateRecoveryPhraseFile } from '@bitcaster-market/client-sdk/seedRecoveryPhraseFile'
+import { deriveRecoveryIndexKeys } from '@bitcaster-market/client-sdk/recoveryIndexDocument'
+import {
+  RECOVERY_INDEX_REALMS,
+  createRecoveryIndexEngineStore,
+  type RecoveryIndexRealm,
+} from '@bitcaster-market/client-sdk/recoveryIndexEngine'
+import { deleteRecoveryIndexDocument } from '@bitcaster-market/client-sdk/recoveryIndexSync'
 import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
@@ -1729,6 +1736,77 @@ function registerWalletCommand(program: Command): void {
           ...(scanPolicy.scope === 'condition' ? ['--condition-id', scanPolicy.conditionId] : []),
           ...(options.allConditions === true ? ['--all-conditions'] : []),
         ])
+      },
+    )
+
+  const backup = wallet
+    .command('backup')
+    .description('Manage the encrypted recovery index of a seed at the engine.')
+  backup
+    .command('delete')
+    .description(
+      'Delete the engine recovery index of one seed. The engine keeps a tombstone. A browser that holds the seed writes the index again at its next upload. Supply exactly one owner-only seed or phrase file.',
+    )
+    .option(
+      '--wallet-seed-hex-file <path>',
+      'Owner-only file containing the 64-byte wallet seed as lowercase hex',
+    )
+    .option('--recovery-phrase-file <path>', 'Owner-only file containing an English BIP-39 phrase')
+    .addOption(
+      new Option('--realm <realm>', 'Recovery index realm of the engine')
+        .choices(Object.values(RECOVERY_INDEX_REALMS))
+        .default(RECOVERY_INDEX_REALMS.production),
+    )
+    .allowExcessArguments(false)
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli wallet backup delete --recovery-phrase-file ./phrase.txt',
+    )
+    .action(
+      async (options: {
+        walletSeedHexFile?: string
+        recoveryPhraseFile?: string
+        realm: RecoveryIndexRealm
+      }) => {
+        if (
+          (options.walletSeedHexFile === undefined) ===
+          (options.recoveryPhraseFile === undefined)
+        ) {
+          throwUsage(
+            'wallet backup delete requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+          )
+        }
+        const seed =
+          options.walletSeedHexFile !== undefined
+            ? new Uint8Array(
+                Buffer.from(await readPrivateWalletSeedFile(options.walletSeedHexFile), 'hex'),
+              )
+            : seedRecoveryMnemonicBytes(
+                await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
+              )
+        const keys = deriveRecoveryIndexKeys(seed, options.realm)
+        if (globalDryRun) {
+          // The request key is public. Never print the seed.
+          printDryRun('wallet.backup.delete', {
+            realm: options.realm,
+            requestPublicKey: keys.locatorPublicKey,
+          })
+          return
+        }
+        if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
+        const result = await deleteRecoveryIndexDocument(
+          createRecoveryIndexEngineStore({
+            engineBaseUrl: globalEngineUrl,
+            realm: options.realm,
+            keys,
+            fetchImpl: (input, init) =>
+              fetch(input, {
+                ...init,
+                signal: init?.signal ?? AbortSignal.timeout(DIRECT_ENGINE_READ_TIMEOUT_MS),
+              }),
+          }),
+        )
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
       },
     )
 

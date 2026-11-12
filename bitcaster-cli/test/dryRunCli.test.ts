@@ -358,6 +358,10 @@ const SUPPORTED: Record<string, { args: Args; method: string }> = {
     method: 'wallet.activity-sync',
   },
   'wallet watch': { args: () => ['wallet', 'watch'], method: 'wallet.watch' },
+  'wallet backup delete': {
+    args: (files) => ['wallet', 'backup', 'delete', '--wallet-seed-hex-file', files.seed],
+    method: 'wallet.backup.delete',
+  },
   'wallet invoice create': {
     args: () => ['wallet', 'invoice', 'create', '--amount-msat', '1000'],
     method: 'wallet.invoice.create',

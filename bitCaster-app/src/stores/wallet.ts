@@ -20,13 +20,9 @@ import {
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
-import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
-import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
 import i18n from "@/i18n";
-import {
-  BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
-  handoffBrowserEncryptedWalletBackupV2Seed,
-} from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
+import { BrowserSeedHandoffRefusal, handoffBrowserSeed } from "@/lib/browserSeedHandoff";
+import { prepareBrowserRecoveryIndexHandoff } from "@/lib/browserRecoveryIndex";
 import {
   activateBrowserWalletDatabase,
   db,
@@ -164,7 +160,7 @@ class WalletReplacementRefusal extends Error {
 }
 
 const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
-  WalletReplacementRefusal["code"] | BrowserEncryptedWalletBackupV2SeedHandoffRefusal["code"],
+  WalletReplacementRefusal["code"] | BrowserSeedHandoffRefusal["code"],
   string
 > = {
   "pending-orders": "wallet.replaceBlockedPendingOrders",
@@ -176,10 +172,7 @@ const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
 };
 
 function walletReplacementErrorMessage(error: unknown): string {
-  if (
-    error instanceof WalletReplacementRefusal ||
-    error instanceof BrowserEncryptedWalletBackupV2SeedHandoffRefusal
-  ) {
+  if (error instanceof WalletReplacementRefusal || error instanceof BrowserSeedHandoffRefusal) {
     return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
   }
   return i18n.t("wallet.replaceBlockedSafetyChecks");
@@ -242,7 +235,7 @@ export const useWalletStore = create<WalletState>()(
       generateMnemonic: () => {
         const previousWallet = get();
         if (previousWallet.mnemonic) {
-          throw new Error("Seed switching requires an acknowledged encrypted backup.");
+          throw new Error("Seed switching uses recoverFromMnemonic.");
         }
         const words = bip39.generate();
         const mnemonic = words.join(" ");
@@ -341,30 +334,13 @@ export const useWalletStore = create<WalletState>()(
           if (oldWalletId === null) {
             return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
           }
-          const backupDriver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId);
-          let replacementCommitted = false;
+          let handoff: Awaited<ReturnType<typeof handoffBrowserSeed>>;
           try {
-            const backupConfigured = resolveEncryptedWalletBackupConfiguration() !== null;
-            const ownerHandoff = await backupDriver?.prepareSeedHandoffOwnerAuthority();
-            await backupDriver?.quiesceForSeedHandoff();
-            await handoffBrowserEncryptedWalletBackupV2Seed({
+            handoff = await handoffBrowserSeed({
               database: oldDatabase,
               scopeId: oldScopeId,
-              ownerScopeId: ownerHandoff?.ownerScopeId ?? null,
-              ...(ownerHandoff === null || ownerHandoff === undefined
-                ? {}
-                : {
-                    ownerAuthorityStore: ownerHandoff.ownerAuthorityStore,
-                    loadCurrentOwnerReachabilityEvidence:
-                      ownerHandoff.loadCurrentOwnerReachabilityEvidence,
-                  }),
-              ...(backupConfigured
-                ? {}
-                : {
-                    withoutBackupConfiguration: {
-                      currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
-                    },
-                  }),
+              currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
+              prepareRecoveryIndex: () => prepareBrowserRecoveryIndexHandoff(oldScopeId),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
                 const pendingTrades = usePendingTradesStore.getState();
@@ -397,21 +373,17 @@ export const useWalletStore = create<WalletState>()(
                 }
               },
             });
-            replacementCommitted = true;
           } catch (error) {
             return {
               valid: false,
               error: walletReplacementErrorMessage(error),
             };
-          } finally {
-            if (
-              !replacementCommitted &&
-              backupDriver !== null &&
-              activeBrowserWalletScopeId() === oldScopeId &&
-              activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId) === backupDriver
-            ) {
-              backupDriver.resumeAfterSeedHandoff();
-            }
+          }
+          if (handoff.backupPartial) {
+            useToastStore.getState().addToast({
+              type: "error",
+              message: i18n.t("wallet.replaceBackupPartial"),
+            });
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };

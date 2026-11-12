@@ -1,6 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CheckStateEnum, MintOperationError, type Proof } from "@cashu/cashu-ts";
 import {
   BrowserCtfClaimBoundaryError,
@@ -21,18 +21,6 @@ import {
   signedPayout,
   disposeFixtures,
 } from "./fixtures/browserCtfRedeemFixture";
-const mocks = vi.hoisted(() => ({
-  requireNewWritePermission: vi.fn(),
-}));
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
-}));
-
-beforeEach(() => {
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
-});
 
 afterEach(async () => {
   await disposeFixtures();
@@ -70,35 +58,14 @@ describe("browser canonical CTF redeem binding", () => {
     expect(await database.custodyReservations.count()).toBe(0);
   });
 
-  it("refuses a new redeem operation before reserving proofs or counters", async () => {
-    const { database, proof, bind, counters } = await fixture();
-    mocks.requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(bind()).rejects.toThrow("Another browser changed this wallet");
-
-    expect((await counters.reserve(REGULAR_KEYSET.id, 0)).start).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-    expect(await database.custodyReservations.count()).toBe(0);
-    expect(await database.custodyProofs.get([proof.scopeId, proof.proofId])).toMatchObject({
-      selectability: "selectable",
-    });
-  });
-
   it("refuses a second preparation for a bound operation without new counters", async () => {
     const { bind, counters } = await fixture();
     await bind();
-    mocks.requireNewWritePermission.mockReset();
-    mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
 
     await expect(bind()).rejects.toMatchObject({
       category: "persisted-recovery",
       operationRef: expect.any(String),
     });
-    expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
     expect((await counters.reserve(REGULAR_KEYSET.id, 0)).start).toBe(1);
   });
 
@@ -387,8 +354,6 @@ describe("browser canonical CTF redeem binding", () => {
     const record = await entry.bind();
     const payout = await signedPayout(entry.adapter, entry.scope, record.operation.operationId);
     let observedState: string | undefined;
-    mocks.requireNewWritePermission.mockReset();
-    mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
 
     const result = await recover(
       entry,
@@ -412,7 +377,6 @@ describe("browser canonical CTF redeem binding", () => {
 
     expect(observedState).toBe("transport-attempted");
     expect(result.kind).toBe("redeemed");
-    expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
     expect(await entry.database.proofs.count()).toBe(1);
   });
 });

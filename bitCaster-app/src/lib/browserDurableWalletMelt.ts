@@ -49,7 +49,6 @@ import {
   deserializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { browserCustodyOperationId, browserWalletScope } from "./browserCtfRangeOrderSource";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   BrowserDurableCustodyAdapter,
@@ -272,7 +271,6 @@ async function runMeltWithOwner(
 
   if (snapshot === null) {
     const database = input.context.database ?? db;
-    await requireBrowserWalletNewWritePermission({ database, scopeId: scope.scopeId });
     const canonicalProofs = await canonicalMeltProofs(adapter, scope, input);
     const selected = input.wallet.getKeyset();
     const hasChange =
@@ -459,15 +457,11 @@ async function persistMeltPreparation(input: {
       database.custodyActiveWork,
       database.custodyProofBackupAuthorities,
       database.custodyConditionalKeysets,
-      database.encryptedWalletBackupV2DesiredAssets,
       database.walletCounterAssociations,
       database.walletCounterCursors,
-      database.encryptedWalletBackupOwnerAcceptedHeads,
-      database.encryptedWalletBackupV2AcceptedHeads,
     ],
     async () => {
       context.requireCapturedProfile();
-      await requireBrowserWalletNewWritePermission({ database, scopeId: input.scope.scopeId });
       const saved = await readMeltSnapshot(input.adapter, input.scope, input.operation.operationId);
       if (saved !== null) {
         assertSavedMeltSelection(saved, input.operation);
@@ -516,7 +510,6 @@ async function persistMeltPreparation(input: {
         { predecessorProofs: { [input.binding.record.operation.operationId]: predecessors } },
       );
       context.injectPreparationFault?.("journal-bound");
-      await requireBrowserWalletNewWritePermission({ database, scopeId: input.scope.scopeId });
       context.requireCapturedProfile();
       const snapshot = await readMeltSnapshot(
         input.adapter,

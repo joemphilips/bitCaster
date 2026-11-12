@@ -43,7 +43,6 @@ import {
   type StoredOutputData,
 } from "@/stores/proof-db";
 import { normalizeUrl } from "@/lib/url";
-import { requireBrowserWalletNewWritePermission } from "@/lib/browserWalletNewWritePermission";
 import { withWalletProfileLock } from "@/lib/walletProfileLock";
 import {
   browserDurableWalletMintStore,
@@ -135,10 +134,6 @@ export async function createBrowserDurableBolt11MintQuote(
     context.scopeId,
     async () => {
       context.requireCapturedProfile();
-      await requireBrowserWalletNewWritePermission({
-        database: context.database,
-        scopeId: context.scopeId,
-      });
       const mintQuote = await wallet.createMintQuote(amount);
       context.requireCapturedProfile();
       const quote = quoteFromMintResponse(mintUrl, unit, amount, mintQuote);
@@ -645,16 +640,8 @@ async function persistQuoteAndOperation(input: {
       input.context.database.custodyProofs,
       input.context.database.custodyProofBackupAuthorities,
       input.context.database.custodyConditionalKeysets,
-      input.context.database.encryptedWalletBackupV2DesiredAssets,
-      input.context.database.encryptedWalletBackupOwnerAcceptedHeads,
-      input.context.database.encryptedWalletBackupV2AcceptedHeads,
     ],
     async () => {
-      input.context.requireCapturedProfile();
-      await requireBrowserWalletNewWritePermission({
-        database: input.context.database,
-        scopeId: input.context.scopeId,
-      });
       input.context.requireCapturedProfile();
       const existing = await selectSavedQuote(input.context, input.quote);
       if (existing !== null) return existing;
@@ -685,10 +672,6 @@ async function persistQuoteAndOperation(input: {
       input.context.requireCapturedProfile();
       input.context.injectPreparationFault?.("journal-bound");
       await input.context.database.mintQuotes.add(toQuoteRow(input.context.scopeId, bound));
-      await requireBrowserWalletNewWritePermission({
-        database: input.context.database,
-        scopeId: input.context.scopeId,
-      });
       input.context.requireCapturedProfile();
       return bound;
     },

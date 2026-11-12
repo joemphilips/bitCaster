@@ -117,11 +117,7 @@ async function preflightBearerAsset(input: {
     asset: { kind: "ordinary" },
   });
   const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.context.scopeId,
-    seed: input.context.seed,
-    mnemonic: input.context.mnemonic,
     asset,
-    requiredAmount: BigInt(input.requiredAmountMsat),
     loadPlan: async () =>
       sumProofs(await readBearerCandidates(input.mintUrl, input.context.scopeId)) >=
       input.requiredAmountMsat
@@ -134,7 +130,6 @@ async function preflightBearerAsset(input: {
   });
   switch (recovery.kind) {
     case "ready":
-    case "recovered":
       return;
     case "unavailable":
       throw new Error("Withdrawal balance is insufficient in the active V2 msat keyset");

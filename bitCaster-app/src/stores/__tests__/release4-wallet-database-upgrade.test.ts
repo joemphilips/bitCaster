@@ -108,13 +108,47 @@ async function createShipped(database: ShippedDatabase): Promise<void> {
   legacy.close();
 }
 
-/** Every shipped table still exists in the current schema and holds exactly its shipped rows. */
-async function expectEveryShippedRow(current: Dexie, database: ShippedDatabase): Promise<void> {
+/**
+ * The tables of the encrypted proof backup and its targeted recovery. Release
+ * 5b drops them in one forward-only version (ADR-034 recovery index
+ * amendment, "No data migration"). No deployed build had a backup
+ * configuration, so they hold no user data.
+ */
+const DROPPED_WALLET_TABLES = new Set([
+  "encryptedWalletBackupV2DesiredAssets",
+  "encryptedWalletBackupWalletEnrollmentResults",
+  "encryptedWalletBackupWalletRetrySchedulers",
+  "encryptedWalletBackupV2WalletPreparedMutations",
+  "encryptedWalletBackupV2WalletAcceptedHeads",
+  "encryptedWalletBackupV2WalletAssetReceipts",
+  "encryptedWalletBackupV2WalletActiveDescriptors",
+  "targetedAssetRecoveryAttempts",
+  "encryptedWalletBackupOwnerEnrollmentResults",
+  "encryptedWalletBackupOwnerRetrySchedulers",
+  "encryptedWalletBackupOwnerPreparedMutations",
+  "encryptedWalletBackupOwnerAcceptedHeads",
+  "encryptedWalletBackupOwnerAssetReceipts",
+  "encryptedWalletBackupOwnerActiveDescriptors",
+  "encryptedWalletBackupOwnerDesiredAssets",
+  "encryptedWalletBackupOwnerProofCoverage",
+]);
+
+/**
+ * Every kept shipped table still exists in the current schema and holds
+ * exactly its shipped rows. Each dropped table is gone.
+ */
+async function expectEveryShippedRow(
+  current: Dexie,
+  database: ShippedDatabase,
+  dropped: ReadonlySet<string> = new Set(),
+): Promise<void> {
   expect(current.verno).toBeGreaterThanOrEqual(database.version);
-  expect(current.tables.map(({ name }) => name)).toEqual(
-    expect.arrayContaining(database.tables.map(({ name }) => name)),
-  );
-  for (const item of database.tables) {
+  const kept = database.tables.filter(({ name }) => !dropped.has(name));
+  expect(kept.length + dropped.size).toBe(database.tables.length);
+  const currentNames = current.tables.map(({ name }) => name);
+  expect(currentNames).toEqual(expect.arrayContaining(kept.map(({ name }) => name)));
+  for (const name of dropped) expect(currentNames, name).not.toContain(name);
+  for (const item of kept) {
     expect(item.rows.length, item.name).toBeGreaterThan(0);
     expect(await current.table(item.name).toArray(), item.name).toEqual(item.rows);
   }
@@ -127,7 +161,7 @@ afterEach(async () => {
 });
 
 describe("release 4 browser databases", () => {
-  it("opens the shipped wallet database and reads every row with the current code", async () => {
+  it("opens the shipped wallet database, drops the backup tables, and reads every kept row", async () => {
     expect(wallet.version).toBe(21);
     expect(browserWalletDatabaseName(scope.scopeId)).toBe(wallet.name);
     await createShipped(wallet);
@@ -135,7 +169,8 @@ describe("release 4 browser databases", () => {
     const current = new BitcasterDB(wallet.name);
     try {
       await current.open();
-      await expectEveryShippedRow(current, wallet);
+      expect(current.verno).toBe(22);
+      await expectEveryShippedRow(current, wallet, DROPPED_WALLET_TABLES);
 
       // The canonical custody proofs: one regular and one outcome proof.
       const proofs = await getCanonicalCurrentProofs(scope.scopeId, current);

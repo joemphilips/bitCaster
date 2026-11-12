@@ -269,10 +269,9 @@ that the tokens cannot receive a payout before it deletes them. If the result
 is uncertain, it keeps the tokens. If the mint returns a payout instead, the
 wallet keeps that payment and stops removal.
 
-Without encrypted backup, removal finishes in this browser. With encrypted
-backup, removal can take time. The token stays visible while removal is
-pending. Keep your wallet data until it finishes. Removal does not erase
-copies that you exported or kept in another browser. A seed restore in another
+Removal finishes in this browser. The wallet backup holds no tokens, so
+removal does not wait for it. Removal does not erase copies that you exported
+or kept in another browser. A seed restore in another
 browser can bring back a removed losing token. It has no value, and you can
 remove it again.
 

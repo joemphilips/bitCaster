@@ -17,7 +17,6 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeCapabilitySourcePlan";
 import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import type { CtfRangeSourceMode } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
-import { planCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderAuthorization";
 import {
   assertCtfRangeOrderFeeConsent,
   composeCtfRangeOrderFeeFacts,
@@ -87,6 +86,8 @@ import {
   ensureWalletKeysetCounterReady,
 } from "./cashu";
 import { requestBrowserKeysetResync } from "@/stores/seed-restore-db";
+import { RECOVERY_INDEX_READ_MINT_REFUSAL_CODES } from "@bitcaster/client-sdk/recoveryIndexSync";
+import { readBrowserRecoveryIndexAfterMintRefusal } from "./browserRecoveryIndex";
 import i18n from "@/i18n";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import {
@@ -343,8 +344,11 @@ export async function submitBrowserCtfRangeOrder(
     });
   } catch (error) {
     failed = true;
-    if (seedUsedElsewhere(error instanceof BrowserCtfRangeOrderError ? error.mintError : null)) {
-      // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+    const mintError = error instanceof BrowserCtfRangeOrderError ? error.mintError : null;
+    if (seedUsedElsewhere(mintError)) {
+      // Another client used the seed. Re-sync the keysets in use at once, and
+      // read the recovery index again (ADR-033).
+      readBrowserRecoveryIndexAfterMintRefusal(scopeId, mintError!.code);
       await requestBrowserKeysetResync({ scopeId, mintUrl: preparation.mintUrl }).catch(
         () => undefined,
       );
@@ -455,15 +459,7 @@ async function consolidateBrowserRangeSource(
     default:
       return assertNever(initial);
   }
-  const recovered = await recoverRangeSourcePlan(input);
-  switch (recovered.kind) {
-    case "direct":
-      return directRangeSource(input, "0", recovered.selection);
-    case "consolidation":
-      return executeConsolidationRounds(input, recovered.plan);
-    default:
-      return assertNever(recovered);
-  }
+  return executeConsolidationRounds(input, await recoverRangeSourcePlan(input));
 }
 
 function directRangeSource(
@@ -482,35 +478,15 @@ function directRangeSource(
 
 async function recoverRangeSourcePlan(
   input: BrowserRangeSourceInput,
-): Promise<RecoveredRangeSourcePlan> {
+): Promise<ReadyRangeSourcePlan> {
   const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.scopeId,
-    seed: input.seed,
-    mnemonic: input.mnemonic,
     asset: rangeSourceAsset(input.preparation),
-    requiredAmount: rangeSourceRequiredAmount(input.preparation),
     loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
     isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
   });
   switch (recovery.kind) {
     case "ready":
-      return { kind: "consolidation", plan: readyRangeSourcePlan(recovery.plan) };
-    case "recovered": {
-      // Recovered custody gets the same selection policy as a fresh preview.
-      const selection = await loadBrowserRangeSourceSelection(
-        input.preparation,
-        input.scopeId,
-        input.maxOutputs,
-        "cash-funded-preferred",
-      );
-      if (selection.kind === "direct") return { kind: "direct", selection };
-      return {
-        kind: "consolidation",
-        plan: postRecoveryRangeSourcePlan(
-          await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
-        ),
-      };
-    }
+      return readyRangeSourcePlan(recovery.plan);
     case "persistent-error":
       throw assetRecoveryFailed();
     case "unavailable":
@@ -525,18 +501,6 @@ async function recoverRangeSourcePlan(
 }
 
 type DirectBrowserRangeSourceSelection = Extract<BrowserRangeSourceSelection, { kind: "direct" }>;
-
-type RecoveredRangeSourcePlan =
-  | { readonly kind: "direct"; readonly selection: DirectBrowserRangeSourceSelection }
-  | { readonly kind: "consolidation"; readonly plan: ReadyRangeSourcePlan };
-
-function postRecoveryRangeSourcePlan(
-  plan: Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
-): ReadyRangeSourcePlan {
-  if (plan.kind === "ready") return plan;
-  if (plan.kind === "insufficient") throw assetRecoveryFailed();
-  throw rangeSourcePlanError(plan.kind);
-}
 
 type ReadyRangeSourcePlan = Extract<
   Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
@@ -812,21 +776,6 @@ export class BrowserCtfRangeScoreTopUpCancelledError extends Error {
     super("Participation Score top-up was cancelled.");
     this.name = "BrowserCtfRangeScoreTopUpCancelledError";
   }
-}
-
-function rangeSourceRequiredAmount(preparation: PersistedCtfRangeOrderPreparation): bigint {
-  return BigInt(
-    planCtfRangeOrderAuthorization({
-      side: preparation.side,
-      priceNumerator: preparation.priceNumerator,
-      amountSubunits: preparation.amountSubunits,
-      divisibility: preparation.divisibility,
-      inputFeePpk: preparation.offerKeyset.inputFeePpk,
-      offerKeysetKeys: preparation.offerKeyset.keys,
-      maxPoolEntries: preparation.maxPoolEntries,
-      maxInputs: preparation.maxInputs,
-    }).inputAmount,
-  );
 }
 
 function conditionalCounterAsset(keyset: PersistedCtfRangeOrderPreparation["offerKeyset"]) {
@@ -1249,11 +1198,11 @@ async function persistRecoveryResults(
       retryable: true,
     });
   }
-  const evidenceMints = new Set(
-    page.refused
-      .filter(({ mintError }) => seedUsedElsewhere(mintError))
-      .map(({ mintUrl }) => mintUrl),
-  );
+  const evidence = page.refused.filter(({ mintError }) => seedUsedElsewhere(mintError));
+  for (const { mintError } of evidence) {
+    readBrowserRecoveryIndexAfterMintRefusal(scopeId, mintError!.code);
+  }
+  const evidenceMints = new Set(evidence.map(({ mintUrl }) => mintUrl));
   for (const mintUrl of evidenceMints) {
     // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
     await requestBrowserKeysetResync({ scopeId, mintUrl }).catch(() => undefined);
@@ -1297,11 +1246,10 @@ async function persistRecoveryPending(
   }
 }
 
-// The mint refused reused outputs or spent inputs: another client used the seed.
-const SEED_USED_ELSEWHERE_MINT_CODES: ReadonlySet<number> = new Set([11001, 11003, 11008]);
-
+// The mint refused reused outputs or spent inputs: another client used the
+// seed. These are the refusals after which the browser reads the index (ADR-033).
 function seedUsedElsewhere(mintError: BrowserCtfRangeMintError | null | undefined): boolean {
-  return mintError != null && SEED_USED_ELSEWHERE_MINT_CODES.has(mintError.code);
+  return mintError != null && RECOVERY_INDEX_READ_MINT_REFUSAL_CODES.has(mintError.code);
 }
 
 /** The order was not submitted. A PENDING restored proof has its own message. */

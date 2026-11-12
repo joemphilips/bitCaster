@@ -26,13 +26,7 @@ import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import { claimPortfolioPosition } from "./browserPortfolioClaim";
 import type { BrowserCanonicalCtfPositionClaimTarget } from "./browserCtfPositionClaim";
-import {
-  startBrowserCtfRemove,
-  type BrowserCtfRemoveResult,
-  type BrowserCtfRemoveTarget,
-} from "./browserCtfRemoveCoordinator";
-import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "./encryptedWalletBackupDriver";
-import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
+import { startBrowserCtfRemove, type BrowserCtfRemoveTarget } from "./browserCtfRemoveCoordinator";
 import { normalizeUrl } from "./url";
 import { toSeed } from "./bip39";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -72,16 +66,12 @@ export interface BrowserPortfolioRemoveStopped extends BrowserPortfolioRemoveRes
 
 export interface BrowserPortfolioRemovePending extends BrowserPortfolioRemoveResultBase {
   readonly kind: "pending";
-  readonly reason:
-    | "claim-pending"
-    | "managed-removal-pending"
-    | "local-removal-pending"
-    | "profile-changed";
+  readonly reason: "claim-pending" | "profile-changed";
 }
 
 export interface BrowserPortfolioRemovePartial extends BrowserPortfolioRemoveResultBase {
   readonly kind: "partial";
-  readonly reason: "local-removal-pending" | "local-removal-error";
+  readonly reason: "local-removal-error";
   readonly error: BrowserPortfolioRemoveFailure | null;
 }
 
@@ -90,11 +80,7 @@ export interface BrowserPortfolioRemoveError extends BrowserPortfolioRemoveResul
   readonly error: BrowserPortfolioRemoveFailure;
 }
 
-export type BrowserPortfolioRemoveFailureStage =
-  | "capture"
-  | "claim"
-  | "managed-backup-removal"
-  | "local-commit";
+export type BrowserPortfolioRemoveFailureStage = "capture" | "claim" | "local-commit";
 
 export interface BrowserPortfolioRemoveFailure {
   readonly code: "remove-failed";
@@ -118,8 +104,8 @@ interface TargetSnapshot {
 
 interface CapturedTargetSet {
   readonly snapshots: readonly TargetSnapshot[];
-  readonly managedTargets: readonly BrowserCtfRemoveTarget[];
-  readonly localTargets: readonly BrowserCtfRemoveTarget[];
+  /** The proofs that a local removal still removes. */
+  readonly targets: readonly BrowserCtfRemoveTarget[];
   readonly claimRequired: boolean;
   readonly pending: boolean;
 }
@@ -127,7 +113,8 @@ interface CapturedTargetSet {
 /**
  * Removes only the exact proof set confirmed by the page.
  *
- * Claiming and managed-backup removal use their existing durable owners. This
+ * Claiming uses its existing durable owner, and the removal of the verified
+ * losing proofs is local only (ADR-034 recovery index amendment). This
  * function only composes their bounded operations and never writes a new saga.
  */
 export async function removePortfolioPosition(
@@ -169,7 +156,7 @@ export async function removePortfolioPosition(
       return readCapturedTargets({ database, scopeId: scope.scopeId, asset, targets });
     });
     if (captured.pending) {
-      return { kind: "pending", reason: "managed-removal-pending", committedPayoutAmount: 0 };
+      return { kind: "pending", reason: "claim-pending", committedPayoutAmount: 0 };
     }
     const targets = captured.snapshots.map(({ target }) => target);
 
@@ -207,70 +194,7 @@ export async function removePortfolioPosition(
       };
     }
 
-    const driver =
-      terminal.managedTargets.length === 0
-        ? null
-        : activeBrowserEncryptedWalletBackupV2RuntimeDriver(scope.scopeId);
-    if (driver !== null) {
-      stage = "managed-backup-removal";
-      const managedResult = await removeManagedProofsInChunks(
-        driver,
-        asset,
-        terminal.managedTargets,
-        terminal.localTargets,
-      );
-      if (managedResult.kind === "error") {
-        return removeError(committedPayoutAmount, stage, attemptRef, oracleEvidence);
-      }
-      if (managedResult.kind === "pending") {
-        return {
-          kind: "pending",
-          reason: "managed-removal-pending",
-          committedPayoutAmount,
-          ...oracleEvidenceResult(oracleEvidence),
-        };
-      }
-
-      stage = "capture";
-      requireProfile();
-      const afterManaged = await withWalletProfileLock(scope.scopeId, async () => {
-        requireProfile();
-        return readTerminalTargets({ database, scopeId: scope.scopeId, asset, targets });
-      });
-      if (
-        afterManaged.pending ||
-        afterManaged.managedTargets.length > 0 ||
-        afterManaged.localTargets.length > 0
-      ) {
-        return {
-          kind: "pending",
-          reason: "managed-removal-pending",
-          committedPayoutAmount,
-          ...oracleEvidenceResult(oracleEvidence),
-        };
-      }
-      return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
-    }
-
-    let localTargets = terminal.localTargets;
-    let withoutBackupConfiguration = false;
-    if (terminal.managedTargets.length > 0) {
-      stage = "managed-backup-removal";
-      if (resolveEncryptedWalletBackupConfiguration() !== null) {
-        return {
-          kind: "pending",
-          reason: "managed-removal-pending",
-          committedPayoutAmount,
-          ...oracleEvidenceResult(oracleEvidence),
-        };
-      }
-      // Without a backup configuration no backup head can exclude a
-      // derivation-backed proof. The local path removes it (ADR-034
-      // amendment 2026-11-09).
-      localTargets = [...terminal.managedTargets, ...terminal.localTargets];
-      withoutBackupConfiguration = true;
-    }
-    if (localTargets.length === 0) {
+    if (terminal.targets.length === 0) {
       return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
     }
     stage = "local-commit";
@@ -278,8 +202,7 @@ export async function removePortfolioPosition(
       database,
       scopeId: scope.scopeId,
       asset,
-      targets: localTargets,
-      withoutBackupConfiguration,
+      targets: terminal.targets,
       committedPayoutAmount,
       attemptRef,
       observedAtMs: input.observedAtMs,
@@ -576,31 +499,17 @@ function classifySnapshots(
   snapshots: readonly TargetSnapshot[],
   pending: boolean,
 ): CapturedTargetSet {
-  const managed: BrowserCtfRemoveTarget[] = [];
-  const local: BrowserCtfRemoveTarget[] = [];
+  const targets: BrowserCtfRemoveTarget[] = [];
   let claimRequired = false;
   for (const snapshot of snapshots) {
-    if (snapshot.completedMarker !== null) {
-      continue;
-    }
+    if (snapshot.completedMarker !== null) continue;
     const row = snapshot.row!;
-    const authority = snapshot.authority!;
     if (row.selectability === "selectable" || row.selectability === "locked") {
       claimRequired = true;
     }
-    if (authority.backupState === "local-only" && authority.derivationLocator === null) {
-      local.push(snapshot.removalTarget);
-    } else {
-      managed.push(snapshot.removalTarget);
-    }
+    targets.push(snapshot.removalTarget);
   }
-  return {
-    snapshots,
-    managedTargets: managed,
-    localTargets: local,
-    claimRequired,
-    pending,
-  };
+  return { snapshots, targets, claimRequired, pending };
 }
 
 async function completeLocalRemoval(input: {
@@ -608,7 +517,6 @@ async function completeLocalRemoval(input: {
   readonly scopeId: string;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly targets: readonly BrowserCtfRemoveTarget[];
-  readonly withoutBackupConfiguration: boolean;
   readonly committedPayoutAmount: number;
   readonly attemptRef: string;
   readonly observedAtMs: number | undefined;
@@ -622,20 +530,13 @@ async function completeLocalRemoval(input: {
         scopeId: input.scopeId,
         asset: input.asset,
         targets,
-        ...(input.withoutBackupConfiguration ? { withoutBackupConfiguration: true } : {}),
         observedAtMs: input.observedAtMs,
         isCurrentProfile: () => {
           input.requireProfile();
           return true;
         },
       });
-      if (result.kind === "completed") continue;
-      return {
-        kind: "partial",
-        reason: "local-removal-pending",
-        committedPayoutAmount: input.committedPayoutAmount,
-        error: null,
-      };
+      if (result.kind !== "completed") throw new Error("browser CTF removal result is invalid");
     } catch {
       return {
         kind: "partial",
@@ -649,36 +550,6 @@ async function completeLocalRemoval(input: {
     kind: "completed",
     committedPayoutAmount: input.committedPayoutAmount,
   };
-}
-
-async function removeManagedProofsInChunks(
-  driver: {
-    removeManagedProofs(input: {
-      readonly asset: EncryptedWalletBackupV2AssetIdentity;
-      readonly targets: readonly BrowserCtfRemoveTarget[];
-      readonly localTargets?: readonly BrowserCtfRemoveTarget[];
-    }): Promise<BrowserCtfRemoveResult>;
-  },
-  asset: EncryptedWalletBackupV2AssetIdentity,
-  targets: readonly BrowserCtfRemoveTarget[],
-  localTargets: readonly BrowserCtfRemoveTarget[],
-): Promise<
-  { readonly kind: "completed" } | { readonly kind: "pending" } | { readonly kind: "error" }
-> {
-  const chunks = chunkTargets(targets);
-  for (const [index, chunk] of chunks.entries()) {
-    try {
-      const result = await driver.removeManagedProofs({
-        asset,
-        targets: chunk,
-        ...(index === 0 && localTargets.length > 0 ? { localTargets } : {}),
-      });
-      if (result.kind !== "completed") return { kind: "pending" };
-    } catch {
-      return { kind: "error" };
-    }
-  }
-  return { kind: "completed" };
 }
 
 function chunkTargets(

@@ -48,7 +48,6 @@ const mocks = vi.hoisted(() => ({
   seed: new Uint8Array(64),
   getWalletForUnit: vi.fn(),
   getWalletForMnemonicUnit: vi.fn(),
-  requireNewWritePermission: vi.fn(),
   restoreOutputs: vi.fn(),
 }));
 
@@ -62,9 +61,6 @@ vi.mock("@/stores/wallet", () => ({
     }),
   },
   getWalletForMnemonicUnit: mocks.getWalletForMnemonicUnit,
-}));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
 }));
 vi.mock("../walletProfileLock", () => ({
   withWalletProfileLock: async (_scopeId: string, action: () => Promise<unknown>) => action(),
@@ -265,8 +261,6 @@ beforeEach(() => {
   mocks.seed = new Uint8Array(64);
   mocks.getWalletForUnit.mockReset();
   mocks.getWalletForMnemonicUnit.mockReset();
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
   mocks.restoreOutputs.mockReset();
   mocks.restoreOutputs.mockImplementation(
     async (_mintUrl: string, outputs: SerializedOutputGroups) => restoreTestOutputGroups(outputs),

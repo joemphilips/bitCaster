@@ -15,7 +15,6 @@ import {
   deferBrowserCtfRangeOrderRecovery,
   listenForBrowserCtfRangeRecoveryWake,
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
-import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 import {
   releaseBrowserSeedPositionRestoreGate,
   resyncBrowserKeysetsInUse,
@@ -28,17 +27,12 @@ import {
   type WalletRecoveryStageOutcome,
   type WalletRecoveryWalletStage,
 } from "@/lib/walletRecoveryPassSummary";
-import { useToastStore, type Toast } from "@/stores/toast";
-import i18n from "@/i18n";
+import { uploadBrowserRecoveryIndexAfterRecovery } from "@/lib/browserRecoveryIndex";
+import { reportBrowserWalletUsedElsewhere } from "@/lib/browserWalletUsedElsewhere";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 /** A seed restore pass that ran out of budget continues soon. */
 const SEED_RESTORE_CONTINUE_MS = 1_000;
-
-/** The notice after the re-sync found outputs of another client. Its action needs a third line. */
-export function usedInAnotherBrowserToast(): Omit<Toast, "id"> {
-  return { type: "info", message: i18n.t("wallet.usedInAnotherBrowser"), lines: 3 };
-}
 
 function earliest(left: number | null, right: number | null): number | null {
   if (left === null) return right;
@@ -123,7 +117,6 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     let receiveRecoveryAfterOperationId: string | null = null;
     let mintsRecovered = false;
     let countersRecovered = false;
-    let usedElsewhereShown = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     // A late result of an earlier activation of this wallet (A -> B -> A) is
@@ -270,10 +263,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
             // The re-sync rows show its deferrals and probes.
             pass.resyncPass(mintUrl, STAGE_COMPLETED);
             retryAtMs = earliest(retryAtMs, result.retryAtMs);
-            if (result.usedElsewhere && !usedElsewhereShown) {
-              usedElsewhereShown = true;
-              useToastStore.getState().addToast(usedInAnotherBrowserToast());
-            }
+            if (result.usedElsewhere) reportBrowserWalletUsedElsewhere(scopeId);
           }
         } catch {
           retryRequired = true;
@@ -315,7 +305,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         else pass.discard();
         if (summary === pass) summary = null;
         if (!isCurrent()) return;
-        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
+        uploadBrowserRecoveryIndexAfterRecovery(scopeId);
         if (rerunRequested) {
           rerunRequested = false;
           void runRecovery();

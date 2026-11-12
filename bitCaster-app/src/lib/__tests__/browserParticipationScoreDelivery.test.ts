@@ -361,7 +361,6 @@ function configureScoreRecoveryFixture(fixture: {
   recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
     expect(recoveryInput.asset).toMatchObject({ mintUrl: input.mintUrl, unit: "msat" });
     expect(recoveryInput.asset.assetIdentity).toBe("cashu:ordinary");
-    expect(recoveryInput.requiredAmount).toBe(21_000n);
     if (fixture.loadPlan) {
       await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "insufficient" });
     }

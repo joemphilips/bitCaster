@@ -29,6 +29,13 @@ export const RECOVERY_INDEX_DOCUMENT_BYTES_MIN = RECOVERY_INDEX_PLAINTEXT_BYTES_
 export const RECOVERY_INDEX_DOCUMENT_BYTES_MAX = RECOVERY_INDEX_PLAINTEXT_BYTES_MAX + ENVELOPE_BYTES
 export const RECOVERY_INDEX_MINTS_MAX = 8
 export const RECOVERY_INDEX_MINT_URL_BYTES_MAX = 2_048
+/**
+ * The 64 KiB step holds at least this many entries of any form, also with 8
+ * mints of the largest URL size (ADR-051 "Plaintext"). A client that keeps at
+ * most this many local keysets writes an index within the cap. A larger bound
+ * needs a new format version.
+ */
+export const RECOVERY_INDEX_ENTRIES_GUARANTEED = 467
 const KEYSET_ID = /^01[0-9a-f]{64}$/
 const HASH = /^[0-9a-f]{64}$/
 const HEADER = concatBytes(

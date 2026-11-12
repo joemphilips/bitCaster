@@ -77,8 +77,8 @@ import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
 } from "@/lib/browserCustodyProofReceive";
-import { requireBrowserWalletNewWritePermission } from "@/lib/browserWalletNewWritePermission";
 import { withWalletProfileLock } from "@/lib/walletProfileLock";
+import { reportBrowserWalletUsedElsewhere } from "@/lib/browserWalletUsedElsewhere";
 import { toSeed } from "@/lib/bip39";
 import {
   hydrateDurableWalletMintPreview,
@@ -285,11 +285,6 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
   context.requireCapturedProfile();
   const prepared = await withWalletProfileLock(context.scopeId, async () => {
     let counters: OperationCounters | undefined;
-    context.requireCapturedProfile();
-    await requireBrowserWalletNewWritePermission({
-      database: context.database,
-      scopeId: context.scopeId,
-    });
     context.requireCapturedProfile();
     const preview = await wallet.prepareMint("bolt11", amount, quote, {
       onCountersReserved: (reserved) => {
@@ -879,6 +874,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
+  // The mint refused outputs that it already signed: another client of this
+  // seed used these counters (ADR-033, ADR-051 "Restore").
+  reportBrowserWalletUsedElsewhere(input.scopeId);
   const counters = selectedCounterStore(input.scopeId);
   try {
     const wallet = (await useWalletStore
@@ -951,6 +949,8 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
+  // The order output check found outputs of another client of this seed.
+  reportBrowserWalletUsedElsewhere(input.scopeId);
   try {
     await deferAndAdvanceSelectedKeyset({
       ...input,
@@ -2332,11 +2332,6 @@ export async function createMeltQuote(
   const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
   context.requireCapturedProfile();
   return withWalletProfileLock(context.scopeId, async () => {
-    context.requireCapturedProfile();
-    await requireBrowserWalletNewWritePermission({
-      database: context.database,
-      scopeId: context.scopeId,
-    });
     context.requireCapturedProfile();
     return wallet.createMeltQuote(invoice);
   });

@@ -504,7 +504,6 @@ describe("browser market funding delivery", () => {
     expect(recoverBrowserFundedAsset).toHaveBeenCalledWith(
       expect.objectContaining({
         asset: expect.objectContaining({ mintUrl: input.mintUrl, unit: input.unit }),
-        requiredAmount: BigInt(input.requestedAmount),
       }),
     );
   });

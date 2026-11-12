@@ -13,9 +13,6 @@ vi.mock("@/stores/wallet", () => ({
   getWalletForMnemonicUnit: async () => state.create(),
   createUncachedWalletForMnemonicUnit: async (input: any) => state.create(input.counterSource),
 }));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: async () => undefined,
-}));
 vi.mock("@/lib/cashu", () => ({
   captureBrowserMintPersistenceContext: () => state.context,
   browserDurableWalletMintStore: () => {
@@ -154,7 +151,6 @@ async function facts() {
     database.proofOperations,
     database.walletCounterAssociations,
     database.walletCounterCursors,
-    database.encryptedWalletBackupV2DesiredAssets,
   ];
   return database.transaction("r", tables, async () =>
     Object.fromEntries(

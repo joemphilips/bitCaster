@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   recoverKeysetCountersForMint: vi.fn(),
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
-  resumeBackupAfterRecovery: vi.fn(),
+  uploadIndexAfterRecovery: vi.fn(),
   resyncBrowserKeysetsInUse: vi.fn(),
   runBrowserSeedPositionRestorePass: vi.fn(),
 }));
@@ -39,8 +39,9 @@ vi.mock("@/lib/browserSeedPositionRestore", () => ({
   runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));
 
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: mocks.resumeBackupAfterRecovery,
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: mocks.uploadIndexAfterRecovery,
 }));
 
 const MNEMONIC_A =
@@ -247,7 +248,7 @@ function currentTag(mintUrls: readonly string[]) {
 /** The coordinator resumes the backup at the end of each current pass. */
 function nextPassEnd(): Promise<void> {
   return new Promise((resolve) => {
-    mocks.resumeBackupAfterRecovery.mockImplementationOnce(() => resolve());
+    mocks.uploadIndexAfterRecovery.mockImplementationOnce(() => resolve());
   });
 }
 

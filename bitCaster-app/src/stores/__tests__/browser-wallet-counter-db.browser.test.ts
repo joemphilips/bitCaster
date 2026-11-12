@@ -5,7 +5,7 @@ import {
 import { planPersistedCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import Dexie from "dexie";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Amount, deriveConditionalKeysetId, deriveKeysetId } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyScopeId,
@@ -403,7 +403,6 @@ it("native IndexedDB co-commits scoped speculative counter and caller journal, r
     database.custodyProofs,
     database.custodyProofBackupAuthorities,
     database.custodyConditionalKeysets,
-    database.encryptedWalletBackupV2DesiredAssets,
     database.ctfRangePreparations,
   ];
   await expect(
@@ -454,10 +453,6 @@ it("native IndexedDB co-commits scoped speculative counter and caller journal, r
   });
   expect(await reopened.ctfRangePreparations.count()).toBe(1);
 });
-
-vi.mock("@/lib/browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: async () => undefined,
-}));
 
 it("native source consolidation commits counters and exact custody only together", async () => {
   const database = openDatabase();
