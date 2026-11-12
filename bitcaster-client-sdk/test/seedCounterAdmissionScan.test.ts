@@ -142,6 +142,7 @@ test('an empty scan from a counter stops after the gap limit with no signature',
     proofs: [],
     proofCounters: [],
     lastCounterWithSignature: null,
+    restoredAmountTotal: 0,
     nextCounter: 40 + SEED_COUNTER_GAP_LIMIT,
     stop: 'gap-limit',
   })
@@ -245,5 +246,28 @@ test('a resumed scan counts the unsigned counters before its start into the gap'
       trailingUnsignedCounters: SEED_COUNTER_GAP_LIMIT,
     }),
     /gap/,
+  )
+})
+
+test('a scan continues the restored total of earlier scans of the keyset', async () => {
+  const { restore } = signingMint((output) => (output.B_ === outputOf(0) ? LARGE_AMOUNT : null))
+
+  const alone = await scanSeedCountersForAdmission({
+    restore,
+    seed: SEED,
+    keyset: KEYSET,
+    startCounter: 0,
+  })
+  assert.equal(alone.restoredAmountTotal, LARGE_AMOUNT)
+  // An earlier scan of the same keyset already restored 2^52: the total would reach 2^53.
+  await assert.rejects(
+    scanSeedCountersForAdmission({
+      restore,
+      seed: SEED,
+      keyset: KEYSET,
+      startCounter: 0,
+      restoredAmountTotal: LARGE_AMOUNT,
+    }),
+    SeedAdmissionScanImplausibleError,
   )
 })

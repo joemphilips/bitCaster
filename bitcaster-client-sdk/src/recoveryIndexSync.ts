@@ -120,12 +120,18 @@ export function isRecoveryIndexReadMintRefusal(failure: CashuMintFailure): boole
   }
 }
 
-/** The listed keysets that have no local cursor (ADR-033: an index read scans only these). */
+/**
+ * The listed keysets of the wallet mints that have no local cursor. ADR-033:
+ * an index read scans only these. ADR-039: an entry of a mint that is not a
+ * wallet mint is not scanned, and it stays in the index.
+ */
 export function listedRecoveryIndexEntriesWithoutCursor(
   listed: readonly RecoveryIndexEntry[],
   local: readonly RecoveryIndexEntry[],
+  walletMints: readonly string[],
 ): readonly RecoveryIndexEntry[] {
-  return pendingRecoveryIndexEntries(listed, local)
+  const mints = new Set(walletMints)
+  return pendingRecoveryIndexEntries(listed, local).filter(({ mintUrl }) => mints.has(mintUrl))
 }
 
 export function planRecoveryIndexRetryDelayMs(input: {
@@ -164,6 +170,8 @@ export interface RecoveryIndexSyncOptions {
    * makes a mint request.
    */
   readonly verifyEntry: (entry: RecoveryIndexEntry) => Promise<boolean>
+  /** The canonical URLs of the wallet mints. A read lists only their keysets to scan. */
+  readonly walletMints: () => readonly string[]
   readonly nowMs: () => number
   readonly random?: () => number
   readonly randomBytes?: (length: number) => Uint8Array
@@ -202,7 +210,7 @@ export class RecoveryIndexSync {
         status: 'read',
         trigger,
         document: this.known,
-        scan: listedRecoveryIndexEntriesWithoutCursor(listed, local),
+        scan: listedRecoveryIndexEntriesWithoutCursor(listed, local, this.options.walletMints()),
       }
     })
   }

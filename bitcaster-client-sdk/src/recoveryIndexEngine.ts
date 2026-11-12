@@ -169,7 +169,14 @@ export class RecoveryIndexEngineError extends Error {
   }
 }
 
-/** The engine routes of one seed and realm, over an injected `fetch`. */
+/**
+ * The engine routes of one seed and realm, over an injected `fetch`.
+ *
+ * A read needs the `X-Recovery-Index-Version` response header. A browser can
+ * read it only from a same-origin response, because the engine CORS policy
+ * exposes no response header. So a browser client must call the engine
+ * through the same-origin `/api` proxy of the frontend.
+ */
 export function createRecoveryIndexEngineStore(options: {
   readonly engineBaseUrl: string
   readonly realm: RecoveryIndexRealm

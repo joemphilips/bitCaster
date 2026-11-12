@@ -172,19 +172,33 @@ def hash_hex(label):
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def document_vector(name, context, version, nonce, mints, entries, full):
+def seal(context, plaintext, nonce, header=HEADER):
     encryption_key, _, _ = derive_keys(SEED, context)
+    return header + nonce + ChaCha20Poly1305(encryption_key).encrypt(nonce, plaintext, header)
+
+
+def pad(cbor, size=None):
+    return cbor + bytes((size or padded_size(len(cbor))) - len(cbor))
+
+
+def rule_entries(rule):
+    return [
+        {"kind": "regular", "mintUrl": rule["mintUrl"], "keysetId": keyset_id(f"{rule['keysetIdLabelPrefix']}{i}")}
+        for i in range(rule["count"])
+    ]
+
+
+def document_vector(name, context, version, nonce, mints, entries, full, rule=None):
     cbor = plaintext_map(version, mints, entries)
-    plaintext = cbor + bytes(padded_size(len(cbor)) - len(cbor))
-    sealed = ChaCha20Poly1305(encryption_key).encrypt(nonce, plaintext, HEADER)
-    document = HEADER + nonce + sealed
+    plaintext = pad(cbor)
+    document = seal(context, plaintext, nonce)
     vector = {
         "name": name,
         "context": context,
         "writtenVersion": version,
         "nonce": nonce.hex(),
         "mints": mints,
-        "entries": entries,
+        **({"entryRule": rule} if rule is not None else {"entries": entries}),
         "cborLength": len(cbor),
         "plaintextLength": len(plaintext),
         "documentLength": len(document),
@@ -195,6 +209,43 @@ def document_vector(name, context, version, nonce, mints, entries, full):
         vector["cbor"] = cbor.hex()
         vector["document"] = document.hex()
     return vector
+
+
+def negative_vectors(entry):
+    """Documents that the reader refuses, with the reason that the SDK reports."""
+    context = "bitcaster-test"
+    nonce = bytes.fromhex("0102030405060708090a0b0c")
+    mints = cbor_array([cbor_text(entry["mintUrl"])])
+    entries = cbor_array([cbor_array([cbor_uint(0), cbor_bytes(bytes.fromhex(entry["keysetId"]))])])
+
+    def raw_map(pairs):
+        return cbor_head(5, len(pairs)) + b"".join(cbor_text(key) + value for key, value in pairs)
+
+    canonical = raw_map([("v", cbor_uint(1)), ("ver", cbor_uint(1)), ("mints", mints), ("entries", entries)])
+    assert canonical == plaintext_map(1, [entry["mintUrl"]], [entry])
+    long_argument = raw_map(
+        [("v", cbor_uint(1)), ("ver", bytes([0x18, 0x01])), ("mints", mints), ("entries", entries)]
+    )
+    keys_out_of_order = raw_map(
+        [("ver", cbor_uint(1)), ("v", cbor_uint(1)), ("mints", mints), ("entries", entries)]
+    )
+    nonzero_padding = bytearray(pad(canonical))
+    nonzero_padding[-1] = 1
+    cases = [
+        ("an integer with a longer argument than necessary", seal(context, pad(long_argument), nonce), 1, "encoding"),
+        ("map keys out of order", seal(context, pad(keys_out_of_order), nonce), 1, "encoding"),
+        ("a nonzero padding byte", seal(context, bytes(nonzero_padding), nonce), 1, "padding"),
+        ("padding above the smallest size", seal(context, pad(canonical, 8192), nonce), 1, "padding"),
+        ("a wrong magic", seal(context, pad(canonical), nonce, b"CASHURX" + bytes([1, 1])), 1, "magic"),
+        ("a newer format version", seal(context, pad(canonical), nonce, MAGIC + bytes([2, 1])), 1, "unsupported-version"),
+        ("an unknown cipher", seal(context, pad(canonical), nonce, MAGIC + bytes([1, 2])), 1, "unsupported-cipher"),
+        ("an all-zero nonce", seal(context, pad(canonical), bytes(12)), 1, "nonce"),
+        ("a document of another store version", seal(context, pad(canonical), nonce), 2, "stored-version"),
+    ]
+    return [
+        {"name": name, "context": context, "storeVersion": store_version, "document": document.hex(), "reason": reason}
+        for name, document, store_version, reason in cases
+    ]
 
 
 def request_vector(name, realm, method, secret, body, expected_version, issued_at):
@@ -235,10 +286,8 @@ def build():
     local_regular = {"kind": "regular", "mintUrl": "http://127.0.0.1:3338", "keysetId": keyset_id("local regular")}
     path_regular = {"kind": "regular", "mintUrl": "https://mint.example.com/cashu", "keysetId": keyset_id("path regular")}
     path_conditional = dict(conditional, mintUrl="https://mint.example.com/cashu")
-    many = [
-        {"kind": "regular", "mintUrl": "https://mint.example.com", "keysetId": keyset_id(f"keyset {i}")}
-        for i in range(120)
-    ]
+    many = rule_entries({"mintUrl": "https://mint.example.com", "keysetIdLabelPrefix": "keyset ", "count": 120})
+    largest_rule = {"mintUrl": "https://mint.example.com", "keysetIdLabelPrefix": "large ", "count": 900}
     keys = []
     for context in ("bitcaster-production", "bitcaster-staging", "bitcaster-local", "bitcaster-test"):
         encryption_key, scalar, public = derive_keys(SEED, context)
@@ -255,7 +304,9 @@ def build():
         "description": (
             "ADR-051 recovery index v1 and ADR-034 request signature golden vectors. "
             "scripts/generate-recovery-index-v1-vectors.py produces them with an "
-            "independent implementation."
+            "independent implementation. An entryRule lists `count` regular entries "
+            "of one mint, with the keyset id 01 || SHA-256(keysetIdLabelPrefix || i) "
+            "for i from 0. invalidDocuments are refused with the given reason."
         ),
         "seed": SEED.hex(),
         "keys": keys,
@@ -276,7 +327,13 @@ def build():
                 "bitcaster-production", 9007199254740991, bytes.fromhex("ffffffffffffffffffffffff"),
                 ["https://mint.example.com"], many, False,
             ),
+            document_vector(
+                "900 entries at the 64 KiB step",
+                "bitcaster-staging", 2, bytes.fromhex("a0a1a2a3a4a5a6a7a8a9aaab"),
+                ["https://mint.example.com"], rule_entries(largest_rule), False, largest_rule,
+            ),
         ],
+        "invalidDocuments": negative_vectors(regular),
         "requests": [
             request_vector(
                 "ADR-034 pinned engine vector",

@@ -9,6 +9,7 @@ import {
 } from './recoveryIndexDocument.ts'
 import {
   SEED_ADMISSION_SCAN_COUNTERS_MAX,
+  SeedAdmissionScanImplausibleError,
   scanSeedCountersForAdmission,
 } from './seedCounterAdmissionScan.ts'
 import { SEED_COUNTER_GAP_LIMIT, nextSeedCounterAfterLastSigned } from './seedCounterGapScan.ts'
@@ -26,11 +27,17 @@ import { SEED_RECOVERY_MAX_GAP_LIMIT } from './seedRecoveryScanPolicy.ts'
 /** The GUI gap. The CLI `wallet recover-seed --gap-limit` can pass a larger one. */
 export const RECOVERY_INDEX_RESTORE_GAP_LIMIT = SEED_COUNTER_GAP_LIMIT
 /**
- * The counters that one restore start can ask the mint about. A full restore
- * of the largest GUI index (467 keysets with no signed output, 300 counters
- * each) fits: 140,100 counters, or about 1,400 NUT-09 requests.
+ * The counters that one restore start can ask the mint about (ADR-039). It
+ * holds a restore of the largest GUI index (467 keysets, 140,100 counters at
+ * 300 each, about 1,400 NUT-09 requests) only when no keyset has a signed
+ * output. A restore of a used full index stops at the budget and needs Retry.
  */
 export const RECOVERY_INDEX_RESTORE_COUNTER_BUDGET = 150_000
+/**
+ * The counters of one keyset scan: the work bound of an admitting scan
+ * (ADR-033, H1). The caller stores the result of each window before the next.
+ */
+export const RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS = SEED_ADMISSION_SCAN_COUNTERS_MAX
 export const RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND =
   'bitcaster wallet recover-seed --all-conditions'
 /** The proofs of one NUT-07 request. */
@@ -43,19 +50,36 @@ export interface RecoveryIndexRestoreTarget {
   readonly source: RecoveryIndexRestoreSource
 }
 
-/** Where the scan of one keyset is. A later pass continues here with the same gap. */
+/** Where the scan of one keyset is. A later window continues here with the same gap. */
 export interface RecoveryIndexKeysetProgress {
   readonly nextCounter: number
   readonly lastSignedCounter: number | null
+  /** The total amount that the mint restored in this keyset so far. It stays a safe integer. */
+  readonly restoredAmount: number
 }
 
 export const RECOVERY_INDEX_KEYSET_PROGRESS_START: RecoveryIndexKeysetProgress = Object.freeze({
   nextCounter: 0,
   lastSignedCounter: null,
+  restoredAmount: 0,
 })
 
-export interface RecoveryIndexKeysetScan {
-  /** `complete`: the gap rule ended the scan. `incomplete`: the counter budget ended it. */
+/**
+ * The result of one keyset scan. A window reads counters. The two refusals
+ * read nothing for admission, and the caller keeps the stored progress:
+ *
+ * - `unverifiable`: the mint keys do not derive the keyset id of the entry
+ *   with its identity. The entry stays in the index.
+ * - `implausible`: the mint restored an amount that the keyset cannot sign,
+ *   or the keyset total would not be a safe integer.
+ */
+export type RecoveryIndexKeysetScan =
+  | RecoveryIndexKeysetWindow
+  | { readonly status: 'unverifiable'; readonly scannedCounters: 0 }
+  | { readonly status: 'implausible'; readonly scannedCounters: number }
+
+export interface RecoveryIndexKeysetWindow {
+  /** `complete`: the gap rule ended the scan. `incomplete`: the window ended first. */
   readonly status: 'complete' | 'incomplete'
   readonly progress: RecoveryIndexKeysetProgress
   readonly scannedCounters: number
@@ -115,10 +139,12 @@ export function planRecoveryIndexRestore(input: {
 }
 
 /**
- * Scan one keyset with NUT-09 from its progress, within `maxScannedCounters`.
- * The mint keys must derive the keyset id of the entry, with its condition
- * identity. Every restored proof must carry a valid DLEQ, and NUT-07 then
- * splits them: only `UNSPENT` proofs are returned for admission.
+ * Scan one window of one keyset with NUT-09 from its progress: at most
+ * `maxScannedCounters`, and never more than one window. The mint keys must
+ * derive the keyset id of the entry, with its condition identity. Every
+ * restored proof must carry a valid DLEQ, and NUT-07 then splits them: only
+ * `UNSPENT` proofs are returned for admission. A failed mint request rejects;
+ * the progress that the caller stored stays valid.
  */
 export async function scanRecoveryIndexKeyset(input: {
   readonly seed: Uint8Array
@@ -132,70 +158,78 @@ export async function scanRecoveryIndexKeyset(input: {
   readonly maxScannedCounters: number
   readonly gapLimit?: number
 }): Promise<RecoveryIndexKeysetScan> {
-  if (!recoveryIndexEntryMatchesKeyset(input.entry, input.keyset)) {
-    throw new Error('recovery index keyset does not match its mint keys')
-  }
   const gapLimit = input.gapLimit ?? RECOVERY_INDEX_RESTORE_GAP_LIMIT
   if (!Number.isSafeInteger(gapLimit) || gapLimit < 1 || gapLimit > SEED_RECOVERY_MAX_GAP_LIMIT) {
     throw new Error('recovery index restore gap limit is invalid')
   }
-  if (!Number.isSafeInteger(input.maxScannedCounters) || input.maxScannedCounters < 1) {
-    throw new Error('recovery index restore counter budget is invalid')
+  const window = input.maxScannedCounters
+  if (
+    !Number.isSafeInteger(window) ||
+    window < 1 ||
+    window > RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS
+  ) {
+    throw new Error('recovery index restore window is invalid')
+  }
+  const progress = requireProgress(input.progress)
+  if (!recoveryIndexEntryMatchesKeyset(input.entry, input.keyset)) {
+    return Object.freeze({ status: 'unverifiable', scannedCounters: 0 })
   }
   const keyset: HasKeysetKeys = { id: input.keyset.id, keys: input.keyset.keys }
-  let progress = requireProgress(input.progress)
-  let scannedCounters = 0
-  let complete = false
-  const proofs: Proof[] = []
-  const counters: number[] = []
-  while (!complete && scannedCounters < input.maxScannedCounters) {
-    const trailing = progress.nextCounter - (progress.lastSignedCounter ?? -1) - 1
-    if (trailing >= gapLimit || progress.nextCounter > DURABLE_SEED_DERIVED_COUNTER_MAX) {
-      complete = true
-      break
-    }
-    const scan = await scanSeedCountersForAdmission({
+  const trailing = progress.nextCounter - (progress.lastSignedCounter ?? -1) - 1
+  if (trailing >= gapLimit || progress.nextCounter > DURABLE_SEED_DERIVED_COUNTER_MAX) {
+    return windowResult({
+      complete: true,
+      progress,
+      scannedCounters: 0,
+      proofs: [],
+      counters: [],
+      states: [],
+    })
+  }
+  let scan
+  try {
+    scan = await scanSeedCountersForAdmission({
       restore: input.restore,
       seed: input.seed,
       keyset,
       startCounter: progress.nextCounter,
-      maxScannedCounters: Math.min(
-        input.maxScannedCounters - scannedCounters,
-        SEED_ADMISSION_SCAN_COUNTERS_MAX,
-      ),
+      maxScannedCounters: window,
       gapLimit,
       trailingUnsignedCounters: trailing,
+      restoredAmountTotal: progress.restoredAmount,
     })
-    scannedCounters += scan.nextCounter - progress.nextCounter
-    progress = Object.freeze({
+  } catch (error) {
+    // The window admits nothing; the mint was asked about at most the window.
+    if (error instanceof SeedAdmissionScanImplausibleError) {
+      return Object.freeze({ status: 'implausible', scannedCounters: window })
+    }
+    throw error
+  }
+  const states = await checkStates(scan.proofs, keyset, input.checkProofStates)
+  return windowResult({
+    complete: scan.stop === 'gap-limit',
+    progress: Object.freeze({
       nextCounter: scan.nextCounter,
       lastSignedCounter: scan.lastCounterWithSignature ?? progress.lastSignedCounter,
-    })
-    proofs.push(...scan.proofs)
-    counters.push(...scan.proofCounters)
-    complete = scan.stop === 'gap-limit'
-  }
-  const states = await checkStates(proofs, keyset, input.checkProofStates)
-  return Object.freeze({
-    status: complete ? 'complete' : 'incomplete',
-    progress,
-    scannedCounters,
-    unspent: Object.freeze(proofs.filter((_, index) => states[index] === 'selectable')),
-    unspentCounters: Object.freeze(counters.filter((_, index) => states[index] === 'selectable')),
-    pendingFromCounter: lowest(
-      counters.filter((_, index) => states[index] === 'retain-nonselectable'),
-    ),
-    spentCount: states.filter((state) => state === 'spent').length,
-    nextOutputCounter: complete ? nextSeedCounterAfterLastSigned(progress.lastSignedCounter) : null,
+      restoredAmount: scan.restoredAmountTotal,
+    }),
+    scannedCounters: scan.nextCounter - progress.nextCounter,
+    proofs: scan.proofs,
+    counters: scan.proofCounters,
+    states,
   })
 }
 
 /**
  * Run one restore pass over unfinished keysets in plan order, within the
- * counter budget of this restore start. `commit` stores the result of each
- * keyset (its admitted proofs, its cursor or its progress, and its deferral
- * marker) before the pass goes on. The pass stops at the budget; a later pass
- * with a new budget continues from the stored progress.
+ * counter budget of this restore start. The pass scans one window at a time.
+ * `commit` stores the result of each window (its admitted proofs, its progress
+ * or its cursor, and its deferral marker) before the next window, and the pass
+ * continues a keyset while the budget remains. An `unverifiable` or
+ * `implausible` keyset does not stop the pass: it is in `refused`, and its
+ * stored progress stays. The restore is complete only when the status is
+ * `complete` and `refused` is empty. A failed mint request rejects the pass
+ * after the committed windows; a later pass continues from them.
  */
 export async function runRecoveryIndexRestorePass<T>(input: {
   readonly keysets: readonly {
@@ -211,23 +245,51 @@ export async function runRecoveryIndexRestorePass<T>(input: {
     },
   ) => Promise<RecoveryIndexKeysetScan>
   readonly commit: (target: T, scan: RecoveryIndexKeysetScan) => Promise<void>
-}): Promise<{ readonly status: 'complete' | 'budget'; readonly scannedCounters: number }> {
+}): Promise<{
+  readonly status: 'complete' | 'budget'
+  readonly scannedCounters: number
+  readonly refused: readonly T[]
+}> {
   if (!Number.isSafeInteger(input.counterBudget) || input.counterBudget < 0) {
     throw new Error('recovery index restore counter budget is invalid')
   }
   let used = 0
-  for (const { target, progress } of input.keysets) {
-    const remaining = input.counterBudget - used
-    if (remaining === 0) return { status: 'budget', scannedCounters: used }
-    const result = await input.scan(target, { progress, maxScannedCounters: remaining })
-    if (!Number.isSafeInteger(result.scannedCounters) || result.scannedCounters > remaining) {
-      throw new Error('recovery index restore scan exceeded its budget')
+  const refused: T[] = []
+  for (const { target, progress: stored } of input.keysets) {
+    let progress = stored
+    for (let done = false; !done; ) {
+      const remaining = input.counterBudget - used
+      if (remaining === 0) return { status: 'budget', scannedCounters: used, refused }
+      const maxScannedCounters = Math.min(remaining, RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS)
+      const result = await input.scan(target, { progress, maxScannedCounters })
+      if (
+        !Number.isSafeInteger(result.scannedCounters) ||
+        result.scannedCounters > maxScannedCounters
+      ) {
+        throw new Error('recovery index restore scan exceeded its window')
+      }
+      used += result.scannedCounters
+      await input.commit(target, result)
+      switch (result.status) {
+        case 'complete':
+          done = true
+          break
+        case 'incomplete':
+          if (result.scannedCounters === 0)
+            throw new Error('recovery index restore scan made no progress')
+          progress = result.progress
+          break
+        case 'unverifiable':
+        case 'implausible':
+          refused.push(target)
+          done = true
+          break
+        default:
+          return assertNever(result)
+      }
     }
-    used += result.scannedCounters
-    await input.commit(target, result)
-    if (result.status === 'incomplete') return { status: 'budget', scannedCounters: used }
   }
-  return { status: 'complete', scannedCounters: used }
+  return { status: 'complete', scannedCounters: used, refused }
 }
 
 /** The CLI command for a larger gap, which every GUI restore result names in one short line. */
@@ -288,16 +350,47 @@ async function checkStates(
   return dispositions
 }
 
+function windowResult(input: {
+  readonly complete: boolean
+  readonly progress: RecoveryIndexKeysetProgress
+  readonly scannedCounters: number
+  readonly proofs: readonly Proof[]
+  readonly counters: readonly number[]
+  readonly states: readonly ReturnType<typeof classifySeedRecoveryMintState>[]
+}): RecoveryIndexKeysetWindow {
+  const where =
+    (state: ReturnType<typeof classifySeedRecoveryMintState>) => (_: unknown, index: number) =>
+      input.states[index] === state
+  return Object.freeze({
+    status: input.complete ? 'complete' : 'incomplete',
+    progress: input.progress,
+    scannedCounters: input.scannedCounters,
+    unspent: Object.freeze(input.proofs.filter(where('selectable'))),
+    unspentCounters: Object.freeze(input.counters.filter(where('selectable'))),
+    pendingFromCounter: lowest(input.counters.filter(where('retain-nonselectable'))),
+    spentCount: input.states.filter((state) => state === 'spent').length,
+    nextOutputCounter: input.complete
+      ? nextSeedCounterAfterLastSigned(input.progress.lastSignedCounter)
+      : null,
+  })
+}
+
 function requireProgress(value: RecoveryIndexKeysetProgress): RecoveryIndexKeysetProgress {
   const last = value?.lastSignedCounter
   if (
     !Number.isSafeInteger(value?.nextCounter) ||
     value.nextCounter < 0 ||
-    (last !== null && (!Number.isSafeInteger(last) || last < 0 || last >= value.nextCounter))
+    (last !== null && (!Number.isSafeInteger(last) || last < 0 || last >= value.nextCounter)) ||
+    !Number.isSafeInteger(value.restoredAmount) ||
+    value.restoredAmount < 0
   ) {
     throw new Error('recovery index restore progress is invalid')
   }
   return value
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled recovery index restore result: ${JSON.stringify(value)}`)
 }
 
 function lowest(values: readonly number[]): number | null {

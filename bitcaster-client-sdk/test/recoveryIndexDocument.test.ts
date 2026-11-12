@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js'
+import { decode, decodeFirst, encode, rfc8949EncodeOptions } from 'cborg'
 import {
   RECOVERY_INDEX_DOCUMENT_BYTES_MAX,
   RECOVERY_INDEX_MINTS_MAX,
@@ -21,6 +22,27 @@ import {
   type RecoveryIndexKeys,
 } from '../src/recoveryIndexDocument.ts'
 
+interface DocumentVector {
+  readonly name: string
+  readonly context: string
+  readonly writtenVersion: number
+  readonly nonce: string
+  readonly mints: readonly string[]
+  readonly entries?: readonly RecoveryIndexEntry[]
+  readonly entryRule?: {
+    readonly mintUrl: string
+    readonly keysetIdLabelPrefix: string
+    readonly count: number
+  }
+  readonly cborLength: number
+  readonly plaintextLength: number
+  readonly documentLength: number
+  readonly cborSha256: string
+  readonly documentSha256: string
+  readonly cbor?: string
+  readonly document?: string
+}
+
 interface VectorFile {
   readonly seed: string
   readonly keys: readonly {
@@ -29,19 +51,13 @@ interface VectorFile {
     readonly locatorSecretKey: string
     readonly locatorPublicKey: string
   }[]
-  readonly documents: readonly {
+  readonly documents: readonly DocumentVector[]
+  readonly invalidDocuments: readonly {
     readonly name: string
     readonly context: string
-    readonly writtenVersion: number
-    readonly nonce: string
-    readonly entries: readonly RecoveryIndexEntry[]
-    readonly cborLength: number
-    readonly plaintextLength: number
-    readonly documentLength: number
-    readonly cborSha256: string
-    readonly documentSha256: string
-    readonly cbor?: string
-    readonly document?: string
+    readonly storeVersion: number
+    readonly document: string
+    readonly reason: string
   }[]
 }
 
@@ -64,6 +80,46 @@ function keysetId(label: string): string {
 function bytewise(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
+
+/** The entries of a vector, in canonical order. */
+function vectorEntries(vector: DocumentVector): readonly RecoveryIndexEntry[] {
+  const rule = vector.entryRule
+  const entries =
+    rule === undefined
+      ? vector.entries!
+      : Array.from({ length: rule.count }, (_, index) => ({
+          kind: 'regular' as const,
+          mintUrl: rule.mintUrl,
+          keysetId: keysetId(`${rule.keysetIdLabelPrefix}${index}`),
+        }))
+  return [...entries].sort(
+    (left, right) =>
+      bytewise(left.mintUrl, right.mintUrl) || bytewise(left.keysetId, right.keysetId),
+  )
+}
+
+/** Seal a vector with the SDK writer, and return the document and its CBOR map. */
+function sealVector(vector: DocumentVector): { document: Uint8Array; cbor: Uint8Array } {
+  const keys = deriveRecoveryIndexKeys(SEED, vector.context)
+  const document = sealRecoveryIndexDocument({
+    keys,
+    entries: vectorEntries(vector),
+    writtenVersion: vector.writtenVersion,
+    randomBytes: () => hexToBytes(vector.nonce),
+  })
+  const plaintext = chacha20poly1305(keys.encryptionKey, hexToBytes(vector.nonce), HEADER).decrypt(
+    document.subarray(21),
+  )
+  return { document, cbor: plaintext.subarray(0, vector.cborLength) }
+}
+
+const STRICT_CBOR = {
+  strict: true,
+  rejectDuplicateMapKeys: true,
+  allowIndefinite: false,
+  allowUndefined: false,
+  allowBigInt: false,
+} as const
 
 function regular(label: string, mintUrl = MINT): RecoveryIndexEntry {
   return { kind: 'regular', mintUrl, keysetId: keysetId(label) }
@@ -166,11 +222,16 @@ test('the key derivation refuses a seed that is not 64 bytes and a context out o
 })
 
 test('the writer gives the golden documents, and the reader gives back their entries', () => {
+  assert.ok(
+    VECTORS.documents.some(
+      ({ documentLength }) => documentLength === RECOVERY_INDEX_DOCUMENT_BYTES_MAX,
+    ),
+  )
   for (const vector of VECTORS.documents) {
     const keys = deriveRecoveryIndexKeys(SEED, vector.context)
     const document = sealRecoveryIndexDocument({
       keys,
-      entries: vector.entries,
+      entries: vectorEntries(vector),
       writtenVersion: vector.writtenVersion,
       randomBytes: () => hexToBytes(vector.nonce),
     })
@@ -193,11 +254,82 @@ test('the writer gives the golden documents, and the reader gives back their ent
       document,
       storeVersion: vector.writtenVersion,
     })
-    const expected = [...vector.entries].sort(
-      (left, right) =>
-        bytewise(left.mintUrl, right.mintUrl) || bytewise(left.keysetId, right.keysetId),
+    assert.ok(isDeepStrictEqual(entries, vectorEntries(vector)), vector.name)
+  }
+})
+
+test('an independent CBOR library reads each golden map and encodes it to the same bytes', () => {
+  for (const vector of VECTORS.documents) {
+    const { cbor } = sealVector(vector)
+    assert.equal(bytesToHex(sha256(cbor)), vector.cborSha256, vector.name)
+    if (vector.cbor !== undefined) assert.ok(bytesToHex(cbor) === vector.cbor, vector.name)
+    const map = decode(cbor, STRICT_CBOR) as {
+      readonly v: number
+      readonly ver: number
+      readonly mints: readonly string[]
+      readonly entries: readonly (readonly [number, Uint8Array, Uint8Array?, Uint8Array?])[]
+    }
+    assert.deepEqual(Object.keys(map), ['v', 'ver', 'mints', 'entries'], vector.name)
+    assert.equal(map.v, 1)
+    assert.equal(map.ver, vector.writtenVersion)
+    assert.deepEqual(map.mints, vector.mints)
+    const read = map.entries.map(([mintIndex, keyset, conditionId, outcomeCollectionId]) =>
+      conditionId === undefined
+        ? { kind: 'regular', mintUrl: map.mints[mintIndex], keysetId: bytesToHex(keyset) }
+        : {
+            kind: 'conditional',
+            mintUrl: map.mints[mintIndex],
+            keysetId: bytesToHex(keyset),
+            conditionId: bytesToHex(conditionId),
+            outcomeCollectionId: bytesToHex(outcomeCollectionId!),
+          },
     )
-    assert.ok(isDeepStrictEqual(entries, expected), vector.name)
+    assert.ok(isDeepStrictEqual(read, vectorEntries(vector)), vector.name)
+    // RFC 8949 deterministic encoding by another encoder gives the same bytes.
+    assert.ok(
+      bytesToHex(encode(map, rfc8949EncodeOptions)) === bytesToHex(cbor),
+      `${vector.name}: the deterministic encodings differ`,
+    )
+  }
+})
+
+test('the reader refuses each invalid golden document with its reason', () => {
+  assert.equal(VECTORS.invalidDocuments.length, 9)
+  for (const vector of VECTORS.invalidDocuments) {
+    assert.throws(
+      () =>
+        openRecoveryIndexDocument({
+          keys: deriveRecoveryIndexKeys(SEED, vector.context),
+          document: hexToBytes(vector.document),
+          storeVersion: vector.storeVersion,
+        }),
+      (error: unknown) =>
+        error instanceof RecoveryIndexFormatError && error.reason === vector.reason,
+      vector.name,
+    )
+  }
+})
+
+test('an independent CBOR library confirms that the invalid encodings are not deterministic', () => {
+  const keys = deriveRecoveryIndexKeys(SEED, 'bitcaster-test')
+  const encodings = VECTORS.invalidDocuments.filter(({ reason }) => reason === 'encoding')
+  assert.equal(encodings.length, 2)
+  for (const vector of encodings) {
+    const document = hexToBytes(vector.document)
+    const plaintext = chacha20poly1305(
+      keys.encryptionKey,
+      document.subarray(9, 21),
+      document.subarray(0, 9),
+    ).decrypt(document.subarray(21))
+    let canonical = false
+    try {
+      const [value, rest] = decodeFirst(plaintext, STRICT_CBOR)
+      const consumed = plaintext.subarray(0, plaintext.length - rest.length)
+      canonical = bytesToHex(encode(value, rfc8949EncodeOptions)) === bytesToHex(consumed)
+    } catch {
+      // A strict decoder refuses an argument that is longer than necessary.
+    }
+    assert.equal(canonical, false, vector.name)
   }
 })
 
@@ -332,6 +464,20 @@ test('the reader refuses an unknown version, a wrong key set, and a wrong type',
   refusal(() => open(sealRaw(padTo(cbor.array(cbor.uint(1)), 4096))), 'content')
 })
 
+test('the reader refuses a byte order mark before a map key', () => {
+  const bomKey = cbor.map(
+    cbor.text('v'),
+    cbor.uint(1),
+    cbor.text('ver'),
+    cbor.uint(1),
+    cbor.text('mints'),
+    cbor.array(cbor.text(MINT)),
+    cbor.text('\ufeffentries'),
+    cbor.array(cbor.array(cbor.uint(0), cbor.bytes(hexToBytes(keysetId('a'))))),
+  )
+  refusal(() => open(sealRaw(padTo(bomKey, 4096))), 'content')
+})
+
 test('the reader refuses wrong mints and entries', () => {
   const id = (label: string) => cbor.bytes(hexToBytes(keysetId(label)))
   const [first, second] = [keysetId('a'), keysetId('b')].sort()
@@ -351,6 +497,10 @@ test('the reader refuses wrong mints and entries', () => {
     query: plainMap({ mints: cbor.array(cbor.text(`${MINT}?a=1`)) }),
     'percent escape': plainMap({ mints: cbor.array(cbor.text(`${MINT}/%41`)) }),
     'upper-case host': plainMap({ mints: cbor.array(cbor.text('https://Mint.example.com')) }),
+    // A decoder that drops a leading byte order mark would read a second encoding of one value.
+    'byte order mark before a mint URL': plainMap({
+      mints: cbor.array(cbor.text(`\ufeff${MINT}`)),
+    }),
     'unused mint': plainMap({ mints: cbor.array(cbor.text(MINT), cbor.text(OTHER_MINT)) }),
     'no entry': plainMap({ entries: cbor.array() }),
     'mint index out of range': plainMap({ entries: cbor.array(cbor.array(cbor.uint(1), id('a'))) }),

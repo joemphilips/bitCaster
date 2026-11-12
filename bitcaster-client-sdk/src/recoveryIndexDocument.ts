@@ -127,7 +127,7 @@ export function requireRecoveryIndexContext(context: string): Uint8Array {
   if (
     bytes.length < 1 ||
     bytes.length > RECOVERY_INDEX_CONTEXT_BYTES_MAX ||
-    new TextDecoder().decode(bytes) !== context
+    new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) !== context
   ) {
     throw new Error('recovery index context is invalid')
   }
@@ -555,7 +555,8 @@ class StrictCborReader {
   text(): string {
     const length = this.expect(3)
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(this.take(length))
+      // Keep a leading byte order mark, so that one text has one encoding.
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(this.take(length))
     } catch (error) {
       if (error instanceof RecoveryIndexFormatError) throw error
       throw new RecoveryIndexFormatError('encoding')

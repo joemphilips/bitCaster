@@ -28,6 +28,7 @@ import {
   RECOVERY_INDEX_KEYSET_PROGRESS_START,
   RECOVERY_INDEX_RESTORE_COUNTER_BUDGET,
   RECOVERY_INDEX_RESTORE_GAP_LIMIT,
+  RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS,
   planRecoveryIndexRestore,
   recoveryIndexCliGapCommand,
   runRecoveryIndexRestorePass,
@@ -35,6 +36,7 @@ import {
   seedCounterGapWarning,
   type RecoveryIndexKeysetProgress,
   type RecoveryIndexKeysetScan,
+  type RecoveryIndexKeysetWindow,
 } from '../src/recoveryIndexRestore.ts'
 import { RecoveryIndexSync } from '../src/recoveryIndexSync.ts'
 import { createSeedRecoveryScanPolicy } from '../src/seedRecoveryScanPolicy.ts'
@@ -80,7 +82,13 @@ function outputOf(counter: number, keysetId = KEYSET.id): string {
  * A mint for one keyset. It signs NUT-13 outputs at the given counters, with
  * a DLEQ, answers NUT-09 restores, and reports a NUT-07 state for each proof.
  */
-function fakeMint(signedCounters: Iterable<number> = [], keysetId = KEYSET.id) {
+function fakeMint(
+  signedCounters: Iterable<number> = [],
+  options: { readonly keysetId?: string; readonly amount?: number } = {},
+) {
+  const keysetId = options.keysetId ?? KEYSET.id
+  const amount = options.amount ?? 1
+  let failAt: string | null = null
   const signed = new Set<string>()
   const counterOfSecret = new Map<string, number>()
   const states = new Map<number, string>()
@@ -99,6 +107,10 @@ function fakeMint(signedCounters: Iterable<number> = [], keysetId = KEYSET.id) {
     return counter
   }
   const restore = async (outputs: SerializedBlindedMessage[]) => {
+    if (outputs[0]?.B_ === failAt) {
+      failAt = null
+      throw new Error('mint request failed')
+    }
     restored.push(outputs)
     const hits = outputs.filter(({ B_ }) => signed.has(B_))
     return {
@@ -109,7 +121,7 @@ function fakeMint(signedCounters: Iterable<number> = [], keysetId = KEYSET.id) {
         const dleq = createDLEQProof(blinded, PRIVATE_KEY)
         return {
           id: keysetId,
-          amount: 1,
+          amount,
           C_,
           dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
         }
@@ -122,6 +134,10 @@ function fakeMint(signedCounters: Iterable<number> = [], keysetId = KEYSET.id) {
     /** The mint signs these counters, as after a trade of some client. */
     sign,
     counterOf,
+    /** The next NUT-09 request that starts at this counter fails once. */
+    failOnceAt(counter: number) {
+      failAt = outputOf(counter, keysetId)
+    },
     setState(counter: number, state: string) {
       states.set(counter, state)
     },
@@ -152,9 +168,22 @@ async function scan(
     restore: mint.restore,
     checkProofStates: mint.checkProofStates,
     progress: options.progress ?? RECOVERY_INDEX_KEYSET_PROGRESS_START,
-    maxScannedCounters: options.maxScannedCounters ?? RECOVERY_INDEX_RESTORE_COUNTER_BUDGET,
+    maxScannedCounters: options.maxScannedCounters ?? RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS,
     ...(options.gapLimit === undefined ? {} : { gapLimit: options.gapLimit }),
   })
+}
+
+/** A scan that must read a window of counters. */
+async function scanWindow(
+  mint: ReturnType<typeof fakeMint>,
+  options: Parameters<typeof scan>[1] = {},
+): Promise<RecoveryIndexKeysetWindow> {
+  const result = await scan(mint, options)
+  assert.ok(
+    result.status === 'complete' || result.status === 'incomplete',
+    'the scan read counters',
+  )
+  return result
 }
 
 test('a restore scans the listed keysets, then the regular keysets, then the hinted keysets', () => {
@@ -182,14 +211,14 @@ test('a restore scans the listed keysets, then the regular keysets, then the hin
 })
 
 test('a restore finds an output after 299 unused counters, but not after 300', async () => {
-  const across299 = await scan(fakeMint([0, 300]))
+  const across299 = await scanWindow(fakeMint([0, 300]))
   assert.equal(across299.status, 'complete')
   assert.equal(across299.progress.lastSignedCounter, 300)
   assert.equal(across299.unspent.length, 2)
   // ADR-051 cursor: the last signed counter plus 150; the next output uses plus 151.
   assert.equal(across299.nextOutputCounter, 451)
 
-  const across300 = await scan(fakeMint([0, 301]))
+  const across300 = await scanWindow(fakeMint([0, 301]))
   assert.equal(across300.status, 'complete')
   assert.equal(across300.progress.lastSignedCounter, 0)
   assert.equal(across300.unspent.length, 1)
@@ -199,7 +228,7 @@ test('a restore finds an output after 299 unused counters, but not after 300', a
 
 test('a keyset with no signed output scans 300 counters and continues at counter 150', async () => {
   const mint = fakeMint([])
-  const result = await scan(mint)
+  const result = await scanWindow(mint)
   assert.equal(result.status, 'complete')
   assert.equal(result.progress.lastSignedCounter, null)
   assert.equal(result.scannedCounters, RECOVERY_INDEX_RESTORE_GAP_LIMIT)
@@ -209,7 +238,7 @@ test('a keyset with no signed output scans 300 counters and continues at counter
 
 test('the CLI gap limit finds an output after a run that the GUI gap misses', async () => {
   const cliGap = createSeedRecoveryScanPolicy({ gapLimit: 701 }).gapLimit
-  const result = await scan(fakeMint([0, 301, 1_000]), { gapLimit: cliGap })
+  const result = await scanWindow(fakeMint([0, 301, 1_000]), { gapLimit: cliGap })
   assert.equal(result.progress.lastSignedCounter, 1_000)
   assert.equal(result.unspent.length, 3)
   assert.equal(result.nextOutputCounter, 1_151)
@@ -226,7 +255,7 @@ test('a restore admits only verified UNSPENT proofs and marks the lowest PENDING
   mint.setState(5, 'SPENT')
   mint.setState(7, 'PENDING')
   mint.setState(9, 'PENDING')
-  const result = await scan(mint)
+  const result = await scanWindow(mint)
   assert.equal(result.unspent.length, 1)
   assert.equal(mint.counterOf(result.unspent[0]!), 3)
   assert.equal(result.spentCount, 1)
@@ -257,10 +286,11 @@ test('a restore admits only verified UNSPENT proofs and marks the lowest PENDING
   )
 })
 
-test('a restore refuses mint keys that do not derive the listed keyset before it asks the mint', async () => {
+test('a keyset whose mint keys do not derive the entry is unverifiable, with no mint request', async () => {
   const mint = fakeMint([0])
   const otherKeys = { '1': PUBLIC_KEY }
-  await assert.rejects(scan(mint, { keyset: { ...KEYSET, keys: otherKeys } }), /keyset/)
+  const unverifiable = { status: 'unverifiable', scannedCounters: 0 }
+  assert.deepEqual(await scan(mint, { keyset: { ...KEYSET, keys: otherKeys } }), unverifiable)
   const conditionId = hash('condition')
   const outcomeCollectionId = hash('collection')
   const conditionalId = deriveConditionalKeysetId({
@@ -278,23 +308,29 @@ test('a restore refuses mint keys that do not derive the listed keyset before it
   }
   const wrongCollection = { ...conditional, outcomeCollectionId: hash('other collection') }
   const conditionalKeyset = { ...KEYSET, id: conditionalId }
-  await assert.rejects(scan(mint, { entry: wrongCollection, keyset: conditionalKeyset }), /keyset/)
+  assert.deepEqual(
+    await scan(mint, { entry: wrongCollection, keyset: conditionalKeyset }),
+    unverifiable,
+  )
   assert.equal(mint.restored.length, 0)
-  const conditionalMint = fakeMint([2], conditionalId)
-  const result = await scan(conditionalMint, { entry: conditional, keyset: conditionalKeyset })
+  const conditionalMint = fakeMint([2], { keysetId: conditionalId })
+  const result = await scanWindow(conditionalMint, {
+    entry: conditional,
+    keyset: conditionalKeyset,
+  })
   assert.equal(result.progress.lastSignedCounter, 2)
 })
 
 test('a pass stops at its counter budget and the next pass continues with the same gap', async () => {
   const signed = [0, 250, 500, 750]
-  const whole = await scan(fakeMint(signed))
+  const whole = await scanWindow(fakeMint(signed))
   assert.equal(whole.nextOutputCounter, 901)
 
   const mint = fakeMint(signed)
   const progress = new Map<string, RecoveryIndexKeysetProgress>([
     ['k', RECOVERY_INDEX_KEYSET_PROGRESS_START],
   ])
-  const results: RecoveryIndexKeysetScan[] = []
+  const results: RecoveryIndexKeysetWindow[] = []
   const runPass = (counterBudget: number) =>
     runRecoveryIndexRestorePass({
       keysets: [...progress].map(([target, keysetProgress]) => ({
@@ -312,17 +348,19 @@ test('a pass stops at its counter budget and the next pass continues with the sa
           ...request,
         }),
       commit: async (target, result) => {
+        assert.ok(result.status === 'complete' || result.status === 'incomplete')
         results.push(result)
         if (result.status === 'complete') progress.delete(target)
         else progress.set(target, result.progress)
       },
     })
 
-  assert.deepEqual(await runPass(400), { status: 'budget', scannedCounters: 400 })
+  assert.deepEqual(await runPass(400), { status: 'budget', scannedCounters: 400, refused: [] })
   assert.equal(results.at(-1)!.status, 'incomplete')
   assert.deepEqual(await runPass(RECOVERY_INDEX_RESTORE_COUNTER_BUDGET), {
     status: 'complete',
     scannedCounters: whole.scannedCounters - 400,
+    refused: [],
   })
   assert.equal(results.at(-1)!.nextOutputCounter, 901)
   assert.equal(
@@ -332,7 +370,132 @@ test('a pass stops at its counter budget and the next pass continues with the sa
   assert.deepEqual(await runPass(RECOVERY_INDEX_RESTORE_COUNTER_BUDGET), {
     status: 'complete',
     scannedCounters: 0,
+    refused: [],
   })
+})
+
+/** A restore pass over keysets with stored progress, as a host runs it. */
+function restoreHost(
+  targets: ReadonlyMap<
+    string,
+    { readonly entry: RecoveryIndexEntry; readonly keyset: RecoveryIndexKeysetAuthority }
+  >,
+  mint: ReturnType<typeof fakeMint>,
+  gapLimit = RECOVERY_INDEX_RESTORE_GAP_LIMIT,
+) {
+  const progress = new Map<string, RecoveryIndexKeysetProgress>(
+    [...targets.keys()].map((target) => [target, RECOVERY_INDEX_KEYSET_PROGRESS_START]),
+  )
+  const admitted: Proof[] = []
+  const windows: number[] = []
+  const committed: RecoveryIndexKeysetScan['status'][] = []
+  const runPass = (counterBudget = RECOVERY_INDEX_RESTORE_COUNTER_BUDGET) =>
+    runRecoveryIndexRestorePass({
+      keysets: [...progress].map(([target, keysetProgress]) => ({
+        target,
+        progress: keysetProgress,
+      })),
+      counterBudget,
+      scan: (target, request) => {
+        windows.push(request.maxScannedCounters)
+        return scanRecoveryIndexKeyset({
+          seed: SEED,
+          ...targets.get(target)!,
+          restore: mint.restore,
+          checkProofStates: mint.checkProofStates,
+          gapLimit,
+          ...request,
+        })
+      },
+      commit: async (target, result) => {
+        committed.push(result.status)
+        switch (result.status) {
+          case 'complete':
+            admitted.push(...result.unspent)
+            progress.delete(target)
+            break
+          case 'incomplete':
+            admitted.push(...result.unspent)
+            progress.set(target, result.progress)
+            break
+          case 'unverifiable':
+          case 'implausible':
+            break
+        }
+      },
+    })
+  return { runPass, progress, admitted, windows, committed }
+}
+
+test('a keyset longer than one window commits each window, and the next pass resumes after a failure', async () => {
+  const signed = Array.from({ length: 26 }, (_, index) => index * 200)
+  const mint = fakeMint(signed)
+  mint.failOnceAt(RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS)
+  const host = restoreHost(new Map([['k', { entry: ENTRY, keyset: KEYSET }]]), mint)
+
+  // The second window fails at its first NUT-09 request. The first window stays committed.
+  await assert.rejects(host.runPass(), /mint request failed/)
+  assert.deepEqual(host.committed, ['incomplete'])
+  assert.equal(host.progress.get('k')!.nextCounter, RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS)
+  assert.equal(host.admitted.length, 15)
+
+  assert.deepEqual(await host.runPass(), {
+    status: 'complete',
+    scannedCounters: 2_301,
+    refused: [],
+  })
+  assert.deepEqual(host.committed, ['incomplete', 'complete'])
+  assert.equal(host.admitted.length, signed.length)
+  // Each scan call reads at most one window.
+  assert.ok(host.windows.every((counters) => counters <= RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS))
+})
+
+test('the restored total stays a safe integer across windows: the crossing window admits nothing', async () => {
+  const large = String(2 ** 52)
+  const keys = { '1': PUBLIC_KEY, [large]: PUBLIC_KEY }
+  const keyset: RecoveryIndexKeysetAuthority = {
+    ...KEYSET,
+    id: deriveKeysetId(keys, { unit: 'msat', versionByte: 1 }),
+    keys,
+  }
+  const entry: RecoveryIndexEntry = { kind: 'regular', mintUrl: MINT, keysetId: keyset.id }
+  const mint = fakeMint([0, RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS], {
+    keysetId: keyset.id,
+    amount: 2 ** 52,
+  })
+  const host = restoreHost(new Map([['big', { entry, keyset }]]), mint, 5_000)
+
+  const result = await host.runPass()
+  assert.equal(result.status, 'complete')
+  assert.deepEqual(result.refused, ['big'])
+  assert.deepEqual(host.committed, ['incomplete', 'implausible'])
+  // Only the first window's proof is admitted, and the stored position stays before the crossing window.
+  assert.equal(host.admitted.length, 1)
+  assert.equal(host.progress.get('big')!.nextCounter, RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS)
+  assert.equal(host.progress.get('big')!.restoredAmount, 2 ** 52)
+})
+
+test('a listed entry that its mint keys do not derive does not stop the pass', async () => {
+  const mint = fakeMint([0, 1])
+  const wrong = { ...entryOf('wrong form'), keysetId: KEYSET.id }
+  const otherKeyset = { ...KEYSET, keys: { '1': PUBLIC_KEY } }
+  const host = restoreHost(
+    new Map([
+      ['listed', { entry: wrong, keyset: otherKeyset }],
+      ['regular', { entry: ENTRY, keyset: KEYSET }],
+    ]),
+    mint,
+  )
+
+  assert.deepEqual(await host.runPass(), {
+    status: 'complete',
+    scannedCounters: 302,
+    refused: ['listed'],
+  })
+  assert.deepEqual(host.committed, ['unverifiable', 'complete'])
+  assert.equal(host.admitted.length, 2)
+  // The unverifiable keyset keeps its stored progress for a later pass.
+  assert.ok(host.progress.has('listed'))
 })
 
 test('the handoff warning names a CLI gap above the longest unused run before a signed output', () => {
@@ -369,6 +532,7 @@ test('an A to B to A device switch writes once, starts no scan loop, and reuses 
       keys,
       localEntries: async () => [...localEntries],
       verifyEntry: async () => true,
+      walletMints: () => [MINT],
       nowMs: () => engine.nowSeconds * 1000,
     })
 
@@ -384,7 +548,7 @@ test('an A to B to A device switch writes once, starts no scan loop, and reuses 
   const b = device(bLocal)
   const bRead = await b.read('wallet-open')
   assert.ok(bRead.status === 'read' && isDeepStrictEqual(bRead.scan, [ENTRY]))
-  const restored = await scan(mint)
+  const restored = await scanWindow(mint)
   assert.equal(restored.unspent.length, 10)
   assert.equal(restored.nextOutputCounter, 160)
   bLocal.push(ENTRY)

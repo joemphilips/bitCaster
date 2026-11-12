@@ -52,6 +52,7 @@ function client(engine: RecoveryIndexFakeEngine, local: RecoveryIndexEntry[] = [
     keys: KEYS,
     localEntries: async () => [...local],
     verifyEntry: async () => true,
+    walletMints: () => [MINT],
     nowMs: () => clock.nowMs,
     random: () => 0,
   })
@@ -305,14 +306,17 @@ test('concurrent uploads of one seed share one write', async () => {
 
 test('a read lists the keysets to scan: listed keysets without a local cursor', async () => {
   const fake = engine()
-  const other = client(fake, [entry('a'), entry('b'), entry('c')])
+  const foreign = { ...entry('foreign'), mintUrl: 'https://other.example.com' }
+  const other = client(fake, [entry('a'), entry('b'), entry('c'), foreign])
   assert.equal((await other.sync.upload()).status, 'written')
   const { sync } = client(fake, [entry('b')])
 
   const read = await sync.read('wallet-open')
   assert.ok(read.status === 'read')
   assert.equal(read.trigger, 'wallet-open')
+  // An entry of a mint that is not a wallet mint is not scanned (ADR-039); it stays listed.
   assert.ok(isDeepStrictEqual(read.scan, [entry('a'), entry('c')].sort(byKeyset)))
+  assert.ok(read.document.status === 'listed' && read.document.entries.length === 4)
   // The second read is "not modified" and lists the same keysets.
   const again = await sync.read('upload-conflict')
   assert.ok(again.status === 'read' && isDeepStrictEqual(again.scan, read.scan))
@@ -358,6 +362,7 @@ test('the next write resolves a listed entry whose form conflicts with the local
     localEntries: async () => [conditional, entry('new')],
     // The mint keys derive the keyset id only with the condition identity.
     verifyEntry: async (candidate) => candidate.kind === 'conditional',
+    walletMints: () => [MINT],
     nowMs: () => START_MS,
   })
 

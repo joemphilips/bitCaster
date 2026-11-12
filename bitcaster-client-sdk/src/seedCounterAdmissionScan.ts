@@ -40,6 +40,8 @@ export interface SeedAdmissionScanResult {
   /** The seed counter of each restored proof, in the same order. */
   readonly proofCounters: readonly number[]
   readonly lastCounterWithSignature: number | null
+  /** The total of the restored amounts, with `restoredAmountTotal` of the input. A later scan continues it. */
+  readonly restoredAmountTotal: number
   /** The first counter that this scan did not ask about. A later scan starts here. */
   readonly nextCounter: number
   readonly stop: SeedAdmissionScanStop
@@ -99,6 +101,11 @@ export async function scanSeedCountersForAdmission(input: {
    * one long scan would end.
    */
   readonly trailingUnsignedCounters?: number
+  /**
+   * The total of the amounts that earlier scans of the keyset restored. The
+   * safe-total bound covers the whole keyset, not one scan.
+   */
+  readonly restoredAmountTotal?: number
 }): Promise<SeedAdmissionScanResult> {
   const budget = input.maxScannedCounters ?? SEED_ADMISSION_SCAN_COUNTERS_MAX
   if (!Number.isSafeInteger(budget) || budget < 1 || budget > SEED_ADMISSION_SCAN_COUNTERS_MAX) {
@@ -116,9 +123,13 @@ export async function scanSeedCountersForAdmission(input: {
   if (!Number.isSafeInteger(trailing) || trailing < 0 || trailing >= gapLimit || trailing > start) {
     throw new Error('seed admission scan trailing gap is invalid')
   }
+  const restoredBefore = input.restoredAmountTotal ?? 0
+  if (!Number.isSafeInteger(restoredBefore) || restoredBefore < 0) {
+    throw new Error('seed admission scan restored total is invalid')
+  }
   const proofs: Proof[] = []
   const proofCounters: number[] = []
-  let total = 0n
+  let total = BigInt(restoredBefore)
   let last: number | null = null
   let next = start
   for (;;) {
@@ -130,6 +141,7 @@ export async function scanSeedCountersForAdmission(input: {
         proofs,
         proofCounters,
         lastCounterWithSignature: last,
+        restoredAmountTotal: Number(total),
         nextCounter: next,
         // The end of the counter space also ends the keyset: no later output exists.
         stop:
