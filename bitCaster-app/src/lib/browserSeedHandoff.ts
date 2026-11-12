@@ -15,6 +15,7 @@ const TEXT_KEY_MAX = "￿";
 export type BrowserSeedHandoffRefusalCode =
   | "active-wallet-work"
   | "backup-not-current"
+  | "backup-partial"
   | "browser-lock-unavailable"
   | "seed-backup-unconfirmed";
 
@@ -26,11 +27,6 @@ export class BrowserSeedHandoffRefusal extends Error {
     super(message);
     this.name = "BrowserSeedHandoffRefusal";
   }
-}
-
-export interface BrowserSeedHandoffResult {
-  /** The engine refused a growing write. A later restore of the old seed can be partial. */
-  readonly backupPartial: boolean;
 }
 
 /**
@@ -45,6 +41,12 @@ export async function handoffBrowserSeed(input: {
   readonly isCurrentProfile: () => boolean;
   /** The user confirmed the written copy of the current seed. */
   readonly currentSeedBackupConfirmed: boolean;
+  /**
+   * The user saw that the backup of the current wallet is incomplete and
+   * replaces the wallet anyway. Without it, a refused growing write stops the
+   * handoff before the commit point.
+   */
+  readonly acceptPartialBackup: boolean;
   /** Read the recovery index again and upload the pending keysets. */
   readonly prepareRecoveryIndex: () => Promise<BrowserRecoveryIndexHandoff>;
   /** Check app-level unfinished orders after the asynchronous checks and before invalidation. */
@@ -53,7 +55,7 @@ export async function handoffBrowserSeed(input: {
   readonly invalidateOldProfile: () => void;
   readonly activateNewProfile: () => Promise<void>;
   readonly restoreOldProfile: () => Promise<void>;
-}): Promise<BrowserSeedHandoffResult> {
+}): Promise<void> {
   requireCapturedDatabase(input);
   const lockManager = input.lockManager ?? globalThis.navigator?.locks;
   if (!lockManager) {
@@ -73,6 +75,12 @@ export async function handoffBrowserSeed(input: {
     throw new BrowserSeedHandoffRefusal(
       "backup-not-current",
       "browser seed handoff waits for the recovery index",
+    );
+  }
+  if (index.kind === "growing-write-refused" && !input.acceptPartialBackup) {
+    throw new BrowserSeedHandoffRefusal(
+      "backup-partial",
+      "browser seed handoff needs the user to accept a partial backup",
     );
   }
   await withWalletProfileLock(
@@ -119,7 +127,6 @@ export async function handoffBrowserSeed(input: {
     },
     lockManager,
   );
-  return { backupPartial: index.kind === "growing-write-refused" };
 }
 
 /**

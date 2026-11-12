@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   deriveDurableCustodyScopeId,
@@ -9,6 +10,7 @@ import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableC
 import {
   deriveRecoveryIndexKeys,
   openRecoveryIndexDocument,
+  sealRecoveryIndexDocument,
   type RecoveryIndexEntry,
 } from "@bitcaster/client-sdk/recoveryIndexDocument";
 import { RECOVERY_INDEX_REALMS } from "@bitcaster/client-sdk/recoveryIndexEngine";
@@ -42,6 +44,21 @@ const REGULAR = `01${"11".repeat(32)}`;
 const OTHER_REGULAR = `01${"22".repeat(32)}`;
 const CONDITIONAL = `01${"33".repeat(32)}`;
 const CONDITION_ID = "ab".repeat(32);
+const CONDITIONAL_ENTRY: RecoveryIndexEntry = {
+  kind: "conditional",
+  mintUrl: MINT,
+  keysetId: CONDITIONAL,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+    conditionId: CONDITION_ID,
+    outcomeCollection: "YES",
+  }),
+};
+const CONDITIONAL_CONTEXT = {
+  mintUrl: MINT,
+  unit: "msat",
+  conditional: { conditionId: CONDITION_ID, outcomeCollection: "YES" },
+} as const;
 const databases: BitcasterDB[] = [];
 const runtimes: BrowserRecoveryIndex[] = [];
 
@@ -379,6 +396,82 @@ describe("browser recovery index", () => {
         false,
       );
     }
+  });
+
+  it("writes a conditional receive into a new keyset in the conditional form before custody admits a proof", async () => {
+    const engine = new RecoveryIndexFakeEngine(REALM);
+    engine.nowSeconds = NOW_MS / 1000;
+    const database = openDatabase();
+    const index = runtime(engine, database);
+    const stop = subscribeToLocalKeysetChanges(database, () => index.requestUpload());
+    try {
+      // The counter recovery of the keyset found no output: an association, no cursor.
+      await counters(database).restoreInContext(
+        { mintUrl: MINT, unit: "msat" },
+        CONDITIONAL,
+        0,
+        false,
+        () => undefined,
+      );
+      // The receive commits its counter with the swap. The custody table has
+      // no row for the keyset yet.
+      await database.transaction(
+        "rw",
+        [database.walletCounterAssociations, database.walletCounterCursors],
+        () =>
+          counters(database).compareAndAdvanceInCurrentTransaction(
+            Dexie.currentTransaction!,
+            CONDITIONAL_CONTEXT,
+            { keysetId: CONDITIONAL, expectedNextCounter: null, nextCounter: 2 },
+          ),
+      );
+      await index.settled();
+
+      expect(await database.custodyConditionalKeysets.count()).toBe(0);
+      expect(storedEntries(engine)).toEqual([CONDITIONAL_ENTRY]);
+      expect(index.status).toEqual({ kind: "current" });
+    } finally {
+      stop();
+    }
+  });
+
+  it("corrects a stored regular-form entry of a conditional keyset at the next write", async () => {
+    const engine = new RecoveryIndexFakeEngine(REALM);
+    engine.nowSeconds = NOW_MS / 1000;
+    // A faulty writer listed the conditional keyset in the regular form.
+    engine.rows.set(KEYS.locatorPublicKey, {
+      version: 1,
+      document: sealRecoveryIndexDocument({
+        keys: KEYS,
+        entries: [{ kind: "regular", mintUrl: MINT, keysetId: CONDITIONAL }],
+        writtenVersion: 1,
+      }),
+    });
+    const database = openDatabase();
+    await counters(database).reserveInContext(CONDITIONAL_CONTEXT, CONDITIONAL, 1, false);
+    const index = runtime(engine, database);
+
+    index.requestUpload();
+    await index.settled();
+
+    expect(storedEntries(engine)).toEqual([CONDITIONAL_ENTRY]);
+    expect(engine.rows.get(KEYS.locatorPublicKey)?.version).toBe(2);
+  });
+
+  it("lets a seed handoff pass when the index lists a keyset in a form this browser cannot check", async () => {
+    const database = openDatabase();
+    // The association of this browser lacks the NUT-CTF identity of the keyset.
+    await counters(database).reserveInContext(
+      { mintUrl: MINT, unit: "msat" },
+      CONDITIONAL,
+      1,
+      false,
+    );
+
+    // Another browser listed it with its identity, so a restore scans it.
+    expect(
+      await browserRecoveryIndexListsEveryLocalKeyset(database, SCOPE_ID, [CONDITIONAL_ENTRY]),
+    ).toBe(true);
   });
 
   it("shows a persistent error and writes nothing over a document it cannot decode", async () => {

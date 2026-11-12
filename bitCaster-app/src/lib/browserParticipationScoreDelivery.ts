@@ -31,7 +31,7 @@ import {
   restoreBrowserDeterministicOutgoingCashuOutputs,
 } from "@/lib/browserDeterministicOutgoingCashu";
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
-import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "@/lib/browserFundedPlan";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 
@@ -191,7 +191,7 @@ async function preflightParticipationScoreAsset(input: {
   readonly mintUrl: string;
 }): Promise<void> {
   let localBalanceMsat: number | null = null;
-  const recovery = await recoverBrowserFundedAsset({
+  const recovery = await classifyBrowserFundedPlan({
     asset: input.asset,
     loadPlan: async () => {
       const proofs = await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId);
@@ -213,7 +213,7 @@ async function preflightParticipationScoreAsset(input: {
       throw new BrowserParticipationScoreInsufficientBalanceError(localBalanceMsat);
     case "persistent-error":
       throw new BrowserParticipationScoreAssetUnavailableError(localBalanceMsat);
-    case "not-recoverable":
+    case "limited":
       throw new BrowserParticipationScoreConsolidationRequiredError();
     default:
       throw new Error("Participation Score recovery outcome is invalid");

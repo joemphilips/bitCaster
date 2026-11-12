@@ -30,7 +30,7 @@ const findBrowserOutgoingCashuTransferByPredecessor = vi.fn();
 const decodeBrowserOutgoingCashuTransferRow = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
-const recoverBrowserFundedAsset = vi.fn();
+const classifyBrowserFundedPlan = vi.fn();
 const readBrowserMarketFundingHead = vi.fn();
 const outgoingDraftWallet = vi.hoisted(() => ({ value: null as unknown }));
 
@@ -80,8 +80,8 @@ vi.mock("@/lib/markets", () => ({
   submitDurableCashuDelivery: (...args: unknown[]) => submitDurableCashuDelivery(...args),
 }));
 
-vi.mock("@/lib/browserFundedAssetRecovery", () => ({
-  recoverBrowserFundedAsset: (...args: unknown[]) => recoverBrowserFundedAsset(...args),
+vi.mock("@/lib/browserFundedPlan", () => ({
+  classifyBrowserFundedPlan: (...args: unknown[]) => classifyBrowserFundedPlan(...args),
 }));
 
 const input = {
@@ -141,7 +141,7 @@ describe("browser market funding delivery", () => {
     findBrowserOutgoingCashuTransferByPredecessor.mockResolvedValue(null);
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
-    recoverBrowserFundedAsset.mockReset();
+    classifyBrowserFundedPlan.mockReset();
     readBrowserMarketFundingHead.mockReset();
   });
 
@@ -493,7 +493,7 @@ describe("browser market funding delivery", () => {
     getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
-    recoverBrowserFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
+    classifyBrowserFundedPlan.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
 
     await executeBrowserMarketFundingDelivery({ ...common, attempt: begin() });
     const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
@@ -501,7 +501,7 @@ describe("browser market funding delivery", () => {
     };
     await outgoingInput.preflightFundedAsset();
 
-    expect(recoverBrowserFundedAsset).toHaveBeenCalledWith(
+    expect(classifyBrowserFundedPlan).toHaveBeenCalledWith(
       expect.objectContaining({
         asset: expect.objectContaining({ mintUrl: input.mintUrl, unit: input.unit }),
       }),
@@ -659,7 +659,7 @@ describe("browser market funding delivery", () => {
       }),
     });
     getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
-    recoverBrowserFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
+    classifyBrowserFundedPlan.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
     executeBrowserDurableOutgoingCashuTransfer.mockImplementation(async (request) => {
       await request.preflightFundedAsset();
       await request.prepareWalletSendOperation();

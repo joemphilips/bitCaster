@@ -18,6 +18,7 @@ import {
   mergeRecoveryIndexEntries,
   openRecoveryIndexDocument,
   pendingRecoveryIndexEntries,
+  unlistedRecoveryIndexEntries,
   sealRecoveryIndexDocument,
   type RecoveryIndexEntry,
   type RecoveryIndexKeys,
@@ -701,4 +702,20 @@ test('a pending keyset is a local keyset that the read document does not list', 
     ]),
   )
   assert.equal(pendingRecoveryIndexEntries(listed, listed).length, 0)
+})
+
+test('a local keyset that the read document lists in another form is pending, not unlisted', () => {
+  const asRegular = { ...regular('b'), keysetId: conditional('b').keysetId }
+  const otherIdentity = { ...conditional('c'), conditionId: conditional('d').conditionId }
+  const listed = [regular('a'), asRegular, conditional('c')]
+  const local = [regular('a'), conditional('b'), otherIdentity]
+  // A faulty writer listed a conditional keyset in the regular form, or with
+  // another identity. The next upload writes the local form (ADR-051 "Upload").
+  const pending = pendingRecoveryIndexEntries(local, listed)
+  assert.equal(pending.length, 2)
+  for (const expected of [conditional('b'), otherIdentity])
+    assert.ok(pending.some((entry) => isDeepStrictEqual(entry, expected)))
+  // The document lists every keyset, so a restore scans each of them.
+  assert.equal(unlistedRecoveryIndexEntries(local, listed).length, 0)
+  assert.ok(sameEntries(unlistedRecoveryIndexEntries([regular('e')], listed), [regular('e')]))
 })

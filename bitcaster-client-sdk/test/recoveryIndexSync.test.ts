@@ -60,6 +60,22 @@ function client(engine: RecoveryIndexFakeEngine, local: RecoveryIndexEntry[] = [
   return { sync, local, clock }
 }
 
+/** The store, keys, mints, and clock of one client at the start time. */
+function syncOptions(fake: RecoveryIndexFakeEngine) {
+  return {
+    store: createRecoveryIndexEngineStore({
+      engineBaseUrl: fake.baseUrl,
+      realm: REALM,
+      keys: KEYS,
+      fetchImpl: fake.fetch,
+      nowMs: () => START_MS,
+    }),
+    keys: KEYS,
+    walletMints: () => [MINT],
+    nowMs: () => START_MS,
+  }
+}
+
 function engine(): RecoveryIndexFakeEngine {
   const fake = new RecoveryIndexFakeEngine(REALM)
   fake.nowSeconds = START_MS / 1000
@@ -369,6 +385,61 @@ test('the next write resolves a listed entry whose form conflicts with the local
 
   assert.deepEqual(await sync.upload(), { status: 'written', version: 2 })
   assert.ok(isDeepStrictEqual(stored(fake), [conditional, entry('new')].sort(byKeyset)))
+})
+
+test('a keyset listed in another form is pending, and the next upload writes its local form', async () => {
+  const fake = engine()
+  const asRegular = entry('k')
+  const local: RecoveryIndexEntry = {
+    kind: 'conditional',
+    mintUrl: MINT,
+    keysetId: asRegular.keysetId,
+    conditionId: 'aa'.repeat(32),
+    outcomeCollectionId: 'bb'.repeat(32),
+  }
+  // A faulty writer listed the conditional keyset in the regular form. No other
+  // keyset of this client is new.
+  fake.rows.set(KEYS.locatorPublicKey, {
+    version: 1,
+    document: sealRecoveryIndexDocument({ keys: KEYS, entries: [asRegular], writtenVersion: 1 }),
+  })
+  const sync = new RecoveryIndexSync({
+    ...syncOptions(fake),
+    localEntries: async () => [local],
+    // The mint keys derive the keyset id only with the condition identity.
+    verifyEntry: async (candidate) => candidate.kind === 'conditional',
+  })
+
+  assert.deepEqual(await sync.upload(), { status: 'written', version: 2 })
+  assert.ok(isDeepStrictEqual(stored(fake), [local]))
+})
+
+test('a form conflict that the client cannot verify writes nothing', async () => {
+  const fake = engine()
+  const asRegular = entry('k')
+  const local: RecoveryIndexEntry = {
+    kind: 'conditional',
+    mintUrl: MINT,
+    keysetId: asRegular.keysetId,
+    conditionId: 'aa'.repeat(32),
+    outcomeCollectionId: 'bb'.repeat(32),
+  }
+  fake.rows.set(KEYS.locatorPublicKey, {
+    version: 1,
+    document: sealRecoveryIndexDocument({ keys: KEYS, entries: [asRegular], writtenVersion: 1 }),
+  })
+  const sync = new RecoveryIndexSync({
+    ...syncOptions(fake),
+    localEntries: async () => [local],
+    // The merge keeps the stored value when the check fails (ADR-051 "Merge").
+    verifyEntry: async () => {
+      throw new Error('mint keys unavailable')
+    },
+  })
+
+  assert.deepEqual(await sync.upload(), { status: 'current', version: 1 })
+  assert.equal(fake.count('PUT'), 0)
+  assert.ok(isDeepStrictEqual(stored(fake), [asRegular]))
 })
 
 test('a restore Retry reads the index again only after the engine was unreachable', async () => {

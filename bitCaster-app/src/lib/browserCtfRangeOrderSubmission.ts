@@ -75,7 +75,7 @@ import {
   resolveTerminalBrowserCtfRangeMessages,
 } from "@/stores/ctf-range-order-messages";
 import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
-import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "./browserFundedPlan";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import {
@@ -479,7 +479,7 @@ function directRangeSource(
 async function recoverRangeSourcePlan(
   input: BrowserRangeSourceInput,
 ): Promise<ReadyRangeSourcePlan> {
-  const recovery = await recoverBrowserFundedAsset({
+  const recovery = await classifyBrowserFundedPlan({
     asset: rangeSourceAsset(input.preparation),
     loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
     isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
@@ -491,7 +491,7 @@ async function recoverRangeSourcePlan(
       throw assetRecoveryFailed();
     case "unavailable":
       throw rangeSourcePlanError("insufficient");
-    case "not-recoverable":
+    case "limited":
       throw rangeSourcePlanError(
         recovery.plan.kind === "ready" ? "insufficient" : recovery.plan.kind,
       );
@@ -1098,22 +1098,29 @@ export async function recoverBrowserCtfRangeOrders(input: {
   let recovered = 0;
   const pending: BrowserCtfRangeRecoveryPending[] = [];
   let priorCursor = "";
-  do {
-    const page = await coordinator.recoverPage({
-      seed,
-      limit: 64,
-      ...(after === undefined ? {} : { after }),
-    });
-    recovered += page.recoveredOperationIds.length;
-    pending.push(...page.pending);
-    await persistRecoveryResults(scopeId, page);
-    if (page.nextCursor === null) break;
-    const cursor = JSON.stringify(page.nextCursor);
-    if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
-    priorCursor = cursor;
-    after = page.nextCursor;
-    await Promise.resolve();
-  } while (after !== undefined);
+  let refusalCode: number | null = null;
+  try {
+    do {
+      const page = await coordinator.recoverPage({
+        seed,
+        limit: 64,
+        ...(after === undefined ? {} : { after }),
+      });
+      recovered += page.recoveredOperationIds.length;
+      pending.push(...page.pending);
+      refusalCode ??= await persistRecoveryResults(scopeId, page);
+      if (page.nextCursor === null) break;
+      const cursor = JSON.stringify(page.nextCursor);
+      if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
+      priorCursor = cursor;
+      after = page.nextCursor;
+      await Promise.resolve();
+    } while (after !== undefined);
+  } finally {
+    // One index read for the pass: each read is an engine presence
+    // observation (ADR-034 "Engine privacy").
+    if (refusalCode !== null) readBrowserRecoveryIndexAfterMintRefusal(scopeId, refusalCode);
+  }
   return { recovered, pending };
 }
 
@@ -1139,7 +1146,8 @@ export async function recoverBrowserCtfRangeOrder(input: {
     seed,
     clientOrderId: input.clientOrderId,
   });
-  await persistRecoveryResults(scopeId, recovery);
+  const refusalCode = await persistRecoveryResults(scopeId, recovery);
+  if (refusalCode !== null) readBrowserRecoveryIndexAfterMintRefusal(scopeId, refusalCode);
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
 }
 
@@ -1178,10 +1186,15 @@ function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): b
   }
 }
 
+/**
+ * Persist the results of one recovery page. Return the mint code of the first
+ * refusal that shows another client of the seed, or null. The caller reads the
+ * recovery index once for the pass.
+ */
 async function persistRecoveryResults(
   scopeId: string,
   page: Omit<BrowserCtfRangeRecoveryPage, "nextCursor">,
-): Promise<void> {
+): Promise<number | null> {
   for (const message of page.pending) await persistRecoveryPending(scopeId, message);
   // The automatic replay stopped. The funds alert shows the mint code, when
   // the mint refused, and a retry. It returns on every pass, also after the
@@ -1199,9 +1212,6 @@ async function persistRecoveryResults(
     });
   }
   const evidence = page.refused.filter(({ mintError }) => seedUsedElsewhere(mintError));
-  for (const { mintError } of evidence) {
-    readBrowserRecoveryIndexAfterMintRefusal(scopeId, mintError!.code);
-  }
   const evidenceMints = new Set(evidence.map(({ mintUrl }) => mintUrl));
   for (const mintUrl of evidenceMints) {
     // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
@@ -1221,6 +1231,7 @@ async function persistRecoveryResults(
     });
   }
   await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+  return evidence[0]?.mintError?.code ?? null;
 }
 
 async function persistRecoveryPending(

@@ -1166,6 +1166,8 @@ export async function restoreProofsAndAdvanceCounter(
      * leaves it `incomplete`, so a later scan admits the proof (ADR-033).
      */
     readonly recovery: "complete" | "incomplete";
+    /** The NUT-CTF identity of a conditional keyset that the mint keys verified. */
+    readonly conditional?: BrowserWalletCounterConditionalIdentity;
     readonly isCurrentProfile: () => boolean;
   },
   database: BitcasterDB = db,
@@ -1180,7 +1182,11 @@ export async function restoreProofsAndAdvanceCounter(
   const admitRestoredProofs: () => void | Promise<void> =
     rows.length === 0 ? () => undefined : () => putNormalizedStoredProofRows(database, rows);
   return counters.restoreInContext(
-    { mintUrl: input.mintUrl, unit: input.unit },
+    {
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      ...(input.conditional === undefined ? {} : { conditional: input.conditional }),
+    },
     input.keysetId,
     input.restoredNext,
     rows.length > 0,

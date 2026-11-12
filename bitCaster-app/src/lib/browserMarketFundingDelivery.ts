@@ -32,7 +32,7 @@ import {
   restoreBrowserDeterministicOutgoingCashuOutputs,
 } from "@/lib/browserDeterministicOutgoingCashu";
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
-import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "@/lib/browserFundedPlan";
 import {
   getBoundedCanonicalRegularProofs,
   decodeBrowserOutgoingCashuTransferRow,
@@ -273,7 +273,7 @@ async function preflightMarketFundingAsset(input: {
   readonly mintUrl: string;
   readonly unit: "sat" | "msat";
 }): Promise<void> {
-  const recovery = await recoverBrowserFundedAsset({
+  const recovery = await classifyBrowserFundedPlan({
     asset: input.asset,
     loadPlan: async () =>
       sumProofs(await readMarketFundingCandidates({ ...input, scopeId: input.context.scopeId })) >=
@@ -292,7 +292,7 @@ async function preflightMarketFundingAsset(input: {
       throw new BrowserMarketFundingInsufficientBalanceError();
     case "persistent-error":
       throw new Error("Market funding asset recovery is unavailable");
-    case "not-recoverable":
+    case "limited":
       throw new BrowserMarketFundingConsolidationRequiredError();
     default:
       throw new Error("market funding recovery outcome is invalid");

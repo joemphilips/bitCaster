@@ -603,24 +603,38 @@ describe("useWalletStore", () => {
       setActiveBrowserWalletProfile("");
     });
 
-    it("replaces the wallet with a warning when the engine refused a growing write", async () => {
+    it("warns before it replaces a wallet whose larger backup the engine refused", async () => {
       const oldMnemonic = bip39.generate().join(" ");
       const newMnemonic = bip39.generate().join(" ");
       const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic)!;
       useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
       setActiveBrowserWalletProfile(oldMnemonic);
       activateBrowserWalletDatabase(oldScopeId);
-      seedHandoffMocks.handoff.mockImplementationOnce((input: WalletSeedHandoffInput) =>
+      seedHandoffMocks.handoff.mockImplementation((input: WalletSeedHandoffInput) =>
         invokeRealSeedHandoff(input, immediateLockManager(), { kind: "growing-write-refused" }),
       );
 
-      const result = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
+      // The warning comes before the commit point, so the user can still cancel.
+      const warned = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
 
-      expect(result).toEqual({ valid: true });
+      expect(warned).toEqual({
+        valid: false,
+        error: i18n.t("wallet.replaceBackupPartial"),
+        confirmPartialBackup: true,
+      });
+      expect(i18n.t("wallet.replaceBackupPartial")).toContain(
+        "bitcaster wallet recover-seed --all-conditions",
+      );
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+      expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+
+      const replaced = await useWalletStore
+        .getState()
+        .recoverFromMnemonic(newMnemonic.split(" "), { acceptPartialBackup: true });
+
+      expect(replaced).toEqual({ valid: true });
       expect(useWalletStore.getState().mnemonic === newMnemonic).toBe(true);
-      expect(useToastStore.getState().toasts).toEqual([
-        expect.objectContaining({ type: "error", message: i18n.t("wallet.replaceBackupPartial") }),
-      ]);
+      expect(useToastStore.getState().toasts).toEqual([]);
       const activeDatabase = db;
       activeDatabase.close();
       await activeDatabase.delete();

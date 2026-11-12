@@ -27,7 +27,7 @@ import {
   prepareBrowserDeterministicOutgoingCashuSend,
   restoreBrowserDeterministicOutgoingCashuOutputs,
 } from "@/lib/browserDeterministicOutgoingCashu";
-import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "@/lib/browserFundedPlan";
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { MintError, registerCondition } from "@/lib/markets";
 import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
@@ -390,7 +390,7 @@ async function preflightRegistrationFeeAsset(input: {
   readonly requiredAmount: number;
   readonly unit: CashuProofUnit;
 }): Promise<void> {
-  const recovery = await recoverBrowserFundedAsset({
+  const recovery = await classifyBrowserFundedPlan({
     asset: input.asset,
     loadPlan: async () =>
       sumProofs(
@@ -414,7 +414,7 @@ async function preflightRegistrationFeeAsset(input: {
       throw insufficientRegistrationFeeError(input.requiredAmount, input.unit);
     case "persistent-error":
       throw new Error("Condition registration fee asset recovery is unavailable.");
-    case "not-recoverable":
+    case "limited":
       throw new Error("Condition registration fee proofs require consolidation.");
     default:
       throw new Error("Condition registration fee recovery outcome is invalid.");

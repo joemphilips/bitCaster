@@ -20,6 +20,7 @@ import {
 import {
   BrowserWalletCounterDexieStore,
   BrowserWalletCounterSnapshotConflictError,
+  ctfPreparationCounterContext,
 } from "../stores/browser-wallet-counter-db";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import {
@@ -1434,7 +1435,11 @@ export class BrowserCtfRangeOrderCoordinator {
           for (const change of transcript.changes()) {
             await counters.compareAndAdvanceInCurrentTransaction(
               tx,
-              { mintUrl: preparation.mintUrl, unit: preparation.offerKeyset.unit },
+              ctfPreparationCounterContext(
+                { mintUrl: preparation.mintUrl, unit: preparation.offerKeyset.unit },
+                preparation,
+                change.keysetId,
+              ),
               change,
             );
             this.#injectSourcePreparationFault?.("counter-written");
@@ -1972,7 +1977,11 @@ export class BrowserCtfRangeOrderCoordinator {
           for (const change of transcript.changes()) {
             await counters.compareAndAdvanceInCurrentTransaction(
               tx,
-              { mintUrl: preparation.mintUrl, unit: preparation.offerKeyset.unit },
+              ctfPreparationCounterContext(
+                { mintUrl: preparation.mintUrl, unit: preparation.offerKeyset.unit },
+                preparation,
+                change.keysetId,
+              ),
               change,
             );
             this.#injectSourcePreparationFault?.("counter-written");
@@ -3369,7 +3378,7 @@ export class BrowserCtfRangeOrderCoordinator {
               throw new Error("browser refund counter transcript is invalid");
             await counters.compareAndAdvanceInCurrentTransaction(
               tx,
-              preparationContext,
+              ctfPreparationCounterContext(preparationContext, preparation, changes[0]!.keysetId),
               changes[0]!,
             );
             this.#injectRefundPreparationFault?.("counter-written");

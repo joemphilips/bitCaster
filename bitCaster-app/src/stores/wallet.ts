@@ -69,7 +69,15 @@ interface WalletState {
   ensureImplicitWallet: () => Promise<void>;
   markWalletBackupConfirmed: () => void;
   acknowledgeWalletSeedReminder: () => void;
-  recoverFromMnemonic: (words: string[]) => Promise<{ valid: boolean; error?: string }>;
+  /**
+   * Open the wallet of a seed phrase. A replacement whose current wallet has a
+   * partial backup returns `confirmPartialBackup`. The user then accepts the
+   * partial backup, and a second call with `acceptPartialBackup` replaces it.
+   */
+  recoverFromMnemonic: (
+    words: string[],
+    options?: { readonly acceptPartialBackup?: boolean },
+  ) => Promise<{ valid: boolean; error?: string; confirmPartialBackup?: true }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
    * Internal walletOps primitive. Registers a mint and SETS it as active.
@@ -167,6 +175,7 @@ const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
   "unscoped-pending-orders": "wallet.replaceBlockedUnscopedOrders",
   "active-wallet-work": "wallet.replaceBlockedActiveWork",
   "backup-not-current": "wallet.replaceBlockedBackup",
+  "backup-partial": "wallet.replaceBackupPartial",
   "browser-lock-unavailable": "wallet.replaceBlockedBrowserLock",
   "seed-backup-unconfirmed": "wallet.replaceBlockedSeedBackup",
 };
@@ -307,7 +316,7 @@ export const useWalletStore = create<WalletState>()(
         set({ walletSeedReminderAcknowledgedScopeId: scopeId });
       },
 
-      recoverFromMnemonic: async (words: string[]) => {
+      recoverFromMnemonic: async (words, options) => {
         if (words.length !== 12 && words.length !== 24) {
           return { valid: false, error: i18n.t("wallet.seedphraseWordCountError") };
         }
@@ -334,12 +343,12 @@ export const useWalletStore = create<WalletState>()(
           if (oldWalletId === null) {
             return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
           }
-          let handoff: Awaited<ReturnType<typeof handoffBrowserSeed>>;
           try {
-            handoff = await handoffBrowserSeed({
+            await handoffBrowserSeed({
               database: oldDatabase,
               scopeId: oldScopeId,
               currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
+              acceptPartialBackup: options?.acceptPartialBackup === true,
               prepareRecoveryIndex: () => prepareBrowserRecoveryIndexHandoff(oldScopeId),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
@@ -377,13 +386,10 @@ export const useWalletStore = create<WalletState>()(
             return {
               valid: false,
               error: walletReplacementErrorMessage(error),
+              ...(error instanceof BrowserSeedHandoffRefusal && error.code === "backup-partial"
+                ? { confirmPartialBackup: true as const }
+                : {}),
             };
-          }
-          if (handoff.backupPartial) {
-            useToastStore.getState().addToast({
-              type: "error",
-              message: i18n.t("wallet.replaceBackupPartial"),
-            });
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };

@@ -5,6 +5,8 @@ import {
   mergeRecoveryIndex,
   openRecoveryIndexDocument,
   pendingRecoveryIndexEntries,
+  sameRecoveryIndexEntries,
+  unlistedRecoveryIndexEntries,
   recoveryIndexEntryKey,
   sealRecoveryIndexDocument,
   type RecoveryIndexEntry,
@@ -140,7 +142,9 @@ export function listedRecoveryIndexEntriesWithoutCursor(
   walletMints: readonly string[],
 ): readonly RecoveryIndexEntry[] {
   const mints = new Set(walletMints)
-  return pendingRecoveryIndexEntries(listed, local).filter(({ mintUrl }) => mints.has(mintUrl))
+  // A keyset with a local cursor in another form is not scanned again. The
+  // upload resolves its form.
+  return unlistedRecoveryIndexEntries(listed, local).filter(({ mintUrl }) => mints.has(mintUrl))
 }
 
 export function planRecoveryIndexRetryDelayMs(input: {
@@ -298,6 +302,9 @@ export class RecoveryIndexSync {
       added: local,
       verifyEntry: this.options.verifyEntry,
     })
+    // A form conflict that the check cannot resolve keeps the stored value.
+    // The same document again is not a write.
+    if (sameRecoveryIndexEntries(merged, listed)) return { status: 'current', version }
     let document: Uint8Array
     try {
       document = sealRecoveryIndexDocument({

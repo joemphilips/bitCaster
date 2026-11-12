@@ -36,7 +36,7 @@ import {
   receiveBrowserDurableWalletToken,
 } from "@/lib/browserDurableWalletReceive";
 import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
-import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "@/lib/browserFundedPlan";
 
 export const BEARER_TOKEN_BYTES_LIMIT = 61_440;
 export const BEARER_TOKEN_PROOF_LIMIT = 512;
@@ -116,7 +116,7 @@ async function preflightBearerAsset(input: {
     unit: "msat",
     asset: { kind: "ordinary" },
   });
-  const recovery = await recoverBrowserFundedAsset({
+  const recovery = await classifyBrowserFundedPlan({
     asset,
     loadPlan: async () =>
       sumProofs(await readBearerCandidates(input.mintUrl, input.context.scopeId)) >=
@@ -135,7 +135,7 @@ async function preflightBearerAsset(input: {
       throw new Error("Withdrawal balance is insufficient in the active V2 msat keyset");
     case "persistent-error":
       throw new Error("Withdrawal asset recovery is unavailable");
-    case "not-recoverable":
+    case "limited":
       throw new Error("Withdrawal proofs require consolidation");
     default:
       throw new Error("Withdrawal recovery outcome is invalid");

@@ -68,6 +68,7 @@ import {
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { readBrowserRecoveryIndexLocalEntries } from "../browserRecoveryIndex";
 import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 
 const receiveDraftFactory = vi.hoisted(() => ({
@@ -217,6 +218,44 @@ describe("browser durable ordinary receive", () => {
         CONDITIONAL_KEYSET_ID,
       ]),
     ).toMatchObject({ next: 2 });
+  });
+
+  it("lists a new conditional keyset in its conditional form before the swap admits a proof", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    const scopeId = browserWalletScope(seed).scopeId;
+    await markConditionalCounterReady(database);
+    let entriesAtSwap: unknown = null;
+    const completeSwap = receiveWallet.completeConditionalSwap!;
+    receiveWallet.completeConditionalSwap = vi.fn(async (preview: ConditionalSwapPreview) => {
+      // The counter commit is before the mint call. Custody admits the
+      // outputs only after it, so the custody table cannot name the keyset.
+      expect(await database.custodyConditionalKeysets.count()).toBe(0);
+      entriesAtSwap = await readBrowserRecoveryIndexLocalEntries(database, scopeId);
+      return completeSwap(preview);
+    });
+
+    await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: [inputProof],
+      ensureConditionalCounterReady: async () => undefined,
+      wallet: receiveWallet,
+      context: receiveContext(database),
+    });
+
+    expect(entriesAtSwap).toEqual([
+      {
+        kind: "conditional",
+        mintUrl: MINT,
+        keysetId: CONDITIONAL_KEYSET_ID,
+        conditionId: CONDITION_ID,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      },
+    ]);
   });
 
   it("admits recovered counter proofs under the receive owner and completes the receive", async () => {

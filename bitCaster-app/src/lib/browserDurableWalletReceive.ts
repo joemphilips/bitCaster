@@ -62,6 +62,7 @@ import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
   BrowserWalletCounterDexieStore,
   BrowserWalletCounterSnapshotConflictError,
+  type BrowserWalletCounterContext,
 } from "../stores/browser-wallet-counter-db";
 import {
   BrowserDurableCustodyAdapter,
@@ -90,7 +91,7 @@ const RECEIVE_PREPARATION_ATTEMPTS = 3;
 interface BrowserReceiveCounterPreparation {
   readonly transcript: SpeculativeCounterTranscript;
   readonly counterStore: BrowserWalletCounterDexieStore;
-  readonly counterContext: { readonly mintUrl: string; readonly unit: "msat" };
+  readonly counterContext: BrowserWalletCounterContext;
   /** Prepare again under the custody owner that binds the draft. */
   readonly rebuild: (owner: DurableCustodyOwnerAuthorization) => Promise<BrowserReceiveDraft>;
 }
@@ -499,7 +500,15 @@ async function prepareBrowserConditionalWalletReceiveOperation(
   input.context.requireCapturedProfile();
   const scope = browserWalletScope(input.context.seed);
   const database = input.context.database ?? db;
-  const counterContext = { mintUrl: input.mintUrl, unit: "msat" as const };
+  // The counter-ready step verified this identity with the mint keys.
+  const counterContext: BrowserWalletCounterContext = {
+    mintUrl: input.mintUrl,
+    unit: "msat",
+    conditional: {
+      conditionId: appAuthority.conditionId,
+      outcomeCollection: appAuthority.outcomeCollection,
+    },
+  };
   const counterStore = new BrowserWalletCounterDexieStore({
     database,
     scopeId: scope.scopeId,
@@ -622,7 +631,7 @@ function makeReceiveDraft(
   operation: DurableWalletReceiveOperation,
   transcript: SpeculativeCounterTranscript,
   counterStore: BrowserWalletCounterDexieStore,
-  counterContext: { readonly mintUrl: string; readonly unit: "msat" },
+  counterContext: BrowserWalletCounterContext,
   rebuild: (owner: DurableCustodyOwnerAuthorization) => Promise<BrowserReceiveDraft>,
 ): BrowserReceiveDraft {
   return { operation, counterPreparation: { transcript, counterStore, counterContext, rebuild } };

@@ -10,6 +10,8 @@ interface WalletSetupModalProps {
   mode?: "setup" | "replace";
   isCreating?: boolean;
   error?: string | null;
+  /** The backup of the current wallet is incomplete. The next replace accepts that. */
+  confirmPartialBackup?: boolean;
   onClose: () => void;
   onCreateNew: () => void;
   onImportSeed: (words: string[]) => void | Promise<void>;
@@ -19,6 +21,7 @@ export function WalletSetupModal({
   mode = "setup",
   isCreating = false,
   error,
+  confirmPartialBackup = false,
   onClose,
   onCreateNew,
   onImportSeed,
@@ -122,7 +125,13 @@ export function WalletSetupModal({
                     className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isCreating && showImport && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {t(mode === "replace" ? "wallet.replaceWallet" : "wallet.restoreWallet")}
+                    {t(
+                      mode !== "replace"
+                        ? "wallet.restoreWallet"
+                        : confirmPartialBackup
+                          ? "wallet.replaceWalletAnyway"
+                          : "wallet.replaceWallet",
+                    )}
                   </button>
                 </div>
               )}

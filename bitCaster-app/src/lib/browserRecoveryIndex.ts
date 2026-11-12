@@ -1,7 +1,7 @@
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import {
   deriveRecoveryIndexKeys,
-  pendingRecoveryIndexEntries,
+  unlistedRecoveryIndexEntries,
   recoveryIndexEntryKey,
   recoveryIndexEntryMatchesKeyset,
   type RecoveryIndexEntry,
@@ -142,14 +142,18 @@ async function localEntry(
   };
 }
 
-/** Whether every local keyset is in the acknowledged index. */
+/**
+ * Whether the acknowledged index lists every local keyset. The upload before
+ * this check wrote the local form of each keyset that this browser can check.
+ * A listed form that this browser cannot check stays, and a restore scans it.
+ */
 export async function browserRecoveryIndexListsEveryLocalKeyset(
   database: BitcasterDB,
   scopeId: string,
   listed: readonly RecoveryIndexEntry[],
 ): Promise<boolean> {
   const local = await readBrowserRecoveryIndexLocalEntries(database, scopeId);
-  return pendingRecoveryIndexEntries(local, listed).length === 0;
+  return unlistedRecoveryIndexEntries(local, listed).length === 0;
 }
 
 export interface BrowserRecoveryIndexInput {
@@ -177,6 +181,14 @@ export interface BrowserRecoveryIndexInput {
 }
 
 /** The recovery index of one active wallet. Create one runtime for each wallet activation. */
+type BrowserRecoveryIndexConditionalAuthority =
+  | { readonly kind: "keys"; readonly authority: RecoveryIndexKeysetAuthority }
+  | {
+      readonly kind: "identity";
+      readonly conditionId: string;
+      readonly outcomeCollectionId: string;
+    };
+
 export class BrowserRecoveryIndex {
   readonly #input: BrowserRecoveryIndexInput;
   readonly #sync: RecoveryIndexSync;
@@ -386,29 +398,51 @@ export class BrowserRecoveryIndex {
   }
 
   /**
-   * Verify one entry of a merge conflict with the mint keys that this browser
-   * already holds. Without them the check throws, so the merge keeps the
-   * stored value (ADR-051 "Merge"). It makes no mint request.
+   * Verify one entry of a merge conflict with the keyset authority that this
+   * browser already holds. It makes no mint request. Without an authority the
+   * check throws, so the merge keeps the stored value (ADR-051 "Merge").
+   *
+   * A conditional authority is the custody keyset row, whose mint keys derive
+   * the keyset id, or else the NUT-CTF identity that a counter association
+   * recorded after the mint keys derived the keyset id with it. A keyset with
+   * a conditional authority is not a regular keyset.
    */
   async #verifyEntry(entry: RecoveryIndexEntry): Promise<boolean> {
-    const authority =
-      entry.kind === "regular"
-        ? this.#input.regularKeysetAuthority(entry.mintUrl, entry.keysetId)
-        : await this.#conditionalKeysetAuthority(entry);
-    if (authority === null) throw new Error("recovery index keyset authority is unavailable");
-    return recoveryIndexEntryMatchesKeyset(entry, authority);
+    const conditional = await this.#conditionalKeysetAuthority(entry);
+    if (entry.kind === "regular") {
+      if (conditional !== null) return false;
+      const authority = this.#input.regularKeysetAuthority(entry.mintUrl, entry.keysetId);
+      if (authority === null) throw new Error("recovery index keyset authority is unavailable");
+      return recoveryIndexEntryMatchesKeyset(entry, authority);
+    }
+    switch (conditional?.kind) {
+      case "keys":
+        return recoveryIndexEntryMatchesKeyset(entry, conditional.authority);
+      case "identity":
+        return (
+          entry.conditionId === conditional.conditionId &&
+          entry.outcomeCollectionId === conditional.outcomeCollectionId
+        );
+      case undefined:
+        throw new Error("recovery index keyset authority is unavailable");
+      default:
+        return assertNever(conditional);
+    }
   }
 
   async #conditionalKeysetAuthority(
-    entry: Extract<RecoveryIndexEntry, { kind: "conditional" }>,
-  ): Promise<RecoveryIndexKeysetAuthority | null> {
+    entry: RecoveryIndexEntry,
+  ): Promise<BrowserRecoveryIndexConditionalAuthority | null> {
     const { database, scopeId } = this.#input;
-    const associations = await database.walletCounterAssociations
-      .where("[scopeId+keysetId]")
-      .equals([scopeId, entry.keysetId])
-      .toArray();
+    const associations = (
+      await database.walletCounterAssociations
+        .where("[scopeId+keysetId]")
+        .equals([scopeId, entry.keysetId])
+        .toArray()
+    ).filter(
+      (association) => canonicalizeMintIdentityUrl(association.normalizedMint) === entry.mintUrl,
+    );
     for (const association of associations) {
-      if (canonicalizeMintIdentityUrl(association.normalizedMint) !== entry.mintUrl) continue;
       const raw = await database.custodyConditionalKeysets.get([
         scopeId,
         association.normalizedMint,
@@ -418,14 +452,23 @@ export class BrowserRecoveryIndex {
       if (raw === undefined) continue;
       const keyset = decodeBrowserCustodyConditionalKeysetRow(raw);
       return {
-        id: keyset.keysetId,
-        unit: keyset.unit,
-        keys: keyset.denominationPublicKeys,
-        inputFeePpk: keyset.inputFeePpk,
-        finalExpiry: keyset.finalExpiryUnixSeconds,
+        kind: "keys",
+        authority: {
+          id: keyset.keysetId,
+          unit: keyset.unit,
+          keys: keyset.denominationPublicKeys,
+          inputFeePpk: keyset.inputFeePpk,
+          finalExpiry: keyset.finalExpiryUnixSeconds,
+        },
       };
     }
-    return null;
+    const identity = associations.find(({ conditional }) => conditional !== undefined)?.conditional;
+    if (identity === undefined) return null;
+    return {
+      kind: "identity",
+      conditionId: identity.conditionId,
+      outcomeCollectionId: deriveRootCtfOutcomeCollectionId(identity),
+    };
   }
 }
 

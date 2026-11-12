@@ -70,6 +70,8 @@ export function SettingsPage() {
   } | null>(null);
   const [isWalletActionPending, setIsWalletActionPending] = useState(false);
   const [walletDialogError, setWalletDialogError] = useState<string | null>(null);
+  // The user saw that the backup of the current wallet is incomplete.
+  const [partialBackupShown, setPartialBackupShown] = useState(false);
   const walletDialogGeneration = useRef(0);
   const walletActionGeneration = useRef<number | null>(null);
   useEffect(
@@ -191,6 +193,7 @@ export function SettingsPage() {
     setWalletDialog(null);
     setIsWalletActionPending(false);
     setWalletDialogError(null);
+    setPartialBackupShown(false);
   }, []);
 
   const openWalletDialog = useCallback((mode: "setup" | "replace") => {
@@ -198,6 +201,7 @@ export function SettingsPage() {
     if (hasWallet !== (mode === "replace")) return;
     const generation = ++walletDialogGeneration.current;
     setWalletDialogError(null);
+    setPartialBackupShown(false);
     setIsWalletActionPending(false);
     setWalletDialog({ mode, generation });
   }, []);
@@ -222,10 +226,13 @@ export function SettingsPage() {
       const isCurrent = () => walletDialogGeneration.current === generation;
       try {
         if (words) {
-          const result = await useWalletStore.getState().recoverFromMnemonic(words);
+          const result = await useWalletStore
+            .getState()
+            .recoverFromMnemonic(words, { acceptPartialBackup: partialBackupShown });
           if (!isCurrent()) return;
           if (!result.valid) {
             setWalletDialogError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+            if (result.confirmPartialBackup) setPartialBackupShown(true);
             return;
           }
         }
@@ -244,7 +251,7 @@ export function SettingsPage() {
         if (isCurrent()) setIsWalletActionPending(false);
       }
     },
-    [walletDialog, closeWalletDialog, t],
+    [walletDialog, closeWalletDialog, partialBackupShown, t],
   );
 
   const handleThemeChange = useCallback(
@@ -358,6 +365,7 @@ export function SettingsPage() {
           mode={walletDialog.mode}
           isCreating={isWalletActionPending}
           error={walletDialogError}
+          confirmPartialBackup={partialBackupShown}
           onClose={() => closeWalletDialog(walletDialog.generation)}
           onCreateNew={() => void handleWalletAction()}
           onImportSeed={(words) => handleWalletAction(words)}

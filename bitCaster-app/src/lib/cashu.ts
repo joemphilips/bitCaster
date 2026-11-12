@@ -1013,7 +1013,11 @@ async function deferAndAdvanceSelectedKeyset(input: {
   }
   if (input.nextCounter !== null) {
     await input.counters.advanceToAtLeastInContext(
-      { mintUrl: input.url, unit: input.unit },
+      {
+        mintUrl: input.url,
+        unit: input.unit,
+        ...(input.conditionalAsset === undefined ? {} : { conditional: input.conditionalAsset }),
+      },
       input.keyset.id,
       input.nextCounter,
       true,
@@ -1879,6 +1883,9 @@ async function recoverKeysetCountersForMintCore(
                 coversLowerCounters && !proofPending && !pendingBelow && scan.stop === "gap-limit"
                   ? "complete"
                   : "incomplete",
+              ...(condition === null || keyset.id !== opts.conditionalKeyset?.id
+                ? {}
+                : { conditional: condition }),
               isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
             });
             requireCapturedProfile();

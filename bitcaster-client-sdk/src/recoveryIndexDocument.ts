@@ -290,8 +290,31 @@ export async function mergeRecoveryIndex(input: {
   return sortEntries([...merged.values()])
 }
 
-/** The local keysets that the read document does not list (ADR-051 "Upload"). */
+/**
+ * The local keysets that the read document does not list, or lists in another
+ * form or with another identity (ADR-051 "Upload"). The next write merges
+ * them, and the merge resolves a form conflict with the mint keys.
+ */
 export function pendingRecoveryIndexEntries(
+  local: readonly RecoveryIndexEntry[],
+  listed: readonly RecoveryIndexEntry[],
+): readonly RecoveryIndexEntry[] {
+  const listedByKey = new Map(
+    listed.map((value) => {
+      const entry = requireEntry(value)
+      return [recoveryIndexEntryKey(entry), entry] as const
+    }),
+  )
+  return sortEntries(
+    local.map(requireEntry).filter((entry) => {
+      const stored = listedByKey.get(recoveryIndexEntryKey(entry))
+      return stored === undefined || !sameEntry(stored, entry)
+    }),
+  )
+}
+
+/** The local keysets that the read document does not list in any form. */
+export function unlistedRecoveryIndexEntries(
   local: readonly RecoveryIndexEntry[],
   listed: readonly RecoveryIndexEntry[],
 ): readonly RecoveryIndexEntry[] {
@@ -299,6 +322,19 @@ export function pendingRecoveryIndexEntries(
   return sortEntries(
     local.map(requireEntry).filter((entry) => !listedKeys.has(recoveryIndexEntryKey(entry))),
   )
+}
+
+/** Whether two entry lists hold the same entries, each in the same form. */
+export function sameRecoveryIndexEntries(
+  left: readonly RecoveryIndexEntry[],
+  right: readonly RecoveryIndexEntry[],
+): boolean {
+  if (left.length !== right.length) return false
+  const rightByKey = new Map(right.map((entry) => [recoveryIndexEntryKey(entry), entry] as const))
+  return left.every((entry) => {
+    const other = rightByKey.get(recoveryIndexEntryKey(entry))
+    return other !== undefined && sameEntry(entry, other)
+  })
 }
 
 /** Whether the mint keys of a keyset derive the keyset id of the entry, with its identity. */

@@ -15,6 +15,7 @@ import {
 import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
 import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
 import { BrowserCtfRangeRecoverySchedule } from "../browserCtfRangeRecoverySchedule";
+import { registerBrowserRecoveryIndex, type BrowserRecoveryIndex } from "../browserRecoveryIndex";
 import {
   listenForBrowserCtfRangeRecoveryWake,
   publishBrowserCtfRangeRecoveryWake,
@@ -50,7 +51,7 @@ const mocks = vi.hoisted(() => ({
   planConsolidation: vi.fn(),
   recoverPage: vi.fn(),
   recoverClientOrder: vi.fn(),
-  recoverFundedAsset: vi.fn(),
+  classifyFundedPlan: vi.fn(),
   readPreparation: vi.fn(),
   recordMessage: vi.fn(),
   raiseMessage: vi.fn(),
@@ -189,8 +190,8 @@ vi.mock("../browserCtfRangeOrderOutputCheck", () => ({
   browserSeedCounterRestoreClient: () => mocks.checkMint,
 }));
 
-vi.mock("../browserFundedAssetRecovery", () => ({
-  recoverBrowserFundedAsset: mocks.recoverFundedAsset,
+vi.mock("../browserFundedPlan", () => ({
+  classifyBrowserFundedPlan: mocks.classifyFundedPlan,
 }));
 
 describe("submitBrowserCtfRangeOrder", () => {
@@ -198,7 +199,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     vi.clearAllMocks();
     mocks.planConsolidation.mockReset();
     mocks.getBoundedCanonicalRangeProofsForKeyset.mockReset();
-    mocks.recoverFundedAsset.mockReset();
+    mocks.classifyFundedPlan.mockReset();
     mocks.counterReady.mockResolvedValue(undefined);
     mocks.buildPreparation.mockImplementation(({ request }) => preparationFor(request));
     mocks.engine.getSettlementCapabilityAdmissionPolicy.mockResolvedValue({
@@ -249,7 +250,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.raiseMessage.mockResolvedValue(undefined);
     mocks.resolveMessages.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
-    mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
+    mocks.classifyFundedPlan.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
       plan: await loadPlan(),
     }));
@@ -325,7 +326,7 @@ describe("submitBrowserCtfRangeOrder", () => {
   it("recovers an insufficient explicit submission before returning insufficient funds", async () => {
     mocks.candidates = [];
     mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "unavailable" });
+    mocks.classifyFundedPlan.mockResolvedValue({ kind: "unavailable" });
 
     await expect(
       submitBrowserCtfRangeOrder({
@@ -351,13 +352,13 @@ describe("submitBrowserCtfRangeOrder", () => {
       }),
     ).rejects.toMatchObject({ code: "insufficient-funds", shortfall: "offered" });
 
-    expect(mocks.recoverFundedAsset).toHaveBeenCalledOnce();
+    expect(mocks.classifyFundedPlan).toHaveBeenCalledOnce();
   });
 
   it("records a revision-zero durable funds error when exact recovery fails", async () => {
     mocks.candidates = [];
     mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "persistent-error" });
+    mocks.classifyFundedPlan.mockResolvedValue({ kind: "persistent-error" });
 
     await expect(
       submitBrowserCtfRangeOrder({
@@ -519,7 +520,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [],
       maxOutputs: 256,
       shortfall: "collateral",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "fee cash is present but the joint outputs exceed the mint bound",
@@ -527,7 +528,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [2],
       maxOutputs: ONE_SHARE_SELL_AUTHORIZATION_OUTPUTS,
       shortfall: "mint-limits",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "cash covers face and fee but 125 held proofs exceed the input bound",
@@ -535,7 +536,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [2 * ONE_SHARE_FACE_SUBUNITS],
       maxOutputs: 256,
       shortfall: "mint-limits",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "a partial holding cannot be completed from regular cash",
@@ -543,7 +544,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [ONE_SHARE_FACE_SUBUNITS + 10],
       maxOutputs: 256,
       shortfall: "offered",
-      offeredAssetRecoveries: 1,
+      offeredAssetPlans: 1,
     },
     {
       name: "no held shares cannot be synthesized from regular cash",
@@ -551,11 +552,11 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [ONE_SHARE_FACE_SUBUNITS + 10],
       maxOutputs: 256,
       shortfall: "offered",
-      offeredAssetRecoveries: 1,
+      offeredAssetPlans: 1,
     },
   ])(
     "refuses a one-share Sell and names the shortfall when $name",
-    async ({ heldSubunits, regularSubunits, maxOutputs, shortfall, offeredAssetRecoveries }) => {
+    async ({ heldSubunits, regularSubunits, maxOutputs, shortfall, offeredAssetPlans }) => {
       // Mint metadata is cached per condition, so each output bound uses its own condition.
       const conditionId = `condition-sell-refusal-${maxOutputs}`;
       mocks.loadMintMetadata.mockResolvedValue({ maxOutputs, observation: {} });
@@ -577,7 +578,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         submitSellOrder("client-sell-refusal", feeFacts("Sell"), conditionId),
       ).rejects.toMatchObject({ code: "insufficient-funds", shortfall });
 
-      expect(mocks.recoverFundedAsset).toHaveBeenCalledTimes(offeredAssetRecoveries);
+      expect(mocks.classifyFundedPlan).toHaveBeenCalledTimes(offeredAssetPlans);
       expect(mocks.consolidateRound).not.toHaveBeenCalled();
       expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
     },
@@ -1048,7 +1049,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         message:
           "The wallet could not finish preparing this order. No order was submitted. Please try again.",
       });
-      expect(mocks.recoverFundedAsset).not.toHaveBeenCalled();
+      expect(mocks.classifyFundedPlan).not.toHaveBeenCalled();
       expect(mocks.consolidateRound).not.toHaveBeenCalled();
       expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
       expect(mocks.recordMessage).not.toHaveBeenCalled();
@@ -1563,6 +1564,48 @@ describe("submitBrowserCtfRangeOrder", () => {
       });
     },
   );
+
+  it("reads the recovery index once for a recovery pass with several refused orders", async () => {
+    const refused = (operationId: string) => ({
+      operationId,
+      revision: 1,
+      mintUrl: "https://mint.example",
+      mintError: { code: 11008, detail: "Duplicate outputs" },
+    });
+    mocks.recoverPage
+      .mockResolvedValueOnce({
+        recoveredOperationIds: [],
+        pending: [],
+        attention: [],
+        refused: [refused("range-a"), refused("range-b")],
+        nextCursor: { createdAtMs: 1, rangeOperationId: "range-b" },
+      })
+      .mockResolvedValueOnce({
+        recoveredOperationIds: [],
+        pending: [],
+        attention: [],
+        refused: [refused("range-c")],
+        nextCursor: null,
+      });
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal", revision: 1 });
+    const read = vi.fn(async () => ({ status: "skipped" }) as never);
+    const unregister = registerBrowserRecoveryIndex(mocks.scopeId, {
+      read,
+    } as unknown as BrowserRecoveryIndex);
+    try {
+      await recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      });
+    } finally {
+      unregister();
+    }
+
+    // Each index read is an engine presence observation (ADR-034 "Engine privacy").
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith("mint-refusal");
+  });
 
   it("records each kind of recovery result with its stored mint code", async () => {
     const mintError = { code: 11008, detail: "Duplicate outputs" };

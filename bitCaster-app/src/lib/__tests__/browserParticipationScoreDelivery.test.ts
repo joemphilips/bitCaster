@@ -23,7 +23,7 @@ const getBoundedCanonicalRegularProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
 const prepareBrowserDeterministicOutgoingCashuSend = vi.fn();
-const recoverBrowserFundedAsset = vi.fn();
+const classifyBrowserFundedPlan = vi.fn();
 
 vi.mock("@/lib/browserDeterministicOutgoingCashu", () => ({
   prepareBrowserDeterministicOutgoingCashuSend: (...args: unknown[]) =>
@@ -55,8 +55,8 @@ vi.mock("@/stores/proof-db", () => ({
     getBoundedCanonicalRegularProofs(...args),
 }));
 
-vi.mock("../browserFundedAssetRecovery", () => ({
-  recoverBrowserFundedAsset: (...args: unknown[]) => recoverBrowserFundedAsset(...args),
+vi.mock("../browserFundedPlan", () => ({
+  classifyBrowserFundedPlan: (...args: unknown[]) => classifyBrowserFundedPlan(...args),
 }));
 
 const ACTIVE_KEYSET_ID = `01${"11".repeat(32)}`;
@@ -109,7 +109,7 @@ describe("browser Participation Score delivery", () => {
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
     prepareBrowserDeterministicOutgoingCashuSend.mockReset();
-    recoverBrowserFundedAsset.mockReset();
+    classifyBrowserFundedPlan.mockReset();
   });
 
   it("recovers a lost POST response from status with the byte-identical stored token", async () => {
@@ -169,7 +169,7 @@ describe("browser Participation Score delivery", () => {
     readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
     getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
-    recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+    classifyBrowserFundedPlan.mockImplementation(async (recoveryInput) => {
       await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "ready" });
       return { kind: "ready", plan: { kind: "ready" } };
     });
@@ -199,7 +199,7 @@ describe("browser Participation Score delivery", () => {
       }),
     );
     await executeBrowserDurableOutgoingCashuTransfer.mock.calls[0][0].preflightFundedAsset();
-    expect(recoverBrowserFundedAsset).toHaveBeenCalledOnce();
+    expect(classifyBrowserFundedPlan).toHaveBeenCalledOnce();
     expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
   });
 
@@ -358,7 +358,7 @@ function configureScoreRecoveryFixture(fixture: {
   if (fixture.proofs !== undefined) {
     getBoundedCanonicalRegularProofs.mockResolvedValue(fixture.proofs);
   }
-  recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+  classifyBrowserFundedPlan.mockImplementation(async (recoveryInput) => {
     expect(recoveryInput.asset).toMatchObject({ mintUrl: input.mintUrl, unit: "msat" });
     expect(recoveryInput.asset.assetIdentity).toBe("cashu:ordinary");
     if (fixture.loadPlan) {

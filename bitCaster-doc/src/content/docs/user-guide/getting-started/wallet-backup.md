@@ -147,8 +147,8 @@ backup holds no output positions, so this keyset check stays.
 
 When the check before an order finds outputs of another browser, or the mint
 refuses outputs that another browser already used, the app shows **This wallet
-was used in another browser. Use one browser at a time.** It also reads the
-wallet backup again.
+was used in another browser. Use one browser at a time.** After such a mint
+refusal, the app also reads the wallet backup again.
 
 If the app cannot add the outputs that it found, it shows
 **Positions could not be restored from the mint.** with **Retry**. The funds
@@ -283,9 +283,11 @@ a move to another browser does not lose funds.
 the keysets that the backup does not list yet. It replaces the wallet only when
 the matching engine confirms a backup that lists every keyset of the wallet, or
 when the matching engine refuses to store a larger backup. In that case, the
-app shows that the backup of the previous wallet is incomplete. Use
-`bitcaster wallet recover-seed` to restore that wallet fully. While the matching
-engine is unavailable, the app keeps the current wallet. Try again later.
+app shows that the backup of the current wallet is incomplete before it replaces
+the wallet. Select **Replace Anyway** to continue, or close the dialog to keep
+the current wallet. To restore that wallet fully later, use
+`bitcaster wallet recover-seed --all-conditions`. While the matching engine is
+unavailable, the app keeps the current wallet. Try again later.
 
 Removing a resolved losing position is local to this browser. A later restore
 of the wallet in another browser can show the position again. It has no value,
@@ -310,7 +312,8 @@ not in the backup.
 
 `wallet backup delete` deletes the wallet backup at the matching engine. Supply
 `--wallet-seed-hex-file` or `--recovery-phrase-file`. `--realm` selects the
-environment: `bitcaster-production` by default, or `bitcaster-staging`.
+environment: `bitcaster-production` by default, `bitcaster-staging`, or
+`bitcaster-local` for a local development engine.
 
 Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when a browser
 restore is incomplete. Without an option, the command scans regular `msat`

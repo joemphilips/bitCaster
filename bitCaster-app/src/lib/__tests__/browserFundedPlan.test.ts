@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk";
-import { recoverBrowserFundedAsset } from "../browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "../browserFundedPlan";
 
 const asset = createEncryptedWalletBackupV2AssetIdentity({
   mintUrl: "https://mint.example",
@@ -17,7 +17,7 @@ function input(loadPlan: () => Promise<Plan>, isCurrentProfile = () => true) {
 
 // The recovery index holds no proofs (ADR-051), so the local plan is the only
 // source of a funded action.
-describe("recoverBrowserFundedAsset", () => {
+describe("classifyBrowserFundedPlan", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -25,23 +25,23 @@ describe("recoverBrowserFundedAsset", () => {
 
   it("returns a ready local plan", async () => {
     await expect(
-      recoverBrowserFundedAsset(input(async () => ({ kind: "ready" }))),
+      classifyBrowserFundedPlan(input(async () => ({ kind: "ready" }))),
     ).resolves.toEqual({ kind: "ready", plan: { kind: "ready" } });
     expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("reports an insufficient local plan as an ordinary shortfall", async () => {
     await expect(
-      recoverBrowserFundedAsset(input(async () => ({ kind: "insufficient" }))),
+      classifyBrowserFundedPlan(input(async () => ({ kind: "insufficient" }))),
     ).resolves.toEqual({ kind: "unavailable" });
     expect(console.warn).not.toHaveBeenCalled();
   });
 
   it.each(["not-reducible", "round-limit"] as const)(
-    "keeps a %s plan without recovery",
+    "classifies a %s plan as limited",
     async (kind) => {
-      await expect(recoverBrowserFundedAsset(input(async () => ({ kind })))).resolves.toEqual({
-        kind: "not-recoverable",
+      await expect(classifyBrowserFundedPlan(input(async () => ({ kind })))).resolves.toEqual({
+        kind: "limited",
         plan: { kind },
       });
     },
@@ -51,10 +51,10 @@ describe("recoverBrowserFundedAsset", () => {
     const loadPlan = vi.fn(async (): Promise<Plan> => ({ kind: "ready" }));
 
     await expect(
-      recoverBrowserFundedAsset({ ...input(loadPlan), asset: { ...asset, unit: "sat" } }),
+      classifyBrowserFundedPlan({ ...input(loadPlan), asset: { ...asset, unit: "sat" } }),
     ).resolves.toEqual({ kind: "persistent-error" });
     expect(loadPlan).not.toHaveBeenCalled();
-    expect(console.warn).toHaveBeenCalledWith("funded-recovery-code=local-plan");
+    expect(console.warn).toHaveBeenCalledWith("funded-plan-code=local-plan");
   });
 
   it("fails closed when the profile changes while the plan loads", async () => {
@@ -64,20 +64,20 @@ describe("recoverBrowserFundedAsset", () => {
       return { kind: "ready" };
     };
 
-    await expect(recoverBrowserFundedAsset(input(loadPlan, () => current))).resolves.toEqual({
+    await expect(classifyBrowserFundedPlan(input(loadPlan, () => current))).resolves.toEqual({
       kind: "persistent-error",
     });
-    expect(console.warn).toHaveBeenCalledWith("funded-recovery-code=profile-or-lock");
+    expect(console.warn).toHaveBeenCalledWith("funded-plan-code=profile-or-lock");
   });
 
   it("labels a failed local plan", async () => {
     await expect(
-      recoverBrowserFundedAsset(
+      classifyBrowserFundedPlan(
         input(async () => {
           throw new Error("local custody read failed");
         }),
       ),
     ).resolves.toEqual({ kind: "persistent-error" });
-    expect(console.warn).toHaveBeenCalledWith("funded-recovery-code=local-plan");
+    expect(console.warn).toHaveBeenCalledWith("funded-plan-code=local-plan");
   });
 });

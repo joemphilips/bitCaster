@@ -4,6 +4,7 @@ import { nip19 } from "nostr-tools";
 import { generateSecretKey } from "nostr-tools/pure";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import "fake-indexeddb/auto";
+import i18n from "@/i18n";
 import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import * as bip39 from "@/lib/bip39";
 import {
@@ -706,6 +707,46 @@ describe("SettingsPage wallet replacement", () => {
     expect(recover).not.toHaveBeenCalled();
     expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
     expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument();
+  });
+
+  it("shows a partial backup in the dialog and replaces only when the user replaces anyway", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    setActiveBrowserWalletProfile(mnemonic);
+    const recover = vi
+      .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
+      .mockResolvedValueOnce({
+        valid: false,
+        error: i18n.t("wallet.replaceBackupPartial"),
+        confirmPartialBackup: true,
+      })
+      .mockResolvedValueOnce({ valid: true });
+    useWalletStore.setState({ recoverFromMnemonic: recover });
+    const replacement = bip39.generate();
+
+    await renderSettingsPage("cashu");
+    fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
+      target: { value: replacement.join(" ") },
+    });
+    const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
+
+    // The warning comes before the commit point. Close still cancels.
+    expect(
+      await within(dialog).findByText(
+        "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
+      ),
+    ).toBeInTheDocument();
+    expect(recover).toHaveBeenLastCalledWith(replacement, { acceptPartialBackup: false });
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument(),
+    );
+    expect(recover).toHaveBeenLastCalledWith(replacement, { acceptPartialBackup: true });
   });
 
   it("keeps the replacement modal open while the handoff is pending", async () => {

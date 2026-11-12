@@ -675,6 +675,37 @@ describe("browser wallet counter authority", () => {
     await expect(source.reserve(keysetId, 1)).resolves.toEqual({ start: 1, count: 1 });
   });
 
+  it("keeps the NUT-CTF identity of a verified conditional counter context and refuses another", async () => {
+    const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    databases.push(database);
+    const counters = new BrowserWalletCounterDexieStore({ database, scopeId });
+    const yes = { conditionId: "AB".repeat(32), outcomeCollection: "YES" };
+    const mint = "https://mint.example";
+
+    // A counter recovery without the identity, then a conditional receive.
+    await counters.advanceToAtLeastInContext({ mintUrl: mint, unit: "msat" }, keysetId, 1, false);
+    await counters.advanceToAtLeastInContext(
+      { mintUrl: mint, unit: "msat", conditional: yes },
+      keysetId,
+      2,
+      false,
+    );
+
+    expect(
+      await database.walletCounterAssociations.get([scopeId, mint, "msat", keysetId]),
+    ).toMatchObject({ conditional: { conditionId: "ab".repeat(32), outcomeCollection: "YES" } });
+    // A keyset id binds one identity.
+    await expect(
+      counters.advanceToAtLeastInContext(
+        { mintUrl: mint, unit: "msat", conditional: { ...yes, outcomeCollection: "NO" } },
+        keysetId,
+        3,
+        false,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_keyset" });
+    expect(await database.walletCounterCursors.get([scopeId, keysetId])).toMatchObject({ next: 2 });
+  });
+
   it("keeps advances monotonic", async () => {
     const counters = createStore();
 
