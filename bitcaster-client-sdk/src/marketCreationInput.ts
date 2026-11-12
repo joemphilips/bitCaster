@@ -7,6 +7,7 @@ import {
 } from './marketUnits.ts'
 
 export const MAX_MARKET_CREATION_OUTCOMES = 8
+export const MAX_MARKET_OUTCOME_LABEL_CHARACTERS = 191
 export const MAX_MARKET_CREATION_MATURITY_EPOCH = 0xffff_ffff
 export const MAX_MARKET_CREATION_METADATA_JSON_CODE_UNITS = 65_536
 
@@ -47,6 +48,17 @@ export interface NormalizedMarketCreationInput {
   collateralUnit: CtfCollateralUnit
 }
 
+/** Public mint metadata used by both new-input measurement and registration. */
+export function marketCreationMintTags(
+  input: Pick<MarketCreationInput, 'title' | 'description' | 'categoryTags'>,
+): string[][] {
+  return [
+    ['title', input.title],
+    ['description', input.description],
+    ...input.categoryTags.map((tag) => ['t', tag]),
+  ]
+}
+
 /** Normalize metadata shared by CLI and browser market creation. */
 export type MarketOutcomeLabelProblem = 'empty' | 'invalid' | 'duplicate'
 
@@ -69,7 +81,10 @@ export function validateMarketOutcomeLabels(
     const trimmed = label.trim()
     if (trimmed.length === 0) {
       issues.push({ index, problem: 'empty' })
-    } else if (!/^[A-Za-z0-9]{1,191}$/.test(trimmed)) {
+    } else if (
+      trimmed.length > MAX_MARKET_OUTCOME_LABEL_CHARACTERS ||
+      !/^[A-Za-z0-9]+$/.test(trimmed)
+    ) {
       issues.push({ index, problem: 'invalid' })
     } else {
       // Labels are ASCII, so lower case is a complete case fold.
@@ -136,7 +151,9 @@ export function normalizeMarketCreationInput(
     case 'empty':
       throw new Error('Every market outcome must have a label.')
     case 'invalid':
-      throw new Error('Outcome labels must be 1 to 191 ASCII letters or digits.')
+      throw new Error(
+        `Outcome labels must be 1 to ${MAX_MARKET_OUTCOME_LABEL_CHARACTERS} ASCII letters or digits.`,
+      )
     case 'duplicate':
       throw new Error('Outcome labels must be unique, ignoring letter case.')
     default:
@@ -171,11 +188,7 @@ export function normalizeMarketCreationInput(
   return {
     metadata,
     outcomeLabels,
-    mintTags: [
-      ['title', input.title],
-      ['description', input.description],
-      ...categoryTags.map((tag) => ['t', tag]),
-    ],
+    mintTags: marketCreationMintTags(input),
     maturityEpoch: input.maturityEpoch,
     collateralUnit: defaultCollateralUnit(baseAsset),
   }

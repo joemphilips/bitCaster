@@ -186,7 +186,12 @@ export interface ActivityDisplayItem extends RecordedActivityItem {
 // Created Market Types
 // =============================================================================
 
-export type CreatedMarketStatus = "active" | "resolved" | "refunded" | "unknown";
+export type CreatedMarketStatus =
+  | "active"
+  | "awaitingResolution"
+  | "resolved"
+  | "refunded"
+  | "unknown";
 export type CreatorEngineDataStatus = "current" | "stale" | "unavailable";
 
 interface CreatedMarketDisplay {

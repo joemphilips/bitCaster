@@ -1,8 +1,15 @@
-import { useId, useRef } from "react";
+import { useId, useRef, useState } from "react";
 import { Upload, X, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo } from "@/types/market-creation";
 import { DateTimePicker } from "@/components/shared/DateTimePicker";
+import { MAX_MARKET_CREATION_MATURITY_EPOCH } from "@bitcaster/client-sdk/marketCreationInput";
+import {
+  inspectNewMarketCreationText,
+  MAX_MARKET_TITLE_CHARACTERS,
+  MAX_MARKET_TITLE_UTF8_BYTES,
+} from "@bitcaster/client-sdk/marketCreationLimits";
+import { marketCreationTextError, marketCreationTagsError } from "@/lib/marketCreationValidation";
 
 interface BasicInfoProps {
   data: WizardStepBasicInfo;
@@ -37,12 +44,34 @@ export function BasicInfo({
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const thumbnailErrorId = useId();
+  const titleId = useId();
+  const titleCountId = useId();
+  const titleErrorId = useId();
+  const tagsErrorId = useId();
+  const categoriesId = useId();
+  const dateErrorId = useId();
+  const [titleBlurred, setTitleBlurred] = useState(false);
+  const text = inspectNewMarketCreationText({ ...data, description: "" });
+  const titleError = marketCreationTextError(
+    t,
+    "title",
+    text.title.issue === "required" && !titleBlurred ? null : text.title.issue,
+  );
+  const tagsError = text.mintTagsIssue ? marketCreationTagsError(t, text.mintTagsIssue) : null;
+  const maxMaturity = new Date(MAX_MARKET_CREATION_MATURITY_EPOCH * 1000);
+  const maturity = new Date(data.closingDate).getTime() / 1000;
+  const dateError =
+    maturity > MAX_MARKET_CREATION_MATURITY_EPOCH
+      ? t("marketCreation.endTimeTooLate", { maxDate: maxMaturity.toLocaleString() })
+      : null;
   // A selection error blocks Next. A rejected file leaves a valid draft, so it is a notice.
   const thumbnailMessage = thumbnailError ?? thumbnailRejectionNotice;
   const canProceed =
     !thumbnailPending &&
     !thumbnailError &&
-    data.title.trim().length > 0 &&
+    !text.title.issue &&
+    !tagsError &&
+    !dateError &&
     data.closingDate.length > 0 &&
     new Date(data.closingDate) > new Date();
 
@@ -140,21 +169,40 @@ export function BasicInfo({
 
         {/* Title */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">
+          <label htmlFor={titleId} className="block text-sm font-medium text-slate-300 mb-2">
             {t("marketCreation.titleLabel")}
           </label>
           <input
+            id={titleId}
             type="text"
             value={data.title}
+            onBlur={() => setTitleBlurred(true)}
+            aria-invalid={!!titleError}
+            aria-describedby={[titleCountId, titleError ? titleErrorId : null]
+              .filter(Boolean)
+              .join(" ")}
             onChange={(e) => onTitleChange?.(e.target.value)}
             placeholder={t("marketCreation.titlePlaceholder")}
             className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           />
+          <p id={titleCountId} className="mt-2 text-xs text-slate-400">
+            {t("marketCreation.textCount", {
+              characters: text.title.characters,
+              maxCharacters: MAX_MARKET_TITLE_CHARACTERS,
+              bytes: text.title.utf8Bytes,
+              maxBytes: MAX_MARKET_TITLE_UTF8_BYTES,
+            })}
+          </p>
+          {titleError && (
+            <p id={titleErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {titleError}
+            </p>
+          )}
         </div>
 
         {/* Categories */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">
+          <label htmlFor={categoriesId} className="block text-sm font-medium text-slate-300 mb-2">
             {t("marketCreation.categories")}
           </label>
           <div className="flex flex-wrap gap-2 mb-2">
@@ -165,6 +213,7 @@ export function BasicInfo({
               >
                 {tag}
                 <button
+                  aria-label={t("marketCreation.removeCategory", { category: tag })}
                   onClick={() => onCategoryTagsChange?.(data.categoryTags.filter((t) => t !== tag))}
                   className="hover:text-blue-200 transition-colors"
                 >
@@ -174,6 +223,9 @@ export function BasicInfo({
             ))}
           </div>
           <select
+            id={categoriesId}
+            aria-invalid={!!tagsError}
+            aria-describedby={tagsError ? tagsErrorId : undefined}
             onChange={(e) => {
               if (e.target.value && !data.categoryTags.includes(e.target.value)) {
                 onCategoryTagsChange?.([...data.categoryTags, e.target.value]);
@@ -194,6 +246,11 @@ export function BasicInfo({
                 </option>
               ))}
           </select>
+          {tagsError && (
+            <p id={tagsErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {tagsError}
+            </p>
+          )}
         </div>
 
         {/* Closing Date */}
@@ -207,7 +264,14 @@ export function BasicInfo({
             min={new Date()}
             placeholder={t("marketCreation.endTimePlaceholder")}
             aria-label={t("marketCreation.endTime")}
+            aria-invalid={!!dateError}
+            aria-describedby={dateError ? dateErrorId : undefined}
           />
+          {dateError && (
+            <p id={dateErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {dateError}
+            </p>
+          )}
         </div>
       </div>
 

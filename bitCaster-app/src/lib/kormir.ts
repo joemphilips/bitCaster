@@ -6,6 +6,8 @@ import type {
 } from "./kormir-wasm-pkg/kormir_wasm";
 import {
   normalizeOracleAnnouncementTags,
+  normalizeLegacyOracleAnnouncementTags,
+  readSignedOracleEvent,
   decodePrivateNostrSignerKey,
   OracleBackupError,
   type OracleBackupValidator,
@@ -225,7 +227,33 @@ export async function prepareEnumAnnouncement(
   title = eventId,
   description = title,
 ): Promise<PreparedOracleArtifact> {
-  const tags = normalizeOracleAnnouncementTags(title, description);
+  let tags = normalizeOracleAnnouncementTags(title, description);
+  const retained = await core.read_prepared_enum_announcement(eventId);
+  let retainedArtifact: PreparedOracleArtifact | undefined;
+  if (retained) {
+    try {
+      retainedArtifact = {
+        artifactHex: retained.artifact_hex,
+        eventJson: retained.nostr_event_json,
+      };
+      const event = readSignedOracleEvent(retainedArtifact.eventJson, 88);
+      const matches = (candidate: typeof tags) =>
+        JSON.stringify(event.tags) ===
+        JSON.stringify([
+          ...(candidate.title ? [["title", candidate.title]] : []),
+          ...(candidate.description ? [["description", candidate.description]] : []),
+        ]);
+      if (!matches(tags)) {
+        const legacy = normalizeLegacyOracleAnnouncementTags(title, description);
+        if (!matches(legacy))
+          throw new Error("Retained oracle announcement text conflicts with this request.");
+        tags = legacy;
+      }
+    } finally {
+      retained.free();
+    }
+  }
+  // Core still validates outcome/maturity equality and returns the retained event.
   const prepared = await core.prepare_enum_event(
     eventId,
     outcomes,
@@ -234,7 +262,12 @@ export async function prepareEnumAnnouncement(
     tags.description,
   );
   try {
-    return { artifactHex: prepared.artifact_hex, eventJson: prepared.nostr_event_json };
+    return (
+      retainedArtifact ?? {
+        artifactHex: prepared.artifact_hex,
+        eventJson: prepared.nostr_event_json,
+      }
+    );
   } finally {
     prepared.free();
   }

@@ -35,6 +35,7 @@ function fakeProvider() {
         calls.local += 1;
         return "event";
       },
+      read_prepared_enum_announcement: async () => undefined,
       prepare_enum_event: async () => ({
         artifact_hex: "artifact",
         nostr_event_json: "event-json",

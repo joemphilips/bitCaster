@@ -175,6 +175,34 @@ describe("UserPage", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Nostr ID copied.");
   });
 
+  it("labels a created market as resolved only when its outcome is known", async () => {
+    getMarkets.mockResolvedValue({
+      markets: [
+        market,
+        { ...market, id: "d".repeat(64), title: "Past deadline", state: "closed" },
+        {
+          ...market,
+          id: "e".repeat(64),
+          title: "Answered",
+          state: "closed",
+          finalOutcome: "Yes",
+        },
+      ],
+      nextCursor: null,
+      lastSuccessfulRefreshAt: "",
+    });
+    serve(relays[0]!, [profileEvent({ name: "alice" })]);
+    renderPage();
+
+    const markets = screen.getByRole("region", { name: "Markets created by this key" });
+    const label = async (name: string) =>
+      (await within(markets).findByRole("link", { name: new RegExp(name) })).textContent;
+    expect(await label("Will the oracle publish")).toContain("Active");
+    expect(await label("Past deadline")).toContain("Awaiting resolution");
+    expect(await label("Past deadline")).not.toMatch(/resolved|closed/i);
+    expect(await label("Answered")).toContain("Resolved");
+  });
+
   it("hides indexer values without an error when the indexer fails", async () => {
     readPrimalProfileStats.mockResolvedValue(null);
     serve(relays[0]!, [profileEvent({ name: "alice" }), followList, ...notes]);

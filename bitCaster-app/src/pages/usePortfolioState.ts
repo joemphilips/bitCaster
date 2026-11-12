@@ -1264,6 +1264,10 @@ export function usePortfolioState(): PortfolioState & {
       });
   }, [loadingMoreAssets, visibleAssets, walletId, signerRevision, walletScopeId]);
 
+  // A lifecycle refresh can keep the same assets and readiness flags. Re-read
+  // catalogue state after each accepted response, including that unchanged set.
+  const catalogueRefreshResponse =
+    monitoringResponse?.key === monitoringKey ? monitoringResponse : null;
   const positionsFromDb = useLiveQuery(
     async (): Promise<PortfolioPositionSnapshot | undefined> => {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -1357,6 +1361,7 @@ export function usePortfolioState(): PortfolioState & {
       }
     },
     [
+      catalogueRefreshResponse,
       monitoringReady,
       monitoringUnavailable,
       monitoringRateLimited,

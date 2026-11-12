@@ -94,7 +94,7 @@ describe("CreatedMarketRow", () => {
     render(
       <CreatedMarketRow
         market={fixture({
-          status: "resolved",
+          status: "awaitingResolution",
           oracle: { type: "self", eventId: "event", outcomes: ["YES", "NO"] },
         })}
         onPublishOracleAttestation={publish}
@@ -103,7 +103,34 @@ describe("CreatedMarketRow", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /close market/i }));
     expect(publish).toHaveBeenCalledWith("m1");
-    expect(screen.getByText("Closed")).toBeVisible();
+    expect(screen.getByText("Awaiting resolution")).toBeVisible();
+    expect(screen.queryByText(/resolved/i)).toBeNull();
+  });
+
+  // A second signature with the same nonce and another outcome discloses the oracle key.
+  it("offers no first answer once the engine has a verified outcome", () => {
+    render(
+      <CreatedMarketRow
+        market={fixture({
+          status: "resolved",
+          oracle: { type: "self", eventId: "event", outcomes: ["YES", "NO"] },
+        })}
+        onPublishOracleAttestation={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
+  });
+
+  it("labels a closed market as resolved only when its outcome is known", () => {
+    const { rerender } = render(
+      <CreatedMarketRow market={fixture({ status: "awaitingResolution" })} />,
+    );
+    expect(screen.getByText("Awaiting resolution")).toBeInTheDocument();
+    expect(screen.queryByText("Resolved")).toBeNull();
+
+    rerender(<CreatedMarketRow market={fixture({ status: "resolved" })} />);
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByText("Awaiting resolution")).toBeNull();
   });
 
   it.each([
@@ -125,7 +152,7 @@ describe("CreatedMarketRow", () => {
     render(
       <CreatedMarketRow
         market={fixture({
-          status: "resolved",
+          status: "awaitingResolution",
           oracle: {
             type: "self",
             eventId: "event",
@@ -141,18 +168,23 @@ describe("CreatedMarketRow", () => {
         onPublishOracleAttestation={vi.fn()}
       />,
     );
-    expect(screen.getByText("Resolved: NO")).toBeVisible();
+    // A signed local answer is not a verified resolution.
+    expect(screen.getByText("Outcome: NO")).toBeVisible();
+    expect(screen.queryByText(/^Resolved:/)).toBeNull();
     expect(screen.getByText(label)).toBeVisible();
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByRole("button", { name: /close market|retry|republish/i })).toBeNull();
     expect(screen.queryByText(/Engine|Relay/)).toBeNull();
   });
 
-  it("marks closed market thumbnails as Closed", () => {
-    render(<CreatedMarketRow market={fixture({ status: "resolved" })} />);
+  it.each(["awaitingResolution", "resolved"] as const)(
+    "marks a %s market thumbnail as closed for trading",
+    (status) => {
+      render(<CreatedMarketRow market={fixture({ status })} />);
 
-    expect(screen.getByText("Closed")).toBeInTheDocument();
-  });
+      expect(screen.getByText("Closed")).toBeInTheDocument();
+    },
+  );
 
   it("shows unavailable engine state without claiming Active, Closed, or resolution", () => {
     render(

@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
+  assertOracleFirstSigningAllowed,
   createOracleExplanationTemplate,
+  encodeOraclePrivateAuthority,
   normalizeMarketCreationInput,
   publishOracleOutcome,
   readSignedOracleEvent,
@@ -168,8 +170,11 @@ export function createNativeOraclePublicationAdapters(
         record.kind === 'imported'
           ? await ports.helper.signExplicitEnum({
               oracleSecretKeyHex: signer.secretKeyHex,
-              privateDtoJson: JSON.stringify(
+              privateDtoJson: await encodeOraclePrivateAuthority(
                 await ports.store.readImportedAuthorityForSigning(binding.conditionId),
+                binding.oraclePubkey,
+                ports.helper,
+                { writeVersion: 2 },
               ),
               chosenOutcome: outcome,
             })
@@ -254,6 +259,8 @@ export async function publishNativeMarketOutcome(
     throw new Error('Native oracle choice conflicts with the saved outcome.')
   // Validate signed binding and membership before committing the immutable native intent.
   nativeOraclePublicationRecord({ ...record, chosenOutcome: outcome })
+  if (record.attestation === null && (options?.engineDelivery ?? 'synchronize') === 'synchronize')
+    await assertOracleFirstSigningAllowed(() => ports.readResolution(conditionId))
   const chosen = await ports.store.chooseAuthorityOutcome(conditionId, outcome, explanation)
   return publishOracleOutcome(
     createNativeOraclePublicationAdapters(ports),
@@ -271,6 +278,13 @@ export async function retryNativeMarketPublication(
 ) {
   const record = await ports.store.readAuthorityByConditionId(conditionId)
   if (record === null) throw new Error('Native oracle announcement is missing.')
+  // A saved choice without an artifact still needs first-signing admission on retry.
+  if (
+    record.attestation === null &&
+    record.chosenOutcome !== null &&
+    (options?.engineDelivery ?? 'synchronize') === 'synchronize'
+  )
+    await assertOracleFirstSigningAllowed(() => ports.readResolution(conditionId))
   // An interrupted signing or companion preparation finishes the original saved draft.
   if (
     options?.republishAttestation !== true &&

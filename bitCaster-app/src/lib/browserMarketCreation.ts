@@ -11,9 +11,11 @@ import {
   type MarketCreationRecord,
   type MarketCreationPreparation,
   type MarketCreationInput,
+  type NormalizedMarketCreationInput,
   type MarketThumbnailBytes,
-  normalizeMarketCreationInput,
 } from "@bitcaster/client-sdk";
+import { assertNewMarketCreationInput } from "@bitcaster/client-sdk/marketCreationLimits";
+import { assertOracleBackupLifecycleCapacity } from "@bitcaster/client-sdk/oracleBackupCapacity";
 import { captureBrowserMintPersistenceContext } from "./cashu";
 import { resolveNsecIdentity } from "./identityOps";
 import { useSettingsStore } from "@/stores/settings";
@@ -88,18 +90,50 @@ export function browserMarketCreationSession(pointer?: BrowserMarketCreationPoin
   return { binding, store, requireBinding };
 }
 
+/** Reserve the eventual resolution size without allocating signing authority. */
+export function assertBrowserMarketCreationCapacity(
+  session: ReturnType<typeof browserMarketCreationSession>,
+  market: NormalizedMarketCreationInput,
+  relayUrls: readonly string[],
+  eventId = buildEventId(market.metadata.title || "market"),
+): string {
+  session.requireBinding();
+  assertOracleBackupLifecycleCapacity({
+    title: market.metadata.title,
+    description: market.metadata.description,
+    outcomes: market.outcomeLabels,
+    eventId,
+    destinations: {
+      mintUrl: session.binding.mintUrl,
+      engineUrl: session.binding.engineBaseUrl,
+      relayUrls: [...relayUrls],
+    },
+    // Reader compatibility ships first; production backup writers still use v1.
+    writeVersion: 1,
+  });
+  return eventId;
+}
+
 export async function prepareBrowserMarketCreation(
   session: ReturnType<typeof browserMarketCreationSession>,
   input: {
     creationId: string;
     market: MarketCreationInput;
+    /** Reuse the exact ID measured before fee consent. */
+    eventId?: string;
     relayUrls: string[];
     feeAmount: number;
     outcomeCollections?: readonly string[];
     thumbnail?: MarketThumbnailBytes;
   },
 ): Promise<MarketCreationRecord> {
-  const normalized = normalizeMarketCreationInput(input.market);
+  const normalized = assertNewMarketCreationInput(input.market);
+  const eventId = assertBrowserMarketCreationCapacity(
+    session,
+    normalized,
+    input.relayUrls,
+    input.eventId,
+  );
   const thumbnail = snapshotMarketCreationThumbnail(input.thumbnail);
   // The final announcement is validated again before retention and payment.
   await prepareMarketCreationRequest(normalized.metadata, thumbnail ?? undefined);
@@ -108,7 +142,6 @@ export async function prepareBrowserMarketCreation(
       "Add at least one Nostr relay in Settings before publishing an oracle announcement.",
     );
   session.requireBinding();
-  const eventId = buildEventId(normalized.metadata.title || "market");
   const preparation = await withBrowserOracleMutation(session.binding.creatorId, async (core) => {
     const artifact = await prepareEnumAnnouncement(
       core,

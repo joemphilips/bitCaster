@@ -1,8 +1,9 @@
-import { getPublicKey } from 'nostr-tools/pure'
+import { getPublicKey, verifyEvent, type Event } from 'nostr-tools/pure'
 import {
   decryptOracleBackupEvent,
   readOracleBackupEnvelope,
   ORACLE_BACKUP_KIND,
+  ORACLE_BACKUP_TAG_PREFIX,
   type OracleBackupRecord,
   type OracleBackupValidator,
 } from './oracleBackup.ts'
@@ -16,6 +17,7 @@ import {
 import { normalizeNostrRelayUrls } from './nostrRelays.ts'
 import {
   oraclePublicationTerminal,
+  mergeOraclePublicationRecords,
   snapshotOraclePublicationRecord,
   type OraclePublicationBinding,
   type OraclePublicationRecord,
@@ -50,7 +52,8 @@ export interface OracleBackupScanCursor {
 export interface OracleBackupRelayFilter {
   readonly kinds: readonly number[]
   readonly authors: readonly string[]
-  readonly '#v': readonly string[]
+  readonly '#v'?: readonly string[]
+  readonly '#d'?: readonly string[]
   readonly ids?: readonly string[]
   readonly limit: number
   readonly since?: number
@@ -76,6 +79,8 @@ export type OracleBackupScanPartialReason =
   | 'saturated-bucket'
   | 'processing-limit'
   | 'invalid-candidates'
+  | 'unsupported-version'
+  | 'lifecycle-regression'
 export interface OracleBackupScanResult {
   readonly descriptors: readonly OracleBackupDescriptor[]
   readonly cursor: OracleBackupScanCursor | null
@@ -90,10 +95,220 @@ export class OracleBackupAccessError extends Error {
     | 'invalid-cursor'
     | 'invalid-relays'
     | 'local-state'
+    | 'stale-source'
+    | 'unsupported-version'
+    | 'incomplete-query'
+    | 'unavailable'
+    | 'lifecycle-regression'
   constructor(reason: OracleBackupAccessError['reason']) {
     super(`Private oracle backup access: ${reason}.`)
     this.name = 'OracleBackupAccessError'
     this.reason = reason
+  }
+}
+
+/** NIP-01 replaceable ordering: newest timestamp, then lowest event ID on a tie. */
+function precedes(left: Event, right: Event): boolean {
+  return (
+    left.created_at > right.created_at ||
+    (left.created_at === right.created_at && left.id < right.id)
+  )
+}
+
+function supportedVersion(event: Event): boolean {
+  return event.tags[1][1] === '1' || event.tags[1][1] === '2'
+}
+
+/** A timestamp cannot restore a retired nonce or erase a verified signing choice. */
+export function assertOracleBackupLifecycleDoesNotRegress(
+  candidate: OracleBackupRecord,
+  known: OracleBackupRecord,
+): void {
+  const next = candidate.authority
+  const old = known.authority
+  const refuse = () => {
+    throw new OracleBackupAccessError('lifecycle-regression')
+  }
+  if (
+    candidate.conditionId !== known.conditionId ||
+    candidate.oraclePubkey !== known.oraclePubkey ||
+    candidate.oracleEventId !== known.oracleEventId ||
+    next.announcementTlvHex !== old.announcementTlvHex ||
+    next.announcementEventJson !== old.announcementEventJson
+  )
+    refuse()
+  if (old.nonceScalarHex === null && next.nonceScalarHex !== null) refuse()
+  if (
+    old.nonceScalarHex !== null &&
+    next.nonceScalarHex !== null &&
+    old.nonceScalarHex !== next.nonceScalarHex
+  )
+    refuse()
+  for (const key of ['signedOutcome', 'attestationHex', 'attestationEventJson'] as const)
+    if (old[key] !== null && old[key] !== next[key]) refuse()
+  if (old.publicationRecordJson !== null) {
+    if (next.publicationRecordJson === null) refuse()
+    try {
+      const previous = snapshotOraclePublicationRecord(JSON.parse(old.publicationRecordJson))
+      const current = snapshotOraclePublicationRecord(JSON.parse(next.publicationRecordJson!))
+      if (
+        JSON.stringify(mergeOraclePublicationRecords(previous, current)) !== JSON.stringify(current)
+      )
+        refuse()
+    } catch {
+      refuse()
+    }
+  }
+}
+
+/**
+ * Recheck a selected identity on the configured relays before importing its exact ID.
+ * EOSE and ordering describe those observations, never global signing freshness.
+ * Versions are deliberately not filtered: an authenticated future version blocks
+ * fallback to an older copy of private signing authority.
+ */
+export async function fetchCurrentOracleBackupSelection(input: {
+  readonly author: string
+  readonly privateKey: Uint8Array
+  readonly validator: OracleBackupValidator
+  readonly eventId: string
+  readonly sourceRelay: string
+  readonly relayUrls: readonly string[]
+  readonly queryRelay: OracleBackupQueryRelay
+  readonly signal?: AbortSignal
+}): Promise<Event> {
+  if (!/^[0-9a-f]{64}$/.test(input.eventId) || !/^[0-9a-f]{64}$/.test(input.author))
+    throw new OracleBackupAccessError('invalid-envelope')
+  if (getPublicKey(input.privateKey) !== input.author)
+    throw new OracleBackupAccessError('wrong-owner')
+  const relays = checkedRelays([...new Set([...input.relayUrls, input.sourceRelay])])
+  const source = checkedRelays([input.sourceRelay])[0]
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, AbortSignal.timeout(ORACLE_BACKUP_SCAN_DEADLINE_MS)])
+    : AbortSignal.timeout(ORACLE_BACKUP_SCAN_DEADLINE_MS)
+  let bytes = 0
+  let rawEvents = 0
+  const observed = new Map<string, Event>()
+  const query = async (relayUrl: string, filter: OracleBackupRelayFilter, required: boolean) => {
+    input.signal?.throwIfAborted()
+    let reply: Awaited<ReturnType<OracleBackupQueryRelay>>
+    try {
+      signal.throwIfAborted()
+      reply = await input.queryRelay({
+        relayUrl,
+        filter,
+        signal,
+        maxEvents: ORACLE_BACKUP_SCAN_BROAD_MAX,
+        maxBytes: ORACLE_BACKUP_SCAN_BROAD_MAX * ORACLE_BACKUP_SCAN_FRAME_BYTES_MAX,
+      })
+    } catch {
+      input.signal?.throwIfAborted()
+      if (required) throw new OracleBackupAccessError('incomplete-query')
+      return []
+    }
+    input.signal?.throwIfAborted()
+    if (
+      !Array.isArray(reply.events) ||
+      reply.events.length > ORACLE_BACKUP_SCAN_BROAD_MAX ||
+      (required && (!reply.complete || reply.events.length === ORACLE_BACKUP_SCAN_BROAD_MAX))
+    )
+      throw new OracleBackupAccessError('incomplete-query')
+    rawEvents += reply.events.length
+    if (rawEvents > ORACLE_BACKUP_SCAN_BROAD_MAX + ORACLE_BACKUP_SCAN_BUCKET_MAX)
+      throw new OracleBackupAccessError('incomplete-query')
+    const events: Event[] = []
+    for (const raw of reply.events) {
+      const size = new TextEncoder().encode(JSON.stringify(raw)).length
+      bytes += size
+      if (size > ORACLE_BACKUP_SCAN_FRAME_BYTES_MAX || bytes > ORACLE_BACKUP_SCAN_BYTES_MAX)
+        throw new OracleBackupAccessError('incomplete-query')
+      try {
+        const event = readOracleBackupEnvelope(raw, input.author)
+        if (matchesFilter(event, filter)) {
+          events.push(event)
+          observed.set(event.id, event)
+        }
+      } catch {
+        // Invalid signatures cannot suppress an authenticated selection.
+      }
+    }
+    return events
+  }
+  const base = {
+    kinds: [ORACLE_BACKUP_KIND],
+    authors: [input.author],
+    limit: ORACLE_BACKUP_SCAN_BROAD_MAX,
+  }
+  const selected = (await query(source, { ...base, ids: [input.eventId] }, true)).find(
+    (event) => event.id === input.eventId,
+  )
+  if (!selected) throw new OracleBackupAccessError('unavailable')
+  let newest = selected
+  const identityFilter = { ...base, '#d': [selected.tags[0][1]] }
+  for (const event of await query(source, identityFilter, true))
+    if (precedes(event, newest)) newest = event
+  const optionalRelays = relays.filter((relay) => relay !== source)
+  // A small batch bounds socket fan-out even for the maximum configured relay list.
+  for (let index = 0; index < optionalRelays.length; index += 4) {
+    const batches = await Promise.all(
+      optionalRelays.slice(index, index + 4).map((relay) => query(relay, identityFilter, false)),
+    )
+    for (const events of batches)
+      for (const event of events) if (precedes(event, newest)) newest = event
+  }
+  if (!supportedVersion(newest)) throw new OracleBackupAccessError('unsupported-version')
+  if (newest.id !== selected.id) throw new OracleBackupAccessError('stale-source')
+  // Validation has its own bounded phase: optional transport timeout must not
+  // consume the healthy source's validation budget. The uncancellable validator
+  // port can leave at most one operation in flight after refusal.
+  const validation = new AbortController()
+  const abort = () => validation.abort()
+  input.signal?.addEventListener('abort', abort, { once: true })
+  if (input.signal?.aborted) abort()
+  const timer = setTimeout(abort, ORACLE_BACKUP_SCAN_DEADLINE_MS)
+  const decode = async (event: Event) => {
+    if (validation.signal.aborted) throw new OracleBackupAccessError('incomplete-query')
+    let onAbort: () => void = () => {}
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new OracleBackupAccessError('incomplete-query'))
+      validation.signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      return await Promise.race([
+        decryptOracleBackupEvent({
+          event,
+          privateKey: input.privateKey,
+          validator: input.validator,
+        }),
+        cancelled,
+      ])
+    } finally {
+      validation.signal.removeEventListener('abort', onAbort)
+    }
+  }
+  try {
+    const current = await decode(selected)
+    for (const event of observed.values()) {
+      if (
+        event.id === selected.id ||
+        event.tags[0][1] !== selected.tags[0][1] ||
+        !supportedVersion(event)
+      )
+        continue
+      let known: OracleBackupRecord
+      try {
+        known = await decode(event)
+      } catch (error) {
+        if (error instanceof OracleBackupAccessError) throw error
+        continue // Invalid private payloads do not establish lifecycle authority.
+      }
+      assertOracleBackupLifecycleDoesNotRegress(current, known)
+    }
+    return selected
+  } finally {
+    clearTimeout(timer)
+    input.signal?.removeEventListener('abort', abort)
+    validation.abort()
   }
 }
 
@@ -182,11 +397,26 @@ export async function listOracleBackups(input: {
   const start = checkedCursor(input.cursor, author, relayUrls)
   const reasons: OracleBackupScanPartialReason[] = ['relay-dependent-history']
   const descriptors: OracleBackupDescriptor[] = []
+  const recordsByIdentity = new Map<string, OracleBackupRecord[]>()
+  const recordsByEventId = new Map<string, OracleBackupRecord>()
+  const currentDescriptors = () =>
+    descriptors.filter((descriptor) => {
+      const current = recordsByEventId.get(descriptor.backupEventId)!
+      const identity = readSignedOracleEvent(current.authority.announcementEventJson, 88).id
+      try {
+        for (const known of recordsByIdentity.get(identity) ?? [])
+          assertOracleBackupLifecycleDoesNotRegress(current, known)
+        return true
+      } catch {
+        reasons.push('lifecycle-regression')
+        return false
+      }
+    })
   const result = (
     cursor: OracleBackupScanCursor | null,
     observedRelayComplete = false,
   ): OracleBackupScanResult => ({
-    descriptors,
+    descriptors: currentDescriptors(),
     cursor,
     discovery: 'relay-dependent',
     partialReasons: [...new Set(reasons)],
@@ -201,6 +431,7 @@ export async function listOracleBackups(input: {
   const timer = setTimeout(abort, ORACLE_BACKUP_SCAN_DEADLINE_MS)
   let bytes = 0
   const seen = new Set<string>()
+  const newestByIdentity = new Map<string, Event>()
   const checkDeadline = () => {
     if (controller.signal.aborted || Date.now() >= deadline) throw new ScanFailure('deadline')
   }
@@ -224,7 +455,6 @@ export async function listOracleBackups(input: {
   const base: OracleBackupRelayFilter = {
     kinds: [ORACLE_BACKUP_KIND],
     authors: [author],
-    '#v': ['1'],
     limit: ORACLE_BACKUP_SCAN_BROAD_MAX,
   }
   const query = async (filter: OracleBackupRelayFilter, maxEvents: number) => {
@@ -264,20 +494,35 @@ export async function listOracleBackups(input: {
   const validate = async (events: readonly unknown[], filter: OracleBackupRelayFilter) => {
     for (const value of events) {
       checkDeadline()
-      if (!matchesFilter(value, filter)) {
-        reasons.push('invalid-candidates')
-        continue
-      }
       // Only authenticated IDs can suppress another raw version.
-      let id: string
+      let envelope: Event
       try {
-        id = readOracleBackupEnvelope(value, author).id
+        const event = readAuthenticatedScanEvent(value, filter)
+        // Kind 30078 also carries settings and public creator records. They
+        // participate in pagination, but are not malformed oracle backups.
+        if (
+          !event.tags.some((tag) => tag[0] === 'd' && tag[1]?.startsWith(ORACLE_BACKUP_TAG_PREFIX))
+        )
+          continue
+        envelope = readOracleBackupEnvelope(event, author)
       } catch {
         reasons.push('invalid-candidates')
         continue
       }
-      if (seen.has(id)) continue
-      seen.add(id)
+      if (seen.has(envelope.id)) continue
+      seen.add(envelope.id)
+      const identity = envelope.tags[0][1]
+      const previous = newestByIdentity.get(identity)
+      const isNewest = !previous || precedes(envelope, previous)
+      if (isNewest) newestByIdentity.set(identity, envelope)
+      if (previous && isNewest) {
+        const index = descriptors.findIndex((row) => row.backupEventId === previous.id)
+        if (index >= 0) descriptors.splice(index, 1)
+      }
+      if (!supportedVersion(envelope)) {
+        reasons.push('unsupported-version')
+        continue
+      }
       try {
         const restored = await boundedAwait(() =>
           restoreOracleBackupEnvelope({
@@ -287,7 +532,12 @@ export async function listOracleBackups(input: {
             validator: input.validator,
           }),
         )
-        descriptors.push(restored.descriptor)
+        recordsByEventId.set(envelope.id, restored.record)
+        const announcementId = restored.descriptor.announcementEventId
+        const history = recordsByIdentity.get(announcementId) ?? []
+        history.push(restored.record)
+        recordsByIdentity.set(announcementId, history)
+        if (isNewest) descriptors.push(restored.descriptor)
       } catch (error) {
         if (error instanceof ScanFailure) throw error
         reasons.push('invalid-candidates')
@@ -305,12 +555,10 @@ export async function listOracleBackups(input: {
     const matching: { created_at: number }[] = []
     for (const value of broad) {
       checkDeadline()
-      if (!matchesFilter(value, broadFilter)) {
-        reasons.push('invalid-candidates')
-        continue
-      }
       try {
-        matching.push(readOracleBackupEnvelope(value, author))
+        // Advance over the entire authenticated kind/author feed. Otherwise
+        // newer unrelated records can permanently hide older oracle backups.
+        matching.push(readAuthenticatedScanEvent(value, broadFilter))
       } catch {
         reasons.push('invalid-candidates')
       }
@@ -492,6 +740,13 @@ function checkedCursor(
     throw new OracleBackupAccessError('invalid-cursor')
   return structuredClone(value)
 }
+function readAuthenticatedScanEvent(value: unknown, filter: OracleBackupRelayFilter): Event {
+  if (!matchesFilter(value, filter)) throw new Error('Invalid relay scan event.')
+  // Strip nostr-tools' verification-cache symbol at the untrusted query port.
+  const event = JSON.parse(JSON.stringify(value)) as Event
+  if (!verifyEvent(event)) throw new Error('Invalid relay scan signature.')
+  return event
+}
 function matchesFilter(value: unknown, filter: OracleBackupRelayFilter): boolean {
   return (
     object(value) &&
@@ -501,9 +756,22 @@ function matchesFilter(value: unknown, filter: OracleBackupRelayFilter): boolean
     (filter.since === undefined || value.created_at >= filter.since) &&
     (filter.until === undefined || value.created_at <= filter.until) &&
     Array.isArray(value.tags) &&
-    value.tags.some(
-      (tag) => Array.isArray(tag) && tag.length === 2 && tag[0] === 'v' && tag[1] === '1',
-    ) &&
+    (filter['#v'] === undefined ||
+      value.tags.some(
+        (tag) =>
+          Array.isArray(tag) &&
+          tag.length === 2 &&
+          tag[0] === 'v' &&
+          filter['#v']!.includes(tag[1]),
+      )) &&
+    (filter['#d'] === undefined ||
+      value.tags.some(
+        (tag) =>
+          Array.isArray(tag) &&
+          tag.length === 2 &&
+          tag[0] === 'd' &&
+          filter['#d']!.includes(tag[1]),
+      )) &&
     (filter.ids === undefined || (typeof value.id === 'string' && filter.ids.includes(value.id)))
   )
 }

@@ -1,12 +1,13 @@
 import {
   deriveDlcConditionId,
   OracleBackupError,
-  snapshotOraclePrivateAuthority,
+  decodeOraclePrivateAuthority,
   type OracleBackupValidator,
   type OraclePrivateAuthority,
 } from "@bitcaster/client-sdk";
 import {
   mergeOraclePublicationRecords,
+  oraclePublicationTerminal,
   snapshotOraclePublicationRecord,
   type OraclePublicationBinding,
   type OraclePublicationRecord,
@@ -31,7 +32,7 @@ export interface BrowserOraclePublicationHandoffStore {
 export function browserOraclePrivateAuthorityPort(core: Kormir): BrowserOraclePrivateAuthorityPort {
   return {
     exportAuthority: (eventId, announcementJson, publicationJson) =>
-      core.export_enum_authority(eventId, announcementJson, publicationJson),
+      core.export_enum_authority_v2(eventId, announcementJson, publicationJson),
     stagedPublication: (eventId) => core.staged_enum_publication(eventId),
     acknowledgePublication: (eventId, exact) => core.acknowledge_enum_publication(eventId, exact),
   };
@@ -48,7 +49,11 @@ export async function reconcileBrowserOraclePublication(input: {
   try {
     const { binding, core, store, validator } = input;
     async function validatePrivate(privateJson: string) {
-      const authority = snapshotOraclePrivateAuthority(JSON.parse(privateJson));
+      const authority = await decodeOraclePrivateAuthority(
+        privateJson,
+        binding.oraclePubkey,
+        validator,
+      );
       const summary = await validator.validateAuthority(privateJson, binding.oraclePubkey);
       if (
         authority.announcementEventJson !== binding.announcementEventJson ||
@@ -126,7 +131,13 @@ export async function reconcileBrowserOraclePublication(input: {
     // A crash can leave a public choice with no artifact after core signing completed.
     // Merge that retained exact artifact before passing public progress back to the core.
     const privateBefore = await validatePrivate(
-      await core.exportAuthority(binding.oracleEventId, binding.announcementEventJson),
+      await core.exportAuthority(
+        binding.oracleEventId,
+        binding.announcementEventJson,
+        requested !== null && oraclePublicationTerminal(requested)
+          ? JSON.stringify(requested)
+          : undefined,
+      ),
     );
     const supplied = mergeOraclePublicationRecords(
       requested,

@@ -157,7 +157,7 @@ export function PositionRow({
               </span>
             ) : isPending ? (
               <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
-                {t("portfolio.awaitingResolution")}
+                {t("marketStatus.awaitingResolution")}
               </span>
             ) : position.side === "Outcome" ? (
               categoricalOutcomeLabel

@@ -55,7 +55,6 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
       criteria: "Will BTC hit 100K?",
       source: "oracle",
       resolutionDate: "2030-12-31T23:59:59Z",
-      status: "open",
     },
     priceHistory: { data: [], timeframe: "7d" },
     orderBook: { bids: [], asks: [], spread: 0 },
@@ -127,11 +126,29 @@ describe("MarketHeader", () => {
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 
-  it("renders engine-closed markets as closed even before mint attestation catches up", async () => {
-    renderHeader(makeMarket({ state: "closed" }));
+  it("shows a past-deadline engine-closed market without an outcome as awaiting resolution", async () => {
+    renderHeader(makeMarket({ state: "closed", closingDate: "2026-01-01T00:00:00Z" }));
 
-    expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
+    expect(screen.getByText("Awaiting resolution")).toBeInTheDocument();
+    expect(screen.queryByText(/resolved/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Final Outcome")).not.toBeInTheDocument();
     expect(screen.queryByText(/remaining/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("uses the Japanese awaiting-resolution term for a closed market without an outcome", async () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <MemoryRouter>
+          <MarketHeader
+            market={makeMarket({ state: "closed", closingDate: "2026-01-01T00:00:00Z" })}
+          />
+        </MemoryRouter>
+      </I18nextProvider>,
+    );
+    expect(screen.getByText("結果判定待ち")).toBeInTheDocument();
+    expect(screen.queryByText("結果判定済み")).not.toBeInTheDocument();
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 
@@ -153,7 +170,6 @@ describe("MarketHeader", () => {
         state: "closed",
         resolution: {
           ...makeMarket().resolution,
-          status: "resolved",
           finalOutcome: "Yes",
         },
       }),
@@ -170,7 +186,7 @@ describe("MarketHeader", () => {
       state: "closed",
       resolution: {
         ...makeMarket().resolution,
-        status: "resolved",
+        finalOutcome: "Yes",
         resolutionDate: null,
       },
     });

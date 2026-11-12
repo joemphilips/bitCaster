@@ -756,6 +756,10 @@ test('retained export sends its exact index and refuses changed helper authority
     assert.equal(sent.action, 'export-enum-authority')
     assert.equal(sent.reservedNonceIndex, 1024)
     assert.equal(mock.calls[0].args.length, 0)
+    await assert.rejects(adapter.exportEnumAuthority({ ...request, authorityVersion: 2 }), {
+      reason: 'malformed-response',
+      uncertain: false,
+    })
     const bad = fakeSpawn({
       stdout: successResponse({
         version: 1,

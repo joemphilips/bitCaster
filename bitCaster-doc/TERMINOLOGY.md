@@ -7,6 +7,8 @@ identifiers unchanged. Choose the term for the action being described.
 | --- | --- | --- |
 | Determine a market's result | resolution | 結果判定 |
 | Rules used to determine the result | resolution criteria | 結果判定基準 |
+| Market state after trading closes, before the verified result | Awaiting resolution | 結果判定待ち |
+| Market state after the verified result | Resolved | 結果判定済み |
 | Complete a trade's exchange of assets | settlement | 決済 |
 | Pay an amount | payment | 支払い |
 | Receive a payout | claim payout | 報酬受取 |

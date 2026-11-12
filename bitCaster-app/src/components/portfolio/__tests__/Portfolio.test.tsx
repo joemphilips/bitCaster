@@ -339,11 +339,11 @@ describe("PositionRow", () => {
     );
 
     expect(screen.getByRole("button", { name: "Cash out" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove losing position" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Remove losing token" })).toHaveAttribute(
       "title",
-      "Remove losing position",
+      "Remove losing token",
     );
-    expect(screen.getByRole("group", { name: "Remove losing position" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Remove losing token" })).toBeInTheDocument();
     for (const element of [...screen.getAllByRole("button"), ...screen.getAllByRole("group")]) {
       expect(element).not.toHaveAccessibleName(/Condition/);
     }
@@ -389,7 +389,7 @@ describe("PositionRow", () => {
       action: "Remove",
       kind: "discard",
       position: mockPositions[2],
-      buttonName: /remove losing position.*fed/i,
+      buttonName: /remove losing token.*fed/i,
     },
   ] as const;
 
@@ -825,7 +825,7 @@ describe("Portfolio", () => {
     it("shows Remove button on losing closed positions", async () => {
       const onDiscardLostPosition = vi.fn();
       renderPortfolio({ positionsTab: "closed", onDiscardLostPosition });
-      await userEvent.click(screen.getByLabelText(/remove losing position.*fed/i));
+      await userEvent.click(screen.getByLabelText(/remove losing token.*fed/i));
       expect(onDiscardLostPosition).toHaveBeenCalledWith("pos-006");
     });
 
@@ -870,20 +870,20 @@ describe("Portfolio", () => {
     it("shows Remove button on losing closed positions", () => {
       const onDiscardLostPosition = vi.fn();
       renderPortfolio({ positionsTab: "closed", onDiscardLostPosition });
-      expect(screen.getByLabelText(/remove losing position.*fed/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/remove losing token.*fed/i)).toBeInTheDocument();
     });
 
     // P22 F2 guard — Remove is NEVER offered on a winner (badge/action parity).
     it("does not show Remove button on winning closed positions", () => {
       const onDiscardLostPosition = vi.fn();
       renderPortfolio({ positionsTab: "closed", onDiscardLostPosition });
-      expect(screen.queryByLabelText(/remove losing position.*ethereum/i)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/remove losing token.*ethereum/i)).not.toBeInTheDocument();
     });
 
     it("calls onDiscardLostPosition on a lost position", async () => {
       const onDiscardLostPosition = vi.fn();
       renderPortfolio({ positionsTab: "closed", onDiscardLostPosition });
-      await userEvent.click(screen.getByLabelText(/remove losing position.*fed/i));
+      await userEvent.click(screen.getByLabelText(/remove losing token.*fed/i));
       expect(onDiscardLostPosition).toHaveBeenCalledWith("pos-006");
     });
   });

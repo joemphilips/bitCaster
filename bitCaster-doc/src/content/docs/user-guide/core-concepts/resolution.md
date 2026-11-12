@@ -60,7 +60,8 @@ Deadline closure alone does not identify winning tokens.
 
 A verified result can arrive after the deadline closes trading.
 It identifies the outcome without reopening trading or changing the first closure time.
-A closed market with no verified result remains unresolved.
+A closed market with no verified result remains unresolved. The app shows it
+as **Awaiting resolution**, not as **Resolved**.
 
 The oracle can publish its attestation through Nostr. A creator can also
 submit the signed attestation directly to the matching engine. Direct
@@ -119,8 +120,9 @@ After the choice is saved, an explanation failure does not block resolution deli
 Its verified text can appear on the closed market page. It is not a paid trade comment.
 
 A deadline-closed market with no verified result still permits the creator's
-resolution action. A closed trading status alone does not identify winning tokens
-or guarantee a payout. A later verified result does not reopen trading.
+resolution action. Its row shows **Awaiting resolution**. A closed trading status
+alone does not identify winning tokens or guarantee a payout. A later verified
+result does not reopen trading.
 
 ## Report a result as the native oracle
 
@@ -169,6 +171,15 @@ and publish it with the original authority and destinations.
 Review and confirm the action in the resolution dialog. Opening or cancelling
 the dialog does not publish an outcome. Automatic recovery does not publish it.
 The first saved outcome on this device cannot change.
+Use only one current oracle copy. Never sign a different outcome for the same
+announcement on another device or from an older backup. Two different outcome
+signatures using the same nonce can reveal the oracle private key. Manual signing
+from a restored record remains available, with a warning in the dialog.
+Before a first signature in the browser or an ordinary CLI close, the client reads
+that market's original engine again. An existing result, including the same outcome,
+or a failed read stops signing before a new choice is saved. This also applies to
+retrying an unsigned saved choice; an exact signed retry remains available.
+A missing public result cannot establish that no other copy has signed.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 
@@ -189,6 +200,9 @@ bitcaster-cli market close --condition-id <condition-id> --retry --republish --r
 ```
 
 `--relay-only` performs no engine request or engine availability check.
+For a first signature, you are responsible for confirming that no other copy has
+already used this announcement's nonce. This offline mode cannot consult the
+engine for that result and still refuses a conflicting outcome already saved locally.
 It applies only to `--outcome` or `--retry`.
 `--republish` requires `--retry`. It sends the exact saved attestation even
 if a relay previously acknowledged it. It does not change saved progress
@@ -250,14 +264,17 @@ status remains visible after a reload. Retrying recovers the unfinished part;
 it does not credit a completed payout again. A lost connection does not mean
 that the mint rejected the payment.
 
-To remove a losing position, select Remove and confirm. The wallet checks
+To remove a losing token, select Remove and confirm. The wallet checks
 that the tokens cannot receive a payout before it deletes them. If the result
 is uncertain, it keeps the tokens. If the mint returns a payout instead, the
 wallet keeps that payment and stops removal.
 
-Removal can take time when encrypted backup is enabled. The position stays
-visible while removal is pending. Keep your wallet data until it finishes.
-Removal does not erase copies that you exported or kept in another browser.
+Without encrypted backup, removal finishes in this browser. With encrypted
+backup, removal can take time. The token stays visible while removal is
+pending. Keep your wallet data until it finishes. Removal does not erase
+copies that you exported or kept in another browser. A seed restore in another
+browser can bring back a removed losing token. It has no value, and you can
+remove it again.
 
 If removal fails, keep the removal reference shown in the message. It identifies
 the failed step and the attempt. Include that reference when you report the

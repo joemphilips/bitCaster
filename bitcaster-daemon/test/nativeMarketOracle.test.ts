@@ -5,7 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { bootstrapFreshDaemonProfile, readProfileSecretAuthority } from '../src/profileBootstrap.ts'
+import { deriveNostrPublicKey } from '../src/profileSecretProtection.ts'
 import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
 import {
   prepareNativeMarketOracle,
@@ -24,7 +25,11 @@ import {
   type NativeOraclePublicationPorts,
 } from '../src/nativeOraclePublicationCoordinator.ts'
 import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
-import { BitcasterEngineClient } from '@bitcaster-market/client-sdk'
+import {
+  BitcasterEngineClient,
+  createOracleBackupEvent,
+  decryptOracleBackupEvent,
+} from '@bitcaster-market/client-sdk'
 
 const input: NativeMarketCreationInput = {
   registration: { requiredFeeMsat: 0 },
@@ -57,7 +62,7 @@ test('native creation stores exact artifacts before returning and retries withou
         request.reservedNonceIndex,
       )
       assert.equal(request.title, 'Title')
-      assert.equal(request.description, 'A description')
+      assert.equal(request.description, input.market.description)
       return original(request)
     }
     const first = await prepareNativeMarketOracle(deps, input)
@@ -117,6 +122,157 @@ test('missing native helper refuses a new creation before nonce allocation', asy
     assert.equal(await deps.store.readCreation(input.creationId), null)
     deps.helper.assertAvailable = () => {}
     assert.equal((await prepareNativeMarketOracle(deps, input)).record.nonceIndex, 0)
+  })
+})
+
+test('new native market text overflow refuses before helper or nonce allocation', async () => {
+  await withFixture(async (deps) => {
+    let helperCalls = 0
+    deps.helper.assertAvailable = () => {
+      helperCalls++
+    }
+    for (const market of [
+      { ...input.market, title: '題'.repeat(101) },
+      { ...input.market, description: '説'.repeat(342) },
+      { ...input.market, categoryTags: ['x'.repeat(4_096)] },
+    ]) {
+      await assert.rejects(
+        prepareNativeMarketOracle(deps, { ...input, market }),
+        /must fit within|limit|maximum|exceed|at most/i,
+      )
+      assert.equal(await deps.store.readCreation(input.creationId), null)
+    }
+    assert.equal(helperCalls, 0)
+  })
+})
+
+test('new native creation reserves later backup capacity before helper or nonce allocation', async () => {
+  await withFixture(async (deps) => {
+    let helperCalls = 0
+    deps.helper.assertAvailable = () => {
+      helperCalls++
+    }
+    await assert.rejects(
+      prepareNativeMarketOracle(deps, {
+        ...input,
+        destination: {
+          ...input.destination,
+          relayUrls: Array.from(
+            { length: 24 },
+            (_, index) => `wss://relay-${index}.example/${'x'.repeat(1800)}`,
+          ),
+        },
+      }),
+      /insufficient room for a recoverable oracle resolution/,
+    )
+    assert.equal(helperCalls, 0)
+    assert.equal(await deps.store.readCreation(input.creationId), null)
+  })
+})
+
+test('retained oversized native creations resume and resolve without new writer restrictions', async () => {
+  await withFixture(async (deps) => {
+    const legacy = {
+      ...input,
+      market: { ...input.market, title: '題'.repeat(201), description: '説'.repeat(2001) },
+    }
+    const reserved = await deps.store.reserveCreation(
+      {
+        creationId: legacy.creationId,
+        eventId: legacy.eventId,
+        canonicalInput: JSON.stringify({
+          market: legacy.market,
+          registration: legacy.registration,
+          destination: legacy.destination,
+        }),
+      },
+      deriveNostrPublicKey(deps.oracleSecretKeyHex),
+    )
+    const exactAnnouncement = '{"kind":88,"content":"retained original artifact"}'
+    await deps.store.persistAnnouncement(reserved.creationId, {
+      conditionId: 'aa'.repeat(32),
+      announcementTlvHex: 'aabb',
+      announcementNostrEventJson: exactAnnouncement,
+    })
+    deps.helper.createEnum = async () => {
+      throw new Error('retained announcement must never be recreated')
+    }
+    const resumed = await prepareNativeMarketOracle(deps, legacy)
+    assert.equal(resumed.record.announcement?.announcementNostrEventJson, exactAnnouncement)
+    assert.equal(resumed.market.metadata.title, legacy.market.title)
+    assert.equal(resumed.market.metadata.description, legacy.market.description)
+    const resolved = await signNativeMarketOutcome(deps, 'aa'.repeat(32), 'Yes')
+    assert.equal(resolved.announcement?.announcementNostrEventJson, exactAnnouncement)
+    assert.equal(resolved.chosenOutcome, 'Yes')
+  })
+})
+
+test('new interrupted native reservations retain exact description formatting on cold retry', async () => {
+  await withFixture(async (deps, directory) => {
+    const description = '  ## Rules\r\n\n- First  condition\n\t- Exception\n'
+    const raw = { ...input, market: { ...input.market, description } }
+    const create = deps.helper.createEnum
+    let attempts = 0
+    deps.helper.createEnum = async (request) => {
+      attempts++
+      assert.equal(request.description, description)
+      if (attempts === 1) throw new Error('interrupted before announcement persisted')
+      return create(request)
+    }
+    await assert.rejects(prepareNativeMarketOracle(deps, raw), /interrupted/)
+    const reserved = (await deps.store.readCreation(raw.creationId))!
+    assert.equal(JSON.parse(reserved.canonicalInput).oracleAnnouncementTagsVersion, 2)
+    const resumed = await prepareNativeMarketOracle(
+      { ...deps, store: createNativeOracleCreationStore(directory) },
+      raw,
+    )
+    assert.equal(resumed.record.nonceIndex, reserved.nonceIndex)
+    assert.equal(resumed.market.metadata.description, description)
+    assert.equal(attempts, 2)
+  })
+})
+
+test('saved unsigned reservations keep legacy code-point title formatting while fresh input refuses it', async () => {
+  await withFixture(async (deps) => {
+    const legacy = {
+      ...input,
+      market: { ...input.market, title: ` \n${'😀'.repeat(99)}界Z\t ` },
+    }
+    const expectedTitle = '😀'.repeat(99) + '界'
+    let helperCalls = 0
+    const create = deps.helper.createEnum
+    deps.helper.createEnum = async (request) => {
+      helperCalls++
+      assert.equal(request.title, expectedTitle)
+      assert.equal(Array.from(request.title).length, 100)
+      assert.equal(request.description, 'A description')
+      assert.equal(request.reservedNonceIndex, 0)
+      assert.equal(request.eventId, legacy.eventId)
+      return create(request)
+    }
+    await assert.rejects(prepareNativeMarketOracle(deps, legacy), /must fit within/)
+    assert.equal(helperCalls, 0)
+    assert.equal(await deps.store.readCreation(legacy.creationId), null)
+
+    // Reproduce a pre-upgrade reservation whose helper response was never retained.
+    const canonicalInput = JSON.stringify({
+      market: legacy.market,
+      registration: legacy.registration,
+      destination: legacy.destination,
+    })
+    const reserved = await deps.store.reserveCreation(
+      { creationId: legacy.creationId, eventId: legacy.eventId, canonicalInput },
+      deriveNostrPublicKey(deps.oracleSecretKeyHex),
+    )
+    assert.equal(reserved.announcement, null)
+    const resumed = await prepareNativeMarketOracle(deps, legacy)
+    assert.equal(resumed.record.nonceIndex, reserved.nonceIndex)
+    assert.equal(resumed.record.canonicalInput, canonicalInput)
+    assert.equal(resumed.market.metadata.title, legacy.market.title)
+    assert.ok(resumed.record.announcement)
+    const retry = await prepareNativeMarketOracle(deps, legacy)
+    assert.deepEqual(retry.record.announcement, resumed.record.announcement)
+    assert.equal(helperCalls, 1)
   })
 })
 
@@ -222,6 +378,100 @@ const realHelperPath =
   (process.platform === 'win32' ? '' : resolveNativeOracleHelperPath())
 const realCrypto = { skip: !existsSync(realHelperPath) }
 
+test(
+  'real native signed description and encrypted backup preserve raw multiline metadata and exact retry',
+  realCrypto,
+  async () => {
+    await withFixture(async (deps, directory) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      deps.nonceSeedHex = secrets.nativeOracleNonceSeedHex
+
+      const description =
+        '  ## 判定条件\r\n\r\n- First  condition  \n\t- Exception\n\n```text\n  keep  spaces\n```\n'
+      const market = { ...input, market: { ...input.market, description } }
+      const helper = createNativeOracleHelperAdapter({ resolveExecutable: () => realHelperPath })
+      const prepared = await prepareNativeMarketOracle({ ...deps, helper }, market)
+      const exact = prepared.record.announcement!.announcementNostrEventJson
+      assert.equal(
+        JSON.parse(exact).tags.find((tag: string[]) => tag[0] === 'description')?.[1],
+        description,
+      )
+      assert.equal(prepared.market.metadata.description, description)
+      const backup = await deps.store.exportBackup(
+        prepared.record.announcement!.conditionId,
+        helper,
+      )
+      assert.equal(backup.authority.announcementEventJson, exact)
+      const envelope = await createOracleBackupEvent({
+        record: backup,
+        privateKey: Buffer.from(deps.oracleSecretKeyHex, 'hex'),
+        validator: helper,
+        createdAt: 1_800_000_000,
+      })
+      const restored = await decryptOracleBackupEvent({
+        event: envelope,
+        privateKey: Buffer.from(deps.oracleSecretKeyHex, 'hex'),
+        validator: helper,
+      })
+      assert.equal(restored.authority.announcementEventJson, exact)
+      const retry = await prepareNativeMarketOracle(
+        { ...deps, helper, store: createNativeOracleCreationStore(directory) },
+        market,
+      )
+      assert.equal(retry.record.announcement!.announcementNostrEventJson, exact)
+    })
+  },
+)
+
+test(
+  'real legacy unsigned reservation keeps its original collapsed description and exact signed retry',
+  realCrypto,
+  async () => {
+    await withFixture(async (deps, directory) => {
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database),
+      )
+      deps.nonceSeedHex = secrets.nativeOracleNonceSeedHex
+
+      const description = '  ## Legacy\r\n\n- First  condition\n\t- Exception\n'
+      const legacy = { ...input, market: { ...input.market, description } }
+      await deps.store.reserveCreation(
+        {
+          creationId: legacy.creationId,
+          eventId: legacy.eventId,
+          canonicalInput: JSON.stringify({
+            market: legacy.market,
+            registration: legacy.registration,
+            destination: legacy.destination,
+          }),
+        },
+        deriveNostrPublicKey(deps.oracleSecretKeyHex),
+      )
+      const helper = createNativeOracleHelperAdapter({ resolveExecutable: () => realHelperPath })
+      const prepared = await prepareNativeMarketOracle({ ...deps, helper }, legacy)
+      const exact = prepared.record.announcement!.announcementNostrEventJson
+      assert.equal(
+        JSON.parse(exact).tags.find((tag: string[]) => tag[0] === 'description')?.[1],
+        '## Legacy - First condition - Exception',
+      )
+      assert.equal(prepared.market.metadata.description, description)
+      const backup = await deps.store.exportBackup(
+        prepared.record.announcement!.conditionId,
+        helper,
+      )
+      assert.equal(backup.authority.announcementEventJson, exact)
+      const retry = await prepareNativeMarketOracle(
+        { ...deps, helper, store: createNativeOracleCreationStore(directory) },
+        legacy,
+      )
+      assert.equal(retry.record.announcement!.announcementNostrEventJson, exact)
+      assert.equal(JSON.parse(retry.record.canonicalInput).oracleAnnouncementTagsVersion, undefined)
+    })
+  },
+)
+
 interface ResolutionFixture {
   attestedOutcome: string
   attestationEvent: { createdAt: number; tags: string[][]; pubkey: string }
@@ -282,8 +532,9 @@ async function withPublication(
       },
       async readResolution(id) {
         const saved = (await createNativeOracleCreationStore(directory).readByConditionId(id))!
+        if (saved.attestation === null) return null
         const announcement = saved.announcement!
-        const attestation = saved.attestation!
+        const attestation = saved.attestation
         const verified = await helper.verifyEnum({
           eventId: saved.eventId,
           oraclePublicKeyHex: saved.creatorPublicKeyHex,
@@ -396,6 +647,113 @@ test(
 )
 
 test(
+  'native first signing and unsigned retry refuse observed results or read failure before effects',
+  realCrypto,
+  async () => {
+    await withPublication(async (ports, conditionId, _directory, calls) => {
+      const observations = [
+        async () => ({ conditionId, attestedOutcome: 'Yes' }),
+        async () => ({ conditionId, attestedOutcome: 'No' }),
+        async () => {
+          throw new Error('engine unavailable')
+        },
+      ]
+      let choices = 0
+      let signerReads = 0
+      const guarded = {
+        ...ports,
+        store: {
+          ...ports.store,
+          chooseAuthorityOutcome: async (
+            ...args: Parameters<typeof ports.store.chooseAuthorityOutcome>
+          ) => {
+            choices++
+            return ports.store.chooseAuthorityOutcome(...args)
+          },
+        },
+        readSigner: async () => {
+          signerReads++
+          return ports.readSigner()
+        },
+      }
+      for (const readResolution of observations) {
+        await assert.rejects(
+          publishNativeMarketOutcome(
+            { ...guarded, readResolution },
+            conditionId,
+            'Yes',
+            'New draft',
+          ),
+          /No new outcome was signed/,
+        )
+        const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
+        assert.equal(saved.chosenOutcome, null)
+        assert.equal(saved.explanationDraft, null)
+      }
+      await ports.store.chooseAuthorityOutcome(conditionId, 'Yes', 'Original draft')
+      for (const readResolution of observations) {
+        await assert.rejects(
+          retryNativeMarketPublication({ ...guarded, readResolution }, conditionId),
+          /No new outcome was signed/,
+        )
+        const saved = (await ports.store.readAuthorityByConditionId(conditionId))!
+        assert.equal(saved.chosenOutcome, 'Yes')
+        assert.equal(saved.explanationDraft, 'Original draft')
+        assert.equal(saved.attestation, null)
+      }
+      assert.equal(choices, 0)
+      assert.equal(signerReads, 0)
+      assert.equal(calls.signed, 0)
+      assert.equal(calls.submitted, 0)
+      assert.deepEqual(calls.relayed, [])
+    })
+  },
+)
+
+test(
+  'native explicit relay-only first signing stays offline and exact retries never sign again',
+  realCrypto,
+  async () => {
+    await withPublication(async (ports, conditionId, _directory, calls) => {
+      let reads = 0
+      const offline = {
+        ...ports,
+        readResolution: async () => {
+          reads++
+          throw new Error('engine unavailable')
+        },
+      }
+      const signed = await publishNativeMarketOutcome(offline, conditionId, 'Yes', undefined, {
+        engineDelivery: 'relay-only',
+      })
+      assert.equal(reads, 0)
+      assert.equal(calls.signed, 1)
+      assert.equal(calls.submitted, 0)
+      assert.equal(signed.record.relayPublished, true)
+      await assert.rejects(
+        publishNativeMarketOutcome(offline, conditionId, 'No', undefined, {
+          engineDelivery: 'relay-only',
+        }),
+        /conflicts/,
+      )
+      const retried = await retryNativeMarketPublication(
+        {
+          ...offline,
+          readSigner: async () => {
+            throw new Error('Exact retry must not read the signer')
+          },
+        },
+        conditionId,
+      )
+      assert.deepEqual(retried.record.attestation, signed.record.attestation)
+      assert.deepEqual(retried.failures, ['engine'])
+      assert.equal(calls.signed, 1)
+      assert.equal(reads, 1)
+    })
+  },
+)
+
+test(
   'native engine evidence reuses verification without another helper process',
   realCrypto,
   async () => {
@@ -422,7 +780,10 @@ test(
     await withPublication(async (ports, conditionId) => {
       const client = new BitcasterEngineClient({
         baseUrl: 'https://engine.example',
-        fetchImpl: async () => Response.json(await ports.readResolution(conditionId)),
+        fetchImpl: async () => {
+          const result = await ports.readResolution(conditionId)
+          return result === null ? new Response(null, { status: 404 }) : Response.json(result)
+        },
       })
       const result = await publishNativeMarketOutcome(
         { ...ports, readResolution: (id) => client.getConditionAttestation(id) },
@@ -442,7 +803,13 @@ test(
   async () => {
     await withPublication(async (ports, conditionId, directory, calls) => {
       const failed = await publishNativeMarketOutcome(
-        { ...ports, readResolution: async () => ({ result: 'Closed' }) },
+        {
+          ...ports,
+          readResolution: async () =>
+            (await ports.store.readAuthorityByConditionId(conditionId))?.attestation === null
+              ? null
+              : { result: 'Closed' },
+        },
         conditionId,
         'Yes',
       )
@@ -713,7 +1080,7 @@ test(
             ...ports,
             readResolution: async (id) => {
               const value = await ports.readResolution(id)
-              mutate(value as ResolutionFixture)
+              if (value !== null) mutate(value as ResolutionFixture)
               return value
             },
           },

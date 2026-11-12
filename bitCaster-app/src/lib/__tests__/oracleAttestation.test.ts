@@ -8,6 +8,7 @@ import { hexToBytes } from "nostr-tools/utils";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveDlcConditionId } from "@bitcaster/client-sdk";
 import {
+  OracleFirstSigningRefusedError,
   publishOracleOutcome,
   retryOraclePublication,
 } from "@bitcaster/client-sdk/oraclePublication";
@@ -31,6 +32,7 @@ import {
 import { __setKormirModuleForTest } from "../kormir";
 import * as wasm from "../kormir-wasm-pkg/kormir_wasm";
 import {
+  type OracleAttestationReadPort,
   oracleEventToWire,
   oracleWireEventJson,
   retainedOracleAuthority as readRetainedOracleAuthority,
@@ -453,7 +455,7 @@ describe("production creator row and shared coordinator", () => {
             read,
             { engineDelivery: "synchronize", automatic: true },
           ),
-        ).rejects.toThrow(/not signed/);
+        ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
         expect(restore).not.toHaveBeenCalled();
         expect(publish).not.toHaveBeenCalled();
         expect(network).not.toHaveBeenCalled();
@@ -489,6 +491,142 @@ describe("production creator row and shared coordinator", () => {
         expect(read.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]!);
       } finally {
         restore.mockRestore();
+      }
+    });
+  });
+  describe("manual first-signing admission", () => {
+    const result = (outcome: string) => ({
+      conditionId,
+      attestedOutcome: outcome,
+      oracleWitness: {},
+      registeredAuthority,
+      attestationEvent: oracleEventToWire(artifact.eventJson),
+    });
+    it.each(["YES", "NO", "unavailable"] as const)(
+      "refuses %s before saving a choice or draft, opening a signer, or publishing",
+      async (observed) => {
+        const retainedNsec = nip19.nsecEncode(fixtureOraclePrivateKey);
+        useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: retainedNsec });
+        const writer = createCreatorMarketsStore(() => localStorage);
+        await writer.getState().addCreatedMarket(market());
+        const draft = vi.spyOn(writer.getState(), "saveOracleExplanationDraft");
+        const save = vi.spyOn(writer.getState(), "saveOraclePublication");
+        const restore = vi.spyOn(wasm.Kormir, "restore");
+        const publish = vi.spyOn(NDKEvent.prototype, "publish");
+        const read = vi.fn(async () => {
+          if (observed === "unavailable") throw new Error("engine unavailable");
+          return result(observed);
+        });
+        try {
+          await expect(
+            publishBrowserOracleOutcome(
+              conditionId,
+              "YES",
+              "New draft",
+              ["wss://relay.example"],
+              writer,
+              read,
+            ),
+          ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
+          expect(read).toHaveBeenCalledWith(conditionId);
+          // Compare as a boolean so a failure cannot print the retained private key.
+          expect(useSettingsStore.getState().nsecSecret === retainedNsec).toBe(true);
+          expect(useSettingsStore.getState().nostrSignerMode).toBe("nsec");
+          expect(draft).not.toHaveBeenCalled();
+          expect(save).not.toHaveBeenCalled();
+          expect(restore).not.toHaveBeenCalled();
+          expect(publish).not.toHaveBeenCalled();
+          expect(await writer.getState().readOraclePublication(conditionId)).toBeNull();
+        } finally {
+          draft.mockRestore();
+          save.mockRestore();
+          restore.mockRestore();
+          publish.mockRestore();
+        }
+      },
+    );
+    it("rechecks a result that arrived after the resolution dialog opened", async () => {
+      const writer = createCreatorMarketsStore(() => localStorage);
+      await writer.getState().addCreatedMarket(market());
+      const read = vi
+        .fn<OracleAttestationReadPort>()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(result("NO"));
+      expect(await read(conditionId)).toBeNull(); // The dialog's earlier public observation.
+      const restore = vi.spyOn(wasm.Kormir, "restore");
+      try {
+        await expect(
+          publishBrowserOracleOutcome(conditionId, "YES", undefined, [], writer, read),
+        ).rejects.toBeInstanceOf(OracleFirstSigningRefusedError);
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(restore).not.toHaveBeenCalled();
+        expect(await writer.getState().readOraclePublication(conditionId)).toBeNull();
+      } finally {
+        restore.mockRestore();
+      }
+    });
+    it("permits manual signing only after a fresh empty result", async () => {
+      const writer = createCreatorMarketsStore(() => localStorage);
+      await writer.getState().addCreatedMarket(market());
+      useSettingsStore.setState({
+        nostrSignerMode: "nsec",
+        nsecSecret: nip19.nsecEncode(fixtureOraclePrivateKey),
+      });
+      const read = vi.fn(async (_id: string) => null);
+      const restore = vi
+        .spyOn(wasm.Kormir, "restore")
+        .mockRejectedValue(new Error("signing reached"));
+      try {
+        await expect(
+          publishBrowserOracleOutcome(conditionId, "YES", undefined, [], writer, read),
+        ).rejects.toThrow();
+        expect(read).toHaveBeenCalledWith(conditionId);
+        expect(restore).toHaveBeenCalledTimes(1);
+        expect(read.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]!);
+      } finally {
+        restore.mockRestore();
+      }
+    });
+    it("retries an exact signed artifact even when the engine cannot be read", async () => {
+      const writer = createCreatorMarketsStore(() => localStorage);
+      await writer.getState().addCreatedMarket(market());
+      await writer.getState().saveOraclePublication(conditionId, {
+        binding,
+        chosenOutcome: "YES",
+        attestation: artifact,
+        relayPublished: false,
+        engineEvidence: null,
+        explanationEventJson: null,
+        explanationRelayPublished: false,
+      });
+      const read = vi.fn(async () => {
+        throw new Error("engine unavailable");
+      });
+      const restore = vi.spyOn(wasm.Kormir, "restore");
+      const publish = vi
+        .spyOn(NDKEvent.prototype, "publish")
+        .mockResolvedValue(new Set([{}]) as unknown as Awaited<ReturnType<NDKEvent["publish"]>>);
+      const network = vi.fn(async () => {
+        throw new Error("engine unavailable");
+      });
+      vi.stubGlobal("fetch", network);
+      try {
+        const retried = await publishBrowserOracleOutcome(
+          conditionId,
+          "YES",
+          undefined,
+          ["wss://relay.example"],
+          writer,
+          read,
+        );
+        expect(retried.record.attestation).toEqual(artifact);
+        expect(retried.failures).toEqual(["engine"]);
+        expect(restore).not.toHaveBeenCalled();
+        expect(publish).toHaveBeenCalledTimes(1);
+      } finally {
+        restore.mockRestore();
+        publish.mockRestore();
+        vi.unstubAllGlobals();
       }
     });
   });

@@ -1,9 +1,11 @@
-import { Info, AlertTriangle } from "lucide-react";
+import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ResolutionDetails } from "@/types/market-detail";
 import type { Outcome } from "@/types/market";
+import { MarketMarkdown } from "@/components/shared/MarketMarkdown";
 import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
+import { isMarketOutcomeKnown } from "@/lib/marketResolution";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -20,9 +22,10 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
     unavailable: boolean;
   } | null>(null);
   const relayKey = useSettingsStore((state) => JSON.stringify(effectiveRelayUrls(state.relays)));
+  const resolved = isMarketOutcomeKnown(resolution.finalOutcome);
   useEffect(() => {
     const conditionId = resolution.conditionId;
-    if (!conditionId || resolution.status !== "resolved") return;
+    if (!conditionId || !resolved) return;
     let cancelled = false;
     const read = async () => {
       const { readBrowserResolutionExplanation } = await import("@/lib/oracleAttestation");
@@ -45,7 +48,7 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
     return () => {
       cancelled = true;
     };
-  }, [resolution.conditionId, resolution.status, relayKey]);
+  }, [resolution.conditionId, resolved, relayKey]);
   const currentExplanation =
     explanation?.conditionId === resolution.conditionId ? explanation : null;
 
@@ -67,7 +70,7 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
         </h3>
       </div>
 
-      {resolution.status === "resolved" && currentExplanation?.text && (
+      {resolved && currentExplanation?.text && (
         <section
           aria-label={t("creator.verifiedExplanation")}
           className="mb-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700"
@@ -78,12 +81,12 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
           </p>
         </section>
       )}
-      {resolution.status === "resolved" && currentExplanation?.unavailable && (
+      {resolved && currentExplanation?.unavailable && (
         <p className="mb-4 text-sm text-slate-500">{t("creator.explanationUnavailable")}</p>
       )}
 
       {/* Final Outcome (if resolved) */}
-      {resolution.status === "resolved" && resolution.finalOutcome && (
+      {resolved && resolution.finalOutcome && (
         <div className="mb-4 p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl border border-emerald-200 dark:border-emerald-500/30">
           <p className="text-xs text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
             {t("market.finalOutcome")}
@@ -114,12 +117,9 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
             {t("market.resolutionCriteria")}
           </span>
         </div>
-        <p
-          data-user-content
-          className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed pl-6"
-        >
-          {resolution.criteria}
-        </p>
+        <div className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed pl-6">
+          <MarketMarkdown source={resolution.criteria} />
+        </div>
       </div>
 
       {resolution.resolutionDate !== null && (
@@ -131,20 +131,6 @@ export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
             <p className="text-sm font-medium text-slate-900 dark:text-white">
               {formatDate(resolution.resolutionDate)}
             </p>
-          </div>
-        </div>
-      )}
-
-      {/* Dispute Deadline (if disputed) */}
-      {resolution.status === "disputed" && resolution.disputeDeadline && (
-        <div className="mt-4 p-3 bg-red-50 dark:bg-red-500/10 rounded-xl border border-red-200 dark:border-red-500/30">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-500" />
-            <span className="text-sm text-red-700 dark:text-red-400">
-              {t("market.disputeDeadline", {
-                date: formatDate(resolution.disputeDeadline),
-              })}
-            </span>
           </div>
         </div>
       )}

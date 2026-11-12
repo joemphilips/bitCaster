@@ -17,6 +17,7 @@ import { oraclePublicationState } from "@bitcaster/client-sdk/oraclePublication"
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
   active: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
+  awaitingResolution: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
   resolved: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400",
   refunded: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
   unknown: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300",
@@ -24,8 +25,19 @@ const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
 
 const CLOSED_THUMBNAIL: Record<CreatedMarketStatus, boolean> = {
   active: false,
+  awaitingResolution: true,
   resolved: true,
   refunded: true,
+  unknown: false,
+};
+// Known engine data that permits the creator's first oracle answer. A saved answer hides the action.
+// A verified outcome closes the first answer. Another signature with the same
+// nonce and a different outcome would disclose the oracle key.
+const ORACLE_ANSWER_OPEN: Record<CreatedMarketStatus, boolean> = {
+  active: true,
+  awaitingResolution: true,
+  resolved: false,
+  refunded: false,
   unknown: false,
 };
 // A refresh of known data has one list-level indicator, so a stale row has no own label.
@@ -70,7 +82,7 @@ export function CreatedMarketRow({
   // A saved outcome is delivered automatically. Only a first choice needs an action.
   const canPublishOracleAttestation =
     !hasOwnerActions &&
-    (market.status === "active" || market.status === "resolved") &&
+    ORACLE_ANSWER_OPEN[market.status] &&
     market.oracle?.type === "self" &&
     !immutableOutcome &&
     market.oracle.outcomes.length > 0 &&
@@ -166,10 +178,11 @@ export function CreatedMarketRow({
                 {t(engineDataLabel)}
               </span>
             )}
-            {/* Owner actions show the saved outcome and its state on their own line. */}
+            {/* Owner actions show the saved outcome and its state on their own line. A signed
+                local answer is not a verified resolution, so this line does not say Resolved. */}
             {market.oracle?.attestedOutcome && !hasOwnerActions && (
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                {t("creator.attestedOutcome", {
+                {t("oracleBackup.savedOutcome", {
                   outcome: market.oracle.attestedOutcome,
                 })}
               </span>
