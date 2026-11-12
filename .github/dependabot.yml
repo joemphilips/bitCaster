@@ -1,9 +1,14 @@
+# Every ecosystem waits 7 days before a version update. A compromised
+# release then has time to be found. Security updates are not delayed by
+# the cooldown.
 version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -13,6 +18,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -22,6 +29,8 @@ updates:
     directory: "/bitCaster-doc"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -33,6 +42,8 @@ updates:
     directory: "/bitCaster-app/server-runtime"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -42,6 +53,8 @@ updates:
     directory: "/bitcaster-daemon/native-oracle-helper"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -51,6 +64,8 @@ updates:
     directory: "/tools/seed-conditions"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
@@ -63,6 +78,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-patch:
