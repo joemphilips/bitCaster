@@ -123,19 +123,27 @@ current wallet, also when that browser created the wallet.
 
 ### Check for use in another browser
 
-The app does not check the mint on a schedule. It checks for use in another
-browser only after evidence of that use: the mint refuses an order because
-another browser used the same outputs or funds, or a buy finds outputs that
-another browser signed. Then the browser checks each keyset (the mint keys of
-one asset) that it uses for outputs that another browser signed after its own
-last output. When the app finds such outputs, it adds the funds and positions
-to this browser.
+Before each buy or sell, the app asks the mint whether another browser already
+signed an output that the order plans to use. If it did, the app skips past
+those outputs, plans the order again, and checks it again. Only then does it
+submit the order. If the mint does not answer the check, the app submits no
+order and asks you to try again. The check sends the outputs of the order to
+the mint. It also sends the outputs at the positions that the locked order
+funds use. These outputs are not signed yet.
 
-Each check sends to the mint the next 100 outputs of each keyset that this
-browser uses. These outputs are not signed yet. The mint can link them to this
-recovery phrase when another browser uses them later. A future version
-replaces this check with the encrypted backup, which stores the highest used
-output of each keyset.
+The app does not check the mint on a schedule. It checks all the keysets that
+it uses only after evidence of use in another browser: the mint refuses an
+order because another browser used the same outputs or funds, or the check
+before an order finds outputs that another browser signed. Then the browser
+checks each keyset (the mint keys of one asset) that it uses for outputs that
+another browser signed after its own last output. When the app finds such
+outputs, it adds the funds and positions to this browser.
+
+When the browser checks the keysets that it uses, it sends to the mint the next
+100 outputs of each keyset. These outputs are not signed yet. The mint can link
+them to this recovery phrase when another browser uses them later. A future
+version replaces this keyset check with the encrypted backup, which stores the
+highest used output of each keyset.
 
 If the app cannot add the outputs that it found, it shows
 **Positions could not be restored from the mint.** with **Retry**. The funds

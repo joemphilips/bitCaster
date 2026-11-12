@@ -358,7 +358,7 @@ export interface BrowserKeysetResyncResult {
  * 2026-11-04). Another client with the same seed can sign outputs above a
  * local cursor, and a later local output at those counters then fails with
  * 11008. Only evidence that another client used the seed (a mint refusal or
- * a buy probe hit) asks for a probe of every keyset in use; no probe runs on
+ * a hit of the order output check) asks for a probe of every keyset in use; no probe runs on
  * a timer. On a hit, it records a local diagnostic and a deferral marker,
  * then admits the verified UNSPENT proofs. Each deferral has its own backoff.
  * A deferral that cannot be admitted gets a counter-only advance, so a later

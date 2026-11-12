@@ -3,12 +3,14 @@ import {
   type AllKeysetSeedRecoveryTransport,
 } from '../src/emergencySeedRecovery.ts'
 import { loadCtfRangeMintMetadata } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
+import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   buildPersistedCtfRangeOrderPreparation,
   deriveCounterCtfRangeIdentity,
   createCtfRangePreparationIntent,
   decodeCtfRangeOrderPreparationFromRecord,
   encodePersistedCtfRangeOrderPreparation,
+  planCounterCtfRangePreparation,
   selectCtfRangePreparationForIntent,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import {
@@ -4148,6 +4150,11 @@ const OUTPUT_REUSE_REFUSALS = [
 
 /** Another client with this seed signed the outputs of counters [0, 128). */
 const OTHER_CLIENT_SIGNED_COUNTERS = 128
+/**
+ * The counter after those outputs: the last signed counter 127, then the 150
+ * counters that the ADR-051 cursor rule leaves unused.
+ */
+const PAST_OTHER_CLIENT_COUNTER = 278
 
 for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
   test(`daemon releases a partial sell refused with ${code} at submit and advances its output counters`, async () => {
@@ -4160,11 +4167,14 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
         cashProofs: [cashProof(64)],
       },
       async ({ directory, fence }) => {
+        const signedOutputs = new Set<string>()
         const mint = mixedSourceMint({
           convert: async () => {
+            // Another client of the seed signs these outputs after the output check.
+            signAsOtherClient(signedOutputs, [RECEIVE_KEYSET_ID, OFFER_KEYSET_ID])
             throw new MintOperationError(code, detail)
           },
-          signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+          signedOutputs,
         })
         let capabilityCalls = 0
         const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -4201,8 +4211,8 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
         // The scan admits no proof. It only moves each output cursor past the
         // outputs that the other client signed.
         const counters = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
-        assert.equal(counters[RECEIVE_KEYSET_ID], OTHER_CLIENT_SIGNED_COUNTERS)
-        assert.equal(counters[OFFER_KEYSET_ID], OTHER_CLIENT_SIGNED_COUNTERS)
+        assert.equal(counters[RECEIVE_KEYSET_ID], PAST_OTHER_CLIENT_COUNTER)
+        assert.equal(counters[OFFER_KEYSET_ID], PAST_OTHER_CLIENT_COUNTER)
       },
     )
   })
@@ -4219,15 +4229,18 @@ test('daemon releases a refused buy source with 11008 at submit', async () => {
     },
     async ({ directory, fence }) => {
       const wallet = new FakeWallet([sourceProof])
+      const signedOutputs = new Set<string>()
       let swaps = 0
       wallet.completeSwap = async () => {
         swaps += 1
+        // Another client of the seed signs these outputs after the output check.
+        signAsOtherClient(signedOutputs, [OFFER_KEYSET_ID])
         throw new MintOperationError(11008, 'Duplicate outputs')
       }
       wallet.checkProofsStates = async (proofs) =>
         proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => fakeMint(64, 1_000, () => otherClientOutputs([OFFER_KEYSET_ID])),
+        createMint: () => fakeMint(64, 1_000, () => signedOutputs),
         createWallet: () => wallet,
         now: () => 10_000,
         randomId: randomIds('range-refused-buy'),
@@ -4294,7 +4307,7 @@ test('daemon releases a refused buy source with 11008 at submit', async () => {
         database.close()
       }
       const counters = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
-      assert.equal(counters[OFFER_KEYSET_ID], OTHER_CLIENT_SIGNED_COUNTERS)
+      assert.equal(counters[OFFER_KEYSET_ID], PAST_OTHER_CLIENT_COUNTER)
     },
   )
 })
@@ -4399,9 +4412,11 @@ test('daemon releases a partial sell after 11001 with a spent fee input and reti
     },
     async ({ directory, fence }) => {
       // Another client spent the fee input, so the mint answers 11001.
+      let restoresAtSource = -1
       const mint = mixedSourceMint({
         inputStates: new Map([[proofY(cash), 'SPENT' as const]]),
         convert: async () => {
+          restoresAtSource = mint.calls.restore
           throw new MintOperationError(11001, 'Token already spent')
         },
       })
@@ -4425,8 +4440,11 @@ test('daemon releases a partial sell after 11001 with a spent fee input and reti
 
       assert.ok(error instanceof CtfRangeOrderReleasedError)
       assert.deepEqual(error.mintError, { code: 11001, detail: 'Token already spent' })
-      // A mixed reading is not an output reuse, so no counter scan runs.
-      assert.equal(mint.calls.restore, 0)
+      // The clean order check and the clean source check ran before the source
+      // request. A mixed reading is not an output reuse, so no counter scan
+      // runs after it.
+      assert.equal(restoresAtSource, 2)
+      assert.equal(mint.calls.restore, restoresAtSource)
       await assertReleasedPartialSell(directory, { cashSpent: true, mintCode: 11001 })
     },
   )
@@ -4459,10 +4477,15 @@ for (const scenario of WAITING_REFUSAL_CASES) {
       },
       async ({ directory, fence }) => {
         const inputStates = new Map<string, SourceInputState>()
+        const signedOutputs = new Set<string>()
+        let restoresAtSource = -1
         const mint = mixedSourceMint({
           inputStates,
-          signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+          signedOutputs,
           convert: async (request) => {
+            restoresAtSource = mint.calls.restore
+            // Another client of the seed signs these outputs after the output check.
+            signAsOtherClient(signedOutputs, [RECEIVE_KEYSET_ID, OFFER_KEYSET_ID])
             convertInputs(request).forEach((proof, index) =>
               inputStates.set(proofY(proof), scenario.observe(index)),
             )
@@ -4486,7 +4509,10 @@ for (const scenario of WAITING_REFUSAL_CASES) {
             isRangeSourceRefusalPending(error, { code: scenario.code, detail: scenario.detail }),
         )
 
-        assert.equal(mint.calls.restore, 0)
+        // The clean order check and the clean source check ran before the
+        // source request. A waiting refusal runs no counter scan after it.
+        assert.equal(restoresAtSource, 2)
+        assert.equal(mint.calls.restore, restoresAtSource)
         assert.deepEqual(await walletSummary(), {
           availableShares: 0,
           availableCash: 0,
@@ -4606,12 +4632,15 @@ for (const scenario of STUCK_PRODUCTION_CASES) {
       },
       async ({ directory, fence }) => {
         const inputStates = new Map<string, SourceInputState>()
+        const signedOutputs = new Set<string>()
         const conversions: string[] = []
         const mint = mixedSourceMint({
           inputStates,
-          signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+          signedOutputs,
           convert: async (request) => {
             conversions.push(exactRequestJson(request))
+            // Another client of the seed signs these outputs after the output check.
+            signAsOtherClient(signedOutputs, [RECEIVE_KEYSET_ID, OFFER_KEYSET_ID])
             if (conversions.length === 1) throw new Error('mint convert response lost')
             throw new MintOperationError(scenario.code, scenario.detail)
           },
@@ -4636,6 +4665,7 @@ for (const scenario of STUCK_PRODUCTION_CASES) {
         if (scenario.spentFee) inputStates.set(proofY(cash), 'SPENT')
 
         const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, dependencies)
+        const restoresBeforeRecovery = mint.calls.restore
         const recovered = await restarted.recover(WALLET_SEED_HEX, client)
 
         const source = await rangeSourceOperation()
@@ -4650,7 +4680,7 @@ for (const scenario of STUCK_PRODUCTION_CASES) {
         ])
         assert.equal(conversions.length, 2)
         assert.equal(new Set(conversions).size, 1, 'a retry changed the exact conversion')
-        assert.equal(mint.calls.restore > 0, scenario.counterScan)
+        assert.equal(mint.calls.restore > restoresBeforeRecovery, scenario.counterScan)
         await assertReleasedPartialSell(directory, {
           cashSpent: scenario.spentFee,
           mintCode: scenario.code,
@@ -4688,10 +4718,13 @@ test('daemon re-enters a refused release after a crash before its commit', async
     },
     async ({ directory, fence }) => {
       const conversions: string[] = []
+      const signedOutputs = new Set<string>()
       const mint = mixedSourceMint({
-        signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+        signedOutputs,
         convert: async (request) => {
           conversions.push(exactRequestJson(request))
+          // Another client of the seed signs these outputs after the output check.
+          signAsOtherClient(signedOutputs, [RECEIVE_KEYSET_ID, OFFER_KEYSET_ID])
           throw new MintOperationError(11008, 'Duplicate outputs')
         },
       })
@@ -4731,8 +4764,8 @@ test('daemon re-enters a refused release after a crash before its commit', async
       assert.equal(new Set(conversions).size, 1, 'a retry changed the exact conversion')
       await assertReleasedPartialSell(directory, { cashSpent: false, mintCode: 11008 })
       const counters = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
-      assert.equal(counters[RECEIVE_KEYSET_ID], OTHER_CLIENT_SIGNED_COUNTERS)
-      assert.equal(counters[OFFER_KEYSET_ID], OTHER_CLIENT_SIGNED_COUNTERS)
+      assert.equal(counters[RECEIVE_KEYSET_ID], PAST_OTHER_CLIENT_COUNTER)
+      assert.equal(counters[OFFER_KEYSET_ID], PAST_OTHER_CLIENT_COUNTER)
     },
   )
 })
@@ -4756,10 +4789,13 @@ test('daemon reports one release when a concurrent replay and the first request 
         releaseFirst = resolve
       })
       const conversions: string[] = []
+      const signedOutputs = new Set<string>()
       const mint = mixedSourceMint({
-        signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+        signedOutputs,
         convert: async (request) => {
           conversions.push(exactRequestJson(request))
+          // Another client of the seed signs these outputs after the output check.
+          signAsOtherClient(signedOutputs, [RECEIVE_KEYSET_ID, OFFER_KEYSET_ID])
           if (conversions.length === 1) {
             notifyFirstStarted()
             await firstReleased
@@ -4870,12 +4906,30 @@ test('daemon stops replaying after five identical coded refusals and retries onc
   )
 })
 
-test('daemon probes a buy receive range and skips the counters that the mint signed', async () => {
+async function retainedCounterPreparation(directory: string, clientOrderId: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const [record] = readRangePreparationHistoryByClientOrderId(
+      database,
+      testScopeId(),
+      clientOrderId,
+    )
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(
+      toSdkRangePreparationRecord(record!),
+    )
+    if (preparation.version !== 3) throw new Error('expected v3 preparation')
+    return preparation
+  } finally {
+    database.close()
+  }
+}
+
+test('daemon checks every output of a buy and skips the counters that another client signed', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
-      prefix: 'bitcaster-range-buy-probe-',
-      incarnationId: 'range-buy-probe-test',
+      prefix: 'bitcaster-range-buy-check-',
+      incarnationId: 'range-buy-check-test',
       proofs: [sourceProof],
       asset: regularAsset(),
     },
@@ -4885,32 +4939,185 @@ test('daemon probes a buy receive range and skips the counters that the mint sig
         createMint: () => mint,
         createWallet: () => new FakeWallet([sourceProof]),
         now: () => 10_000,
-        randomId: randomIds('range-buy-probe'),
+        randomId: randomIds('range-buy-check'),
+      })
+      const before = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
+
+      await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+
+      const preparation = await retainedCounterPreparation(directory, orderRequest().clientOrderId)
+      assert.equal(preparation.receiveCounterStart, PAST_OTHER_CLIENT_COUNTER)
+      assert.equal(preparation.offerCounterStart, before[OFFER_KEYSET_ID] ?? 0)
+    },
+  )
+})
+
+test('daemon checks every output of a sell and skips the counters that another client signed', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-sell-check-',
+      incarnationId: 'range-sell-check-test',
+      proofs: heldShareProofs(),
+      asset: outcomeAsset(),
+      cashProofs: [cashProof(64)],
+    },
+    async ({ directory, fence }) => {
+      const mint = mixedSourceMint({
+        signedOutputs: otherClientOutputs([RECEIVE_KEYSET_ID, OFFER_KEYSET_ID]),
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        now: () => 10_000,
+        randomId: randomIds('range-sell-check'),
+      })
+
+      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient(boundCapability))
+
+      // A Sell offers shares (the conditional keyset) and receives cash.
+      const preparation = await retainedCounterPreparation(
+        directory,
+        sellOneShareRequest().clientOrderId,
+      )
+      assert.equal(preparation.offerKeyset.id, RECEIVE_KEYSET_ID)
+      assert.equal(preparation.offerCounterStart, PAST_OTHER_CLIENT_COUNTER)
+      assert.equal(preparation.receiveCounterStart, PAST_OTHER_CLIENT_COUNTER)
+      assert.equal(mint.convertRequests.length, 1)
+    },
+  )
+})
+
+/** The number of offer counters that one `orderRequest()` Buy reserves. */
+async function buyOfferCounterCount(directory: string, fence: CustodyScopeFence): Promise<number> {
+  const { candidate } = await atomicPreparationInput(directory, fence)
+  return planCounterCtfRangePreparation(candidate).offerCount
+}
+
+test('daemon checks the keep outputs of a buy source and skips the counters that another client signed', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-keep-check-',
+      incarnationId: 'range-keep-check-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const before = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
+      const offerStart = before[OFFER_KEYSET_ID] ?? 0
+      // Another client signed 20 outputs just after the range that this order
+      // reserves, where the source request puts its keep outputs.
+      const keepStart = offerStart + (await buyOfferCounterCount(directory, fence))
+      const signed = seedOutputs(OFFER_KEYSET_ID, keepStart, keepStart + 20)
+      const wallet = new FakeWallet([sourceProof])
+      const sentKeep: string[] = []
+      const completeSwap = wallet.completeSwap.bind(wallet)
+      wallet.completeSwap = async (preview) => {
+        sentKeep.push(...(preview.keepOutputs ?? []).map(({ blindedMessage }) => blindedMessage.B_))
+        return completeSwap(preview)
+      }
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(64, 1_000, () => signed),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('range-keep-check'),
       })
 
       await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
 
+      const preparation = await retainedCounterPreparation(directory, orderRequest().clientOrderId)
+      // The order range itself was clean.
+      assert.equal(preparation.offerCounterStart, offerStart)
+      const keepPlan = (await rangeSourceOperation()).metadata.keepPlan as { counterStart: number }
+      // The last signed counter is keepStart + 19; the next 150 stay unused.
+      assert.equal(keepPlan.counterStart, keepStart + 19 + 151)
+      assert.ok(sentKeep.length > 0)
+      assert.equal(
+        sentKeep.some((output) => signed.has(output)),
+        false,
+      )
+    },
+  )
+})
+
+test('daemon ends the attempt with no source request when the mint cannot check the source outputs', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-keep-check-failed-',
+      incarnationId: 'range-keep-check-failed-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([sourceProof])
+      let swaps = 0
+      wallet.completeSwap = async () => {
+        swaps += 1
+        throw new Error('a refused source check must not send the source request')
+      }
+      let restores = 0
+      const base = fakeMint()
+      const mint = {
+        ...base,
+        // The order check passes; the source check that follows fails.
+        restore: async (payload: { outputs: SerializedBlindedMessage[] }) => {
+          restores += 1
+          if (restores > 1) throw new TypeError('fetch failed')
+          return base.restore(payload)
+        },
+      }
+      let capabilityCalls = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('range-keep-check-failed'),
+      })
+
+      await assert.rejects(
+        coordinator.prepare(
+          orderRequest(),
+          fakeEngineClient((request) => {
+            capabilityCalls += 1
+            return boundCapability(request)
+          }),
+        ),
+        (error: unknown) =>
+          error instanceof CtfRangeOrderOutputCheckError && error.reason === 'mint-check-failed',
+      )
+
+      assert.equal(restores, 2)
+      assert.equal(swaps, 0)
+      assert.equal(capabilityCalls, 0)
+      // The attempt holds no funds, so it ends and leaves no recovery work.
       const database = await openDaemonStateSqlite(directory)
       try {
         const [record] = readRangePreparationHistoryByClientOrderId(
           database,
           testScopeId(),
-          'client-order-1',
+          orderRequest().clientOrderId,
         )
-        const preparation = decodeCtfRangeOrderPreparationFromRecord(
-          toSdkRangePreparationRecord(record!),
-        )
-        assert.equal(preparation.version, 3)
-        if (preparation.version !== 3) throw new Error('expected v3 preparation')
-        assert.equal(preparation.receiveCounterStart, OTHER_CLIENT_SIGNED_COUNTERS)
+        assert.equal(record?.lifecycleState, 'terminal')
       } finally {
         database.close()
       }
+      assert.deepEqual(
+        Object.values((await readState())?.proofOperations ?? {}).filter(
+          ({ metadata }) => metadata.purpose === 'ctf-range-authorization-source',
+        ),
+        [],
+      )
+      const recovered = await coordinator.recover(
+        WALLET_SEED_HEX,
+        fakeEngineClient(boundCapability),
+      )
+      assert.deepEqual(recovered.pending, [])
+      assert.equal(swaps, 0)
     },
   )
 })
 
-test('daemon sends one clean buy receive probe and no probe for a sell', async () => {
+test('daemon sends one clean order check and one clean source check for a buy and for a sell', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -4928,13 +5135,14 @@ test('daemon sends one clean buy receive probe and no probe for a sell', async (
         randomId: randomIds('range-buy-clean'),
       })
       await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
-      assert.equal(mint.calls.restore, 1)
+      // The order check, then the check of the keep outputs of the source.
+      assert.equal(mint.calls.restore, 2)
     },
   )
   await withDaemonProfile(
     {
-      prefix: 'bitcaster-range-sell-no-probe-',
-      incarnationId: 'range-sell-no-probe-test',
+      prefix: 'bitcaster-range-sell-clean-',
+      incarnationId: 'range-sell-clean-test',
       proofs: heldShareProofs(),
       asset: outcomeAsset(),
       cashProofs: [cashProof(64)],
@@ -4944,10 +5152,75 @@ test('daemon sends one clean buy receive probe and no probe for a sell', async (
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         now: () => 10_000,
-        randomId: randomIds('range-sell-no-probe'),
+        randomId: randomIds('range-sell-clean'),
       })
       await coordinator.prepare(sellOneShareRequest(), fakeEngineClient(boundCapability))
-      assert.equal(mint.calls.restore, 0)
+      // The order check, then the check of the offered and collateral change.
+      assert.equal(mint.calls.restore, 2)
+    },
+  )
+})
+
+test('daemon submits nothing when the mint cannot answer the output check', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-check-failed-',
+      incarnationId: 'range-check-failed-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([sourceProof])
+      let swaps = 0
+      wallet.completeSwap = async () => {
+        swaps += 1
+        throw new Error('a refused check must not send the source request')
+      }
+      const mint = {
+        ...fakeMint(),
+        restore: async () => {
+          throw new TypeError('fetch failed')
+        },
+      }
+      let capabilityCalls = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds('range-check-failed'),
+      })
+      const before = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
+
+      await assert.rejects(
+        coordinator.prepare(
+          orderRequest(),
+          fakeEngineClient((request) => {
+            capabilityCalls += 1
+            return boundCapability(request)
+          }),
+        ),
+        (error: unknown) =>
+          error instanceof CtfRangeOrderOutputCheckError &&
+          error.message ===
+            "The wallet could not check this order's outputs with the mint. No order was submitted.",
+      )
+
+      assert.equal(swaps, 0)
+      assert.equal(capabilityCalls, 0)
+      assert.deepEqual(
+        await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' }),
+        before,
+      )
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        assert.deepEqual(
+          readRangePreparationHistoryByClientOrderId(database, testScopeId(), 'client-order-1'),
+          [],
+        )
+      } finally {
+        database.close()
+      }
     },
   )
 })
@@ -4997,9 +5270,11 @@ test('daemon refund re-plans its outputs after 11008 and keeps the replaced plan
         replaced[0]!.outputs.map(({ blindedMessage }) => blindedMessage.B_),
         firstOutputs,
       )
+      // The new plan starts after the last signed counter (+39) and the 150
+      // counters that the ADR-051 cursor rule leaves unused.
       assert.equal(
         (refund.metadata.refundOutputPlan as { counterStart: number }).counterStart,
-        firstCounterStart + 40,
+        firstCounterStart + 39 + 151,
       )
       assert.equal(await completedRefundCount(), 1)
     },
@@ -7258,6 +7533,11 @@ async function walletSummary() {
   }
 }
 
+/** Another client of the seed signs the outputs of counters [0, 128) in each keyset. */
+function signAsOtherClient(signed: Set<string>, keysetIds: readonly string[]): void {
+  for (const output of otherClientOutputs(keysetIds)) signed.add(output)
+}
+
 /** The NUT-13 outputs of counters [0, 128) for each keyset, as another client signed them. */
 function otherClientOutputs(keysetIds: readonly string[]): ReadonlySet<string> {
   return new Set(
@@ -7476,12 +7756,18 @@ async function atomicPreparationInput(
     feeConsentBytes: null,
     consolidateProofs: false,
   })
+  const counters = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
   return {
     storage: createDaemonStateSqliteSession(directory),
     mutation: { fence, observedAtMs: 10000 },
     intent,
     candidate,
     seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
+    // The starts that the SDK output check read before this reservation.
+    counterStarts: {
+      offer: counters[candidate.offerKeyset.id] ?? 0,
+      receive: counters[candidate.receiveKeyset.id] ?? 0,
+    },
   }
 }
 
@@ -7561,11 +7847,20 @@ test('atomic preparation SQLite concurrent allocation, reopen replay, exhausted 
         second.receiveCounterStart,
         receipt.receiveCounterStart + receipt.receiveCounterCount,
       )
-      const distinct = await Promise.all(
-        ['third', 'fourth'].map(async (id) =>
-          reserveDaemonCtfPreparation(await atomicPreparationInput(directory, fence, id)),
-        ),
+      // Two reservations checked at the same starts: one takes them, and the
+      // other sees that a counter moved after its check.
+      const sameStarts = await Promise.all(
+        ['third', 'fourth'].map((id) => atomicPreparationInput(directory, fence, id)),
       )
+      assert.deepEqual(sameStarts[0]!.counterStarts, sameStarts[1]!.counterStarts)
+      const raced = await Promise.all(sameStarts.map((each) => reserveDaemonCtfPreparation(each)))
+      assert.equal(raced.filter((row) => row === null).length, 1)
+      const moved = sameStarts[raced.findIndex((row) => row === null)]!
+      const retried = await reserveDaemonCtfPreparation(
+        await atomicPreparationInput(directory, fence, moved.intent.request.clientOrderId),
+      )
+      assert.notEqual(retried, null)
+      const distinct = [raced.find((row) => row !== null)!, retried!]
       const distinctReceipts = distinct
         .map((row) => decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(row)))
         .sort((left, right) =>

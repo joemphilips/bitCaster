@@ -29,7 +29,9 @@ import {
   planPersistedCtfRangeOrderAuthorization,
   previewCtfRangeSettlementCapabilityWorkFacts,
   reconstructCtfRangePreparation,
+  type CtfRangePreparationIntent,
   type PersistedCtfRangeOrderPreparation,
+  type PersistedCtfRangeOrderPreparationV2,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import {
   CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
@@ -42,8 +44,9 @@ import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
 import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
-import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
+import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
+  BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
@@ -55,10 +58,11 @@ import {
 } from "./browserCtfRangeOrderCoordinator";
 import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
 import {
-  createBuyReceiveProbeCache,
-  probeBuyReceiveRange,
   browserSeedCounterRestoreClient,
-} from "./browserCtfRangeCounterProbe";
+  reserveCheckedBrowserCtfRangePreparation,
+} from "./browserCtfRangeOrderOutputCheck";
+import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
+import type { SeedCounterSkip } from "@bitcaster/client-sdk/seedCounterGapScan";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
   readCtfRangePreparation,
@@ -77,6 +81,7 @@ import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import {
   WalletKeysetCounterPendingError,
+  WalletKeysetCounterReadinessError,
   advanceWalletKeysetCounterPastMint,
   advanceWalletKeysetCounterPastSignedOutputs,
   ensureWalletKeysetCounterReady,
@@ -94,8 +99,6 @@ import {
 } from "./browserCtfRangeOrderRecoveryWake";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
-/** The preview and the submit share clean buy receive-range probes. */
-const buyReceiveProbeCache = createBuyReceiveProbeCache();
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
@@ -172,9 +175,6 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
-  // Probe during the preview so the submit adds no mint round trip. A failed
-  // probe here only means that the submit probes again.
-  await previewBuyReceiveCounters(scopeId, preparation).catch(() => undefined);
   const selection = await loadBrowserRangeSourceSelection(
     preparation,
     scopeId,
@@ -281,27 +281,12 @@ export async function submitBrowserCtfRangeOrder(
     } catch (error) {
       throw counterReadinessError(error);
     }
-    const counterStore = new BrowserWalletCounterDexieStore({
-      database: db,
+    const reservation = await reserveCheckedRangePreparation(
       scopeId,
-      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-    });
-    try {
-      // Reuses the preview's clean probe unless the receive cursor moved.
-      await probeBuyReceiveCounters(scopeId, basePreparation, seed, counterStore);
-    } catch {
-      throw new BrowserCtfRangeOrderError(
-        "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-      );
-    }
-    const reservation = await counterStore.reserveCtfPreparationInContext({
-      context: { mintUrl: basePreparation.mintUrl, unit: "msat" },
-      preparation: basePreparation,
-      intent: preparationIntent.intent,
+      basePreparation,
+      preparationIntent.intent,
       seed,
-      createdAtMs: Date.now(),
-    });
+    );
     preparation = decodeCtfRangeOrderPreparationFromRecord(reservation.record);
     reconstructCtfRangePreparation(preparation, seed);
     sourceCountersReady = !reservation.replayed;
@@ -1371,6 +1356,14 @@ function createBrowserCtfRangeCoordinator(
   return new BrowserCtfRangeOrderCoordinator({
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
+    sourceOutputCheck: {
+      mint: browserSeedCounterRestoreClient,
+      skipSignedCounters: (keyset, skip) => {
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+        return skipSignedBrowserCounters(scopeId, keyset.canonicalMintUrl)(keyset, skip);
+      },
+    },
     allowInsecureLoopbackHttp,
     recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
     // The coordinator holds the profile lock and the custody scope here. The
@@ -1426,53 +1419,71 @@ function createBrowserCtfRangeCoordinator(
 }
 
 /**
- * Another client with this seed can have signed a buy's planned receive
- * outputs. The engine's group convert would then reject every participant.
+ * Check every output of a new order with the mint before the order reserves
+ * its counters (ADR-037 reused-output amendment, decision 14). Another client
+ * of this seed can already have signed outputs at these counters: a reused
+ * pool output rejects the settlement group and charges the reused-output
+ * penalty. A hit moves the counter past the signed outputs and asks for a
+ * re-sync. When the check cannot finish, nothing is reserved or submitted.
  */
-async function probeBuyReceiveCounters(
+async function reserveCheckedRangePreparation(
   scopeId: string,
-  preparation: PersistedCtfRangeOrderPreparation,
+  preparation: PersistedCtfRangeOrderPreparationV2,
+  intent: CtfRangePreparationIntent,
   seed: Uint8Array,
-  counterStore: BrowserWalletCounterDexieStore,
-): Promise<void> {
-  if (preparation.version !== 2) return;
-  await probeBuyReceiveRange({
-    scopeId,
-    counterStore,
-    preparation,
-    seed,
-    mint: browserSeedCounterRestoreClient(preparation.mintUrl),
-    cache: buyReceiveProbeCache,
-    advancePastSignedOutputs: (keyset, fromCounter, nextCounter) =>
-      advanceWalletKeysetCounterPastSignedOutputs({
+): ReturnType<typeof reserveCheckedBrowserCtfRangePreparation> {
+  try {
+    return await reserveCheckedBrowserCtfRangePreparation({
+      counterStore: new BrowserWalletCounterDexieStore({
+        database: db,
         scopeId,
-        mintUrl: preparation.mintUrl,
-        unit: "msat",
-        keyset,
-        ...conditionalCounterAsset(keyset),
-        fromCounter,
-        nextCounter,
+        isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
       }),
-  });
+      preparation,
+      intent,
+      seed,
+      mint: browserSeedCounterRestoreClient(preparation.mintUrl),
+      createdAtMs: Date.now(),
+      skipSignedCounters: skipSignedBrowserCounters(scopeId, preparation.mintUrl),
+    });
+  } catch (error) {
+    if (
+      error instanceof CtfRangeOrderOutputCheckError ||
+      error instanceof WalletKeysetCounterReadinessError
+    ) {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
+      );
+    }
+    throw error;
+  }
 }
 
-async function previewBuyReceiveCounters(
+/**
+ * Move one order keyset past outputs that another client of this seed signed.
+ * The checked range starts the deferral, so a later pass admits the skipped
+ * outputs (ADR-033). It admits no proof, so it can run while the caller holds
+ * the profile lock and the custody scope.
+ */
+function skipSignedBrowserCounters(
   scopeId: string,
-  preparation: PersistedCtfRangeOrderPreparation,
-): Promise<void> {
-  if (preparation.side !== "Buy") return;
-  const mnemonic = useWalletStore.getState().mnemonic;
-  if (!mnemonic || browserWalletScopeIdFromMnemonic(mnemonic) !== scopeId) return;
-  await probeBuyReceiveCounters(
-    scopeId,
-    preparation,
-    toSeed(mnemonic.trim().split(/\s+/).filter(Boolean)),
-    new BrowserWalletCounterDexieStore({
-      database: db,
+  mintUrl: string,
+): (
+  keyset: PersistedCtfRangeOrderPreparation["offerKeyset"],
+  skip: SeedCounterSkip,
+) => Promise<void> {
+  return (keyset, skip) =>
+    advanceWalletKeysetCounterPastSignedOutputs({
       scopeId,
-      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-    }),
-  );
+      mintUrl,
+      unit: "msat",
+      keyset,
+      ...conditionalCounterAsset(keyset),
+      fromCounter: skip.fromCounter,
+      lastSignedCounter: skip.lastSignedCounter,
+      nextCounter: skip.nextCounter,
+    });
 }
 
 function isLoopbackMint(mintUrl: string): boolean {

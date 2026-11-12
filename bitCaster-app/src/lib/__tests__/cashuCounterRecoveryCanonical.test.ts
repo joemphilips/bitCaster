@@ -414,9 +414,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect((firstScan as { outputs: { B_: string }[] }).outputs[0]!.B_).toBe(
       OutputData.createSingleDeterministicData(1, SEED, 5, CONDITIONAL_KEYSET_ID).blindedMessage.B_,
     );
+    // The last signed counter is 40. The ADR-051 cursor rule leaves the next
+    // 150 counters, 41 to 190, unused.
     expect(
       await database!.walletCounterCursors.get([scopeId(), CONDITIONAL_KEYSET_ID]),
-    ).toMatchObject({ next: 41 });
+    ).toMatchObject({ next: 191 });
     // The other client's outputs stay with that client. Nothing is admitted here,
     // so the caller's profile lock and custody scope are not taken again.
     expect(await database!.custodyProofs.count()).toBe(custodyProofs);

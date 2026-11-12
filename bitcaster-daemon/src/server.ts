@@ -197,6 +197,7 @@ import {
   CtfRangeSellPreparationPendingError,
   type DaemonCtfRangeRecoveryStatus,
 } from './ctfRangeOrderRelease.ts'
+import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   DAEMON_WATCH_MEDIA_TYPE,
   DAEMON_WATCH_REQUEST_BYTES_MAX,
@@ -2018,6 +2019,17 @@ async function dispatchProtectedOrderSubmit(
         code: 'order-attempt-released',
         error: error.message,
         mintError: error.mintError,
+        clientOrderId,
+      }
+    }
+    if (error instanceof CtfRangeOrderOutputCheckError) {
+      // The mint did not confirm that the outputs of this order are unused.
+      // The order sent no mint request and holds no funds, so nothing remains
+      // to recover. The message is fixed; it holds no mint text.
+      return {
+        ok: false,
+        code: 'order-output-check-failed',
+        error: error.message,
         clientOrderId,
       }
     }

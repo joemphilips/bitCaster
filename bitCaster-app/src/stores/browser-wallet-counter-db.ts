@@ -14,6 +14,7 @@ import {
   type CtfRangePreparationIntent,
   type PersistedCtfRangeOrderPreparationV2,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import type { CtfRangeOrderCounterStarts } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { advanceBrowserV2DesiredAssetsForCounter } from "./browser-encrypted-wallet-backup-v2-desired-asset";
@@ -134,7 +135,12 @@ export class BrowserWalletCounterDexieStore {
     readonly intent: CtfRangePreparationIntent;
     readonly seed: Uint8Array;
     readonly createdAtMs: number;
-  }): Promise<BrowserCtfPreparationReservationResult> {
+    /**
+     * The starts whose outputs the SDK checked with the mint. The reservation
+     * returns null when a counter moved after that check.
+     */
+    readonly counterStarts: CtfRangeOrderCounterStarts;
+  }): Promise<BrowserCtfPreparationReservationResult | null> {
     const association = requireContext(input.context);
     const intentScopeId = input.intent.scopeId;
     if (intentScopeId !== this.#scopeId) {
@@ -207,6 +213,12 @@ export class BrowserWalletCounterDexieStore {
         );
         const offerStart = currentValues[0]!;
         const receiveStart = currentValues[1]!;
+        if (
+          offerStart !== input.counterStarts.offer ||
+          receiveStart !== input.counterStarts.receive
+        ) {
+          return null;
+        }
         const offerNext = offerStart + counts.offerCount;
         const receiveNext = receiveStart + counts.receiveCount;
         if (!Number.isSafeInteger(offerNext) || !Number.isSafeInteger(receiveNext)) {

@@ -259,9 +259,10 @@ describe("browser wallet counter authority", () => {
       intent,
       seed: ctfSeed,
       createdAtMs: 100,
+      counterStarts: { offer: 0, receive: 0 },
     } as const;
 
-    const first = await counters.reserveCtfPreparationInContext(input);
+    const first = (await counters.reserveCtfPreparationInContext(input))!;
     const decoded = decodeCounterCtfRangePreparationBytes(first.record.preparationBytes);
     expect(first.replayed).toBe(false);
     expect(decoded.version).toBe(3);
@@ -297,6 +298,32 @@ describe("browser wallet counter authority", () => {
     reopened.close();
   });
 
+  it("reserves nothing when a CTF counter moved after the output check", async () => {
+    const { database, counters } = createCtfStore();
+    await markCtfCountersReady(database);
+    await database.walletCounterCursors.bulkPut([
+      { scopeId: ctfScopeId, keysetId: ctfOfferKeysetId, next: 0 },
+      { scopeId: ctfScopeId, keysetId: ctfReceiveKeysetId, next: 5 },
+    ]);
+    const preparation = ctfBasePreparation();
+    const before = await database.walletCounterCursors.toArray();
+
+    // The SDK checked the outputs at receive counter 0, and another operation
+    // reserved receive counters after that check.
+    await expect(
+      counters.reserveCtfPreparationInContext({
+        context: { mintUrl: ctfMintUrl, unit: "msat" },
+        preparation,
+        intent: ctfIntent(preparation.request),
+        seed: ctfSeed,
+        createdAtMs: 100,
+        counterStarts: { offer: 0, receive: 0 },
+      }),
+    ).resolves.toBeNull();
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.walletCounterCursors.toArray()).toEqual(before);
+  });
+
   it("serializes identical concurrent CTF submissions to one receipt and one range pair", async () => {
     const { database, counters } = createCtfStore();
     await markCtfCountersReady(database);
@@ -307,13 +334,14 @@ describe("browser wallet counter authority", () => {
       intent: ctfIntent(preparation.request),
       seed: ctfSeed,
       createdAtMs: 100,
+      counterStarts: { offer: 0, receive: 0 },
     } as const;
 
     const results = await Promise.all([
       counters.reserveCtfPreparationInContext(input),
       counters.reserveCtfPreparationInContext(input),
     ]);
-    expect(results.map((result) => result.replayed).sort()).toEqual([false, true]);
+    expect(results.map((result) => result!.replayed).sort()).toEqual([false, true]);
     expect(results[0]?.record).toEqual(results[1]?.record);
     expect(await database.ctfRangePreparations.count()).toBe(1);
     expect(await database.walletCounterCursors.get([ctfScopeId, ctfOfferKeysetId])).toMatchObject({
@@ -356,6 +384,7 @@ describe("browser wallet counter authority", () => {
         intent,
         seed: foreignSeed,
         createdAtMs: 101,
+        counterStarts: { offer: 0, receive: 0 },
       }),
     ).rejects.toMatchObject({ code: "foreign_database" });
     expect(await database.ctfRangePreparations.count()).toBe(1);
@@ -384,6 +413,7 @@ describe("browser wallet counter authority", () => {
         intent: ctfIntent(preparation.request),
         seed: ctfSeed,
         createdAtMs: 100,
+        counterStarts: { offer: 0, receive: 0 },
       }),
     ).rejects.toThrow("second cursor write failed");
     expect(await database.ctfRangePreparations.count()).toBe(0);
@@ -416,6 +446,7 @@ describe("browser wallet counter authority", () => {
         intent: ctfIntent(preparation.request),
         seed: ctfSeed,
         createdAtMs: 100,
+        counterStarts: { offer: 0, receive: 0 },
       }),
     ).rejects.toThrow("receipt insert failed");
     expect(await database.ctfRangePreparations.count()).toBe(0);
@@ -437,6 +468,7 @@ describe("browser wallet counter authority", () => {
       intent: ctfIntent(preparation.request),
       seed: ctfSeed,
       createdAtMs: 100,
+      counterStarts: { offer: 0, receive: 0 },
     } as const;
     await counters.reserveCtfPreparationInContext(input);
     const changedRequest = { ...preparation.request, amountSubunits: 2_000 };

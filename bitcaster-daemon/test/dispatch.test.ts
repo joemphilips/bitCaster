@@ -28,6 +28,7 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import type {
   AssetMonitoringAssetsResponse,
   AssetMonitoringPortfolioResponse,
@@ -2494,6 +2495,59 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         if (priorState) await writeState(priorState)
       },
     )
+
+    for (const reason of ['mint-check-failed', 'attempts-exhausted'] as const) {
+      await t.test(`order.submit reports a failed order output check (${reason})`, async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let recoveryTriggers = 0
+        let submits = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => ({
+              ...testOrderEngine(),
+              submitOrder: async () => {
+                submits += 1
+                throw new Error('a refused check must not submit an order')
+              },
+            }),
+            prepareSettlementCapability: async () => {
+              throw new CtfRangeOrderOutputCheckError(reason)
+            },
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.deepEqual(
+          { ...response, clientOrderId: typeof response.clientOrderId },
+          {
+            ok: false,
+            code: 'order-output-check-failed',
+            error:
+              "The wallet could not check this order's outputs with the mint. No order was submitted.",
+            clientOrderId: 'string',
+          },
+        )
+        assert.equal(submits, 0)
+        // The check sent no mint request and left no funds to recover.
+        assert.equal(recoveryTriggers, 0)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      })
+    }
 
     await t.test('order.recovery reports halted and released range operations', async () => {
       const status = {

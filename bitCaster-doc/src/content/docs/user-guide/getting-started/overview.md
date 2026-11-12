@@ -178,7 +178,7 @@ after the check finishes. See
 [Open your wallet in a new browser](/user-guide/getting-started/wallet-backup/#open-your-wallet-in-a-new-browser).
 Let your trades finish in the old browser before you move. Use one
 browser at a time: the app checks the mint for use in another browser after a
-mint refusal or a buy check that shows such use.
+mint refusal or an order check that shows such use.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.

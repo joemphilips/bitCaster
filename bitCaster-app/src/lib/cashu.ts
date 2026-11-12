@@ -68,7 +68,10 @@ import {
   seedRestoreDatabase,
   settleSeedRestoreDeferral,
 } from "@/stores/seed-restore-db";
-import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
+import {
+  SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
+  findLastSignedSeedCounter,
+} from "@bitcaster/client-sdk/seedCounterGapScan";
 import { scanSeedCountersForAdmission } from "@bitcaster/client-sdk/seedCounterAdmissionScan";
 import {
   admitBrowserReceivedProofs,
@@ -847,7 +850,8 @@ export function ensureWalletKeysetCounterReady(
 
 /**
  * Advance one selected keyset's counter past every output that the mint
- * signed for this seed, even after an earlier scan completed. Use it after
+ * signed for this seed and the 150 counters after it (ADR-051 cursor rule),
+ * even after an earlier scan completed. Use it after
  * the mint reports a reused output: another client with the same seed signed
  * outputs past this browser's cursor. It admits no proof, so it claims no
  * custody scope and can run while the caller owns that scope. The scan has a
@@ -902,6 +906,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
       counters,
       fromCounter: Math.min(input.plannedFromCounter ?? start, start),
       lastSigned,
+      // ADR-051 cursor rule: the next 150 counters stay unused.
+      nextCounter:
+        lastSigned === null ? null : lastSigned + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
       deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
     });
   } catch {
@@ -913,10 +920,11 @@ export async function advanceWalletKeysetCounterPastMint(input: {
 }
 
 /**
- * Advance one selected keyset's counter to `nextCounter` after a probe found
- * outputs that the mint signed from `fromCounter`. The caller already ran the
- * bounded gap scan. It admits no proof. It first writes the deferral marker,
- * so a later pass admits the skipped outputs (ADR-033).
+ * Advance one selected keyset's counter to `nextCounter` after the order
+ * output check found outputs that the mint signed from `fromCounter` to
+ * `lastSignedCounter`. The SDK already ran the bounded gap scan and the
+ * ADR-051 cursor rule. It admits no proof. It first writes the deferral
+ * marker, so a later pass admits the skipped outputs (ADR-033).
  */
 export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   scopeId: string;
@@ -925,14 +933,20 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   keyset: ActiveCtfRangeMintKeyset;
   conditionalAsset?: { conditionId: string; outcomeCollection: string };
   fromCounter: number;
+  lastSignedCounter: number;
   nextCounter: number;
 }): Promise<void> {
   let selected: ReturnType<typeof requireSelectedCounterRecovery>;
   try {
     selected = requireSelectedCounterRecovery(input);
     requireCounter(input.fromCounter);
-    if (!Number.isSafeInteger(input.nextCounter) || input.nextCounter <= input.fromCounter) {
-      throw new Error("next counter is invalid");
+    if (
+      !Number.isSafeInteger(input.lastSignedCounter) ||
+      input.lastSignedCounter < input.fromCounter ||
+      !Number.isSafeInteger(input.nextCounter) ||
+      input.nextCounter <= input.lastSignedCounter
+    ) {
+      throw new Error("signed counter range is invalid");
     }
   } catch {
     throw new WalletKeysetCounterReadinessError();
@@ -942,7 +956,8 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
       ...input,
       url: selected.url,
       counters: selectedCounterStore(input.scopeId),
-      lastSigned: input.nextCounter - 1,
+      lastSigned: input.lastSignedCounter,
+      nextCounter: input.nextCounter,
       deferred: true,
     });
   } catch {
@@ -980,6 +995,8 @@ async function deferAndAdvanceSelectedKeyset(input: {
   counters: BrowserWalletCounterDexieStore;
   fromCounter: number;
   lastSigned: number | null;
+  /** The counter after the skipped outputs, or null when nothing is skipped. */
+  nextCounter: number | null;
   deferred: boolean;
 }): Promise<void> {
   if (input.deferred) {
@@ -994,11 +1011,11 @@ async function deferAndAdvanceSelectedKeyset(input: {
       nowMs: Date.now(),
     });
   }
-  if (input.lastSigned !== null) {
+  if (input.nextCounter !== null) {
     await input.counters.advanceToAtLeastInContext(
       { mintUrl: input.url, unit: input.unit },
       input.keyset.id,
-      input.lastSigned + 1,
+      input.nextCounter,
       true,
     );
   }
