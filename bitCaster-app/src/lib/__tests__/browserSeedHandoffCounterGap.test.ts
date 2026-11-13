@@ -93,6 +93,31 @@ describe("seed handoff counter gap", () => {
     });
   });
 
+  it("bounds a live proof whose counter this browser did not record by the cursor", async () => {
+    const database = openDatabase();
+    // A deposit signed counters 0 to 5. Failed orders left 6 to 320 unsigned.
+    await signed(database, KEYSET, [0, 1, 2, 3, 4, 5]);
+    // A withdrawal kept change at about counter 321 without a locator.
+    await database.walletCounterCursors.put({ scopeId: SCOPE_ID, keysetId: KEYSET, next: 330 });
+    await database.custodyProofs.put({
+      scopeId: SCOPE_ID,
+      proofId: "melt-change",
+      keysetId: KEYSET,
+      selectability: "selectable",
+    } as never);
+    await database.custodyProofBackupAuthorities.put({
+      scopeId: SCOPE_ID,
+      proofId: "melt-change",
+      derivationLocator: null,
+    } as never);
+
+    // The change can be anywhere below the cursor, so the run can reach counter 328.
+    expect(await browserSeedHandoffCounterGap(database, SCOPE_ID)).toEqual({
+      longestRun: 323,
+      cliGapLimit: 324,
+    });
+  });
+
   it("does not warn below 300 unused counters, or for a keyset that is not local", async () => {
     const database = openDatabase();
     await signed(database, KEYSET, [0, 300]);

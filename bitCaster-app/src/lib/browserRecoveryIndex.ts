@@ -259,20 +259,25 @@ export class BrowserRecoveryIndex {
    * Read the index on one of the ADR-033 events, report the keysets that the
    * read lets the browser scan, then upload the pending keysets.
    */
-  async read(trigger: RecoveryIndexReadTrigger): Promise<RecoveryIndexReadOutcome> {
-    const read = this.#sync.read(trigger);
+  read(trigger: RecoveryIndexReadTrigger): Promise<RecoveryIndexReadOutcome> {
+    const read = (async () => {
+      const outcome = await this.#sync.read(trigger);
+      await this.#report(
+        outcome.status === "failed"
+          ? { status: "failed" }
+          : { status: "read", document: outcome.document, scan: outcome.scan },
+      );
+      this.requestUpload();
+      return outcome;
+    })();
     this.#lastRead = read;
-    const outcome = await read;
-    await this.#report(
-      outcome.status === "failed"
-        ? { status: "failed" }
-        : { status: "read", document: outcome.document, scan: outcome.scan },
-    );
-    this.requestUpload();
-    return outcome;
+    return read;
   }
 
-  /** The outcome of the latest read, for the restore of a seed entry. Null before a read. */
+  /**
+   * The outcome of the latest read, for the restore of a seed entry. It
+   * resolves after the read reported its scans. Null before a read.
+   */
   lastRead(): Promise<RecoveryIndexReadOutcome> | null {
     return this.#lastRead;
   }

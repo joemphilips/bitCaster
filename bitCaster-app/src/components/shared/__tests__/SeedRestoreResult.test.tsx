@@ -38,7 +38,11 @@ describe("SeedRestoreResult", () => {
   });
 
   it("shows only the CLI gap line for a complete restore", () => {
-    render(<SeedRestoreResult result={{ scopeId: "scope", partial: false, retryable: false }} />);
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: false, retryable: false, gapLineShown: true }}
+      />,
+    );
 
     expect(screen.getByText(GAP_LINE)).toBeInTheDocument();
     expect(screen.queryByText(POINTER)).not.toBeInTheDocument();
@@ -46,7 +50,11 @@ describe("SeedRestoreResult", () => {
   });
 
   it("keeps the CLI pointer for a partial restore, and Retry starts no new restore", async () => {
-    render(<SeedRestoreResult result={{ scopeId: "scope", partial: true, retryable: true }} />);
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: true, retryable: true, gapLineShown: true }}
+      />,
+    );
 
     expect(screen.getByText(POINTER)).toBeInTheDocument();
     expect(screen.getByText(GAP_LINE)).toBeInTheDocument();
@@ -57,14 +65,22 @@ describe("SeedRestoreResult", () => {
   });
 
   it("shows the pointer without Retry when the engine holds no index", () => {
-    render(<SeedRestoreResult result={{ scopeId: "scope", partial: true, retryable: false }} />);
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: true, retryable: false, gapLineShown: true }}
+      />,
+    );
 
     expect(screen.getByText(POINTER)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
-  it("closes only on an explicit, keyboard-accessible action", async () => {
-    render(<SeedRestoreResult result={{ scopeId: "scope", partial: true, retryable: false }} />);
+  it("closes only the CLI gap line, on an explicit keyboard-accessible action", async () => {
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: false, retryable: false, gapLineShown: true }}
+      />,
+    );
 
     const close = screen.getByRole("button", { name: "Dismiss" });
     close.focus();
@@ -73,9 +89,26 @@ describe("SeedRestoreResult", () => {
     expect(mocks.dismiss).toHaveBeenCalledWith("scope");
   });
 
+  it("keeps the partial pointer after the user closed the gap line", () => {
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: true, retryable: false, gapLineShown: false }}
+      />,
+    );
+
+    // ADR-039: one persistent pointer while the coverage is limited.
+    expect(screen.getByText(POINTER)).toBeInTheDocument();
+    expect(screen.queryByText(GAP_LINE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+  });
+
   it("has the same lines in Japanese", async () => {
     await i18n.changeLanguage("ja");
-    render(<SeedRestoreResult result={{ scopeId: "scope", partial: true, retryable: false }} />);
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: true, retryable: false, gapLineShown: true }}
+      />,
+    );
 
     expect(
       screen.getByText(

@@ -32,7 +32,7 @@ import {
   type BitcasterDB,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
-import { recordGeneratedBrowserSeed } from "./seed-restore-db";
+import { recordEnteredBrowserSeed, recordGeneratedBrowserSeed } from "./seed-restore-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { readPublicMintMetadata } from "@bitcaster/client-sdk";
@@ -199,6 +199,16 @@ function walletReplacementErrorMessage(error: unknown): string {
     return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
   }
   return i18n.t("wallet.replaceBlockedSafetyChecks");
+}
+
+/**
+ * A seed entry makes the seed restore run for the entered wallet (ADR-039).
+ * The write starts before the profile activates, so the first recovery pass
+ * waits for it.
+ */
+function recordBrowserSeedEntry(mnemonic: string): void {
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId !== null) void recordEnteredBrowserSeed(scopeId).catch(() => undefined);
 }
 
 /** Create a counter source that stays bound to one active wallet profile. */
@@ -377,6 +387,7 @@ export const useWalletStore = create<WalletState>()(
               },
               invalidateOldProfile: () => setActiveBrowserWalletProfile(""),
               activateNewProfile: async () => {
+                recordBrowserSeedEntry(mnemonic);
                 activateWalletProfile(mnemonic);
                 set({
                   mnemonic,
@@ -431,6 +442,7 @@ export const useWalletStore = create<WalletState>()(
           }
           throw error;
         }
+        recordBrowserSeedEntry(mnemonic);
         activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };

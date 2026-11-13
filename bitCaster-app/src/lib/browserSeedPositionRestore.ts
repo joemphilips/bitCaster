@@ -40,6 +40,7 @@ import { getNdk } from "@/lib/nostr";
 import { normalizeUrl } from "@/lib/url";
 import {
   admitBrowserRecoveryIndexWindow,
+  CounterRecoveryPostponedError,
   restoreBrowserConditionalKeyset,
   rescanBrowserRegularKeyset,
   type BrowserRecoveryIndexWindowKeyset,
@@ -50,9 +51,9 @@ import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-
 import { decodeBrowserCustodyConditionalKeysetRow } from "@/stores/durable-custody-types";
 import { db } from "@/stores/proof-db";
 import {
+  browserSeedRestoreRuns,
   initialSeedRestoreResyncSchedule,
   initialSeedRestoreState,
-  isBrowserSeedGeneratedHere,
   postponeSeedRestoreDeferral,
   recordSeedRestoreDeferral,
   recordSeedRestoreDeferralFailure,
@@ -149,7 +150,7 @@ function reportGate(scopeId: string) {
  * read does not hold the report forever.
  */
 export async function browserSeedPositionRestoreHintsSettled(scopeId: string): Promise<boolean> {
-  if (await isBrowserSeedGeneratedHere(scopeId)) return true;
+  if (!(await browserSeedRestoreRuns(scopeId, db))) return true;
   const states = await statesOfScope(scopeId);
   return states.length > 0 && states.every(hintsSettled);
 }
@@ -251,7 +252,7 @@ export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<
   }
 }
 
-/** Closes the restore result of this wallet. A later Retry shows it again. */
+/** Closes the CLI gap line of the restore result. A later Retry shows it again. */
 export async function dismissBrowserSeedRestoreResult(
   scopeId: string,
   nowMs = Date.now(),
@@ -325,7 +326,25 @@ async function addTargets(
   const known = new Set(existing.map(({ keysetId }) => keysetId));
   let order = existing.reduce((highest, row) => Math.max(highest, row.order + 1), 0);
   let added = false;
+  const byKeyset = new Map(existing.map((row) => [row.keysetId, row]));
   for (const entry of entries) {
+    const current = byKeyset.get(entry.keysetId);
+    if (current !== undefined && source === "listed" && current.state === "complete") {
+      // An index read lists a keyset that this browser scanned empty and holds
+      // no cursor for: another client used it since (ADR-033). Scan it again.
+      // A listed scan sets a cursor, so it runs once.
+      await table.put({
+        ...current,
+        source,
+        state: "queued",
+        progress: RECOVERY_INDEX_KEYSET_PROGRESS_START,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      });
+      byKeyset.delete(entry.keysetId);
+      added = true;
+      continue;
+    }
     if (known.has(entry.keysetId)) continue;
     known.add(entry.keysetId);
     await table.put({
@@ -371,9 +390,9 @@ export async function runBrowserSeedPositionRestorePass(
   const mintUrl = normalizeUrl(input.mintUrl);
   const database = seedRestoreDatabase(input.scopeId);
   const isCurrent = () => activeBrowserWalletScopeId() === input.scopeId;
-  const generated = await isBrowserSeedGeneratedHere(input.scopeId);
+  const runs = await browserSeedRestoreRuns(input.scopeId, db);
   let state: SeedRestoreStateRow | null = null;
-  if (!generated) {
+  if (runs) {
     const deniedRetryAtMs = await claimRestoreStart(input.scopeId, mintUrl, now);
     if (deniedRetryAtMs !== null) {
       // The restoring notice stays while the start waits for a free slot.
@@ -388,7 +407,7 @@ export async function runBrowserSeedPositionRestorePass(
       };
     }
   } else if ((await keysetRows(input.scopeId, mintUrl)).length === 0) {
-    // This profile generated the seed and no index read named another keyset.
+    // This profile holds the wallet and no index read named another keyset.
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
   }
   const context: PassContext = {
@@ -407,6 +426,14 @@ export async function runBrowserSeedPositionRestorePass(
     return await finishPass(context, scanned);
   } catch (error) {
     if (!isCurrent()) return { status: "waiting", retryAtMs: null, hintsSettled: false };
+    if (error instanceof CounterRecoveryPostponedError) {
+      // Custody work of this browser is in flight. The keyset waits; no failure.
+      return {
+        status: "waiting",
+        retryAtMs: await waitingRetryAtMs(context),
+        hintsSettled: state === null || hintsSettled(await readState(input.scopeId, mintUrl)),
+      };
+    }
     if (state === null) {
       return { status: "waiting", retryAtMs: await waitingRetryAtMs(context), hintsSettled: true };
     }
@@ -464,6 +491,11 @@ async function claimRestoreStart(
  */
 async function prepareRestore(context: PassContext, initial: SeedRestoreStateRow): Promise<void> {
   const database = seedRestoreDatabase(context.scopeId);
+  // The activity log names a market only while the restore is unfinished. A
+  // later activity item is a trade of this browser, whose keysets can be in
+  // use. The earlier asset-monitoring report is another profile's: it is read
+  // once, also after the restore completed, and it settles the report gate.
+  const unfinished = initial.initialCompletedAtMs === null;
   if (!hintsSettled(initial)) {
     const hints = await addAssetMonitoringHints(context);
     const read = await readState(context.scopeId, context.mintUrl);
@@ -473,7 +505,7 @@ async function prepareRestore(context: PassContext, initial: SeedRestoreStateRow
       hintFailures: hints === "failed" ? read.hintFailures + 1 : read.hintFailures,
     });
   }
-  await addActivityLogHints(context);
+  if (unfinished) await addActivityLogHints(context);
   if ((await readState(context.scopeId, context.mintUrl)).index === "unread") {
     // The wallet open read the index (ADR-033). The restore uses that read.
     await recordBrowserRecoveryIndexRead(context.scopeId, await lastIndexRead(context.scopeId), [
@@ -594,7 +626,8 @@ async function scanTargets(context: PassContext): Promise<PassScanResult> {
       (left, right) =>
         SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source] || left.order - right.order,
     );
-  if (due.length === 0) return { status: "idle" };
+  const scannable = await skipKeysetsInUse(context, due);
+  if (scannable.length === 0) return { status: "idle" };
   const state = await seedRestoreDatabase(context.scopeId).states.get([
     context.scopeId,
     context.mintUrl,
@@ -629,11 +662,35 @@ async function scanTargets(context: PassContext): Promise<PassScanResult> {
     return resolution;
   };
   return runRecoveryIndexRestorePass({
-    keysets: due.map((row) => ({ target: row, progress: row.progress })),
+    keysets: scannable.map((row) => ({ target: row, progress: row.progress })),
     counterBudget: restoring ? Math.max(0, budget - state.countersUsed) : budget,
     scan: (row, request) => scanTarget(context, row, request, resolve),
     commit: async (row, scan) => commitTarget(context, row, scan, restoring, await resolve(row)),
   });
+}
+
+/**
+ * A planned keyset that this browser already uses (a completed counter
+ * association with a cursor) is complete: a scan from counter 0 would read
+ * its outputs again. ADR-033: a scan never starts for a keyset in use.
+ */
+async function skipKeysetsInUse(
+  context: PassContext,
+  rows: readonly SeedRestoreKeysetRow[],
+): Promise<SeedRestoreKeysetRow[]> {
+  const scannable: SeedRestoreKeysetRow[] = [];
+  for (const row of rows) {
+    const [association, cursor] = await Promise.all([
+      db.walletCounterAssociations.get([context.scopeId, context.mintUrl, "msat", row.keysetId]),
+      db.walletCounterCursors.get([context.scopeId, row.keysetId]),
+    ]);
+    if (association?.recoveryComplete === true && cursor !== undefined) {
+      await seedRestoreDatabase(context.scopeId).keysets.put({ ...row, state: "complete" });
+      continue;
+    }
+    scannable.push(row);
+  }
+  return scannable;
 }
 
 async function scanTarget(
@@ -715,7 +772,7 @@ async function commitTarget(
       const complete = scan.status === "complete";
       const keepsCursor = lastSigned !== null || row.source === "listed";
       if (complete || scan.unspent.length > 0 || lastSigned !== null) {
-        await admitBrowserRecoveryIndexWindow({
+        await admitWindow(context, row, {
           mintUrl: context.mintUrl,
           keyset,
           proofs: scan.unspent as Proof[],
@@ -772,6 +829,32 @@ async function commitTarget(
       });
     }
   });
+}
+
+/**
+ * Admit one window. With custody work in flight, the keyset waits a short
+ * backoff with its stored position, and the pass stops: this is no failure.
+ */
+async function admitWindow(
+  context: PassContext,
+  row: SeedRestoreKeysetRow,
+  window: Omit<Parameters<typeof admitBrowserRecoveryIndexWindow>[0], "scopeId" | "seed">,
+): Promise<void> {
+  try {
+    await admitBrowserRecoveryIndexWindow({
+      ...window,
+      scopeId: context.scopeId,
+      seed: context.seed,
+    });
+  } catch (error) {
+    if (error instanceof CounterRecoveryPostponedError) {
+      await seedRestoreDatabase(context.scopeId).keysets.put({
+        ...row,
+        nextAttemptAtMs: context.now() + seedRestoreBackoffMs(1),
+      });
+    }
+    throw error;
+  }
 }
 
 /** Records the result of a pass: the completion of the restore, its budget stop, and its waits. */

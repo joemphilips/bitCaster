@@ -36,6 +36,7 @@ import {
   type StoredProofRow,
 } from "@/stores/proof-db";
 import {
+  recordEnteredBrowserSeed,
   recordGeneratedBrowserSeed,
   seedRestoreDatabase,
   type SeedRestoreDB,
@@ -575,7 +576,7 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expectNoCatalogueWalk(mint);
   });
 
-  it("scans the market of a hint that arrives after the restore completed", async () => {
+  it("discovers activity-log hints only while the restore is unfinished", async () => {
     const regular = regularKeyset();
     const market = binaryMarket("ab".repeat(32));
     const mint = new FakeMint(regular, [market.yes, market.no]);
@@ -586,12 +587,148 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     const now = () => nowMs;
 
     expect((await restorePass(now)).status).toBe("complete");
-    expect(await selectableHoldings()).toEqual([]);
 
-    // The relays deliver the activity log after the first pass.
+    // A later activity item, for example a trade of this browser, starts no scan:
+    // that market can be in use, with an order in flight.
     useActivityLogStore.setState({ items: [activityHint(`${"ab".repeat(32)}-YES`)] });
     nowMs += 1_000;
     await restorePass(now);
+
+    expectNotScanned(mint, market.yes, market.no);
+    expect(await selectableHoldings()).toEqual([]);
+  });
+
+  it("skips a planned keyset that this browser already uses", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await openIndexOnly();
+    useActivityLogStore.setState({ items: [activityHint(`${"ab".repeat(32)}-YES`)] });
+    await recordEnteredBrowserSeed(scopeId());
+    // A trade of this browser recovered and uses the keyset before the restore reaches it.
+    await db.walletCounterCursors.put({ scopeId: scopeId(), keysetId: market.yes.id, next: 9 });
+    await db.walletCounterAssociations.put({
+      scopeId: scopeId(),
+      normalizedMint: MINT_URL,
+      unit: "msat",
+      keysetId: market.yes.id,
+      recoveryComplete: true,
+    });
+
+    expect((await restorePass(() => 1_000_000)).status).toBe("complete");
+
+    expectNotScanned(mint, market.yes);
+    expect(await restoreRow(market.yes.id)).toMatchObject({ state: "complete" });
+    expect(await cursor(market.yes.id)).toBe(9);
+  });
+
+  it("waits with an admission while custody work of this browser is in flight", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
+    await mint.listInIndex([market.yes]);
+    vi.stubGlobal("fetch", mint.fetch);
+    await openIndexOnly();
+    await db.custodyActiveWork.put({ scopeId: scopeId(), operationId: "in-flight" } as never);
+    let nowMs = 1_000_000;
+    const now = () => nowMs;
+
+    const waiting = await restorePass(now);
+
+    // The outputs of an operation in flight must not be admitted first. This is a wait, no failure.
+    expect(waiting.status).toBe("waiting");
+    expect(await selectableHoldings()).toEqual([]);
+    expect(await restoreState()).toMatchObject({ failures: 0 });
+
+    await db.custodyActiveWork.clear();
+    nowMs += HOUR_MS;
+    expect((await restorePass(now)).status).toBe("complete");
+    expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
+  });
+
+  it("scans a completed empty keyset again when a later index read lists it (B -> A -> B)", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    // Browser B restores. A hint names the market, and its NO keyset is empty.
+    useActivityLogStore.setState({ items: [activityHint(`${"ab".repeat(32)}-YES`)] });
+    await runStartupPass();
+    expect(await restoreRow(market.no.id)).toMatchObject({ state: "complete" });
+    expect(await cursor(market.no.id)).toBeUndefined();
+
+    // Back in browser A, the user buys NO, and A lists the keyset.
+    mint.sign({ keyset: market.no, counter: 0, amount: 4, state: "UNSPENT" });
+    await mint.listInIndex([market.no]);
+    // Browser B opens the wallet again. The read names NO, which has no cursor in B.
+    await openWallet();
+    await activeBrowserRecoveryIndex(scopeId())!.lastRead();
+    await nextPass();
+
+    expect(await selectableHoldings()).toEqual(
+      [position(market.yes, 2), position(market.no, 4)].sort(byKeysetAndAmount),
+    );
+    expect(await cursor(market.no.id)).toBe(150 + 1);
+  });
+
+  it("keeps the restore cursor rule for a regular keyset that the restore did not reach", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: regular, counter: 4, amount: 8, state: "UNSPENT" });
+    await mint.listInIndex([market.yes]);
+    // The keys of the listed keyset fail, so the pass stops before the regular keyset.
+    mint.failKeys.add(market.yes.id);
+    vi.stubGlobal("fetch", mint.fetch);
+
+    await runStartupPass();
+
+    // The regular counter recovery of the same pass scanned it. The other
+    // browser's reserved counters after the last signed output stay unused.
+    expect(await selectableHoldings()).toEqual([regularHolding(regular, 8)]);
+    expect(await cursor(regular.id)).toBe(4 + 151);
+  });
+
+  it("does not run the restore in a profile that held the wallet before origin records", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    useActivityLogStore.setState({ items: [activityHint(`${"ab".repeat(32)}-YES`)] });
+    // A release 3 or 4 profile: a local cursor, and no origin or restore record.
+    await db.walletCounterCursors.put({ scopeId: scopeId(), keysetId: regular.id, next: 3 });
+    await db.walletCounterAssociations.put({
+      scopeId: scopeId(),
+      normalizedMint: MINT_URL,
+      unit: "msat",
+      keysetId: regular.id,
+      recoveryComplete: true,
+    });
+
+    await runStartupPass();
+
+    expect(await restoreState()).toBeUndefined();
+    expectNotScanned(mint, market.yes, market.no);
+    expect(window.localStorage.getItem("bitcaster.seed-restore-starts") ?? "[]").toBe("[]");
+    expect(await recoveryStatus()).toMatchObject({ kind: "completed", coverage: "full" });
+  });
+
+  it("runs the restore after a seed entry also when local wallet data exists", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
+    await mint.listInIndex([market.yes]);
+    vi.stubGlobal("fetch", mint.fetch);
+    await db.walletCounterCursors.put({ scopeId: scopeId(), keysetId: regular.id, next: 3 });
+    await recordEnteredBrowserSeed(scopeId());
+
+    await runStartupPass();
 
     expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
   });

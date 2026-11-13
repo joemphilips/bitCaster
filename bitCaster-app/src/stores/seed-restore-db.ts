@@ -1,4 +1,5 @@
 import Dexie, { type Table, type Transaction } from "dexie";
+import type { BitcasterDB } from "./proof-db";
 import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCustody";
 import type {
   RecoveryIndexKeysetProgress,
@@ -18,8 +19,11 @@ import { normalizeUrl } from "@/lib/url";
 
 export interface SeedRestoreOriginRow {
   readonly scopeId: string;
-  /** This browser profile generated the seed. It holds every proof of it. */
-  readonly origin: "generated";
+  /**
+   * `generated`: this browser profile generated the seed and holds every
+   * proof of it. `entered`: the user entered the seed, so the restore runs.
+   */
+  readonly origin: "generated" | "entered";
   readonly recordedAtMs: number;
 }
 
@@ -57,7 +61,7 @@ export interface SeedRestoreStateRow {
   readonly countersUsed: number;
   /** The restore stopped at its counter budget. Retry continues it with a new budget. */
   readonly budgetStopped: boolean;
-  /** The user closed the restore result. */
+  /** The user closed the CLI gap line of the restore result. The partial pointer stays. */
   readonly resultDismissedAtMs: number | null;
   readonly failures: number;
   readonly nextAttemptAtMs: number;
@@ -723,8 +727,16 @@ const pendingOriginWrites = new Map<string, Promise<void>>();
  * skips this profile: it holds every proof of the seed. Call it at generation.
  */
 export function recordGeneratedBrowserSeed(scopeId: string, nowMs = Date.now()): Promise<void> {
+  return recordOrigin(scopeId, "generated", nowMs);
+}
+
+function recordOrigin(
+  scopeId: string,
+  origin: SeedRestoreOriginRow["origin"],
+  nowMs: number,
+): Promise<void> {
   const write = seedRestoreDatabase(scopeId)
-    .origins.put({ scopeId, origin: "generated", recordedAtMs: nowMs })
+    .origins.put({ scopeId, origin, recordedAtMs: nowMs })
     .then(() => undefined);
   pendingOriginWrites.set(scopeId, write);
   void write
@@ -737,6 +749,75 @@ export function recordGeneratedBrowserSeed(scopeId: string, nowMs = Date.now()):
 
 /** True when this browser profile generated the seed and still holds its records. */
 export async function isBrowserSeedGeneratedHere(scopeId: string): Promise<boolean> {
+  return (await browserSeedOrigin(scopeId)) === "generated";
+}
+
+/**
+ * Records a seed entry: the user entered the seed (setup, import, or wallet
+ * replacement). The seed restore then runs for it. Call it before the
+ * profile of the seed is activated.
+ */
+export function recordEnteredBrowserSeed(scopeId: string, nowMs = Date.now()): Promise<void> {
+  return recordOrigin(scopeId, "entered", nowMs);
+}
+
+/** The origin of the seed in this browser profile, or null without a record. */
+export async function browserSeedOrigin(
+  scopeId: string,
+): Promise<SeedRestoreOriginRow["origin"] | null> {
   await pendingOriginWrites.get(scopeId)?.catch(() => undefined);
-  return (await seedRestoreDatabase(scopeId).origins.get(scopeId))?.origin === "generated";
+  const origin = (await seedRestoreDatabase(scopeId).origins.get(scopeId))?.origin;
+  switch (origin) {
+    case "generated":
+    case "entered":
+      return origin;
+    case undefined:
+      return null;
+    default:
+      throw new Error("The seed restore origin is unknown.");
+  }
+}
+
+/**
+ * Whether the automatic seed restore event runs for this profile (ADR-039,
+ * amendment 2026-11-09). It runs after a seed entry, and it continues a
+ * restore that already started. A profile without an origin record that
+ * holds local counter cursors used the wallet before origin records existed:
+ * it holds the proofs, so it does not run the event. It only uploads its
+ * index. An empty profile without a record holds nothing, so it restores.
+ */
+export async function browserSeedRestoreRuns(
+  scopeId: string,
+  database: BitcasterDB,
+): Promise<boolean> {
+  await pendingOriginWrites.get(scopeId)?.catch(() => undefined);
+  return readBrowserSeedRestoreRuns(scopeId, database);
+}
+
+/**
+ * `browserSeedRestoreRuns` with Dexie reads only, for a live query: a live
+ * query observes only the tables of its Dexie reads.
+ */
+export async function readBrowserSeedRestoreRuns(
+  scopeId: string,
+  database: BitcasterDB,
+): Promise<boolean> {
+  const restore = seedRestoreDatabase(scopeId);
+  const origin = (await restore.origins.get(scopeId))?.origin;
+  switch (origin) {
+    case "generated":
+      return false;
+    case "entered":
+      return true;
+    case undefined: {
+      const started = await restore.states
+        .where("[scopeId+mintUrl]")
+        .between([scopeId, ""], [scopeId, "\uffff"], true, true)
+        .count();
+      if (started > 0) return true;
+      return (await database.walletCounterCursors.where("scopeId").equals(scopeId).count()) === 0;
+    }
+    default:
+      throw new Error("The seed restore origin is unknown.");
+  }
 }

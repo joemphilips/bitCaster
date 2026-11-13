@@ -23,6 +23,7 @@ import {
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
 import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
+import { browserSeedOrigin } from "../seed-restore-db";
 import { useToastStore } from "../toast";
 import { usePendingTradesStore } from "../pendingTrades";
 import i18n from "@/i18n";
@@ -669,6 +670,17 @@ describe("useWalletStore", () => {
       expect(seedHandoffMocks.handoff).toHaveBeenLastCalledWith(
         expect.objectContaining({ acceptCounterGap: true, acceptPartialBackup: false }),
       );
+      setActiveBrowserWalletProfile("");
+    });
+
+    it("records a seed entry, so that the seed restore runs for the entered wallet", async () => {
+      useWalletStore.setState({ mnemonic: "" });
+      const words = bip39.generate();
+      const scopeId = browserWalletScopeIdFromMnemonic(words.join(" "))!;
+
+      expect(await useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
+
+      expect(await browserSeedOrigin(scopeId)).toBe("entered");
       setActiveBrowserWalletProfile("");
     });
 

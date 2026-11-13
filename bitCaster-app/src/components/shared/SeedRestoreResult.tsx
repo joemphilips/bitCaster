@@ -19,18 +19,20 @@ export interface SeedRestoreResultDisplay {
   readonly partial: boolean;
   /** Retry can change the partial result. */
   readonly retryable: boolean;
+  /** The user did not close the CLI gap line. */
+  readonly gapLineShown: boolean;
 }
 
 /**
  * The restore result: one short line with the CLI command for a larger gap
- * (ADR-051), and for a partial result one pointer to the CLI broad recovery.
- * It stays until the user closes it. Retry continues the restore; it is not a
- * new restore start.
+ * (ADR-051), and for a partial result one persistent pointer to the CLI broad
+ * recovery (ADR-039). Only the gap line can be closed. The pointer stays while
+ * the coverage is limited. Retry continues the restore; it is not a new start.
  */
 export function SeedRestoreResult({ result }: { result: SeedRestoreResultDisplay | null }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  if (result === null) return null;
+  if (result === null || (!result.partial && !result.gapLineShown)) return null;
   const { scopeId } = result;
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -64,26 +66,30 @@ export function SeedRestoreResult({ result }: { result: SeedRestoreResultDisplay
             })}
           </p>
         )}
-        <p>
-          {t("wallet.restoreResult.gapLimit", {
-            command: recoveryIndexCliGapCommand(RECOVERY_INDEX_CLI_RESULT_GAP_LIMIT),
-          })}
-        </p>
+        {result.gapLineShown && (
+          <p className="flex items-start gap-2">
+            <span className="min-w-0 flex-1">
+              {t("wallet.restoreResult.gapLimit", {
+                command: recoveryIndexCliGapCommand(RECOVERY_INDEX_CLI_RESULT_GAP_LIMIT),
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={() => void dismiss()}
+              disabled={busy}
+              aria-label={t("common.dismiss")}
+              className="shrink-0 rounded p-0.5 hover:bg-slate-200 disabled:opacity-50 dark:hover:bg-slate-800"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </p>
+        )}
       </div>
       {result.retryable && (
         <button type="button" onClick={() => void retry()} disabled={busy} className={actionClass}>
           {t("common.retry")}
         </button>
       )}
-      <button
-        type="button"
-        onClick={() => void dismiss()}
-        disabled={busy}
-        aria-label={t("common.dismiss")}
-        className="shrink-0 rounded p-1 hover:bg-slate-200 disabled:opacity-50 dark:hover:bg-slate-800"
-      >
-        <X className="h-4 w-4" aria-hidden="true" />
-      </button>
     </div>
   );
 }

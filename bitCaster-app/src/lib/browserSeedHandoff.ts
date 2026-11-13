@@ -41,17 +41,21 @@ export class BrowserSeedHandoffRefusal extends Error {
  * the later output. The signed outputs are the NUT-13 counters of the proofs
  * that this browser holds or held. A counter that the browser does not know
  * can only lengthen a run, so the check can warn too often but not too rarely.
+ * A live proof without a NUT-13 locator, for example melt change, has an
+ * unknown counter below the cursor: the run can end there.
  */
 export async function browserSeedHandoffCounterGap(
   database: BitcasterDB,
   scopeId: string,
 ): Promise<{ readonly longestRun: number; readonly cliGapLimit: number } | null> {
-  const local = new Set(
+  const cursors = new Map(
     (await database.walletCounterCursors.where("scopeId").equals(scopeId).toArray()).map(
-      ({ keysetId }) => keysetId,
+      ({ keysetId, next }) => [keysetId, next],
     ),
   );
+  const local = new Set(cursors.keys());
   const signed = new Map<string, number[]>();
+  const located = new Set<string>();
   const authorities = await database.custodyProofBackupAuthorities
     .where("[scopeId+proofId]")
     .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
@@ -67,12 +71,27 @@ export async function browserSeedHandoffCounterGap(
       continue;
     }
     if (locator.kind !== "nut13" || !local.has(locator.keysetId)) continue;
+    located.add(row.proofId);
     const counters = signed.get(locator.keysetId) ?? [];
     counters.push(locator.counter);
     signed.set(locator.keysetId, counters);
   }
+  // The keysets that hold a live proof whose counter is not recorded.
+  const unknown = new Set<string>();
+  const proofs = await database.custodyProofs
+    .where("[scopeId+selectability]")
+    .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+    .toArray();
+  for (const proof of proofs) {
+    if (proof.selectability === "spent" || located.has(proof.proofId)) continue;
+    if (local.has(proof.keysetId)) unknown.add(proof.keysetId);
+  }
   let worst: { readonly longestRun: number; readonly cliGapLimit: number } | null = null;
-  for (const counters of signed.values()) {
+  for (const keysetId of local) {
+    const counters = [...(signed.get(keysetId) ?? [])];
+    // The latest place of an unknown signed output: the counter below the cursor.
+    const cursor = cursors.get(keysetId);
+    if (unknown.has(keysetId) && cursor !== undefined && cursor > 0) counters.push(cursor - 1);
     const warning = seedCounterGapWarning(counters);
     if (warning !== null && (worst === null || warning.longestRun > worst.longestRun)) {
       worst = warning;

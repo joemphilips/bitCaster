@@ -1,5 +1,8 @@
 import "fake-indexeddb/auto";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { createElement } from "react";
+import { Portfolio } from "@/components/portfolio/Portfolio";
+import type { PortfolioStats } from "@/types/portfolio";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WalletRecoveryStatus } from "@bitcaster/client-sdk/walletRecoveryStatus";
 import {
@@ -552,6 +555,57 @@ describe("useWalletRecoveryStatus", () => {
     await waitFor(() =>
       expect(status.current).toMatchObject({ kind: "completed", coverage: "limited" }),
     );
+  });
+
+  it("shows a restore stopped at its budget as a partial result with Retry, not as recovering", async () => {
+    await putState(MINT_1, {
+      ...completedState(),
+      budgetStopped: true,
+      initialCompletedAtMs: null,
+    });
+    // The plan still holds keysets that the budget did not reach.
+    await putRestoreKeyset(MINT_1, KEYSET_A, { state: "queued" });
+    useWallet(MNEMONIC_A, [MINT_1]);
+    const status = mountStatus();
+    await runPass(MINT_1);
+
+    await waitFor(() =>
+      expect(status.current).toMatchObject({ kind: "completed", coverage: "limited" }),
+    );
+    const tag = currentTag([MINT_1]);
+    const read = { kind: "ok", tag, afterPassSeq: 1, value: [] } as const;
+    render(
+      createElement(Portfolio, {
+        walletState: "ready",
+        baseCurrency: "BTC",
+        selectedTimeRange: "ALL",
+        profile: { displayName: "Anonymous", avatarUrl: null, bio: "" },
+        plChartData: { "1D": [], "1W": [], "1M": [], ALL: [] },
+        stats: {
+          totalValueSats: 0,
+          totalValueKnown: true,
+          positionsValueSats: 0,
+          positionsValueKnown: true,
+          predictionsCount: 0,
+        } as PortfolioStats,
+        positions: [],
+        activity: [],
+        funds: [],
+        holdings: { funds: read, positions: read },
+        createdMarkets: [],
+        positionsTab: "active",
+      }),
+    );
+
+    const result = await screen.findByTestId("seed-restore-result");
+    expect(result).toHaveAttribute("data-partial", "true");
+    expect(
+      within(result).getByText(
+        "Some positions may be missing. Use bitcaster wallet recover-seed --all-conditions.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(result).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByTestId("wallet-recovery-status")).toHaveAttribute("data-state", "complete");
   });
 
   it("keeps a keyset scan pending, and a refused keyset limits the coverage", async () => {

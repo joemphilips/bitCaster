@@ -125,7 +125,8 @@ Without a wallet backup, for example when the old browser never wrote one, the
 restore cannot find the markets that only the backup lists. The same applies
 while the matching engine is unavailable. Then Portfolio also shows **Some
 positions may be missing. Use `bitcaster wallet recover-seed --all-conditions`.**
-It does not show **No funds** or **No active positions** as final. After an
+This line stays while the restore is partial. Portfolio does not show
+**No funds** or **No active positions** as final. After an
 unavailable matching engine, **Retry** reads the backup again, and so does the
 next opening of the wallet.
 
@@ -133,9 +134,9 @@ One restore checks at most 150,000 outputs at the mint. When a restore reaches
 this limit, it stops and shows the same partial result. **Retry** continues
 where it stopped.
 
-An earlier version of the app did not record which browser created a wallet.
-So the first time a browser opens this version, it runs the restore for its
-current wallet, also when that browser created the wallet.
+A browser that already held its wallet before this version of the app does
+not run this restore. It keeps its records and writes the wallet backup of the
+keysets that it uses.
 
 ### Check for use in another browser
 

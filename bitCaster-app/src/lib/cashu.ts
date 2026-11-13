@@ -71,6 +71,7 @@ import {
 import {
   SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
   findLastSignedSeedCounter,
+  nextSeedCounterAfterLastSigned,
 } from "@bitcaster/client-sdk/seedCounterGapScan";
 import { scanSeedCountersForAdmission } from "@bitcaster/client-sdk/seedCounterAdmissionScan";
 import {
@@ -735,8 +736,8 @@ export interface KeysetRecoveryResult {
   postponedKeysets?: string[];
 }
 
-/** A deferral scan met custody work in flight at admission. */
-class CounterRecoveryPostponedError extends Error {}
+/** A recovery scan met custody work in flight at admission. The caller waits; it is no failure. */
+export class CounterRecoveryPostponedError extends Error {}
 
 type RecoverableMintKeyset = {
   id: string;
@@ -1720,7 +1721,19 @@ async function recoverKeysetCountersForMintCore(
         const pendingBelow = passedPending !== null && passedPending < scanFrom;
         requireCapturedProfile();
         requireValidCounterRecoveryResult(lastCounterWithSignature);
-        const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
+        // A regular keyset that an unfinished seed restore still owns gets the
+        // restore cursor rule (ADR-051): another browser's reserved counters
+        // after the last signed output stay unused.
+        const restoreOwned =
+          scanFrom === 0 &&
+          opts.conditionalKeyset === undefined &&
+          (await seedRestoreOwnsKeyset(scopeId, url, keyset.id));
+        const next =
+          lastCounterWithSignature === undefined
+            ? 0
+            : restoreOwned
+              ? nextSeedCounterAfterLastSigned(lastCounterWithSignature)
+              : lastCounterWithSignature + 1;
         // CRITICAL: the scan returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
         // proofs would inflate the displayed balance and cause spent-token
@@ -1984,6 +1997,9 @@ export type BrowserRecoveryIndexWindowKeyset =
  * cursor never moves back.
  */
 export async function admitBrowserRecoveryIndexWindow(input: {
+  readonly scopeId: string;
+  /** The 64-byte BIP-39 seed of the scope. */
+  readonly seed: Uint8Array;
   readonly mintUrl: string;
   readonly keyset: BrowserRecoveryIndexWindowKeyset;
   readonly proofs: readonly Proof[];
@@ -1993,9 +2009,7 @@ export async function admitBrowserRecoveryIndexWindow(input: {
   readonly recovery: "complete" | "incomplete";
 }): Promise<void> {
   const url = normalizeUrl(input.mintUrl);
-  const store = useWalletStore.getState();
-  const scopeId = store.mnemonic ? browserWalletScopeIdFromMnemonic(store.mnemonic) : null;
-  if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+  const { scopeId, seed } = input;
   const requireCapturedProfile = () => {
     if (activeBrowserWalletScopeId() !== scopeId) {
       throw new Error("The wallet profile changed during the seed restore.");
@@ -2006,7 +2020,7 @@ export async function admitBrowserRecoveryIndexWindow(input: {
   }
   requireCounter(input.next);
   const unit = "msat" as const;
-  const wallet = (await store.getWalletForUnit(url, unit)) as CashuWallet;
+  const wallet = (await useWalletStore.getState().getWalletForUnit(url, unit)) as CashuWallet;
   const keysetId = input.keyset.kind === "regular" ? input.keyset.id : input.keyset.authority.id;
   let conditional: { conditionId: string; outcomeCollection: string } | null = null;
   if (input.keyset.kind === "conditional") {
@@ -2032,7 +2046,6 @@ export async function admitBrowserRecoveryIndexWindow(input: {
   }
   await wallet.keyChain.ensureKeysetKeys(keysetId);
   requireCapturedProfile();
-  const seed = toSeed(store.mnemonic.trim().split(/\s+/));
   validateRecoveredProofs(wallet, url, unit, keysetId, input.proofs);
   const asset = counterRecoveryProofAsset(wallet, keysetId);
   const stored: StoredProof[] = input.proofs.map((proof) => ({
@@ -2074,11 +2087,27 @@ export async function admitBrowserRecoveryIndexWindow(input: {
       restoredNext: input.next,
       recovery: input.recovery,
       conditional,
-      refuseWhileCustodyWork: false,
+      // A scan from counter 0 must not admit the outputs of an operation of
+      // this browser before the operation records them.
+      refuseWhileCustodyWork: true,
       custodyOwner: null,
       requireCapturedProfile,
     }),
   );
+}
+
+/** Whether an unfinished seed restore still plans to scan this keyset. A read failure means no. */
+async function seedRestoreOwnsKeyset(
+  scopeId: string,
+  mintUrl: string,
+  keysetId: string,
+): Promise<boolean> {
+  try {
+    const row = await seedRestoreDatabase(scopeId).keysets.get([scopeId, mintUrl, keysetId]);
+    return row?.state === "queued";
+  } catch {
+    return false;
+  }
 }
 
 /**

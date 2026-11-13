@@ -17,7 +17,7 @@ import { useWalletStore } from "@/stores/wallet";
 /**
  * The restore result of the active wallet, from the durable restore rows. A
  * restore has a result when its plan is complete or it stopped at its counter
- * budget. A closed result and a seed that this browser generated show none.
+ * budget. A profile that runs no restore has no restore row, so it shows none.
  */
 export function useSeedRestoreResult(): SeedRestoreResultDisplay | null {
   const walletKey = useSyncExternalStore(subscribeToWallet, readWalletKey, readWalletKey);
@@ -41,13 +41,13 @@ async function readResult(
   mintUrls: readonly string[],
 ): Promise<SeedRestoreResultDisplay | null> {
   const database = seedRestoreDatabase(scopeId);
-  if ((await database.origins.get(scopeId)) !== undefined) return null;
   let shown = false;
   let partial = false;
   let retryable = false;
+  let gapLineShown = false;
   for (const mintUrl of walletRecoveryMintUrls(mintUrls)) {
     const state = await database.states.get([scopeId, mintUrl]);
-    if (state === undefined || state.resultDismissedAtMs !== null) continue;
+    if (state === undefined) continue;
     if (state.initialCompletedAtMs === null && !state.budgetStopped) continue;
     const keysets = await database.keysets
       .where("[scopeId+mintUrl]")
@@ -56,8 +56,9 @@ async function readResult(
     shown = true;
     partial ||= seedRestoreResultIsPartial(state, keysets);
     retryable ||= seedRestoreResultIsRetryable(state, keysets);
+    gapLineShown ||= state.resultDismissedAtMs === null;
   }
-  return shown ? { scopeId, partial, retryable } : null;
+  return shown ? { scopeId, partial, retryable, gapLineShown } : null;
 }
 
 function activeScopeId(mnemonic: string, activeScope: string | null): string | null {

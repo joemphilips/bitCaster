@@ -29,6 +29,7 @@ import {
 import { db, type BrowserWalletCounterAssociationRow } from "@/stores/proof-db";
 import {
   isSeedRestoreScanCapped,
+  readBrowserSeedRestoreRuns,
   readSeedRestoreResyncRow,
   seedRestoreDatabase,
   seedRestoreKeysetRefused,
@@ -55,8 +56,8 @@ export type WalletRecoveryDurableRead =
   | {
       readonly kind: "ok";
       readonly tag: WalletRecoveryTag;
-      /** This browser profile generated the seed. The seed restore does not run. */
-      readonly generated: boolean;
+      /** The seed restore event runs for this profile (ADR-039, amendment 2026-11-09). */
+      readonly restoreRuns: boolean;
       /** Keyed by the normalized mint URL. */
       readonly mints: ReadonlyMap<string, WalletRecoveryDurableMintRows>;
     }
@@ -123,11 +124,7 @@ export async function readWalletRecoveryDurableRows(
       throw new Error("The wallet database is not the active wallet.");
     }
     const database = seedRestoreDatabase(scopeId);
-    const origin = await database.origins.get(scopeId);
-    if (origin !== undefined && origin.origin !== "generated") {
-      throw new Error("The seed restore origin is unknown.");
-    }
-    const generated = origin !== undefined;
+    const restoreRuns = await readBrowserSeedRestoreRuns(scopeId, db);
     const mints = new Map<string, WalletRecoveryDurableMintRows>();
     for (const mintUrl of mintUrls) {
       const [state, keysets, resync, schedule, associations] = await Promise.all([
@@ -148,7 +145,7 @@ export async function readWalletRecoveryDurableRows(
         associations,
       });
     }
-    return { kind: "ok", tag, generated, mints };
+    return { kind: "ok", tag, restoreRuns, mints };
   } catch {
     return { kind: "failed", tag };
   }
@@ -217,7 +214,7 @@ export function browserWalletRecoveryStatus(input: {
     stages.push(passed?.resyncPass ?? notRun(`resyncPass ${mintUrl}`));
     resyncObservations(mintUrl, rows, stages, persistentFailures);
     restoreScanObservations(mintUrl, rows, stages, persistentFailures);
-    if (!durable.generated) {
+    if (durable.restoreRuns) {
       seedRestoreObservations(
         mintUrl,
         passed?.seedRestorePass ?? null,
@@ -332,9 +329,12 @@ function restoreScanObservations(
   stages: WalletRecoveryStageObservation[],
   persistentFailures: WalletRecoveryFailureCount[],
 ): void {
+  // A restore that stopped at its counter budget does not continue its plan
+  // until Retry. Its result shows as partial, with Retry (ADR-039).
+  const stopped = rows.state?.budgetStopped === true && rows.state.initialCompletedAtMs === null;
   for (const row of rows.keysets) {
     const stage = `restoreScan ${mintUrl} ${row.keysetId}`;
-    if (seedRestoreKeysetRefused(row.state)) {
+    if (seedRestoreKeysetRefused(row.state) || (stopped && row.state === "queued")) {
       stages.push({ stage, state: "completed", coverage: "limited" });
       continue;
     }

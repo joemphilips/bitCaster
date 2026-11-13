@@ -172,6 +172,8 @@ export class FakeMint {
   echoRestore = false;
   /** Runs once at the next NUT-07 check, between a scan and its admission. */
   onCheckstate: (() => Promise<void>) | null = null;
+  /** Keysets whose NUT-01 keys request fails with 503. */
+  readonly failKeys = new Set<string>();
   /** Conditions whose filtered keyset listing fails. */
   readonly failConditionListing = new Set<string>();
   /**
@@ -319,7 +321,9 @@ export class FakeMint {
       return json({ keysets: [keysResponse(this.regular)] });
     }
     if (method === "GET" && url.pathname.startsWith("/v1/keys/")) {
-      const keyset = allKeysets.find(({ id }) => id === url.pathname.slice("/v1/keys/".length));
+      const keysetId = url.pathname.slice("/v1/keys/".length);
+      if (this.failKeys.has(keysetId)) return json({ detail: "unavailable" }, 503);
+      const keyset = allKeysets.find(({ id }) => id === keysetId);
       return keyset === undefined
         ? json({ detail: "unknown keyset", code: 12001 }, 400)
         : json({ keysets: [keysResponse(keyset)] });

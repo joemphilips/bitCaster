@@ -23,8 +23,10 @@ import {
   getProofs,
 } from "../proof-db";
 import {
+  browserSeedRestoreRuns,
   deleteSeedRestoreDatabase,
   initialSeedRestoreState,
+  recordEnteredBrowserSeed,
   isBrowserSeedGeneratedHere,
   SeedRestoreDB,
   seedRestoreDatabaseName,
@@ -324,6 +326,35 @@ describe("release 4 browser databases", () => {
           nextAttemptAtMs: 0,
         },
       ]);
+    } finally {
+      current.close();
+    }
+  });
+
+  it("does not run the seed restore for a shipped wallet without a seed restore record", async () => {
+    // A release 3 or 4 profile holds the wallet with its cursors. ADR-039: a
+    // profile without an origin record does not run the restore event.
+    await createShipped(wallet);
+    const current = new BitcasterDB(wallet.name);
+    try {
+      await current.open();
+      expect(await current.walletCounterCursors.count()).toBeGreaterThan(0);
+      expect(await browserSeedRestoreRuns(scope.scopeId, current)).toBe(false);
+      // A seed entry writes the origin that makes the restore run.
+      await recordEnteredBrowserSeed(scope.scopeId);
+      expect(await browserSeedRestoreRuns(scope.scopeId, current)).toBe(true);
+    } finally {
+      current.close();
+    }
+  });
+
+  it("does not run the seed restore for the shipped generated seed", async () => {
+    await createShipped(wallet);
+    await createShipped(seedRestore);
+    const current = new BitcasterDB(wallet.name);
+    try {
+      await current.open();
+      expect(await browserSeedRestoreRuns(scope.scopeId, current)).toBe(false);
     } finally {
       current.close();
     }
