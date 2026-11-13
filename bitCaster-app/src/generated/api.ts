@@ -2673,7 +2673,7 @@ export interface operations {
                     "application/json": components["schemas"]["SubmitOrderResponse"];
                 };
             };
-            /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
+            /** @description Application validation failed with order-invalid-request or order-invalid-comment. In the admission form, settlement-capability-policy-rejected means the capability does not meet the admission policy, including an authorization that expires less than 15 seconds after the request; settlement-capability-invalid-artifact means the artifact is invalid or unsupported; settlement-capability-invalid-request means an invalid capability request field. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2707,7 +2707,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
+            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. In the admission form, settlement-capability-not-found means the market of the capability is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2716,7 +2716,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. In the admission form, order-capability-not-current also means that the capability expired unbound or that the stage route bound it. settlement-capability-conflict means that the stageIdempotencyKey, the clientOrderId or a proof is already used by another operation or route; nothing is written. A submission failure alone does not authorize a refund. */
+            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. In the admission form, order-capability-not-current also means that the capability expired unbound or that the stage route bound it. settlement-capability-conflict means that the stageIdempotencyKey, the clientOrderId or a proof is already used by another operation or route; nothing is written. settlement-capability-market-unavailable means the market does not accept the capability now. A submission failure alone does not authorize a refund. */
             409: {
                 headers: {
                     [name: string]: unknown;
