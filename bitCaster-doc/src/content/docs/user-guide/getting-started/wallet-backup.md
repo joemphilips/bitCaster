@@ -203,9 +203,6 @@ uses user-approved asset, amount, condition, and activity metadata.
 The history chart shows changes in estimated portfolio value. These changes
 can include cash flows. They do not measure profit or investment return.
 
-Its secondary purpose is to help the web app identify an exact missing asset.
-The app can then make one bounded recovery attempt.
-
 The portfolio's Funds tab reads regular funds from the wallet in this browser,
 not from asset monitoring. It groups them by mint and asset and shows money in
 sats. Different mints remain separate. Funds that an unfinished trade or
