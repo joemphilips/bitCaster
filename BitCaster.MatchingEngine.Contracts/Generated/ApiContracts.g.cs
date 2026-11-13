@@ -2058,26 +2058,34 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority.
+    /// Order submission. The body holds exactly one of settlementCapability (reference form) and settlementCapabilityAdmission (admission form). A body with both forms or with neither form gets 400 order-invalid-request. In the reference form the server loads all immutable order identity and economic terms from the current durable DCB binding. In the admission form the server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. A reference is not bearer authority.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference @settlementCapability, string? @walletId)
+        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference? @settlementCapability, CreateSettlementCapabilityRequest? @settlementCapabilityAdmission, string? @walletId)
         {
             this.SettlementCapability = @settlementCapability;
+            this.SettlementCapabilityAdmission = @settlementCapabilityAdmission;
             this.Comment = @comment;
             this.WalletId = @walletId;
         }
 
         /// <summary>
-        /// Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state.
+        /// Reference form. A current capability binding from POST /api/v1/settlement-capabilities. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
-        public SettlementCapabilityReference SettlementCapability { get; }
+        public SettlementCapabilityReference? SettlementCapability { get; }
+
+        /// <summary>
+        /// Admission form. The capability artifact and order intent, with the same fields and limits as POST /api/v1/settlement-capabilities. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. A stageIdempotencyKey that the stage route used conflicts here, and the reverse. A capability that the stage route bound is accepted only through the reference form.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapabilityAdmission")]
+        public CreateSettlementCapabilityRequest? SettlementCapabilityAdmission { get; }
 
         /// <summary>
         /// Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL.
@@ -2495,7 +2503,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status)
+        public SubmitOrderResponse(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, SettlementCapabilityResponse? @settlementCapability, OrderLifecycleStatus @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
@@ -2504,6 +2512,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.ActiveSettlementGroup = @activeSettlementGroup;
+            this.SettlementCapability = @settlementCapability;
         }
 
         /// <summary>
@@ -2541,6 +2550,59 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
         public SettlementGroupSummary? ActiveSettlementGroup { get; }
+
+        /// <summary>
+        /// Admission form only. The capability lifecycle of this order. It is absent from a reference-form response, and from a stored result whose capability the server no longer keeps.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
+        public SettlementCapabilityResponse? SettlementCapability { get; }
+
+    }
+
+    /// <summary>
+    /// One accepted order of the authenticated owner, found by condition and client order id. Read the order details through GET /api/v1/{marketId}/orders/{orderId}.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderLookupResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderLookupResponse(string @artifactDigest, string @marketId, System.Guid @orderId, SettlementCapabilityReference @settlementCapability, OrderLookupResponseStatus @status)
+        {
+            this.OrderId = @orderId;
+            this.MarketId = @marketId;
+            this.Status = @status;
+            this.SettlementCapability = @settlementCapability;
+            this.ArtifactDigest = @artifactDigest;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// Public market route of the order.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// accepted: the order is accepted and its processing result is not recorded yet. processed: its processing result is recorded.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderLookupResponseStatus>))]
+        public OrderLookupResponseStatus Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
+        public SettlementCapabilityReference SettlementCapability { get; }
+
+        /// <summary>
+        /// Digest of the capability artifact. A client compares it with its local artifact digest before it uses the reference.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("artifactDigest")]
+        public string ArtifactDigest { get; }
 
     }
 
@@ -4407,6 +4469,18 @@ namespace BitCaster.MatchingEngine.Contracts
         _1000 = 1000,
 
         _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderLookupResponseStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"accepted")]
+        Accepted = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"processed")]
+        Processed = 1,
 
     }
 
