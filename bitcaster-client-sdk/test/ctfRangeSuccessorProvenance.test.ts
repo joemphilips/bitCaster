@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { webcrypto } from 'node:crypto'
 import { OutputData, createCtfSelectionBitmap } from '@cashu/cashu-ts'
 import { signedOwnerRangeFixture } from './support/signedOwnerRangeFixture.ts'
 import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDurableCustodyAdapter.ts'
@@ -17,11 +16,7 @@ import {
   resolveDurableCustodyProofOperationFacts,
 } from '../src/index.ts'
 import { bindDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
-import {
-  prepareEncryptedWalletBackupV2ProofSetBundle,
-  createEncryptedWalletBackupV2AssetIdentity,
-} from '../src/encryptedWalletBackupV2ProofSet.ts'
-import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
+import { createEncryptedWalletBackupV2AssetIdentity } from '../src/encryptedWalletBackupV2ProofSet.ts'
 import { deserializeDurableCustodyProofArtifact } from '../src/durableCustodyProofMaterial.ts'
 
 async function stagedFixture(plain: boolean, side: 'Buy' | 'Sell' = 'Buy', zero = false) {
@@ -124,8 +119,8 @@ async function stagedFixture(plain: boolean, side: 'Buy' | 'Sell' = 'Buy', zero 
 for (const plain of [false, true])
   for (const zero of plain ? [false, true] : [false])
     for (const side of ['Buy', 'Sell'] as const)
-      test(`verified ${plain ? 'ordinary-counter' : 'legacy-contextual'} ${side} ${zero ? 'zero' : 'nonzero'} successors remain exportable by the actual backup consumer`, async () => {
-        const { fixture, operation, preparation, seed, record, result } = await stagedFixture(
+      test(`verified ${plain ? 'ordinary-counter' : 'legacy-contextual'} ${side} ${zero ? 'zero' : 'nonzero'} successors map to stored proofs and asset identities`, async () => {
+        const { operation, preparation, seed, record, result } = await stagedFixture(
           plain,
           side,
           zero,
@@ -136,68 +131,36 @@ for (const plain of [false, true])
         )
         assert.ok(successors.some((s) => s.classification.conditionId === null))
         assert.ok(successors.some((s) => s.classification.conditionId !== null))
-        const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
-          seed,
-          realm: 'backup.example',
-          runtime: webcrypto,
-        })
         for (const successor of successors) {
           const conditional = successor.classification.conditionId !== null
-          const source = conditional
-            ? preparation.offerKeyset.id === successor.material.keysetId
-              ? preparation.offerKeyset
-              : preparation.receiveKeyset
-            : null
           const metadata = preparation.expiryObservation.conditionalKeysets.find(
             (k) => k.keysetId === successor.material.keysetId,
           )
-          const asset =
-            source === null
-              ? { kind: 'ordinary' as const }
-              : {
-                  kind: 'ctf' as const,
+          assert.equal(metadata !== undefined, conditional)
+          const proof = deserializeDurableCustodyProofArtifact({
+            schemaVersion: 1,
+            ...successor.proof,
+          })
+          assert.equal(proof.id, successor.material.keysetId)
+          const identity = createEncryptedWalletBackupV2AssetIdentity({
+            mintUrl: operation.mintUrl,
+            unit: 'msat',
+            asset: conditional
+              ? {
+                  kind: 'ctf',
                   conditionId: operation.conditionId,
                   outcomeLabel: metadata!.outcomeCollection as string,
                   outcomeCollectionId: metadata!.outcomeCollectionId as string,
                   registeredAt: metadata!.registeredAt as number,
                   finalExpiry: metadata!.finalExpiry as number,
                 }
-          const proof = {
-            mintUrl: operation.mintUrl,
-            unit: 'msat' as const,
-            asset,
-            proof: deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...successor.proof }),
-            locator: successor.derivationLocator,
-          }
-          const next =
-            preparation.version === 3
-              ? successor.material.keysetId === preparation.offerKeyset.id
-                ? preparation.offerCounterStart + preparation.offerCounterCount
-                : preparation.receiveCounterStart + preparation.receiveCounterCount
-              : 0
-          await assert.doesNotReject(() =>
-            prepareEncryptedWalletBackupV2ProofSetBundle({
-              keyHandle,
-              seed,
-              asset: createEncryptedWalletBackupV2AssetIdentity({
-                mintUrl: operation.mintUrl,
-                unit: 'msat',
-                asset,
-              }),
-              custodyRevision: 1n,
-              proofs: [proof],
-              counterHighWaterMarks: plain
-                ? [
-                    {
-                      mintUrl: operation.mintUrl,
-                      unit: 'msat',
-                      keysetId: successor.material.keysetId,
-                      nextCounter: next,
-                    },
-                  ]
-                : [],
-              runtime: webcrypto,
-            }),
+              : { kind: 'ordinary' },
+          })
+          assert.equal(
+            identity.assetIdentity,
+            conditional
+              ? `ctf:${operation.conditionId}:${metadata!.outcomeCollectionId}`
+              : 'cashu:ordinary',
           )
         }
       })

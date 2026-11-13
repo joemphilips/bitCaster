@@ -37,9 +37,9 @@ implementation choices in `BitCaster.MatchingEngine.Contracts/`,
   economic portfolio.
 - Do not use that projection for spending, settlement, proof selection, refunds,
   penalties, Score, eviction, or deletion.
-- A browser can use a separate client-encrypted backup for quota and origin-loss
-  recovery.
-- The backup service must not learn proof secrets or spending authority.
+- A browser keeps a client-encrypted recovery index for origin-loss recovery.
+  The index holds no proofs.
+- The index host must not learn proof secrets or spending authority.
 - Use encrypted NIP-78 records only for other approved private application
   state.
 - Creator-market discovery can be public or indexed by the engine.
