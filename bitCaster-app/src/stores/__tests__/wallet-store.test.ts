@@ -23,7 +23,7 @@ import {
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
 import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
-import { browserSeedOrigin } from "../seed-restore-db";
+import { browserSeedOrigin, recordGeneratedBrowserSeed } from "../seed-restore-db";
 import { useToastStore } from "../toast";
 import { usePendingTradesStore } from "../pendingTrades";
 import i18n from "@/i18n";
@@ -681,6 +681,19 @@ describe("useWalletStore", () => {
       expect(await useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
 
       expect(await browserSeedOrigin(scopeId)).toBe("entered");
+      setActiveBrowserWalletProfile("");
+    });
+
+    it("keeps the generated origin of a seed whose wallet data stayed in this browser", async () => {
+      // localStorage was cleared, but the wallet database of the generated seed stayed.
+      useWalletStore.setState({ mnemonic: "" });
+      const words = bip39.generate();
+      const scopeId = browserWalletScopeIdFromMnemonic(words.join(" "))!;
+      await recordGeneratedBrowserSeed(scopeId);
+
+      expect(await useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
+
+      expect(await browserSeedOrigin(scopeId)).toBe("generated");
       setActiveBrowserWalletProfile("");
     });
 

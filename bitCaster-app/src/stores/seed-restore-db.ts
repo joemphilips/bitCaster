@@ -735,9 +735,15 @@ function recordOrigin(
   origin: SeedRestoreOriginRow["origin"],
   nowMs: number,
 ): Promise<void> {
-  const write = seedRestoreDatabase(scopeId)
-    .origins.put({ scopeId, origin, recordedAtMs: nowMs })
-    .then(() => undefined);
+  const database = seedRestoreDatabase(scopeId);
+  const row: SeedRestoreOriginRow = { scopeId, origin, recordedAtMs: nowMs };
+  const write = (
+    origin === "generated"
+      ? database.origins.put(row)
+      : database.transaction("rw", database.origins, async () => {
+          if ((await database.origins.get(scopeId)) === undefined) await database.origins.add(row);
+        })
+  ).then(() => undefined);
   pendingOriginWrites.set(scopeId, write);
   void write
     .finally(() => {
@@ -755,7 +761,8 @@ export async function isBrowserSeedGeneratedHere(scopeId: string): Promise<boole
 /**
  * Records a seed entry: the user entered the seed (setup, import, or wallet
  * replacement). The seed restore then runs for it. Call it before the
- * profile of the seed is activated.
+ * profile of the seed is activated. An existing origin stays: a "generated"
+ * seed whose wallet data stayed in this browser holds every proof.
  */
 export function recordEnteredBrowserSeed(scopeId: string, nowMs = Date.now()): Promise<void> {
   return recordOrigin(scopeId, "entered", nowMs);

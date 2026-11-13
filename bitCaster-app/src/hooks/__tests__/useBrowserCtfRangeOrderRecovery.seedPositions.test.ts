@@ -156,6 +156,7 @@ import {
 } from "@/lib/browserSeedPositionRestore";
 import { seedRestoreResultIsPartial, seedRestoreResultIsRetryable } from "@/stores/seed-restore-db";
 import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
+import { restoreBrowserConditionalKeyset } from "@/lib/cashu";
 import { useBrowserCtfRangeOrderRecovery } from "../useBrowserCtfRangeOrderRecovery";
 import { useBrowserRecoveryIndex } from "../useBrowserRecoveryIndex";
 
@@ -691,6 +692,41 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     // browser's reserved counters after the last signed output stay unused.
     expect(await selectableHoldings()).toEqual([regularHolding(regular, 8)]);
     expect(await cursor(regular.id)).toBe(4 + 151);
+  });
+
+  it("keeps the restore cursor rule for a conditional keyset that an order checks before the restore reaches it", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: market.yes, counter: 4, amount: 2, state: "UNSPENT" });
+    await mint.listInIndex([market.yes]);
+    vi.stubGlobal("fetch", mint.fetch);
+    await openIndexOnly();
+    await recordEnteredBrowserSeed(scopeId());
+    // The budget stops the restore inside the listed keyset, so its row stays queued.
+    await restorePass(() => 1_000_000, GAP);
+    expect(await restoreRow(market.yes.id)).toMatchObject({ state: "queued" });
+
+    // An order checks the counters of the keyset with the order readiness scan.
+    const keyset = market.yes;
+    await restoreBrowserConditionalKeyset({
+      mintUrl: MINT_URL,
+      authority: {
+        id: keyset.id,
+        unit: "msat",
+        active: true,
+        inputFeePpk: 0,
+        finalExpiry: null,
+        conditionId: keyset.conditional!.conditionId,
+        outcomeCollection: keyset.conditional!.outcomeCollection,
+        outcomeCollectionId: keyset.conditional!.outcomeCollectionId,
+        registeredAt: keyset.conditional!.registeredAt,
+        keys: keyset.keys,
+      },
+    });
+
+    // ADR-051: the 150 counters after the old browser's last signed output stay unused.
+    expect(await cursor(market.yes.id)).toBe(4 + 151);
   });
 
   it("does not run the restore in a profile that held the wallet before origin records", async () => {

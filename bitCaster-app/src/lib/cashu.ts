@@ -1721,13 +1721,12 @@ async function recoverKeysetCountersForMintCore(
         const pendingBelow = passedPending !== null && passedPending < scanFrom;
         requireCapturedProfile();
         requireValidCounterRecoveryResult(lastCounterWithSignature);
-        // A regular keyset that an unfinished seed restore still owns gets the
-        // restore cursor rule (ADR-051): another browser's reserved counters
-        // after the last signed output stay unused.
+        // A keyset that an unfinished seed restore still owns, regular or
+        // conditional (an order readiness scan), gets the restore cursor rule
+        // (ADR-051): another browser's reserved counters after the last
+        // signed output stay unused.
         const restoreOwned =
-          scanFrom === 0 &&
-          opts.conditionalKeyset === undefined &&
-          (await seedRestoreOwnsKeyset(scopeId, url, keyset.id));
+          scanFrom === 0 && (await seedRestoreOwnsKeyset(scopeId, url, keyset.id));
         const next =
           lastCounterWithSignature === undefined
             ? 0
