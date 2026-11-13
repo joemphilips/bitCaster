@@ -1,15 +1,20 @@
-import Dexie, { type Table } from "dexie";
+import Dexie, { type Table, type Transaction } from "dexie";
 import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCustody";
+import type {
+  RecoveryIndexKeysetProgress,
+  RecoveryIndexKeysetRefusal,
+  RecoveryIndexRestoreSource,
+} from "@bitcaster/client-sdk/recoveryIndexRestore";
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { normalizeUrl } from "@/lib/url";
 
-// The record of the automatic seed restore event and of the keyset re-sync
-// (ADR-039 and ADR-033, amendments 2026-11-04). The seed and the mint can
-// rebuild every restored proof, so a lost record only repeats mint work. It
-// lives in its own database, so the wallet database schema and the previous
-// release that reads it do not change. Delete it together with the wallet
-// database of its seed: a "generated" origin without the wallet data would
-// skip the restore of that seed.
+// The record of the automatic seed restore event, of the keyset scans after
+// a recovery index read, and of the keyset re-sync (ADR-039 and ADR-033,
+// amendments 2026-11-09). The seed, the index and the mint can rebuild every
+// restored proof, so a lost record only repeats mint work. It lives in its
+// own database, so the wallet database schema does not change. Delete it
+// together with the wallet database of its seed: a "generated" origin without
+// the wallet data would skip the restore of that seed.
 
 export interface SeedRestoreOriginRow {
   readonly scopeId: string;
@@ -18,22 +23,42 @@ export interface SeedRestoreOriginRow {
   readonly recordedAtMs: number;
 }
 
+/**
+ * The recovery index as the restore knows it (ADR-039, "Restore order").
+ * Only `listed` and `release4-catalogue` let a restore have full coverage.
+ */
+export type SeedRestoreIndexState =
+  /** The restore has not used an index read yet. */
+  | "unread"
+  | "listed"
+  /** The engine holds no index for this seed. */
+  | "absent"
+  /** The browser cannot read the index. */
+  | "undecodable"
+  /** The read failed. Retry or the next wallet open reads again. */
+  | "unavailable"
+  /** A release 4 restore that walked the whole market catalogue completed. */
+  | "release4-catalogue";
+
 export interface SeedRestoreStateRow {
   readonly scopeId: string;
   readonly mintUrl: string;
-  readonly schemaVersion: 2;
-  /** Every condition was listed and every listed keyset was probed or scanned. */
+  readonly schemaVersion: 3;
+  /** The plan is complete and each keyset of it is scanned or refused. */
   readonly initialCompletedAtMs: number | null;
   /** The earlier asset-monitoring report was read with a signer. */
   readonly hintsDone: boolean;
   /** Failed reads of the earlier asset-monitoring report in a row. */
   readonly hintFailures: number;
-  /** The source of the catalogue walk of this restore. */
-  readonly catalogueSource: "engine" | "mint" | null;
-  readonly catalogueCursor: string | null;
-  readonly catalogueDone: boolean;
-  /** Insertion order of the next condition or keyset row. */
-  readonly nextOrder: number;
+  readonly index: SeedRestoreIndexState;
+  /** The regular keysets of the mint listing are in the plan. */
+  readonly planned: boolean;
+  /** The counters that this restore start asked the mint about (ADR-039 budget). */
+  readonly countersUsed: number;
+  /** The restore stopped at its counter budget. Retry continues it with a new budget. */
+  readonly budgetStopped: boolean;
+  /** The user closed the restore result. */
+  readonly resultDismissedAtMs: number | null;
   readonly failures: number;
   readonly nextAttemptAtMs: number;
   readonly lastFailure: string | null;
@@ -41,51 +66,52 @@ export interface SeedRestoreStateRow {
   readonly itemFailures: number;
 }
 
+/** A market that a hint names. The restore lists its keysets at the mint. */
 export interface SeedRestoreConditionRow {
   readonly scopeId: string;
   readonly mintUrl: string;
   readonly conditionId: string;
-  /** Catalogue outcomes, or null when only a hint or the mint names the market. */
-  readonly outcomes: readonly string[] | null;
-  /** 0: a hint names the market. 1: the catalogue or the mint listing. */
-  readonly priority: 0 | 1;
+  readonly schemaVersion: 3;
   readonly order: number;
   readonly listed: boolean;
+  /** Descriptors of the listing that are not bitCaster keysets. */
   readonly foreign: number;
   readonly failures: number;
   readonly nextAttemptAtMs: number;
 }
 
-export interface SeedRestoreKeysetDescriptor {
-  readonly id: string;
-  readonly unit: string;
-  readonly active: boolean;
-  readonly inputFeePpk: number;
-  readonly finalExpiry: number | null;
-  readonly conditionId: string;
-  readonly outcomeCollection: string;
-  readonly outcomeCollectionId: string;
-  readonly registeredAt: number;
-}
-
 export type SeedRestoreKeysetState =
-  /** Not probed yet. */
+  /** The scan continues at `progress`. */
   | "queued"
-  /** Probed with no signature in its first counters. A hint can still ask for a full scan. */
-  | "no-signature"
-  /** Fully scanned. A PENDING proof that the scan found waits in the deferral marker. */
-  | "restored"
-  /** A scan failed. A later pass tries again after a backoff. */
-  | "failed";
+  /** The gap rule ended the scan. A PENDING proof waits in its deferral marker. */
+  | "complete"
+  /** The mint keys do not derive the keyset id with its identity. Retry tries again. */
+  | "unverifiable"
+  /** The mint answer failed a check (`refusal`). Retry tries again. */
+  | "implausible";
 
+/**
+ * One keyset that the restore or an index read scans (ADR-051 "Restore").
+ * The scan starts at counter 0 and keeps its position after each window.
+ */
 export interface SeedRestoreKeysetRow {
   readonly scopeId: string;
   readonly mintUrl: string;
   readonly keysetId: string;
-  readonly descriptor: SeedRestoreKeysetDescriptor;
-  readonly priority: 0 | 1;
+  readonly schemaVersion: 3;
+  readonly source: RecoveryIndexRestoreSource;
+  /** The NUT-CTF identity that the index or the mint listing names. Null for a regular keyset. */
+  readonly conditional: {
+    readonly conditionId: string;
+    readonly outcomeCollectionId: string;
+  } | null;
+  /** The outcome collection after the mint keys verified the keyset. */
+  readonly outcomeCollection: string | null;
   readonly order: number;
   readonly state: SeedRestoreKeysetState;
+  readonly refusal: RecoveryIndexKeysetRefusal | null;
+  readonly progress: RecoveryIndexKeysetProgress;
+  /** Failed scans in a row. They set the backoff. */
   readonly failures: number;
   readonly nextAttemptAtMs: number;
 }
@@ -158,6 +184,15 @@ export interface SeedRestoreResyncScheduleRow {
   readonly nextProbeAtMs: number;
 }
 
+const SEED_RESTORE_STORES = {
+  origins: "&scopeId",
+  states: "&[scopeId+mintUrl]",
+  conditions: "&[scopeId+mintUrl+conditionId], [scopeId+mintUrl]",
+  keysets: "&[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
+  resync: "&[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
+  resyncSchedules: "&[scopeId+mintUrl]",
+} as const;
+
 export class SeedRestoreDB extends Dexie {
   origins!: Table<SeedRestoreOriginRow, string>;
   states!: Table<SeedRestoreStateRow, [string, string]>;
@@ -168,15 +203,60 @@ export class SeedRestoreDB extends Dexie {
 
   constructor(name: string) {
     super(name);
-    this.version(2).stores({
-      origins: "&scopeId",
-      states: "&[scopeId+mintUrl]",
-      conditions: "&[scopeId+mintUrl+conditionId], [scopeId+mintUrl]",
-      keysets: "&[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
-      resync: "&[scopeId+mintUrl+keysetId], [scopeId+mintUrl]",
-      resyncSchedules: "&[scopeId+mintUrl]",
-    });
+    this.version(2).stores(SEED_RESTORE_STORES);
+    // Release 5b never walks the market catalogue (ADR-039, amendment
+    // 2026-11-09). Forward-only: release 4 cannot open version 3.
+    this.version(3).stores(SEED_RESTORE_STORES).upgrade(upgradeRelease4SeedRestore);
   }
+}
+
+/**
+ * The release 4 rows hold a catalogue walk. A completed walk scanned every
+ * market, so its restore stays complete. An unfinished one plans again
+ * without the catalogue and keeps only its hinted markets.
+ */
+async function upgradeRelease4SeedRestore(transaction: Transaction): Promise<void> {
+  const completed = new Set<string>();
+  await transaction
+    .table("states")
+    .toCollection()
+    .modify((row: Record<string, unknown>, ref: { value: unknown }) => {
+      const done = typeof row.initialCompletedAtMs === "number";
+      if (done) completed.add(`${String(row.scopeId)}\u0000${String(row.mintUrl)}`);
+      ref.value = {
+        ...initialSeedRestoreState(String(row.scopeId), String(row.mintUrl)),
+        initialCompletedAtMs: done ? (row.initialCompletedAtMs as number) : null,
+        hintsDone: row.hintsDone === true,
+        hintFailures: typeof row.hintFailures === "number" ? row.hintFailures : 0,
+        index: done ? "release4-catalogue" : "unread",
+        planned: done,
+      } satisfies SeedRestoreStateRow;
+    });
+  await transaction.table("keysets").clear();
+  await transaction
+    .table("conditions")
+    .toCollection()
+    .modify((row: Record<string, unknown>, ref: { value: unknown }) => {
+      // A catalogue market (priority 1) or a market of a completed restore has no work.
+      if (
+        row.priority !== 0 ||
+        completed.has(`${String(row.scopeId)}\u0000${String(row.mintUrl)}`)
+      ) {
+        delete (ref as { value?: unknown }).value;
+        return;
+      }
+      ref.value = {
+        scopeId: String(row.scopeId),
+        mintUrl: String(row.mintUrl),
+        conditionId: String(row.conditionId),
+        schemaVersion: 3,
+        order: typeof row.order === "number" ? row.order : 0,
+        listed: false,
+        foreign: 0,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      } satisfies SeedRestoreConditionRow;
+    });
 }
 
 // The F13 range-recovery backoff bounds.
@@ -559,19 +639,81 @@ export function initialSeedRestoreState(scopeId: string, mintUrl: string): SeedR
   return {
     scopeId,
     mintUrl,
-    schemaVersion: 2,
+    schemaVersion: 3,
     initialCompletedAtMs: null,
     hintsDone: false,
     hintFailures: 0,
-    catalogueSource: null,
-    catalogueCursor: null,
-    catalogueDone: false,
-    nextOrder: 0,
+    index: "unread",
+    planned: false,
+    countersUsed: 0,
+    budgetStopped: false,
+    resultDismissedAtMs: null,
     failures: 0,
     nextAttemptAtMs: 0,
     lastFailure: null,
     itemFailures: 0,
   };
+}
+
+/**
+ * The result of a seed restore (ADR-039, "Restore order"). With no index,
+ * an unavailable index, a refused keyset, or a stop at the counter budget,
+ * the result is partial: the GUI shows the CLI pointer, and empty holdings
+ * are not final.
+ */
+export function seedRestoreResultIsPartial(
+  state: SeedRestoreStateRow,
+  keysets: readonly SeedRestoreKeysetRow[],
+): boolean {
+  return (
+    !seedRestoreIndexCovers(state.index) ||
+    state.budgetStopped ||
+    keysets.some(({ state: keyset }) => seedRestoreKeysetRefused(keyset))
+  );
+}
+
+/** A partial result that Retry can change. */
+export function seedRestoreResultIsRetryable(
+  state: SeedRestoreStateRow,
+  keysets: readonly SeedRestoreKeysetRow[],
+): boolean {
+  return (
+    state.index === "unavailable" ||
+    state.budgetStopped ||
+    keysets.some(({ state: keyset }) => seedRestoreKeysetRefused(keyset))
+  );
+}
+
+function seedRestoreIndexCovers(index: SeedRestoreIndexState): boolean {
+  switch (index) {
+    case "listed":
+    case "release4-catalogue":
+      return true;
+    case "unread":
+    case "absent":
+    case "undecodable":
+    case "unavailable":
+      return false;
+    default:
+      return assertNever(index);
+  }
+}
+
+export function seedRestoreKeysetRefused(state: SeedRestoreKeysetState): boolean {
+  switch (state) {
+    case "unverifiable":
+    case "implausible":
+      return true;
+    case "queued":
+    case "complete":
+      return false;
+    default:
+      return assertNever(state);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unknown seed restore value: ${JSON.stringify(value)}`);
 }
 
 const pendingOriginWrites = new Map<string, Promise<void>>();

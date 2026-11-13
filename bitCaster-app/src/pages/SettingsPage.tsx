@@ -72,6 +72,7 @@ export function SettingsPage() {
   const [walletDialogError, setWalletDialogError] = useState<string | null>(null);
   // The user saw that the backup of the current wallet is incomplete.
   const [partialBackupShown, setPartialBackupShown] = useState(false);
+  const [counterGapShown, setCounterGapShown] = useState(false);
   const walletDialogGeneration = useRef(0);
   const walletActionGeneration = useRef<number | null>(null);
   useEffect(
@@ -194,6 +195,7 @@ export function SettingsPage() {
     setIsWalletActionPending(false);
     setWalletDialogError(null);
     setPartialBackupShown(false);
+    setCounterGapShown(false);
   }, []);
 
   const openWalletDialog = useCallback((mode: "setup" | "replace") => {
@@ -202,6 +204,7 @@ export function SettingsPage() {
     const generation = ++walletDialogGeneration.current;
     setWalletDialogError(null);
     setPartialBackupShown(false);
+    setCounterGapShown(false);
     setIsWalletActionPending(false);
     setWalletDialog({ mode, generation });
   }, []);
@@ -226,13 +229,15 @@ export function SettingsPage() {
       const isCurrent = () => walletDialogGeneration.current === generation;
       try {
         if (words) {
-          const result = await useWalletStore
-            .getState()
-            .recoverFromMnemonic(words, { acceptPartialBackup: partialBackupShown });
+          const result = await useWalletStore.getState().recoverFromMnemonic(words, {
+            acceptPartialBackup: partialBackupShown,
+            acceptCounterGap: counterGapShown,
+          });
           if (!isCurrent()) return;
           if (!result.valid) {
             setWalletDialogError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
             if (result.confirmPartialBackup) setPartialBackupShown(true);
+            if (result.confirmCounterGap) setCounterGapShown(true);
             return;
           }
         }
@@ -251,7 +256,7 @@ export function SettingsPage() {
         if (isCurrent()) setIsWalletActionPending(false);
       }
     },
-    [walletDialog, closeWalletDialog, partialBackupShown, t],
+    [walletDialog, closeWalletDialog, partialBackupShown, counterGapShown, t],
   );
 
   const handleThemeChange = useCallback(
@@ -365,7 +370,7 @@ export function SettingsPage() {
           mode={walletDialog.mode}
           isCreating={isWalletActionPending}
           error={walletDialogError}
-          confirmPartialBackup={partialBackupShown}
+          confirmWarning={partialBackupShown || counterGapShown}
           onClose={() => closeWalletDialog(walletDialog.generation)}
           onCreateNew={() => void handleWalletAction()}
           onImportSeed={(words) => handleWalletAction(words)}

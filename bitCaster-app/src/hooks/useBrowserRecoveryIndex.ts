@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import type { Transaction } from "dexie";
+import Dexie, { type Transaction } from "dexie";
 import type { RecoveryIndexKeysetAuthority } from "@bitcaster/client-sdk/recoveryIndexDocument";
 import { canonicalizeMintIdentityUrl } from "@bitcaster/client-sdk/tokenImportValidation";
 import { toSeed } from "@/lib/bip39";
@@ -17,6 +17,9 @@ import {
   browserWalletScopeIdFromMnemonic,
   subscribeBrowserWalletActivation,
 } from "@/lib/browserWalletProfile";
+import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
+import { recordBrowserRecoveryIndexRead } from "@/lib/browserSeedPositionRestore";
+import { normalizeUrl } from "@/lib/url";
 import { db, type BitcasterDB } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -48,6 +51,13 @@ export function useBrowserRecoveryIndex(walletMnemonic: string): void {
       realm,
       walletMints: walletMintUrls,
       regularKeysetAuthority,
+      // ADR-033: after a read, scan each listed keyset with no local cursor.
+      onIndexRead: async (read) => {
+        const mints = useWalletStore.getState().mints.map(({ url }) => normalizeUrl(url));
+        if (await recordBrowserRecoveryIndexRead(scopeId, read, mints)) {
+          publishBrowserCtfRangeRecoveryWake({ scopeId });
+        }
+      },
     });
     const unregister = registerBrowserRecoveryIndex(scopeId, runtime);
     const unsubscribe = subscribeToLocalKeysetChanges(database, () => runtime.requestUpload());
@@ -138,10 +148,15 @@ export function subscribeToLocalKeysetChanges(
   const observed = new WeakSet<Transaction>();
   let active = true;
   const afterCommit = (transaction: Transaction) => {
-    if (observed.has(transaction)) return;
-    observed.add(transaction);
-    transaction.on("complete", () => {
-      if (active) callback();
+    // A nested transaction "completes" at the end of its scope, inside its
+    // parent. Wait for the commit of the outermost transaction.
+    let root = transaction;
+    while (root.parent !== undefined && root.parent !== null) root = root.parent;
+    if (observed.has(root)) return;
+    observed.add(root);
+    root.on("complete", () => {
+      // Leave the transaction zone: the upload opens its own transactions.
+      if (active) Dexie.ignoreTransaction(callback);
     });
   };
   const created = (_key: unknown, _value: unknown, transaction: Transaction) =>

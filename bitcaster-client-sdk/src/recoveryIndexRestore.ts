@@ -40,6 +40,12 @@ export const RECOVERY_INDEX_RESTORE_COUNTER_BUDGET = 150_000
 export const RECOVERY_INDEX_RESTORE_WINDOW_COUNTERS = SEED_ADMISSION_SCAN_COUNTERS_MAX
 export const RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND =
   'bitcaster wallet recover-seed --all-conditions'
+/**
+ * The gap that a GUI restore result names in its CLI line (ADR-051): ten
+ * times the GUI gap, and one scan window of the GUI. A restore does not know
+ * the length of a run of unused counters, so it names one larger gap.
+ */
+export const RECOVERY_INDEX_CLI_RESULT_GAP_LIMIT = 3_000
 /** The proofs of one NUT-07 request. */
 const PROOF_STATE_BATCH_MAX = 100
 

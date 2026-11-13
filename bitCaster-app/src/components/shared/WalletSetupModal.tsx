@@ -10,8 +10,8 @@ interface WalletSetupModalProps {
   mode?: "setup" | "replace";
   isCreating?: boolean;
   error?: string | null;
-  /** The backup of the current wallet is incomplete. The next replace accepts that. */
-  confirmPartialBackup?: boolean;
+  /** The dialog shows a restore warning about the current wallet. The next replace accepts it. */
+  confirmWarning?: boolean;
   onClose: () => void;
   onCreateNew: () => void;
   onImportSeed: (words: string[]) => void | Promise<void>;
@@ -21,7 +21,7 @@ export function WalletSetupModal({
   mode = "setup",
   isCreating = false,
   error,
-  confirmPartialBackup = false,
+  confirmWarning = false,
   onClose,
   onCreateNew,
   onImportSeed,
@@ -128,7 +128,7 @@ export function WalletSetupModal({
                     {t(
                       mode !== "replace"
                         ? "wallet.restoreWallet"
-                        : confirmPartialBackup
+                        : confirmWarning
                           ? "wallet.replaceWalletAnyway"
                           : "wallet.replaceWallet",
                     )}

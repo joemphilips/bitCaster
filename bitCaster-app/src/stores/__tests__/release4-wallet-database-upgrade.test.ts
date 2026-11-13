@@ -24,6 +24,7 @@ import {
 } from "../proof-db";
 import {
   deleteSeedRestoreDatabase,
+  initialSeedRestoreState,
   isBrowserSeedGeneratedHere,
   SeedRestoreDB,
   seedRestoreDatabaseName,
@@ -241,7 +242,7 @@ describe("release 4 browser databases", () => {
     ).toEqual([{ secret: "release4-legacy-proof", amount: 4 }]);
   });
 
-  it("opens the shipped seed restore database with every row", async () => {
+  it("opens the shipped seed restore database and drops its catalogue walk", async () => {
     expect(seedRestore.version).toBe(2);
     expect(seedRestoreDatabaseName(scope.scopeId)).toBe(seedRestore.name);
     await createShipped(seedRestore);
@@ -249,12 +250,83 @@ describe("release 4 browser databases", () => {
     const current = new SeedRestoreDB(seedRestore.name);
     try {
       await current.open();
-      await expectEveryShippedRow(current, seedRestore);
+      expect(current.verno).toBe(3);
+      // The origin, the re-sync and its schedule keep every row.
+      for (const name of ["origins", "resync", "resyncSchedules"]) {
+        expect(await current.table(name).toArray(), name).toEqual(table(seedRestore, name).rows);
+      }
+      // Release 5b never walks the catalogue (ADR-039, amendment 2026-11-09). The
+      // unfinished walk plans again, and its catalogue markets and probes go.
+      const [state] = table(seedRestore, "states").rows as [Record<string, unknown>];
+      expect(await current.states.toArray()).toEqual([
+        initialSeedRestoreState(String(state.scopeId), String(state.mintUrl)),
+      ]);
+      expect(await current.conditions.toArray()).toEqual([]);
+      expect(await current.keysets.toArray()).toEqual([]);
     } finally {
       current.close();
     }
-    // A lost "generated" origin would start a restore scan of this seed.
+    // A lost "generated" origin would start a restore of this seed.
     expect(await isBrowserSeedGeneratedHere(scope.scopeId)).toBe(true);
+  });
+
+  it("keeps a completed release 4 restore complete, and the hinted markets of an unfinished one", async () => {
+    const [state] = table(seedRestore, "states").rows as [Record<string, unknown>];
+    const [condition] = table(seedRestore, "conditions").rows as [Record<string, unknown>];
+    const otherMint = "https://other-mint.example";
+    await createShipped({
+      ...seedRestore,
+      tables: seedRestore.tables.map((item) => {
+        switch (item.name) {
+          case "states":
+            return {
+              ...item,
+              rows: [
+                { ...state, initialCompletedAtMs: 77, catalogueDone: true, hintsDone: true },
+                { ...state, mintUrl: otherMint },
+              ],
+            };
+          case "conditions":
+            // A hint (priority 0) of each mint.
+            return {
+              ...item,
+              rows: [
+                { ...condition, priority: 0 },
+                { ...condition, mintUrl: otherMint, priority: 0, listed: true, order: 4 },
+              ],
+            };
+          default:
+            return item;
+        }
+      }),
+    });
+
+    const current = new SeedRestoreDB(seedRestore.name);
+    try {
+      await current.open();
+      expect(await current.states.get([String(state.scopeId), String(state.mintUrl)])).toEqual({
+        ...initialSeedRestoreState(String(state.scopeId), String(state.mintUrl)),
+        initialCompletedAtMs: 77,
+        hintsDone: true,
+        index: "release4-catalogue",
+        planned: true,
+      });
+      expect(await current.conditions.toArray()).toEqual([
+        {
+          scopeId: condition.scopeId,
+          mintUrl: otherMint,
+          conditionId: condition.conditionId,
+          schemaVersion: 3,
+          order: 4,
+          listed: false,
+          foreign: 0,
+          failures: 0,
+          nextAttemptAtMs: 0,
+        },
+      ]);
+    } finally {
+      current.close();
+    }
   });
 
   it("opens the shipped market draft image database with its thumbnail", async () => {

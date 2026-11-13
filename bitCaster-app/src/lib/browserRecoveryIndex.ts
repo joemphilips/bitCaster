@@ -15,9 +15,11 @@ import {
   type RecoveryIndexStore,
 } from "@bitcaster/client-sdk/recoveryIndexEngine";
 import {
+  listedRecoveryIndexEntriesWithoutCursor,
   planRecoveryIndexRetryDelayMs,
   RECOVERY_INDEX_READ_MINT_REFUSAL_CODES,
   RecoveryIndexSync,
+  type RecoveryIndexKnownDocument,
   type RecoveryIndexReadOutcome,
   type RecoveryIndexReadTrigger,
   type RecoveryIndexUploadOutcome,
@@ -178,7 +180,22 @@ export interface BrowserRecoveryIndexInput {
   readonly random?: () => number;
   readonly setTimer?: (callback: () => void, delayMs: number) => unknown;
   readonly clearTimer?: (timer: unknown) => void;
+  /**
+   * Called after each index read and each upload with the document and the
+   * listed keysets that have no local cursor. ADR-033: after a read, the
+   * browser scans only those keysets. A read that failed reports `failed`.
+   */
+  readonly onIndexRead?: (read: BrowserRecoveryIndexRead) => Promise<void>;
 }
+
+/** One index read for the scan rule of ADR-033. */
+export type BrowserRecoveryIndexRead =
+  | {
+      readonly status: "read";
+      readonly document: RecoveryIndexKnownDocument;
+      readonly scan: readonly RecoveryIndexEntry[];
+    }
+  | { readonly status: "failed" };
 
 /** The recovery index of one active wallet. Create one runtime for each wallet activation. */
 type BrowserRecoveryIndexConditionalAuthority =
@@ -200,6 +217,7 @@ export class BrowserRecoveryIndex {
   #retryTimer: unknown = undefined;
   #localFailureStreak = 0;
   #stopped = false;
+  #lastRead: Promise<RecoveryIndexReadOutcome> | null = null;
 
   constructor(input: BrowserRecoveryIndexInput) {
     this.#input = input;
@@ -237,11 +255,52 @@ export class BrowserRecoveryIndex {
     };
   }
 
-  /** Read the index on one of the ADR-033 events, then upload the pending keysets. */
+  /**
+   * Read the index on one of the ADR-033 events, report the keysets that the
+   * read lets the browser scan, then upload the pending keysets.
+   */
   async read(trigger: RecoveryIndexReadTrigger): Promise<RecoveryIndexReadOutcome> {
-    const outcome = await this.#sync.read(trigger);
+    const read = this.#sync.read(trigger);
+    this.#lastRead = read;
+    const outcome = await read;
+    await this.#report(
+      outcome.status === "failed"
+        ? { status: "failed" }
+        : { status: "read", document: outcome.document, scan: outcome.scan },
+    );
     this.requestUpload();
     return outcome;
+  }
+
+  /** The outcome of the latest read, for the restore of a seed entry. Null before a read. */
+  lastRead(): Promise<RecoveryIndexReadOutcome> | null {
+    return this.#lastRead;
+  }
+
+  async #report(read: BrowserRecoveryIndexRead): Promise<void> {
+    if (this.#stopped || this.#input.onIndexRead === undefined) return;
+    await this.#input.onIndexRead(read).catch(() => undefined);
+  }
+
+  /**
+   * An upload can read the document again, for example after a 409 (ADR-034
+   * "Client upload"). That read is an index read for the scan rule too.
+   */
+  async #reportDocument(): Promise<void> {
+    const document = this.#sync.document;
+    if (document.status !== "listed" || this.#input.onIndexRead === undefined) return;
+    let local: readonly RecoveryIndexEntry[];
+    try {
+      local = await readBrowserRecoveryIndexLocalEntries(this.#input.database, this.#input.scopeId);
+    } catch {
+      return;
+    }
+    const scan = listedRecoveryIndexEntriesWithoutCursor(
+      document.entries,
+      local,
+      this.#input.walletMints(),
+    );
+    if (scan.length > 0) await this.#report({ status: "read", document, scan });
   }
 
   /**
@@ -320,6 +379,9 @@ export class BrowserRecoveryIndex {
       }
       if (this.#stopped) return;
       this.#apply(outcome);
+      if (outcome?.status === "written" || outcome?.status === "current") {
+        await this.#reportDocument();
+      }
     } while (this.#uploadRequested && !this.#stopped);
   }
 

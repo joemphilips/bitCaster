@@ -67,8 +67,10 @@ Do not clear browser storage to resolve an uncertain payment or trade.
 
 When you restore a wallet with its recovery phrase in a browser that did not
 create it, the app restores your funds and your market positions from the mint
-at once. It does this automatically. It does not need a Nostr identity or a
-backup. With many markets, this can take some minutes.
+at once. It does this automatically. It does not need a Nostr identity. It
+reads the wallet backup and restores the keysets that the backup lists, the
+regular keysets of the mint, and the markets that asset monitoring or your
+activity log names. It never checks every market of the mint.
 
 Each time the app opens a wallet, it checks the wallet. While the app checks
 or recovers the wallet, one status row shows above the Positions, Funds, and
@@ -113,10 +115,23 @@ The restore tells the mint which outputs belong to this recovery phrase. The
 mint can link these outputs and can learn which markets the wallet traded. The
 mint does not receive your Nostr identity or your matching-engine account.
 
-The app checks the first 128 counters of each market. A position can stay
-hidden when many orders on one outcome did not fill before its first fill. The
-CLI command `wallet recover-seed --condition-id` can restore such a market.
-The app checks the market list once, when the restore starts.
+When the restore is done, Portfolio shows the line **Missing funds? Use
+`bitcaster wallet recover-seed --gap-limit 3000`.** The restore of one keyset
+stops after 300 unused outputs in a row, for example after many orders that did
+not fill. The CLI command with a larger `--gap-limit` finds funds after such a
+run. Close the line when you do not need it.
+
+Without a wallet backup, for example when the old browser never wrote one, the
+restore cannot find the markets that only the backup lists. The same applies
+while the matching engine is unavailable. Then Portfolio also shows **Some
+positions may be missing. Use `bitcaster wallet recover-seed --all-conditions`.**
+It does not show **No funds** or **No active positions** as final. After an
+unavailable matching engine, **Retry** reads the backup again, and so does the
+next opening of the wallet.
+
+One restore checks at most 150,000 outputs at the mint. When a restore reaches
+this limit, it stops and shows the same partial result. **Retry** continues
+where it stopped.
 
 An earlier version of the app did not record which browser created a wallet.
 So the first time a browser opens this version, it runs the restore for its
@@ -240,9 +255,9 @@ the saved estimate.
 When the web app needs proofs for one asset, it uses the proofs in local
 browser storage. The wallet backup holds no proofs.
 
-The restore in a new browser and the check for use in another browser above
-are the only automatic broad checks of the mint. Broad recovery remains
-available through the CLI.
+The web app never checks every market of the mint. Broad recovery is
+available only through the CLI command
+`bitcaster wallet recover-seed --all-conditions`.
 
 If a trade needs Participation Score and locally available funds are insufficient,
 the app checks wallet recovery. If recovery is unavailable, it offers Retry
@@ -285,6 +300,15 @@ the wallet. Select **Replace Anyway** to continue, or close the dialog to keep
 the current wallet. To restore that wallet fully later, use
 `bitcaster wallet recover-seed --all-conditions`. While the matching engine is
 unavailable, the app keeps the current wallet. Try again later.
+
+**Replace Wallet** also checks the outputs that this browser signed. When one
+keyset has a run of 300 or more unused outputs before a later output, a restore
+in another browser can miss the later funds. The app then shows the CLI command
+`bitcaster wallet recover-seed --gap-limit <n>` with a gap that passes the run.
+Select **Replace Anyway** to continue.
+
+When this browser reads the wallet backup and finds a keyset that another
+browser listed and that this browser never used, it restores that keyset.
 
 Removing a resolved losing position is local to this browser. A later restore
 of the wallet in another browser can show the position again. It has no value,

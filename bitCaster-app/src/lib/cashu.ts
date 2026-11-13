@@ -1782,115 +1782,27 @@ async function recoverKeysetCountersForMintCore(
               ].map(nut13Counter),
             )
           : null;
-        const persistRecoveredKeyset = async () => {
-          requireCapturedProfile();
-          await db.transaction("rw", db.tables, async () => {
-            requireCapturedProfile();
-            // Check again in the admission transaction: an operation can start
-            // after the caller's check and while this scan runs.
-            if (
-              deferralScan &&
-              (await db.custodyActiveWork
-                .where("[scopeId+operationId]")
-                .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
-                .count()) > 0
-            ) {
-              throw new CounterRecoveryPostponedError();
-            }
-            const cacheSafe: StoredProof[] = [];
-            for (
-              let pageStart = 0;
-              pageStart < stored.length;
-              pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
-            ) {
-              const page = stored.slice(
-                pageStart,
-                pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
-              );
-              const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
-              const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
-              const existingRows = await db.custodyProofs.bulkGet(keys);
-              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
-              const freshPage: StoredProof[] = [];
-              const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
-              for (const [index, proof] of page.entries()) {
-                const locator = locators.get(proof.secret);
-                if (locator === undefined) {
-                  throw new Error("counter recovery proof locator is missing");
-                }
-                const proofId = proofIds[index]!;
-                const existingRow = existingRows[index];
-                const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
-                  backupAuthorities[index],
-                  [scopeId, proofId],
-                );
-                if (existingRow === undefined) {
-                  if (backupAuthority !== undefined) {
-                    throw new Error("counter recovery canonical backup authority is orphaned");
-                  }
-                  freshPage.push(proof);
-                  freshLocators.set(proof.secret, locator);
-                  cacheSafe.push(proof);
-                  continue;
-                }
-                let canonicalRow: BrowserCustodyProofRow;
-                try {
-                  canonicalRow = decodeBrowserCustodyProofRow(existingRow);
-                } catch {
-                  throw new Error("counter recovery canonical proof row is invalid");
-                }
-                requireMatchingCounterRecoveryProof(
-                  canonicalRow,
-                  expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
-                );
-                requireMatchingCounterRecoveryBackupAuthority(
-                  canonicalRow,
-                  backupAuthority,
-                  locator,
-                );
-              }
-              if (freshPage.length > 0) {
-                await admitBrowserReceivedProofsWithHeldProfileLock({
-                  seed,
-                  sourceOperationId: counterRecoverySourceOperationId(
-                    scopeId,
-                    url,
-                    unit,
-                    keyset.id,
-                    freshPage,
-                  ),
-                  mintUrl: url,
-                  unit,
-                  wallet,
-                  proofs: freshPage,
-                  derivationAuthority: null,
-                  proofLocators: freshLocators,
-                  database: db,
-                  ...(opts.profileLockHeld === true && opts.custodyOwner
-                    ? { custodyOwner: opts.custodyOwner }
-                    : {}),
-                });
-              }
-            }
-            await restoreProofsAndAdvanceCounter({
-              proofs: cacheSafe,
-              scopeId,
-              mintUrl: url,
-              unit,
-              keysetId: keyset.id,
-              restoredNext: next,
-              recovery:
-                coversLowerCounters && !proofPending && !pendingBelow && scan.stop === "gap-limit"
-                  ? "complete"
-                  : "incomplete",
-              ...(condition === null || keyset.id !== opts.conditionalKeyset?.id
-                ? {}
-                : { conditional: condition }),
-              isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-            });
-            requireCapturedProfile();
+        const persistRecoveredKeyset = () =>
+          persistCounterRecoveryWindow({
+            scopeId,
+            mintUrl: url,
+            unit,
+            keysetId: keyset.id,
+            wallet,
+            seed,
+            stored,
+            locators,
+            restoredNext: next,
+            recovery:
+              coversLowerCounters && !proofPending && !pendingBelow && scan.stop === "gap-limit"
+                ? "complete"
+                : "incomplete",
+            conditional:
+              condition === null || keyset.id !== opts.conditionalKeyset?.id ? null : condition,
+            refuseWhileCustodyWork: deferralScan,
+            custodyOwner: opts.profileLockHeld === true ? (opts.custodyOwner ?? null) : null,
+            requireCapturedProfile,
           });
-        };
         if (opts.profileLockHeld === true) {
           await persistRecoveredKeyset();
         } else {
@@ -1935,6 +1847,238 @@ async function recoverKeysetCountersForMintCore(
     ...(continuedKeysets.length === 0 ? {} : { continuedKeysets }),
     ...(postponedKeysets.length === 0 ? {} : { postponedKeysets }),
   };
+}
+
+/**
+ * Admit recovered proofs and move the counter of one keyset in one wallet
+ * transaction. The caller holds the wallet profile lock. An existing proof
+ * row must match the recovered proof exactly, so a repeated window admits
+ * nothing twice.
+ */
+async function persistCounterRecoveryWindow(input: {
+  readonly scopeId: string;
+  readonly mintUrl: string;
+  readonly unit: CashuProofUnit;
+  readonly keysetId: string;
+  readonly wallet: CashuWallet;
+  readonly seed: Uint8Array;
+  readonly stored: readonly StoredProof[];
+  readonly locators: ReadonlyMap<string, DurableWalletProofDerivationLocator>;
+  readonly restoredNext: number;
+  readonly recovery: "complete" | "incomplete";
+  readonly conditional: { readonly conditionId: string; readonly outcomeCollection: string } | null;
+  /** A scan below the cursor must not admit the outputs of an operation in flight. */
+  readonly refuseWhileCustodyWork: boolean;
+  readonly custodyOwner: DurableCustodyOwnerAuthorization | null;
+  readonly requireCapturedProfile: () => void;
+}): Promise<void> {
+  const { scopeId, mintUrl: url, unit, wallet } = input;
+  input.requireCapturedProfile();
+  await db.transaction("rw", db.tables, async () => {
+    input.requireCapturedProfile();
+    // Check again in the admission transaction: an operation can start
+    // after the caller's check and while this scan runs.
+    if (
+      input.refuseWhileCustodyWork &&
+      (await db.custodyActiveWork
+        .where("[scopeId+operationId]")
+        .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+        .count()) > 0
+    ) {
+      throw new CounterRecoveryPostponedError();
+    }
+    const cacheSafe: StoredProof[] = [];
+    for (
+      let pageStart = 0;
+      pageStart < input.stored.length;
+      pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+    ) {
+      const page = input.stored.slice(
+        pageStart,
+        pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+      );
+      const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
+      const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
+      const existingRows = await db.custodyProofs.bulkGet(keys);
+      const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
+      const freshPage: StoredProof[] = [];
+      const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
+      for (const [index, proof] of page.entries()) {
+        const locator = input.locators.get(proof.secret);
+        if (locator === undefined) {
+          throw new Error("counter recovery proof locator is missing");
+        }
+        const proofId = proofIds[index]!;
+        const existingRow = existingRows[index];
+        const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+          backupAuthorities[index],
+          [scopeId, proofId],
+        );
+        if (existingRow === undefined) {
+          if (backupAuthority !== undefined) {
+            throw new Error("counter recovery canonical backup authority is orphaned");
+          }
+          freshPage.push(proof);
+          freshLocators.set(proof.secret, locator);
+          cacheSafe.push(proof);
+          continue;
+        }
+        let canonicalRow: BrowserCustodyProofRow;
+        try {
+          canonicalRow = decodeBrowserCustodyProofRow(existingRow);
+        } catch {
+          throw new Error("counter recovery canonical proof row is invalid");
+        }
+        requireMatchingCounterRecoveryProof(
+          canonicalRow,
+          expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
+        );
+        requireMatchingCounterRecoveryBackupAuthority(canonicalRow, backupAuthority, locator);
+      }
+      if (freshPage.length > 0) {
+        await admitBrowserReceivedProofsWithHeldProfileLock({
+          seed: input.seed,
+          sourceOperationId: counterRecoverySourceOperationId(
+            scopeId,
+            url,
+            unit,
+            input.keysetId,
+            freshPage,
+          ),
+          mintUrl: url,
+          unit,
+          wallet,
+          proofs: freshPage,
+          derivationAuthority: null,
+          proofLocators: freshLocators,
+          database: db,
+          ...(input.custodyOwner ? { custodyOwner: input.custodyOwner } : {}),
+        });
+      }
+    }
+    await restoreProofsAndAdvanceCounter({
+      proofs: cacheSafe,
+      scopeId,
+      mintUrl: url,
+      unit,
+      keysetId: input.keysetId,
+      restoredNext: input.restoredNext,
+      recovery: input.recovery,
+      ...(input.conditional === null ? {} : { conditional: { ...input.conditional } }),
+      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+    });
+    input.requireCapturedProfile();
+  });
+}
+
+/** The keyset of one recovery index restore window. The SDK scan verified it with the mint keys. */
+export type BrowserRecoveryIndexWindowKeyset =
+  | { readonly kind: "regular"; readonly id: string }
+  | { readonly kind: "conditional"; readonly authority: ConditionalKeysetSeedRecoveryAuthority };
+
+/**
+ * Admit the verified UNSPENT proofs of one recovery index restore window and
+ * move the NUT-13 cursor to at least `next` (ADR-051 "Restore", ADR-039
+ * "Restore order"). The SDK scan checked the keyset, each DLEQ, and NUT-07.
+ * `recovery: "complete"` marks the counter association complete. The local
+ * cursor never moves back.
+ */
+export async function admitBrowserRecoveryIndexWindow(input: {
+  readonly mintUrl: string;
+  readonly keyset: BrowserRecoveryIndexWindowKeyset;
+  readonly proofs: readonly Proof[];
+  /** The NUT-13 counter of each proof, in the order of the proofs. */
+  readonly counters: readonly number[];
+  readonly next: number;
+  readonly recovery: "complete" | "incomplete";
+}): Promise<void> {
+  const url = normalizeUrl(input.mintUrl);
+  const store = useWalletStore.getState();
+  const scopeId = store.mnemonic ? browserWalletScopeIdFromMnemonic(store.mnemonic) : null;
+  if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+  const requireCapturedProfile = () => {
+    if (activeBrowserWalletScopeId() !== scopeId) {
+      throw new Error("The wallet profile changed during the seed restore.");
+    }
+  };
+  if (input.proofs.length !== input.counters.length) {
+    throw new Error("seed restore window counters are invalid");
+  }
+  requireCounter(input.next);
+  const unit = "msat" as const;
+  const wallet = (await store.getWalletForUnit(url, unit)) as CashuWallet;
+  const keysetId = input.keyset.kind === "regular" ? input.keyset.id : input.keyset.authority.id;
+  let conditional: { conditionId: string; outcomeCollection: string } | null = null;
+  if (input.keyset.kind === "conditional") {
+    const { authority } = input.keyset;
+    if (authority.unit !== unit) throw new Error("seed restore keyset unit is invalid");
+    registerCounterRecoveryConditionalKeyset(wallet, {
+      canonicalMintUrl: url,
+      id: authority.id,
+      unit,
+      keys: { ...authority.keys },
+      inputFeePpk: authority.inputFeePpk,
+      finalExpiry: authority.finalExpiry,
+      active: authority.active,
+      conditionId: authority.conditionId,
+      outcomeCollection: authority.outcomeCollection,
+      outcomeCollectionId: authority.outcomeCollectionId,
+      registeredAt: authority.registeredAt,
+    });
+    conditional = {
+      conditionId: authority.conditionId.toLowerCase(),
+      outcomeCollection: authority.outcomeCollection,
+    };
+  }
+  await wallet.keyChain.ensureKeysetKeys(keysetId);
+  requireCapturedProfile();
+  const seed = toSeed(store.mnemonic.trim().split(/\s+/));
+  validateRecoveredProofs(wallet, url, unit, keysetId, input.proofs);
+  const asset = counterRecoveryProofAsset(wallet, keysetId);
+  const stored: StoredProof[] = input.proofs.map((proof) => ({
+    ...proof,
+    mintUrl: url,
+    baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
+    unit,
+    ...(asset.kind === "conditional"
+      ? { conditionId: asset.conditionId, outcomeCollection: asset.outcomeCollection }
+      : {}),
+  }));
+  const locators = new Map<string, DurableWalletProofDerivationLocator>();
+  for (const [index, proof] of stored.entries()) {
+    const counter = input.counters[index]!;
+    requireCounter(counter);
+    // The lineage check proves that the proof secret is the NUT-13 secret of its counter.
+    const lineage = locateSeedDerivedProofLineage({
+      seed,
+      keysetId,
+      counterStart: counter,
+      counterCount: 1,
+      proofs: [{ id: keysetId, secret: proof.secret }],
+    });
+    const located = lineage[0];
+    if (located === undefined) throw new Error("seed restore proof is outside its counter");
+    const { secret: _secret, ...locator } = located;
+    locators.set(proof.secret, locator);
+  }
+  await withWalletProfileLock(scopeId, () =>
+    persistCounterRecoveryWindow({
+      scopeId,
+      mintUrl: url,
+      unit,
+      keysetId,
+      wallet,
+      seed,
+      stored,
+      locators,
+      restoredNext: input.next,
+      recovery: input.recovery,
+      conditional,
+      refuseWhileCustodyWork: false,
+      custodyOwner: null,
+      requireCapturedProfile,
+    }),
+  );
 }
 
 /**

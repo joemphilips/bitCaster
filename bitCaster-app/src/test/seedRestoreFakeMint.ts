@@ -10,19 +10,46 @@ import {
 import { bytesToHex } from "@noble/curves/utils.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import {
+  deriveRecoveryIndexKeys,
+  sealRecoveryIndexDocument,
+  type RecoveryIndexEntry,
+} from "@bitcaster/client-sdk/recoveryIndexDocument";
+import {
+  createRecoveryIndexEngineStore,
+  RECOVERY_INDEX_REALMS,
+} from "@bitcaster/client-sdk/recoveryIndexEngine";
+import { RecoveryIndexFakeEngine } from "../../../bitcaster-client-sdk/test/support/recoveryIndexFakeEngine";
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { db } from "@/stores/proof-db";
 
 // A fake mint at the HTTP boundary for the seed restore tests (ADR-039,
-// amendment 2026-11-04). It signs deterministic NUT-13 outputs of one seed and
+// amendment 2026-11-09). It signs deterministic NUT-13 outputs of one seed and
 // lists conditional keysets only on the NUT-CTF endpoint, as the production
-// mint does. Requests to another origin (the engine) answer 404.
+// mint does. The app origin serves the engine recovery index (the SDK fake
+// engine, which checks each request signature) and the public market
+// catalogue. Other engine routes answer 404.
 
 export const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 export const SEED = toSeed(MNEMONIC.split(/\s+/));
 export const MINT_URL = "https://mint.example";
+export const APP_ORIGIN = "https://app.example";
+const RECOVERY_INDEX_REALM = RECOVERY_INDEX_REALMS.local;
+
+/** The recovery index entry of a fake keyset. */
+export function indexEntry(keyset: FakeKeyset): RecoveryIndexEntry {
+  return keyset.conditional === undefined
+    ? { kind: "regular", mintUrl: MINT_URL, keysetId: keyset.id }
+    : {
+        kind: "conditional",
+        mintUrl: MINT_URL,
+        keysetId: keyset.id,
+        conditionId: keyset.conditional.conditionId,
+        outcomeCollectionId: keyset.conditional.outcomeCollectionId,
+      };
+}
 
 export interface FakeKeyset {
   readonly id: string;
@@ -147,17 +174,23 @@ export class FakeMint {
   onCheckstate: (() => Promise<void>) | null = null;
   /** Conditions whose filtered keyset listing fails. */
   readonly failConditionListing = new Set<string>();
-  /** The public engine catalogue at the app origin. Null answers 404. */
+  /**
+   * The public engine catalogue at the app origin. Null answers 404. A seed
+   * restore must never read it (ADR-039, amendment 2026-11-09).
+   */
   catalogue: readonly { conditionId: string; outcomes: readonly string[] }[] | null = null;
-  /** The next catalogue reads with a cursor that fail with 503. */
-  cursorReadFailures = 0;
-  /** A restarted engine issues new cursors and rejects the old ones. */
-  catalogueEpoch = 0;
+  /** The engine recovery index routes at the app origin. */
+  readonly index = new RecoveryIndexFakeEngine(RECOVERY_INDEX_REALM, APP_ORIGIN);
+  /** The engine cannot be reached: each recovery index request fails as a network error. */
+  indexUnreachable = false;
   readonly #signatures = new Map<
     string,
     { id: string; amount: number; C_: string; dleq: { e: string; s: string } }
   >();
   readonly #states = new Map<string, ProofState>();
+  readonly #keysetOfY = new Map<string, string>();
+  /** Keysets whose NUT-07 answer is not a known state: a mint answer that fails a check. */
+  readonly unknownStateKeysets = new Set<string>();
   #echoes = 0;
 
   constructor(
@@ -188,7 +221,52 @@ export class FakeMint {
 
   setState(keyset: FakeKeyset, counter: number, state: ProofState): void {
     const data = OutputData.createSingleDeterministicData(0, SEED, counter, keyset.id);
-    this.#states.set(hashToCurve(data.secret).toHex(true), state);
+    const Y = hashToCurve(data.secret).toHex(true);
+    this.#states.set(Y, state);
+    this.#keysetOfY.set(Y, keyset.id);
+  }
+
+  /** Store a recovery index of the seed that lists these keysets, as another browser did. */
+  async listInIndex(keysets: readonly FakeKeyset[]): Promise<void> {
+    const keys = deriveRecoveryIndexKeys(SEED, RECOVERY_INDEX_REALM);
+    const store = createRecoveryIndexEngineStore({
+      engineBaseUrl: APP_ORIGIN,
+      realm: RECOVERY_INDEX_REALM,
+      keys,
+      fetchImpl: async (input, init) => {
+        this.index.nowSeconds = Math.floor(Date.now() / 1000);
+        return this.index.fetch(input, init);
+      },
+    });
+    const { version } = await store.read();
+    const written = await store.write(
+      sealRecoveryIndexDocument({
+        keys,
+        entries: keysets.map(indexEntry),
+        writtenVersion: version + 1,
+      }),
+      version,
+    );
+    if (written.status !== "written") throw new Error("fake index write conflicted");
+  }
+
+  /** Requests of the restore that would walk the catalogue or the whole mint listing. */
+  catalogueRequests(): MintRequest[] {
+    return this.requests.filter(
+      ({ url }) =>
+        url.pathname === "/api/v1/markets/query" ||
+        (url.origin === MINT_URL &&
+          url.pathname === "/v1/conditional_keysets" &&
+          url.searchParams.get("condition_id") === null),
+    );
+  }
+
+  /** Whether a NUT-09 request asked about any of the first counters of a keyset. */
+  scanned(keyset: FakeKeyset, counters = 3): boolean {
+    const asked = new Set(this.restoredOutputs().flat());
+    return Array.from({ length: counters }, (_, counter) => blindedOutput(keyset, counter)).some(
+      (output) => asked.has(output),
+    );
   }
 
   requestsTo(path: string): MintRequest[] {
@@ -211,6 +289,11 @@ export class FakeMint {
     ).toUpperCase();
     const body = String(init?.body ?? "");
     this.requests.push({ method, url, headers: new Headers(init?.headers), body });
+    if (url.origin === APP_ORIGIN && url.pathname === "/api/v1/recovery-index") {
+      if (this.indexUnreachable) throw new TypeError("Failed to fetch");
+      this.index.nowSeconds = Math.floor(Date.now() / 1000);
+      return this.index.fetch(request instanceof Request ? request.url : String(request), init);
+    }
     if (url.origin !== MINT_URL) return this.#engine(url);
     const allKeysets = [this.regular, ...this.conditional];
     const parsed = () => JSON.parse(body || "{}") as Record<string, unknown>;
@@ -282,32 +365,29 @@ export class FakeMint {
       await hook?.();
       const Ys = (parsed().Ys ?? []) as string[];
       return json({
-        states: Ys.map((Y) => ({ Y, state: this.#states.get(Y) ?? "UNSPENT", witness: null })),
+        states: Ys.map((Y) => ({
+          Y,
+          state: this.unknownStateKeysets.has(this.#keysetOfY.get(Y) ?? "")
+            ? "UNKNOWN"
+            : (this.#states.get(Y) ?? "UNSPENT"),
+          witness: null,
+        })),
       });
     }
     return json({ detail: "not found" }, 404);
   };
 
-  // The app origin serves the public market catalogue. It has no other route here.
+  // The app origin serves the public market catalogue, one market for each page.
   #engine(url: URL): Response {
     if (url.pathname !== "/api/v1/markets/query" || this.catalogue === null) {
       return json({ detail: "not found" }, 404);
     }
     const requested = url.searchParams.get("cursor");
-    if (requested !== null && this.cursorReadFailures > 0) {
-      this.cursorReadFailures -= 1;
-      return json({ detail: "unavailable" }, 503);
-    }
-    const prefix = `e${this.catalogueEpoch}-page-`;
-    if (requested !== null && !requested.startsWith(prefix)) {
-      return json({ detail: "invalid or stale cursor" }, 400);
-    }
-    // One market for each page, newest first, so a walk has several pages.
-    const index = requested === null ? 0 : Number(requested.slice(prefix.length));
+    const index = requested === null ? 0 : Number(requested.slice("page-".length));
     const market = this.catalogue[index];
     return json({
       markets: market === undefined ? [] : [{ ...market, outcomes: [...market.outcomes] }],
-      nextCursor: index + 1 < this.catalogue.length ? `${prefix}${index + 1}` : null,
+      nextCursor: index + 1 < this.catalogue.length ? `page-${index + 1}` : null,
       lastSuccessfulRefreshAt: "2026-11-04T00:00:00Z",
     });
   }

@@ -21,6 +21,7 @@ import {
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
 import i18n from "@/i18n";
+import { recoveryIndexCliGapCommand } from "@bitcaster/client-sdk/recoveryIndexRestore";
 import { BrowserSeedHandoffRefusal, handoffBrowserSeed } from "@/lib/browserSeedHandoff";
 import { prepareBrowserRecoveryIndexHandoff } from "@/lib/browserRecoveryIndex";
 import {
@@ -71,13 +72,20 @@ interface WalletState {
   acknowledgeWalletSeedReminder: () => void;
   /**
    * Open the wallet of a seed phrase. A replacement whose current wallet has a
-   * partial backup returns `confirmPartialBackup`. The user then accepts the
-   * partial backup, and a second call with `acceptPartialBackup` replaces it.
+   * partial backup returns `confirmPartialBackup`, and one whose GUI restore
+   * can miss funds after a long run of unused counters returns
+   * `confirmCounterGap`. The user then accepts the warning, and a later call
+   * with `acceptPartialBackup` or `acceptCounterGap` continues.
    */
   recoverFromMnemonic: (
     words: string[],
-    options?: { readonly acceptPartialBackup?: boolean },
-  ) => Promise<{ valid: boolean; error?: string; confirmPartialBackup?: true }>;
+    options?: { readonly acceptPartialBackup?: boolean; readonly acceptCounterGap?: boolean },
+  ) => Promise<{
+    valid: boolean;
+    error?: string;
+    confirmPartialBackup?: true;
+    confirmCounterGap?: true;
+  }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
    * Internal walletOps primitive. Registers a mint and SETS it as active.
@@ -177,10 +185,16 @@ const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
   "backup-not-current": "wallet.replaceBlockedBackup",
   "backup-partial": "wallet.replaceBackupPartial",
   "browser-lock-unavailable": "wallet.replaceBlockedBrowserLock",
+  "counter-gap": "wallet.replaceCounterGap",
   "seed-backup-unconfirmed": "wallet.replaceBlockedSeedBackup",
 };
 
 function walletReplacementErrorMessage(error: unknown): string {
+  if (error instanceof BrowserSeedHandoffRefusal && error.code === "counter-gap") {
+    return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code], {
+      command: recoveryIndexCliGapCommand(error.cliGapLimit!),
+    });
+  }
   if (error instanceof WalletReplacementRefusal || error instanceof BrowserSeedHandoffRefusal) {
     return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
   }
@@ -349,6 +363,7 @@ export const useWalletStore = create<WalletState>()(
               scopeId: oldScopeId,
               currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
               acceptPartialBackup: options?.acceptPartialBackup === true,
+              acceptCounterGap: options?.acceptCounterGap === true,
               prepareRecoveryIndex: () => prepareBrowserRecoveryIndexHandoff(oldScopeId),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
@@ -388,6 +403,9 @@ export const useWalletStore = create<WalletState>()(
               error: walletReplacementErrorMessage(error),
               ...(error instanceof BrowserSeedHandoffRefusal && error.code === "backup-partial"
                 ? { confirmPartialBackup: true as const }
+                : {}),
+              ...(error instanceof BrowserSeedHandoffRefusal && error.code === "counter-gap"
+                ? { confirmCounterGap: true as const }
                 : {}),
             };
           }

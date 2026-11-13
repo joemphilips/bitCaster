@@ -238,6 +238,37 @@ describe("browser recovery index", () => {
     }
   });
 
+  it("asks for the upload after the outer commit of a nested counter write, outside its transaction", async () => {
+    const database = openDatabase();
+    const callbacks: string[] = [];
+    // The upload reads the local keysets in its own transaction, after a lock wait.
+    const stop = subscribeToLocalKeysetChanges(database, () => {
+      callbacks.push(Dexie.currentTransaction === null ? "outside" : "inside");
+      void Promise.resolve().then(() => readBrowserRecoveryIndexLocalEntries(database, SCOPE_ID));
+    });
+    try {
+      // A restore admits proofs and moves the cursor in one wallet transaction:
+      // the cursor write is a nested transaction, and the outer one continues.
+      await database.transaction("rw", database.tables, async () => {
+        await counters(database).advanceToAtLeastInContext(
+          { mintUrl: MINT, unit: "msat" },
+          REGULAR,
+          7,
+          false,
+        );
+        expect(callbacks).toEqual([]);
+        await database.walletCounterCursors.get([SCOPE_ID, REGULAR]);
+      });
+
+      expect(callbacks).toEqual(["outside"]);
+      expect(await database.walletCounterCursors.get([SCOPE_ID, REGULAR])).toMatchObject({
+        next: 7,
+      });
+    } finally {
+      stop();
+    }
+  });
+
   it("writes nothing for a later reservation in a listed keyset", async () => {
     const engine = new RecoveryIndexFakeEngine(REALM);
     engine.nowSeconds = NOW_MS / 1000;

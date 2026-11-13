@@ -1,4 +1,6 @@
 import Dexie from "dexie";
+import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { seedCounterGapWarning } from "@bitcaster/client-sdk/recoveryIndexRestore";
 import { pageActiveCtfRangePreparations } from "../stores/ctf-range-order-db";
 import type { BitcasterDB } from "../stores/proof-db";
 import { deleteSeedRestoreDatabase } from "../stores/seed-restore-db";
@@ -17,16 +19,66 @@ export type BrowserSeedHandoffRefusalCode =
   | "backup-not-current"
   | "backup-partial"
   | "browser-lock-unavailable"
+  | "counter-gap"
   | "seed-backup-unconfirmed";
 
 export class BrowserSeedHandoffRefusal extends Error {
   constructor(
     readonly code: BrowserSeedHandoffRefusalCode,
     message: string,
+    /** For `counter-gap`: the CLI gap that passes the longest run of unused counters. */
+    readonly cliGapLimit: number | null = null,
   ) {
     super(message);
     this.name = "BrowserSeedHandoffRefusal";
   }
+}
+
+/**
+ * The longest run of unused counters before a later signed output, over the
+ * local keysets of this browser (ADR-034 recovery index amendment, "Seed
+ * handoff"). A GUI restore stops after 300 unused counters, so it would miss
+ * the later output. The signed outputs are the NUT-13 counters of the proofs
+ * that this browser holds or held. A counter that the browser does not know
+ * can only lengthen a run, so the check can warn too often but not too rarely.
+ */
+export async function browserSeedHandoffCounterGap(
+  database: BitcasterDB,
+  scopeId: string,
+): Promise<{ readonly longestRun: number; readonly cliGapLimit: number } | null> {
+  const local = new Set(
+    (await database.walletCounterCursors.where("scopeId").equals(scopeId).toArray()).map(
+      ({ keysetId }) => keysetId,
+    ),
+  );
+  const signed = new Map<string, number[]>();
+  const authorities = await database.custodyProofBackupAuthorities
+    .where("[scopeId+proofId]")
+    .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+    .toArray();
+  for (const row of authorities) {
+    // A removal marker holds no locator.
+    const derivationLocator = (row as { readonly derivationLocator?: unknown }).derivationLocator;
+    if (derivationLocator === undefined || derivationLocator === null) continue;
+    let locator;
+    try {
+      locator = decodeDurableWalletProofDerivationLocator(derivationLocator);
+    } catch {
+      continue;
+    }
+    if (locator.kind !== "nut13" || !local.has(locator.keysetId)) continue;
+    const counters = signed.get(locator.keysetId) ?? [];
+    counters.push(locator.counter);
+    signed.set(locator.keysetId, counters);
+  }
+  let worst: { readonly longestRun: number; readonly cliGapLimit: number } | null = null;
+  for (const counters of signed.values()) {
+    const warning = seedCounterGapWarning(counters);
+    if (warning !== null && (worst === null || warning.longestRun > worst.longestRun)) {
+      worst = warning;
+    }
+  }
+  return worst;
 }
 
 /**
@@ -47,6 +99,11 @@ export async function handoffBrowserSeed(input: {
    * handoff before the commit point.
    */
   readonly acceptPartialBackup: boolean;
+  /**
+   * The user saw that a GUI restore of the current wallet can miss funds after
+   * a long run of unused counters, and replaces the wallet anyway.
+   */
+  readonly acceptCounterGap: boolean;
   /** Read the recovery index again and upload the pending keysets. */
   readonly prepareRecoveryIndex: () => Promise<BrowserRecoveryIndexHandoff>;
   /** Check app-level unfinished orders after the asynchronous checks and before invalidation. */
@@ -100,6 +157,17 @@ export async function handoffBrowserSeed(input: {
         throw new BrowserSeedHandoffRefusal(
           "backup-not-current",
           "browser seed handoff has a keyset that the recovery index does not list",
+        );
+      }
+      // The warning comes before the commit point. The handoff stays permitted.
+      const gap = input.acceptCounterGap
+        ? null
+        : await browserSeedHandoffCounterGap(input.database, input.scopeId);
+      if (gap !== null) {
+        throw new BrowserSeedHandoffRefusal(
+          "counter-gap",
+          "browser seed handoff needs the user to accept a long run of unused counters",
+          gap.cliGapLimit,
         );
       }
       requireCapturedDatabase(input);

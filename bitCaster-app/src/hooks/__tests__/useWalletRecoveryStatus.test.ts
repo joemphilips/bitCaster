@@ -14,9 +14,11 @@ import {
   initialSeedRestoreResyncSchedule,
   initialSeedRestoreState,
   seedRestoreDatabase,
+  type SeedRestoreKeysetRow,
   type SeedRestoreResyncRow,
   type SeedRestoreStateRow,
 } from "@/stores/seed-restore-db";
+import { RECOVERY_INDEX_KEYSET_PROGRESS_START } from "@bitcaster/client-sdk/recoveryIndexRestore";
 import { useBrowserCtfRangeOrderRecovery } from "../useBrowserCtfRangeOrderRecovery";
 import {
   browserWalletRecoveryStatus,
@@ -90,6 +92,7 @@ const SCOPE_A = browserWalletScopeIdFromMnemonic(MNEMONIC_A)!;
 const MINT_1 = "https://mint-1.example";
 const MINT_2 = "https://mint-2.example";
 const LATER = Date.now() + 3_600_000;
+const KEYSET_A = `01${"aa".repeat(32)}`;
 
 describe("useWalletRecoveryStatus", () => {
   const unmounts: Array<() => void> = [];
@@ -535,6 +538,38 @@ describe("useWalletRecoveryStatus", () => {
     );
   });
 
+  it.each([
+    ["no index", { index: "absent" as const }],
+    ["an unavailable index", { index: "unavailable" as const }],
+    ["a stop at the counter budget", { budgetStopped: true, initialCompletedAtMs: null }],
+  ])("completes a restore with %s with limited coverage", async (_label, fields) => {
+    await putState(MINT_1, { ...completedState(), ...fields });
+    useWallet(MNEMONIC_A, [MINT_1]);
+    const status = mountStatus();
+    await runPass(MINT_1);
+
+    // Empty holdings are not final (ADR-039 "Restore order").
+    await waitFor(() =>
+      expect(status.current).toMatchObject({ kind: "completed", coverage: "limited" }),
+    );
+  });
+
+  it("keeps a keyset scan pending, and a refused keyset limits the coverage", async () => {
+    await putState(MINT_1, completedState());
+    await putRestoreKeyset(MINT_1, KEYSET_A, { state: "queued", nextAttemptAtMs: LATER });
+    useWallet(MNEMONIC_A, [MINT_1]);
+    const status = mountStatus();
+    await runPass(MINT_1);
+    await waitFor(() =>
+      expect(status.current).toMatchObject({ kind: "pending", reason: "scan-continues" }),
+    );
+
+    await putRestoreKeyset(MINT_1, KEYSET_A, { state: "unverifiable" });
+    await waitFor(() =>
+      expect(status.current).toMatchObject({ kind: "completed", coverage: "limited" }),
+    );
+  });
+
   function mountStatus(): { readonly current: WalletRecoveryStatus } {
     const rendered = renderHook(() => useWalletRecoveryStatus());
     unmounts.push(rendered.unmount);
@@ -593,7 +628,8 @@ function completedState(): SeedRestoreStateRow {
     ...initialSeedRestoreState(SCOPE_A, MINT_1),
     initialCompletedAtMs: 1,
     hintsDone: true,
-    catalogueDone: true,
+    index: "listed",
+    planned: true,
   };
 }
 
@@ -608,6 +644,29 @@ async function putResync(
 ): Promise<void> {
   await seedRestoreDatabase(SCOPE_A).resync.put({
     ...initialSeedRestoreResyncRow(SCOPE_A, mintUrl, keysetId),
+    ...fields,
+  });
+}
+
+async function putRestoreKeyset(
+  mintUrl: string,
+  keysetId: string,
+  fields: Partial<SeedRestoreKeysetRow>,
+): Promise<void> {
+  await seedRestoreDatabase(SCOPE_A).keysets.put({
+    scopeId: SCOPE_A,
+    mintUrl,
+    keysetId,
+    schemaVersion: 3,
+    source: "listed",
+    conditional: null,
+    outcomeCollection: null,
+    order: 0,
+    state: "queued",
+    refusal: null,
+    progress: RECOVERY_INDEX_KEYSET_PROGRESS_START,
+    failures: 0,
+    nextAttemptAtMs: 0,
     ...fields,
   });
 }

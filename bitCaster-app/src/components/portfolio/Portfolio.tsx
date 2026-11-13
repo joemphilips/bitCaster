@@ -13,6 +13,8 @@ import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
 import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
 import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
+import { SeedRestoreResult } from "@/components/shared/SeedRestoreResult";
+import { useSeedRestoreResult } from "@/hooks/useSeedRestoreResult";
 import { walletRecoveryDisplay, walletRecoveryHoldingsUnknown } from "@/lib/walletRecoveryDisplay";
 
 type MainTab = "positions" | "funds" | "activity";
@@ -135,6 +137,8 @@ export function Portfolio(props: PortfolioProps) {
     profileExpected,
     reads: [props.holdings.funds, props.holdings.positions],
   });
+  // The restore result shows once the recovery row is gone (ADR-039).
+  const restoreResult = useSeedRestoreResult();
   // While the wallet recovery checks, waits or failed, the totals are not known.
   const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
   const positionsRequestKey = props.positionsRequest?.key;
@@ -233,6 +237,7 @@ export function Portfolio(props: PortfolioProps) {
       </div>
 
       <WalletRecoveryStatusRow display={recoveryDisplay} />
+      {recoveryDisplay.state === "complete" && <SeedRestoreResult result={restoreResult} />}
 
       {/* Main Tabs: Positions | Funds | Activity */}
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">

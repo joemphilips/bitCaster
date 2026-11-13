@@ -90,6 +90,7 @@
     "replaceBlockedUnscopedOrders": "古い注文にウォレット識別子がありません。切り替える前に解決してください。",
     "replaceBlockedBackup": "ウォレットのバックアップを確認できませんでした。後でもう一度試してください。現在のウォレットはそのままです。",
     "replaceBackupPartial": "このウォレットのバックアップは不完全です。切り替えた後にこのウォレットを完全に復元するには、bitcaster wallet recover-seed --all-conditions を使ってください。",
+    "replaceCounterGap": "別のブラウザーで復元すると、このウォレットの一部の資金が見つからない場合があります。見つけるには {{command}} を使ってください。",
     "replaceBlockedSeedBackup": "切り替える前に、シードバックアップで現在のシードフレーズをバックアップしてください。",
     "replaceBlockedActiveWork": "未完了のウォレット操作があります。切り替える前に完了または復旧してください。",
     "replaceBlockedBrowserLock": "このブラウザーではウォレットを安全にロックできません。現在のウォレットを保持し、ロックに対応したブラウザーで再試行してください。",
@@ -103,6 +104,10 @@
       "readFailed": "ウォレットのデータを読み込めませんでした。",
       "profileUnavailable": "ウォレットが開いていません。",
       "reload": "再読み込み"
+    },
+    "restoreResult": {
+      "partial": "一部のポジションが見つからない可能性があります。{{command}} を使ってください。",
+      "gapLimit": "資金が見つからない場合は {{command}} を使ってください。"
     },
     "operationFailed": "ウォレット操作を開始できませんでした。もう一度お試しください。"
   },

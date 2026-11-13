@@ -90,6 +90,7 @@
     "replaceBlockedUnscopedOrders": "An older order has no wallet identity. Resolve it before replacing the wallet.",
     "replaceBlockedBackup": "The wallet backup could not be confirmed. Try again later. The current wallet was kept.",
     "replaceBackupPartial": "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
+    "replaceCounterGap": "A restore in another browser can miss some funds of this wallet. To find them, use {{command}}.",
     "replaceBlockedSeedBackup": "Back up your current seed phrase in Seed Backup before replacing this wallet.",
     "replaceBlockedActiveWork": "A wallet operation is unfinished. Finish or recover it before replacing the wallet.",
     "replaceBlockedBrowserLock": "This browser cannot safely lock the wallet. Keep this wallet and retry in a browser that supports wallet locking.",
@@ -103,6 +104,10 @@
       "readFailed": "Wallet data could not be read.",
       "profileUnavailable": "The wallet is not open.",
       "reload": "Reload"
+    },
+    "restoreResult": {
+      "partial": "Some positions may be missing. Use {{command}}.",
+      "gapLimit": "Missing funds? Use {{command}}."
     },
     "operationFailed": "The wallet operation could not start. Try again."
   },

@@ -98,9 +98,9 @@ export function useBrowserCtfRangeOrderRecovery(input: {
     activationEpoch,
   );
 
-  // Another device can advance the shared seed's cursor. Recover default msat
-  // keysets before reuse, re-sync the keysets in use (ADR-033), and run the
-  // budgeted seed restore of conditional keysets (ADR-039).
+  // Another device can advance the shared seed's cursor. Run the budgeted seed
+  // restore and the index-read scans (ADR-039), recover the default msat
+  // keysets before reuse, and re-sync the keysets in use (ADR-033).
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -223,6 +223,35 @@ export function useBrowserCtfRangeOrderRecovery(input: {
           pass.walletStage("outgoing", stageFailedWith("outgoing", error));
         }
         if (!isCurrent()) return;
+        // The automatic seed restore event and the index-read scans (ADR-039,
+        // amendment 2026-11-09). The restore scans the regular keysets with
+        // the ADR-051 cursor rule, so it runs before the regular counters,
+        // which then skip each keyset that the restore completed.
+        let hintsSettled = true;
+        let restoreMintUrl: string | null = null;
+        try {
+          for (const mintUrl of mintUrls) {
+            restoreMintUrl = mintUrl;
+            const result = await runBrowserSeedPositionRestorePass({
+              scopeId,
+              mnemonic: walletMnemonic,
+              mintUrl,
+              yieldControl: yieldToBrowser,
+            });
+            if (!isCurrent()) return;
+            pass.seedRestorePass(mintUrl, result, Date.now() + SEED_RESTORE_CONTINUE_MS);
+            restoreMore ||= result.status === "more";
+            retryAtMs = earliest(retryAtMs, result.retryAtMs);
+            hintsSettled &&= result.hintsSettled;
+          }
+        } catch {
+          hintsSettled = false;
+          retryRequired = true;
+          if (restoreMintUrl !== null) {
+            pass.seedRestorePass(restoreMintUrl, "error", Date.now() + RANGE_RECOVERY_RETRY_MS);
+          }
+        }
+        if (!isCurrent()) return;
         if (!countersRecovered) {
           let counterMintUrl: string | null = null;
           try {
@@ -270,31 +299,6 @@ export function useBrowserCtfRangeOrderRecovery(input: {
           if (resyncMintUrl !== null) pass.resyncPass(resyncMintUrl, stageFailed());
         }
         if (!isCurrent()) return;
-        // The automatic seed restore event (ADR-039, amendment 2026-11-04).
-        let hintsSettled = true;
-        let restoreMintUrl: string | null = null;
-        try {
-          for (const mintUrl of mintUrls) {
-            restoreMintUrl = mintUrl;
-            const result = await runBrowserSeedPositionRestorePass({
-              scopeId,
-              mnemonic: walletMnemonic,
-              mintUrl,
-              yieldControl: yieldToBrowser,
-            });
-            if (!isCurrent()) return;
-            pass.seedRestorePass(mintUrl, result, Date.now() + SEED_RESTORE_CONTINUE_MS);
-            restoreMore ||= result.status === "more";
-            retryAtMs = earliest(retryAtMs, result.retryAtMs);
-            hintsSettled &&= result.hintsSettled;
-          }
-        } catch {
-          hintsSettled = false;
-          retryRequired = true;
-          if (restoreMintUrl !== null) {
-            pass.seedRestorePass(restoreMintUrl, "error", Date.now() + RANGE_RECOVERY_RETRY_MS);
-          }
-        }
         passRan = true;
         // The first asset-monitoring report waits for the earlier report's hints.
         if (hintsSettled) releaseBrowserSeedPositionRestoreGate(scopeId);

@@ -641,6 +641,37 @@ describe("useWalletStore", () => {
       setActiveBrowserWalletProfile("");
     });
 
+    it("warns about a long run of unused counters, and continues after the user accepts it", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newWords = bip39.generate();
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      seedHandoffMocks.handoff
+        .mockRejectedValueOnce(
+          new BrowserSeedHandoffRefusal("counter-gap", "opaque internal detail", 400),
+        )
+        .mockRejectedValueOnce(new Error("stop after capture"));
+
+      const warned = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+      // The warning names a CLI gap above the longest run.
+      expect(warned).toEqual({
+        valid: false,
+        error: i18n.t("wallet.replaceCounterGap", {
+          command: "bitcaster wallet recover-seed --gap-limit 400",
+        }),
+        confirmCounterGap: true,
+      });
+      expect(warned.error).toContain("bitcaster wallet recover-seed --gap-limit 400");
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+
+      await useWalletStore.getState().recoverFromMnemonic(newWords, { acceptCounterGap: true });
+      expect(seedHandoffMocks.handoff).toHaveBeenLastCalledWith(
+        expect.objectContaining({ acceptCounterGap: true, acceptPartialBackup: false }),
+      );
+      setActiveBrowserWalletProfile("");
+    });
+
     it("maps the unconfirmed seed refusal to its localized message", async () => {
       const oldMnemonic = bip39.generate().join(" ");
       const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);

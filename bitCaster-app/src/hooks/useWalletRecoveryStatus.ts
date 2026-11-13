@@ -31,6 +31,9 @@ import {
   isSeedRestoreScanCapped,
   readSeedRestoreResyncRow,
   seedRestoreDatabase,
+  seedRestoreKeysetRefused,
+  seedRestoreResultIsPartial,
+  type SeedRestoreKeysetRow,
   type SeedRestoreResyncRow,
   type SeedRestoreResyncScheduleRow,
   type SeedRestoreStateRow,
@@ -40,6 +43,8 @@ import { useWalletStore } from "@/stores/wallet";
 /** The durable recovery rows of one wallet mint. */
 export interface WalletRecoveryDurableMintRows {
   readonly state: SeedRestoreStateRow | null;
+  /** The keysets that the restore or an index read scans. */
+  readonly keysets: readonly SeedRestoreKeysetRow[];
   readonly resync: readonly SeedRestoreResyncRow[];
   readonly schedule: SeedRestoreResyncScheduleRow | null;
   readonly associations: readonly BrowserWalletCounterAssociationRow[];
@@ -125,8 +130,9 @@ export async function readWalletRecoveryDurableRows(
     const generated = origin !== undefined;
     const mints = new Map<string, WalletRecoveryDurableMintRows>();
     for (const mintUrl of mintUrls) {
-      const [state, resync, schedule, associations] = await Promise.all([
+      const [state, keysets, resync, schedule, associations] = await Promise.all([
         database.states.get([scopeId, mintUrl]),
+        database.keysets.where("[scopeId+mintUrl]").equals([scopeId, mintUrl]).toArray(),
         database.resync.where("[scopeId+mintUrl]").equals([scopeId, mintUrl]).toArray(),
         database.resyncSchedules.get([scopeId, mintUrl]),
         db.walletCounterAssociations
@@ -136,6 +142,7 @@ export async function readWalletRecoveryDurableRows(
       ]);
       mints.set(mintUrl, {
         state: state ?? null,
+        keysets,
         resync: resync.map(readKnownResyncRow),
         schedule: schedule ?? null,
         associations,
@@ -209,6 +216,7 @@ export function browserWalletRecoveryStatus(input: {
     stages.push(regularCounterStage(mintUrl, passed?.regularCounters ?? null, rows));
     stages.push(passed?.resyncPass ?? notRun(`resyncPass ${mintUrl}`));
     resyncObservations(mintUrl, rows, stages, persistentFailures);
+    restoreScanObservations(mintUrl, rows, stages, persistentFailures);
     if (!durable.generated) {
       seedRestoreObservations(
         mintUrl,
@@ -313,7 +321,36 @@ function resyncObservations(
   persistentFailures.push({ source, consecutiveFailures: schedule.probeFailures, retryAtMs });
 }
 
-/** The automatic seed restore of conditional keysets (ADR-039). */
+/**
+ * The keyset scans of the restore and of the index reads (ADR-051 "Restore").
+ * A scan that continues keeps the recovery pending. A refused keyset ends its
+ * scan, but the browser cannot know its funds, so empty holdings are not final.
+ */
+function restoreScanObservations(
+  mintUrl: string,
+  rows: WalletRecoveryDurableMintRows,
+  stages: WalletRecoveryStageObservation[],
+  persistentFailures: WalletRecoveryFailureCount[],
+): void {
+  for (const row of rows.keysets) {
+    const stage = `restoreScan ${mintUrl} ${row.keysetId}`;
+    if (seedRestoreKeysetRefused(row.state)) {
+      stages.push({ stage, state: "completed", coverage: "limited" });
+      continue;
+    }
+    if (row.state !== "queued") continue;
+    const retryAtMs = dueAt(row.nextAttemptAtMs);
+    stages.push({
+      stage,
+      state: "pending",
+      reason: row.failures > 0 ? "backoff" : "scan-continues",
+      retryAtMs,
+    });
+    persistentFailures.push({ source: stage, consecutiveFailures: row.failures, retryAtMs });
+  }
+}
+
+/** The automatic seed restore (ADR-039, amendment 2026-11-09). */
 function seedRestoreObservations(
   mintUrl: string,
   passed: WalletRecoverySeedRestoreStage | null,
@@ -338,7 +375,7 @@ function seedRestoreObservations(
     consecutiveFailures: Math.max(state.failures, state.itemFailures),
     retryAtMs: dueAt(state.nextAttemptAtMs),
   });
-  if (state.initialCompletedAtMs === null) {
+  if (state.initialCompletedAtMs === null && !state.budgetStopped) {
     stages.push({
       stage,
       state: "pending",
@@ -347,7 +384,14 @@ function seedRestoreObservations(
     });
     return;
   }
-  stages.push(passed?.observation ?? notRun(stage));
+  const observation = passed?.observation ?? notRun(stage);
+  // With no index, an unavailable index, or a stop at the budget, the result
+  // is partial: empty holdings are not final (ADR-039 "Restore order").
+  stages.push(
+    observation.state === "completed" && seedRestoreResultIsPartial(state, rows.keysets)
+      ? { ...observation, coverage: "limited" }
+      : observation,
+  );
 }
 
 function notRun(stage: string): WalletRecoveryStageObservation {

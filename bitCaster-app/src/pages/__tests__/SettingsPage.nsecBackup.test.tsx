@@ -738,7 +738,10 @@ describe("SettingsPage wallet replacement", () => {
         "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
       ),
     ).toBeInTheDocument();
-    expect(recover).toHaveBeenLastCalledWith(replacement, { acceptPartialBackup: false });
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: false,
+      acceptCounterGap: false,
+    });
     expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
@@ -746,7 +749,54 @@ describe("SettingsPage wallet replacement", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument(),
     );
-    expect(recover).toHaveBeenLastCalledWith(replacement, { acceptPartialBackup: true });
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: true,
+      acceptCounterGap: false,
+    });
+  });
+
+  it("shows the counter gap warning after the partial backup, and replaces after both are accepted", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    setActiveBrowserWalletProfile(mnemonic);
+    const gap = i18n.t("wallet.replaceCounterGap", {
+      command: "bitcaster wallet recover-seed --gap-limit 400",
+    });
+    const recover = vi
+      .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
+      .mockResolvedValueOnce({
+        valid: false,
+        error: i18n.t("wallet.replaceBackupPartial"),
+        confirmPartialBackup: true,
+      })
+      .mockResolvedValueOnce({ valid: false, error: gap, confirmCounterGap: true })
+      .mockResolvedValueOnce({ valid: true });
+    useWalletStore.setState({ recoverFromMnemonic: recover });
+    const replacement = bip39.generate();
+
+    await renderSettingsPage("cashu");
+    fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
+      target: { value: replacement.join(" ") },
+    });
+    const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Replace Anyway" }));
+
+    expect(
+      await within(dialog).findByText(
+        "A restore in another browser can miss some funds of this wallet. To find them, use bitcaster wallet recover-seed --gap-limit 400.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument(),
+    );
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: true,
+      acceptCounterGap: true,
+    });
   });
 
   it("keeps the replacement modal open while the handoff is pending", async () => {

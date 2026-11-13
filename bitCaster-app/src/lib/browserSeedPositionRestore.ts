@@ -1,29 +1,48 @@
-import type { Wallet as CashuWallet } from "@cashu/cashu-ts";
-import Dexie, { type Table } from "dexie";
+import type { Proof, Wallet as CashuWallet } from "@cashu/cashu-ts";
+import Dexie from "dexie";
 import {
   validateConditionalKeysetSeedRecoveryAuthority,
   validateConditionalKeysetSeedRecoveryDescriptor,
+  type ConditionalKeysetSeedRecoveryDescriptor,
 } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
+import type { RecoveryIndexEntry } from "@bitcaster/client-sdk/recoveryIndexDocument";
 import {
-  SEED_POSITION_PROBE_COUNTERS,
+  planRecoveryIndexRestore,
+  RECOVERY_INDEX_KEYSET_PROGRESS_START,
+  RECOVERY_INDEX_RESTORE_COUNTER_BUDGET,
+  runRecoveryIndexRestorePass,
+  scanRecoveryIndexKeyset,
+  type RecoveryIndexKeysetScan,
+  type RecoveryIndexRestoreSource,
+} from "@bitcaster/client-sdk/recoveryIndexRestore";
+import {
   SEED_POSITION_RESYNC_COUNTERS,
   listSeedRestoreConditionKeysets,
   probeSeedRestoreKeysets,
-  readSeedRestoreCataloguePage,
-  readSeedRestoreMintConditionPage,
+  resolveSeedRestoreKeyset,
+  seedRestoreHintEntries,
+  type SeedRestoreKeysetListing,
+  type SeedRestoreKeysetResolution,
   type SeedRestoreProbeTarget,
 } from "@bitcaster/client-sdk/seedPositionRestore";
+import { canonicalizeMintIdentityUrl } from "@bitcaster/client-sdk/tokenImportValidation";
 import { toSeed } from "@/lib/bip39";
 import {
   activeBrowserWalletScopeId,
   browserWalletIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
+import {
+  activeBrowserRecoveryIndex,
+  type BrowserRecoveryIndexRead,
+} from "@/lib/browserRecoveryIndex";
 import { createAuthenticatedBrowserEngineClient } from "@/lib/markets";
 import { getNdk } from "@/lib/nostr";
 import { normalizeUrl } from "@/lib/url";
 import {
+  admitBrowserRecoveryIndexWindow,
   restoreBrowserConditionalKeyset,
   rescanBrowserRegularKeyset,
+  type BrowserRecoveryIndexWindowKeyset,
   type KeysetRecoveryResult,
 } from "@/lib/cashu";
 import { useActivityLogStore } from "@/stores/activity-log";
@@ -40,9 +59,10 @@ import {
   SEED_RESTORE_PERSISTENT_FAILURES,
   seedRestoreBackoffMs,
   seedRestoreDatabase,
+  settleSeedRestoreDeferral,
   type SeedRestoreCondition,
   type SeedRestoreConditionRow,
-  type SeedRestoreKeysetDescriptor,
+  type SeedRestoreIndexState,
   type SeedRestoreKeysetRow,
   type SeedRestoreResyncRow,
   type SeedRestoreStateRow,
@@ -50,25 +70,33 @@ import {
 import { claimSeedRestoreStart, releaseSeedRestoreStart } from "@/stores/seed-restore-starts";
 import { useWalletStore } from "@/stores/wallet";
 
-// The automatic seed restore event of ADR-039 and the keyset re-sync of
-// ADR-033 (amendments 2026-11-04). They are a release 4 measure: the release 5
-// wallet-id backup replaces them with its counter high-water marks, and this
-// scan then stays only as a fallback. Operator decision 2026-11-04: no scan
-// runs on a timer. A seed entry starts the restore (at most four starts per
-// browser in 24 hours), and only evidence of another client starts a re-sync.
+// The automatic seed restore event of ADR-039 (amendment 2026-11-09), the
+// keyset scans after a recovery index read (ADR-033), and the keyset re-sync
+// (ADR-033, amendment 2026-11-04).
+//
+// - A seed entry starts the restore: at most four starts per browser in 24
+//   hours, and no scan on a timer. It scans the listed keysets of the
+//   recovery index, the regular keysets of the mint listing, and the keysets
+//   of the hinted markets, in that order (SDK planner). It never reads the
+//   market catalogue or the whole mint listing. Each restore start has the
+//   SDK counter budget.
+// - After an index read, a listed keyset with no local cursor gets the same
+//   scan, also in a browser that generated the seed.
+// - Only evidence of another client starts a re-sync.
 
-/** Work bounds of one round. A pass runs rounds until its time budget ends. */
-const ROUND_CATALOGUE_PAGES = 4;
-const ROUND_LISTINGS = 8;
-const ROUND_PROBE_OUTPUTS = 1024;
-const ROUND_FULL_SCANS = 4;
-const PASS_TIME_BUDGET_MS = 15_000;
 /** After this many failures in a row, the UI shows a persistent error. */
 export { SEED_RESTORE_PERSISTENT_FAILURES };
 const ASSET_MONITORING_HINT_PAGES = 4;
+/** Hinted markets that one pass lists at the mint. */
+const PASS_CONDITION_LISTINGS = 8;
 /** Pages of the unfiltered mint listing that the re-sync reads to find one keyset. */
 const RESYNC_RESOLVE_LISTING_PAGES = 20;
 const MINT_LISTING_PAGE_SIZE = 100;
+const SOURCE_ORDER: Readonly<Record<RecoveryIndexRestoreSource, number>> = {
+  listed: 0,
+  regular: 1,
+  hint: 2,
+};
 
 export type BrowserSeedPositionRestorePassStatus =
   | "skipped"
@@ -90,8 +118,10 @@ export interface BrowserSeedPositionRestoreInput {
   readonly mnemonic: string;
   readonly mintUrl: string;
   readonly now?: () => number;
-  /** Yields the main thread between derivation chunks. */
+  /** Yields the main thread between derivation chunks of the re-sync probe. */
   readonly yieldControl?: () => Promise<void>;
+  /** The counters of one restore start. The default is the SDK budget. */
+  readonly counterBudget?: number;
 }
 
 const reportGates = new Map<
@@ -120,10 +150,7 @@ function reportGate(scopeId: string) {
  */
 export async function browserSeedPositionRestoreHintsSettled(scopeId: string): Promise<boolean> {
   if (await isBrowserSeedGeneratedHere(scopeId)) return true;
-  const states = await seedRestoreDatabase(scopeId)
-    .states.where("[scopeId+mintUrl]")
-    .between([scopeId, ""], [scopeId, "\uffff"], true, true)
-    .toArray();
+  const states = await statesOfScope(scopeId);
   return states.length > 0 && states.every(hintsSettled);
 }
 
@@ -158,15 +185,23 @@ export function browserSeedPositionRestoreGate(scopeId: string): {
   };
 }
 
+function ofScope<T, K>(scopeId: string, table: Dexie.Table<T, K>) {
+  return table.where("[scopeId+mintUrl]").between([scopeId, ""], [scopeId, "￿"], true, true);
+}
+
+function statesOfScope(scopeId: string): Promise<SeedRestoreStateRow[]> {
+  return ofScope(scopeId, seedRestoreDatabase(scopeId).states).toArray();
+}
+
 /**
- * Clears every backoff of a failed restore or re-sync, and restarts a
- * catalogue walk that has not ended (its saved cursor can be stale). The
- * caller then wakes the recovery pass.
+ * Retry of a failed or partial restore. It clears every backoff, starts a new
+ * counter budget, and scans the refused keysets again. After an unavailable
+ * index, it reads the index again; the SDK sends that read only after an
+ * engine outage (ADR-039 "Restore order"). The caller then wakes the recovery
+ * pass. Retry is not a new restore start.
  */
 export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<void> {
   const database = seedRestoreDatabase(scopeId);
-  const ofScope = <T, K>(table: Table<T, K>) =>
-    table.where("[scopeId+mintUrl]").between([scopeId, ""], [scopeId, "\uffff"], true, true);
   await database.transaction(
     "rw",
     [
@@ -177,23 +212,25 @@ export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<
       database.resyncSchedules,
     ],
     async () => {
-      await ofScope(database.states).modify((state: SeedRestoreStateRow) => {
+      await ofScope(scopeId, database.states).modify((state: SeedRestoreStateRow) => {
         Object.assign(state, {
           failures: 0,
           nextAttemptAtMs: 0,
           lastFailure: null,
           itemFailures: 0,
-          // An unfinished walk starts again at the first page: its cursor can be stale.
-          ...(state.catalogueDone ? {} : { catalogueSource: null, catalogueCursor: null }),
+          countersUsed: 0,
+          budgetStopped: false,
+          resultDismissedAtMs: null,
         });
       });
-      await ofScope(database.conditions).modify((row: SeedRestoreConditionRow) => {
+      await ofScope(scopeId, database.conditions).modify((row: SeedRestoreConditionRow) => {
         if (!row.listed) Object.assign(row, { failures: 0, nextAttemptAtMs: 0 });
       });
-      await ofScope(database.keysets).modify((row: SeedRestoreKeysetRow) => {
-        if (row.state === "failed") Object.assign(row, { failures: 0, nextAttemptAtMs: 0 });
+      await ofScope(scopeId, database.keysets).modify((row: SeedRestoreKeysetRow) => {
+        if (row.state === "complete") return;
+        Object.assign(row, { state: "queued", refusal: null, failures: 0, nextAttemptAtMs: 0 });
       });
-      await ofScope(database.resync).modify((row: SeedRestoreResyncRow) => {
+      await ofScope(scopeId, database.resync).modify((row: SeedRestoreResyncRow) => {
         if (row.waitReason === "admission-failed") {
           Object.assign(row, { failures: 0, nextAttemptAtMs: 0 });
         }
@@ -202,14 +239,131 @@ export async function retryBrowserSeedPositionRestore(scopeId: string): Promise<
           Object.assign(row, { failures: 0, nextAttemptAtMs: 0, scanContinuations: 0 });
         }
       });
-      await ofScope(database.resyncSchedules).modify((row) => {
+      await ofScope(scopeId, database.resyncSchedules).modify((row) => {
         Object.assign(row as object, { probeFailures: 0, nextProbeAtMs: 0 });
       });
     },
   );
+  if ((await statesOfScope(scopeId)).some(({ index }) => index === "unavailable")) {
+    await activeBrowserRecoveryIndex(scopeId)
+      ?.read("restore-retry")
+      .catch(() => undefined);
+  }
 }
 
-/** Runs one budgeted pass of the seed restore for one wallet mint. */
+/** Closes the restore result of this wallet. A later Retry shows it again. */
+export async function dismissBrowserSeedRestoreResult(
+  scopeId: string,
+  nowMs = Date.now(),
+): Promise<void> {
+  const database = seedRestoreDatabase(scopeId);
+  await ofScope(scopeId, database.states).modify((state: SeedRestoreStateRow) => {
+    Object.assign(state, { resultDismissedAtMs: nowMs });
+  });
+}
+
+/**
+ * Records one recovery index read (ADR-033): each listed keyset of a wallet
+ * mint with no local cursor gets a scan, and a restore that had no index yet
+ * takes this one. An index read never starts a scan of a keyset that the
+ * browser already uses. Returns true when the read added a scan.
+ */
+export async function recordBrowserRecoveryIndexRead(
+  scopeId: string,
+  read: BrowserRecoveryIndexRead,
+  walletMintUrls: readonly string[],
+): Promise<boolean> {
+  const index = indexStateOf(read);
+  const database = seedRestoreDatabase(scopeId);
+  let added = false;
+  await database.transaction("rw", database.states, database.keysets, async () => {
+    for (const mintUrl of new Set(walletMintUrls.map(normalizeUrl))) {
+      const state = await database.states.get([scopeId, mintUrl]);
+      // Only a restore with no index yet, or after an outage, takes a later read.
+      if (
+        state !== undefined &&
+        (state.index === "unread" || state.index === "unavailable") &&
+        index !== state.index
+      ) {
+        await database.states.put({ ...state, index });
+      }
+      if (read.status !== "read") continue;
+      const canonical = canonicalMint(mintUrl);
+      const entries = read.scan.filter((entry) => entry.mintUrl === canonical);
+      added = (await addTargets(scopeId, mintUrl, entries, "listed")) || added;
+    }
+  });
+  return added;
+}
+
+function indexStateOf(read: BrowserRecoveryIndexRead): SeedRestoreIndexState {
+  if (read.status === "failed") return "unavailable";
+  switch (read.document.status) {
+    case "listed":
+      return "listed";
+    case "absent":
+      return "absent";
+    case "undecodable":
+      return "undecodable";
+    case "unread":
+      return "unavailable";
+    default:
+      return assertNever(read.document);
+  }
+}
+
+/** Adds the keysets that have no scan row yet, after the existing rows. Call in a transaction. */
+async function addTargets(
+  scopeId: string,
+  mintUrl: string,
+  entries: readonly RecoveryIndexEntry[],
+  source: RecoveryIndexRestoreSource,
+): Promise<boolean> {
+  if (entries.length === 0) return false;
+  const table = seedRestoreDatabase(scopeId).keysets;
+  const existing = await table.where("[scopeId+mintUrl]").equals([scopeId, mintUrl]).toArray();
+  const known = new Set(existing.map(({ keysetId }) => keysetId));
+  let order = existing.reduce((highest, row) => Math.max(highest, row.order + 1), 0);
+  let added = false;
+  for (const entry of entries) {
+    if (known.has(entry.keysetId)) continue;
+    known.add(entry.keysetId);
+    await table.put({
+      scopeId,
+      mintUrl,
+      keysetId: entry.keysetId,
+      schemaVersion: 3,
+      source,
+      conditional:
+        entry.kind === "conditional"
+          ? { conditionId: entry.conditionId, outcomeCollectionId: entry.outcomeCollectionId }
+          : null,
+      outcomeCollection: null,
+      order,
+      state: "queued",
+      refusal: null,
+      progress: RECOVERY_INDEX_KEYSET_PROGRESS_START,
+      failures: 0,
+      nextAttemptAtMs: 0,
+    });
+    order += 1;
+    added = true;
+  }
+  return added;
+}
+
+interface PassContext extends BrowserSeedPositionRestoreInput {
+  readonly mintUrl: string;
+  /** The canonical mint URL of the recovery index entries. */
+  readonly canonicalMintUrl: string;
+  readonly now: () => number;
+  readonly seed: Uint8Array;
+  readonly walletId: string | null;
+  readonly isCurrent: () => boolean;
+  readonly wallet: CashuWallet;
+}
+
+/** Runs one pass of the seed restore and of the index-read scans for one wallet mint. */
 export async function runBrowserSeedPositionRestorePass(
   input: BrowserSeedPositionRestoreInput,
 ): Promise<BrowserSeedPositionRestorePassResult> {
@@ -217,119 +371,46 @@ export async function runBrowserSeedPositionRestorePass(
   const mintUrl = normalizeUrl(input.mintUrl);
   const database = seedRestoreDatabase(input.scopeId);
   const isCurrent = () => activeBrowserWalletScopeId() === input.scopeId;
-  if (await isBrowserSeedGeneratedHere(input.scopeId)) {
+  const generated = await isBrowserSeedGeneratedHere(input.scopeId);
+  let state: SeedRestoreStateRow | null = null;
+  if (!generated) {
+    const deniedRetryAtMs = await claimRestoreStart(input.scopeId, mintUrl, now);
+    if (deniedRetryAtMs !== null) {
+      // The restoring notice stays while the start waits for a free slot.
+      return { status: "waiting", retryAtMs: deniedRetryAtMs, hintsSettled: false };
+    }
+    state = await readState(input.scopeId, mintUrl);
+    if (now() < state.nextAttemptAtMs) {
+      return {
+        status: state.failures >= SEED_RESTORE_PERSISTENT_FAILURES ? "failed" : "waiting",
+        retryAtMs: state.nextAttemptAtMs,
+        hintsSettled: hintsSettled(state),
+      };
+    }
+  } else if ((await keysetRows(input.scopeId, mintUrl)).length === 0) {
+    // This profile generated the seed and no index read named another keyset.
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
-  }
-  // A new restore of this seed counts toward the browser cap. A resumed scan
-  // and Retry do not. Claim the start and write the first state row in one
-  // transaction: a second tab then sees the row only after a granted claim,
-  // and a denied claim writes no row. localStorage is not transactional, so a
-  // failed write gives the start back.
-  const claimed: { atMs: number | null } = { atMs: null };
-  let deniedRetryAtMs: number | null;
-  try {
-    deniedRetryAtMs = await database.transaction("rw", database.states, async () => {
-      const started = await database.states
-        .where("[scopeId+mintUrl]")
-        .between([input.scopeId, ""], [input.scopeId, "\uffff"], true, true)
-        .count();
-      if (started > 0) return null;
-      // The claim is synchronous, so the transaction stays active.
-      const atMs = now();
-      const claim = claimSeedRestoreStart(atMs);
-      if (!claim.granted) return claim.retryAtMs;
-      claimed.atMs = atMs;
-      await database.states.put(initialSeedRestoreState(input.scopeId, mintUrl));
-      return null;
-    });
-  } catch (error) {
-    if (claimed.atMs !== null) releaseSeedRestoreStart(claimed.atMs);
-    throw error;
-  }
-  if (deniedRetryAtMs !== null) {
-    // The restoring notice stays while the start waits for a free slot.
-    return { status: "waiting", retryAtMs: deniedRetryAtMs, hintsSettled: false };
-  }
-  let state =
-    (await database.states.get([input.scopeId, mintUrl])) ??
-    initialSeedRestoreState(input.scopeId, mintUrl);
-  if (now() < state.nextAttemptAtMs) {
-    return {
-      status: state.failures >= SEED_RESTORE_PERSISTENT_FAILURES ? "failed" : "waiting",
-      retryAtMs: state.nextAttemptAtMs,
-      hintsSettled: hintsSettled(state),
-    };
   }
   const context: PassContext = {
     ...input,
     mintUrl,
+    canonicalMintUrl: canonicalMint(mintUrl),
     now,
     seed: toSeed(input.mnemonic.trim().split(/\s+/)),
     walletId: browserWalletIdFromMnemonic(input.mnemonic),
     isCurrent,
     wallet: await walletForMint(mintUrl),
   };
-  const started = now();
   try {
-    if (!hintsSettled(state)) {
-      const hints = await addAssetMonitoringHints(context);
-      const read = await readState(context);
-      state = {
-        ...read,
-        hintsDone: hints === "read",
-        hintFailures: hints === "failed" ? read.hintFailures + 1 : read.hintFailures,
-      };
-      await database.states.put(state);
-    }
-    await addActivityLogHints(context);
-    let finished = false;
-    let idle = false;
-    while (now() - started < PASS_TIME_BUDGET_MS) {
-      requireCurrent(context);
-      const before = await readState(context);
-      state = await walkCatalogue(context, before);
-      const work =
-        (state.catalogueCursor !== before.catalogueCursor ||
-        state.catalogueDone !== before.catalogueDone
-          ? 1
-          : 0) +
-        (await listConditions(context)) +
-        (await scanHintedKeysets(context)) +
-        (await probeCatalogueKeysets(context));
-      finished = await initialRestoreDone(context);
-      // Rows that wait for a backoff leave nothing to do in this pass.
-      if (work === 0) {
-        idle = true;
-        break;
-      }
-    }
-    state = await readState(context);
-    if (finished && state.initialCompletedAtMs === null) {
-      state = { ...state, initialCompletedAtMs: now() };
-    }
-    const waiting = await waitingWork(context);
-    state = {
-      ...state,
-      failures: 0,
-      nextAttemptAtMs: 0,
-      lastFailure: null,
-      itemFailures: waiting.itemFailures,
-    };
-    await database.states.put(state);
-    const settled = hintsSettled(state);
-    // A failed hint read tries again after a backoff. Without a signer, the
-    // recovery hook runs a pass when the signer becomes ready.
-    const hintRetryAtMs =
-      settled || state.hintFailures === 0 ? null : now() + seedRestoreBackoffMs(state.hintFailures);
-    return {
-      // Out of budget with work left, the next pass continues soon.
-      status: !idle ? "more" : finished ? "complete" : "waiting",
-      retryAtMs: earliest(waiting.retryAtMs, hintRetryAtMs),
-      hintsSettled: settled,
-    };
+    if (state !== null) await prepareRestore(context, state);
+    const scanned = await scanTargets(context);
+    return await finishPass(context, scanned);
   } catch (error) {
     if (!isCurrent()) return { status: "waiting", retryAtMs: null, hintsSettled: false };
-    const failed = await readState(context).catch(() => state);
+    if (state === null) {
+      return { status: "waiting", retryAtMs: await waitingRetryAtMs(context), hintsSettled: true };
+    }
+    const failed = await readState(input.scopeId, mintUrl).catch(() => state);
     const failures = failed.failures + 1;
     const nextAttemptAtMs = now() + seedRestoreBackoffMs(failures);
     await database.states.put({
@@ -344,6 +425,555 @@ export async function runBrowserSeedPositionRestorePass(
       hintsSettled: hintsSettled(failed),
     };
   }
+}
+
+/**
+ * A new restore of this seed counts toward the browser cap. A resumed scan
+ * and Retry do not. Claim the start and write the first state row in one
+ * transaction: a second tab then sees the row only after a granted claim, and
+ * a denied claim writes no row. localStorage is not transactional, so a
+ * failed write gives the start back. Returns the retry time of a denial.
+ */
+async function claimRestoreStart(
+  scopeId: string,
+  mintUrl: string,
+  now: () => number,
+): Promise<number | null> {
+  const database = seedRestoreDatabase(scopeId);
+  const claimed: { atMs: number | null } = { atMs: null };
+  try {
+    return await database.transaction("rw", database.states, async () => {
+      if ((await ofScope(scopeId, database.states).count()) > 0) return null;
+      // The claim is synchronous, so the transaction stays active.
+      const atMs = now();
+      const claim = claimSeedRestoreStart(atMs);
+      if (!claim.granted) return claim.retryAtMs;
+      claimed.atMs = atMs;
+      await database.states.put(initialSeedRestoreState(scopeId, mintUrl));
+      return null;
+    });
+  } catch (error) {
+    if (claimed.atMs !== null) releaseSeedRestoreStart(claimed.atMs);
+    throw error;
+  }
+}
+
+/**
+ * The restore part of a pass: the hints, the index of the restore start, the
+ * regular keysets, and the keysets of the hinted markets.
+ */
+async function prepareRestore(context: PassContext, initial: SeedRestoreStateRow): Promise<void> {
+  const database = seedRestoreDatabase(context.scopeId);
+  if (!hintsSettled(initial)) {
+    const hints = await addAssetMonitoringHints(context);
+    const read = await readState(context.scopeId, context.mintUrl);
+    await database.states.put({
+      ...read,
+      hintsDone: hints === "read",
+      hintFailures: hints === "failed" ? read.hintFailures + 1 : read.hintFailures,
+    });
+  }
+  await addActivityLogHints(context);
+  if ((await readState(context.scopeId, context.mintUrl)).index === "unread") {
+    // The wallet open read the index (ADR-033). The restore uses that read.
+    await recordBrowserRecoveryIndexRead(context.scopeId, await lastIndexRead(context.scopeId), [
+      context.mintUrl,
+    ]);
+    const state = await readState(context.scopeId, context.mintUrl);
+    if (state.index === "unread") {
+      await database.states.put({ ...state, index: "unavailable" });
+    }
+  }
+  if (!(await readState(context.scopeId, context.mintUrl)).planned) {
+    const regular = await regularKeysets(context);
+    await database.transaction("rw", database.states, database.keysets, async () => {
+      await addTargets(context.scopeId, context.mintUrl, regular, "regular");
+      const state = await readState(context.scopeId, context.mintUrl);
+      await database.states.put({ ...state, planned: true });
+    });
+  }
+  await listHintedConditions(context);
+}
+
+/** The outcome of the latest recovery index read of the active wallet. */
+async function lastIndexRead(scopeId: string): Promise<BrowserRecoveryIndexRead> {
+  const outcome = await activeBrowserRecoveryIndex(scopeId)
+    ?.lastRead()
+    ?.catch(() => null);
+  if (outcome == null) return { status: "failed" };
+  switch (outcome.status) {
+    case "read":
+    case "skipped":
+      return { status: "read", document: outcome.document, scan: outcome.scan };
+    case "failed":
+      return { status: "failed" };
+    default:
+      return assertNever(outcome);
+  }
+}
+
+/** The regular msat keysets of the mint listing (NUT-02). */
+async function regularKeysets(context: PassContext): Promise<readonly RecoveryIndexEntry[]> {
+  const listing = await context.wallet.mint.getKeySets();
+  const regular = listing.keysets
+    .filter(({ unit }) => unit === "msat")
+    .map(({ id }) => ({
+      kind: "regular" as const,
+      mintUrl: context.canonicalMintUrl,
+      keysetId: id,
+    }));
+  return planRecoveryIndexRestore({
+    listed: null,
+    walletMints: [context.canonicalMintUrl],
+    regular,
+    hints: [],
+  }).targets.map(({ entry }) => entry);
+}
+
+/** Lists the keysets of each due hinted market at the mint, with the condition filter. */
+async function listHintedConditions(context: PassContext): Promise<void> {
+  const database = seedRestoreDatabase(context.scopeId);
+  const due = (await conditionRows(context))
+    .filter((row) => !row.listed && row.nextAttemptAtMs <= context.now())
+    .sort((left, right) => left.order - right.order)
+    .slice(0, PASS_CONDITION_LISTINGS);
+  for (const condition of due) {
+    requireCurrent(context);
+    let listing: SeedRestoreKeysetListing;
+    try {
+      listing = await listSeedRestoreConditionKeysets({
+        conditionId: condition.conditionId,
+        outcomes: null,
+        mint: context.wallet.mint,
+      });
+    } catch {
+      // One market must not stop the pass. Try it again after a backoff.
+      const failures = condition.failures + 1;
+      await database.conditions.put({
+        ...condition,
+        failures,
+        nextAttemptAtMs: context.now() + seedRestoreBackoffMs(failures),
+      });
+      continue;
+    }
+    const hints = planRecoveryIndexRestore({
+      listed: null,
+      walletMints: [context.canonicalMintUrl],
+      regular: [],
+      hints: seedRestoreHintEntries(context.canonicalMintUrl, listing),
+    }).targets.map(({ entry }) => entry);
+    await database.transaction("rw", database.conditions, database.keysets, async () => {
+      await addTargets(context.scopeId, context.mintUrl, hints, "hint");
+      await database.conditions.put({
+        ...condition,
+        listed: true,
+        foreign: listing.foreign,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      });
+    });
+  }
+}
+
+type PassScanResult =
+  | { readonly status: "idle" }
+  /** The restore stopped at the counter budget of its start. */
+  | { readonly status: "stopped" }
+  | Awaited<ReturnType<typeof runRecoveryIndexRestorePass<SeedRestoreKeysetRow>>>;
+
+/**
+ * Scans the due keysets in plan order with the SDK pass. A restore that has
+ * not completed uses what remains of its start's budget. Other scans have one
+ * budget in each pass. Each window is stored before the next.
+ */
+async function scanTargets(context: PassContext): Promise<PassScanResult> {
+  const nowMs = context.now();
+  const due = (await keysetRows(context.scopeId, context.mintUrl))
+    .filter((row) => row.state === "queued" && row.nextAttemptAtMs <= nowMs)
+    .sort(
+      (left, right) =>
+        SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source] || left.order - right.order,
+    );
+  if (due.length === 0) return { status: "idle" };
+  const state = await seedRestoreDatabase(context.scopeId).states.get([
+    context.scopeId,
+    context.mintUrl,
+  ]);
+  const restoring = state !== undefined && state.initialCompletedAtMs === null;
+  if (restoring && state.budgetStopped) return { status: "stopped" };
+  const budget = context.counterBudget ?? RECOVERY_INDEX_RESTORE_COUNTER_BUDGET;
+  const resolutions = new Map<string, Promise<SeedRestoreKeysetResolution>>();
+  const listings = new Map<string, Promise<SeedRestoreKeysetListing>>();
+  const conditionKeysets = (conditionId: string) => {
+    let listing = listings.get(conditionId);
+    if (listing === undefined) {
+      listing = listSeedRestoreConditionKeysets({
+        conditionId,
+        outcomes: null,
+        mint: context.wallet.mint,
+      });
+      listings.set(conditionId, listing);
+    }
+    return listing;
+  };
+  const resolve = (row: SeedRestoreKeysetRow) => {
+    let resolution = resolutions.get(row.keysetId);
+    if (resolution === undefined) {
+      resolution = resolveSeedRestoreKeyset({
+        entry: entryOf(context, row),
+        mint: context.wallet.mint,
+        conditionKeysets,
+      });
+      resolutions.set(row.keysetId, resolution);
+    }
+    return resolution;
+  };
+  return runRecoveryIndexRestorePass({
+    keysets: due.map((row) => ({ target: row, progress: row.progress })),
+    counterBudget: restoring ? Math.max(0, budget - state.countersUsed) : budget,
+    scan: (row, request) => scanTarget(context, row, request, resolve),
+    commit: async (row, scan) => commitTarget(context, row, scan, restoring, await resolve(row)),
+  });
+}
+
+async function scanTarget(
+  context: PassContext,
+  row: SeedRestoreKeysetRow,
+  request: {
+    readonly progress: SeedRestoreKeysetRow["progress"];
+    readonly maxScannedCounters: number;
+  },
+  resolve: (row: SeedRestoreKeysetRow) => Promise<SeedRestoreKeysetResolution>,
+): Promise<RecoveryIndexKeysetScan> {
+  requireCurrent(context);
+  try {
+    const resolution = await resolve(row);
+    if (resolution.status === "unverifiable") return { status: "unverifiable", scannedCounters: 0 };
+    return await scanRecoveryIndexKeyset({
+      seed: context.seed,
+      entry: entryOf(context, row),
+      keyset: resolution.keyset,
+      restore: (outputs) => context.wallet.mint.restore({ outputs }),
+      checkProofStates: async (proofs) =>
+        (await context.wallet.checkProofsStates([...proofs])).map(({ state }) => state),
+      progress: request.progress,
+      maxScannedCounters: request.maxScannedCounters,
+    });
+  } catch (error) {
+    // A failed mint request backs this keyset off. The pass stops, and the
+    // next pass continues with the other keysets.
+    const failures = row.failures + 1;
+    await seedRestoreDatabase(context.scopeId).keysets.put({
+      ...((await seedRestoreDatabase(context.scopeId).keysets.get([
+        context.scopeId,
+        context.mintUrl,
+        row.keysetId,
+      ])) ?? row),
+      failures,
+      nextAttemptAtMs: context.now() + seedRestoreBackoffMs(failures),
+    });
+    throw error;
+  }
+}
+
+/**
+ * Stores one window: the admitted proofs and the cursor in the wallet, then
+ * the scan position of the keyset. A complete scan of a keyset with a signed
+ * output, or of a listed keyset, moves the cursor by the ADR-051 rule. A
+ * complete scan of an empty regular or hinted keyset leaves no cursor, so the
+ * index does not list it. A PENDING proof keeps a deferral marker (ADR-033).
+ */
+async function commitTarget(
+  context: PassContext,
+  row: SeedRestoreKeysetRow,
+  scan: RecoveryIndexKeysetScan,
+  restoring: boolean,
+  resolution: SeedRestoreKeysetResolution,
+): Promise<void> {
+  requireCurrent(context);
+  const database = seedRestoreDatabase(context.scopeId);
+  let next: SeedRestoreKeysetRow;
+  switch (scan.status) {
+    case "unverifiable":
+    case "implausible":
+      next = {
+        ...row,
+        state: scan.status,
+        refusal: scan.status === "implausible" ? scan.reason : null,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      };
+      break;
+    case "complete":
+    case "incomplete": {
+      if (resolution.status !== "resolved") throw new Error("seed restore keyset is unresolved");
+      const keyset: BrowserRecoveryIndexWindowKeyset =
+        resolution.conditional === null
+          ? { kind: "regular", id: row.keysetId }
+          : { kind: "conditional", authority: resolution.conditional };
+      const lastSigned = scan.progress.lastSignedCounter;
+      const complete = scan.status === "complete";
+      const keepsCursor = lastSigned !== null || row.source === "listed";
+      if (complete || scan.unspent.length > 0 || lastSigned !== null) {
+        await admitBrowserRecoveryIndexWindow({
+          mintUrl: context.mintUrl,
+          keyset,
+          proofs: scan.unspent as Proof[],
+          counters: scan.unspentCounters,
+          next:
+            complete && keepsCursor
+              ? scan.nextOutputCounter!
+              : lastSigned === null
+                ? 0
+                : lastSigned + 1,
+          recovery: complete && scan.pendingFromCounter === null ? "complete" : "incomplete",
+        });
+      }
+      const condition =
+        resolution.conditional === null
+          ? null
+          : {
+              conditionId: resolution.conditional.conditionId.toLowerCase(),
+              outcomeCollection: resolution.conditional.outcomeCollection,
+            };
+      if (complete && scan.pendingFromCounter !== null) {
+        await settleSeedRestoreDeferral({
+          scopeId: context.scopeId,
+          mintUrl: context.mintUrl,
+          keysetId: row.keysetId,
+          scannedFrom: 0,
+          pendingFrom: scan.pendingFromCounter,
+          continueFrom: null,
+          condition,
+          nowMs: context.now(),
+        });
+      }
+      next = {
+        ...row,
+        state: complete ? "complete" : "queued",
+        outcomeCollection: condition?.outcomeCollection ?? null,
+        progress: scan.progress,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      };
+      break;
+    }
+    default:
+      return assertNever(scan);
+  }
+  await database.transaction("rw", database.states, database.keysets, async () => {
+    await database.keysets.put(next);
+    if (!restoring || scan.scannedCounters === 0) return;
+    const state = await database.states.get([context.scopeId, context.mintUrl]);
+    if (state !== undefined) {
+      await database.states.put({
+        ...state,
+        countersUsed: state.countersUsed + scan.scannedCounters,
+      });
+    }
+  });
+}
+
+/** Records the result of a pass: the completion of the restore, its budget stop, and its waits. */
+async function finishPass(
+  context: PassContext,
+  scanned: PassScanResult,
+): Promise<BrowserSeedPositionRestorePassResult> {
+  const database = seedRestoreDatabase(context.scopeId);
+  const stored = await database.states.get([context.scopeId, context.mintUrl]);
+  const rows = await keysetRows(context.scopeId, context.mintUrl);
+  const queued = rows.filter(({ state }) => state === "queued");
+  const conditions = (await conditionRows(context)).filter(({ listed }) => !listed);
+  const restoring = stored !== undefined && stored.initialCompletedAtMs === null;
+  const budgetStopped =
+    restoring && (stored.budgetStopped || (scanned.status === "budget" && queued.length > 0));
+  const itemFailures = Math.max(
+    0,
+    ...queued.map(({ failures }) => failures),
+    ...conditions.map(({ failures }) => failures),
+  );
+  const retryAtMs = await waitingRetryAtMs(context);
+  if (stored !== undefined) {
+    const done =
+      stored.planned && stored.index !== "unread" && queued.length === 0 && conditions.length === 0;
+    await database.states.put({
+      ...stored,
+      initialCompletedAtMs: stored.initialCompletedAtMs ?? (done ? context.now() : null),
+      budgetStopped,
+      failures: 0,
+      nextAttemptAtMs: 0,
+      lastFailure: null,
+      itemFailures,
+    });
+  }
+  const settled = stored === undefined || hintsSettled(stored);
+  // A failed hint read tries again after a backoff. Without a signer, the
+  // recovery hook runs a pass when the signer becomes ready.
+  const hintRetryAtMs =
+    stored === undefined || settled || stored.hintFailures === 0
+      ? null
+      : context.now() + seedRestoreBackoffMs(stored.hintFailures);
+  const due = queued.some(({ nextAttemptAtMs }) => nextAttemptAtMs <= context.now());
+  return {
+    // Out of budget with work left, the next pass continues soon. A restore
+    // at its own budget shows its partial result until Retry.
+    status: budgetStopped
+      ? "complete"
+      : due || conditions.some(({ nextAttemptAtMs }) => nextAttemptAtMs <= context.now())
+        ? "more"
+        : queued.length > 0 || conditions.length > 0
+          ? "waiting"
+          : "complete",
+    retryAtMs: budgetStopped ? null : earliest(retryAtMs, hintRetryAtMs),
+    hintsSettled: settled,
+  };
+}
+
+/** The next due time of a backed-off keyset scan or market listing. */
+async function waitingRetryAtMs(context: PassContext): Promise<number | null> {
+  let retryAtMs: number | null = null;
+  for (const row of await keysetRows(context.scopeId, context.mintUrl)) {
+    if (row.state === "queued" && row.nextAttemptAtMs > context.now()) {
+      retryAtMs = earliest(retryAtMs, row.nextAttemptAtMs);
+    }
+  }
+  for (const row of await conditionRows(context)) {
+    if (!row.listed && row.nextAttemptAtMs > context.now()) {
+      retryAtMs = earliest(retryAtMs, row.nextAttemptAtMs);
+    }
+  }
+  return retryAtMs;
+}
+
+function entryOf(context: PassContext, row: SeedRestoreKeysetRow): RecoveryIndexEntry {
+  return row.conditional === null
+    ? { kind: "regular", mintUrl: context.canonicalMintUrl, keysetId: row.keysetId }
+    : {
+        kind: "conditional",
+        mintUrl: context.canonicalMintUrl,
+        keysetId: row.keysetId,
+        conditionId: row.conditional.conditionId,
+        outcomeCollectionId: row.conditional.outcomeCollectionId,
+      };
+}
+
+function canonicalMint(mintUrl: string): string {
+  return canonicalizeMintIdentityUrl(mintUrl);
+}
+
+async function walletForMint(mintUrl: string): Promise<CashuWallet> {
+  return (await useWalletStore.getState().getWalletForUnit(mintUrl, "msat")) as CashuWallet;
+}
+
+function requireCurrent(context: PassContext): void {
+  if (!context.isCurrent()) throw new Error("The wallet profile changed during the seed restore.");
+}
+
+function earliest(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
+}
+
+async function readState(scopeId: string, mintUrl: string): Promise<SeedRestoreStateRow> {
+  return (
+    (await seedRestoreDatabase(scopeId).states.get([scopeId, mintUrl])) ??
+    initialSeedRestoreState(scopeId, mintUrl)
+  );
+}
+
+async function conditionRows(context: PassContext): Promise<SeedRestoreConditionRow[]> {
+  return seedRestoreDatabase(context.scopeId)
+    .conditions.where("[scopeId+mintUrl]")
+    .equals([context.scopeId, context.mintUrl])
+    .toArray();
+}
+
+async function keysetRows(scopeId: string, mintUrl: string): Promise<SeedRestoreKeysetRow[]> {
+  return seedRestoreDatabase(scopeId)
+    .keysets.where("[scopeId+mintUrl]")
+    .equals([scopeId, mintUrl])
+    .toArray();
+}
+
+/** Adds the markets that a hint names. Their keysets come from the mint listing of each market. */
+async function addConditions(
+  context: PassContext,
+  conditionIds: ReadonlySet<string>,
+): Promise<void> {
+  if (conditionIds.size === 0) return;
+  const database = seedRestoreDatabase(context.scopeId);
+  await database.transaction("rw", database.conditions, async () => {
+    const existing = await conditionRows(context);
+    const known = new Set(existing.map(({ conditionId }) => conditionId));
+    let order = existing.reduce((highest, row) => Math.max(highest, row.order + 1), 0);
+    for (const conditionId of conditionIds) {
+      if (known.has(conditionId)) continue;
+      await database.conditions.put({
+        scopeId: context.scopeId,
+        mintUrl: context.mintUrl,
+        conditionId,
+        schemaVersion: 3,
+        order,
+        listed: false,
+        foreign: 0,
+        failures: 0,
+        nextAttemptAtMs: 0,
+      });
+      order += 1;
+    }
+  });
+}
+
+/**
+ * Reads the conditions of the earlier asset-monitoring report, before this
+ * profile reports. The result is "read" only after a read with a signer.
+ */
+async function addAssetMonitoringHints(
+  context: PassContext,
+): Promise<"read" | "no-signer" | "failed"> {
+  const signer = getNdk().signer;
+  if (!signer || context.walletId === null) return "no-signer";
+  const conditionIds = new Set<string>();
+  try {
+    const client = createAuthenticatedBrowserEngineClient(signer);
+    let cursor: string | undefined;
+    for (let page = 0; page < ASSET_MONITORING_HINT_PAGES; page += 1) {
+      const response = await client.getAssetMonitoringAssets({
+        walletId: context.walletId,
+        pageSize: 200,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      for (const { asset } of response.assets) {
+        if (
+          asset.kind === "conditional" &&
+          normalizeUrl(asset.canonicalMintUrl) === context.mintUrl
+        ) {
+          conditionIds.add(asset.conditionId);
+        }
+      }
+      if (!response.nextCursor) break;
+      cursor = response.nextCursor;
+    }
+  } catch {
+    // A hint is optional: the index and the regular keysets still restore.
+    return "failed";
+  }
+  await addConditions(context, conditionIds);
+  return "read";
+}
+
+/** Reads markets of this wallet from the NIP-78 activity log when it is available. */
+async function addActivityLogHints(context: PassContext): Promise<void> {
+  const conditionIds = new Set<string>();
+  for (const item of useActivityLogStore.getState().items) {
+    if (item.walletId !== context.walletId || typeof item.marketId !== "string") continue;
+    const conditionId = item.marketId.slice(0, 64);
+    if (/^[0-9a-f]{64}$/.test(conditionId) && item.marketId.charAt(64) === "-") {
+      conditionIds.add(conditionId);
+    }
+  }
+  await addConditions(context, conditionIds);
 }
 
 export interface BrowserKeysetResyncResult {
@@ -493,13 +1123,19 @@ async function admitDueDeferrals(input: {
     isCurrentProfile: input.isCurrentProfile,
   });
   // Move the cursor past the signed outputs of a hit, so the next local
-  // output does not reuse them. The deferral marker keeps the outputs.
-  const advancePastHit = async (keysetId: string) => {
-    const last = input.highest.get(keysetId);
+  // output does not reuse them. The deferral marker keeps the outputs. A
+  // marker records a condition only after the mint keys verified it, so the
+  // association keeps the conditional form for the recovery index.
+  const advancePastHit = async (row: SeedRestoreResyncRow) => {
+    const last = input.highest.get(row.keysetId);
     if (last === undefined) return;
     await counters.advanceToAtLeastInContext(
-      { mintUrl: input.mintUrl, unit: "msat" },
-      keysetId,
+      {
+        mintUrl: input.mintUrl,
+        unit: "msat",
+        ...(row.condition === null ? {} : { conditional: { ...row.condition } }),
+      },
+      row.keysetId,
       last + 1,
       false,
     );
@@ -510,7 +1146,7 @@ async function admitDueDeferrals(input: {
   const due: SeedRestoreResyncRow[] = [];
   for (const row of deferred) {
     if (row.nextAttemptAtMs <= input.now()) due.push(row);
-    else await advancePastHit(row.keysetId);
+    else await advancePastHit(row);
   }
   if (due.length === 0) return;
   if (await hasCustodyWorkInFlight(input.scopeId)) {
@@ -518,7 +1154,7 @@ async function admitDueDeferrals(input: {
     // browser before the operation records them. The operation would then
     // stay stuck. Wait for it. The wait is not an admission failure.
     for (const row of due) {
-      await advancePastHit(row.keysetId);
+      await advancePastHit(row);
       await postponeSeedRestoreDeferral({
         scopeId: input.scopeId,
         mintUrl: input.mintUrl,
@@ -563,7 +1199,7 @@ async function admitDueDeferrals(input: {
     if (result?.scannedKeysets.includes(row.keysetId) === true) continue;
     if (result?.postponedKeysets?.includes(row.keysetId) === true) {
       // An operation started during the scan. Wait for it; this is no failure.
-      await advancePastHit(row.keysetId);
+      await advancePastHit(row);
       await postponeSeedRestoreDeferral({
         scopeId: input.scopeId,
         mintUrl: input.mintUrl,
@@ -573,7 +1209,7 @@ async function admitDueDeferrals(input: {
       continue;
     }
     // Admission cannot run now (no keyset authority, or a failed scan).
-    await advancePastHit(row.keysetId);
+    await advancePastHit(row);
     await recordSeedRestoreDeferralFailure({
       scopeId: input.scopeId,
       mintUrl: input.mintUrl,
@@ -599,431 +1235,9 @@ async function hasCustodyWorkInFlight(scopeId: string): Promise<boolean> {
   );
 }
 
-interface PassContext extends BrowserSeedPositionRestoreInput {
-  readonly mintUrl: string;
-  readonly now: () => number;
-  readonly seed: Uint8Array;
-  readonly walletId: string | null;
-  readonly isCurrent: () => boolean;
-  readonly wallet: CashuWallet;
-}
-
-async function walletForMint(mintUrl: string): Promise<CashuWallet> {
-  return (await useWalletStore.getState().getWalletForUnit(mintUrl, "msat")) as CashuWallet;
-}
-
-function requireCurrent(context: PassContext): void {
-  if (!context.isCurrent()) throw new Error("The wallet profile changed during the seed restore.");
-}
-
-function earliest(left: number | null, right: number | null): number | null {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Math.min(left, right);
-}
-
-async function readState(context: PassContext): Promise<SeedRestoreStateRow> {
-  return (
-    (await seedRestoreDatabase(context.scopeId).states.get([context.scopeId, context.mintUrl])) ??
-    initialSeedRestoreState(context.scopeId, context.mintUrl)
-  );
-}
-
-async function conditionRows(context: PassContext): Promise<SeedRestoreConditionRow[]> {
-  return seedRestoreDatabase(context.scopeId)
-    .conditions.where("[scopeId+mintUrl]")
-    .equals([context.scopeId, context.mintUrl])
-    .toArray();
-}
-
-async function keysetRows(context: PassContext): Promise<SeedRestoreKeysetRow[]> {
-  return seedRestoreDatabase(context.scopeId)
-    .keysets.where("[scopeId+mintUrl]")
-    .equals([context.scopeId, context.mintUrl])
-    .toArray();
-}
-
-/**
- * Adds restore work for markets. A hint (priority 0) can name a market that
- * the catalogue listed earlier: its keysets go back to the queue for a full
- * scan. The function returns the number of new conditions.
- */
-async function addConditions(
-  context: PassContext,
-  markets: readonly { conditionId: string; outcomes: readonly string[] | null }[],
-  priority: 0 | 1,
-): Promise<number> {
-  if (markets.length === 0) return 0;
-  const database = seedRestoreDatabase(context.scopeId);
-  let added = 0;
-  await database.transaction(
-    "rw",
-    database.states,
-    database.conditions,
-    database.keysets,
-    async () => {
-      let state = await readState(context);
-      for (const market of markets) {
-        const key: [string, string, string] = [
-          context.scopeId,
-          context.mintUrl,
-          market.conditionId,
-        ];
-        const existing = await database.conditions.get(key);
-        if (existing !== undefined) {
-          const outcomes = existing.outcomes ?? market.outcomes;
-          const raise = priority < existing.priority;
-          if (outcomes !== existing.outcomes || raise) {
-            await database.conditions.put({
-              ...existing,
-              outcomes,
-              ...(raise ? { priority } : {}),
-            });
-          }
-          if (raise && existing.listed) await requeueForFullScan(context, market.conditionId);
-          continue;
-        }
-        await database.conditions.put({
-          scopeId: context.scopeId,
-          mintUrl: context.mintUrl,
-          conditionId: market.conditionId,
-          outcomes: market.outcomes === null ? null : [...market.outcomes],
-          priority,
-          order: state.nextOrder,
-          listed: false,
-          foreign: 0,
-          failures: 0,
-          nextAttemptAtMs: 0,
-        });
-        state = { ...state, nextOrder: state.nextOrder + 1 };
-        added += 1;
-      }
-      await database.states.put(state);
-    },
-  );
-  return added;
-}
-
-/** A late hint names a listed market. A probe window can miss its first signature. */
-async function requeueForFullScan(context: PassContext, conditionId: string): Promise<void> {
-  await seedRestoreDatabase(context.scopeId)
-    .keysets.where("[scopeId+mintUrl]")
-    .equals([context.scopeId, context.mintUrl])
-    .modify((row: SeedRestoreKeysetRow) => {
-      if (row.descriptor.conditionId !== conditionId) return;
-      Object.assign(row, {
-        priority: 0,
-        ...(row.state === "no-signature" ? { state: "queued", nextAttemptAtMs: 0 } : {}),
-      });
-    });
-}
-
-/**
- * Reads the conditions of the earlier asset-monitoring report, before this
- * profile reports. The result is "read" only after a read with a signer.
- */
-async function addAssetMonitoringHints(
-  context: PassContext,
-): Promise<"read" | "no-signer" | "failed"> {
-  const signer = getNdk().signer;
-  if (!signer || context.walletId === null) return "no-signer";
-  const conditionIds = new Set<string>();
-  try {
-    const client = createAuthenticatedBrowserEngineClient(signer);
-    let cursor: string | undefined;
-    for (let page = 0; page < ASSET_MONITORING_HINT_PAGES; page += 1) {
-      const response = await client.getAssetMonitoringAssets({
-        walletId: context.walletId,
-        pageSize: 200,
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-      for (const { asset } of response.assets) {
-        if (
-          asset.kind === "conditional" &&
-          normalizeUrl(asset.canonicalMintUrl) === context.mintUrl
-        ) {
-          conditionIds.add(asset.conditionId);
-        }
-      }
-      if (!response.nextCursor) break;
-      cursor = response.nextCursor;
-    }
-  } catch {
-    // A hint is optional. The catalogue scan still covers every market.
-    return "failed";
-  }
-  await addConditions(
-    context,
-    [...conditionIds].map((conditionId) => ({ conditionId, outcomes: null })),
-    0,
-  );
-  return "read";
-}
-
-/** Reads markets of this wallet from the NIP-78 activity log when it is available. */
-async function addActivityLogHints(context: PassContext): Promise<void> {
-  const conditionIds = new Set<string>();
-  for (const item of useActivityLogStore.getState().items) {
-    if (item.walletId !== context.walletId || typeof item.marketId !== "string") continue;
-    const conditionId = item.marketId.slice(0, 64);
-    if (/^[0-9a-f]{64}$/.test(conditionId) && item.marketId.charAt(64) === "-") {
-      conditionIds.add(conditionId);
-    }
-  }
-  await addConditions(
-    context,
-    [...conditionIds].map((conditionId) => ({ conditionId, outcomes: null })),
-    0,
-  );
-}
-
-/**
- * Walks the market catalogue once for this restore. The catalogue sets the
- * scan scope. A first-page failure of the engine catalogue uses the strict
- * mint listing for this walk. Another page failure fails the pass; the walk
- * keeps its cursor, so a later pass resumes at that page after the backoff.
- */
-async function walkCatalogue(
-  context: PassContext,
-  state: SeedRestoreStateRow,
-): Promise<SeedRestoreStateRow> {
-  const database = seedRestoreDatabase(context.scopeId);
-  let current = state;
-  for (let page = 0; page < ROUND_CATALOGUE_PAGES && !current.catalogueDone; page += 1) {
-    if (current.catalogueSource !== "mint") {
-      let result: Awaited<ReturnType<typeof readSeedRestoreCataloguePage>>;
-      try {
-        result = await readSeedRestoreCataloguePage({
-          engineBaseUrl: window.location.origin,
-          fetchImpl: fetch,
-          cursor: current.catalogueCursor,
-        });
-      } catch (error) {
-        if (current.catalogueSource === "engine") throw error;
-        // Use the strict mint listing for this walk.
-        current = { ...current, catalogueSource: "mint", catalogueCursor: null };
-        continue;
-      }
-      await addConditions(context, result.markets, 1);
-      current = {
-        ...(await readState(context)),
-        catalogueSource: "engine",
-        catalogueCursor: result.nextCursor,
-        catalogueDone: result.nextCursor === null,
-      };
-      await database.states.put(current);
-      continue;
-    }
-    const result = await readSeedRestoreMintConditionPage({
-      mint: context.wallet.mint,
-      cursor: current.catalogueCursor,
-    });
-    await addConditions(
-      context,
-      result.conditionIds.map((conditionId) => ({ conditionId, outcomes: null })),
-      1,
-    );
-    current = {
-      ...(await readState(context)),
-      catalogueSource: "mint",
-      catalogueCursor: result.nextCursor,
-      catalogueDone: result.nextCursor === null,
-    };
-    await database.states.put(current);
-  }
-  return current;
-}
-
-function byPriorityAndOrder<T extends { priority: number; order: number }>(left: T, right: T) {
-  return left.priority - right.priority || left.order - right.order;
-}
-
-async function listConditions(context: PassContext): Promise<number> {
-  const database = seedRestoreDatabase(context.scopeId);
-  const due = (await conditionRows(context))
-    .filter((row) => !row.listed && row.nextAttemptAtMs <= context.now())
-    .sort(byPriorityAndOrder)
-    .slice(0, ROUND_LISTINGS);
-  for (const condition of due) {
-    requireCurrent(context);
-    let listing: Awaited<ReturnType<typeof listSeedRestoreConditionKeysets>>;
-    try {
-      listing = await listSeedRestoreConditionKeysets({
-        conditionId: condition.conditionId,
-        outcomes: condition.outcomes,
-        mint: context.wallet.mint,
-      });
-    } catch {
-      // One condition must not stop the pass. Try it again after a backoff.
-      const failures = condition.failures + 1;
-      await database.conditions.put({
-        ...condition,
-        failures,
-        nextAttemptAtMs: context.now() + seedRestoreBackoffMs(failures),
-      });
-      continue;
-    }
-    const nowMs = context.now();
-    await database.transaction(
-      "rw",
-      database.states,
-      database.conditions,
-      database.keysets,
-      async () => {
-        let state = await readState(context);
-        // A hint can raise the priority while the listing runs.
-        const latest =
-          (await database.conditions.get([
-            context.scopeId,
-            context.mintUrl,
-            condition.conditionId,
-          ])) ?? condition;
-        for (const descriptor of listing.keysets) {
-          if (descriptor.finalExpiry !== null && descriptor.finalExpiry * 1000 <= nowMs) continue;
-          const key: [string, string, string] = [context.scopeId, context.mintUrl, descriptor.id];
-          if ((await database.keysets.get(key)) !== undefined) continue;
-          await database.keysets.put({
-            scopeId: context.scopeId,
-            mintUrl: context.mintUrl,
-            keysetId: descriptor.id,
-            descriptor: { ...descriptor } satisfies SeedRestoreKeysetDescriptor,
-            priority: latest.priority,
-            order: state.nextOrder,
-            state: "queued",
-            failures: 0,
-            nextAttemptAtMs: 0,
-          });
-          state = { ...state, nextOrder: state.nextOrder + 1 };
-        }
-        await database.states.put(state);
-        await database.conditions.put({
-          ...latest,
-          listed: true,
-          foreign: listing.foreign,
-          failures: 0,
-          nextAttemptAtMs: 0,
-        });
-      },
-    );
-  }
-  return due.length;
-}
-
-/** A hint names the market, so the full scan runs at once, without the probe window. */
-async function scanHintedKeysets(context: PassContext): Promise<number> {
-  const nowMs = context.now();
-  const rows = (await keysetRows(context))
-    .filter(
-      (row) =>
-        (row.priority === 0 && row.state === "queued") ||
-        (row.state === "failed" && row.nextAttemptAtMs <= nowMs),
-    )
-    .sort(byPriorityAndOrder)
-    .slice(0, ROUND_FULL_SCANS);
-  for (const row of rows) await fullScan(context, row);
-  return rows.length;
-}
-
-async function probeCatalogueKeysets(context: PassContext): Promise<number> {
-  const rows = (await keysetRows(context))
-    .filter((row) => row.state === "queued")
-    .sort(byPriorityAndOrder)
-    .slice(0, Math.floor(ROUND_PROBE_OUTPUTS / SEED_POSITION_PROBE_COUNTERS));
-  await probeAndScan(context, rows);
-  return rows.length;
-}
-
-async function probeAndScan(
-  context: PassContext,
-  rows: readonly SeedRestoreKeysetRow[],
-): Promise<void> {
-  if (rows.length === 0) return;
-  requireCurrent(context);
-  const highest = await probeSeedRestoreKeysets({
-    seed: context.seed,
-    targets: rows.map((row) => ({
-      keysetId: row.keysetId,
-      start: 0,
-      count: SEED_POSITION_PROBE_COUNTERS,
-    })),
-    restore: (outputs) => context.wallet.mint.restore({ outputs }),
-    ...(context.yieldControl === undefined ? {} : { yieldControl: context.yieldControl }),
-  });
-  const database = seedRestoreDatabase(context.scopeId);
-  for (const row of rows) {
-    if (highest.get(row.keysetId) === null) {
-      await database.keysets.put({ ...row, state: "no-signature" });
-    } else {
-      await fullScan(context, row);
-    }
-  }
-}
-
-async function fullScan(context: PassContext, row: SeedRestoreKeysetRow): Promise<void> {
-  requireCurrent(context);
-  const database = seedRestoreDatabase(context.scopeId);
-  let state: SeedRestoreKeysetRow["state"];
-  try {
-    const authority = await mintConditionalAuthority(context.wallet, row.descriptor);
-    // No forced scan: a keyset that this browser uses and completed belongs
-    // to the keyset re-sync.
-    const result = await restoreBrowserConditionalKeyset({
-      mintUrl: context.mintUrl,
-      authority,
-    });
-    // A PENDING proof waits in its deferral marker, with its own backoff.
-    state =
-      result.complete || result.pendingKeysets?.includes(row.keysetId) === true
-        ? "restored"
-        : "failed";
-  } catch {
-    state = "failed";
-  }
-  const failures = state === "restored" ? 0 : row.failures + 1;
-  await database.keysets.put({
-    ...row,
-    state,
-    failures,
-    nextAttemptAtMs: state === "restored" ? 0 : context.now() + seedRestoreBackoffMs(failures),
-  });
-}
-
-/**
- * The initial restore is done when the catalogue walk ended, every condition
- * is listed, and every listed keyset was probed or scanned. A failed listing
- * or scan keeps it open, so the UI does not report an early completion.
- */
-async function initialRestoreDone(context: PassContext): Promise<boolean> {
-  const state = await readState(context);
-  if (!state.catalogueDone) return false;
-  if ((await conditionRows(context)).some((row) => !row.listed)) return false;
-  return !(await keysetRows(context)).some(
-    (row) => row.state === "queued" || row.state === "failed",
-  );
-}
-
-/** Backed-off conditions and keyset scans: their next due time and their worst failure count. */
-async function waitingWork(
-  context: PassContext,
-): Promise<{ retryAtMs: number | null; itemFailures: number }> {
-  let retryAtMs: number | null = null;
-  let itemFailures = 0;
-  for (const row of await conditionRows(context)) {
-    if (row.listed) continue;
-    retryAtMs = earliest(retryAtMs, row.nextAttemptAtMs);
-    itemFailures = Math.max(itemFailures, row.failures);
-  }
-  for (const row of await keysetRows(context)) {
-    if (row.state !== "failed") continue;
-    retryAtMs = earliest(retryAtMs, row.nextAttemptAtMs);
-    itemFailures = Math.max(itemFailures, row.failures);
-  }
-  return { retryAtMs, itemFailures };
-}
-
 async function mintConditionalAuthority(
   wallet: CashuWallet,
-  descriptor: SeedRestoreKeysetDescriptor,
+  descriptor: ConditionalKeysetSeedRecoveryDescriptor,
 ) {
   const response = await wallet.mint.getKeys(descriptor.id);
   const keys = response.keysets.find(({ id }) => id === descriptor.id)?.keys;
@@ -1053,21 +1267,11 @@ async function localConditionalAuthority(
   row: SeedRestoreResyncRow,
   wallet: CashuWallet,
 ) {
-  let condition = row.condition ?? (await knownCondition(scopeId, mintUrl, row.keysetId));
-  if (condition === null) {
-    condition = await mintListedCondition(wallet, row.keysetId);
-    if (condition === null) return null;
-    await recordSeedRestoreDeferral({
-      scopeId,
-      mintUrl,
-      keysetId: row.keysetId,
-      fromCounter: row.pendingFromCounter!,
-      highestCounter: null,
-      condition,
-      finding: false,
-      nowMs: Date.now(),
-    });
-  }
+  const condition =
+    row.condition ??
+    (await knownCondition(scopeId, mintUrl, row.keysetId)) ??
+    (await mintListedCondition(wallet, row.keysetId));
+  if (condition === null) return null;
   const page = await wallet.mint.getConditionalKeysets({
     condition_id: condition.conditionId,
     limit: MINT_LISTING_PAGE_SIZE,
@@ -1081,7 +1285,21 @@ async function localConditionalAuthority(
   ) {
     return null;
   }
-  return mintConditionalAuthority(wallet, descriptor satisfies SeedRestoreKeysetDescriptor);
+  const authority = await mintConditionalAuthority(wallet, descriptor);
+  if (row.condition === null) {
+    // The mint keys derived the keyset id with this condition.
+    await recordSeedRestoreDeferral({
+      scopeId,
+      mintUrl,
+      keysetId: row.keysetId,
+      fromCounter: row.pendingFromCounter!,
+      highestCounter: null,
+      condition,
+      finding: false,
+      nowMs: Date.now(),
+    });
+  }
+  return authority;
 }
 
 async function knownCondition(
@@ -1094,12 +1312,12 @@ async function knownCondition(
     const decoded = decodeBrowserCustodyConditionalKeysetRow(custody);
     return { conditionId: decoded.conditionId, outcomeCollection: decoded.outcomeCollection };
   }
-  const listed = await seedRestoreDatabase(scopeId).keysets.get([scopeId, mintUrl, keysetId]);
-  return listed === undefined
+  const target = await seedRestoreDatabase(scopeId).keysets.get([scopeId, mintUrl, keysetId]);
+  return target?.conditional == null || target.outcomeCollection === null
     ? null
     : {
-        conditionId: listed.descriptor.conditionId,
-        outcomeCollection: listed.descriptor.outcomeCollection,
+        conditionId: target.conditional.conditionId,
+        outcomeCollection: target.outcomeCollection,
       };
 }
 
@@ -1131,4 +1349,8 @@ async function mintListedCondition(
 function failureCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, 200);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unknown seed restore value: ${JSON.stringify(value)}`);
 }
