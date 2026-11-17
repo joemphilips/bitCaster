@@ -132,10 +132,16 @@ return `429`.
 
 The clients use one outcome for each response:
 
-- A documented refusal writes nothing: `400`, `402`, `403` `market-closed`,
-  `404` with a documented code, `409` with a documented code other than
-  `order-book-conflict`, `413` and `429`. The wallet records the refusal. The
-  reserved funds return through the refund after the authorization expires.
+- A documented refusal writes nothing: `400`, `402`, `404`
+  `order-market-not-found` and `settlement-capability-not-found`, `409`
+  `order-processing-conflict`, `order-market-closed`,
+  `settlement-capability-conflict` and `settlement-capability-market-unavailable`,
+  `413` and `429`. The wallet records the refusal. The reserved funds return
+  through the refund after the authorization expires.
+- `403` `market-closed`, `404` `order-capability-not-found` and `409`
+  `order-capability-route-mismatch` or `order-capability-not-current` can also
+  answer a repeated request whose order already exists. The client treats them
+  as uncertain.
 - `order-quotes-refreshing` and `order-book-conflict` refuse before acceptance
   and commit nothing. Only while you wait in the submit flow, the client sends
   the identical request again within the limits in
@@ -182,7 +188,8 @@ It never sends a request that can create the order:
   local capability artifact. The wallet then records the submitted order.
 - Not found before the authorization expiry is not final. The wallet reads
   again after 5 seconds, then doubles the wait after each read, up to 60
-  seconds.
+  seconds. A `429` from the lookup is not a counted read: the next read waits
+  at least until its `Retry-After`.
 - At or after the authorization expiry, the wallet reads the mint (NUT-09 and
   NUT-07) and refunds unspent inputs.
 

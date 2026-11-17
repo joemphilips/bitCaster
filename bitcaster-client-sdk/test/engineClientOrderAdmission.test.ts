@@ -359,12 +359,8 @@ test('every documented admission-form problem has one client outcome', () => {
     [400, 'settlement-capability-invalid-artifact'],
     [400, 'settlement-capability-invalid-request'],
     [402, 'settlement-capability-score-required'],
-    [403, 'market-closed'],
     [404, 'order-market-not-found'],
-    [404, 'order-capability-not-found'],
     [404, 'settlement-capability-not-found'],
-    [409, 'order-capability-route-mismatch'],
-    [409, 'order-capability-not-current'],
     [409, 'order-processing-conflict'],
     [409, 'order-market-closed'],
     [409, 'settlement-capability-conflict'],
@@ -388,6 +384,11 @@ test('every documented admission-form problem has one client outcome', () => {
     })
   }
   const uncertain: unknown[] = [
+    // A replay of this request's committed order can answer these four.
+    new EngineClientError(403, '{}', 'market-closed'),
+    new EngineClientError(404, '{}', 'order-capability-not-found'),
+    new EngineClientError(409, '{}', 'order-capability-route-mismatch'),
+    new EngineClientError(409, '{}', 'order-capability-not-current'),
     new EngineClientError(503, '{}', 'order-admission-unavailable'),
     new EngineClientError(503, '{}', 'order-processing-unavailable'),
     new EngineClientError(503, '{}', 'settlement-capability-admission-unavailable'),

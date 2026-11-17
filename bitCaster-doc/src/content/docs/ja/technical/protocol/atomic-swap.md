@@ -121,9 +121,11 @@ admission 形式では、capability API の `settlement-capability-` のコー�
 
 クライアントは応答ごとに 1 つの結果を使います。
 
-- 文書化された拒否は何も書き込みません。`400`、`402`、`403` の `market-closed`、
-  文書化されたコードを持つ `404`、`order-book-conflict` 以外の文書化されたコードを持つ `409`、`413`、`429` です。
+- 文書化された拒否は何も書き込みません。`400`、`402`、`404` の `order-market-not-found` と `settlement-capability-not-found`、
+  `409` の `order-processing-conflict`、`order-market-closed`、`settlement-capability-conflict`、`settlement-capability-market-unavailable`、`413`、`429` です。
   ウォレットは拒否を記録します。予約済み資金は、認可の有効期限の後に返金で戻ります。
+- `403` の `market-closed`、`404` の `order-capability-not-found`、`409` の `order-capability-route-mismatch` と `order-capability-not-current` は、
+  注文がすでに存在する再送リクエストへの応答の場合もあります。クライアントはこれらを結果不明として扱います。
 - `order-quotes-refreshing` と `order-book-conflict` は受け付け前の拒否で、何も確定しません。
   送信フローで待っている間だけ、クライアントは
   [気配値の更新を待つ](/ja/technical/architecture/trading-model/#気配値の更新を待つ)の上限内で同一のリクエストを再送します。
@@ -164,6 +166,7 @@ CLI はこの応答の後に注文を自動で再送しません。
   その場合、ウォレットは送信済みの注文として記録します。
 - 認可の有効期限より前に見つからない場合は、最終結果ではありません。
   ウォレットは 5 秒後に再度読み取り、読み取るたびに待ち時間を 2 倍にします。上限は 60 秒です。
+  照会への `429` は読み取りとして数えません。次の読み取りは少なくとも `Retry-After` まで待ちます。
 - 認可の有効期限の時刻以降は、ウォレットは mint を照会し (NUT-09 と NUT-07)、未使用の入力を返金します。
 
 ## バッチ、取消し、読み取りのエラー

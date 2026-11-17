@@ -1986,12 +1986,16 @@ export type OrderSubmissionFailure =
   | { readonly kind: 'rejected'; readonly code: string | null }
   | { readonly kind: 'uncertain' }
 
+// The admission form can also replay a stored result through the reference
+// form, after this request's commit exists. That replay can answer 403
+// `market-closed`, 404 `order-capability-not-found`, 409
+// `order-capability-route-mismatch` and 409 `order-capability-not-current`.
+// The client cannot tell such an answer from a refusal, so those four stay
+// uncertain: recovery reads the order instead of reporting that no order exists.
 const REJECTED_ORDER_SUBMISSION_CODES: Readonly<Record<number, readonly string[]>> = {
-  403: ['market-closed'],
-  404: ['order-market-not-found', 'order-capability-not-found', 'settlement-capability-not-found'],
+  403: [],
+  404: ['order-market-not-found', 'settlement-capability-not-found'],
   409: [
-    'order-capability-route-mismatch',
-    'order-capability-not-current',
     'order-processing-conflict',
     'order-market-closed',
     'settlement-capability-conflict',

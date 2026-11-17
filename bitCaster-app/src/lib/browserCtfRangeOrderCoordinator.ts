@@ -4337,7 +4337,6 @@ function immediateFokRemainingAmount(
 /** The user-visible code of a definitive refusal of the one-step order request. */
 function rejectedOrderErrorCode(code: string | null): BrowserCtfRangeOrderErrorCode {
   if (code === null) return "order-submission-rejected";
-  if (code === "market-closed") return "order-market-closed";
   if (isSettlementCapabilityErrorCode(code) || isDefinitiveOrderSubmissionErrorCode(code)) {
     return code;
   }

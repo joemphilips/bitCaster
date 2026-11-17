@@ -16,10 +16,11 @@ import {
   decodeCtfRangeOrderPreparationCapability,
   type CtfRangeOrderPreparationCapability,
 } from './ctfRangeOrderJournal.ts'
-import type {
-  OrderLookupResponse,
-  SettlementCapabilityState,
-  SubmitOrderResponse,
+import {
+  EngineClientError,
+  type OrderLookupResponse,
+  type SettlementCapabilityState,
+  type SubmitOrderResponse,
 } from './engineClient.ts'
 
 /** The local facts of one order request that a response or a lookup must match. */
@@ -78,6 +79,25 @@ export class CtfRangeOrderLookupSchedule {
   recordRead(operationId: string, nowMs: number): number {
     const reads = (this.#entries.get(operationId)?.reads ?? 0) + 1
     const nextReadAtMs = nowMs + ctfRangeOrderLookupDelayMs(reads)
+    this.#entries.delete(operationId)
+    this.#entries.set(operationId, { reads, nextReadAtMs })
+    while (this.#entries.size > this.#maxOperations) {
+      const oldest = this.#entries.keys().next().value
+      if (oldest === undefined) break
+      this.#entries.delete(oldest)
+    }
+    return nextReadAtMs
+  }
+
+  /**
+   * Move the next read to `atMs` or later without counting a read, for
+   * example after the `order-lookup` rate limit. Return the time of the next read.
+   */
+  deferRead(operationId: string, nowMs: number, atMs: number): number {
+    const entry = this.#entries.get(operationId)
+    const reads = entry?.reads ?? 0
+    // The wait is at least the step that the next counted read would wait.
+    const nextReadAtMs = Math.max(atMs, nowMs + ctfRangeOrderLookupDelayMs(reads + 1))
     this.#entries.delete(operationId)
     this.#entries.set(operationId, { reads, nextReadAtMs })
     while (this.#entries.size > this.#maxOperations) {
@@ -157,14 +177,16 @@ export type CtfRangeOrderRequestRecovery =
   /** Keep `order-requested` and read again at `retryAtMs`. */
   | {
       readonly kind: 'pending'
-      readonly reason: 'waiting' | 'not-found' | 'digest-mismatch'
+      readonly reason: 'waiting' | 'not-found' | 'digest-mismatch' | 'rate-limited'
       readonly retryAtMs: number
     }
 
 /**
  * One recovery pass of an `order-requested` record. It sends at most one
- * read-only lookup and never a request that can create the order. A failed
- * lookup throws after the schedule records the read.
+ * read-only lookup and never a request that can create the order. A lookup
+ * refused by its rate limit (429) is not a counted read: the next read waits
+ * at least until its `Retry-After`. Any other failed lookup throws after the
+ * schedule records the read.
  */
 export async function recoverCtfRangeOrderRequest(input: {
   readonly identity: CtfRangeOrderAdmissionIdentity
@@ -186,8 +208,23 @@ export async function recoverCtfRangeOrderRequest(input: {
   if (state.kind === 'waiting') {
     return { kind: 'pending', reason: 'waiting', retryAtMs: Math.min(state.nextReadAtMs, expiryMs) }
   }
+  let found: OrderLookupResponse | null
+  try {
+    found = await input.lookupOrder(identity.conditionId, identity.clientOrderId)
+  } catch (error) {
+    if (error instanceof EngineClientError && error.status === 429) {
+      const retryAfterMs = (error.retryAfterSeconds ?? 0) * 1_000
+      const nextReadAtMs = schedule.deferRead(operationId, nowMs, nowMs + retryAfterMs)
+      return {
+        kind: 'pending',
+        reason: 'rate-limited',
+        retryAtMs: Math.min(nextReadAtMs, expiryMs),
+      }
+    }
+    schedule.recordRead(operationId, nowMs)
+    throw error
+  }
   const retryAtMs = Math.min(schedule.recordRead(operationId, nowMs), expiryMs)
-  const found = await input.lookupOrder(identity.conditionId, identity.clientOrderId)
   if (found === null) return { kind: 'pending', reason: 'not-found', retryAtMs }
   const capability = projectCtfRangeOrderLookup(found, identity)
   if (capability === null) return { kind: 'pending', reason: 'digest-mismatch', retryAtMs }

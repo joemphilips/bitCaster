@@ -8,10 +8,11 @@ import {
   recoverCtfRangeOrderRequest,
   type CtfRangeOrderAdmissionIdentity,
 } from '../src/ctfRangeOrderAdmission.ts'
-import type {
-  OrderLookupResponse,
-  SettlementCapabilityResponse,
-  SubmitOrderResponse,
+import {
+  EngineClientError,
+  type OrderLookupResponse,
+  type SettlementCapabilityResponse,
+  type SubmitOrderResponse,
 } from '../src/engineClient.ts'
 
 const CONDITION_ID = 'a'.repeat(64)
@@ -251,4 +252,68 @@ test('the schedule holds a bounded number of operations', () => {
   })
   schedule.forget('three')
   assert.deepEqual(schedule.state('three', START_MS), { kind: 'due' })
+})
+
+test('a rate-limited lookup waits for Retry-After and is not a counted read', async () => {
+  const schedule = new CtfRangeOrderLookupSchedule()
+  const limited = async () => {
+    throw new EngineClientError(429, '{}', 'order-lookup-limited', undefined, 90)
+  }
+  assert.deepEqual(
+    await recoverCtfRangeOrderRequest({
+      identity: IDENTITY,
+      nowMs: START_MS,
+      schedule,
+      lookupOrder: limited,
+    }),
+    { kind: 'pending', reason: 'rate-limited', retryAtMs: START_MS + 90_000 },
+  )
+  // No read before Retry-After.
+  const early = recovery(schedule, START_MS + 89_999, null)
+  assert.deepEqual(await early.result, {
+    kind: 'pending',
+    reason: 'waiting',
+    retryAtMs: START_MS + 90_000,
+  })
+  assert.equal(early.reads.length, 0)
+  // The refused read was not counted: the first counted read waits 5 seconds.
+  const due = recovery(schedule, START_MS + 90_000, null)
+  assert.deepEqual(await due.result, {
+    kind: 'pending',
+    reason: 'not-found',
+    retryAtMs: START_MS + 95_000,
+  })
+  assert.equal(due.reads.length, 1)
+})
+
+test('a rate-limited lookup without Retry-After waits at least the next backoff step', async () => {
+  const schedule = new CtfRangeOrderLookupSchedule()
+  await recovery(schedule, START_MS, null).result
+  const result = await recoverCtfRangeOrderRequest({
+    identity: IDENTITY,
+    nowMs: START_MS + 5_000,
+    schedule,
+    lookupOrder: async () => {
+      throw new EngineClientError(429, '')
+    },
+  })
+  // One read is counted, so the next step is 10 seconds.
+  assert.deepEqual(result, {
+    kind: 'pending',
+    reason: 'rate-limited',
+    retryAtMs: START_MS + 15_000,
+  })
+  const nearExpiry = await recoverCtfRangeOrderRequest({
+    identity: IDENTITY,
+    nowMs: EXPIRY_SECONDS * 1_000 - 1_000,
+    schedule: new CtfRangeOrderLookupSchedule(),
+    lookupOrder: async () => {
+      throw new EngineClientError(429, '{}', undefined, undefined, 600)
+    },
+  })
+  assert.deepEqual(nearExpiry, {
+    kind: 'pending',
+    reason: 'rate-limited',
+    retryAtMs: EXPIRY_SECONDS * 1_000,
+  })
 })

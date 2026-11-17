@@ -2572,6 +2572,36 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("order-request-rejected");
   });
 
+  it.each([
+    [403, "market-closed"],
+    [404, "order-capability-not-found"],
+    [409, "order-capability-route-mismatch"],
+    [409, "order-capability-not-current"],
+  ] as const)(
+    "keeps order-requested after %s %s, which a replay of a committed order can answer",
+    async (status, code) => {
+      const database = createDatabase();
+      const preparation = persistedPreparation(`range-replay-${code}`);
+      const engine = engineMock({
+        onSubmit: async () => {
+          throw new EngineClientError(status, "{}", code);
+        },
+      });
+      const coordinator = createCoordinator(database, sourceWallet(), engine);
+      await expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("order-requested");
+    },
+  );
+
   it("records only a documented definitive refusal as order-request-rejected", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-definitive-rejection");
@@ -2616,7 +2646,7 @@ describe("browser CTF range order coordinator", () => {
         throw new EngineClientError(
           409,
           "provider response contains a secret",
-          "order-capability-route-mismatch",
+          "order-market-closed",
           "provider detail contains a secret",
         );
       },
@@ -2631,8 +2661,8 @@ describe("browser CTF range order coordinator", () => {
       })
       .catch((error: unknown) => error);
     expect(rejection).toMatchObject({
-      code: "order-capability-route-mismatch",
-      message: "The settlement capability does not match the order route.",
+      code: "order-market-closed",
+      message: "The engine rejected the order because the market closed.",
     });
     expect(String(rejection)).not.toContain("secret");
     expect((rejection as { cause?: unknown }).cause).toBeUndefined();

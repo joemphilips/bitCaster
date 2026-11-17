@@ -2062,15 +2062,15 @@ test('submitOrder preserves error classification through coded Problem Details',
     [400, 'order-invalid-request', 'rejected'],
     [400, 'order-invalid-comment', 'rejected'],
     [404, 'order-market-not-found', 'rejected'],
-    [409, 'order-capability-route-mismatch', 'rejected'],
-    [409, 'order-capability-not-current', 'rejected'],
+    [409, 'order-capability-route-mismatch', 'uncertain'],
+    [409, 'order-capability-not-current', 'uncertain'],
     [503, 'order-admission-unavailable', 'uncertain'],
     [503, 'order-processing-unavailable', 'uncertain'],
     [409, 'order-processing-conflict', 'rejected'],
     // Without the in-flow resend loop, a resend refusal proves nothing.
     [409, 'order-book-conflict', 'uncertain'],
     [409, 'order-market-closed', 'rejected'],
-    [403, 'market-closed', 'rejected'],
+    [403, 'market-closed', 'uncertain'],
   ] as const
   for (const [status, code, outcome] of cases) {
     const detail =
