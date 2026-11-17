@@ -270,6 +270,8 @@ function isTerminal(lifecycleState: CtfRangeOrderPreparationLifecycle): boolean 
     case "terminal":
       return true;
     case "prepared":
+    case "order-requested":
+    case "order-request-rejected":
     case "capability-requested":
     case "capability-bound":
     case "order-submitted":
@@ -283,6 +285,8 @@ function isTerminal(lifecycleState: CtfRangeOrderPreparationLifecycle): boolean 
 function readsSettlementStatus(lifecycleState: CtfRangeOrderPreparationLifecycle): boolean {
   switch (lifecycleState) {
     case "prepared":
+    case "order-requested":
+    case "order-request-rejected":
     case "capability-requested":
     case "capability-bound":
     case "submission-rejected":

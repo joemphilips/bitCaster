@@ -50,7 +50,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(22);
+    expect(db.verno).toBe(23);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();
@@ -174,7 +174,7 @@ describe("browser wallet databases", () => {
     const upgraded = new BitcasterDB(name);
     try {
       await upgraded.open();
-      expect(upgraded.verno).toBe(22);
+      expect(upgraded.verno).toBe(23);
       expect(upgraded.tables.map(({ name: table }) => table)).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/^encryptedWalletBackup/)]),
       );

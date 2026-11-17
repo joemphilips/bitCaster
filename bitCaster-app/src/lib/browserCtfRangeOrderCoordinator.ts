@@ -145,6 +145,7 @@ import {
 import {
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeSettlementCapabilityRequest,
+  ctfRangeOrderAdmissionIdentity,
   createCtfRangeOrderPreparationKeysetResolver,
   decodeSettlementCoordinatorPublicKey,
   decodeCtfRangeOrderPreparationFromRecord,
@@ -161,8 +162,15 @@ import {
   calculateSettlementCapabilityTariff,
 } from "@bitcaster/client-sdk/participationScore";
 import {
+  CtfRangeOrderLookupSchedule,
+  projectCtfRangeOrderAdmissionResponse,
+  recoverCtfRangeOrderRequest,
+} from "@bitcaster/client-sdk/ctfRangeOrderAdmission";
+import {
   EngineClientError,
+  classifyOrderSubmissionFailure,
   type CreateSettlementCapabilityRequest,
+  type OrderLookupResponse,
   type NostrKind1Event,
   type OrderStatusResponse,
   type SettlementCapabilityResultResponse,
@@ -215,6 +223,7 @@ import {
   requireBrowserStagedResult,
 } from "./browserCtfRangeOrderSource";
 import {
+  bindCtfRangePreparationAdmission,
   bindCtfRangePreparationCapability,
   appendCtfRangePreparationConsolidationInTransaction,
   readPreparedCtfRangeSells,
@@ -258,9 +267,15 @@ type BrowserCtfRangeMintRecovery = Pick<
 >;
 
 export interface BrowserCtfRangeEngine {
+  /** The old stage route. Only the recovery of a release 4 `capability-requested` record uses it. */
   createSettlementCapability(
     request: CreateSettlementCapabilityRequest,
   ): Promise<SettlementCapabilityResponse>;
+  /** Read-only recovery lookup of an `order-requested` record. It never creates an order. */
+  lookupOrderByClientOrderId(
+    conditionId: string,
+    clientOrderId: string,
+  ): Promise<OrderLookupResponse | null>;
   submitOrder(
     marketId: string,
     request: SubmitOrderRequest,
@@ -346,7 +361,8 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
   readonly now?: () => number;
   readonly randomId?: () => string;
   readonly allowInsecureLoopbackHttp?: boolean;
-  readonly isDefinitiveOrderRejection?: (error: unknown) => boolean;
+  /** The lookup backoff of `order-requested` records. One tab shares one schedule. */
+  readonly orderLookupSchedule?: CtfRangeOrderLookupSchedule;
   readonly restoreOutputs?: typeof restoreOutputGroups;
   readonly restoreRefundOutputs?: typeof restoreDurableCtfRangeRefundOutputs;
   readonly createMintRecovery?: (
@@ -405,7 +421,8 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
 export type BrowserCtfRangeRecoveryPendingCode =
   | BrowserCtfRangeOrderErrorCode
   | "awaiting-authorization-expiry"
-  | "awaiting-mint-retry";
+  | "awaiting-mint-retry"
+  | "awaiting-order-confirmation";
 
 /** A bounded mint error code and detail. It never holds proofs or blinded messages. */
 export type BrowserCtfRangeMintError = CashuMintRefusal;
@@ -442,7 +459,8 @@ export interface BrowserCtfRangeRecoveryPage {
 type BrowserCtfRangeRecordRecoveryOutcome =
   | "recovered"
   | "awaiting-authorization-expiry"
-  | "awaiting-mint-retry";
+  | "awaiting-mint-retry"
+  | "awaiting-order-confirmation";
 
 export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
   "invalid-order-type",
@@ -588,6 +606,10 @@ const REFUSED_SOURCE_RELEASED_MESSAGE =
  */
 const BROWSER_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS = 300;
 
+// Each recovery pass builds a new coordinator, so the tab keeps one schedule.
+// It is a load control: losing it on a reload only allows an earlier read.
+const BROWSER_ORDER_LOOKUP_SCHEDULE = new CtfRangeOrderLookupSchedule();
+
 export function buildBrowserCtfRangeOrderPreparation(input: {
   readonly request: CtfRangeOrderRequest;
   readonly policy: SettlementCapabilityAdmissionPolicyResponse;
@@ -623,7 +645,7 @@ export class BrowserCtfRangeOrderCoordinator {
   readonly #now: () => number;
   readonly #randomId: () => string;
   readonly #allowInsecureLoopbackHttp: boolean;
-  readonly #isDefinitiveOrderRejection: (error: unknown) => boolean;
+  readonly #orderLookups: CtfRangeOrderLookupSchedule;
   readonly #restoreOutputs: typeof restoreOutputGroups;
   readonly #restoreRefundOutputs: typeof restoreDurableCtfRangeRefundOutputs;
   readonly #createMintRecovery: (
@@ -674,7 +696,7 @@ export class BrowserCtfRangeOrderCoordinator {
     this.#now = input.now ?? Date.now;
     this.#randomId = input.randomId ?? (() => crypto.randomUUID());
     this.#allowInsecureLoopbackHttp = input.allowInsecureLoopbackHttp === true;
-    this.#isDefinitiveOrderRejection = input.isDefinitiveOrderRejection ?? (() => false);
+    this.#orderLookups = input.orderLookupSchedule ?? BROWSER_ORDER_LOOKUP_SCHEDULE;
     const restoreOutputs = input.restoreOutputs;
     this.#restoreOutputs = restoreOutputs ?? restoreOutputGroups;
     this.#restoreRefundOutputs = input.restoreRefundOutputs ?? restoreDurableCtfRangeRefundOutputs;
@@ -784,7 +806,7 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async () => {
-          return this.#createCapabilityAndSubmit(
+          return this.#requestAndSubmitOrder(
             scope,
             input.preparation,
             completed.operation,
@@ -929,6 +951,8 @@ export class BrowserCtfRangeOrderCoordinator {
             recoveredOperationIds.push(operationId);
             break;
           case "awaiting-mint-retry":
+          // The lookup backoff spaces engine reads; it is not a mint failure.
+          case "awaiting-order-confirmation":
             pending.push({ operationId, revision: record.revision, code: outcome });
             break;
           case "awaiting-authorization-expiry": {
@@ -1012,11 +1036,13 @@ export class BrowserCtfRangeOrderCoordinator {
     mintDue: boolean,
   ): Promise<BrowserCtfRangeRecordRecoveryOutcome> {
     requireFokRequest(decodeCtfRangeOrderPreparationFromRecord(record).request);
-    // Only a submitted order can finish from its engine result alone.
+    // Only a submitted order can finish from its engine result alone. An order
+    // request reads the engine before expiry, which sends no mint request.
     if (
       !mintDue &&
       record.lifecycleState !== "order-submitted" &&
-      record.lifecycleState !== "submission-rejected"
+      record.lifecycleState !== "submission-rejected" &&
+      record.lifecycleState !== "order-requested"
     ) {
       return "awaiting-mint-retry";
     }
@@ -1026,6 +1052,24 @@ export class BrowserCtfRangeOrderCoordinator {
         if (sourceReleased) return "recovered";
         break;
       }
+      case "order-requested": {
+        const requested = await this.#recoverRequestedOrder(record, scope);
+        switch (requested) {
+          case "submitted":
+            break;
+          case "pending":
+            return "awaiting-order-confirmation";
+          case "expired":
+            if (!mintDue) return "awaiting-mint-retry";
+            break;
+          default:
+            return assertNever(requested);
+        }
+        break;
+      }
+      // A definitive refusal committed nothing. The refund opens at expiry.
+      case "order-request-rejected":
+        break;
       case "capability-requested":
         if (
           Math.floor(this.#now() / 1_000) >= decodeCtfRangeOrderPreparationFromRecord(record).expiry
@@ -2968,7 +3012,12 @@ export class BrowserCtfRangeOrderCoordinator {
     }
   }
 
-  async #createCapabilityAndSubmit(
+  /**
+   * The one-step order request (ADR-037 amendment of 2026-11-13). The journal
+   * holds `order-requested` before the first send. Only the bounded in-flow
+   * resend of the SDK sends the request again; recovery never does.
+   */
+  async #requestAndSubmitOrder(
     scope: Extract<DurableCustodyScope, { scopeKind: "wallet" }>,
     preparation: PersistedCtfRangeOrderPreparation,
     operation: DurableCtfRangeOperation,
@@ -2976,6 +3025,9 @@ export class BrowserCtfRangeOrderCoordinator {
     comment: NostrKind1Event | null,
     control: BrowserCtfRangeOrderSubmitControl,
   ): Promise<SubmitOrderResponse> {
+    if (Math.floor(this.#now() / 1_000) >= preparation.expiry) {
+      throw rangeError("order-attempt-ended");
+    }
     let requested: Awaited<ReturnType<typeof transitionCtfRangePreparation>>;
     try {
       requested = await transitionCtfRangePreparation(
@@ -2984,7 +3036,7 @@ export class BrowserCtfRangeOrderCoordinator {
           rangeOperationId: preparation.operationId,
           expectedRevision: 0,
           from: "prepared",
-          to: "capability-requested",
+          to: "order-requested",
           updatedAtMs: this.#now(),
         },
         this.#database,
@@ -3002,20 +3054,132 @@ export class BrowserCtfRangeOrderCoordinator {
       } catch (error) {
         if (error instanceof BrowserCtfRangeOrderError) throw error;
       }
-      throw rangeError("capability-creation-failed");
+      // Another pass owns this record; it never sends the order again.
+      throw rangeError("order-submission-uncertain");
     }
-    const capability = await this.#createVerifiedCapability(preparation, operation, request);
-    const bound = await bindCtfRangePreparationCapability(
-      {
-        scopeId: scope.scopeId,
-        rangeOperationId: preparation.operationId,
-        expectedRevision: requested.revision,
-        capability,
-        updatedAtMs: this.#now(),
-      },
-      this.#database,
+    let submitted: SubmitOrderResponse;
+    try {
+      submitted = await this.#engine.submitOrder(
+        preparation.request.marketId,
+        {
+          settlementCapabilityAdmission: request,
+          comment,
+          walletId: scope.walletId as WalletId,
+        },
+        {
+          signal: control.signal,
+          quoteRefreshRetry: {
+            authorizationExpiresAtUnixSeconds: preparation.expiry,
+            onWaiting: control.onQuotesRefreshing,
+          },
+        },
+      );
+    } catch (error) {
+      const failure = classifyOrderSubmissionFailure(error);
+      switch (failure.kind) {
+        case "uncertain":
+          throw rangeError("order-submission-uncertain");
+        case "rejected":
+          try {
+            await transitionCtfRangePreparation(
+              {
+                scopeId: requested.scopeId,
+                rangeOperationId: requested.rangeOperationId,
+                expectedRevision: requested.revision,
+                from: "order-requested",
+                to: "order-request-rejected",
+                updatedAtMs: this.#now(),
+              },
+              this.#database,
+            );
+          } catch {
+            throw rangeError("order-submission-uncertain");
+          }
+          throw rangeError(rejectedOrderErrorCode(failure.code));
+        default:
+          return assertNever(failure);
+      }
+    }
+    let capability: ReturnType<typeof projectCtfRangeOrderAdmissionResponse>;
+    try {
+      submitted = decodeSubmitOrderResponse(submitted);
+      capability = projectCtfRangeOrderAdmissionResponse(
+        submitted,
+        ctfRangeOrderAdmissionIdentity(preparation, operation),
+      );
+      submitted = requireImmediateSubmitResponse(submitted, preparation, capability.orderId);
+    } catch {
+      throw rangeError("order-submission-uncertain");
+    }
+    try {
+      await bindCtfRangePreparationAdmission(
+        {
+          scopeId: requested.scopeId,
+          rangeOperationId: requested.rangeOperationId,
+          expectedRevision: requested.revision,
+          capability,
+          updatedAtMs: this.#now(),
+        },
+        this.#database,
+      );
+    } catch {
+      throw rangeError("order-submission-uncertain");
+    }
+    return submitted;
+  }
+
+  /**
+   * Recovery of an `order-requested` record reads the order and never sends a
+   * request that can create it. `pending` waits for the lookup backoff;
+   * `expired` hands the record to the NUT-09 and NUT-07 refund path.
+   */
+  async #recoverRequestedOrder(
+    record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
+    scope: DurableCustodyScope,
+  ): Promise<"submitted" | "expired" | "pending"> {
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
+    const snapshot = await this.#custody.readOperationSnapshot(
+      scope,
+      browserCustodyOperationId(scope, preparation.operationId),
     );
-    return this.#submitBoundCapability(scope, preparation, capability, bound, comment, control);
+    if (snapshot === null) throw rangeError("recovery-pending");
+    const operation = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+    let recovery: Awaited<ReturnType<typeof recoverCtfRangeOrderRequest>>;
+    try {
+      recovery = await recoverCtfRangeOrderRequest({
+        identity: ctfRangeOrderAdmissionIdentity(preparation, operation),
+        nowMs: this.#now(),
+        schedule: this.#orderLookups,
+        lookupOrder: (conditionId, clientOrderId) =>
+          this.#engine.lookupOrderByClientOrderId(conditionId, clientOrderId),
+      });
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+    switch (recovery.kind) {
+      case "expired":
+        return "expired";
+      case "pending":
+        return "pending";
+      case "submitted":
+        try {
+          await bindCtfRangePreparationAdmission(
+            {
+              scopeId: record.scopeId,
+              rangeOperationId: record.rangeOperationId,
+              expectedRevision: record.revision,
+              capability: recovery.capability,
+              updatedAtMs: this.#now(),
+            },
+            this.#database,
+          );
+        } catch (error) {
+          throw rangeError("recovery-pending", error);
+        }
+        return "submitted";
+      default:
+        return assertNever(recovery);
+    }
   }
 
   async #recoverRequestedCapability(
@@ -3098,78 +3262,6 @@ export class BrowserCtfRangeOrderCoordinator {
     return capability;
   }
 
-  async #submitBoundCapability(
-    scope: Extract<DurableCustodyScope, { scopeKind: "wallet" }>,
-    preparation: PersistedCtfRangeOrderPreparation,
-    capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>,
-    bound: Awaited<ReturnType<typeof bindCtfRangePreparationCapability>>,
-    comment: NostrKind1Event | null,
-    control: BrowserCtfRangeOrderSubmitControl,
-  ): Promise<SubmitOrderResponse> {
-    let submitted: SubmitOrderResponse;
-    try {
-      submitted = await this.#engine.submitOrder(
-        preparation.request.marketId,
-        {
-          settlementCapability: {
-            artifactId: capability.artifactId,
-            bindingDigest: capability.bindingDigest,
-          },
-          comment,
-          walletId: scope.walletId as WalletId,
-        },
-        {
-          signal: control.signal,
-          quoteRefreshRetry: {
-            authorizationExpiresAtUnixSeconds: preparation.expiry,
-            onWaiting: control.onQuotesRefreshing,
-          },
-        },
-      );
-    } catch (error) {
-      if (!this.#isDefinitiveOrderRejection(error)) {
-        throw rangeError("order-submission-uncertain");
-      }
-      try {
-        await this.#markSubmissionRejected(bound);
-      } catch {
-        throw rangeError("order-submission-uncertain");
-      }
-      const code =
-        error instanceof EngineClientError && error.code !== undefined ? error.code : undefined;
-      throw rangeError(
-        code !== undefined && isDefinitiveOrderSubmissionErrorCode(code)
-          ? code
-          : "order-submission-rejected",
-      );
-    }
-    try {
-      submitted = requireImmediateSubmitResponse(
-        decodeSubmitOrderResponse(submitted),
-        preparation,
-        capability.orderId,
-      );
-    } catch {
-      throw rangeError("order-submission-uncertain");
-    }
-    try {
-      await transitionCtfRangePreparation(
-        {
-          scopeId: bound.scopeId,
-          rangeOperationId: bound.rangeOperationId,
-          expectedRevision: bound.revision,
-          from: "capability-bound",
-          to: "order-submitted",
-          updatedAtMs: this.#now(),
-        },
-        this.#database,
-      );
-    } catch {
-      throw rangeError("order-submission-uncertain");
-    }
-    return submitted;
-  }
-
   async #discoverBoundOrder(
     record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
   ): Promise<void> {
@@ -3191,22 +3283,6 @@ export class BrowserCtfRangeOrderCoordinator {
         expectedRevision: record.revision,
         from: "capability-bound",
         to: "order-submitted",
-        updatedAtMs: this.#now(),
-      },
-      this.#database,
-    );
-  }
-
-  async #markSubmissionRejected(
-    bound: Awaited<ReturnType<typeof bindCtfRangePreparationCapability>>,
-  ): Promise<void> {
-    await transitionCtfRangePreparation(
-      {
-        scopeId: bound.scopeId,
-        rangeOperationId: bound.rangeOperationId,
-        expectedRevision: bound.revision,
-        from: "capability-bound",
-        to: "submission-rejected",
         updatedAtMs: this.#now(),
       },
       this.#database,
@@ -4258,6 +4334,16 @@ function immediateFokRemainingAmount(
   }
 }
 
+/** The user-visible code of a definitive refusal of the one-step order request. */
+function rejectedOrderErrorCode(code: string | null): BrowserCtfRangeOrderErrorCode {
+  if (code === null) return "order-submission-rejected";
+  if (code === "market-closed") return "order-market-closed";
+  if (isSettlementCapabilityErrorCode(code) || isDefinitiveOrderSubmissionErrorCode(code)) {
+    return code;
+  }
+  return "order-submission-rejected";
+}
+
 function rangeError(
   code: BrowserCtfRangeOrderErrorCode,
   cause?: unknown,
@@ -4458,7 +4544,7 @@ export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderError
       "The settlement capability result is uncertain. The order was not submitted.",
     "capability-validation-failed": "The engine returned an invalid settlement capability.",
     "order-attempt-ended":
-      "The prepared order attempt ended before capability creation. No order was submitted.",
+      "The prepared order attempt ended before the order request. No order was submitted.",
     "settlement-capability-invalid-request":
       "The engine rejected the capability request because its fields are invalid.",
     "settlement-capability-invalid-artifact": "The engine rejected the capability artifact.",
@@ -4472,10 +4558,9 @@ export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderError
     "settlement-capability-market-unavailable": "The market is not available for this capability.",
     "settlement-capability-request-too-large":
       "The capability request exceeds a supported size or count limit.",
-    "settlement-capability-admission-limited":
-      "Capability admission is busy. The capability result may be uncertain.",
+    "settlement-capability-admission-limited": "Order admission is busy. No order was placed.",
     "settlement-capability-capacity-exhausted":
-      "Capability admission capacity is exhausted. The capability result may be uncertain.",
+      "Order admission capacity is exhausted. No order was placed.",
     "settlement-capability-admission-unavailable":
       "Capability admission is temporarily unavailable. The capability result may be uncertain.",
     "order-invalid-request":

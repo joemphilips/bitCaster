@@ -2766,7 +2766,7 @@ describe("MarketDetailPage live market status", () => {
         await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
         fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
         const waiting = await screen.findByTestId("trade-quotes-refreshing");
-        expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+        expect(waiting).toHaveTextContent("Waiting for the order book");
         expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
         expect(submissionSignal?.aborted).toBe(false);
         if (action === "empty-book") {

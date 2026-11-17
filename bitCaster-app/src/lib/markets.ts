@@ -13,7 +13,6 @@ import {
   createTradeCommentTemplate,
   tradeCommentToWire,
 } from "@bitcaster/client-sdk";
-import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
 import type { MarketSnapshotReadOptions } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
@@ -42,15 +41,6 @@ export { CreateMarketError };
 
 // Types from generated OpenAPI spec
 
-// The reference form of the order request. The admission form is not used by this client yet.
-export type SubmitOrderRequest = Omit<
-  components["schemas"]["SubmitOrderRequest"],
-  "walletId" | "settlementCapability" | "settlementCapabilityAdmission"
-> & {
-  settlementCapability: components["schemas"]["SettlementCapabilityReference"];
-  walletId?: WalletId;
-};
-export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];
 export type Fill = components["schemas"]["Fill"];
@@ -896,16 +886,6 @@ export async function fetchOrderBook(
     baseUrl: window.location.origin,
   }).getOrderBook(marketId, signal, { retryRefreshing: options.retryRefreshing ?? true });
   return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
-}
-
-export async function submitOrder(
-  marketId: string,
-  params: SubmitOrderRequest,
-): Promise<SubmitOrderResponse> {
-  return (await createAuthenticatedBrowserEngineClient().submitOrder(
-    marketId,
-    params,
-  )) as unknown as SubmitOrderResponse;
 }
 
 export async function signTradeComment(

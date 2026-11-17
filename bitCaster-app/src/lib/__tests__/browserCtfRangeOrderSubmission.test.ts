@@ -953,7 +953,7 @@ describe("submitBrowserCtfRangeOrder", () => {
   it("records a terminal order explanation without stale pending-funds recovery", async () => {
     const ended = new BrowserCtfRangeOrderError(
       "order-attempt-ended",
-      "The prepared order attempt ended before capability creation. No order was submitted.",
+      "The prepared order attempt ended before the order request. No order was submitted.",
     );
     mocks.readPreparation.mockResolvedValue({ revision: 5, lifecycleState: "terminal" });
     mocks.prepareAndSubmit.mockRejectedValueOnce(ended);

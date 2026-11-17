@@ -11,7 +11,7 @@ export type OrderTimelinePhase =
   | 'preparation-durable-bind'
   | 'preparation-exact-request'
   | 'score-admission'
-  | 'capability-admission'
+  | 'order-request'
   | 'order-submit'
   | 'submitted-record'
   | 'result-verification'

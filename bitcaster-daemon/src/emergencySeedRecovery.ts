@@ -52,6 +52,7 @@ import {
 } from './profileFencing.ts'
 import { profileDir, readProfile } from './profile.ts'
 import { acquireDaemonRunLock } from './runLock.ts'
+import { upgradeDaemonProfileSchema } from './profileSchemaUpgrade.ts'
 import { createDaemonStateSqliteSession, type DaemonStateSqliteSession } from './stateSqlite.ts'
 import { createCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
 import {
@@ -162,6 +163,7 @@ export async function runOfflineDaemonSeedRecovery(
   }
   const runLock = await acquireDaemonRunLock()
   try {
+    await upgradeDaemonProfileSchema(profileDir())
     return await runOfflineRecoveryWithLease(input)
   } finally {
     await runLock.release()

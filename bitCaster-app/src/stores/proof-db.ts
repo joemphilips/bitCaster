@@ -764,6 +764,12 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupOwnerDesiredAssets: null,
       encryptedWalletBackupOwnerProofCoverage: null,
     });
+    // Release 5b: the one-step order journal states `order-requested` and
+    // `order-request-rejected` (ADR-037 amendment of 2026-11-13). The stores do
+    // not change; the forward-only version keeps an older app build, which
+    // cannot read those states, from opening this database. Every stored
+    // record stays readable, and a release 4 record keeps its old-route recovery.
+    this.version(23).stores({});
     this.mintQuotes = this.table("mintQuotes");
     this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
     this.marketFundingHeads = this.table("marketFundingHeads");

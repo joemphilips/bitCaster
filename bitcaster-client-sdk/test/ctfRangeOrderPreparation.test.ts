@@ -39,6 +39,7 @@ import {
   previewCtfRangeSettlementCapabilityWorkFacts,
   settlementCapabilityWorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
+  ctfRangeOrderAdmissionIdentity,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
 import {
@@ -49,6 +50,7 @@ import {
 import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
 import {
   createPoolSettlementCapabilityArtifact,
+  decodeSettlementCapabilityArtifactBytes,
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
 } from '../src/settlementCapabilityArtifact.ts'
@@ -535,6 +537,35 @@ test('builds one capability request and validates its exact engine projection', 
   assert.throws(
     () =>
       createCtfRangeSettlementCapabilityRequest(preparation, {
+        ...operation,
+        sourceOperationId: 'foreign-source-operation',
+      }),
+    /foreign to its persisted order preparation/,
+  )
+})
+
+test('the admission identity holds the digest of the exact local capability artifact', () => {
+  const preparation = persistedPreparation('range-operation-admission')
+  const operation = completedOperation(preparation)
+  const identity = ctfRangeOrderAdmissionIdentity(preparation, operation)
+  assert.deepEqual(identity, {
+    rangeOperationId: preparation.operationId,
+    conditionId: preparation.conditionId,
+    clientOrderId: preparation.request.clientOrderId,
+    marketId: preparation.request.marketId,
+    artifactDigest: deriveSettlementCapabilityArtifactDigest(
+      decodeSettlementCapabilityArtifactBytes(
+        Buffer.from(
+          createCtfRangeSettlementCapabilityRequest(preparation, operation).artifact,
+          'base64',
+        ),
+      ),
+    ),
+    authorizationExpiresAtUnixSeconds: preparation.expiry,
+  })
+  assert.throws(
+    () =>
+      ctfRangeOrderAdmissionIdentity(preparation, {
         ...operation,
         sourceOperationId: 'foreign-source-operation',
       }),

@@ -1,10 +1,5 @@
 import { Mint as CashuMint, splitAmount, type Proof } from "@cashu/cashu-ts";
-import {
-  EngineClientError,
-  isDefinitiveOrderSubmissionError,
-  type NostrKind1Event,
-  type SubmitOrderResponse,
-} from "@bitcaster/client-sdk/engineClient";
+import { type NostrKind1Event, type SubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import {
   loadCtfRangeMintMetadata,
   type CtfRangeMintMetadataClient,
@@ -1176,6 +1171,8 @@ function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): b
     case "terminal":
       return true;
     case "prepared":
+    case "order-requested":
+    case "order-request-rejected":
     case "capability-requested":
     case "capability-bound":
     case "order-submitted":
@@ -1244,6 +1241,7 @@ async function persistRecoveryPending(
     // retry, as a failure.
     case "awaiting-authorization-expiry":
     case "awaiting-mint-retry":
+    case "awaiting-order-confirmation":
       return;
     default:
       await persistRangeMessages({
@@ -1372,8 +1370,6 @@ function createBrowserCtfRangeCoordinator(
         });
       }
     },
-    isDefinitiveOrderRejection: (error) =>
-      error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error),
   });
 }
 

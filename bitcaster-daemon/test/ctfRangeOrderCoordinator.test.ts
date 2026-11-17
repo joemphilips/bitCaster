@@ -112,7 +112,11 @@ import {
 } from '../src/durableCustodySqliteStore.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
-import type { EngineClientLike, PrepareSettlementCapabilityInput } from '../src/server.ts'
+import type {
+  EngineClientLike,
+  PreparedOrderAdmission,
+  PrepareSettlementCapabilityInput,
+} from '../src/server.ts'
 import {
   createDaemonCounterSource,
   deserializeOutputGroups,
@@ -874,7 +878,7 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
   })
 }
 
-test('daemon retries the exact capability request after its acknowledgement is lost', async (t) => {
+test('daemon commits order-requested before the one request and never resends it after a lost response', async (t) => {
   const originalBind = DaemonCtfRangeCoordinator.prototype.bindPreparedSource
   let boundRequest: unknown
   t.mock.method(
@@ -907,20 +911,26 @@ test('daemon retries the exact capability request after its acknowledgement is l
     async ({ directory, fence }) => {
       const wallet = new FakeWallet([sourceProof])
       const mint = fakeMint()
-      const posted: CreateSettlementCapabilityRequest[] = []
       const callOrder: string[] = []
       const requiredScores: number[] = []
       const phases: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
       let createAttempts = 0
-      const client = fakeEngineClient((request) => {
-        assert.notStrictEqual(request, boundRequest)
-        assert.ok(isDeepStrictEqual(request, boundRequest), 'exact capability request changed')
-        callOrder.push('create-capability')
-        posted.push(structuredClone(request))
-        createAttempts += 1
-        if (createAttempts === 1) throw new Error('capability acknowledgement lost')
-        return boundCapability(request)
-      })
+      let submitAttempts = 0
+      const lookups: Array<[string, string]> = []
+      const client = fakeEngineClient(
+        () => {
+          createAttempts += 1
+          throw new Error('the one-step path never stages a capability')
+        },
+        async () => {
+          submitAttempts += 1
+          throw new Error('recovery never sends the order')
+        },
+        async (conditionId, clientOrderId) => {
+          lookups.push([conditionId, clientOrderId])
+          return null
+        },
+      )
       const ids = ['range-operation-1', 'range-authorization-1']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         observeOrderTimeline: (observation) => {
@@ -943,21 +953,23 @@ test('daemon retries the exact capability request after its acknowledgement is l
           /bound is invalid/,
         )
         assert.equal(wallet.completeCalls, 0)
-        assert.equal(createAttempts, 0)
       }
 
-      await assert.rejects(
-        coordinator.prepare(orderRequest(), client, async (requiredScore) => {
-          callOrder.push('fund-score')
-          assert.deepEqual(
-            phases
-              .filter(({ phase }) => !phase.startsWith('preparation-'))
-              .map(({ phase }) => phase),
-            ['preparation'],
-          )
-          requiredScores.push(requiredScore)
-        }),
-        /capability acknowledgement lost/,
+      const prepared = await coordinator.prepare(orderRequest(), client, async (requiredScore) => {
+        callOrder.push('fund-score')
+        assert.deepEqual(
+          phases.filter(({ phase }) => !phase.startsWith('preparation-')).map(({ phase }) => phase),
+          ['preparation'],
+        )
+        assert.equal(await journalLifecycle(directory), 'prepared')
+        requiredScores.push(requiredScore)
+      })
+      // The caller sends prepared.admission now; its response is lost.
+      assert.equal(await journalLifecycle(directory), 'order-requested')
+      assert.notStrictEqual(prepared.admission, boundRequest)
+      assert.ok(
+        isDeepStrictEqual(prepared.admission, boundRequest),
+        'exact capability request changed',
       )
       // Initial absence check + postcommit validated load. No third duplicate load.
       assert.equal(loads, 2)
@@ -968,7 +980,7 @@ test('daemon retries the exact capability request after its acknowledgement is l
         [
           ['preparation', 'success'],
           ['score-admission', 'success'],
-          ['capability-admission', 'failed'],
+          ['order-request', 'success'],
         ],
       )
       assert.equal(topLevelPhases[0]!.endedUtc <= topLevelPhases[1]!.startedUtc, true)
@@ -1013,7 +1025,22 @@ test('daemon retries the exact capability request after its acknowledgement is l
         'completed',
       )
       assert.deepEqual(committed?.orders, {})
+      assert.equal(prepared.admission.orderIntent.maxQuotePaymentSubunits, 500)
+      assert.equal(prepared.admission.orderIntent.minQuotePaymentSubunits, null)
+      assert.deepEqual(callOrder, ['fund-score'])
+      assert.equal(requiredScores.length, 1)
+      const artifactBytes = Buffer.from(prepared.admission.artifact, 'base64')
+      const artifact = decodeSettlementCapabilityArtifactBytes(artifactBytes)
+      // settlement-capability-v2: a tenth of the v1 work sum, rounded up.
+      const v1WorkSum =
+        1 +
+        artifact.inputs.length +
+        Math.ceil(artifact.manifest.entries.length / 16) +
+        Math.ceil(artifactBytes.byteLength / 4_096)
+      assert.equal(requiredScores[0], Math.max(1, Math.ceil(v1WorkSum / 10)))
+      assert.equal(JSON.stringify(prepared.admission), canonicalJson(prepared.admission))
 
+      // A restart reads the order once and sends no request that can create it.
       const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => {
@@ -1024,29 +1051,10 @@ test('daemon retries the exact capability request after its acknowledgement is l
       const recovered = await restarted.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recovered.recovered, [])
       assert.equal(recovered.pending.length, 1)
-      assert.equal(recovered.pending[0]!.retryAtMs, 10_000)
-      assert.equal(wallet.completeCalls, 1)
-      assert.equal(posted.length, 2)
-      assert.equal(posted[0]!.orderIntent.maxQuotePaymentSubunits, 500)
-      assert.equal(posted[0]!.orderIntent.minQuotePaymentSubunits, null)
-      assert.equal(posted[1]!.orderIntent.maxQuotePaymentSubunits, 500)
-      assert.equal(posted[1]!.orderIntent.minQuotePaymentSubunits, null)
-      assert.deepEqual(callOrder, ['fund-score', 'create-capability', 'create-capability'])
-      assert.equal(requiredScores.length, 1)
-      const artifactBytes = Buffer.from(posted[0]!.artifact, 'base64')
-      const artifact = decodeSettlementCapabilityArtifactBytes(artifactBytes)
-      // settlement-capability-v2: a tenth of the v1 work sum, rounded up.
-      const v1WorkSum =
-        1 +
-        artifact.inputs.length +
-        Math.ceil(artifact.manifest.entries.length / 16) +
-        Math.ceil(artifactBytes.byteLength / 4_096)
-      assert.equal(requiredScores[0], Math.max(1, Math.ceil(v1WorkSum / 10)))
-      assert.ok(
-        isDeepStrictEqual(posted[1], posted[0]),
-        'restart changed capability admission bytes',
-      )
-      assert.equal(JSON.stringify(posted[0]), canonicalJson(posted[0]))
+      assert.equal(recovered.pending[0]!.retryAtMs, 15_000)
+      assert.match(recovered.pending[0]!.error, /not confirmed before authorization expiry/)
+      assert.deepEqual(lookups, [[CONDITION_ID, orderRequest().clientOrderId]])
+      assert.equal(await journalLifecycle(directory), 'order-requested')
       const database = await openDaemonStateSqlite(directory)
       const custodyRows = database
         .prepare(
@@ -1063,33 +1071,38 @@ test('daemon retries the exact capability request after its acknowledgement is l
       assert.ok(persistedAuthority)
       assert.equal(
         persistedAuthority.record.operation.exactRequest.requestFingerprint,
-        deriveDurableCustodyArtifactFingerprint(posted[0]),
+        deriveDurableCustodyArtifactFingerprint(prepared.admission),
       )
       await assert.rejects(
         restarted.prepare({ ...orderRequest(), maxQuotePaymentSubunits: 501 }, client),
         /intent conflicts/,
       )
-      assert.equal(posted.length, 2)
+      // The same intent never sends again: the record left prepared.
+      await assert.rejects(
+        restarted.prepare(orderRequest(), client),
+        /order request conflicts with its journal/,
+      )
 
-      const persisted = await readState()
-      assert.deepEqual(persisted?.orders, {})
+      // A pass before the backoff ends sends nothing and keeps retained authority.
       const beforePendingRecovery = await rangeRecoverySnapshot(directory)
-      const waiting = await coordinator.recover(WALLET_SEED_HEX, client)
+      const waiting = await restarted.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(waiting.recovered, [])
       assert.equal(waiting.pending.length, 1)
-      assert.match(waiting.pending[0]!.error, /remains unspent before expiry/)
+      assert.equal(waiting.pending[0]!.retryAtMs, 15_000)
       assert.ok(
         isDeepStrictEqual(await rangeRecoverySnapshot(directory), beforePendingRecovery),
         'pending recovery changed retained authority',
       )
-      assert.equal(posted.length, 2)
+      assert.equal(lookups.length, 1)
+      assert.equal(createAttempts, 0)
+      assert.equal(submitAttempts, 0)
       await assertSeedAbsentFromArtifacts(directory)
     },
   )
 })
 
 test(
-  'replayed capability keeps recovery scheduled until exact expiry refund without order submission',
+  'an unconfirmed order request reads on the backoff until expiry and then refunds without a creating request',
   { timeout: 30_000 },
   async () => {
     const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
@@ -1105,16 +1118,20 @@ test(
         let orderCalls = 0
         let refundCalls = 0
         const posted: CreateSettlementCapabilityRequest[] = []
+        const lookupTimes: number[] = []
         const wallet = new FakeWallet([sourceProof])
         const client = fakeEngineClient(
           (request) => {
             posted.push(structuredClone(request))
-            if (posted.length === 1) throw new Error('capability acknowledgement lost')
             return boundCapability(request)
           },
           async () => {
             orderCalls += 1
             return submittedOrder()
+          },
+          async () => {
+            lookupTimes.push(nowMs)
+            return null
           },
         )
         const ids = ['range-operation-retry-wake', 'range-authorization-retry-wake']
@@ -1130,7 +1147,8 @@ test(
           now: () => nowMs,
           randomId: () => ids.shift()!,
         })
-        await assert.rejects(coordinator.prepare(orderRequest(), client), /acknowledgement lost/)
+        // The response of the one request is lost; the journal holds order-requested.
+        await coordinator.prepare(orderRequest(), client)
         const before = await openDaemonStateSqlite(directory)
         const original = before
           .prepare(
@@ -1164,30 +1182,30 @@ test(
           return completion.promise
         }
         try {
-          const rebound = await pass(() => loop.trigger())
-          assert.deepEqual(rebound.recovered, [])
-          assert.equal(rebound.pending.length, 1)
-          assert.equal(timers.length, 1, 'capability binding must not stop the recovery loop')
-          assert.equal(timers[0]!.delayMs, 0)
-          assert.deepEqual(posted[1], posted[0], 'recovery must preserve the exact signed request')
-          assert.equal(wallet.completeCalls, 1)
-          assert.equal(orderCalls, 0)
-          assert.equal(refundCalls, 0)
-
-          const waiting = await pass(timers.shift()!.callback)
-          assert.equal(waiting.pending.length, 1)
-          assert.equal(waiting.pending[0]!.retryAtMs, 31_000)
-          assert.equal(timers.length, 1)
-          assert.equal(timers[0]!.delayMs, 21_000)
-          assert.equal(refundCalls, 0)
-          nowMs += timers[0]!.delayMs
-          const finished = await pass(timers.shift()!.callback)
+          // Each pass reads once; the loop waits 5, then 10 seconds, then until expiry.
+          let result = await pass(() => loop.trigger())
+          const delays: number[] = []
+          while (timers.length > 0) {
+            assert.deepEqual(result.recovered, [])
+            assert.equal(result.pending.length, 1)
+            assert.equal(orderCalls, 0)
+            assert.equal(refundCalls, 0)
+            const timer = timers.shift()!
+            delays.push(timer.delayMs)
+            nowMs += timer.delayMs
+            result = await pass(timer.callback)
+          }
+          assert.deepEqual(lookupTimes, [10_000, 15_000, 25_000])
+          // The third read caps its wait at the expiry (30 s). At expiry no read
+          // runs; the unspent NUT-07 answer opens the refund.
+          assert.deepEqual(delays, [5_000, 10_000, 5_000])
+          const finished = result
           assert.deepEqual(finished.pending, [])
           assert.deepEqual(finished.recovered, [
             (await counterRangeId(directory, 'client-order-1')) + ':source',
           ])
           assert.equal(timers.length, 0)
-          assert.equal(posted.length, 2)
+          assert.equal(posted.length, 0)
           assert.equal(wallet.completeCalls, 1)
           assert.equal(orderCalls, 0)
           assert.equal(refundCalls, 1)
@@ -1254,6 +1272,42 @@ test(
   },
 )
 
+test('daemon keeps order-requested when the accepted response holds another artifact', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-digest-mismatch-',
+      incarnationId: 'range-digest-mismatch-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const ids = ['range-digest-mismatch-operation', 'range-digest-mismatch-authorization']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(),
+        createWallet: () => new FakeWallet([sourceProof]),
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      const prepared = await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+      const accepted = boundCapability(prepared.admission)
+      for (const settlementCapability of [
+        { ...accepted, artifactDigest: '00'.repeat(32) },
+        { ...accepted, clientOrderId: 'client-order-2' },
+        undefined,
+      ]) {
+        await assert.rejects(
+          prepared.recordAccepted({ ...submittedOrder(), settlementCapability }),
+          /foreign order admission response/,
+        )
+        assert.equal(await journalLifecycle(directory), 'order-requested')
+      }
+      await prepared.recordAccepted({ ...submittedOrder(), settlementCapability: accepted })
+      assert.equal(await journalLifecycle(directory), 'order-submitted')
+    },
+  )
+})
+
 test('daemon caps a FOK authorization at 300 seconds by default, as the browser does', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
@@ -1276,11 +1330,12 @@ test('daemon caps a FOK authorization at 300 seconds by default, as the browser 
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      await coordinator.prepare(orderRequest(), client).catch(() => undefined)
+      const prepared = await coordinator.prepare(orderRequest(), client)
       const artifact = decodeSettlementCapabilityArtifactBytes(
-        Buffer.from(posted[0]!.artifact, 'base64'),
+        Buffer.from(prepared.admission.artifact, 'base64'),
       )
       assert.equal(artifact.expiry, 10 + DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS)
+      assert.equal(posted.length, 0)
     },
   )
 })
@@ -1297,11 +1352,15 @@ test('daemon retains a capped authorization after restart with a different cap',
     async ({ directory, fence }) => {
       const wallet = new FakeWallet([sourceProof])
       const posted: CreateSettlementCapabilityRequest[] = []
-      const client = fakeEngineClient((request) => {
-        posted.push(structuredClone(request))
-        if (posted.length === 1) throw new Error('capability acknowledgement lost')
-        return boundCapability(request)
-      })
+      let admission: CreateSettlementCapabilityRequest | undefined
+      const client = fakeEngineClient(
+        (request) => {
+          posted.push(structuredClone(request))
+          return boundCapability(request)
+        },
+        undefined,
+        async () => orderLookupFor(admission!),
+      )
       const ids = ['range-lifetime-operation', 'range-lifetime-authorization']
       const dependencies = {
         createMint: () => fakeMint(),
@@ -1313,24 +1372,22 @@ test('daemon retains a capped authorization after restart with a different cap',
         ...dependencies,
         authorizationLifetimeSeconds: 60,
       })
-      await assert.rejects(coordinator.prepare(orderRequest(), client), /acknowledgement lost/)
+      // The response of the one request is lost.
+      admission = (await coordinator.prepare(orderRequest(), client)).admission
       const first = decodeSettlementCapabilityArtifactBytes(
-        Buffer.from(posted[0]!.artifact, 'base64'),
+        Buffer.from(admission.artifact, 'base64'),
       )
       assert.equal(first.expiry, 70)
       const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         ...dependencies,
         authorizationLifetimeSeconds: 600,
       })
+      // The lookup finds the order with the original artifact, so the restart kept it.
       const recovery = await restarted.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recovery.recovered, [])
       assert.equal(recovery.pending.length, 1)
-      assert.equal(recovery.pending[0]!.retryAtMs, 10_000)
-      assert.equal(posted.length, 2)
-      assert.ok(
-        posted[0]!.artifact === posted[1]!.artifact,
-        'replay changed the authorization artifact',
-      )
+      assert.equal(await journalLifecycle(directory), 'order-submitted')
+      assert.equal(posted.length, 0)
       assert.equal(wallet.completeCalls, 1)
     },
   )
@@ -2117,7 +2174,7 @@ test('daemon applies a late exact source result and refunds locally without capa
       })
       const prepareError = await preparing
       assert.ok(prepareError instanceof Error)
-      assert.match(prepareError.message, /expired before capability admission/)
+      assert.match(prepareError.message, /expired before the order request/)
       assert.equal(beforeCapabilityCalls, 0)
       assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
@@ -2198,20 +2255,10 @@ test('daemon routes an expired capability-requested journal to local refund with
         },
       )
 
-      await assert.rejects(
-        coordinator.prepare(orderRequest(), client),
-        /capability acknowledgement lost/,
-      )
-      assert.equal(capabilityCalls, 1)
-      const pendingDatabase = await openDaemonStateSqlite(directory)
-      const pending = pendingDatabase
-        .prepare(
-          `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
-           WHERE range_operation_id = ?`,
-        )
-        .get(await counterRangeId(directory))
-      pendingDatabase.close()
-      assert.equal(pending?.lifecycle, 'capability-requested')
+      // A release 4 record that stayed capability-requested after a lost stage response.
+      const prepared = await coordinator.prepare(orderRequest(), client)
+      await rewriteAsRelease4Journal(directory, prepared.operationId, 'capability-requested', null)
+      assert.equal(await journalLifecycle(directory), 'capability-requested')
 
       nowMs = 29_000
       crossExpiryDuringExactRequestRead = true
@@ -2220,7 +2267,7 @@ test('daemon routes an expired capability-requested journal to local refund with
         pending: [],
       })
       assert.ok(recoveryFenceReads >= 2)
-      assert.equal(capabilityCalls, 1)
+      assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
       const state = await readState()
       assert.ok(
@@ -2270,58 +2317,67 @@ test('daemon refuses a range authorization without five minutes of refund headro
   )
 })
 
-test('daemon discovers but does not replay an order after its submission acknowledgement is lost', async () => {
-  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
-  await withDaemonProfile(
-    {
-      prefix: 'bitcaster-range-order-submit-',
-      incarnationId: 'range-order-submit-production-test',
-      proofs: [sourceProof],
-      asset: regularAsset(),
-    },
-    async ({ directory, fence }) => {
-      let capabilityState: SettlementCapabilityResponse['state'] = 'bound'
-      let submitAttempts = 0
-      const baseClient = fakeEngineClient(
-        (request) => boundCapability(request, capabilityState),
-        async () => {
-          submitAttempts += 1
-          capabilityState = 'selected'
-          if (submitAttempts === 1) throw new Error('order acknowledgement lost')
-          return submittedOrder()
-        },
-      )
-      const client: EngineClientLike = {
-        ...baseClient,
-        getOrderStatus: async () => (submitAttempts > 0 ? restingOrderStatus() : null),
-      }
-      const ids = ['range-operation-submit', 'range-authorization-submit']
-      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => fakeMint(),
-        createWallet: () => new FakeWallet([sourceProof]),
-        now: () => 10_000,
-        randomId: () => ids.shift()!,
-      })
-      const prepared = await coordinator.prepare(orderRequest(), client)
+for (const generation of ['one-step', 'release 4'] as const) {
+  test(`daemon discovers but does not replay a ${generation} order after its acknowledgement is lost`, async () => {
+    const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-order-submit-',
+        incarnationId: 'range-order-submit-production-test',
+        proofs: [sourceProof],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        let accepted = false
+        let admission: CreateSettlementCapabilityRequest | undefined
+        let stageCalls = 0
+        let submitAttempts = 0
+        const baseClient = fakeEngineClient(
+          (request) => {
+            stageCalls += 1
+            return boundCapability(request, 'selected')
+          },
+          async () => {
+            submitAttempts += 1
+            throw new Error('recovery never sends the order')
+          },
+          async () => (accepted ? orderLookupFor(admission!) : null),
+        )
+        const client: EngineClientLike = {
+          ...baseClient,
+          getOrderStatus: async () => (accepted ? restingOrderStatus() : null),
+        }
+        const ids = ['range-operation-submit', 'range-authorization-submit']
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => fakeMint(),
+          createWallet: () => new FakeWallet([sourceProof]),
+          now: () => 10_000,
+          randomId: () => ids.shift()!,
+        })
+        const prepared = await coordinator.prepare(orderRequest(), client)
+        admission = prepared.admission
+        if (generation === 'release 4') {
+          await rewriteAsRelease4Journal(directory, prepared.operationId, 'capability-bound', {
+            ...ACCEPTED_REFERENCE,
+            artifactDigest: boundCapability(admission).artifactDigest,
+          })
+        }
+        // The engine accepted the order, and its response was lost.
+        accepted = true
+        assert.deepEqual((await readState())?.orders, {})
 
-      await assert.rejects(
-        client.submitOrder(orderRequest().marketId, {
-          settlementCapability: prepared.capability.reference,
-          comment: null,
-        }),
-        /order acknowledgement lost/,
-      )
-      assert.deepEqual((await readState())?.orders, {})
-
-      const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.deepEqual(recovered.recovered, [])
-      assert.equal(recovered.pending.length, 1)
-      assert.match(recovered.pending[0]!.error, /submitted range authorization remains unspent/)
-      assert.equal(submitAttempts, 1)
-      assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
-    },
-  )
-})
+        const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.deepEqual(recovered.recovered, [])
+        assert.equal(recovered.pending.length, 1)
+        assert.match(recovered.pending[0]!.error, /submitted range authorization remains unspent/)
+        assert.equal(await journalLifecycle(directory), 'order-submitted')
+        assert.equal(submitAttempts, 0)
+        assert.equal(stageCalls, 0)
+        assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
+      },
+    )
+  })
+}
 
 test('daemon refunds a definitively rejected order without requiring engine order state', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
@@ -2347,7 +2403,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
       })
       const client = fakeEngineClient(boundCapability)
       const prepared = await coordinator.prepare(orderRequest(), client)
-      await prepared.markRejected()
+      await prepared.recordRejected()
 
       const database = await openDaemonStateSqlite(directory)
       const preparation = database
@@ -2365,7 +2421,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
         operation_id: string
       }
       database.close()
-      assert.equal(preparation.lifecycle, 'submission-rejected')
+      assert.equal(preparation.lifecycle, 'order-request-rejected')
 
       const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
         custody.operation_id,
@@ -2461,7 +2517,7 @@ test('daemon leaves an unexpectedly active FOK pending without cancellation or r
         request.baseAsset,
         request.divisibility,
       )
-      await prepared.markSubmitted()
+      await acceptPrepared(prepared)
 
       nowMs = 71_000
       activeFence = await claimCustodyScopeLease(directory, {
@@ -2522,7 +2578,10 @@ for (const [acknowledgementLost, resultDeleted] of [
         let engineOffline = false
         const observations: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
         const mint = fakeMint(64, 1_000, () => selectedOutputs)
-        const baseClient = fakeEngineClient(boundCapability)
+        let admission: CreateSettlementCapabilityRequest | undefined
+        const baseClient = fakeEngineClient(boundCapability, undefined, async () =>
+          orderLookupFor(admission!),
+        )
         const client: EngineClientLike = {
           ...baseClient,
           getSettlementCapabilityResultByOperation: async () => {
@@ -2558,6 +2617,7 @@ for (const [acknowledgementLost, resultDeleted] of [
         })
         const request = orderRequest()
         const prepared = await coordinator.prepare(request, client)
+        admission = prepared.admission
         assert.deepEqual(
           observations.map(({ phase }) => phase),
           [
@@ -2571,7 +2631,7 @@ for (const [acknowledgementLost, resultDeleted] of [
             'preparation-exact-request',
             'preparation',
             'score-admission',
-            'capability-admission',
+            'order-request',
           ],
         )
         assert.equal(
@@ -2582,10 +2642,8 @@ for (const [acknowledgementLost, resultDeleted] of [
           observations.find(({ phase }) => phase === 'score-admission')!.outcome,
           'unverified',
         )
-        assert.equal(
-          observations.find(({ phase }) => phase === 'capability-admission')!.orderId,
-          prepared.capability.orderId,
-        )
+        // The order id comes with the accepted response, after this phase.
+        assert.equal(observations.find(({ phase }) => phase === 'order-request')!.orderId, null)
         assert.equal(
           observations.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0),
           true,
@@ -2602,13 +2660,13 @@ for (const [acknowledgementLost, resultDeleted] of [
           request.baseAsset,
           request.divisibility,
         )
-        if (acknowledgementLost) await prepared.markSubmitted()
+        if (acknowledgementLost) await acceptPrepared(prepared)
 
         const database = await openDaemonStateSqlite(directory)
         if (!acknowledgementLost) {
           database
             .prepare('DELETE FROM daemon_orders WHERE scope_id = ? AND order_id = ?')
-            .run(fence.scopeId, prepared.capability.orderId)
+            .run(fence.scopeId, ORDER_ID)
         }
         const custody = database
           .prepare(
@@ -2633,11 +2691,7 @@ for (const [acknowledgementLost, resultDeleted] of [
 
         if (!acknowledgementLost) {
           assert.equal(
-            await recordOrderStatus(
-              request.marketId,
-              prepared.capability.orderId,
-              filledOrderStatus(),
-            ),
+            await recordOrderStatus(request.marketId, ORDER_ID, filledOrderStatus()),
             null,
           )
         }
@@ -2652,10 +2706,7 @@ for (const [acknowledgementLost, resultDeleted] of [
           assert.equal(completion[0]!.applicationPath, 'engine')
           assert.equal(completion[0]!.outcome, 'success')
           assert.equal(acknowledgementCalls, 1)
-          assert.equal(
-            (await readState())?.orders[prepared.capability.orderId]?.clientOrderId,
-            request.clientOrderId,
-          )
+          assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, request.clientOrderId)
           const recorded = observations.length
           assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
             recovered: [],
@@ -2669,7 +2720,7 @@ for (const [acknowledgementLost, resultDeleted] of [
         assert.match(interrupted.pending[0]!.error, /acknowledgement response lost/)
         const firstApplication = observations.find(({ phase }) => phase === 'result-application')!
         assert.equal(firstApplication.outcome, 'success')
-        assert.equal(firstApplication.orderId, prepared.capability.orderId)
+        assert.equal(firstApplication.orderId, ORDER_ID)
         assert.equal(firstApplication.groupId, result!.settlementGroup!.groupId)
         assert.equal(firstApplication.groupRevision, result!.settlementGroup!.revision)
         assert.deepEqual(
@@ -2922,7 +2973,7 @@ test('daemon applies a partial FOK result but keeps it pending and unacknowledge
         request.baseAsset,
         request.divisibility,
       )
-      await prepared.markSubmitted()
+      await acceptPrepared(prepared)
 
       const database = await openDaemonStateSqlite(directory)
       const custody = database
@@ -3024,7 +3075,7 @@ for (const persistedStage of [false, true])
           request.baseAsset,
           request.divisibility,
         )
-        await prepared.markSubmitted()
+        await acceptPrepared(prepared)
 
         const database = await openDaemonStateSqlite(directory)
         const custody = database
@@ -3137,7 +3188,7 @@ for (const persistedStage of [false, true])
         assert.equal(applications.length, 1)
         assert.equal(applications[0]!.outcome, 'success')
         assert.equal(applications[0]!.operationId, prepared.operationId)
-        assert.equal(applications[0]!.orderId, prepared.capability.orderId)
+        assert.equal(applications[0]!.orderId, ORDER_ID)
         assert.equal(applications[0]!.groupId, null)
         assert.equal(applications[0]!.groupRevision, null)
         assert.ok(!selectedObservations.some(({ phase }) => phase === 'result-acknowledgement'))
@@ -3272,7 +3323,7 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
         request.baseAsset,
         request.divisibility,
       )
-      await prepared.markSubmitted()
+      await acceptPrepared(prepared)
 
       const database = await openDaemonStateSqlite(directory)
       const custody = database
@@ -4004,7 +4055,9 @@ test('daemon prepares a full held-share Sell from exact shares plus fee cash', a
 
       assert.equal(mint.convertRequests.length, 1)
       assert.deepEqual(convertInputTotals(mint.convertRequests[0]!), { YES: 1_000, '*': 64 })
-      assert.equal(capabilityCalls, 1)
+      // The one-step path sends the capability with the order; it never stages it.
+      assert.equal(capabilityCalls, 0)
+      assert.equal(await journalLifecycle(directory), 'order-requested')
       await assertCounterAuthorityPairs(directory)
       assert.deepEqual(await walletSummary(), {
         availableShares: 0,
@@ -5893,7 +5946,7 @@ test('daemon keeps both mixed reservations when a duplicate retry loses to the o
       releaseOriginal()
       const prepareError = await preparing
       assert.ok(prepareError instanceof Error)
-      assert.match(prepareError.message, /expired before capability admission/)
+      assert.match(prepareError.message, /expired before the order request/)
       assert.equal(scoreCalls, 0)
       assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
@@ -5931,11 +5984,36 @@ const EXPIRY_BOUNDARY_CASES = [
     },
   },
   {
+    journal: 'order-requested',
+    boundary: 'one millisecond before expiry',
+    recoveryAtMs: 29_999,
+    expected: {
+      capabilityCalls: 0,
+      recovered: false,
+      pending: /requested order is not confirmed before authorization expiry/,
+      lifecycle: 'order-requested',
+      refunds: 0,
+    },
+  },
+  {
+    journal: 'order-requested',
+    boundary: 'at the exact expiry',
+    recoveryAtMs: 30_000,
+    expected: {
+      capabilityCalls: 0,
+      recovered: true,
+      pending: null,
+      lifecycle: 'terminal',
+      refunds: 1,
+    },
+  },
+  // A release 4 record resends its stage request only before expiry.
+  {
     journal: 'capability-requested',
     boundary: 'one millisecond before expiry',
     recoveryAtMs: 29_999,
     expected: {
-      capabilityCalls: 2,
+      capabilityCalls: 1,
       recovered: false,
       pending: /recovered range capability requires custody reconciliation/,
       lifecycle: 'capability-bound',
@@ -5947,7 +6025,7 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'at the exact expiry',
     recoveryAtMs: 30_000,
     expected: {
-      capabilityCalls: 1,
+      capabilityCalls: 0,
       recovered: true,
       pending: null,
       lifecycle: 'terminal',
@@ -5983,7 +6061,6 @@ for (const scenario of EXPIRY_BOUNDARY_CASES) {
         const client = fakeEngineClient(
           (request) => {
             capabilityCalls += 1
-            if (capabilityCalls === 1) throw new Error('capability acknowledgement lost')
             return boundCapability(request)
           },
           async () => {
@@ -6000,7 +6077,14 @@ for (const scenario of EXPIRY_BOUNDARY_CASES) {
           now: () => nowMs,
           randomId: randomIds('range-mixed-expiry'),
         })
-        await assert.rejects(coordinator.prepare(sellOneShareRequest(), client), /lost/)
+        if (scenario.journal === 'prepared') {
+          await assert.rejects(coordinator.prepare(sellOneShareRequest(), client), /lost/)
+        } else {
+          // The response of the one request is lost.
+          const prepared = await coordinator.prepare(sellOneShareRequest(), client)
+          if (scenario.journal === 'capability-requested')
+            await rewriteAsRelease4Journal(directory, prepared.operationId, scenario.journal, null)
+        }
         assert.equal((await mixedSourceCustody(directory)).lifecycle, scenario.journal)
 
         nowMs = scenario.recoveryAtMs
@@ -6249,7 +6333,8 @@ for (const scenario of SELECTION_BOUNDARY_CASES) {
             .map(({ metadata }) => metadata.fees),
           scenario.expected.consolidationFees,
         )
-        assert.equal(capabilityCalls, scenario.expected.conversionOutputCounts.length)
+        // The one-step path never stages a capability.
+        assert.equal(capabilityCalls, 0)
         assert.deepEqual(await walletSummary(), scenario.expected.wallet)
       },
     )
@@ -7021,9 +7106,12 @@ function fakeMint(
 function fakeEngineClient(
   create: (request: CreateSettlementCapabilityRequest) => SettlementCapabilityResponse,
   submit: () => Promise<ReturnType<typeof submittedOrder>> = async () => submittedOrder(),
+  lookup: NonNullable<EngineClientLike['lookupOrderByClientOrderId']> = async () => null,
 ): EngineClientLike {
   return {
+    // The old stage route: only the recovery of a release 4 capability-requested record calls it.
     createSettlementCapability: async (request) => create(request),
+    lookupOrderByClientOrderId: lookup,
     getSettlementCapabilityAdmissionPolicy: async () => ({
       coordinatorPubkey: COORDINATOR_KEY,
     }),
@@ -7043,6 +7131,77 @@ function fakeEngineClient(
     getParticipationScore: async () => {
       throw new Error('not used')
     },
+  }
+}
+
+/** The engine accepted the one-step request: record order-submitted with its capability. */
+async function acceptPrepared(
+  prepared: PreparedOrderAdmission,
+  order: ReturnType<typeof submittedOrder> = submittedOrder(),
+): Promise<SettlementCapabilityResponse> {
+  return prepared.recordAccepted({
+    ...order,
+    settlementCapability: boundCapability(prepared.admission),
+  })
+}
+
+const ACCEPTED_REFERENCE = { artifactId: CAPABILITY_ARTIFACT_ID, bindingDigest: 'ef'.repeat(32) }
+
+/** The engine lookup of an accepted order that holds the artifact of `request`. */
+function orderLookupFor(request: CreateSettlementCapabilityRequest) {
+  const capability = boundCapability(request)
+  return {
+    orderId: capability.orderId,
+    marketId: capability.marketId,
+    status: 'accepted' as const,
+    settlementCapability: capability.reference,
+    artifactDigest: capability.artifactDigest,
+  }
+}
+
+async function journalLifecycle(directory: string): Promise<string> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const rows = database
+      .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+      .all() as Array<{ lifecycle: string }>
+    assert.equal(rows.length, 1)
+    return rows[0]!.lifecycle
+  } finally {
+    database.close()
+  }
+}
+
+/**
+ * Rewrite a one-step journal record to a state that only the release 4 writer
+ * produced, so the old-route recovery of such a record stays covered.
+ */
+async function rewriteAsRelease4Journal(
+  directory: string,
+  rangeOperationId: string,
+  lifecycleState: 'capability-requested' | 'capability-bound' | 'submission-rejected',
+  capability: { artifactId: string; bindingDigest: string; artifactDigest: string } | null,
+): Promise<void> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const changed = database
+      .prepare(
+        `UPDATE daemon_ctf_range_preparations
+         SET lifecycle_state = ?, capability_artifact_id = ?, capability_binding_digest = ?,
+             capability_artifact_digest = ?, engine_order_id = ?
+         WHERE range_operation_id = ? AND lifecycle_state = 'order-requested'`,
+      )
+      .run(
+        lifecycleState,
+        capability?.artifactId ?? null,
+        capability?.bindingDigest ?? null,
+        capability?.artifactDigest ?? null,
+        capability === null ? null : ORDER_ID,
+        rangeOperationId,
+      )
+    assert.equal(changed.changes, 1)
+  } finally {
+    database.close()
   }
 }
 
@@ -7203,7 +7362,7 @@ function engineResult(
   const envelopeBytes = Buffer.from(JSON.stringify(envelope))
   return {
     resultId: '00000000-0000-4000-8000-000000000003',
-    reference: prepared.capability.reference,
+    reference: ACCEPTED_REFERENCE,
     operationId: operation.operationId,
     requestDigest: envelope.requestDigest,
     envelopeDigest: createHash('sha256').update(envelopeBytes).digest('hex'),
@@ -8164,8 +8323,13 @@ async function withExpiredOrdinaryRefund(
       )
       const client = fakeEngineClient(boundCapability)
       const prepared = await coordinator.prepare(orderRequest(), client)
-      // Without the rejection, the journal stays capability-bound.
-      if (options.markRejected !== false) await prepared.markRejected()
+      if (options.markRejected !== false) await prepared.recordRejected()
+      // Without the rejection, the journal is a release 4 capability-bound record.
+      else
+        await rewriteAsRelease4Journal(directory, prepared.operationId, 'capability-bound', {
+          ...ACCEPTED_REFERENCE,
+          artifactDigest: boundCapability(prepared.admission).artifactDigest,
+        })
       const db = await openDaemonStateSqlite(directory)
       const row = db
         .prepare(

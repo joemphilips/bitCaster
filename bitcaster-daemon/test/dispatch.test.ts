@@ -1906,7 +1906,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
-      'order.submit prepares a capability and submits only its bound reference',
+      'order.submit prepares a capability and submits it in one admission-form request',
       async () => {
         const timeline: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
         await writeState(backedDaemonState('cond', 1_000_000))
@@ -1986,9 +1986,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             ['submitted-record', 'success'],
           ],
         )
-        assert.equal(
-          timeline.every(({ orderId }) => orderId === 'order-1'),
-          true,
+        // The engine assigns the order id in the response of the one request.
+        assert.deepEqual(
+          timeline.map(({ orderId }) => orderId),
+          [null, 'order-1'],
         )
         assert.equal(
           timeline.every(({ groupId }) => groupId === null),
@@ -2000,10 +2001,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           nostrSecretKeyHex: secrets.nostrSecretKeyHex,
         })
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.match(
@@ -2102,10 +2102,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         assert.equal(response.ok, true, response.error)
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.equal(
@@ -2248,10 +2247,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(capturedRequest, {
-        settlementCapability: {
-          artifactId: '00000000-0000-4000-8000-000000000001',
-          bindingDigest: 'ab'.repeat(32),
-        },
+        settlementCapabilityAdmission: testOrderAdmission(
+          capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+        ),
         comment: null,
       })
       assert.equal(
@@ -2684,7 +2682,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           assert.match(response.error ?? '', /submission is uncertain/)
           assert.ok(response.clientOrderId)
           assert.equal(response.operationId, `range:${response.clientOrderId}`)
-          assert.equal(response.orderId, 'order-retryable')
+          // The response never arrived, so no order id is known.
+          assert.equal(response.orderId, undefined)
           assert.equal(markedRejected, false)
           assert.equal(recoveryTriggers, 1)
           assert.deepEqual((await readState())?.orders, {})
@@ -3271,10 +3270,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         assert.equal(response.ok, true)
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.equal(
@@ -3590,7 +3588,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.match(response.error ?? '', /submission is uncertain/)
         assert.ok(response.clientOrderId)
         assert.equal(response.operationId, `range:${response.clientOrderId}`)
-        assert.equal(response.orderId, 'order-lost')
+        assert.equal(response.orderId, undefined)
         assert.equal(recoveryWakes, 1)
         assert.deepEqual((await readState())?.orders, {})
       },
@@ -4289,25 +4287,54 @@ function prepareSettlementCapability(
     return {
       operationId: `range:${input.clientOrderId}`,
       authorizationExpiresAtUnixSeconds: 1785542400,
-      markSubmitted: async () => undefined,
-      markRejected: async () => onRejected?.(),
-      consolidation: { operationIds: [], feeSubunits: 0 },
-      capability: {
-        reference: {
-          artifactId: '00000000-0000-4000-8000-000000000001',
-          bindingDigest: 'ab'.repeat(32),
-        },
-        orderId,
-        clientOrderId: input.clientOrderId,
-        marketId: input.marketId,
-        artifactDigest: 'cd'.repeat(32),
-        state: 'bound' as const,
-        version: 1,
-        authorizationExpiresAt: '2026-08-01T00:00:00.000Z',
-        stageExpiresAt: '2026-07-31T23:59:00.000Z',
-        settlementGroup: null,
+      admission: testOrderAdmission(input),
+      recordAccepted: async (response: { orderId: string }) => {
+        if (response.orderId !== orderId) throw new Error('engine returned a foreign order')
+        return {
+          reference: TEST_CAPABILITY_REFERENCE,
+          orderId,
+          clientOrderId: input.clientOrderId,
+          marketId: input.marketId,
+          artifactDigest: 'cd'.repeat(32),
+          state: 'bound' as const,
+          version: 1,
+          authorizationExpiresAt: '2026-08-01T00:00:00.000Z',
+          stageExpiresAt: '2026-07-31T23:59:00.000Z',
+          settlementGroup: null,
+        }
       },
+      recordRejected: async () => onRejected?.(),
+      consolidation: { operationIds: [], feeSubunits: 0 },
     }
+  }
+}
+
+const TEST_CAPABILITY_REFERENCE = {
+  artifactId: '00000000-0000-4000-8000-000000000001',
+  bindingDigest: 'ab'.repeat(32),
+}
+
+/** The one-step admission value that the fake coordinator prepares for `input`. */
+function testOrderAdmission(input: PrepareSettlementCapabilityInput) {
+  return {
+    stageIdempotencyKey: `authorization:${input.clientOrderId}`,
+    clientOrderId: input.clientOrderId,
+    marketId: input.marketId,
+    orderIntent: {
+      outcomeId: input.outcomeId,
+      tokenSide: input.tokenSide,
+      side: input.side,
+      price: input.price,
+      maxQuotePaymentSubunits: input.maxQuotePaymentSubunits,
+      minQuotePaymentSubunits: input.minQuotePaymentSubunits,
+      amountSubunits: input.amountSubunits,
+      minimumFillAmountSubunits: input.minimumFillAmountSubunits,
+      baseAsset: input.baseAsset,
+      collateralUnit: input.collateralUnit,
+      timeInForce: 'FOK' as const,
+      expiresAt: input.expiresAt,
+    },
+    artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
   }
 }
 

@@ -1,5 +1,6 @@
 import {
   assertCtfRangeOrderPreparationTransition,
+  bindCtfRangeOrderPreparationAdmission,
   bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationIdentity,
   decodeCtfRangeOrderPreparationPageCursor,
@@ -27,6 +28,8 @@ export interface CtfRangePreparationPage {
 
 const ACTIVE_PREPARATION_STATES = [
   "prepared",
+  "order-requested",
+  "order-request-rejected",
   "capability-requested",
   "capability-bound",
   "order-submitted",
@@ -261,6 +264,35 @@ export async function readCtfRangePreparationConsolidations(
     .sortBy("round");
 }
 
+/** One-step path: `order-requested` -> `order-submitted` with the capability of the accepted order. */
+export async function bindCtfRangePreparationAdmission(
+  input: {
+    scopeId: string;
+    rangeOperationId: string;
+    expectedRevision: number;
+    capability: CtfRangeOrderPreparationCapability;
+    updatedAtMs: number;
+  },
+  database: BitcasterDB = db,
+): Promise<CtfRangeOrderPreparationRecord> {
+  return database.transaction("rw", database.ctfRangePreparations, async (transaction) =>
+    runInCurrentWriteTransaction(
+      transaction,
+      database,
+      [database.ctfRangePreparations],
+      async () => {
+        const current = await requirePreparation(input.scopeId, input.rangeOperationId, database);
+        const next = bindCtfRangeOrderPreparationAdmission({ current, ...input });
+        if (next.revision !== current.revision) {
+          await database.ctfRangePreparations.put(next);
+        }
+        return decodeCtfRangeOrderPreparationRecord(next);
+      },
+    ),
+  );
+}
+
+/** Old two-step path: only the recovery of a release 4 `capability-requested` record binds. */
 export async function bindCtfRangePreparationCapability(
   input: {
     scopeId: string;

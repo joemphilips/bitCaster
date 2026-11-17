@@ -19,11 +19,36 @@ export interface DaemonRuntimeOptions {
   readonly authorizationLifetimeSeconds?: number
 }
 
+/**
+ * A forward-only profile schema upgrade runs only under the run lock, so no
+ * older daemon holds the profile open. A missing profile is left to validation.
+ */
+async function upgradeProfileUnderRunLock(
+  acquireDaemonRunLock: typeof import('./runLock.ts').acquireDaemonRunLock,
+): Promise<void> {
+  const { access } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { DAEMON_PROFILE_DATABASE } = await import('./profileSchema.ts')
+  try {
+    await access(join(profileDir(), DAEMON_PROFILE_DATABASE))
+  } catch {
+    return
+  }
+  const lock = await acquireDaemonRunLock()
+  try {
+    const { upgradeDaemonProfileSchema } = await import('./profileSchemaUpgrade.ts')
+    await upgradeDaemonProfileSchema(profileDir())
+  } finally {
+    await lock.release()
+  }
+}
+
 export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Promise<void> {
   const observeOrderTimeline = createOrderTimelineStderrSink(process.stderr)
   const nativeConfig = freezeNativeConfigAtStartup().config
-  await assertDaemonProfileStorageComplete()
   const { acquireDaemonRunLock } = await import('./runLock.ts')
+  await upgradeProfileUnderRunLock(acquireDaemonRunLock)
+  await assertDaemonProfileStorageComplete()
   const { startDaemonServer } = await import('./server.ts')
   const { SignalROrderLifecycleConnection } = await import('./orderHubConnection.ts')
   const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')

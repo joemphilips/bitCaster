@@ -75,7 +75,10 @@ import {
   type CtfRangeOrderRequest,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
-import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import {
+  encodeCtfRangeOrderFeeConsentArtifact,
+  type CtfRangeOrderPreparationRecord,
+} from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import {
   decodeSettlementCapabilityArtifactBytes,
@@ -88,6 +91,7 @@ import {
   type OrderStatusResponse,
   type SettlementCapabilityResponse,
   type SettlementCapabilityResultResponse,
+  type OrderLookupResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
   type SubmitOrderOptions,
@@ -121,11 +125,9 @@ import {
 } from "../browserCtfRangeOrderSource";
 import { BrowserDurableCustodyAdapter } from "../../stores/durable-custody-db";
 import {
-  bindCtfRangePreparationCapability,
   insertCtfRangePreparation,
   readCtfRangePreparation,
   readCtfRangePreparationConsolidations,
-  transitionCtfRangePreparation,
 } from "../../stores/ctf-range-order-db";
 import {
   BitcasterDB,
@@ -302,7 +304,8 @@ describe("browser CTF range order coordinator", () => {
       await perform();
       const counters = await database.walletCounterCursors.toArray();
       if (family === "source")
-        await expect(perform()).rejects.toMatchObject({ code: "capability-creation-failed" });
+        // The record left prepared, so a second submit never sends the order again.
+        await expect(perform()).rejects.toMatchObject({ code: "order-submission-uncertain" });
       else await perform();
       expect(await database.walletCounterCursors.toArray()).toEqual(counters);
       expect(drafts).toBe(1);
@@ -461,7 +464,7 @@ describe("browser CTF range order coordinator", () => {
         return;
       }
       if (outcome === "confirmed") {
-        await expect(submitting).resolves.toEqual(submitResponse());
+        await expect(submitting).resolves.toMatchObject(submitResponse());
       } else {
         await expect(submitting).rejects.toMatchObject({ code: "mint-source-uncertain" });
         const name = database.name;
@@ -479,7 +482,7 @@ describe("browser CTF range order coordinator", () => {
         ]);
       }
       expect(conversions).toBe(1);
-      expect(engine.createCalls).toBe(outcome === "confirmed" ? 1 : 0);
+      expect(engine.createCalls).toBe(0);
       expect(engine.submitCalls).toBe(outcome === "confirmed" ? 1 : 0);
       const rows = await database.proofs.toArray();
       expect(
@@ -553,10 +556,10 @@ describe("browser CTF range order coordinator", () => {
         preparation,
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).resolves.toEqual(submitResponse());
+    ).resolves.toMatchObject(submitResponse());
 
     expect(mintCalls).toBe(1);
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
     expect(await database.custodyOperations.count()).toBeGreaterThan(0);
   });
 
@@ -1031,7 +1034,8 @@ describe("browser CTF range order coordinator", () => {
     });
 
     expect(response.orderId).toBe("44444444-4444-4444-8444-444444444444");
-    expect(calls).toEqual(["mint-source", "capability", "submit"]);
+    // The one-step path sends the capability with the order.
+    expect(calls).toEqual(["mint-source", "submit"]);
     expect(contexts).toEqual([
       [walletScopeId(), preparation.mintUrl, preparation.offerKeyset.unit],
     ]);
@@ -1115,15 +1119,17 @@ describe("browser CTF range order coordinator", () => {
     expect(await database.ctfRangePreparations.count()).toBe(0);
   });
 
-  it("funds the exact capability tariff before the first capability request", async () => {
+  it("funds the exact capability tariff before the one order request", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-score-tariff");
     const calls: string[] = [];
     let fundedScore = 0;
     let expectedScore = 0;
     const engine = engineMock({
-      onCreate: async (request) => {
-        const artifact = decodeSettlementCapabilityArtifactBytes(base64Bytes(request.artifact));
+      onSubmit: async (request) => {
+        const artifact = decodeSettlementCapabilityArtifactBytes(
+          base64Bytes(request.settlementCapabilityAdmission.artifact),
+        );
         if (artifact.authorizationMode !== "pool") throw new Error("expected pool artifact");
         // settlement-capability-v2: a tenth of the v1 work sum, rounded up.
         const v1 =
@@ -1132,7 +1138,7 @@ describe("browser CTF range order coordinator", () => {
           Math.ceil(artifact.manifest.entries.length / 16) +
           Math.ceil(encodeSettlementCapabilityArtifact(artifact).byteLength / 4_096);
         expectedScore = Math.max(1, Math.ceil(v1 / 10));
-        calls.push("capability");
+        calls.push("order-request");
       },
     });
     const coordinator = createCoordinator(database, sourceWallet(), engine, {
@@ -1149,7 +1155,8 @@ describe("browser CTF range order coordinator", () => {
     });
 
     expect(fundedScore).toBe(expectedScore);
-    expect(calls).toEqual(["score", "capability"]);
+    expect(calls).toEqual(["score", "order-request"]);
+    expect(engine.createCalls).toBe(0);
   });
 
   it("reserves the order source before Score funding reads the regular balance", async () => {
@@ -1523,7 +1530,7 @@ describe("browser CTF range order coordinator", () => {
       expect(await counterSource.snapshot()).toEqual({
         [preparation.offerKeyset.id]: 5,
       });
-      expect(engine.createCalls).toBe(1);
+      expect(engine.createCalls).toBe(0);
       expect(engine.submitCalls).toBe(1);
     },
   );
@@ -1636,7 +1643,7 @@ describe("browser CTF range order coordinator", () => {
     expect(await database.custodyOperations.count()).toBeGreaterThan(0);
     expect(await database.custodyProofs.count()).toBeGreaterThan(0);
     expect((await database.proofs.toArray()).length).toBeGreaterThan(0);
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
   });
 
@@ -1664,7 +1671,7 @@ describe("browser CTF range order coordinator", () => {
         ({ reservedBy }) => reservedBy !== "stale-legacy-operation",
       ),
     ).toBe(true);
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
   });
 
@@ -2031,7 +2038,7 @@ describe("browser CTF range order coordinator", () => {
     });
   });
 
-  it("keeps bound funds recoverable when the user stops quote waiting", async () => {
+  it("keeps requested funds recoverable and never resends after the user stops waiting", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-stop-quote-wait");
     const controller = new AbortController();
@@ -2057,23 +2064,39 @@ describe("browser CTF range order coordinator", () => {
       }),
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
     expect(onWaiting).toHaveBeenCalledTimes(1);
-    const bound = await readCtfRangePreparation(walletScopeId(), preparation.operationId, database);
-    expect(bound?.lifecycleState).toBe("capability-bound");
+    const requested = await readCtfRangePreparation(
+      walletScopeId(),
+      preparation.operationId,
+      database,
+    );
+    expect(requested?.lifecycleState).toBe("order-requested");
     expect(
       (await database.proofs.toArray()).every(
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
       ),
     ).toBe(true);
-    await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(recovery.pending).toMatchObject([
+      { operationId: preparation.operationId, code: "awaiting-order-confirmation" },
+    ]);
+    expect(engine.lookupCalls).toBe(1);
     expect(engine.submitCalls).toBe(1);
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
   });
 
-  it("never retries submission after a lost order acknowledgement", async () => {
+  it("never resends the order after a lost acknowledgement and binds it from the lookup", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-submit-lost");
     const wallet = sourceWallet();
-    const engine = engineMock({ submitFailure: true, orderStatus: discoveredOrderStatus() });
+    let sent: CreateSettlementCapabilityRequest | undefined;
+    const engine = engineMock({
+      onSubmit: async (request) => {
+        sent = request.settlementCapabilityAdmission;
+      },
+      submitFailure: true,
+      orderStatus: discoveredOrderStatus(),
+      lookup: () => orderLookup(sent!),
+    });
     const coordinator = createCoordinator(database, wallet, engine);
 
     await expect(
@@ -2083,18 +2106,22 @@ describe("browser CTF range order coordinator", () => {
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
-    expect(engine.statusCalls).toBe(0);
+    expect(engine.lookupCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("order-requested");
 
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
-    expect(engine.createCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
-    expect(engine.statusCalls).toBe(1);
+    expect(engine.lookupCalls).toBe(1);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
@@ -2106,20 +2133,56 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
-  it("retries only the exact persisted capability request after a lost response", async () => {
+  it("keeps order-requested when the found order holds another artifact digest", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-lookup-mismatch");
+    let sent: CreateSettlementCapabilityRequest | undefined;
+    const engine = engineMock({
+      onSubmit: async (request) => {
+        sent = request.settlementCapabilityAdmission;
+      },
+      submitFailure: true,
+      lookup: () => orderLookup(sent!, "ff".repeat(32)),
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+
+    const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(recovery.pending).toMatchObject([
+      { operationId: preparation.operationId, code: "awaiting-order-confirmation" },
+    ]);
+    const journal = await readCtfRangePreparation(
+      walletScopeId(),
+      preparation.operationId,
+      database,
+    );
+    expect(journal?.lifecycleState).toBe("order-requested");
+    expect(journal?.capability).toBeNull();
+    expect(engine.lookupCalls).toBe(1);
+    expect(engine.submitCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
+  });
+
+  it("a release 4 capability-requested record resends only its exact stage request", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-capability-lost");
     const requests: CreateSettlementCapabilityRequest[] = [];
+    let sent: CreateSettlementCapabilityRequest | undefined;
     let fundingCalls = 0;
-    let failResponse = true;
     const engine = engineMock({
       onCreate: async (request) => {
         requests.push(structuredClone(request));
-        if (failResponse) {
-          failResponse = false;
-          throw new Error("lost capability response");
-        }
       },
+      onSubmit: async (request) => {
+        sent = structuredClone(request.settlementCapabilityAdmission);
+      },
+      submitFailure: true,
     });
     const coordinator = createCoordinator(database, sourceWallet(), engine, {
       beforeCreateCapability: async () => {
@@ -2133,39 +2196,33 @@ describe("browser CTF range order coordinator", () => {
         preparation,
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).rejects.toMatchObject({ code: "capability-creation-failed" });
-    expect(
-      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
-        ?.lifecycleState,
-    ).toBe("capability-requested");
+    ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+    await rewriteAsRelease4Journal(database, preparation.operationId, "capability-requested", null);
 
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toEqual(requests[0]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toEqual(sent);
     expect(fundingCalls).toBe(1);
-    expect(engine.createCalls).toBe(2);
-    expect(engine.submitCalls).toBe(0);
+    expect(engine.createCalls).toBe(1);
+    expect(engine.submitCalls).toBe(1);
+    expect(engine.lookupCalls).toBe(0);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("capability-bound");
   });
 
-  it.each(["source-completion", "capability-requested"] as const)(
-    "refunds expired %s without another capability request",
+  it.each(["source-completion", "order-requested", "capability-requested"] as const)(
+    "refunds expired %s without a creating request",
     async (stage) => {
       const database = createRefundDatabase();
       const preparation = persistedPreparation(`range-expired-${stage}`);
       let now = preparation.expiry * 1_000 - 1_000;
-      const engine = engineMock({
-        onCreate: async () => {
-          throw new Error("lost capability response");
-        },
-      });
+      const engine = engineMock({ submitFailure: true });
       const wallet = sourceWallet({
         onComplete: async () => {
           if (stage === "source-completion") now = preparation.expiry * 1_000;
@@ -2187,17 +2244,21 @@ describe("browser CTF range order coordinator", () => {
           candidates: [sourceProof(preparation.offerKeyset.id)],
         }),
       ).rejects.toMatchObject({
-        code: stage === "source-completion" ? "order-attempt-ended" : "capability-creation-failed",
+        code: stage === "source-completion" ? "order-attempt-ended" : "order-submission-uncertain",
       });
+      if (stage === "capability-requested")
+        await rewriteAsRelease4Journal(database, preparation.operationId, stage, null);
 
       now = preparation.expiry * 1_000;
       expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
         recoveredOperationIds: [preparation.operationId],
         pending: [],
       });
-      expect(engine.createCalls).toBe(stage === "source-completion" ? 0 : 1);
+      // At expiry, recovery reads neither the lookup nor the stage route.
+      expect(engine.createCalls).toBe(0);
+      expect(engine.lookupCalls).toBe(0);
       expect(beforeCreateCapability).toHaveBeenCalledTimes(stage === "source-completion" ? 0 : 1);
-      expect(engine.submitCalls).toBe(0);
+      expect(engine.submitCalls).toBe(stage === "source-completion" ? 0 : 1);
       expect(await database.custodyReservations.count()).toBe(0);
       expect(
         (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
@@ -2206,17 +2267,12 @@ describe("browser CTF range order coordinator", () => {
     },
   );
 
-  it("refunds an accepted but unsubmitted capability after a policy refusal expires", async () => {
+  it("refunds a definitively refused order request after expiry", async () => {
     const database = createRefundDatabase();
     const preparation = persistedPreparation("range-capability-policy-refusal-expiry");
     let now = 20_000;
-    let rejectInitialCapability = true;
-    const requests: CreateSettlementCapabilityRequest[] = [];
     const engine = engineMock({
-      onCreate: async (request) => {
-        requests.push(structuredClone(request));
-        if (!rejectInitialCapability) return;
-        rejectInitialCapability = false;
+      onSubmit: async () => {
         throw new EngineClientError(
           400,
           "controlled settlement capability policy refusal",
@@ -2243,22 +2299,21 @@ describe("browser CTF range order coordinator", () => {
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("capability-requested");
-    expect(engine.createCalls).toBe(1);
-    expect(engine.submitCalls).toBe(0);
+    ).toBe("order-request-rejected");
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
 
     const beforeExpiry = await coordinator.recoverPage({ seed: SEED, limit: 8 });
     expect(beforeExpiry.pending).toMatchObject([
       { operationId: preparation.operationId, code: "awaiting-authorization-expiry" },
     ]);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toEqual(requests[0]);
-    expect(engine.createCalls).toBe(2);
-    expect(engine.submitCalls).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
+    expect(engine.lookupCalls).toBe(0);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("capability-bound");
+    ).toBe("order-request-rejected");
     expect(await database.custodyReservations.count()).toBeGreaterThan(0);
     expect(
       (await database.custodyProofs.toArray()).some(
@@ -2275,8 +2330,8 @@ describe("browser CTF range order coordinator", () => {
       refused: [],
       nextCursor: null,
     });
-    expect(engine.createCalls).toBe(2);
-    expect(engine.submitCalls).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
     expect(await database.custodyReservations.count()).toBe(0);
 
     const outerOperationId = custodyOperationId(preparation.operationId);
@@ -2406,7 +2461,7 @@ describe("browser CTF range order coordinator", () => {
     ]);
   });
 
-  it("does not bind or submit a foreign engine capability", async () => {
+  it("does not bind the foreign capability of an accepted response", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-foreign-capability");
     const engine = engineMock({ foreignCapability: true });
@@ -2418,27 +2473,29 @@ describe("browser CTF range order coordinator", () => {
         preparation,
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).rejects.toMatchObject({ code: "capability-validation-failed" });
+    ).rejects.toMatchObject({ code: "order-submission-uncertain" });
 
-    expect(engine.createCalls).toBe(1);
-    expect(engine.submitCalls).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
     const journal = await readCtfRangePreparation(
       walletScopeId(),
       preparation.operationId,
       database,
     );
-    expect(journal?.lifecycleState).toBe("capability-requested");
+    expect(journal?.lifecycleState).toBe("order-requested");
     expect(journal?.capability).toBeNull();
+    // The lookup finds no order with the local artifact; the record waits.
     await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
       recoveredOperationIds: [],
       pending: [
         {
           operationId: preparation.operationId,
           revision: 1,
-          code: "capability-validation-failed",
+          code: "awaiting-order-confirmation",
         },
       ],
     });
+    expect(engine.submitCalls).toBe(1);
     expect(
       (await database.proofs.toArray()).every(
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
@@ -2450,7 +2507,7 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-capability-coded-rejection");
     const engine = engineMock({
-      onCreate: async () => {
+      onSubmit: async () => {
         throw new EngineClientError(
           400,
           "provider response contains a secret",
@@ -2474,16 +2531,23 @@ describe("browser CTF range order coordinator", () => {
     });
     expect(String(rejection)).not.toContain("secret");
     expect((rejection as { cause?: unknown }).cause).toBeUndefined();
-    expect(engine.submitCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
+    expect(engine.createCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("order-request-rejected");
   });
 
-  it("marks only a classified definitive submission rejection as rejected", async () => {
+  it("records only a documented definitive refusal as order-request-rejected", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-definitive-rejection");
-    const engine = engineMock({ submitFailure: true });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      isDefinitiveOrderRejection: () => true,
+    const engine = engineMock({
+      onSubmit: async () => {
+        throw new EngineClientError(409, "{}", "order-processing-conflict");
+      },
     });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
 
     await expect(
       coordinator.prepareAndSubmit({
@@ -2491,16 +2555,19 @@ describe("browser CTF range order coordinator", () => {
         preparation,
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).rejects.toMatchObject({ code: "order-submission-rejected" });
+    ).rejects.toMatchObject({ code: "order-processing-conflict" });
 
     expect(engine.submitCalls).toBe(1);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("submission-rejected");
+    ).toBe("order-request-rejected");
+    // Nothing was committed, so recovery uses only the mint and reads no engine order.
     expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
       pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
     });
+    expect(engine.lookupCalls).toBe(0);
+    expect(engine.submitCalls).toBe(1);
     expect(
       (await database.proofs.toArray()).every(
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
@@ -2521,9 +2588,7 @@ describe("browser CTF range order coordinator", () => {
         );
       },
     });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      isDefinitiveOrderRejection: () => true,
-    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
 
     const rejection = await coordinator
       .prepareAndSubmit({
@@ -2544,9 +2609,7 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-foreign-submit");
     const engine = engineMock({ foreignOrderResponse: true });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      isDefinitiveOrderRejection: () => true,
-    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
 
     await expect(
       coordinator.prepareAndSubmit({
@@ -2559,7 +2622,7 @@ describe("browser CTF range order coordinator", () => {
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("capability-bound");
+    ).toBe("order-requested");
   });
 
   it("keeps a matching but resting immediate-order response uncertain", async () => {
@@ -2582,7 +2645,7 @@ describe("browser CTF range order coordinator", () => {
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("capability-bound");
+    ).toBe("order-requested");
   });
 
   it.each([
@@ -2638,7 +2701,7 @@ describe("browser CTF range order coordinator", () => {
       expect(
         (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
           ?.lifecycleState,
-      ).toBe(expected === "order-submitted" ? "order-submitted" : "capability-bound");
+      ).toBe(expected === "order-submitted" ? "order-submitted" : "order-requested");
     },
   );
 
@@ -2652,9 +2715,7 @@ describe("browser CTF range order coordinator", () => {
         });
       },
     });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      isDefinitiveOrderRejection: () => true,
-    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
 
     await expect(
       coordinator.prepareAndSubmit({
@@ -2667,7 +2728,7 @@ describe("browser CTF range order coordinator", () => {
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("capability-bound");
+    ).toBe("order-requested");
   });
 
   it("propagates durable preparation corruption instead of hiding it as pending", async () => {
@@ -2692,7 +2753,7 @@ describe("browser CTF range order coordinator", () => {
     await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).rejects.toThrow();
   });
 
-  it("propagates a foreign discovered order status", async () => {
+  it("propagates a foreign discovered order status of a release 4 record", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-foreign-status");
     const foreignStatus = { ...discoveredOrderStatus(), marketId: `${CONDITION_ID}-NO` };
@@ -2705,6 +2766,12 @@ describe("browser CTF range order coordinator", () => {
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+    await rewriteAsRelease4Journal(database, preparation.operationId, "capability-bound", {
+      artifactId: "11111111-1111-4111-8111-111111111111",
+      bindingDigest: "22".repeat(32),
+      artifactDigest: "33".repeat(32),
+      orderId: "44444444-4444-4444-8444-444444444444",
+    });
 
     await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).rejects.toThrow(
       "foreign range order status",
@@ -3024,8 +3091,7 @@ describe("browser CTF range order coordinator", () => {
     releaseCapability();
     await expect(attempt).rejects.toMatchObject({
       code: "order-attempt-ended",
-      message:
-        "The prepared order attempt ended before capability creation. No order was submitted.",
+      message: "The prepared order attempt ended before the order request. No order was submitted.",
     });
     expect(engineA.createCalls).toBe(0);
     expect(engineA.submitCalls).toBe(0);
@@ -5359,39 +5425,26 @@ function createCoordinator(
   }) as TestCoordinator;
 }
 
+/** A release 4 record in capability-bound: the stage route bound its capability. */
 async function bindJournalCapability(
   database: BitcasterDB,
   preparation: PersistedCtfRangeOrderPreparation,
   orderId: string,
 ): Promise<void> {
   const identity = browserRangeJournalIdentity(browserWalletScope(SEED), preparation, 1);
-  await insertCtfRangePreparation(identity, database);
-  await transitionCtfRangePreparation(
-    {
-      scopeId: identity.scopeId,
-      rangeOperationId: identity.rangeOperationId,
-      expectedRevision: 0,
-      from: "prepared",
-      to: "capability-requested",
-      updatedAtMs: 2,
+  const inserted = await insertCtfRangePreparation(identity, database);
+  await database.ctfRangePreparations.put({
+    ...inserted,
+    lifecycleState: "capability-bound",
+    revision: 2,
+    capability: {
+      artifactId: "11111111-1111-4111-8111-111111111111",
+      bindingDigest: "22".repeat(32),
+      artifactDigest: "33".repeat(32),
+      orderId,
     },
-    database,
-  );
-  await bindCtfRangePreparationCapability(
-    {
-      scopeId: identity.scopeId,
-      rangeOperationId: identity.rangeOperationId,
-      expectedRevision: 1,
-      capability: {
-        artifactId: "11111111-1111-4111-8111-111111111111",
-        bindingDigest: "22".repeat(32),
-        artifactDigest: "33".repeat(32),
-        orderId,
-      },
-      updatedAtMs: 3,
-    },
-    database,
-  );
+    updatedAtMs: 3,
+  });
 }
 
 function sourceWallet(
@@ -5657,10 +5710,12 @@ function engineMock(
     result?: () => SettlementCapabilityResultResponse | null;
     resultFailure?: boolean;
     acknowledgeFailureOnce?: boolean;
+    lookup?: () => OrderLookupResponse | null;
   } = {},
 ): BrowserCtfRangeEngine & {
   createCalls: number;
   submitCalls: number;
+  lookupCalls: number;
   statusCalls: number;
   acknowledgeCalls: number;
 } {
@@ -5668,6 +5723,7 @@ function engineMock(
   return {
     createCalls: 0,
     submitCalls: 0,
+    lookupCalls: 0,
     statusCalls: 0,
     acknowledgeCalls: 0,
     async createSettlementCapability(request) {
@@ -5684,13 +5740,28 @@ function engineMock(
       this.submitCalls += 1;
       await input.onSubmit?.(request, options);
       if (input.submitFailure === true) throw new Error("lost acknowledgement");
-      const response = { ...submitResponse(), ...input.submitResponse };
+      const admission = request.settlementCapabilityAdmission;
+      const digest = deriveSettlementCapabilityArtifactDigest(
+        decodeSettlementCapabilityArtifactBytes(base64Bytes(admission.artifact)),
+      );
+      const response = {
+        ...submitResponse(),
+        settlementCapability: capabilityResponse(
+          admission,
+          input.foreignCapability === true ? "ff".repeat(32) : digest,
+        ),
+        ...input.submitResponse,
+      };
       if (input.foreignOrderResponse === true) {
         return { ...response, orderId: "55555555-5555-4555-8555-555555555555" };
       }
       return input.restingOrderResponse === true
         ? { ...response, status: "resting", remainingAmountSubunits: 1_000 }
         : response;
+    },
+    async lookupOrderByClientOrderId() {
+      this.lookupCalls += 1;
+      return input.lookup?.() ?? null;
     },
     async getOrderStatus() {
       this.statusCalls += 1;
@@ -5721,6 +5792,38 @@ function engineMock(
       };
     },
   };
+}
+
+/** The engine lookup of an accepted order that holds the artifact of `request`. */
+function orderLookup(
+  request: CreateSettlementCapabilityRequest,
+  artifactDigest = deriveSettlementCapabilityArtifactDigest(
+    decodeSettlementCapabilityArtifactBytes(base64Bytes(request.artifact)),
+  ),
+): OrderLookupResponse {
+  const capability = capabilityResponse(request, artifactDigest);
+  return {
+    orderId: capability.orderId,
+    marketId: capability.marketId,
+    status: "accepted",
+    settlementCapability: capability.reference,
+    artifactDigest,
+  };
+}
+
+/**
+ * Rewrite a one-step journal record to a state that only the release 4 writer
+ * produced, so the old-route recovery of such a record stays covered.
+ */
+async function rewriteAsRelease4Journal(
+  database: BitcasterDB,
+  rangeOperationId: string,
+  lifecycleState: "capability-requested" | "capability-bound" | "submission-rejected",
+  capability: CtfRangeOrderPreparationRecord["capability"],
+): Promise<void> {
+  const current = await readCtfRangePreparation(walletScopeId(), rangeOperationId, database);
+  if (current?.lifecycleState !== "order-requested") throw new Error("expected order-requested");
+  await database.ctfRangePreparations.put({ ...current, lifecycleState, capability });
 }
 
 function capabilityResponse(

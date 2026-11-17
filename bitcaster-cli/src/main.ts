@@ -2605,7 +2605,7 @@ function registerOrderCommand(program: Command): void {
     .option('--market-url <url>', 'Market URL to include with the optional order comment')
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --fee-consent-file fees.json\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --amount-msat 1000',
+      '\nThe daemon sends one order request that carries the settlement capability. While you wait, it sends the same request again only when the engine answers that the order book changed or quotes are updating; it stops after 60 seconds or 30 attempts. If the answer is lost, recovery only reads the order and never sends it again. Reserved funds return after the authorization expires.\n\nExample:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --fee-consent-file fees.json\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --amount-msat 1000',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const draft = orderDraftParams(options, command.args)
@@ -2633,7 +2633,7 @@ function registerOrderCommand(program: Command): void {
               signal: controller.signal,
               onWaiting: () => {
                 process.stderr.write(
-                  'Updating quotes; waiting with the original order. Press Ctrl-C to stop waiting.\n',
+                  'The order book changed or quotes are updating; sending the same order again. Press Ctrl-C to stop waiting.\n',
                 )
               },
             },

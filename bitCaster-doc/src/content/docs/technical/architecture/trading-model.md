@@ -169,7 +169,8 @@ return `413`. Rate or concurrency limits return `429` with `Retry-After`.
 
 A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FOK
 order. The engine validates the capability during order admission. It makes no
-mint network call during admission.
+mint network call during admission. One order request carries the capability.
+The engine binds it and accepts the order in one commit, or writes nothing.
 
 The capability covers an authorized range for that one attempt. Public FOK does
 not rest on the book or leave a residual order. If the complete quantity cannot
@@ -267,10 +268,11 @@ The server does not extend price limits, consent, or expiry. If the quote wait
 ends without acceptance, the batch reports `authorityUnavailable` for the
 remaining current items. This does not guarantee a fill.
 
-The GUI and CLI can wait when the engine returns the exact
-`order-quotes-refreshing` pre-acceptance problem. The client retries the same
-serialized request and signed comment. It keeps the original capability,
-price limit, fee consent and expiry. It does not prepare a replacement order.
+The GUI and CLI can wait when the engine refuses the order before acceptance
+with the exact `order-quotes-refreshing` problem or with `order-book-conflict`.
+Neither refusal commits anything. The client sends the same serialized request
+and signed comment again. It keeps the original capability, price limit, fee
+consent and expiry. It does not prepare a replacement order.
 
 Waiting lasts at most 60 seconds from the first submission and 30 attempts.
 The first delay is one second. Later delays are two seconds. Each request has
@@ -284,8 +286,10 @@ or prove that the order was never accepted. Check the original order status.
 The wallet keeps its existing recovery and expiry process.
 
 A generic service error, timeout, malformed response or uncertain result stops
-automatic submission. The client reconciles the original operation. Restarting
-the app does not restart this submission loop.
+automatic submission. When waiting stops, the client also sends no more
+requests. It reconciles the original operation through the read-only order
+lookup and never sends the order again. Restarting the app does not restart
+this submission loop.
 
 ## Reading depth while quotes refresh
 

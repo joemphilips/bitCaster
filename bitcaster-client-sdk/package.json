@@ -223,6 +223,10 @@
       "types": "./dist/ctfRangeMintMetadata.d.ts",
       "import": "./dist/ctfRangeMintMetadata.js"
     },
+    "./ctfRangeOrderAdmission": {
+      "types": "./dist/ctfRangeOrderAdmission.d.ts",
+      "import": "./dist/ctfRangeOrderAdmission.js"
+    },
     "./ctfRangeOrderJournal": {
       "types": "./dist/ctfRangeOrderJournal.d.ts",
       "import": "./dist/ctfRangeOrderJournal.js"

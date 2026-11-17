@@ -182,6 +182,10 @@ function localLifecycleMessage(lifecycleState: CtfRangeOrderPreparationLifecycle
   switch (lifecycleState) {
     case "prepared":
       return "prepared";
+    case "order-requested":
+      return "orderRequested";
+    case "order-request-rejected":
+      return "orderRequestRejected";
     case "capability-requested":
       return "capabilityRequested";
     case "capability-bound":

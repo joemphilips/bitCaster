@@ -14,6 +14,7 @@ import { BrowserWalletCounterDexieStore } from "../browser-wallet-counter-db";
 import { BrowserDurableCustodyAdapter } from "../durable-custody-db";
 import { decodeBrowserCustodyConditionalKeysetRow } from "../durable-custody-types";
 import { MarketDraftImageStore } from "../marketDraftImage";
+import { pageActiveCtfRangePreparations } from "../ctf-range-order-db";
 import {
   activateBrowserWalletDatabase,
   BitcasterDB,
@@ -172,7 +173,7 @@ describe("release 4 browser databases", () => {
     const current = new BitcasterDB(wallet.name);
     try {
       await current.open();
-      expect(current.verno).toBe(22);
+      expect(current.verno).toBe(23);
       await expectEveryShippedRow(current, wallet, DROPPED_WALLET_TABLES);
 
       // The canonical custody proofs: one regular and one outcome proof.
@@ -242,6 +243,77 @@ describe("release 4 browser databases", () => {
         amount: amountToNumber(proof.amount),
       })),
     ).toEqual([{ secret: "release4-legacy-proof", amount: 4 }]);
+  });
+
+  it("keeps every release 4 order journal state readable and active after the upgrade", async () => {
+    // The fixture journal row is a shape row. These rows have the complete
+    // release 4 record form in each state that the release 4 writer produced.
+    const capability = {
+      artifactId: "11111111-1111-4111-8111-111111111111",
+      bindingDigest: "22".repeat(32),
+      artifactDigest: "33".repeat(32),
+      orderId: "44444444-4444-4444-8444-444444444444",
+    };
+    const release4States = [
+      ["prepared", null],
+      ["capability-requested", null],
+      ["capability-bound", capability],
+      ["order-submitted", capability],
+      ["submission-rejected", capability],
+    ] as const;
+    const rows = release4States.map(([lifecycleState, bound], index) => ({
+      scopeId: scope.scopeId,
+      rangeOperationId: `range-${lifecycleState}`,
+      sourceOperationId: `source-${lifecycleState}`,
+      authorizationId: `authorization-${lifecycleState}`,
+      clientOrderId: `client-${lifecycleState}`,
+      orderRouteId: `${"aa".repeat(32)}-YES`,
+      normalizedMint: MINT,
+      conditionId: "aa".repeat(32),
+      unit: "msat",
+      tokenSide: "Outcome",
+      side: "Buy",
+      priceSubunits: 500,
+      amountSubunits: 1_000,
+      minimumFillAmountSubunits: 1_000,
+      divisibility: 1_000,
+      authorizationExpiresAtUnixSeconds: 2_000_000_000,
+      preparationBytes: new TextEncoder().encode(`{"rangeOperationId":"range-${lifecycleState}"}`),
+      feeConsentBytes: null,
+      createdAtMs: 10 + index,
+      lifecycleState,
+      revision: lifecycleState === "prepared" ? 0 : 2,
+      capability: bound,
+      updatedAtMs: 20 + index,
+    }));
+    await createShipped({
+      ...wallet,
+      tables: wallet.tables.map((item) =>
+        item.name === "ctfRangePreparations" ? { ...item, rows } : item,
+      ),
+    });
+
+    const current = new BitcasterDB(wallet.name);
+    try {
+      await current.open();
+      expect(current.verno).toBe(23);
+      const page = await pageActiveCtfRangePreparations(
+        { scopeId: scope.scopeId, limit: 16 },
+        current,
+      );
+      expect(page.preparations.map(({ lifecycleState }) => lifecycleState)).toEqual(
+        release4States.map(([lifecycleState]) => lifecycleState),
+      );
+      expect(page.preparations.map(({ capability: bound }) => bound?.orderId ?? null)).toEqual([
+        null,
+        null,
+        capability.orderId,
+        capability.orderId,
+        capability.orderId,
+      ]);
+    } finally {
+      current.close();
+    }
   });
 
   it("opens the shipped seed restore database and drops its catalogue walk", async () => {

@@ -40,9 +40,9 @@ import { type Proof } from '@cashu/cashu-ts'
 import { boundedMintAnswer } from './mintErrorText.ts'
 import {
   BitcasterEngineClient,
-  EngineClientError,
-  isDefinitiveOrderSubmissionError,
+  classifyOrderSubmissionFailure,
   type OrderBookSnapshot,
+  type OrderLookupResponse,
   type OrderStatusResponse,
   type ParticipationScoreResponse,
   type QueryMarketsParams,
@@ -251,9 +251,15 @@ export interface EngineClientLike {
   ): Promise<DurableRecipientDeliveryStatus>
   getMarket?(conditionId: string): Promise<unknown | null>
   getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
+  /** Old two-step route. Only the recovery of a release 4 `capability-requested` record uses it. */
   createSettlementCapability?(
     request: CreateSettlementCapabilityRequest,
   ): Promise<SettlementCapabilityResponse>
+  /** Read-only recovery lookup of an `order-requested` record. It never creates an order. */
+  lookupOrderByClientOrderId?(
+    conditionId: string,
+    clientOrderId: string,
+  ): Promise<OrderLookupResponse | null>
   getSettlementCapabilityAdmissionPolicy?(): Promise<SettlementCapabilityAdmissionPolicyResponse>
   getSettlementCapabilityResultByOperation?(
     operationId: string,
@@ -290,13 +296,24 @@ export interface PrepareSettlementCapabilityInput {
   walletSeedHex: string
 }
 
-export interface PreparedSettlementCapability {
+/**
+ * A prepared one-step order request (ADR-037 amendment of 2026-11-13). The
+ * journal holds `order-requested` before the caller sends `admission`.
+ */
+export interface PreparedOrderAdmission {
   /** Original locally prepared authorization expiry. Never renew on submission. */
   authorizationExpiresAtUnixSeconds: number
   operationId: string
-  capability: SettlementCapabilityResponse
-  markSubmitted(): Promise<void>
-  markRejected(): Promise<void>
+  /** The exact capability request rebuilt from the durable snapshot. */
+  admission: CreateSettlementCapabilityRequest
+  /**
+   * Check the capability of an accepted response against the local artifact and
+   * record `order-submitted`. A foreign or absent capability throws and keeps
+   * `order-requested` for recovery.
+   */
+  recordAccepted(response: SubmitOrderResponse): Promise<SettlementCapabilityResponse>
+  /** Record `order-request-rejected` after a definitive refusal. */
+  recordRejected(): Promise<void>
   consolidation: {
     operationIds: string[]
     feeSubunits: number
@@ -310,7 +327,7 @@ export type PrepareSettlementCapability = (
   client: EngineClientLike,
   beforeCreateCapability?: BeforeCreateSettlementCapability,
   consentedFeeFacts?: CtfRangeOrderFeeFacts,
-) => Promise<PreparedSettlementCapability>
+) => Promise<PreparedOrderAdmission>
 
 export type PreviewSettlementCapabilityFees = (
   input: PrepareSettlementCapabilityInput,
@@ -1975,7 +1992,7 @@ async function dispatchProtectedOrderSubmit(
   let operationId: string | undefined
   let orderId: string | undefined
   let participationScore: DaemonParticipationScorePreflightResult | undefined
-  let prepared: PreparedSettlementCapability
+  let prepared: PreparedOrderAdmission
   inFlightOrderSubmissions += 1
   try {
     prepared = await deps.prepareSettlementCapability(
@@ -2003,8 +2020,7 @@ async function dispatchProtectedOrderSubmit(
       feeConsent.feeFacts,
     )
     operationId = prepared.operationId
-    orderId = prepared.capability.orderId
-    assertPreparedSettlementCapability(prepared, { clientOrderId, marketId: request.marketId })
+    assertPreparedOrderAdmission(prepared, { clientOrderId, marketId: request.marketId })
     if (!participationScore)
       throw new Error('daemon settlement capability coordinator skipped Score admission')
   } catch (error) {
@@ -2080,7 +2096,7 @@ async function dispatchProtectedOrderSubmit(
         client.submitOrder(
           request.marketId,
           {
-            settlementCapability: prepared.capability.reference,
+            settlementCapabilityAdmission: prepared.admission,
             comment: signedComment,
           },
           {
@@ -2093,38 +2109,45 @@ async function dispatchProtectedOrderSubmit(
         ),
     )
   } catch (error) {
-    if (error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error)) {
-      try {
-        await prepared.markRejected()
-      } catch {
+    const failure = classifyOrderSubmissionFailure(error)
+    switch (failure.kind) {
+      case 'rejected':
+        try {
+          await prepared.recordRejected()
+        } catch {
+          deps.triggerSettlementRecovery?.()
+        }
+        return {
+          ok: false,
+          ...(failure.code === null ? {} : { code: failure.code }),
+          error: 'Order submission was rejected',
+          clientOrderId,
+          operationId,
+        }
+      case 'uncertain':
+        // Recovery only reads the order; it never sends it again.
         deps.triggerSettlementRecovery?.()
-      }
-      return {
-        ok: false,
-        code: error.code,
-        error: 'Order submission was rejected',
-        clientOrderId,
-        operationId,
-        orderId,
-      }
-    }
-    deps.triggerSettlementRecovery?.()
-    return {
-      ok: false,
-      error: 'Order submission is uncertain; check order status before retrying',
-      clientOrderId,
-      operationId,
-      orderId,
+        return {
+          ok: false,
+          error: 'Order submission is uncertain; check order status before retrying',
+          clientOrderId,
+          operationId,
+        }
+      default:
+        return assertNeverOrderSubmissionFailure(failure)
     }
   }
-  if (submitted.orderId !== orderId) {
+  let settlementCapability: SettlementCapabilityResponse
+  try {
+    settlementCapability = await prepared.recordAccepted(submitted)
+    orderId = submitted.orderId
+  } catch {
     deps.triggerSettlementRecovery?.()
     return {
       ok: false,
       error: 'Order submission is uncertain; check order status before retrying',
       clientOrderId,
       operationId,
-      orderId,
     }
   }
   try {
@@ -2149,7 +2172,6 @@ async function dispatchProtectedOrderSubmit(
           marketUnit.baseAsset,
           marketUnit.divisibility,
         )
-        await prepared.markSubmitted()
         return recorded
       },
     )
@@ -2160,7 +2182,7 @@ async function dispatchProtectedOrderSubmit(
         engine: submitted,
         local,
         participationScore,
-        settlementCapability: prepared.capability,
+        settlementCapability,
         operationId,
         consolidation: prepared.consolidation,
       },
@@ -3483,23 +3505,24 @@ async function loadMarketUnit(
   }
 }
 
-function assertPreparedSettlementCapability(
-  prepared: PreparedSettlementCapability,
+function assertPreparedOrderAdmission(
+  prepared: PreparedOrderAdmission,
   expected: { clientOrderId: string; marketId: string },
 ): void {
   if (
     prepared.operationId.length === 0 ||
-    prepared.capability.clientOrderId !== expected.clientOrderId ||
-    prepared.capability.marketId !== expected.marketId ||
-    prepared.capability.orderId.length === 0 ||
-    prepared.capability.reference.artifactId.length === 0 ||
-    prepared.capability.reference.bindingDigest.length === 0 ||
+    prepared.admission.clientOrderId !== expected.clientOrderId ||
+    prepared.admission.marketId !== expected.marketId ||
     !Number.isSafeInteger(prepared.consolidation.feeSubunits) ||
     prepared.consolidation.feeSubunits < 0 ||
     prepared.consolidation.operationIds.some((operationId) => operationId.length === 0)
   ) {
-    throw new Error('daemon settlement capability response is foreign')
+    throw new Error('daemon prepared order request is foreign')
   }
+}
+
+function assertNeverOrderSubmissionFailure(value: never): never {
+  throw new Error(`order submission failure is invalid: ${JSON.stringify(value)}`)
 }
 
 async function trackOwnedOrderBestEffort(

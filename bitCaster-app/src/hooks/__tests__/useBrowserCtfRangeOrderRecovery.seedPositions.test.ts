@@ -1089,17 +1089,17 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
       receivedAt: 1,
     } as StoredProofRow;
     await db.proofs.put(legacyRow);
-    expect(db.verno).toBe(22);
+    expect(db.verno).toBe(23);
 
     await runStartupPass();
 
     expect(await selectableHoldings()).toContainEqual(position(market.yes, 4));
-    expect(db.verno).toBe(22);
+    expect(db.verno).toBe(23);
     expect(await db.proofs.get("legacy-secret")).toEqual(legacyRow);
     const reopened = new BitcasterDB(db.name);
     try {
       await reopened.open();
-      expect(reopened.verno).toBe(22);
+      expect(reopened.verno).toBe(23);
     } finally {
       reopened.close();
     }

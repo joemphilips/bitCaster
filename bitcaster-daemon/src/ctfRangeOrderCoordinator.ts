@@ -82,7 +82,13 @@ import {
   type CtfRangeMintClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
 import {
+  CtfRangeOrderLookupSchedule,
+  projectCtfRangeOrderAdmissionResponse,
+  recoverCtfRangeOrderRequest,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderAdmission'
+import {
   createCtfRangePreparationIntent,
+  ctfRangeOrderAdmissionIdentity,
   selectCtfRangePreparationForIntent,
   reconstructCtfRangePreparation,
   type PersistedCtfRangeOrderPreparationV2,
@@ -235,6 +241,7 @@ import {
 } from './state.ts'
 import {
   appendRangePreparationConsolidation,
+  bindRangePreparationAdmission,
   bindRangePreparationCapability,
   linkRangePreparationSource,
   pageActiveRangePreparations,
@@ -265,7 +272,7 @@ import {
 import type {
   BeforeCreateSettlementCapability,
   EngineClientLike,
-  PreparedSettlementCapability,
+  PreparedOrderAdmission,
   PrepareSettlementCapabilityInput,
 } from './server.ts'
 
@@ -417,6 +424,8 @@ export class DaemonCtfRangeOrderCoordinator {
   >()
   readonly #pendingStatus = new Map<string, DaemonCtfRangeRecoveryPending>()
   #releasedStatus: DaemonCtfRangeReleasedOperation[] = []
+  // The lookup backoff of order-requested records. A restart reads at once.
+  readonly #orderLookups = new CtfRangeOrderLookupSchedule()
 
   constructor(
     directory: string,
@@ -434,7 +443,7 @@ export class DaemonCtfRangeOrderCoordinator {
     client: EngineClientLike,
     beforeCreateCapability?: BeforeCreateSettlementCapability,
     consentedFeeFacts?: CtfRangeOrderFeeFacts,
-  ): Promise<PreparedSettlementCapability> {
+  ): Promise<PreparedOrderAdmission> {
     requireFokOrder(request.timeInForce)
     decodeOrderQuotePaymentBounds(request.side, request)
     const finishPreparation = startOrderPhase(
@@ -516,16 +525,11 @@ export class DaemonCtfRangeOrderCoordinator {
           authority.preparationInput,
           request.walletSeedHex,
         )
-        throw new Error('range authorization expired before capability admission')
-      }
-      const createCapability = client.createSettlementCapability
-      if (createCapability === undefined) {
-        throw new Error('engine client does not support settlement capability creation')
+        throw new Error('range authorization expired before the order request')
       }
       const identity = {
         clientOrderId: request.clientOrderId,
         operationId: operation.operationId,
-        orderId: undefined as string | undefined,
       }
       finishPreparation('success', identity)
       await measureOrderPhase(
@@ -541,37 +545,36 @@ export class DaemonCtfRangeOrderCoordinator {
           ),
         beforeCreateCapability === undefined ? 'unverified' : 'success',
       )
-      const capability = await measureOrderPhase(
+      // Commit order-requested before the caller sends the one-step request.
+      await measureOrderPhase(
         this.#dependencies.observeOrderTimeline,
-        'capability-admission',
+        'order-request',
         identity,
         async () => {
-          await this.#markCapabilityRequested(operation.operationId)
           if (this.#nowSeconds() >= operation.expiry) {
             await this.#recoverUnsubmittedAuthorization(
               authority.preparationInput,
               request.walletSeedHex,
             )
-            throw new Error('range authorization expired before capability admission')
+            throw new Error('range authorization expired before the order request')
           }
-          const capability = await createCapability.call(client, exactCapabilityRequest)
-          const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-            capability,
-            preparation: authority.preparationInput,
-            operation,
-            recovering: false,
-          })
-          await this.#bindCapability(operation.operationId, projectedCapability)
-          identity.orderId = projectedCapability.orderId
-          return capability
+          await this.#markOrderRequested(operation.operationId)
         },
+      )
+      const admissionIdentity = ctfRangeOrderAdmissionIdentity(
+        authority.preparationInput,
+        operation,
       )
       return {
         operationId: operation.operationId,
         authorizationExpiresAtUnixSeconds: operation.expiry,
-        capability,
-        markSubmitted: () => this.#markOrderSubmitted(operation.operationId),
-        markRejected: () => this.#markOrderSubmissionRejected(operation.operationId),
+        admission: exactCapabilityRequest,
+        recordAccepted: async (response) => {
+          const capability = projectCtfRangeOrderAdmissionResponse(response, admissionIdentity)
+          await this.#bindOrderAdmission(operation.operationId, capability)
+          return response.settlementCapability!
+        },
+        recordRejected: () => this.#markOrderRequestRejected(operation.operationId),
         consolidation: await sourceConsolidationSummary(operation.sourceOperationId),
       }
     } catch (error) {
@@ -932,6 +935,19 @@ export class DaemonCtfRangeOrderCoordinator {
           client,
         )
         return
+      case 'order-requested':
+        await this.#recoverRequestedOrder(
+          preparationRecord,
+          preparationInput,
+          walletSeedHex,
+          client,
+        )
+        return
+      // The engine refused the one-step request and committed nothing. The
+      // inputs stay locked until authorization expiry, then the refund runs.
+      case 'order-request-rejected':
+        await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
+        return
       case 'capability-bound':
         await this.#recoverCapabilityBoundOrder(
           preparationRecord,
@@ -1007,6 +1023,77 @@ export class DaemonCtfRangeOrderCoordinator {
     await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
   }
 
+  /**
+   * Recovery of an `order-requested` record reads the order and never sends a
+   * request that can create it (ADR-037 amendment of 2026-11-13). Before
+   * authorization expiry it uses the lookup with its backoff; at or after
+   * expiry it uses the NUT-09 and NUT-07 recovery and the refund path.
+   */
+  async #recoverRequestedOrder(
+    preparation: RangePreparationRecord,
+    input: PersistedPreparationInput,
+    walletSeedHex: string,
+    client: EngineClientLike,
+  ): Promise<void> {
+    const loaded = await new DaemonCtfRangeCoordinator(this.#directory, this.#getFence()).load(
+      rangeCustodyOperationId(walletSeedHex, input.operationId),
+    )
+    if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
+    const lookupOrder = client.lookupOrderByClientOrderId
+    if (lookupOrder === undefined) {
+      throw new Error('engine client does not support the order lookup')
+    }
+    const recovery = await recoverCtfRangeOrderRequest({
+      identity: ctfRangeOrderAdmissionIdentity(input, loaded.operation),
+      nowMs: this.#nowMs(),
+      schedule: this.#orderLookups,
+      lookupOrder: (conditionId, clientOrderId) =>
+        lookupOrder.call(client, conditionId, clientOrderId),
+    })
+    switch (recovery.kind) {
+      case 'expired':
+        await this.#recoverUnsubmittedAuthorization(input, walletSeedHex)
+        return
+      case 'pending':
+        throw new RangeRecoveryDeferredError(
+          recovery.reason === 'digest-mismatch'
+            ? 'the engine order holds another capability artifact'
+            : 'the requested order is not confirmed before authorization expiry',
+          recovery.retryAtMs,
+        )
+      case 'submitted': {
+        await this.#bindOrderAdmission(input.operationId, recovery.capability)
+        const status = await client.getOrderStatus(
+          input.request.marketId,
+          recovery.capability.orderId,
+        )
+        if (status !== null) {
+          await recordDiscoveredOrder(
+            input.request.marketId,
+            input.request.clientOrderId,
+            status,
+            input.request.tokenSide,
+            input.request.side,
+            input.request.price,
+            input.request.amountSubunits,
+            input.request.baseAsset,
+            input.request.divisibility,
+          )
+        }
+        await this.#recoverSubmittedOrder(
+          { ...preparation, lifecycleState: 'order-submitted', capability: recovery.capability },
+          input,
+          walletSeedHex,
+          client,
+        )
+        return
+      }
+      default:
+        return assertNeverOrderRequestRecovery(recovery)
+    }
+  }
+
+  /** Old two-step path: a release 4 record in `capability-requested` resends its stage request. */
   async #recoverRequestedCapability(
     input: PersistedPreparationInput,
     operation: DurableCtfRangeOperation,
@@ -1383,7 +1470,8 @@ export class DaemonCtfRangeOrderCoordinator {
     )
   }
 
-  async #markCapabilityRequested(rangeOperationId: string): Promise<void> {
+  /** `prepared` -> `order-requested`. Another state refuses: recovery owns that record. */
+  async #markOrderRequested(rangeOperationId: string): Promise<void> {
     const mutation = this.#mutation()
     await withDurableCustodyUnitOfWork(
       this.#storage,
@@ -1392,16 +1480,62 @@ export class DaemonCtfRangeOrderCoordinator {
       (database) => {
         const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
         if (current === null) throw new Error('daemon CTF range preparation is missing')
-        if (current.lifecycleState === 'capability-requested') return
         if (current.lifecycleState !== 'prepared') {
-          throw new Error('daemon CTF range capability request conflicts with its journal')
+          throw new Error('daemon CTF range order request conflicts with its journal')
         }
         transitionRangePreparation(database, {
           scopeId: mutation.fence.scopeId,
           rangeOperationId,
           expectedRevision: current.revision,
           from: 'prepared',
-          to: 'capability-requested',
+          to: 'order-requested',
+          updatedAtMs: mutation.observedAtMs,
+        })
+      },
+    )
+  }
+
+  /** `order-requested` -> `order-submitted` with the capability of the accepted order. */
+  async #bindOrderAdmission(
+    rangeOperationId: string,
+    capability: RangePreparationCapability,
+  ): Promise<void> {
+    const mutation = this.#mutation()
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) => {
+        const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
+        if (current === null) throw new Error('daemon CTF range preparation is missing')
+        bindRangePreparationAdmission(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId,
+          expectedRevision: current.revision,
+          capability,
+          updatedAtMs: mutation.observedAtMs,
+        })
+      },
+    )
+  }
+
+  /** `order-requested` -> `order-request-rejected` after a definitive refusal. */
+  async #markOrderRequestRejected(rangeOperationId: string): Promise<void> {
+    const mutation = this.#mutation()
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) => {
+        const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
+        if (current === null) throw new Error('daemon CTF range preparation is missing')
+        if (current.lifecycleState === 'order-request-rejected') return
+        transitionRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId,
+          expectedRevision: current.revision,
+          from: 'order-requested',
+          to: 'order-request-rejected',
           updatedAtMs: mutation.observedAtMs,
         })
       },
@@ -1426,33 +1560,6 @@ export class DaemonCtfRangeOrderCoordinator {
           expectedRevision: current.revision,
           from: 'capability-bound',
           to: 'order-submitted',
-          updatedAtMs: mutation.observedAtMs,
-        })
-      },
-    )
-  }
-
-  async #markOrderSubmissionRejected(rangeOperationId: string): Promise<void> {
-    const mutation = this.#mutation()
-    await withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
-        if (current === null) throw new Error('daemon CTF range preparation is missing')
-        if (
-          current.lifecycleState === 'submission-rejected' ||
-          current.lifecycleState === 'terminal'
-        ) {
-          return
-        }
-        transitionRangePreparation(database, {
-          scopeId: mutation.fence.scopeId,
-          rangeOperationId,
-          expectedRevision: current.revision,
-          from: 'capability-bound',
-          to: 'submission-rejected',
           updatedAtMs: mutation.observedAtMs,
         })
       },
@@ -4926,6 +5033,10 @@ function readSourceNumber(entry: ProofOperationRecord, key: string): number {
     throw new Error(`Range source operation ${entry.operationId} has invalid ${key}`)
   }
   return value
+}
+
+function assertNeverOrderRequestRecovery(value: never): never {
+  throw new Error(`order request recovery outcome is invalid: ${JSON.stringify(value)}`)
 }
 
 function requireText(value: unknown, label: string): string {

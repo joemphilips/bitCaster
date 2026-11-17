@@ -12,6 +12,7 @@ import {
 } from '../src/profileBootstrap.ts'
 import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from '../src/profileSchema.ts'
 import { getFinalProfileSchemaManifest } from '../src/profileSchemaManifest.ts'
+import { upgradeDaemonProfileSchema } from '../src/profileSchemaUpgrade.ts'
 import { readState } from '../src/state.ts'
 import { readDaemonWalletBalance } from '../src/walletBalance.ts'
 
@@ -113,6 +114,9 @@ test('the current daemon opens the shipped release 4 profile and reads every row
   }
   assert.ok(before.custody_proofs?.length === 1 && before.target_wallet_proofs?.length === 2)
 
+  // Version 17 rebuilds the order journal and the marker, forward only.
+  assert.equal(await upgradeDaemonProfileSchema(directory), 'upgraded')
+  assert.equal(await upgradeDaemonProfileSchema(directory), 'current')
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   assert.deepEqual(await readBootstrappedProfileSecrets(directory), shipped.reads.secrets)
   assert.equal(await readBootstrappedRpcToken(directory), shipped.reads.rpcToken)
@@ -124,5 +128,12 @@ test('the current daemon opens the shipped release 4 profile and reads every row
     shipped.reads.oracleCreation,
   )
 
-  assert.deepEqual(readAllRows(directory), before)
+  // Every row stays; only the marker records the new version.
+  assert.deepEqual(readAllRows(directory), {
+    ...before,
+    profile_schema_marker: (before.profile_schema_marker as Array<Record<string, unknown>>).map(
+      // SQLite rows have a null prototype.
+      (row) => Object.assign(Object.create(null), row, { schema_version: 17 }),
+    ),
+  })
 })

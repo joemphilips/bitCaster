@@ -48,6 +48,16 @@ unfinished operation with its original request bytes.
 A wallet authorizes one public FOK attempt with one `PAY_TO_UNLOCK` capability.
 Order admission checks that capability. Admission makes no mint network call.
 
+The wallet sends the capability in the order request itself:
+`POST /api/v1/{marketId}/orders` with `settlementCapabilityAdmission`. That
+value has the same fields as a capability request, and its `marketId` equals
+the route. One request binds the capability and accepts the order, or the
+engine writes nothing. A refusal is not charged. The response holds
+`settlementCapability`, the capability of the accepted order. The older
+two-step route, `POST /api/v1/settlement-capabilities` and then the
+`settlementCapability` reference, still works. A client uses one route for one
+order. A key or a capability of one route conflicts on the other route.
+
 The authorization covers its permitted range for that attempt. Public FOK does
 not rest on the book or leave a residual order. If the complete quantity cannot
 fill, the engine cancels the complete request. This cancellation does not spend
@@ -55,7 +65,8 @@ the capability or trigger a refund.
 
 ## Capability API errors
 
-Application errors from the capability API use RFC 9457
+The capability API and the admission form of the order request return these
+errors. Application errors use RFC 9457
 `application/problem+json`. Clients use the HTTP status and `code`.
 Do not classify errors from the wording of `title` or `detail`.
 Every code below starts with `settlement-capability-`.
@@ -113,13 +124,29 @@ is `/errors/` followed by the `code`. Use the code, not the message wording.
 | 503 | `order-processing-unavailable` | Order processing is temporarily unavailable. |
 | 503 | `order-quotes-refreshing` | Quotes are not ready. The order was refused before acceptance. |
 
-Only `order-book-conflict` is the retryable application `409`. Do not apply
-that rule to every conflict. The only automatically retryable `503` is
-`order-quotes-refreshing`. It can occur, for example, shortly after a service
-start. Retry the identical request within the limits in
-[Waiting for fresh quotes](/technical/architecture/trading-model/#waiting-for-fresh-quotes).
-`order-admission-unavailable` and `order-processing-unavailable` do not permit
-this retry. The SDK retains the original operation for `403`
+The admission form can also return the `settlement-capability-` codes of the
+capability API, for example `402` `settlement-capability-score-required` or
+`409` `settlement-capability-conflict`. A body above 400,000 bytes gets `413`
+before authentication. The `order-submit` rate limit and the admission limits
+return `429`.
+
+The clients use one outcome for each response:
+
+- A documented refusal writes nothing: `400`, `402`, `403` `market-closed`,
+  `404` with a documented code, `409` with a documented code other than
+  `order-book-conflict`, `413` and `429`. The wallet records the refusal. The
+  reserved funds return through the refund after the authorization expires.
+- `order-quotes-refreshing` and `order-book-conflict` refuse before acceptance
+  and commit nothing. Only while you wait in the submit flow, the client sends
+  the identical request again within the limits in
+  [Waiting for fresh quotes](/technical/architecture/trading-model/#waiting-for-fresh-quotes).
+- Every other response is uncertain, for example a timeout,
+  `order-admission-unavailable`, `order-processing-unavailable` or a generic
+  `503`. The client never sends the order again. It reads the order through the
+  order lookup below.
+
+Do not apply the resend rule to every conflict. `order-quotes-refreshing` can
+occur, for example, shortly after a service start. The SDK retains the original operation for `403`
 and `503` responses. An error does not prove that a refund is complete or
 authorize deletion of wallet records. An exact accepted replay returns the
 prior admission result. Missing and foreign capabilities have the same response.
@@ -135,6 +162,27 @@ authorization expiry.
 
 The shared closed-market check also returns `market-closed` for deposits.
 Framework errors can use another body shape.
+
+## Order lookup
+
+`GET /api/v1/conditions/{conditionId}/orders/by-client-order-id?clientOrderId=`
+reads one accepted order of the authenticated owner. The response holds
+`orderId`, `marketId`, `status` (`accepted` or `processed`),
+`settlementCapability` and `artifactDigest`. A missing order, an order of
+another owner and a capability without an accepted order give the same `404`
+`order-not-found`. The lookup never stages, verifies or accepts. It has its own
+per-subject rate limit, `order-lookup`, of 30 requests a minute.
+
+After an uncertain response or a restart, the wallet uses only this lookup.
+It never sends a request that can create the order:
+
+- A found order counts only when its `artifactDigest` equals the digest of the
+  local capability artifact. The wallet then records the submitted order.
+- Not found before the authorization expiry is not final. The wallet reads
+  again after 5 seconds, then doubles the wait after each read, up to 60
+  seconds.
+- At or after the authorization expiry, the wallet reads the mint (NUT-09 and
+  NUT-07) and refunds unspent inputs.
 
 ## Batch, cancellation, and read errors
 
