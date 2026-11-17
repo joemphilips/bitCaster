@@ -1781,7 +1781,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         const pendingDelivery = await dispatch(command, dispatchDeps)
         assert.equal(pendingDelivery.ok, false)
-        assert.match(pendingDelivery.error ?? '', /preparation is uncertain/)
+        assert.match(pendingDelivery.error ?? '', /preparation did not finish; no order was sent/)
         assert.ok(pendingDelivery.clientOrderId)
         assert.equal(deliveryStatusReads, 10)
         assert.deepEqual(deliveryRetryAttempts, [1, 2, 3, 4, 5, 6, 7, 8, 9])
@@ -1791,7 +1791,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         creditAvailable = true
         const pendingCredit = await dispatch(command, dispatchDeps)
         assert.equal(pendingCredit.ok, false)
-        assert.match(pendingCredit.error ?? '', /preparation is uncertain/)
+        assert.match(pendingCredit.error ?? '', /preparation did not finish; no order was sent/)
         assert.ok(pendingCredit.clientOrderId)
         const response = await dispatch(command, dispatchDeps)
 
