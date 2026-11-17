@@ -2679,7 +2679,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nReasons: OwnOutputReused (an output of this order was already used by another operation of the same wallet; a Score penalty was charged) and GroupOutputReused (another order in the same settlement reused an output; no penalty).\nExample:\n  bitcaster-cli order settlement-failure <market-id> <order-id>',
+      '\nReasons: OwnOutputReused (an output of this order was already used by another operation of the same wallet; a Score penalty was charged) and GroupOutputReused (an output in the same settlement was already used; no penalty for this order).\nExample:\n  bitcaster-cli order settlement-failure <market-id> <order-id>',
     )
     .action(async (marketId: string, orderId: string) => {
       await printDaemonResult(

@@ -211,10 +211,10 @@ tariff is `max(1, ceil(v1 / 10))`, where `v1 = 1 + InputCount +
 ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)`. A charge recorded
 earlier under `settlement-capability-v1` keeps its `v1` amount. Each
 authenticated invalid proof or DLEQ validation attempt uses the same tariff.
-There is no separate order, fill, or settlement-failure tariff. Fills,
-cancellation, settlement failure, refund, and recovery do not debit Score. The
-one exception is the reused-output penalty below. This tariff applies to public
-client capabilities.
+The tariff is not a per-order, per-fill, or settlement-failure fee. Fills,
+cancellation, settlement failure, refund, and recovery do not charge the tariff.
+This tariff applies to public client capabilities. The reused-output penalty
+below is a separate charge, not a tariff.
 
 The mint refuses a settlement when one of its outputs was already used by
 another operation, for example by the same wallet in another browser. When the

@@ -3861,7 +3861,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output of another order in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+    /// `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]

@@ -179,9 +179,9 @@ operation of your wallet, it removes your order from that settlement. The
 other orders can still settle. Your order fails, and **Active trade progress**
 shows the reason. A Participation Score penalty of 100 Score is charged once
 for that settlement. Your funds are not lost. The reserved funds return after
-the authorization expires, as for another failed order. When an output of
-another trader's order was reused, your order can fail too. Then you pay no
-penalty.
+the authorization expires, as for another failed order. Your order can also
+fail when another output in the same settlement was already used. Then no
+penalty is charged for your order.
 
 ## What the web app stores
 

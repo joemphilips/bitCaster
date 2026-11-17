@@ -121,8 +121,8 @@ not your completed-trade history.
 When a settlement fails because an output was already used, the list shows
 the reason in place of the general failure text. It says whether the output
 belonged to your order, in which case a Participation Score penalty was
-charged, or to another order in the same settlement, in which case no penalty
-was charged. In both cases the reserved funds return after the authorization
+charged, or was another output in the same settlement, in which case no
+penalty was charged for your order. In both cases the reserved funds return after the authorization
 expires. See [Check for use in another browser](/user-guide/getting-started/wallet-backup/#check-for-use-in-another-browser).
 
 While the wallet finishes the trade that you just submitted, the trading panel

@@ -392,7 +392,7 @@ export interface paths {
         };
         /**
          * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint. The one settlement charge is the reused-output penalty of 100 Score. It is charged once when an output of the caller's order was already used by another operation and the order is removed from its settlement.
+         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint. The reused-output penalty is a separate charge, not a tariff: 100 Score, charged once when an output of the caller's order was already used by another operation and the order is removed from its settlement.
          */
         get: operations["getParticipationScore"];
         put?: never;
@@ -1919,7 +1919,7 @@ export interface components {
             entries: components["schemas"]["ParticipationScoreHistoryEntry"][];
         };
         /**
-         * @description `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output of another order in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+         * @description `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
          * @enum {string}
          */
         OrderSettlementFailureReason: "OwnOutputReused" | "GroupOutputReused";

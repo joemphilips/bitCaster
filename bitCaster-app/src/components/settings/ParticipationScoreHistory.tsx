@@ -5,6 +5,7 @@ import type {
   ParticipationScoreHistoryResponse,
 } from "@bitcaster/client-sdk/engineClient";
 import { ParticipationScoreHelp } from "@/components/shared/ParticipationScoreHelp";
+import i18n from "@/i18n";
 import { formatTimeAgo } from "@/lib/format";
 
 type HistoryState =
@@ -100,7 +101,7 @@ export function ParticipationScoreHistory({
 }
 
 function formatScore(value: number, signed: boolean): string {
-  const text = Math.abs(value).toLocaleString();
+  const text = Math.abs(value).toLocaleString(i18n.resolvedLanguage ?? "en");
   if (value < 0) return `-${text}`;
   return signed && value > 0 ? `+${text}` : text;
 }
