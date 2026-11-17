@@ -163,97 +163,9 @@
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
     },
-    "./encryptedWalletBackup": {
-      "types": "./dist/encryptedWalletBackup.d.ts",
-      "import": "./dist/encryptedWalletBackup.js"
-    },
-    "./encryptedWalletBackupV2Keys": {
-      "types": "./dist/encryptedWalletBackupV2Keys.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Keys.js"
-    },
-    "./encryptedWalletBackupV2Bundle": {
-      "types": "./dist/encryptedWalletBackupV2Bundle.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Bundle.js"
-    },
-    "./encryptedWalletBackupV2Descriptor": {
-      "types": "./dist/encryptedWalletBackupV2Descriptor.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Descriptor.js"
-    },
-    "./encryptedWalletBackupV2Head": {
-      "types": "./dist/encryptedWalletBackupV2Head.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Head.js"
-    },
-    "./encryptedWalletBackupV2Mutation": {
-      "types": "./dist/encryptedWalletBackupV2Mutation.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Mutation.js"
-    },
-    "./encryptedWalletBackupV2Receipt": {
-      "types": "./dist/encryptedWalletBackupV2Receipt.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Receipt.js"
-    },
-    "./encryptedWalletBackupV2ServiceCodec": {
-      "types": "./dist/encryptedWalletBackupV2ServiceCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2ServiceCodec.js"
-    },
-    "./encryptedWalletBackupV2HttpCodec": {
-      "types": "./dist/encryptedWalletBackupV2HttpCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2HttpCodec.js"
-    },
-    "./encryptedWalletBackupV2DelegatedServerCodec": {
-      "types": "./dist/encryptedWalletBackupV2DelegatedServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2DelegatedServerCodec.js"
-    },
-    "./encryptedWalletBackupV2HttpAdapter": {
-      "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
-    },
-    "./encryptedWalletBackupOwnerDiscovery": {
-      "types": "./dist/encryptedWalletBackupOwnerDiscovery.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerDiscovery.js"
-    },
-    "./encryptedWalletBackupOwnerHead": {
-      "types": "./dist/encryptedWalletBackupOwnerHead.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerHead.js"
-    },
-    "./encryptedWalletBackupOwnerServiceCodec": {
-      "types": "./dist/encryptedWalletBackupOwnerServiceCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerServiceCodec.js"
-    },
-    "./encryptedWalletBackupV2RequestProof": {
-      "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
-      "import": "./dist/encryptedWalletBackupV2RequestProof.js"
-    },
     "./encryptedWalletBackupV2ProofSet": {
       "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
       "import": "./dist/encryptedWalletBackupV2ProofSet.js"
-    },
-    "./encryptedWalletBackupV2Sync": {
-      "types": "./dist/encryptedWalletBackupV2Sync.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Sync.js"
-    },
-    "./encryptedWalletBackupEnrollment": {
-      "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
-      "import": "./dist/encryptedWalletBackupEnrollment.js"
-    },
-    "./encryptedWalletBackupHttpCodec": {
-      "types": "./dist/encryptedWalletBackupHttpCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupHttpCodec.js"
-    },
-    "./encryptedWalletBackupHttpAdapter": {
-      "types": "./dist/encryptedWalletBackupHttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupHttpAdapter.js"
-    },
-    "./encryptedWalletBackupNip98AccountAuthorization": {
-      "types": "./dist/encryptedWalletBackupNip98AccountAuthorization.d.ts",
-      "import": "./dist/encryptedWalletBackupNip98AccountAuthorization.js"
-    },
-    "./encryptedWalletBackupServerCodec": {
-      "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupServerCodec.js"
-    },
-    "./encryptedWalletBackupDelegatedServerCodec": {
-      "types": "./dist/encryptedWalletBackupDelegatedServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupDelegatedServerCodec.js"
     },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",

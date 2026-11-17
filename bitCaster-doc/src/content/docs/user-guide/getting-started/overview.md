@@ -269,19 +269,6 @@ Initialization imports keys; it does not recover funds.
 `wallet recover-seed` requires explicit acknowledgment of seed-candidate disclosure
 to the mint. See [CLI wallet and signer commands](/technical/#select-and-import-a-native-wallet-profile).
 
-### When wallet backup pauses an action
-
-Wait while **Preparing wallet backup** is shown. Do not keep pressing Continue.
-Top-up and other new wallet changes stay paused until backup preparation or recovery completes.
-If **Wallet backup stopped** is shown, use **Retry wallet backup**.
-If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
-Close an unused second wallet tab when the message asks you to do so.
-Log in or reload when the message says the backup driver is unavailable.
-Keep the page open while a retry is pending.
-Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
-The local wallet keeps its funds and unfinished work while recovery is incomplete.
-Do not delete wallet data or start another payment to bypass the pause.
-
 ## Switch between environments
 
 When configured, the user menu includes **Go to testnet** or **Go to mainnet**.
