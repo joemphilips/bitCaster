@@ -394,7 +394,10 @@ export async function submitOrderWithProgress(
       throw new Error('Missing order submission result')
     } catch {
       if (signal.aborted) throw signal.reason
-      throw new Error('Order submission is uncertain; check order status before retrying')
+      // The daemon may have sent the order; its recovery reads it and never sends it again.
+      throw new Error(
+        'Order submission is uncertain; recovery reads the order and never sends it again. It appears in `order list` once found',
+      )
     }
   } finally {
     controller.abort()

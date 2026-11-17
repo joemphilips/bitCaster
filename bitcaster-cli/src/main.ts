@@ -2642,7 +2642,7 @@ function registerOrderCommand(program: Command): void {
       } catch (error) {
         if (!controller.signal.aborted) throw error
         process.stderr.write(
-          'Stopped waiting. The original order and reserved funds may still need recovery. Check order status.\n',
+          'Stopped waiting. The original order and reserved funds stay with recovery, which reads the order and never sends it again; it appears in `order list` once found.\n',
         )
         process.exitCode = 130
       } finally {

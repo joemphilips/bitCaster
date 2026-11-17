@@ -1941,6 +1941,17 @@ function decodeOrderFeeConsent(value: unknown): OrderFeeConsent | null {
   }
 }
 
+/**
+ * After an uncertain response the daemon never sends the order again; its
+ * recovery reads the order through the lookup (ADR-037 amendment of 2026-11-13).
+ * The order id is unknown until then, so the text does not invite a retry.
+ */
+export const ORDER_SUBMISSION_UNCERTAIN_MESSAGE =
+  'Order submission is uncertain; recovery reads the order and never sends it again. It appears in `order list` once found'
+/** Preparation stops before the order request, so no order exists. */
+export const ORDER_PREPARATION_UNCERTAIN_MESSAGE =
+  'Order preparation did not finish; no order was sent. Recovery returns the reserved funds'
+
 async function dispatchProtectedOrderSubmit(
   params: SubmitOrderParams,
   deps: DispatchDependencies,
@@ -2062,7 +2073,7 @@ async function dispatchProtectedOrderSubmit(
     deps.triggerSettlementRecovery?.()
     return {
       ok: false,
-      error: 'Order preparation is uncertain; check order status before retrying',
+      error: ORDER_PREPARATION_UNCERTAIN_MESSAGE,
       clientOrderId,
       operationId,
       orderId,
@@ -2129,7 +2140,7 @@ async function dispatchProtectedOrderSubmit(
         deps.triggerSettlementRecovery?.()
         return {
           ok: false,
-          error: 'Order submission is uncertain; check order status before retrying',
+          error: ORDER_SUBMISSION_UNCERTAIN_MESSAGE,
           clientOrderId,
           operationId,
         }
@@ -2145,7 +2156,7 @@ async function dispatchProtectedOrderSubmit(
     deps.triggerSettlementRecovery?.()
     return {
       ok: false,
-      error: 'Order submission is uncertain; check order status before retrying',
+      error: ORDER_SUBMISSION_UNCERTAIN_MESSAGE,
       clientOrderId,
       operationId,
     }
@@ -2191,7 +2202,7 @@ async function dispatchProtectedOrderSubmit(
     deps.triggerSettlementRecovery?.()
     return {
       ok: false,
-      error: 'Order submission is uncertain; check order status before retrying',
+      error: ORDER_SUBMISSION_UNCERTAIN_MESSAGE,
       clientOrderId,
       operationId,
       orderId,

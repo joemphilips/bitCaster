@@ -282,7 +282,8 @@ attempt starts only while time remains before both limits.
 
 The GUI shows progress and lets you stop waiting. The CLI shows progress on
 stderr. Press Ctrl-C to stop waiting. Stopping does not release reserved funds
-or prove that the order was never accepted. Check the original order status.
+or prove that the order was never accepted. The wallet reads the original order
+and shows it once found.
 The wallet keeps its existing recovery and expiry process.
 
 A generic service error, timeout, malformed response or uncertain result stops
