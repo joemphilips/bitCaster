@@ -140,6 +140,8 @@ The clients use one outcome for each response:
   and commit nothing. Only while you wait in the submit flow, the client sends
   the identical request again within the limits in
   [Waiting for fresh quotes](/technical/architecture/trading-model/#waiting-for-fresh-quotes).
+  If the wait stops and every attempt got one of these refusals, the client
+  records a refusal.
 - Every other response is uncertain, for example a timeout,
   `order-admission-unavailable`, `order-processing-unavailable` or a generic
   `503`. The client never sends the order again. It reads the order through the

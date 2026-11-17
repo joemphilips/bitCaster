@@ -177,10 +177,147 @@ test('the in-flow resend stops at 30 attempts and sends nothing more', async (t)
     return true
   })
   assert.equal(calls, 30)
-  assert.equal(
-    classifyOrderSubmissionFailure(new OrderQuoteRefreshWaitStopped('budget')).kind,
-    'uncertain',
-  )
+})
+
+test('a stopped resend after only non-committing refusals is a definitive refusal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      calls += 1
+      return calls % 2 === 1
+        ? problem(409, 'order-book-conflict')
+        : new Response(
+            JSON.stringify({
+              type: '/errors/order-quotes-refreshing',
+              status: 503,
+              code: 'order-quotes-refreshing',
+            }),
+            { status: 503, headers: { 'content-type': 'application/problem+json' } },
+          )
+    },
+  })
+  const error = await client
+    .submitOrder(
+      MARKET_ID,
+      { settlementCapabilityAdmission: ADMISSION, comment: null },
+      {
+        quoteRefreshRetry: {
+          authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1_000) + 300,
+          onWaiting: ({ attempt }) =>
+            queueMicrotask(() => t.mock.timers.tick(attempt === 1 ? 1_000 : 2_000)),
+        },
+      },
+    )
+    .catch((caught: unknown) => caught)
+  assert.ok(error instanceof OrderQuoteRefreshWaitStopped)
+  assert.equal(error.reason, 'budget')
+  assert.equal(error.allAttemptsRefused, true)
+  assert.equal(calls, 30)
+  assert.deepEqual(classifyOrderSubmissionFailure(error), {
+    kind: 'rejected',
+    code: 'order-quotes-refreshing',
+  })
+})
+
+test('a user cancel during the wait after a refusal is a definitive refusal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const controller = new AbortController()
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      calls += 1
+      return problem(409, 'order-book-conflict')
+    },
+  })
+  const error = await client
+    .submitOrder(
+      MARKET_ID,
+      { settlementCapabilityAdmission: ADMISSION, comment: null },
+      {
+        signal: controller.signal,
+        quoteRefreshRetry: {
+          authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1_000) + 300,
+          onWaiting: () => queueMicrotask(() => controller.abort()),
+        },
+      },
+    )
+    .catch((caught: unknown) => caught)
+  assert.ok(error instanceof OrderQuoteRefreshWaitStopped)
+  assert.equal(error.reason, 'cancelled')
+  assert.equal(calls, 1)
+  assert.deepEqual(classifyOrderSubmissionFailure(error), {
+    kind: 'rejected',
+    code: 'order-book-conflict',
+  })
+})
+
+test('a user cancel during an attempt in flight stays uncertain', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      calls += 1
+      if (calls === 1) return problem(409, 'order-book-conflict')
+      // The second attempt is in flight when the user cancels.
+      controller.abort()
+      init?.signal?.throwIfAborted()
+      return problem(409, 'order-book-conflict')
+    },
+  })
+  const error = await client
+    .submitOrder(
+      MARKET_ID,
+      { settlementCapabilityAdmission: ADMISSION, comment: null },
+      {
+        signal: controller.signal,
+        quoteRefreshRetry: {
+          authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1_000) + 300,
+          onWaiting: () => undefined,
+        },
+        requestTimeoutMs: 30_000,
+      },
+    )
+    .catch((caught: unknown) => caught)
+  assert.ok(error instanceof OrderQuoteRefreshWaitStopped)
+  assert.equal(error.reason, 'cancelled')
+  assert.equal(error.allAttemptsRefused, false)
+  assert.equal(calls, 2)
+  assert.deepEqual(classifyOrderSubmissionFailure(error), { kind: 'uncertain' })
+})
+
+test('a timeout stops the resend and stays uncertain', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      calls += 1
+      if (calls === 1) return problem(409, 'order-book-conflict')
+      queueMicrotask(() => t.mock.timers.tick(30_000))
+      return await new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true }),
+      )
+    },
+  })
+  const error = await client
+    .submitOrder(
+      MARKET_ID,
+      { settlementCapabilityAdmission: ADMISSION, comment: null },
+      {
+        quoteRefreshRetry: {
+          authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1_000) + 300,
+          onWaiting: () => queueMicrotask(() => t.mock.timers.tick(1_000)),
+        },
+      },
+    )
+    .catch((caught: unknown) => caught)
+  assert.ok(!(error instanceof OrderQuoteRefreshWaitStopped))
+  assert.equal(calls, 2)
+  assert.deepEqual(classifyOrderSubmissionFailure(error), { kind: 'uncertain' })
 })
 
 test('only order-quotes-refreshing and order-book-conflict permit the in-flow resend', () => {
@@ -266,8 +403,9 @@ test('every documented admission-form problem has one client outcome', () => {
     // The resend loop consumes these; outside it they prove nothing.
     new EngineClientError(409, '{}', 'order-book-conflict'),
     new EngineClientError(503, '{}', 'order-quotes-refreshing'),
-    new OrderQuoteRefreshWaitStopped('cancelled'),
-    new OrderQuoteRefreshWaitStopped('expired'),
+    // A stop that interrupted an attempt in flight.
+    new OrderQuoteRefreshWaitStopped('cancelled', false),
+    new OrderQuoteRefreshWaitStopped('budget', false),
     new TypeError('fetch failed'),
     new Error('order response fields are invalid'),
   ]

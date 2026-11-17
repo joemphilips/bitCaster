@@ -127,6 +127,7 @@ admission 形式では、capability API の `settlement-capability-` のコー�
 - `order-quotes-refreshing` と `order-book-conflict` は受け付け前の拒否で、何も確定しません。
   送信フローで待っている間だけ、クライアントは
   [気配値の更新を待つ](/ja/technical/architecture/trading-model/#気配値の更新を待つ)の上限内で同一のリクエストを再送します。
+  待機が終わり、すべての送信がこれらの拒否を受けた場合、クライアントは拒否を記録します。
 - その他の応答はすべて結果が不明です。たとえばタイムアウト、`order-admission-unavailable`、
   `order-processing-unavailable`、一般的な `503` です。クライアントは注文を再送しません。
   下記の注文照会で注文を読み取ります。

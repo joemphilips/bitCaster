@@ -286,9 +286,12 @@ or prove that the order was never accepted. Check the original order status.
 The wallet keeps its existing recovery and expiry process.
 
 A generic service error, timeout, malformed response or uncertain result stops
-automatic submission. When waiting stops, the client also sends no more
-requests. It reconciles the original operation through the read-only order
-lookup and never sends the order again. Restarting the app does not restart
+automatic submission. The client reconciles the original operation through the
+read-only order lookup and never sends the order again. When waiting stops at a
+limit or by your stop, and every attempt got one of the two refusals, no order
+exists: the wallet records the refusal and refunds after the authorization
+expires. If the stop interrupts an attempt in flight, the result is uncertain
+and the wallet uses the order lookup. Restarting the app does not restart
 this submission loop.
 
 ## Reading depth while quotes refresh

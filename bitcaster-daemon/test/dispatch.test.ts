@@ -27,7 +27,10 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
-import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import {
+  EngineClientError,
+  OrderQuoteRefreshWaitStopped,
+} from '@bitcaster-market/client-sdk/engineClient'
 import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import type {
   AssetMonitoringAssetsResponse,
@@ -2609,87 +2612,103 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
     for (const failure of [
       {
-        status: 409,
-        code: undefined,
-        detail: 'Order book changed while submitting order; retry the request.',
+        label: '409 retryable conflict',
+        error: () =>
+          new EngineClientError(
+            409,
+            'Order book changed while submitting order; retry the request.',
+          ),
+        rejected: false,
       },
       {
-        status: 503,
-        code: 'order-processing-unavailable',
-        detail: 'Order processing is temporarily unavailable.',
+        label: '503 order-processing-unavailable',
+        error: () =>
+          new EngineClientError(
+            503,
+            'Order processing is temporarily unavailable.',
+            'order-processing-unavailable',
+            'Order processing is temporarily unavailable.',
+          ),
+        rejected: false,
+      },
+      // The in-flow resend stopped. Only refusals that commit nothing make it final.
+      {
+        label: 'a resend stopped after only refusals',
+        error: () => new OrderQuoteRefreshWaitStopped('budget', true, 'order-book-conflict'),
+        rejected: true,
+      },
+      {
+        label: 'a cancel during an attempt in flight',
+        error: () => new OrderQuoteRefreshWaitStopped('cancelled', false, 'order-book-conflict'),
+        rejected: false,
       },
     ])
-      await t.test(
-        `order.submit retains a prepared capability after ${failure.status} ${failure.code ?? 'retryable conflict'}`,
-        async () => {
-          const priorState = await readState()
-          await writeState(backedDaemonState())
-          let markedRejected = false
-          let recoveryTriggers = 0
-          const engine: EngineClientLike = {
-            ...scoreDisabledEngineMethods,
-            async submitOrder() {
-              throw new EngineClientError(
-                failure.status,
-                failure.detail,
-                failure.code,
-                failure.detail,
-              )
-            },
-            async getOrderStatus() {
-              return null
-            },
-            async cancelOrder() {
-              throw new Error('cancelOrder unused')
-            },
-            async getOrderBook() {
-              throw new Error('getOrderBook unused')
-            },
-            async queryMarkets() {
-              return { markets: [], nextCursor: null }
-            },
-          }
+      await t.test(`order.submit records the outcome after ${failure.label}`, async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let markedRejected = false
+        let recoveryTriggers = 0
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder() {
+            throw failure.error()
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
 
-          const response = await dispatch(
-            {
-              method: 'order.submit',
-              params: withFeeConsent({
-                marketId: 'cond-Bob',
-                outcomeId: 'Bob',
-                side: 'Buy',
-                price: 420,
-                amountSubunits: 1_000,
-                timeInForce: 'FOK',
-              }),
-            },
-            {
-              createEngineClient: () => engine,
-              prepareSettlementCapability: prepareSettlementCapability(
-                'order-retryable',
-                undefined,
-                () => {
-                  markedRejected = true
-                },
-              ),
-              triggerSettlementRecovery: () => {
-                recoveryTriggers += 1
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => engine,
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-retryable',
+              undefined,
+              () => {
+                markedRejected = true
               },
+            ),
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
             },
-          )
+          },
+        )
 
-          assert.equal(response.ok, false)
-          assert.equal(response.code, undefined)
-          assert.match(response.error ?? '', /submission is uncertain/)
-          assert.ok(response.clientOrderId)
-          assert.equal(response.operationId, `range:${response.clientOrderId}`)
-          // The response never arrived, so no order id is known.
-          assert.equal(response.orderId, undefined)
-          assert.equal(markedRejected, false)
-          assert.equal(recoveryTriggers, 1)
-          assert.deepEqual((await readState())?.orders, {})
-          if (priorState) await writeState(priorState)
-        },
-      )
+        assert.equal(response.ok, false)
+        assert.equal(response.code, failure.rejected ? 'order-book-conflict' : undefined)
+        assert.match(
+          response.error ?? '',
+          failure.rejected ? /submission was rejected/ : /submission is uncertain/,
+        )
+        assert.ok(response.clientOrderId)
+        assert.equal(response.operationId, `range:${response.clientOrderId}`)
+        // The response never arrived, so no order id is known.
+        assert.equal(response.orderId, undefined)
+        assert.equal(markedRejected, failure.rejected)
+        assert.equal(recoveryTriggers, failure.rejected ? 0 : 1)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      })
 
     for (const enabled of [false, true]) {
       await t.test(

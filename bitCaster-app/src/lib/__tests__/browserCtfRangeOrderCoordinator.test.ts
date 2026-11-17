@@ -87,6 +87,7 @@ import {
 } from "@bitcaster/client-sdk/settlementCapabilityArtifact";
 import {
   EngineClientError,
+  OrderQuoteRefreshWaitStopped,
   type CreateSettlementCapabilityRequest,
   type OrderStatusResponse,
   type SettlementCapabilityResponse,
@@ -2083,6 +2084,38 @@ describe("browser CTF range order coordinator", () => {
     expect(engine.submitCalls).toBe(1);
     expect(engine.createCalls).toBe(0);
   });
+
+  it.each([
+    ["only non-committing refusals", true, "order-request-rejected", "order-submission-rejected"],
+    ["an attempt in flight", false, "order-requested", "order-submission-uncertain"],
+  ] as const)(
+    "records a stopped resend after %s",
+    async (_label, allAttemptsRefused, lifecycle, code) => {
+      const database = createDatabase();
+      const preparation = persistedPreparation(`range-stopped-${lifecycle}`);
+      const engine = engineMock({
+        onSubmit: async () => {
+          throw new OrderQuoteRefreshWaitStopped("cancelled", allAttemptsRefused, null);
+        },
+      });
+      const coordinator = createCoordinator(database, sourceWallet(), engine);
+      await expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe(lifecycle);
+      await coordinator.recoverPage({ seed: SEED, limit: 8 });
+      // A refusal reads no engine order; an uncertain stop reads the lookup. Neither resends.
+      expect(engine.lookupCalls).toBe(allAttemptsRefused ? 0 : 1);
+      expect(engine.submitCalls).toBe(1);
+    },
+  );
 
   it("never resends the order after a lost acknowledgement and binds it from the lookup", async () => {
     const database = createDatabase();

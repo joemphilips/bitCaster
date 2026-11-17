@@ -1,4 +1,5 @@
 import {
+  OrderQuoteRefreshWaitStopped,
   requireOrderRequestTimeoutMs,
   runOrderQuoteRefreshRetry,
   type SubmitOrderOptions,
@@ -1976,9 +1977,10 @@ export class EngineClientError extends Error {
  * amendment of 2026-11-13, decision 6). `rejected` is a documented refusal that
  * committed nothing: the journal records `order-request-rejected`. Every other
  * failure is `uncertain`: the record stays `order-requested`, and recovery only
- * reads the order. The two refusals that permit the in-flow resend are
- * uncertain here, because the resend loop consumes them; when they escape the
- * loop, the loop stopped.
+ * reads the order. The resend loop consumes the two refusals that permit the
+ * in-flow resend; alone they are uncertain here. When the loop stops (budget,
+ * expiry or a user cancel), the stop is a refusal only if every attempt got
+ * one of those refusals; a stop that interrupts an attempt stays uncertain.
  */
 export type OrderSubmissionFailure =
   | { readonly kind: 'rejected'; readonly code: string | null }
@@ -1998,6 +2000,13 @@ const REJECTED_ORDER_SUBMISSION_CODES: Readonly<Record<number, readonly string[]
 }
 
 export function classifyOrderSubmissionFailure(error: unknown): OrderSubmissionFailure {
+  // The in-flow resend stopped (budget, expiry or cancel). Only refusals that
+  // commit nothing make it definitive; an interrupted attempt stays uncertain.
+  if (error instanceof OrderQuoteRefreshWaitStopped) {
+    return error.allAttemptsRefused
+      ? { kind: 'rejected', code: error.lastRefusalCode }
+      : { kind: 'uncertain' }
+  }
   if (!(error instanceof EngineClientError)) return { kind: 'uncertain' }
   const code = error.code ?? null
   switch (error.status) {
