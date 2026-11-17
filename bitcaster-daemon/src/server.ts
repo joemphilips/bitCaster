@@ -2155,11 +2155,15 @@ async function dispatchProtectedOrderSubmit(
     const failure = classifyOrderSubmissionFailure(error)
     switch (failure.kind) {
       case 'rejected':
+        // The engine committed nothing, but the inputs stay locked until
+        // authorization expiry. A recovery pass schedules the refund at expiry,
+        // as the browser does for every non-terminal record.
         try {
           await prepared.recordRejected()
         } catch {
-          deps.triggerSettlementRecovery?.()
+          // Recovery reconciles the record that the refusal could not move.
         }
+        deps.triggerSettlementRecovery?.()
         return {
           ok: false,
           ...(failure.code === null ? {} : { code: failure.code }),

@@ -2391,6 +2391,76 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
+      'order.submit wakes recovery after a definitive refusal so the locked inputs are refunded',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder() {
+            throw new EngineClientError(
+              429,
+              '{"code":"settlement-capability-capacity-exhausted","limitCode":"condition-concurrency"}',
+              'settlement-capability-capacity-exhausted',
+            )
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
+        let markedRejected = false
+        let recoveryTriggers = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient() {
+              return engine
+            },
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-capacity-rejected',
+              undefined,
+              () => {
+                markedRejected = true
+              },
+            ),
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.equal(response.ok, false)
+        assert.equal(response.code, 'settlement-capability-capacity-exhausted')
+        assert.equal(response.error, 'Order submission was rejected')
+        assert.equal(markedRejected, true)
+        // The engine committed nothing, but the inputs stay locked until
+        // authorization expiry. Only a recovery pass schedules that refund.
+        assert.equal(recoveryTriggers, 1)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
+
+    await t.test(
       'order.submit reports a mint refusal that released the reserved funds',
       async () => {
         const priorState = await readState()
@@ -2705,7 +2775,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         // The response never arrived, so no order id is known.
         assert.equal(response.orderId, undefined)
         assert.equal(markedRejected, failure.rejected)
-        assert.equal(recoveryTriggers, failure.rejected ? 0 : 1)
+        // An uncertain order needs its lookup; a rejected one needs its refund at expiry.
+        assert.equal(recoveryTriggers, 1)
         assert.deepEqual((await readState())?.orders, {})
         if (priorState) await writeState(priorState)
       })
