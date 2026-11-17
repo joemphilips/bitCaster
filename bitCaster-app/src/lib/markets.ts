@@ -42,7 +42,12 @@ export { CreateMarketError };
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = Omit<components["schemas"]["SubmitOrderRequest"], "walletId"> & {
+// The reference form of the order request. The admission form is not used by this client yet.
+export type SubmitOrderRequest = Omit<
+  components["schemas"]["SubmitOrderRequest"],
+  "walletId" | "settlementCapability" | "settlementCapabilityAdmission"
+> & {
+  settlementCapability: components["schemas"]["SettlementCapabilityReference"];
   walletId?: WalletId;
 };
 export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];

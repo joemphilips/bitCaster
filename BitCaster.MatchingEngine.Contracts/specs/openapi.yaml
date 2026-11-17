@@ -296,6 +296,57 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConditionAttestationProblem'
 
+  /api/v1/conditions/{conditionId}/orders/by-client-order-id:
+    get:
+      operationId: lookupOrderByClientOrderId
+      summary: Find an accepted order by client order id
+      security:
+        - nip98: []
+      description: >
+        Read-only recovery lookup. The server takes the owner only from the
+        authenticated subject and derives the order id from the owner, the
+        condition and clientOrderId. Found means an accepted submission
+        receipt. An order of another owner, a missing order and a capability
+        without an accepted order all give the same 404. The lookup never
+        stages, verifies, or accepts. It has its own per-subject rate limit
+        (order-lookup, 30 requests a minute).
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+        - name: clientOrderId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '200':
+          description: The accepted order and its capability reference.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderLookupResponse'
+        '400':
+          description: order-invalid-request. The condition or clientOrderId is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: order-not-found. No accepted order of the authenticated owner.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: The order-lookup rate limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/conditions/{conditionId}/orders/batch:
     post:
       operationId: batchSubmitOrders
@@ -459,14 +510,19 @@ paths:
       security:
         - nip98: []
       description: >
-        Submits the current settlement capability referenced by the request.
-        The server loads every immutable order term from the durable DCB
-        binding; the authenticated owner and route market must exactly match
-        that prebound intent. The reference is not bearer authority and is
-        rejected when it is foreign, stale, or no longer current. An exact
-        retry by the same authenticated owner for the same order, reference,
-        and fingerprint returns the prior accepted admission result even if
-        the capability has since become selected or terminal.
+        Submits an order in one of two body forms (see SubmitOrderRequest).
+        The reference form submits the current settlement capability that the
+        request references. The server loads every immutable order term from
+        the durable DCB binding; the authenticated owner and route market must
+        exactly match that prebound intent. The reference is not bearer
+        authority and is rejected when it is foreign, stale, or no longer
+        current. The admission form carries the capability artifact. One
+        durable commit binds the capability and accepts the order; a refusal
+        writes nothing and is not charged. An exact retry by the same
+        authenticated owner for the same order returns the prior accepted
+        admission result even if the capability has since become selected or
+        terminal, without a second verification or charge. The body limit is
+        400,000 bytes.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       requestBody:
@@ -485,14 +541,29 @@ paths:
         '400':
           description: >
             Application validation failed with order-invalid-request or
-            order-invalid-comment. Framework input validation can return a
-            different body shape.
+            order-invalid-comment. In the admission form,
+            settlement-capability-policy-rejected means the capability does
+            not meet the admission policy, including an authorization that
+            expires less than 15 seconds after the request;
+            settlement-capability-invalid-artifact means the artifact is
+            invalid or unsupported; settlement-capability-invalid-request means
+            an invalid capability request field. Framework input validation
+            can return a different body shape.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '402':
+          description: >
+            Admission form. settlement-capability-score-required means the
+            Participation Score balance is below the binding tariff. Nothing is
+            written and nothing is charged.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '403':
           description: >
             The application closed-market gate returns market-closed.
@@ -506,6 +577,8 @@ paths:
             order-market-not-found means the market is not registered.
             order-capability-not-found means the capability is absent,
             belongs to another owner, or its binding digest does not match.
+            In the admission form, settlement-capability-not-found means the
+            market of the capability is not registered.
           content:
             application/problem+json:
               schema:
@@ -518,7 +591,32 @@ paths:
             replay returns its prior result. order-book-conflict permits an
             unchanged request retry. order-processing-conflict and
             order-market-closed are distinct, definitive submission failures.
-            A submission failure alone does not authorize a refund.
+            In the admission form, order-capability-not-current also means that
+            the capability expired unbound or that the stage route bound it.
+            settlement-capability-conflict means that the stageIdempotencyKey,
+            the clientOrderId or a proof is already used by another operation
+            or route; nothing is written. settlement-capability-market-unavailable
+            means the market does not accept the capability now. A submission failure alone does not
+            authorize a refund.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: >
+            The body exceeds 400,000 bytes; the server refuses it before
+            authentication, with no body. In the admission form,
+            settlement-capability-request-too-large means that the artifact
+            exceeds its limits.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: >
+            The order-submit rate limit, or in the admission form an admission
+            capacity limit (settlement-capability-capacity-exhausted or
+            settlement-capability-admission-limited). Nothing is written.
           content:
             application/problem+json:
               schema:
@@ -537,7 +635,9 @@ paths:
             before both limits.
             Waiting can be stopped. Stopping or this refusal does not authorize
             custody release or prove that another copy cannot be accepted.
-            order-admission-unavailable, order-processing-unavailable, generic 503,
+            order-admission-unavailable, order-processing-unavailable,
+            settlement-capability-admission-unavailable (admission form: mint
+            authority or durable capability authority unavailable), generic 503,
             timeout and malformed problems do not permit this automatic retry.
             Retain the original operation for reconciliation and recovery.
           content:
@@ -3608,20 +3708,37 @@ components:
       type: object
       additionalProperties: false
       required:
-        - settlementCapability
         - comment
       description: >
-        Reference-only order submission. The server loads all immutable order
-        identity and economic terms from the current durable DCB binding. The
-        authenticated owner and route market must exactly match that prebound
-        intent. This reference is not bearer authority.
+        Order submission. The body holds exactly one of settlementCapability
+        (reference form) and settlementCapabilityAdmission (admission form).
+        A body with both forms or with neither form gets 400
+        order-invalid-request. In the reference form the server loads all
+        immutable order identity and economic terms from the current durable
+        DCB binding. In the admission form the server verifies and stores the
+        capability, and one durable commit binds the capability and accepts
+        the order, or nothing is written. The authenticated owner and route
+        market must exactly match the order intent. A reference is not bearer
+        authority.
       properties:
         settlementCapability:
           $ref: '#/components/schemas/SettlementCapabilityReference'
           description: >
-            Current capability binding to submit. Possession does not authorize
+            Reference form. A current capability binding from
+            POST /api/v1/settlement-capabilities. Possession does not authorize
             use: the server verifies ownership, route identity, and current DCB
             authorization state.
+        settlementCapabilityAdmission:
+          $ref: '#/components/schemas/CreateSettlementCapabilityRequest'
+          description: >
+            Admission form. The capability artifact and order intent, with the
+            same fields and limits as POST /api/v1/settlement-capabilities. Its
+            marketId must equal the route marketId. The client operation
+            identity is the pair (stageIdempotencyKey, clientOrderId). An exact
+            retry sends the same value again; comment and walletId are not part
+            of that identity. A stageIdempotencyKey that the stage route used
+            conflicts here, and the reverse. A capability that the stage route
+            bound is accepted only through the reference form.
         comment:
           oneOf:
             - $ref: '#/components/schemas/NostrKind1Event'
@@ -3945,6 +4062,48 @@ components:
             - type: 'null'
           description: >
             Current nonterminal settlement group for this order, or null.
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityResponse'
+          description: >
+            Admission form only. The capability lifecycle of this order. It is
+            absent from a reference-form response, and from a stored result
+            whose capability the server no longer keeps.
+
+    OrderLookupResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - marketId
+        - status
+        - settlementCapability
+        - artifactDigest
+      description: >
+        One accepted order of the authenticated owner, found by condition and
+        client order id. Read the order details through
+        GET /api/v1/{marketId}/orders/{orderId}.
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+          description: Public market route of the order.
+        status:
+          type: string
+          enum:
+            - accepted
+            - processed
+          description: >
+            accepted: the order is accepted and its processing result is not
+            recorded yet. processed: its processing result is recorded.
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        artifactDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+          description: >
+            Digest of the capability artifact. A client compares it with its
+            local artifact digest before it uses the reference.
 
     BatchSubmitOrdersRequest:
       type: object
