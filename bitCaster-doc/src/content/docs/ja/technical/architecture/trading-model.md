@@ -170,9 +170,9 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v2` の下で 1 回だけ課金します。料金は `max(1, ceil(v1 / 10))` です。ここで `v1 = 1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。以前に `settlement-capability-v1` の下で記録した課金は、`v1` の金額のままです。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。この料金は、order、fill、settlement failure ごとの料金ではありません。fill、取消、settlement failure、refund、recovery では、この料金を debit しません。この料金は公開クライアントの capability に適用します。次の出力の再使用ペナルティは、料金とは別の課金です。
+Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v2` の下で 1 回だけ課金します。料金は `max(1, ceil(v1 / 10))` です。ここで `v1 = 1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。以前に `settlement-capability-v1` の下で記録した課金は、`v1` の金額のままです。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。この料金は、order、fill、settlement failure ごとの料金ではありません。fill、取消、settlement failure、refund、recovery では、この料金を課しません。この料金は公開クライアントの capability に適用します。次の出力の再使用ペナルティは、料金とは別の課金です。
 
-決済の出力の一つが別の操作ですでに使われていた場合、たとえば同じウォレットを別のブラウザーで使った場合、mint はその決済を拒否します。その出力が 1 つの注文のものであることを mint の応答からエンジンが証明できる場合、エンジンはその注文と、それより後に受け付けた注文を決済から外し、残りの注文をもう一度だけ送信します。注文が残らない場合や、残りの注文を決済できない場合は、決済全体が失敗します。エンジンは外した注文の所有者に `reused-output-penalty-v1` を課します。その決済について 100 Score を 1 回だけ課します。残高は負になることがあります。同じ決済にあったために失敗しただけの注文には課しません。エンジンは自身の bot には課しません。このペナルティは Score だけを変更します。資金は取りません。外した注文は、認可の期限後に通常の返金の処理に従います。
+決済の出力の一つが別の操作ですでに使われていた場合、たとえば同じウォレットを別のブラウザーで使った場合、ミントはその決済を拒否します。その出力が 1 つの注文のものであることをミントの応答からエンジンが証明できる場合、エンジンはその注文と、それより後に受け付けた注文を決済から外し、残りの注文をもう一度だけ送信します。注文が残らない場合や、残りの注文を決済できない場合は、決済全体が失敗します。エンジンは外した注文の所有者に `reused-output-penalty-v1` を課します。その決済について 100 Score を 1 回だけ課します。残高は負になることがあります。同じ決済にあったために失敗しただけの注文には課しません。エンジンは自身の Bot には課しません。このペナルティは Score だけを変更します。資金は取りません。外した注文は、認可の有効期限後に通常の返金の処理に従います。
 
 外した注文の注文状態は `failed` のままで、決済グループの状態は `DefinitivelyRejected` のままです。`GET /api/v1/{marketId}/orders/{orderId}/settlement-failure` は理由を返します。課金した注文には `OwnOutputReused`、ペナルティなしで失敗した注文には `GroupOutputReused` を返します。`GET /api/v1/participation-score/history` は、残高と最近の 50 件の Score の変動を新しい順に返します。ペナルティの種類は `reused-output-penalty` です。CLI では `bitcaster-cli order settlement-failure <market-id> <order-id>` と `bitcaster-cli score history` で読み取ります。
 
@@ -208,7 +208,7 @@ complementary、mint、merge という名前はオンチェーン CTF システ�
 この待機は約定を保証しません。
 
 エンジンが正確な `order-quotes-refreshing` エラーまたは `order-book-conflict` で
-受理前に注文を拒否した場合、GUI と CLI は待ちます。どちらの拒否も何も確定しません。
+受理前に注文を拒否した場合、GUI と CLI は待つことができます。どちらの拒否も何も確定しません。
 クライアントは同じシリアライズ済みリクエストと署名済みコメントを再送します。
 元のケイパビリティ、指値、手数料への同意、有効期限を維持します。別の注文は作成しません。
 
