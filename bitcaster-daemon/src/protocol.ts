@@ -258,6 +258,7 @@ export type DaemonCommand =
   | { method: 'market.funding.head'; params: { conditionId: string } }
   | { method: 'market.fund'; params: MarketFundParams }
   | { method: 'score.show'; params?: undefined }
+  | { method: 'score.history'; params?: undefined }
   | { method: 'score.quote'; params: { deliveryId: string; scorePoints: number } }
   | { method: 'score.buy'; params: { consent: ScorePurchaseConsent } }
   | { method: 'score.status'; params: { consent: ScorePurchaseConsent } }
@@ -305,6 +306,7 @@ export type DaemonCommand =
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.fee-preview'; params: OrderDraftParams }
   | { method: 'order.status'; params: { marketId: string; orderId: string } }
+  | { method: 'order.settlement-failure'; params: { marketId: string; orderId: string } }
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
   | { method: 'order.cancel'; params: { marketId: string; orderId: string } }
   | { method: 'order.recovery'; params?: undefined }

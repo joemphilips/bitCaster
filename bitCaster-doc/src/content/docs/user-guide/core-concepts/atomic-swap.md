@@ -28,7 +28,8 @@ balance)** row also appears. It shows the Score that the app buys with ordinary
 sats from your wallet when you confirm. This purchase can be larger than the
 shortfall. Score that the order does not use stays in your Score balance for
 later orders. The trade totals do not include these rows. Score is not
-refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
+refundable. Your recent Score changes, including a penalty, appear under
+**Participation Score** in **Nostr Settings**. See [Participation Score](/technical/architecture/trading-model/#participation-score)
 for the charge and top-up rules.
 
 To sell all your shares, keep some ordinary sats available for preparation
@@ -116,6 +117,13 @@ does not mean a refund is complete. An operation leaves this active list when
 the wallet finishes its work. After a confirmed trade, the list shows
 **Trade complete.** for a few seconds before the trade leaves it. The list is
 not your completed-trade history.
+
+When a settlement fails because an output was already used, the list shows
+the reason in place of the general failure text. It says whether the output
+belonged to your order, in which case a Participation Score penalty was
+charged, or to another order in the same settlement, in which case no penalty
+was charged. In both cases the reserved funds return after the authorization
+expires. See [Check for use in another browser](/user-guide/getting-started/wallet-backup/#check-for-use-in-another-browser).
 
 While the wallet finishes the trade that you just submitted, the trading panel
 shows **Updating your wallet…**. This includes the refund of a failed trade.

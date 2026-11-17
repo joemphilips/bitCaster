@@ -43,7 +43,9 @@ import {
   classifyOrderSubmissionFailure,
   type OrderBookSnapshot,
   type OrderLookupResponse,
+  type OrderSettlementFailureResponse,
   type OrderStatusResponse,
+  type ParticipationScoreHistoryResponse,
   type ParticipationScoreResponse,
   type QueryMarketsParams,
   type QueryMarketsResponse,
@@ -235,6 +237,10 @@ export interface EngineClientLike {
     options?: SubmitOrderOptions,
   ): Promise<SubmitOrderResponse>
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
+  getOrderSettlementFailure?(
+    marketId: string,
+    orderId: string,
+  ): Promise<OrderSettlementFailureResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
   getAssetMonitoringAssets?(
@@ -243,6 +249,7 @@ export interface EngineClientLike {
   getPortfolio?(query: AssetMonitoringPortfolioQuery): Promise<AssetMonitoringPortfolioResponse>
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
   getParticipationScore(): Promise<ParticipationScoreResponse>
+  getParticipationScoreHistory?(): Promise<ParticipationScoreHistoryResponse>
   getDurableRecipientDeliveryStatus?(
     deliveryId: string,
   ): Promise<DurableRecipientDeliveryStatus | null>
@@ -1335,6 +1342,7 @@ export async function dispatch(
     case 'market.fund':
       return dispatchMarketFunding(command, deps)
     case 'score.show':
+    case 'score.history':
     case 'score.quote':
     case 'score.buy':
     case 'score.status':
@@ -1375,6 +1383,30 @@ export async function dispatch(
       return {
         ok: true,
         result: { engine: status, local },
+      }
+    }
+    case 'order.settlement-failure': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      const client = await createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      if (!client.getOrderSettlementFailure) {
+        return { ok: false, error: 'engine settlement failure reads are unavailable' }
+      }
+      return {
+        ok: true,
+        result: await client.getOrderSettlementFailure(
+          command.params.marketId,
+          command.params.orderId,
+        ),
       }
     }
     case 'order.list': {
@@ -2589,7 +2621,7 @@ function invalidNativeWalletPaymentRequest(): DaemonResponse {
 
 type ParticipationScoreCommand = Extract<
   DaemonCommand,
-  { method: 'score.show' | 'score.quote' | 'score.buy' | 'score.status' }
+  { method: 'score.show' | 'score.history' | 'score.quote' | 'score.buy' | 'score.status' }
 >
 
 interface ParticipationScoreContext {
@@ -2597,6 +2629,13 @@ interface ParticipationScoreContext {
   readonly accountSubject: string
   readonly walletId: string
   readonly mintUrl: string
+}
+
+function readParticipationScoreHistory(
+  client: EngineClientLike,
+): Promise<ParticipationScoreHistoryResponse> {
+  if (!client.getParticipationScoreHistory) throw new Error('Score history is unavailable')
+  return client.getParticipationScoreHistory()
 }
 
 /** Handle native Score reads and explicitly approved Score purchases. */
@@ -2612,9 +2651,15 @@ async function dispatchParticipationScore(
     baseUrl: profile.engineBaseUrl,
     nostrSecretKeyHex: secrets.nostrSecretKeyHex,
   })
-  if (command.method === 'score.show') {
+  if (command.method === 'score.show' || command.method === 'score.history') {
     try {
-      return { ok: true, result: await client.getParticipationScore() }
+      return {
+        ok: true,
+        result:
+          command.method === 'score.show'
+            ? await client.getParticipationScore()
+            : await readParticipationScoreHistory(client),
+      }
     } catch {
       return {
         ok: false,
@@ -3565,12 +3610,14 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'market.create':
     case 'market.create-native':
     case 'score.show':
+    case 'score.history':
     case 'score.quote':
     case 'score.buy':
     case 'score.status':
     case 'order.fee-preview':
     case 'order.submit':
     case 'order.status':
+    case 'order.settlement-failure':
     case 'order.cancel':
     case 'order.retry':
       return true

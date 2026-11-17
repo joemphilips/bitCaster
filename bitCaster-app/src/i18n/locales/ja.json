@@ -1028,6 +1028,8 @@
     "Reconciling": "エンジンが不明な決済結果を確認しています。",
     "Confirmed": "ミントが決済を確認しました。ウォレットの回復がまだ必要な場合があります。",
     "DefinitivelyRejected": "この決済は完了しませんでした。資金が返金されたことを意味しません。",
+    "OwnOutputReused": "この注文は決済されませんでした。この注文の出力の一つが、同じウォレットの別の操作（別のブラウザーなど）ですでに使われていました。Participation Score のペナルティが課されました。確保された資金は承認の期限後に戻ります。",
+    "GroupOutputReused": "同じ決済内の別の注文の出力がすでに使われていたため、この注文は決済されませんでした。ペナルティは課されていません。確保された資金は承認の期限後に戻ります。",
     "Refundable": "エンジンが返金条件の成立を確認しました。ウォレットによる確認と回復の完了が必要です。",
     "ExpiredBeforeSubmission": "送信前に認可の期限が切れました。資金の回復は別の処理です。",
     "RejectedBeforeSubmission": "エンジンが送信前に決済を停止しました。資金の回復は別の処理です。",
@@ -1160,7 +1162,16 @@
     "name": "Participation Score",
     "helpLabel": "Participation Score について",
     "help": "スパム対策の手数料です。注文板を使う注文には、bitCaster が数 sats 分の Score を請求します。返金はできません。",
-    "purchaseAtConfirm": "確認時の Score チャージ（残高として保持）"
+    "purchaseAtConfirm": "確認時の Score チャージ（残高として保持）",
+    "history": "Score 履歴",
+    "historyEmpty": "Score の変動はまだありません。",
+    "historyUnavailable": "Score 履歴を取得できません。",
+    "kinds": {
+      "purchase": "購入",
+      "capability-binding": "注文の受付",
+      "invalid-capability-validation": "無効な証明の検証",
+      "reused-output-penalty": "出力の再使用ペナルティ"
+    }
   },
   "sort": {
     "label": "マーケットの並び替え",

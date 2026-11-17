@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettlementGroupStatus } from "@bitcaster/client-sdk/engineClient";
 import type { OrderStatusResponse } from "../orderStatus";
 import {
+  createSettlementFailureReader,
   createSettlementProgressReader,
+  createSettlementReadSlot,
   settlementGroupForOrder,
 } from "../settlementProgressReader";
 
-vi.mock("../orderStatus", () => ({ fetchOrderStatus: vi.fn() }));
+vi.mock("../orderStatus", () => ({
+  fetchOrderStatus: vi.fn(),
+  fetchOrderSettlementFailure: vi.fn(),
+}));
 afterEach(() => vi.useRealTimers());
 
 const statuses = [
@@ -116,6 +121,53 @@ describe("settlement progress reader", () => {
     ).rejects.toThrow("unavailable");
     expect(read).toHaveBeenCalledTimes(1);
     finish(order());
+  });
+});
+
+describe("settlement failure reader", () => {
+  const failure = {
+    groupId: "57e2c029-25f6-8546-9afe-3ea5a8c0049f",
+    reason: "OwnOutputReused" as const,
+    failedAt: "2026-08-21T00:00:00.011+00:00",
+  };
+
+  it("returns the recorded reason of the order, or null", async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ orderId: "order-1", failure })
+      .mockResolvedValueOnce({ orderId: "order-1", failure: null })
+      .mockResolvedValueOnce(null);
+    const reader = createSettlementFailureReader(read);
+    const signal = new AbortController().signal;
+    expect(await reader("condition-Alpha", "order-1", signal)).toEqual(failure);
+    expect(await reader("condition-Alpha", "order-1", signal)).toBeNull();
+    expect(await reader("condition-Alpha", "order-1", signal)).toBeNull();
+    expect(read.mock.calls[0].slice(0, 2)).toEqual(["condition-Alpha", "order-1"]);
+  });
+
+  it("shares one signer slot with the status reader", async () => {
+    let finish!: (value: OrderStatusResponse) => void;
+    const slot = createSettlementReadSlot();
+    const status = createSettlementProgressReader(
+      vi.fn().mockReturnValue(
+        new Promise<OrderStatusResponse>((resolve) => {
+          finish = resolve;
+        }),
+      ),
+      slot,
+    );
+    const readFailure = vi.fn().mockResolvedValue({ orderId: "order-1", failure });
+    const failureReader = createSettlementFailureReader(readFailure, slot);
+    const pending = status("condition-Alpha", "order-1", new AbortController().signal);
+    await expect(
+      failureReader("condition-Alpha", "order-1", new AbortController().signal),
+    ).rejects.toThrow("unavailable");
+    expect(readFailure).not.toHaveBeenCalled();
+    finish(order());
+    await pending;
+    expect(await failureReader("condition-Alpha", "order-1", new AbortController().signal)).toEqual(
+      failure,
+    );
   });
 });
 

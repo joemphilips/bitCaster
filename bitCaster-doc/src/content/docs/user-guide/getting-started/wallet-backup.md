@@ -172,6 +172,17 @@ stay at the mint. Funds that the mint reports as pending wait until the other
 browser finishes. An order that needs them shows **Some funds of this wallet are
 still pending at the mint. No order was submitted. Try again later.**
 
+Two browsers that trade with one wallet at the same time can still use the
+same output. The mint then refuses the settlement that holds the order. When
+bitCaster can show that an output of your order was already used by another
+operation of your wallet, it removes your order from that settlement. The
+other orders can still settle. Your order fails, and **Active trade progress**
+shows the reason. A Participation Score penalty of 100 Score is charged once
+for that settlement. Your funds are not lost. The reserved funds return after
+the authorization expires, as for another failed order. When an output of
+another trader's order was reused, your order can fail too. Then you pay no
+penalty.
+
 ## What the web app stores
 
 The web app has two independent wallet features. It enables both by default.

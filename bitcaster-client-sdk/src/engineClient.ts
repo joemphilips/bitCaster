@@ -77,6 +77,9 @@ export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
 export const SUBMIT_ORDER_RESPONSE_BYTES_MAX = 1024 * 1024
 export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
 export const DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX = 64 * 1_024
+export const ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX = 4 * 1_024
+export const PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX = 16 * 1_024
+const PARTICIPATION_SCORE_HISTORY_ENTRIES_MAX = 50
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
 // The first hosted custody receive can take more than 10 seconds. The engine
@@ -481,6 +484,14 @@ export interface ParticipationScoreResponse {
   enabled: boolean
 }
 
+export type OrderSettlementFailureReason = components['schemas']['OrderSettlementFailureReason']
+export type OrderSettlementFailure = components['schemas']['OrderSettlementFailure']
+export type OrderSettlementFailureResponse = components['schemas']['OrderSettlementFailureResponse']
+export type ParticipationScoreHistoryKind = components['schemas']['ParticipationScoreHistoryKind']
+export type ParticipationScoreHistoryEntry = components['schemas']['ParticipationScoreHistoryEntry']
+export type ParticipationScoreHistoryResponse =
+  components['schemas']['ParticipationScoreHistoryResponse']
+
 export class BitcasterEngineClient {
   private readonly baseUrl: string
   private readonly fetchImpl: EngineFetch
@@ -815,6 +826,31 @@ export class BitcasterEngineClient {
     return decodeOrderStatusResponse(value)
   }
 
+  /** The recorded settlement failure reason of one owned order. Null when the engine does not find the order. */
+  async getOrderSettlementFailure(
+    marketId: string,
+    orderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderSettlementFailureResponse | null> {
+    const response = await this.request(
+      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/settlement-failure`,
+      { signal },
+      undefined,
+      true,
+      ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX,
+    )
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const value = await readAllocationBoundedJsonResponse(
+      response,
+      ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX,
+    )
+    signal?.throwIfAborted()
+    return decodeOrderSettlementFailureResponse(value, orderId)
+  }
+
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
     return listMyOrders(this.baseUrl, conditionId, cursor, this.fetchImpl, this.authorization)
   }
@@ -945,6 +981,25 @@ export class BitcasterEngineClient {
   async getParticipationScore(): Promise<ParticipationScoreResponse> {
     const response = await this.request('/api/v1/participation-score')
     return (await response.json()) as ParticipationScoreResponse
+  }
+
+  /** The caller's Score balance and its most recent changes, newest first. */
+  async getParticipationScoreHistory(
+    signal?: AbortSignal,
+  ): Promise<ParticipationScoreHistoryResponse> {
+    const response = await this.request(
+      '/api/v1/participation-score/history',
+      { signal },
+      undefined,
+      false,
+      PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX,
+    )
+    const value = await readAllocationBoundedJsonResponse(
+      response,
+      PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX,
+    )
+    signal?.throwIfAborted()
+    return decodeParticipationScoreHistoryResponse(value)
   }
 
   async getDurableRecipientDeliveryStatus(
@@ -1456,6 +1511,78 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     divisibility,
     activeSettlementGroup,
   }
+}
+
+/** Decode the settlement failure of the requested order. An unknown reason or field is refused. */
+export function decodeOrderSettlementFailureResponse(
+  value: unknown,
+  orderId: string,
+): OrderSettlementFailureResponse {
+  const response = exactEngineRecord(value, ['orderId', 'failure'])
+  if (response.orderId !== orderId) throw new Error('settlement failure order id is invalid')
+  if (response.failure === null) return { orderId, failure: null }
+  const failure = exactEngineRecord(response.failure, ['groupId', 'reason', 'failedAt'])
+  requireUuid(failure.groupId, 'settlement failure group id')
+  requireIsoEngineTime(failure.failedAt, 'settlement failure time')
+  return {
+    orderId,
+    failure: {
+      groupId: failure.groupId,
+      reason: decodeOrderSettlementFailureReason(failure.reason),
+      failedAt: failure.failedAt,
+    },
+  }
+}
+
+function decodeOrderSettlementFailureReason(value: unknown): OrderSettlementFailureReason {
+  switch (value) {
+    case 'OwnOutputReused':
+    case 'GroupOutputReused':
+      return value
+    default:
+      throw new Error('settlement failure reason is invalid')
+  }
+}
+
+/** Decode the bounded Score history. An unknown kind or field is refused. */
+export function decodeParticipationScoreHistoryResponse(
+  value: unknown,
+): ParticipationScoreHistoryResponse {
+  const response = exactEngineRecord(value, ['balance', 'entries'])
+  requireSafeInteger(response.balance, 'Score balance')
+  const entries = boundedEngineArray(
+    response.entries,
+    PARTICIPATION_SCORE_HISTORY_ENTRIES_MAX,
+    'Score history entries',
+  ).map((item): ParticipationScoreHistoryEntry => {
+    const entry = exactEngineRecord(item, ['kind', 'amountScore', 'balanceAfter', 'occurredAt'])
+    requireSafeInteger(entry.amountScore, 'Score history amount')
+    requireSafeInteger(entry.balanceAfter, 'Score history balance')
+    requireIsoEngineTime(entry.occurredAt, 'Score history time')
+    return {
+      kind: decodeParticipationScoreHistoryKind(entry.kind),
+      amountScore: entry.amountScore,
+      balanceAfter: entry.balanceAfter,
+      occurredAt: entry.occurredAt,
+    }
+  })
+  return { balance: response.balance, entries }
+}
+
+function decodeParticipationScoreHistoryKind(value: unknown): ParticipationScoreHistoryKind {
+  switch (value) {
+    case 'purchase':
+    case 'capability-binding':
+    case 'invalid-capability-validation':
+    case 'reused-output-penalty':
+      return value
+    default:
+      throw new Error('Score history kind is invalid')
+  }
+}
+
+function requireSafeInteger(value: unknown, name: string): asserts value is number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} is invalid`)
 }
 
 function decodeOrderStatusQuoteBounds(

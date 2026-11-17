@@ -134,7 +134,7 @@ function ProgressItems({
             (!canReadStatus
               ? "authenticationRequired"
               : observation?.group
-                ? observation.group.status
+                ? (observation.failure?.reason ?? observation.group.status)
                 : observation?.unavailable
                   ? "unavailable"
                   : "orderSubmitted");

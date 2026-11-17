@@ -149,6 +149,7 @@ test('bitcaster-cli Score quote can be saved and reused for buy and status', asy
 
   try {
     await runCli(`http://127.0.0.1:${address.port}`, ['score', 'show'])
+    await runCli(`http://127.0.0.1:${address.port}`, ['score', 'history'])
     const quote = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
       'score',
       'quote',
@@ -173,11 +174,12 @@ test('bitcaster-cli Score quote can be saved and reused for buy and status', asy
     ])
 
     assert.deepEqual(received[0], { method: 'score.show' })
-    assert.equal(received[1]?.method, 'score.quote')
-    assert.equal(received[1]?.params?.scorePoints, 3)
-    assert.match(received[1]?.params?.deliveryId as string, /^[0-9a-f-]{36}$/)
-    assert.deepEqual(received[2], { method: 'score.buy', params: { consent: envelope.result } })
-    assert.deepEqual(received[3], { method: 'score.status', params: { consent: envelope.result } })
+    assert.deepEqual(received[1], { method: 'score.history' })
+    assert.equal(received[2]?.method, 'score.quote')
+    assert.equal(received[2]?.params?.scorePoints, 3)
+    assert.match(received[2]?.params?.deliveryId as string, /^[0-9a-f-]{36}$/)
+    assert.deepEqual(received[3], { method: 'score.buy', params: { consent: envelope.result } })
+    assert.deepEqual(received[4], { method: 'score.status', params: { consent: envelope.result } })
   } finally {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -364,6 +366,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       feeConsentPath,
     ])
     await runCli(daemonUrl, ['order', 'status', 'cond-YES', 'order-1'])
+    await runCli(daemonUrl, ['order', 'settlement-failure', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, ['order', 'list', '--market', 'cond-YES', '--status', 'resting'])
     await runCli(daemonUrl, ['order', 'cancel', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, ['order', 'book', 'cond-YES'])
@@ -472,6 +475,10 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       {
         method: 'order.status',
+        params: { marketId: 'cond-YES', orderId: 'order-1' },
+      },
+      {
+        method: 'order.settlement-failure',
         params: { marketId: 'cond-YES', orderId: 'order-1' },
       },
       {

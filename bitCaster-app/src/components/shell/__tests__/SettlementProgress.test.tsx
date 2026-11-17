@@ -19,12 +19,16 @@ import ja from "@/i18n/locales/ja.json";
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
+  readFailure: vi.fn(),
   scopeId: "",
   walletId: "a".repeat(64),
   signerRevision: 0,
   signerListeners: new Set<() => void>(),
 }));
-vi.mock("@/lib/settlementProgressReader", () => ({ readSettlementProgress: mocks.read }));
+vi.mock("@/lib/settlementProgressReader", () => ({
+  readSettlementProgress: mocks.read,
+  readSettlementFailure: mocks.readFailure,
+}));
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: () => mocks.scopeId,
   browserWalletIdFromMnemonic: () => mocks.walletId,
@@ -67,6 +71,7 @@ beforeEach(() => {
   mocks.scopeId = fixture().scopeId;
   mocks.signerRevision = 0;
   mocks.read.mockReset().mockResolvedValue(group("Reconciling"));
+  mocks.readFailure.mockReset().mockResolvedValue(null);
   useOrderSettlementObservations.setState({ byOrderId: {} });
 });
 afterEach(async () => {
@@ -179,6 +184,26 @@ describe("active settlement progress", () => {
     for (const dictionary of dictionaries) expect(dictionary[status]).not.toBe("");
     expect(screen.getByText(en.settlementProgress.fees)).toBeVisible();
   });
+
+  it.each(["OwnOutputReused", "GroupOutputReused"] as const)(
+    "shows the %s reason in place of the generic rejection",
+    async (reason) => {
+      await database.ctfRangePreparations.put(fixture());
+      mocks.read.mockResolvedValue(group("DefinitivelyRejected"));
+      mocks.readFailure.mockResolvedValue({
+        groupId: "group-1",
+        reason,
+        failedAt: "2026-09-07T00:00:01Z",
+      });
+      render(<SettlementProgress canReadStatus />);
+      expect(await screen.findByText(en.settlementProgress[reason])).toBeVisible();
+      expect(
+        screen.queryByText(en.settlementProgress.DefinitivelyRejected),
+      ).not.toBeInTheDocument();
+      expect(ja.settlementProgress[reason]).toMatch(/\S/);
+      expect(ja.settlementProgress[reason]).not.toBe(en.settlementProgress[reason]);
+    },
+  );
 
   it("reconstructs progress from the reopened journal without the pending-trade cache", async () => {
     await database.ctfRangePreparations.put(fixture());

@@ -882,6 +882,56 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+  /api/v1/{marketId}/orders/{orderId}/settlement-failure:
+    get:
+      operationId: getOrderSettlementFailure
+      summary: Read why the settlement of an order failed
+      security:
+        - nip98: []
+      description: >
+        Returns the recorded reason when the settlement of this order failed
+        because a settlement output was already used. The order status of
+        such an order stays `failed`, and its settlement group status stays
+        `DefinitivelyRejected`. `failure` is null when no such reason is
+        recorded, for example while the order settles, after a confirmed
+        settlement, or after a failure for another reason. Only the order's
+        owner may read it.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The order's unique identifier.
+      responses:
+        '200':
+          description: The recorded settlement failure of the order, or null
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderSettlementFailureResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '403':
+          description: The order belongs to another authenticated owner.
+        '404':
+          description: >
+            order-not-found. The order is unavailable for this request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/{marketId}/orderbook:
     get:
       operationId: getOrderBook
@@ -968,7 +1018,10 @@ paths:
         A recorded charge keeps the rule that it was recorded under. The tariff
         is charged once for each successful capability binding. It is not a
         per-order, per-fill, or settlement-failure fee and is not returned by
-        this endpoint.
+        this endpoint. The one settlement charge is the reused-output penalty
+        of 100 Score. It is charged once when an output of the caller's order
+        was already used by another operation and the order is removed from
+        its settlement.
       responses:
         '200':
           description: Participation Score state for the authenticated pubkey
@@ -976,6 +1029,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ParticipationScoreResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
+  /api/v1/participation-score/history:
+    get:
+      operationId: getParticipationScoreHistory
+      summary: Read the authenticated user's recent Participation Score changes
+      security:
+        - nip98: []
+      description: >
+        Returns the caller's Score balance and at most the 50 most recent
+        Score changes, newest first. Each entry has a kind, the signed Score
+        change and the balance after the change.
+      responses:
+        '200':
+          description: Recent Participation Score changes for the authenticated pubkey
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipationScoreHistoryResponse'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -4844,10 +4917,115 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by capability-admission and invalid-validation charges.
+          description: Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
         enabled:
           type: boolean
           description: Whether Participation Score purchase and payment is enabled by the engine.
+
+    ParticipationScoreHistoryKind:
+      type: string
+      enum:
+        - purchase
+        - capability-binding
+        - invalid-capability-validation
+        - reused-output-penalty
+      description: >
+        `purchase` credits purchased Score. `capability-binding` is the
+        admission charge of an order. `invalid-capability-validation` is the
+        charge for an invalid proof or DLEQ validation attempt.
+        `reused-output-penalty` is the 100 Score penalty for an order whose
+        output was already used by another operation, so that the order was
+        removed from its settlement.
+
+    ParticipationScoreHistoryEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - amountScore
+        - balanceAfter
+        - occurredAt
+      properties:
+        kind:
+          $ref: '#/components/schemas/ParticipationScoreHistoryKind'
+        amountScore:
+          type: integer
+          format: int64
+          description: Signed Score change. A charge or a penalty is negative.
+        balanceAfter:
+          type: integer
+          format: int64
+          description: Score balance after this change. It can be negative.
+        occurredAt:
+          type: string
+          format: date-time
+
+    ParticipationScoreHistoryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - balance
+        - entries
+      properties:
+        balance:
+          type: integer
+          format: int64
+          description: Current Participation Score balance. It can be negative.
+        entries:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ParticipationScoreHistoryEntry'
+          description: The most recent Score changes, newest first.
+
+    OrderSettlementFailureReason:
+      type: string
+      enum:
+        - OwnOutputReused
+        - GroupOutputReused
+      description: >
+        `OwnOutputReused`: an output of this order was already used by another
+        operation of the same wallet, for example in another browser. The
+        order was removed from its settlement, and the reused-output penalty
+        was charged. `GroupOutputReused`: an output of another order in the
+        same settlement was already used, so this order did not settle. No
+        penalty was charged for this order. In both cases the order's funds
+        are not lost. The wallet recovers them as for another failed
+        settlement.
+
+    OrderSettlementFailure:
+      type: object
+      additionalProperties: false
+      required:
+        - groupId
+        - reason
+        - failedAt
+      properties:
+        groupId:
+          type: string
+          format: uuid
+          description: The settlement group that the order joined.
+        reason:
+          $ref: '#/components/schemas/OrderSettlementFailureReason'
+        failedAt:
+          type: string
+          format: date-time
+
+    OrderSettlementFailureResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - failure
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        failure:
+          oneOf:
+            - $ref: '#/components/schemas/OrderSettlementFailure'
+            - type: 'null'
+          description: The recorded settlement failure, or null when none is recorded.
 
 
     LatestConfirmedTrade:

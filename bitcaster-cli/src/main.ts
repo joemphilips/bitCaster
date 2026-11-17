@@ -2249,6 +2249,19 @@ function registerScoreCommand(program: Command): void {
     })
 
   score
+    .command('history')
+    .description(
+      'Show the authenticated Participation Score balance and its most recent changes, newest first.',
+    )
+    .addHelpText(
+      'after',
+      '\nEach entry has kind purchase, capability-binding, invalid-capability-validation or reused-output-penalty.',
+    )
+    .action(async () => {
+      await printDaemonResult(callDaemon({ method: 'score.history' }))
+    })
+
+  score
     .command('quote <scorePoints>')
     .description('Preview the exact wallet debit for one Score purchase.')
     .addHelpText(
@@ -2657,6 +2670,21 @@ function registerOrderCommand(program: Command): void {
     .addHelpText('after', '\nExample:\n  bitcaster-cli order status <market-id> <order-id>')
     .action(async (marketId: string, orderId: string) => {
       await printDaemonResult(callDaemon({ method: 'order.status', params: { marketId, orderId } }))
+    })
+
+  order
+    .command('settlement-failure <marketId> <orderId>')
+    .description(
+      'Show why the settlement of a failed order failed. The result is null when no reason is recorded.',
+    )
+    .addHelpText(
+      'after',
+      '\nReasons: OwnOutputReused (an output of this order was already used by another operation of the same wallet; a Score penalty was charged) and GroupOutputReused (another order in the same settlement reused an output; no penalty).\nExample:\n  bitcaster-cli order settlement-failure <market-id> <order-id>',
+    )
+    .action(async (marketId: string, orderId: string) => {
+      await printDaemonResult(
+        callDaemon({ method: 'order.settlement-failure', params: { marketId, orderId } }),
+      )
     })
 
   order

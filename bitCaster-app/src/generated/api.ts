@@ -309,6 +309,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/{marketId}/orders/{orderId}/settlement-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read why the settlement of an order failed
+         * @description Returns the recorded reason when the settlement of this order failed because a settlement output was already used. The order status of such an order stays `failed`, and its settlement group status stays `DefinitivelyRejected`. `failure` is null when no such reason is recorded, for example while the order settles, after a confirmed settlement, or after a failure for another reason. Only the order's owner may read it.
+         */
+        get: operations["getOrderSettlementFailure"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
@@ -372,9 +392,29 @@ export interface paths {
         };
         /**
          * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
+         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint. The one settlement charge is the reused-output penalty of 100 Score. It is charged once when an output of the caller's order was already used by another operation and the order is removed from its settlement.
          */
         get: operations["getParticipationScore"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/participation-score/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the authenticated user's recent Participation Score changes
+         * @description Returns the caller's Score balance and at most the 50 most recent Score changes, newest first. Each entry has a kind, the signed Score change and the balance after the change.
+         */
+        get: operations["getParticipationScoreHistory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1843,11 +1883,61 @@ export interface components {
             purchasedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by capability-admission and invalid-validation charges.
+             * @description Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
              */
             consumedTotal: number;
             /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
+        };
+        /**
+         * @description `purchase` credits purchased Score. `capability-binding` is the admission charge of an order. `invalid-capability-validation` is the charge for an invalid proof or DLEQ validation attempt. `reused-output-penalty` is the 100 Score penalty for an order whose output was already used by another operation, so that the order was removed from its settlement.
+         * @enum {string}
+         */
+        ParticipationScoreHistoryKind: "purchase" | "capability-binding" | "invalid-capability-validation" | "reused-output-penalty";
+        ParticipationScoreHistoryEntry: {
+            kind: components["schemas"]["ParticipationScoreHistoryKind"];
+            /**
+             * Format: int64
+             * @description Signed Score change. A charge or a penalty is negative.
+             */
+            amountScore: number;
+            /**
+             * Format: int64
+             * @description Score balance after this change. It can be negative.
+             */
+            balanceAfter: number;
+            /** Format: date-time */
+            occurredAt: string;
+        };
+        ParticipationScoreHistoryResponse: {
+            /**
+             * Format: int64
+             * @description Current Participation Score balance. It can be negative.
+             */
+            balance: number;
+            /** @description The most recent Score changes, newest first. */
+            entries: components["schemas"]["ParticipationScoreHistoryEntry"][];
+        };
+        /**
+         * @description `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output of another order in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+         * @enum {string}
+         */
+        OrderSettlementFailureReason: "OwnOutputReused" | "GroupOutputReused";
+        OrderSettlementFailure: {
+            /**
+             * Format: uuid
+             * @description The settlement group that the order joined.
+             */
+            groupId: string;
+            reason: components["schemas"]["OrderSettlementFailureReason"];
+            /** Format: date-time */
+            failedAt: string;
+        };
+        OrderSettlementFailureResponse: {
+            /** Format: uuid */
+            orderId: string;
+            /** @description The recorded settlement failure, or null when none is recorded. */
+            failure: components["schemas"]["OrderSettlementFailure"] | null;
         };
         /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
         LatestConfirmedTrade: {
@@ -3011,6 +3101,63 @@ export interface operations {
             };
         };
     };
+    getOrderSettlementFailure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                marketId: components["parameters"]["MarketId"];
+                /** @description The order's unique identifier. */
+                orderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recorded settlement failure of the order, or null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderSettlementFailureResponse"];
+                };
+            };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The order belongs to another authenticated owner. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description order-not-found. The order is unavailable for this request. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     getOrderBook: {
         parameters: {
             query?: never;
@@ -3121,6 +3268,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ParticipationScoreResponse"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getParticipationScoreHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent Participation Score changes for the authenticated pubkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParticipationScoreHistoryResponse"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */

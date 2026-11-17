@@ -8,8 +8,11 @@ import {
   type OrderSettlementObservation,
 } from "@/stores/orderSettlementObservations";
 
-const mocks = vi.hoisted(() => ({ read: vi.fn(), readJournal: vi.fn() }));
-vi.mock("@/lib/settlementProgressReader", () => ({ readSettlementProgress: mocks.read }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), readFailure: vi.fn(), readJournal: vi.fn() }));
+vi.mock("@/lib/settlementProgressReader", () => ({
+  readSettlementProgress: mocks.read,
+  readSettlementFailure: mocks.readFailure,
+}));
 vi.mock("@/stores/ctf-range-order-db", () => ({ readCtfRangePreparation: mocks.readJournal }));
 const scope = { scopeId: "scope-1", walletId: "a".repeat(64), signerRevision: 1 };
 const entries = [
@@ -20,6 +23,11 @@ const entries = [
     marketId: "condition-Alpha",
   },
 ];
+const failure = {
+  groupId: "group-1",
+  reason: "OwnOutputReused" as const,
+  failedAt: "2026-09-07T00:00:01Z",
+};
 const group = {
   groupId: "group-1",
   status: "Reconciling",
@@ -31,6 +39,7 @@ const group = {
 describe("read-only settlement progress", () => {
   beforeEach(() => {
     mocks.read.mockReset().mockResolvedValue(group);
+    mocks.readFailure.mockReset().mockResolvedValue(failure);
     mocks.readJournal.mockReset().mockResolvedValue({ lifecycleState: "terminal" });
     useOrderSettlementObservations.setState({ byOrderId: {} });
   });
@@ -217,6 +226,54 @@ describe("read-only settlement progress", () => {
     await act(async () => finish({ lifecycleState: "order-submitted" }));
     expect(mocks.readJournal).toHaveBeenCalledExactlyOnceWith("scope-1", "operation-1");
     expect(view.result.current.completed).toEqual([]);
+  });
+
+  it("reads the failure reason of a definitively rejected group once", async () => {
+    mocks.read.mockResolvedValue(groupWith("DefinitivelyRejected", 4));
+    const view = renderHook(() => useSettlementProgress(entries, true, scope));
+    await waitFor(() =>
+      expect(view.result.current.observations["operation-1"]).toEqual({
+        group: groupWith("DefinitivelyRejected", 4),
+        unavailable: false,
+        failure,
+      }),
+    );
+    expect(mocks.readFailure).toHaveBeenCalledTimes(1);
+    expect(mocks.readFailure.mock.calls[0].slice(0, 2)).toEqual(["condition-Alpha", "order-1"]);
+    act(() => view.result.current.refresh());
+    await waitFor(() => expect(mocks.read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(mocks.readFailure).toHaveBeenCalledTimes(1);
+    expect(view.result.current.observations["operation-1"]?.failure).toEqual(failure);
+  });
+
+  it.each(["Prepared", "SubmissionPending", "Reconciling", "Confirmed", "Refundable"] as const)(
+    "does not read a failure reason for %s",
+    async (status) => {
+      mocks.read.mockResolvedValue(groupWith(status, 4));
+      const view = renderHook(() => useSettlementProgress(entries, true, scope));
+      await waitFor(() =>
+        expect(view.result.current.observations["operation-1"]?.group?.status).toBe(status),
+      );
+      await waitFor(() => expect(view.result.current.loading).toBe(false));
+      expect(mocks.readFailure).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the rejected group when its failure reason is unavailable, and reads it again later", async () => {
+    mocks.read.mockResolvedValue(groupWith("DefinitivelyRejected", 4));
+    mocks.readFailure.mockRejectedValueOnce(new Error("private provider detail"));
+    const view = renderHook(() => useSettlementProgress(entries, true, scope));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(view.result.current.observations["operation-1"]).toEqual({
+      group: groupWith("DefinitivelyRejected", 4),
+      unavailable: false,
+    });
+    act(() => view.result.current.refresh());
+    await waitFor(() =>
+      expect(view.result.current.observations["operation-1"]?.failure).toEqual(failure),
+    );
+    expect(mocks.readFailure).toHaveBeenCalledTimes(2);
   });
 });
 

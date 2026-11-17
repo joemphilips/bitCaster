@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { DeferredSettings } from "@/components/settings/DeferredSettings";
+import { getParticipationScoreHistory } from "@/lib/markets";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
 import { useNostrLogout } from "@/hooks/useNostrLogout";
@@ -363,6 +364,7 @@ export function SettingsPage() {
         onSaveNostrProfileEdit={saveBrowserNostrProfileEdit}
         onAddRelay={userAddRelay}
         onRemoveRelay={userRemoveRelay}
+        onLoadParticipationScoreHistory={getParticipationScoreHistory}
       />
       {walletDialog && (
         <WalletSetupModal

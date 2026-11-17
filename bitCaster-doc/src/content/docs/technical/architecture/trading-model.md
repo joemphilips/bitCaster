@@ -212,8 +212,31 @@ ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)`. A charge recorded
 earlier under `settlement-capability-v1` keeps its `v1` amount. Each
 authenticated invalid proof or DLEQ validation attempt uses the same tariff.
 There is no separate order, fill, or settlement-failure tariff. Fills,
-cancellation, settlement failure, refund, and recovery do not debit Score. This
-tariff applies to public client capabilities.
+cancellation, settlement failure, refund, and recovery do not debit Score. The
+one exception is the reused-output penalty below. This tariff applies to public
+client capabilities.
+
+The mint refuses a settlement when one of its outputs was already used by
+another operation, for example by the same wallet in another browser. When the
+engine can prove from the mint's answers that the output belongs to one order,
+it removes that order and any order accepted after it from the settlement, and
+it submits the remaining orders once more. If no order remains, or the
+remaining orders cannot settle, the whole settlement fails. It charges the owner of the removed
+order `reused-output-penalty-v1`: 100 Score once for that settlement. The
+balance can become negative. An order that fails only because it was in the
+same settlement pays nothing. The engine never charges its own bot. The
+penalty changes Score only. It does not take funds: a removed order follows
+the normal refund path after its authorization expires.
+
+The order status of a removed order stays `failed`, and its settlement group
+status stays `DefinitivelyRejected`.
+`GET /api/v1/{marketId}/orders/{orderId}/settlement-failure` returns the
+reason: `OwnOutputReused` for the charged order and `GroupOutputReused` for an
+order that failed with no penalty. `GET /api/v1/participation-score/history`
+returns the balance and the 50 most recent Score changes, newest first. The
+penalty has the kind `reused-output-penalty`. The CLI reads them with
+`bitcaster-cli order settlement-failure <market-id> <order-id>` and
+`bitcaster-cli score history`.
 
 If Score is insufficient, the daemon submits a payment and waits for its
 delivery state to become `credited` before it prepares the order capability.

@@ -548,6 +548,9 @@ a refusal or failure. This result does not confirm wallet recovery.
 `wait.status: "timed_out"` returns a nonzero exit code.
 A timeout stops observation. It does not cancel the order or undo preparation.
 Use the same order ID to check again.
+For a `failed` order, `bitcaster-cli order settlement-failure <market-id> <order-id>`
+returns the reason when an output was already used, or `null`.
+`bitcaster-cli score history` returns the recent Participation Score changes.
 
 ### Claim a resolved position
 

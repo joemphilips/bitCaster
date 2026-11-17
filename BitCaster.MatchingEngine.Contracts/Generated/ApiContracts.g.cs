@@ -3759,7 +3759,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long PurchasedTotal { get; }
 
         /// <summary>
-        /// Total Score consumed by capability-admission and invalid-validation charges.
+        /// Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("consumedTotal")]
         public long ConsumedTotal { get; }
@@ -3778,6 +3778,148 @@ namespace BitCaster.MatchingEngine.Contracts
             get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
             set { _additionalProperties = value; }
         }
+
+    }
+
+    /// <summary>
+    /// `purchase` credits purchased Score. `capability-binding` is the admission charge of an order. `invalid-capability-validation` is the charge for an invalid proof or DLEQ validation attempt. `reused-output-penalty` is the 100 Score penalty for an order whose output was already used by another operation, so that the order was removed from its settlement.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScoreHistoryKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"purchase")]
+        Purchase = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"capability-binding")]
+        CapabilityBinding = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalid-capability-validation")]
+        InvalidCapabilityValidation = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"reused-output-penalty")]
+        ReusedOutputPenalty = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScoreHistoryEntry
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScoreHistoryEntry(long @amountScore, long @balanceAfter, ParticipationScoreHistoryKind @kind, System.DateTimeOffset @occurredAt)
+        {
+            this.Kind = @kind;
+            this.AmountScore = @amountScore;
+            this.BalanceAfter = @balanceAfter;
+            this.OccurredAt = @occurredAt;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScoreHistoryKind>))]
+        public ParticipationScoreHistoryKind Kind { get; }
+
+        /// <summary>
+        /// Signed Score change. A charge or a penalty is negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountScore")]
+        public long AmountScore { get; }
+
+        /// <summary>
+        /// Score balance after this change. It can be negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("balanceAfter")]
+        public long BalanceAfter { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("occurredAt")]
+        public System.DateTimeOffset OccurredAt { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScoreHistoryResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScoreHistoryResponse(long @balance, System.Collections.Generic.List<ParticipationScoreHistoryEntry> @entries)
+        {
+            this.Balance = @balance;
+            this.Entries = @entries;
+        }
+
+        /// <summary>
+        /// Current Participation Score balance. It can be negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("balance")]
+        public long Balance { get; }
+
+        /// <summary>
+        /// The most recent Score changes, newest first.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("entries")]
+        public System.Collections.Generic.List<ParticipationScoreHistoryEntry> Entries { get; }
+
+    }
+
+    /// <summary>
+    /// `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output of another order in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderSettlementFailureReason
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"OwnOutputReused")]
+        OwnOutputReused = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"GroupOutputReused")]
+        GroupOutputReused = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderSettlementFailure
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderSettlementFailure(System.DateTimeOffset @failedAt, System.Guid @groupId, OrderSettlementFailureReason @reason)
+        {
+            this.GroupId = @groupId;
+            this.Reason = @reason;
+            this.FailedAt = @failedAt;
+        }
+
+        /// <summary>
+        /// The settlement group that the order joined.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("groupId")]
+        public System.Guid GroupId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reason")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSettlementFailureReason>))]
+        public OrderSettlementFailureReason Reason { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("failedAt")]
+        public System.DateTimeOffset FailedAt { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderSettlementFailureResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderSettlementFailureResponse(OrderSettlementFailure? @failure, System.Guid @orderId)
+        {
+            this.OrderId = @orderId;
+            this.Failure = @failure;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// The recorded settlement failure, or null when none is recorded.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("failure")]
+        public OrderSettlementFailure? Failure { get; }
 
     }
 

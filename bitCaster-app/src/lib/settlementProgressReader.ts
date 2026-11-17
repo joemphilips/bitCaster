@@ -1,16 +1,24 @@
-import type { SettlementGroupSummary } from "@bitcaster/client-sdk/engineClient";
-import { fetchOrderStatus, type OrderStatusResponse } from "./orderStatus";
+import type {
+  OrderSettlementFailure,
+  SettlementGroupSummary,
+} from "@bitcaster/client-sdk/engineClient";
+import {
+  fetchOrderSettlementFailure,
+  fetchOrderStatus,
+  type OrderStatusResponse,
+} from "./orderStatus";
 
 const READ_DEADLINE_MS = 15_000;
 
-/** One slot survives page and wallet changes, including uncancellable signing. */
-export function createSettlementProgressReader(read = fetchOrderStatus) {
+/** Runs one read at a time. The slot stays occupied until the read settles, including uncancellable signing. */
+export type SettlementReadSlot = <T>(
+  signal: AbortSignal,
+  work: (signal: AbortSignal) => Promise<T>,
+) => Promise<T>;
+
+export function createSettlementReadSlot(): SettlementReadSlot {
   let occupied = false;
-  return async (
-    marketId: string,
-    orderId: string,
-    signal: AbortSignal,
-  ): Promise<SettlementGroupSummary | null> => {
+  return async <T>(signal: AbortSignal, read: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     signal.throwIfAborted();
     if (occupied) throw new Error("Settlement status is unavailable.");
     occupied = true;
@@ -26,9 +34,9 @@ export function createSettlementProgressReader(read = fetchOrderStatus) {
     const work = Promise.resolve()
       .then(async () => {
         controller.signal.throwIfAborted();
-        const response = await read(marketId, orderId, controller.signal);
+        const result = await read(controller.signal);
         controller.signal.throwIfAborted();
-        return response === null ? null : settlementGroupForOrder(response, marketId, orderId);
+        return result;
       })
       .finally(() => {
         occupied = false;
@@ -43,7 +51,45 @@ export function createSettlementProgressReader(read = fetchOrderStatus) {
   };
 }
 
-export const readSettlementProgress = createSettlementProgressReader();
+/** One slot survives page and wallet changes, including uncancellable signing. */
+export function createSettlementProgressReader(
+  read = fetchOrderStatus,
+  slot: SettlementReadSlot = createSettlementReadSlot(),
+) {
+  return (
+    marketId: string,
+    orderId: string,
+    signal: AbortSignal,
+  ): Promise<SettlementGroupSummary | null> =>
+    slot(signal, async (readSignal) => {
+      const response = await read(marketId, orderId, readSignal);
+      return response === null ? null : settlementGroupForOrder(response, marketId, orderId);
+    });
+}
+
+/** Reads why the settlement of one order failed. Null when the engine records no reason or no order. */
+export function createSettlementFailureReader(
+  read = fetchOrderSettlementFailure,
+  slot: SettlementReadSlot = createSettlementReadSlot(),
+) {
+  return (
+    marketId: string,
+    orderId: string,
+    signal: AbortSignal,
+  ): Promise<OrderSettlementFailure | null> =>
+    slot(
+      signal,
+      async (readSignal) => (await read(marketId, orderId, readSignal))?.failure ?? null,
+    );
+}
+
+// Status and failure reads share one slot, so the page never signs two reads at once.
+const sharedSlot = createSettlementReadSlot();
+export const readSettlementProgress = createSettlementProgressReader(fetchOrderStatus, sharedSlot);
+export const readSettlementFailure = createSettlementFailureReader(
+  fetchOrderSettlementFailure,
+  sharedSlot,
+);
 
 export function settlementGroupForOrder(
   response: OrderStatusResponse,

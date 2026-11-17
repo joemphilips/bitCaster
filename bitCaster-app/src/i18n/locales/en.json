@@ -1034,6 +1034,8 @@
     "Reconciling": "The engine is checking an uncertain settlement result.",
     "Confirmed": "The mint confirmed settlement. Wallet recovery can still be pending.",
     "DefinitivelyRejected": "This settlement did not complete. This does not mean funds were refunded.",
+    "OwnOutputReused": "This order did not settle. One of its outputs was already used by another operation of this wallet, for example in another browser. A Participation Score penalty was charged. The reserved funds return after the authorization expires.",
+    "GroupOutputReused": "This order did not settle because an output of another order in the same settlement was already used. No penalty was charged. The reserved funds return after the authorization expires.",
     "Refundable": "The engine found refund eligibility. The wallet must still verify and complete recovery.",
     "ExpiredBeforeSubmission": "The authorization expired before submission. Funds recovery is separate.",
     "RejectedBeforeSubmission": "The engine stopped settlement before submission. Funds recovery is separate.",
@@ -1166,7 +1168,16 @@
     "name": "Participation Score",
     "helpLabel": "About Participation Score",
     "help": "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
-    "purchaseAtConfirm": "Score top-up at confirm (kept as balance)"
+    "purchaseAtConfirm": "Score top-up at confirm (kept as balance)",
+    "history": "Score history",
+    "historyEmpty": "No Score changes yet.",
+    "historyUnavailable": "Score history is unavailable.",
+    "kinds": {
+      "purchase": "Purchase",
+      "capability-binding": "Order admission",
+      "invalid-capability-validation": "Invalid proof check",
+      "reused-output-penalty": "Reused output penalty"
+    }
   },
   "sort": {
     "label": "Sort markets",

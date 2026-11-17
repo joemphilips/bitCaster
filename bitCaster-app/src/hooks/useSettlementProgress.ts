@@ -8,10 +8,11 @@ import {
 } from "react";
 import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type {
+  OrderSettlementFailure,
   SettlementGroupStatus,
   SettlementGroupSummary,
 } from "@bitcaster/client-sdk/engineClient";
-import { readSettlementProgress } from "@/lib/settlementProgressReader";
+import { readSettlementFailure, readSettlementProgress } from "@/lib/settlementProgressReader";
 import { listenForSettlementProgressHints } from "@/lib/settlementProgressHints";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import {
@@ -39,6 +40,8 @@ export interface SettlementProgressScope {
 interface Observation {
   group: SettlementGroupSummary | null;
   unavailable: boolean;
+  /** Why a definitively rejected group failed for this order; absent until it is read. */
+  failure?: OrderSettlementFailure | null;
 }
 
 /** Read-only, visible-page observations. The durable journal owns membership. */
@@ -72,6 +75,35 @@ export function useSettlementProgress(
     const stopObserving = useOrderSettlementObservations.subscribe((state, previous) => {
       if (state.byOrderId !== previous.byOrderId) adoptPublished(state.byOrderId);
     });
+    // The failure reason of a rejected group never changes, so one successful read is enough.
+    const failures: Record<string, OrderSettlementFailure | null> = {};
+    const readFailureOnce = async (
+      entry: SettlementProgressEntry,
+      group: SettlementGroupSummary | null,
+    ) => {
+      if (group === null || !hasFailureReason(group.status) || entry.orderId === null) return;
+      const key = `${entry.operationId}:${group.groupId}`;
+      if (!Object.hasOwn(failures, key)) {
+        try {
+          failures[key] = await readSettlementFailure(
+            entry.marketId,
+            entry.orderId,
+            controller.signal,
+          );
+        } catch {
+          // The generic rejection stays visible; the next refresh reads the reason again.
+          return;
+        }
+      }
+      if (controller.signal.aborted) return;
+      const failure = failures[key]!;
+      setObservations((current) => {
+        const observation = current[entry.operationId];
+        return observation?.group?.groupId === group.groupId
+          ? { ...current, [entry.operationId]: { ...observation, failure } }
+          : current;
+      });
+    };
     const run = async () => {
       if (!enabled || controller.signal.aborted) return;
       if (running) {
@@ -94,23 +126,28 @@ export function useSettlementProgress(
               );
               if (controller.signal.aborted) return;
               setObservations((current) => {
-                const previous = current[entry.operationId]?.group ?? null;
+                const previous = current[entry.operationId];
+                const next =
+                  group === null
+                    ? (previous?.group ?? null)
+                    : latestGroup(previous?.group ?? null, group);
                 return {
                   ...current,
-                  [entry.operationId]: {
-                    group: group === null ? previous : latestGroup(previous, group),
-                    unavailable: group === null,
-                  },
+                  [entry.operationId]: withFailure(
+                    { group: next, unavailable: group === null },
+                    previous,
+                  ),
                 };
               });
+              await readFailureOnce(entry, group);
             } catch {
               if (controller.signal.aborted) return;
               setObservations((current) => ({
                 ...current,
-                [entry.operationId]: {
-                  group: current[entry.operationId]?.group ?? null,
-                  unavailable: true,
-                },
+                [entry.operationId]: withFailure(
+                  { group: current[entry.operationId]?.group ?? null, unavailable: true },
+                  current[entry.operationId],
+                ),
               }));
             }
           }
@@ -230,9 +267,34 @@ function adoptPublishedGroups(
     const group = latestGroup(previous?.group ?? null, observation.group);
     if (group !== observation.group || (previous?.group === group && !previous.unavailable))
       continue;
-    next = { ...next, [entry.operationId]: { group, unavailable: false } };
+    next = { ...next, [entry.operationId]: withFailure({ group, unavailable: false }, previous) };
   }
   return next;
+}
+
+/** Keep a read failure reason only while the observation names the same group. */
+function withFailure(next: Observation, previous: Observation | undefined): Observation {
+  return previous?.failure !== undefined && previous.group?.groupId === next.group?.groupId
+    ? { ...next, failure: previous.failure }
+    : next;
+}
+
+/** Only a definitively rejected group can carry a recorded failure reason. */
+function hasFailureReason(status: SettlementGroupStatus): boolean {
+  switch (status) {
+    case "DefinitivelyRejected":
+      return true;
+    case "Prepared":
+    case "SubmissionPending":
+    case "Reconciling":
+    case "Confirmed":
+    case "Refundable":
+    case "ExpiredBeforeSubmission":
+    case "RejectedBeforeSubmission":
+      return false;
+    default:
+      return assertNever(status);
+  }
 }
 
 /** A later read wins, except an older revision of the same group. */

@@ -1097,6 +1097,8 @@ export function getMarketThumbnail(market: {
 }
 
 export type ParticipationScoreResponse = components["schemas"]["ParticipationScoreResponse"];
+export type ParticipationScoreHistoryResponse =
+  components["schemas"]["ParticipationScoreHistoryResponse"];
 
 /** Submit one exact durable Cashu delivery. The response never exposes the token. */
 export async function submitDurableCashuDelivery(
@@ -1115,6 +1117,13 @@ export async function getDurableCashuDeliveryStatus(
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {
   return createAuthenticatedBrowserEngineClient().getParticipationScore();
+}
+
+/** The caller's Score balance and its most recent changes, newest first. */
+export async function getParticipationScoreHistory(
+  signal?: AbortSignal,
+): Promise<ParticipationScoreHistoryResponse> {
+  return createAuthenticatedBrowserEngineClient().getParticipationScoreHistory(signal);
 }
 
 /**
