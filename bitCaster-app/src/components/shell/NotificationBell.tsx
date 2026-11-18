@@ -7,11 +7,8 @@ import {
   selectUnreadCount,
   useNotificationsStore,
 } from "@/stores/notifications";
-import {
-  orderFailureReasonTextKey,
-  useOrderFailureNotices,
-  type OrderFailureNotice,
-} from "@/stores/orderFailureNotices";
+import { useOrderFailureNotices, type OrderFailureNotice } from "@/stores/orderFailureNotices";
+import { orderFailureText } from "@/lib/orderFailureText";
 import { assertNever } from "@/lib/enumDiscipline";
 import { splitMarketId } from "@/lib/orderStatus";
 import { portfolioClosedPositionHref } from "@/lib/portfolioRoute";
@@ -158,7 +155,7 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                             </div>
                             {failure && (
                               <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                                {t(orderFailureReasonTextKey(failure.reason))}
+                                {orderFailureText(t, failure)}
                               </div>
                             )}
                             <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">

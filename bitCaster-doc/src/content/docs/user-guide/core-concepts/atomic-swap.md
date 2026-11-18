@@ -121,25 +121,30 @@ history.
 When bitCaster accepts an order but its settlement does not complete, or when
 bitCaster ends the accepted order without a settlement, the order leaves
 **Active trade progress**. A separate **Trade failed** panel shows the market of
-the order and **This order was not completed. Your funds return to this wallet
-after the order expires.** The wallet recovers the funds automatically while
-the app is open. The failure stays after the refund and after a reload until
-you dismiss it. The failed-order notification in the notification list shows
-the same reason.
+the order and **This order was not completed. Your funds, less preparation and
+refund fees, return to this wallet after the order expires.** The wallet
+recovers the funds automatically while the app is open. After the refund, the
+panel says **Your funds, less preparation and refund fees, were returned to
+this wallet.** The failure stays after the refund and after a reload until you
+dismiss it. The failed-order notification in the notification list shows the
+same reason.
 
 When bitCaster refuses the order request itself, the wallet alert
 **Order was not completed** shows the refusal and the market of the order. The
-order does not show in either list. When you select **Stop waiting**, leave the market, or change the
+alert also says when your funds, less preparation and refund fees, return to
+this wallet, and that they were returned after the refund. The order does not
+show in either list. When you select **Stop waiting**, leave the market, or change the
 trade while the order waits between two attempts, that is not a failure. Until
 its refund, the order shows in **Active trade progress** as **This order ended
-without a trade. Your funds return to this wallet after the order expires.** An
-order that bitCaster cancels because it cannot fill at once shows the same
-text. If you stop while the wallet is sending an attempt, the result is
+without a trade. Your funds, less preparation and refund fees, return to this
+wallet after the order expires.** It has no **Refresh status** control, because
+only its refund is still active. An order that bitCaster cancels because it
+cannot fill at once shows the same text. If you stop while the wallet is sending an attempt, the result is
 uncertain, and the order can still fill. The wallet then reads the status of
 the order and does not send it again.
 
-When a settlement fails because an output was already used, the panel shows
-the specific reason. If your wallet was used in another browser or device at
+When a settlement fails because the same wallet was used in two places at the
+same time, the panel shows the specific reason. If your wallet was used in another browser or device at
 the same time, a Participation Score penalty was charged. If another order in
 the same settlement failed, no penalty was charged for your order. In
 **Score history**, the penalty row is **Penalty: wallet used in two places**.

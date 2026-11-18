@@ -11,6 +11,8 @@ import {
   useOrderSettlementObservations,
   type OrderSettlementObservation,
 } from "@/stores/orderSettlementObservations";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useNotificationsStore } from "@/stores/notifications";
 import {
   ORDER_FAILURE_NOTICES_STORAGE_KEY,
   orderFailureNoticeKey,
@@ -53,6 +55,8 @@ describe("read-only settlement progress", () => {
     useOrderSettlementObservations.setState({ byOrderId: {} });
     localStorage.clear();
     useOrderFailureNotices.setState({ notices: {} });
+    usePendingTradesStore.setState({ byOrderId: {} });
+    useNotificationsStore.setState({ items: [] });
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -266,6 +270,50 @@ describe("read-only settlement progress", () => {
     expect(recordedNotice()).toMatchObject({ ...expectedNotice, dismissed: false });
   });
 
+  it.each([
+    ["its pending trade", "pending"],
+    ["its order notification", "notification"],
+  ] as const)(
+    "stores the market title from %s when it records a failure",
+    async (_case, source) => {
+      const title = "Will Alice win the cup?";
+      if (source === "pending")
+        usePendingTradesStore.setState({
+          byOrderId: {
+            "order-1": {
+              orderId: "order-1",
+              walletId: scope.walletId,
+              marketId: "condition-Alpha",
+              marketTitle: title,
+              submittedAt: 1,
+              baseAsset: "sat",
+              divisibility: 1_000,
+            },
+          },
+        });
+      else
+        useNotificationsStore.setState({
+          items: [
+            {
+              id: "order-1-failed",
+              kind: "Failed",
+              orderId: "order-1",
+              marketId: "condition-Alpha",
+              filledAmountSubunits: 0,
+              remainingAmountSubunits: 1_000,
+              unit: "sat",
+              marketTitle: title,
+              occurredAt: 1,
+              read: false,
+            },
+          ],
+        });
+      mocks.read.mockResolvedValue(progressRead(groupWith("Refundable", 4)));
+      renderHook(() => useSettlementProgress(entries, true, scope));
+      await waitFor(() => expect(recordedNotice()?.marketTitle).toBe(title));
+    },
+  );
+
   it("does not read a reason again after a reload when the order already has a specific reason", async () => {
     useOrderFailureNotices.getState().record(expectedNotice);
     useOrderFailureNotices.getState().dismiss("scope-1", "operation-1");
@@ -423,6 +471,7 @@ const expectedNotice = {
   operationId: "operation-1",
   orderId: "order-1",
   marketId: "condition-Alpha",
+  marketTitle: null,
   reason: "OwnOutputReused" as const,
 };
 

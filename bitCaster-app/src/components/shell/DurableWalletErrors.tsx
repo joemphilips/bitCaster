@@ -15,6 +15,8 @@ import {
   type BrowserCtfRangeMessageCursor,
 } from "@/stores/ctf-range-order-messages";
 import { marketLabel, useMarketTitles } from "@/hooks/useMarketTitles";
+import { readCtfRangeOrderFunds, refusedOrderAlertFunds } from "@/lib/ctfRangeOrderFunds";
+import { withFundsSentence } from "@/lib/orderFailureText";
 import { assertNever } from "@/lib/enumDiscipline";
 
 const VISIBLE_MESSAGE_LIMIT = 8;
@@ -44,7 +46,7 @@ function AlertSubject({
     case "order":
       return marketId === undefined ? null : (
         <p className="mt-1 text-xs opacity-75">
-          {t("settlementProgress.failedOrder", { market: marketLabel(marketId, titles) })}
+          {t("settlementProgress.orderOnMarket", { market: marketLabel(marketId, titles) })}
         </p>
       );
     case "funds":
@@ -69,22 +71,46 @@ function namesMarket(kind: BrowserCtfRangeMessage["kind"]): boolean {
   }
 }
 
-/** The market of each order alert, from its journal operation. */
-async function readOrderMarkets(
+/** A refused order request ends with its funds sentence, which names the fees. */
+function alertText(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  message: BrowserCtfRangeMessage,
+  funds: "pending" | "refunded" | undefined,
+): string {
+  const text = t(`walletRecovery.errors.${message.code}`);
+  return funds === undefined ? text : withFundsSentence(t, text, funds);
+}
+
+/**
+ * The market of each order alert, from its journal operation, and the funds of
+ * each refused order request whose refund follows.
+ */
+async function readOrderAlertFacts(
   scopeId: string,
   messages: readonly BrowserCtfRangeMessage[],
-): Promise<Readonly<Record<string, string>>> {
-  const markets: Record<string, string> = {};
+): Promise<{
+  orderMarkets: Readonly<Record<string, string>>;
+  orderFunds: Readonly<Record<string, "pending" | "refunded">>;
+}> {
+  const orderMarkets: Record<string, string> = {};
+  const orderFunds: Record<string, "pending" | "refunded"> = {};
   for (const message of messages) {
-    if (!namesMarket(message.kind) || Object.hasOwn(markets, message.operationId)) continue;
+    if (!namesMarket(message.kind)) continue;
     try {
-      const record = await readCtfRangePreparation(scopeId, message.operationId);
-      if (record !== null) markets[message.operationId] = record.orderRouteId;
+      if (!Object.hasOwn(orderMarkets, message.operationId)) {
+        const record = await readCtfRangePreparation(scopeId, message.operationId);
+        if (record !== null) orderMarkets[message.operationId] = record.orderRouteId;
+      }
+      const funds = refusedOrderAlertFunds(
+        message.code,
+        await readCtfRangeOrderFunds(scopeId, message.operationId),
+      );
+      if (funds !== null) orderFunds[message.operationId] = funds;
     } catch {
-      // Without its journal record, the alert shows no market.
+      // Without its journal record, the alert shows no market and no funds.
     }
   }
-  return markets;
+  return { orderMarkets, orderFunds };
 }
 
 export function DurableWalletErrors() {
@@ -103,7 +129,7 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
       limit: VISIBLE_MESSAGE_LIMIT,
       ...(after ? { after } : {}),
     });
-    return { ...result, orderMarkets: await readOrderMarkets(scopeId, result.messages) };
+    return { ...result, ...(await readOrderAlertFacts(scopeId, result.messages)) };
   }, [scopeId, after]);
   if (!page || (page.messages.length === 0 && after === undefined)) return null;
 
@@ -126,7 +152,7 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
               <p>
                 {message.code === "order-attempt-ended" && message.fundsReleased === true
                   ? t("walletRecovery.fundsReleased")
-                  : t(`walletRecovery.errors.${message.code}`)}
+                  : alertText(t, message, page.orderFunds[message.operationId])}
               </p>
               {PARTICIPATION_SCORE_MESSAGE_CODES.has(message.code) && <ParticipationScoreHelp />}
             </div>

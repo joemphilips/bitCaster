@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ORDER_FAILURE_NOTICES_MAX,
   ORDER_FAILURE_NOTICES_STORAGE_KEY,
-  markEndedOrderFailureNotices,
+  observeOrderFailureFunds,
   orderFailureNoticeKey,
   useOrderFailureNotices,
   type NewOrderFailureNotice,
 } from "../orderFailureNotices";
 
 // The journal records of these operations are gone, so each bound sees them ended.
-vi.mock("@/stores/ctf-range-order-db", () => ({
-  readCtfRangePreparation: vi.fn().mockResolvedValue(null),
+vi.mock("@/lib/ctfRangeOrderFunds", () => ({
+  readCtfRangeOrderFunds: vi.fn().mockResolvedValue({ kind: "ended" }),
 }));
 
 function notice(operationId: string, overrides: Partial<NewOrderFailureNotice> = {}) {
@@ -19,6 +19,7 @@ function notice(operationId: string, overrides: Partial<NewOrderFailureNotice> =
     operationId,
     orderId: `order-${operationId}`,
     marketId: "condition-Alpha",
+    marketTitle: null,
     reason: "OwnOutputReused" as const,
     ...overrides,
   };
@@ -85,13 +86,13 @@ describe("order failure notices", () => {
       ...notice("operation-1"),
       recordedAtMs: 10,
       dismissed: true,
-      ended: false,
+      funds: "pending",
     });
     expect(stored("operation-2")).toEqual({
       ...notice("operation-2", { reason: "Unspecified" }),
       recordedAtMs: 20,
       dismissed: false,
-      ended: false,
+      funds: "pending",
     });
   });
 
@@ -114,7 +115,7 @@ describe("order failure notices", () => {
       ...notice("operation-1", { reason: "GroupOutputReused" }),
       recordedAtMs: 10,
       dismissed: true,
-      ended: false,
+      funds: "pending",
     });
   });
 
@@ -147,7 +148,7 @@ describe("order failure notices", () => {
     dismiss("scope-1", "operation-1");
     dismiss("scope-1", "missing");
     evictBeyondLimit("scope-1");
-    await markEndedOrderFailureNotices("scope-1", async () => true);
+    await observeOrderFailureFunds("scope-1", async () => "pending");
 
     expect(writes()).toBe(0);
   });
@@ -185,13 +186,13 @@ describe("order failure notices", () => {
         ...notice("operation-1", { reason: "GroupOutputReused" }),
         recordedAtMs: 10,
         dismissed: true,
-        ended: false,
+        funds: "pending",
       },
       [orderFailureNoticeKey("scope-1", "operation-2")]: {
         ...notice("operation-2"),
         recordedAtMs: 20,
         dismissed: false,
-        ended: false,
+        funds: "pending",
       },
     };
     realSetItem.call(
@@ -229,13 +230,13 @@ describe("order failure notices", () => {
               ...notice("operation-1", { reason: "Unspecified" }),
               recordedAtMs: 10,
               dismissed: false,
-              ended: true,
+              funds: "ended",
             },
             [orderFailureNoticeKey("scope-1", "operation-2")]: {
               ...notice("operation-2"),
               recordedAtMs: 20,
               dismissed: false,
-              ended: false,
+              funds: "pending",
             },
           },
         },
@@ -254,17 +255,22 @@ describe("order failure notices", () => {
     expect(stored("operation-1")).toMatchObject({
       reason: "OwnOutputReused",
       dismissed: true,
-      ended: true,
+      funds: "ended",
     });
   });
 
   it("drops a stored notice with an unknown reason or field, and keeps the valid ones", async () => {
-    const valid = { ...notice("operation-1"), recordedAtMs: 10, dismissed: false, ended: false };
+    const valid = {
+      ...notice("operation-1"),
+      recordedAtMs: 10,
+      dismissed: false,
+      funds: "pending",
+    };
     const generic = {
       ...notice("operation-6", { reason: "Unspecified" }),
       recordedAtMs: 10,
       dismissed: false,
-      ended: true,
+      funds: "ended",
     };
     const entry = (value: { scopeId: string; operationId: string; [field: string]: unknown }) =>
       [orderFailureNoticeKey(value.scopeId, value.operationId), value] as const;
@@ -281,7 +287,8 @@ describe("order failure notices", () => {
             entry({ ...valid, operationId: "operation-5", extra: true }),
             entry({ ...valid, operationId: "operation-7", orderId: "" }),
             entry({ ...valid, operationId: "operation-8", orderId: null }),
-            entry({ ...valid, operationId: "operation-9", ended: 1 }),
+            entry({ ...valid, operationId: "operation-9", funds: "done" }),
+            entry({ ...valid, operationId: "operation-10", marketTitle: 7 }),
           ]),
         },
         version: 0,
@@ -340,24 +347,45 @@ describe("order failure notices", () => {
     }
   });
 
-  it("marks the ended operations of the current wallet only", async () => {
+  it("keeps the first known market title, and fills a missing one later", () => {
+    const { record } = useOrderFailureNotices.getState();
+    record(notice("operation-1"), 10);
+    record(notice("operation-1", { marketTitle: "Will Alice win the cup?" }), 20);
+    record(notice("operation-1", { marketTitle: "Another title" }), 30);
+
+    expect(stored("operation-1")?.marketTitle).toBe("Will Alice win the cup?");
+  });
+
+  it("moves the funds of a notice only from pending to a final state", async () => {
+    const { record } = useOrderFailureNotices.getState();
+    record(notice("operation-1"), 10);
+    await observeOrderFailureFunds("scope-1", async () => "refunded");
+    await observeOrderFailureFunds("scope-1", async () => "pending");
+
+    expect(stored("operation-1")?.funds).toBe("refunded");
+  });
+
+  it("observes the funds of the current wallet only", async () => {
     const { record } = useOrderFailureNotices.getState();
     record(notice("ended"), 1);
     record(notice("active"), 2);
     record(notice("unreadable"), 3);
     record(notice("other", { scopeId: "scope-2" }), 4);
-    const isActive = vi.fn(async (_scopeId: string, operationId: string) => {
+    record(notice("refunded"), 5);
+    const read = vi.fn(async (_scopeId: string, operationId: string) => {
       if (operationId === "unreadable") throw new Error("journal unavailable");
-      return operationId === "active";
+      if (operationId === "refunded") return "refunded" as const;
+      return operationId === "active" ? ("pending" as const) : ("ended" as const);
     });
 
-    await markEndedOrderFailureNotices("scope-1", isActive);
+    await observeOrderFailureFunds("scope-1", read);
 
-    expect(stored("ended")?.ended).toBe(true);
-    expect(stored("active")?.ended).toBe(false);
-    expect(stored("unreadable")?.ended).toBe(false);
-    expect(stored("other", "scope-2")?.ended).toBe(false);
-    expect(isActive.mock.calls.map(([scopeId]) => scopeId)).not.toContain("scope-2");
+    expect(stored("ended")?.funds).toBe("ended");
+    expect(stored("refunded")?.funds).toBe("refunded");
+    expect(stored("active")?.funds).toBe("pending");
+    expect(stored("unreadable")?.funds).toBe("pending");
+    expect(stored("other", "scope-2")?.funds).toBe("pending");
+    expect(read.mock.calls.map(([scopeId]) => scopeId)).not.toContain("scope-2");
   });
 
   it("keeps the notices of other wallets", async () => {
@@ -365,11 +393,11 @@ describe("order failure notices", () => {
     record(notice("operation-1"), 10);
     record(notice("operation-2", { scopeId: "scope-2" }), 20);
 
-    await markEndedOrderFailureNotices("scope-1", async () => false);
+    await observeOrderFailureFunds("scope-1", async () => "ended");
     useOrderFailureNotices.getState().evictBeyondLimit("scope-1");
 
     expect(stored("operation-2", "scope-2")).toBeDefined();
-    expect(stored("operation-1")?.ended).toBe(true);
+    expect(stored("operation-1")?.funds).toBe("ended");
   });
 
   it("above the limit, evicts the oldest ended notices that the current wallet does not show", async () => {
@@ -385,13 +413,11 @@ describe("order failure notices", () => {
     });
     // Dismissed failures of the current wallet; the second is still active.
     recordMany(3, (index) => notice(`dismissed-${index}`), { dismissed: true, fromMs: 2_000 });
-    await markEndedOrderFailureNotices(
-      "scope-1",
-      async (_scopeId, operationId) => operationId === "dismissed-2",
+    await observeOrderFailureFunds("scope-1", async (_scopeId, operationId) =>
+      operationId === "dismissed-2" ? "pending" : "ended",
     );
-    await markEndedOrderFailureNotices(
-      "scope-2",
-      async (_scopeId, operationId) => operationId === "other-3",
+    await observeOrderFailureFunds("scope-2", async (_scopeId, operationId) =>
+      operationId === "other-3" ? "pending" : "ended",
     );
     const total = () => Object.keys(useOrderFailureNotices.getState().notices).length;
     expect(total()).toBe(ORDER_FAILURE_NOTICES_MAX + 2);
@@ -416,9 +442,9 @@ describe("order failure notices", () => {
     recordMany(2, (index) => notice(`dismissed-${index}`), { dismissed: true, fromMs: 1_000 });
     // Every current failure ended. The journal of dismissed-1 is active, and
     // the journal of dismissed-2 cannot be read.
-    await markEndedOrderFailureNotices("scope-1", async (_scopeId, operationId) => {
+    await observeOrderFailureFunds("scope-1", async (_scopeId, operationId) => {
       if (operationId === "dismissed-2") throw new Error("journal unavailable");
-      return operationId === "dismissed-1";
+      return operationId === "dismissed-1" ? "pending" : "refunded";
     });
 
     useOrderFailureNotices.getState().evictBeyondLimit("scope-1");

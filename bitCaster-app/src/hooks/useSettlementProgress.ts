@@ -20,6 +20,7 @@ import {
 } from "@/lib/settlementProgressReader";
 import { listenForSettlementProgressHints } from "@/lib/settlementProgressHints";
 import { isTerminalCtfRangePreparation } from "@/lib/ctfRangeOrderLifecycle";
+import { knownMarketTitle } from "@/hooks/useMarketTitles";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import {
   isSpecificReason,
@@ -60,12 +61,14 @@ export interface SettlementObservation {
  * How the panel shows one active journal entry. `failed` is a final failure
  * with a notice. `refusal` is a local refusal: its wallet alert shows an
  * engine refusal; otherwise the user stopped it, and the entry shows
- * `message` until the refund. `progress` shows `message`.
+ * `message` until the refund. `progress` shows `message`. A `final` entry
+ * ended without a trade: only its refund is still active, so it has no
+ * status to refresh.
  */
 export type SettlementEntryDisplay =
   | { readonly kind: "failed" }
   | { readonly kind: "refusal"; readonly message: string }
-  | { readonly kind: "progress"; readonly message: string };
+  | { readonly kind: "progress"; readonly message: string; readonly final: boolean };
 
 /** Read-only, visible-page observations. The durable journal owns membership. */
 export function useSettlementProgress(
@@ -132,6 +135,7 @@ export function useSettlementProgress(
         operationId: entry.operationId,
         orderId,
         marketId: entry.marketId,
+        marketTitle: knownMarketTitle(orderId, entry.marketId),
         reason: failure.reason,
       });
     };
@@ -224,6 +228,7 @@ export function useSettlementProgress(
         operationId: entry.operationId,
         orderId: entry.orderId,
         marketId: entry.marketId,
+        marketTitle: knownMarketTitle(entry.orderId, entry.marketId),
         reason: "Unspecified",
       });
     }
@@ -352,8 +357,8 @@ function mergeRead(
 
 const FAILED: SettlementEntryDisplay = { kind: "failed" };
 
-function progress(message: string): SettlementEntryDisplay {
-  return { kind: "progress", message };
+function progress(message: string, final = false): SettlementEntryDisplay {
+  return { kind: "progress", message, final };
 }
 
 /** Only a final failure of an engine order gets a failure notice. */
@@ -434,7 +439,7 @@ function orderStatusDisplay(status: OrderLifecycleStatus): SettlementEntryDispla
       return FAILED;
     case "cancelled":
     case "expired":
-      return progress("endedWithoutTrade");
+      return progress("endedWithoutTrade", true);
     case "resting":
     case "matched":
     case "partially_filled":

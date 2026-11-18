@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
 import { useNotificationsStore } from "@/stores/notifications";
+import en from "@/i18n/locales/en.json";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn().mockResolvedValue(undefined),
@@ -35,6 +36,7 @@ const mocks = vi.hoisted(() => ({
     }>,
     nextCursor: null,
     orderMarkets: {} as Record<string, string>,
+    orderFunds: {} as Record<string, "pending" | "refunded">,
   },
 }));
 
@@ -68,6 +70,38 @@ describe("DurableWalletErrors", () => {
     mocks.readPage.mockResolvedValue({ messages: [], nextCursor: null });
     useNotificationsStore.setState({ items: [] });
   });
+
+  it.each([
+    ["pending", en.settlementProgress.fundsPending],
+    ["refunded", en.settlementProgress.fundsReturned],
+  ] as const)(
+    "adds the %s funds sentence, with its fees, to a refused order request",
+    (funds, sentence) => {
+      const original = mocks.page;
+      const base = original.messages[0]!;
+      mocks.page = {
+        ...original,
+        messages: [
+          { ...base, operationId: "range-1", code: "order-submission-rejected", kind: "order" },
+          { ...base, operationId: "range-2", code: "order-submission-uncertain", kind: "order" },
+        ],
+        orderMarkets: { "range-1": "condition-a-Alpha", "range-2": "condition-a-Alpha" },
+        orderFunds: { "range-1": funds },
+      };
+      try {
+        render(<DurableWalletErrors />);
+
+        const [refused, uncertain] = screen.getAllByRole("alert");
+        expect(refused).toHaveTextContent(
+          `${en.walletRecovery.errors["order-submission-rejected"]} ${sentence}`,
+        );
+        // No refund follows from an uncertain result, so it names no funds.
+        expect(uncertain).not.toHaveTextContent(/Your funds/);
+      } finally {
+        mocks.page = original;
+      }
+    },
+  );
 
   it("names the order of an order alert by its market, and keeps the operation of a funds alert", () => {
     const original = mocks.page;

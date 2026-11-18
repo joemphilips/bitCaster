@@ -2,14 +2,13 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import type { OrderSettlementFailureReason } from "@bitcaster/client-sdk/engineClient";
 import { assertNever } from "@/lib/enumDiscipline";
-import { isTerminalCtfRangePreparation } from "@/lib/ctfRangeOrderLifecycle";
-import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
+import { readCtfRangeOrderFunds } from "@/lib/ctfRangeOrderFunds";
 
 export const ORDER_FAILURE_NOTICES_STORAGE_KEY = "bitcaster-order-failures";
 
 /**
  * Above this count, the oldest notices that are safe to drop are evicted. A
- * notice is safe to drop when its journal operation ended, and the user
+ * notice is safe to drop when its funds are final, and the user
  * dismissed it or it belongs to another wallet. A notice with an active
  * journal operation stays: the panel would record its failure again. An
  * undismissed notice of the current wallet stays until the user dismisses it.
@@ -37,16 +36,21 @@ export interface OrderFailureNotice {
   readonly reason: OrderFailureReason;
   readonly recordedAtMs: number;
   readonly dismissed: boolean;
+  /** The market title when the failure was recorded, or null when it was not known. */
+  readonly marketTitle: string | null;
   /**
-   * The wallet saw the journal operation end. Each wallet has its own
-   * database, so only that wallet can set this, while it is current.
+   * Where the reserved funds are: the refund is pending, it returned them, or
+   * the journal ended another way. Each wallet has its own database, so only
+   * that wallet can settle this, while it is current.
    */
-  readonly ended: boolean;
+  readonly funds: OrderFailureFunds;
 }
+
+export type OrderFailureFunds = "pending" | "refunded" | "ended";
 
 export type NewOrderFailureNotice = Omit<
   OrderFailureNotice,
-  "recordedAtMs" | "dismissed" | "ended"
+  "recordedAtMs" | "dismissed" | "funds"
 >;
 
 interface OrderFailureNoticeState {
@@ -57,8 +61,8 @@ interface OrderFailureNoticeState {
    */
   record: (notice: NewOrderFailureNotice, nowMs?: number) => void;
   dismiss: (scopeId: string, operationId: string) => void;
-  /** Mark these notices as notices of ended journal operations. */
-  markEnded: (keys: readonly string[]) => void;
+  /** Settle the pending funds of these notices. A final state never changes. */
+  settleFunds: (updates: Readonly<Record<string, "refunded" | "ended">>) => void;
   /** Keep the count within the limit; see ORDER_FAILURE_NOTICES_MAX. */
   evictBeyondLimit: (currentScopeId: string) => void;
 }
@@ -111,13 +115,18 @@ export const useOrderFailureNotices = create<OrderFailureNoticeState>()(
           set({
             notices: {
               ...notices,
-              [key]: { ...notice, recordedAtMs: nowMs, dismissed: false, ended: false },
+              [key]: { ...notice, recordedAtMs: nowMs, dismissed: false, funds: "pending" },
             },
           });
           return;
         }
-        if (isSpecificReason(current.reason) || !isSpecificReason(notice.reason)) return;
-        set({ notices: { ...notices, [key]: { ...current, reason: notice.reason } } });
+        const reason =
+          isSpecificReason(current.reason) || !isSpecificReason(notice.reason)
+            ? current.reason
+            : notice.reason;
+        const marketTitle = current.marketTitle ?? notice.marketTitle;
+        if (reason === current.reason && marketTitle === current.marketTitle) return;
+        set({ notices: { ...notices, [key]: { ...current, reason, marketTitle } } });
       },
       dismiss: (scopeId, operationId) => {
         const { notices } = get();
@@ -126,12 +135,14 @@ export const useOrderFailureNotices = create<OrderFailureNoticeState>()(
         if (notice === undefined || notice.dismissed) return;
         set({ notices: { ...notices, [key]: { ...notice, dismissed: true } } });
       },
-      markEnded: (keys) => {
+      settleFunds: (updates) => {
         const { notices } = get();
-        const ending = keys.filter((key) => notices[key]?.ended === false);
-        if (ending.length === 0) return;
+        const settling = Object.entries(updates).filter(
+          ([key]) => notices[key] !== undefined && !isFinalFunds(notices[key]!.funds),
+        );
+        if (settling.length === 0) return;
         const next = { ...notices };
-        for (const key of ending) next[key] = { ...next[key]!, ended: true };
+        for (const [key, funds] of settling) next[key] = { ...next[key]!, funds };
         set({ notices: next });
       },
       evictBeyondLimit: (currentScopeId) => {
@@ -193,14 +204,40 @@ export function isSpecificReason(reason: OrderFailureReason): boolean {
 }
 
 function isEvictable(notice: OrderFailureNotice, currentScopeId: string): boolean {
-  return notice.ended && (notice.dismissed || notice.scopeId !== currentScopeId);
+  return isFinalFunds(notice.funds) && (notice.dismissed || notice.scopeId !== currentScopeId);
 }
 
-type IsActiveOperation = (scopeId: string, operationId: string) => Promise<boolean>;
+/** A final state of the funds never changes. */
+export function isFinalFunds(funds: OrderFailureFunds): boolean {
+  switch (funds) {
+    case "pending":
+      return false;
+    case "refunded":
+    case "ended":
+      return true;
+    default:
+      return assertNever(funds);
+  }
+}
 
-async function isActiveOperation(scopeId: string, operationId: string): Promise<boolean> {
-  const record = await readCtfRangePreparation(scopeId, operationId);
-  return record !== null && !isTerminalCtfRangePreparation(record.lifecycleState);
+type ReadOrderFailureFunds = (scopeId: string, operationId: string) => Promise<OrderFailureFunds>;
+
+/** The funds state of a notice, from the journal and the custody operation. */
+export async function readOrderFailureFunds(
+  scopeId: string,
+  operationId: string,
+): Promise<OrderFailureFunds> {
+  const funds = await readCtfRangeOrderFunds(scopeId, operationId);
+  switch (funds.kind) {
+    case "active":
+      return "pending";
+    case "refunded":
+      return "refunded";
+    case "ended":
+      return "ended";
+    default:
+      return assertNever(funds);
+  }
 }
 
 /**
@@ -223,34 +260,41 @@ export function dismissOrderFailureNotice(scopeId: string, operationId: string):
   return boundOrderFailureNotices(scopeId);
 }
 
-async function boundOrderFailureNotices(
-  scopeId: string,
-  isActive: IsActiveOperation = isActiveOperation,
-): Promise<void> {
-  await markEndedOrderFailureNotices(scopeId, isActive);
+async function boundOrderFailureNotices(scopeId: string): Promise<void> {
+  await observeOrderFailureFunds(scopeId, readOrderFailureFunds);
   useOrderFailureNotices.getState().evictBeyondLimit(scopeId);
 }
 
 /**
- * Mark the notices of the current wallet whose journal operation ended. A
- * journal that cannot be read keeps its notice unmarked.
+ * Settle the pending funds of the notices of the current wallet. A journal
+ * that cannot be read keeps its notice pending.
  */
-export async function markEndedOrderFailureNotices(
+export async function observeOrderFailureFunds(
   scopeId: string,
-  isActive: IsActiveOperation,
+  read: ReadOrderFailureFunds,
 ): Promise<void> {
-  const unchecked = Object.entries(useOrderFailureNotices.getState().notices).filter(
-    ([, notice]) => notice.scopeId === scopeId && !notice.ended,
+  const pending = Object.entries(useOrderFailureNotices.getState().notices).filter(
+    ([, notice]) => notice.scopeId === scopeId && !isFinalFunds(notice.funds),
   );
-  const ended: string[] = [];
-  for (const [key, notice] of unchecked) {
+  const updates: Record<string, "refunded" | "ended"> = {};
+  for (const [key, notice] of pending) {
     try {
-      if (!(await isActive(notice.scopeId, notice.operationId))) ended.push(key);
+      const funds = await read(notice.scopeId, notice.operationId);
+      switch (funds) {
+        case "pending":
+          break;
+        case "refunded":
+        case "ended":
+          updates[key] = funds;
+          break;
+        default:
+          assertNever(funds);
+      }
     } catch {
-      // The next check reads the journal again.
+      // The next observation reads the journal again.
     }
   }
-  useOrderFailureNotices.getState().markEnded(ended);
+  useOrderFailureNotices.getState().settleFunds(updates);
 }
 
 /** The union by key. A dismissal, an end mark and a specific reason win. */
@@ -269,7 +313,8 @@ function mergeNotices(
             reason: isSpecificReason(notice.reason) ? notice.reason : other.reason,
             recordedAtMs: Math.min(notice.recordedAtMs, other.recordedAtMs),
             dismissed: notice.dismissed || other.dismissed,
-            ended: notice.ended || other.ended,
+            funds: isFinalFunds(notice.funds) ? notice.funds : other.funds,
+            marketTitle: notice.marketTitle ?? other.marketTitle,
           };
   }
   return merged;
@@ -290,9 +335,10 @@ const NOTICE_KEYS = [
   "orderId",
   "marketId",
   "reason",
+  "marketTitle",
   "recordedAtMs",
   "dismissed",
-  "ended",
+  "funds",
 ] as const;
 
 /** Keep each stored notice with the exact known shape. Drop any other value. */
@@ -313,7 +359,17 @@ function decodeStoredNotice(value: unknown): OrderFailureNotice | null {
   const keys = Object.keys(value);
   if (keys.length !== NOTICE_KEYS.length || !NOTICE_KEYS.every((key) => keys.includes(key)))
     return null;
-  const { scopeId, operationId, orderId, marketId, reason, recordedAtMs, dismissed, ended } = value;
+  const {
+    scopeId,
+    operationId,
+    orderId,
+    marketId,
+    marketTitle,
+    reason,
+    recordedAtMs,
+    dismissed,
+    funds,
+  } = value;
   if (
     !isText(scopeId) ||
     !isText(operationId) ||
@@ -321,11 +377,12 @@ function decodeStoredNotice(value: unknown): OrderFailureNotice | null {
     !isText(marketId) ||
     !Number.isSafeInteger(recordedAtMs) ||
     typeof dismissed !== "boolean" ||
-    typeof ended !== "boolean"
+    (marketTitle !== null && !isText(marketTitle))
   )
     return null;
   const knownReason = decodeStoredReason(reason);
-  if (knownReason === null) return null;
+  const knownFunds = decodeStoredFunds(funds);
+  if (knownReason === null || knownFunds === null) return null;
   return {
     scopeId,
     operationId,
@@ -333,9 +390,21 @@ function decodeStoredNotice(value: unknown): OrderFailureNotice | null {
     marketId,
     reason: knownReason,
     recordedAtMs: recordedAtMs as number,
+    marketTitle,
     dismissed,
-    ended,
+    funds: knownFunds,
   };
+}
+
+function decodeStoredFunds(value: unknown): OrderFailureFunds | null {
+  switch (value) {
+    case "pending":
+    case "refunded":
+    case "ended":
+      return value;
+    default:
+      return null;
+  }
 }
 
 function decodeStoredReason(value: unknown): OrderFailureReason | null {

@@ -24,8 +24,11 @@ const REASON_KEYS = [
 /** Order-failure alerts and labels that used protocol jargon before. */
 const REWORDED_ORDER_FAILURE_KEYS = [
   ...REASON_KEYS,
-  "settlementProgress.failedOrder",
+  "settlementProgress.orderOnMarket",
   "settlementProgress.endedWithoutTrade",
+  "settlementProgress.fundsPending",
+  "settlementProgress.fundsReturned",
+  "settlementProgress.dismissFailure",
   "participationScore.kinds.reused-output-penalty",
   "walletRecovery.errors.order-attempt-ended",
   "walletRecovery.errors.settlement-capability-conflict",
@@ -45,13 +48,21 @@ const REPLACED_STATUS_KEYS = [
 describe("final order failure copy", () => {
   it("uses the approved plain English reasons, heading and Score label", () => {
     expect(en.settlementProgress.OwnOutputReused).toBe(
-      "This order was not completed because this wallet was used in another browser or device at the same time. A Participation Score penalty was charged. Your funds return to this wallet after the order expires.",
+      "This order was not completed because this wallet was used in another browser or device at the same time. A Participation Score penalty was charged.",
     );
     expect(en.settlementProgress.GroupOutputReused).toBe(
-      "This order was not completed because another order in the same settlement failed. No penalty was charged. Your funds return to this wallet after the order expires.",
+      "This order was not completed because another order in the same settlement failed. No penalty was charged.",
     );
-    expect(lookup(en, "settlementProgress.failed")).toBe(
-      "This order was not completed. Your funds return to this wallet after the order expires.",
+    expect(lookup(en, "settlementProgress.failed")).toBe("This order was not completed.");
+    expect(lookup(en, "settlementProgress.endedWithoutTrade")).toBe(
+      "This order ended without a trade.",
+    );
+    // The fee clause is part of the funds sentence (ADR-040, section 7).
+    expect(lookup(en, "settlementProgress.fundsPending")).toBe(
+      "Your funds, less preparation and refund fees, return to this wallet after the order expires.",
+    );
+    expect(lookup(en, "settlementProgress.fundsReturned")).toBe(
+      "Your funds, less preparation and refund fees, were returned to this wallet.",
     );
     expect(en.settlementProgress.failedTitle).toBe("Trade failed");
     expect(en.participationScore.kinds["reused-output-penalty"]).toBe(
@@ -86,13 +97,28 @@ describe("final order failure copy", () => {
     expect(ja.settlementProgress.GroupOutputReused).not.toContain("Participation Score");
     for (const key of REASON_KEYS) {
       expect(lookup(ja, key), key).toContain("この注文は完了しませんでした");
-      expect(lookup(ja, key), key).toContain("注文の有効期限が切れた後にこのウォレットに戻ります");
     }
-    expect(lookup(ja, "settlementProgress.endedWithoutTrade")).toContain(
-      "注文の有効期限が切れた後にこのウォレットに戻ります",
-    );
-    expect(lookup(ja, "settlementProgress.failedOrder")).toContain("{{market}}");
+    // The fee terms of the existing fee notice.
+    for (const key of ["settlementProgress.fundsPending", "settlementProgress.fundsReturned"]) {
+      expect(lookup(ja, key), key).toContain("準備手数料と返金手数料");
+      expect(lookup(ja, key), key).toContain("このウォレットに戻");
+    }
+    expect(lookup(ja, "settlementProgress.fundsPending")).toContain("注文の有効期限が切れた後");
+    expect(lookup(ja, "settlementProgress.orderOnMarket")).toContain("{{market}}");
     expect(ja.settlementProgress.failedTitle).toMatch(/取引/);
     expect(ja.settlementProgress.dismissFailure).toMatch(/閉じる$/);
+    expect(ja.settlementProgress.dismissFailure).toContain("{{market}}");
   });
+
+  it.each([
+    ["en", en, "A. B."],
+    ["ja", ja, "A。B。"],
+  ] as const)(
+    "%s joins a reason and its funds sentence as one paragraph",
+    (_locale, catalogue, joined) => {
+      const template = lookup(catalogue, "settlementProgress.withFunds") as string;
+      const [reason, funds] = _locale === "en" ? ["A.", "B."] : ["A。", "B。"];
+      expect(template.replace("{{reason}}", reason).replace("{{funds}}", funds)).toBe(joined);
+    },
+  );
 });

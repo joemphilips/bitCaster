@@ -228,7 +228,8 @@ export async function readBrowserCtfRangeOrderRefusalOperations(
       .between([scopeId, operationId], [scopeId, operationId, []])
       .limit(OPERATION_MESSAGE_LIMIT)
       .toArray();
-    if (rows.some((row) => isOrderRequestRefusal(decodeMessage(row).code))) found.add(operationId);
+    if (rows.some((row) => isOrderRequestRefusalCode(decodeMessage(row).code)))
+      found.add(operationId);
   }
   return found;
 }
@@ -237,7 +238,7 @@ export async function readBrowserCtfRangeOrderRefusalOperations(
  * The codes of an engine refusal of an order request. The wallet records them
  * when the engine refuses the request before any write.
  */
-function isOrderRequestRefusal(code: BrowserCtfRangeOrderErrorCode): boolean {
+export function isOrderRequestRefusalCode(code: BrowserCtfRangeOrderErrorCode): boolean {
   switch (code) {
     case "settlement-capability-invalid-request":
     case "settlement-capability-invalid-artifact":

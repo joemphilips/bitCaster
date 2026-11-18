@@ -18,6 +18,8 @@ import type {
 import { BitcasterDB } from "@/stores/proof-db";
 import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { browserRangeCustodyOperationId } from "@/lib/ctfRangeOrderFunds";
 import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages";
 import {
   ORDER_FAILURE_NOTICES_MAX,
@@ -69,6 +71,14 @@ vi.mock("@/stores/ctf-range-order-db", async (original) => {
       actual.readCtfRangePreparation(scopeId, rangeOperationId, database),
   };
 });
+vi.mock("@/lib/ctfRangeOrderFunds", async (original) => {
+  const actual = await original<typeof import("@/lib/ctfRangeOrderFunds")>();
+  return {
+    ...actual,
+    readCtfRangeOrderFunds: (scopeId: string, operationId: string) =>
+      actual.readCtfRangeOrderFunds(scopeId, operationId, database),
+  };
+});
 vi.mock("@/stores/ctf-range-order-messages", async (original) => {
   const actual = await original<typeof import("@/stores/ctf-range-order-messages")>();
   return {
@@ -98,6 +108,7 @@ beforeEach(() => {
   localStorage.clear();
   useOrderFailureNotices.setState({ notices: {} });
   useNotificationsStore.setState({ items: [] });
+  usePendingTradesStore.setState({ byOrderId: {} });
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -229,10 +240,8 @@ describe("active settlement progress", () => {
       mocks.read.mockResolvedValue(statusRead(group(status)));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
-      expect(
-        within(failed).getByRole("button", { name: en.settlementProgress.dismissFailure }),
-      ).toBeVisible();
+      expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+      expect(within(failed).getByRole("button", { name: dismissName("Alpha") })).toBeVisible();
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
       ).not.toBeInTheDocument();
@@ -248,7 +257,7 @@ describe("active settlement progress", () => {
       mocks.readFailure.mockResolvedValue(failure(reason));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(en.settlementProgress[reason])).toBeVisible();
+      expect(within(failed).getByText(pending(en.settlementProgress[reason]))).toBeVisible();
       // The failure uses the error colour role of the wallet alerts, not neutral text.
       expect(
         within(failed).getByRole("heading", { name: en.settlementProgress.failedTitle }),
@@ -257,7 +266,7 @@ describe("active settlement progress", () => {
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
       ).not.toBeInTheDocument();
-      expect(screen.queryByText(en.settlementProgress.failed)).not.toBeInTheDocument();
+      expect(screen.queryByText(pending(en.settlementProgress.failed))).not.toBeInTheDocument();
       expect(ja.settlementProgress[reason]).toMatch(/\S/);
       expect(ja.settlementProgress[reason]).not.toBe(en.settlementProgress[reason]);
     },
@@ -286,7 +295,7 @@ describe("active settlement progress", () => {
     expect(within(active).getAllByRole("listitem")).toHaveLength(1);
     expect(within(active).getByText(en.settlementProgress.prepared)).toBeVisible();
     expect(
-      within(active).queryByText(en.settlementProgress.OwnOutputReused),
+      within(active).queryByText(pending(en.settlementProgress.OwnOutputReused)),
     ).not.toBeInTheDocument();
   });
 
@@ -306,9 +315,7 @@ describe("active settlement progress", () => {
     expect(
       screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
     ).not.toBeInTheDocument();
-    expect(
-      within(active).queryByRole("button", { name: en.settlementProgress.dismissFailure }),
-    ).toBeNull();
+    expect(within(active).queryByRole("button", { name: dismissName("Alpha") })).toBeNull();
     expect(useOrderFailureNotices.getState().notices).toEqual({});
   });
 
@@ -318,7 +325,7 @@ describe("active settlement progress", () => {
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     await waitFor(() => expect(mocks.readFailure).toHaveBeenCalledTimes(1));
-    expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
+    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
     expect(stored("range-1")?.reason).toBe("Unspecified");
   });
 
@@ -331,7 +338,7 @@ describe("active settlement progress", () => {
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     await waitFor(() => expect(mocks.readFailure).toHaveBeenCalledTimes(1));
-    expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
+    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
 
     // The next settlement hint for this order reads the reason again.
     act(() =>
@@ -340,8 +347,12 @@ describe("active settlement progress", () => {
         marketId: fixture().orderRouteId,
       }),
     );
-    expect(await within(failed).findByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
-    expect(within(failed).queryByText(en.settlementProgress.failed)).not.toBeInTheDocument();
+    expect(
+      await within(failed).findByText(pending(en.settlementProgress.OwnOutputReused)),
+    ).toBeVisible();
+    expect(
+      within(failed).queryByText(pending(en.settlementProgress.failed)),
+    ).not.toBeInTheDocument();
 
     // A dismissed generic failure stays dismissed when its reason is found.
     act(() => {
@@ -352,6 +363,7 @@ describe("active settlement progress", () => {
         orderId: fixture().capability!.orderId,
         marketId: fixture().orderRouteId,
         reason: "Unspecified",
+        marketTitle: null,
       });
       useOrderFailureNotices.getState().dismiss(fixture().scopeId, "range-1");
     });
@@ -385,14 +397,23 @@ describe("active settlement progress", () => {
     await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     expect(await screen.findByText(en.settlementProgress.prepared)).toBeVisible();
 
-    // Wallet recovery refunds the order and ends its journal operation. The
-    // other operation ends in the same write, so the in-progress section
-    // closes when the panel has read the ended journal.
+    // Wallet recovery refunds the order: it aborts the custody operation and
+    // ends the journal in one transaction. The other operation ends in the
+    // same write, so the in-progress section closes when the panel has read
+    // the ended journal.
     await act(async () => {
-      await database.ctfRangePreparations.bulkPut([
-        { ...fixture(), lifecycleState: "terminal" },
-        { ...preparing, lifecycleState: "terminal" },
-      ]);
+      await database.transaction(
+        "rw",
+        database.ctfRangePreparations,
+        database.custodyOperations,
+        async () => {
+          await database.custodyOperations.put(custodyOperation("range-1", "aborted"));
+          await database.ctfRangePreparations.bulkPut([
+            { ...fixture(), lifecycleState: "terminal" },
+            { ...preparing, lifecycleState: "terminal" },
+          ]);
+        },
+      );
     });
     await waitFor(() =>
       expect(
@@ -400,7 +421,9 @@ describe("active settlement progress", () => {
       ).not.toBeInTheDocument(),
     );
     const failed = screen.getByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(failed).getByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
+    expect(
+      await within(failed).findByText(returned(en.settlementProgress.OwnOutputReused)),
+    ).toBeVisible();
     expect(screen.queryByText(en.settlementProgress.terminal)).not.toBeInTheDocument();
 
     // A reload recreates the failure from the persisted notice.
@@ -408,10 +431,10 @@ describe("active settlement progress", () => {
     await reloadNotices();
     const reloaded = render(<SettlementProgress canReadStatus />);
     const again = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(again).getByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
+    expect(within(again).getByText(returned(en.settlementProgress.OwnOutputReused))).toBeVisible();
 
     const dismiss = within(again).getAllByRole("button", {
-      name: en.settlementProgress.dismissFailure,
+      name: dismissName("Alpha"),
     });
     expect(dismiss).toHaveLength(1);
     fireEvent.click(dismiss[0]);
@@ -428,6 +451,7 @@ describe("active settlement progress", () => {
       orderId: "33333333-3333-4333-8333-333333333333",
       marketId: fixture().orderRouteId,
       reason: "Unspecified",
+      marketTitle: null,
     });
     await reloadNotices();
     expect(stored("range-1")?.dismissed).toBe(true);
@@ -436,10 +460,9 @@ describe("active settlement progress", () => {
       name: en.settlementProgress.failedTitle,
     });
     expect(within(remaining).getAllByRole("listitem")).toHaveLength(1);
-    expect(within(remaining).getByText(en.settlementProgress.failed)).toBeVisible();
-    expect(
-      within(remaining).queryByText(en.settlementProgress.OwnOutputReused),
-    ).not.toBeInTheDocument();
+    // Its journal record is gone, so the panel makes no refund claim for it.
+    expect(await within(remaining).findByText(en.settlementProgress.failed)).toBeVisible();
+    expect(remaining).not.toHaveTextContent(en.settlementProgress.OwnOutputReused);
     expect(mocks.read).toHaveBeenCalledTimes(1);
   });
 
@@ -452,9 +475,7 @@ describe("active settlement progress", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("full", "QuotaExceededError");
     });
-    fireEvent.click(
-      within(failed).getByRole("button", { name: en.settlementProgress.dismissFailure }),
-    );
+    fireEvent.click(within(failed).getByRole("button", { name: dismissName("Alpha") }));
     expect(
       screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
     ).not.toBeInTheDocument();
@@ -467,7 +488,7 @@ describe("active settlement progress", () => {
     await reloadNotices();
     render(<SettlementProgress canReadStatus />);
     const again = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(again).getByText(en.settlementProgress.GroupOutputReused)).toBeVisible();
+    expect(within(again).getByText(pending(en.settlementProgress.GroupOutputReused))).toBeVisible();
   });
 
   it("keeps the failure of another wallet for its return, and does not show it here", async () => {
@@ -481,6 +502,7 @@ describe("active settlement progress", () => {
       orderId: "99999999-9999-4999-8999-999999999999",
       marketId: "condition-a-Alpha",
       reason: "OwnOutputReused",
+      marketTitle: null,
     });
     await database.ctfRangePreparations.put(fixture());
     const view = render(<SettlementProgress canReadStatus />);
@@ -496,7 +518,7 @@ describe("active settlement progress", () => {
     });
     view.rerender(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(failed).getByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
+    expect(within(failed).getByText(pending(en.settlementProgress.OwnOutputReused))).toBeVisible();
   });
 
   it("keeps paging when every operation on the first page failed", async () => {
@@ -534,23 +556,145 @@ describe("active settlement progress", () => {
     );
   });
 
-  it("names a failed order by its market title, or by its outcome", async () => {
+  it("keeps the market title of a failed order after the bell is cleared, or names its outcome", async () => {
     await database.ctfRangePreparations.put(fixture());
     mocks.read.mockResolvedValue(statusRead(group("Refundable")));
     useNotificationsStore.setState({ items: [failedNotification("Will Alice win the cup?")] });
-    render(<SettlementProgress canReadStatus />);
+    const view = render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     expect(within(failed).getByText("Order on “Will Alice win the cup?”")).toBeVisible();
     expect(failed).not.toHaveTextContent(/Operation/);
+    // The notice stored the title when it recorded the failure.
     act(() => useNotificationsStore.setState({ items: [] }));
-    expect(within(failed).getByText("Order on “Alpha”")).toBeVisible();
+    expect(within(failed).getByText("Order on “Will Alice win the cup?”")).toBeVisible();
+    expect(
+      within(failed).getByRole("button", { name: dismissName("Will Alice win the cup?") }),
+    ).toBeVisible();
+
+    // Without a known title, the label names the outcome.
+    view.unmount();
+    act(() => useOrderFailureNotices.setState({ notices: {} }));
+    render(<SettlementProgress canReadStatus />);
+    const untitled = await screen.findByRole("region", {
+      name: en.settlementProgress.failedTitle,
+    });
+    expect(within(untitled).getByText("Order on “Alpha”")).toBeVisible();
+  });
+
+  it("keeps a long market title whole and lets it wrap", async () => {
+    const title = `Will ${"a very long market title ".repeat(12)}resolve?`.replace(/ +/g, " ");
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(statusRead(group("Refundable")));
+    useNotificationsStore.setState({ items: [failedNotification(title)] });
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    const label = within(failed).getByText(`Order on “${title}”`);
+    expect(label).toBeVisible();
+    expect(label.className).toMatch(/\bbreak-words\b/);
+  });
+
+  it("says that the funds were returned once the refund ends the operation", async () => {
+    const preparing = {
+      ...fixture(),
+      rangeOperationId: "range-2",
+      clientOrderId: "client-2",
+      capability: null,
+      lifecycleState: "prepared" as const,
+      createdAtMs: 3,
+      updatedAtMs: 4,
+    };
+    await database.ctfRangePreparations.bulkPut([fixture(), preparing]);
+    mocks.read.mockResolvedValue(statusRead(group("DefinitivelyRejected")));
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+
+    // The refund aborts the custody operation and ends the journal together.
+    await act(async () => {
+      await database.transaction(
+        "rw",
+        database.ctfRangePreparations,
+        database.custodyOperations,
+        async () => {
+          await database.custodyOperations.put(custodyOperation("range-1", "aborted"));
+          await database.ctfRangePreparations.bulkPut([
+            { ...fixture(), lifecycleState: "terminal" },
+            { ...preparing, lifecycleState: "terminal" },
+          ]);
+        },
+      );
+    });
+    expect(await within(failed).findByText(returned(en.settlementProgress.failed))).toBeVisible();
+    expect(stored("range-1")?.funds).toBe("refunded");
+  });
+
+  it("makes no refund claim when the operation ended without a refund", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(statusRead(group("Refundable")));
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    // The settlement committed after all: the custody operation reconciled.
+    await act(async () => {
+      await database.transaction(
+        "rw",
+        database.ctfRangePreparations,
+        database.custodyOperations,
+        async () => {
+          await database.custodyOperations.put(custodyOperation("range-1", "reconciled"));
+          await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
+        },
+      );
+    });
+    await waitFor(() => expect(stored("range-1")?.funds).toBe("ended"));
+    expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
+    expect(failed).not.toHaveTextContent(en.settlementProgress.fundsPending);
+    expect(failed).not.toHaveTextContent(en.settlementProgress.fundsReturned);
+  });
+
+  it("names each order in progress by its market, not by its operation", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    usePendingTradesStore.setState({
+      byOrderId: {
+        [fixture().capability!.orderId]: {
+          orderId: fixture().capability!.orderId,
+          walletId: mocks.walletId,
+          marketId: fixture().orderRouteId,
+          marketTitle: "Will Alice win the cup?",
+          submittedAt: 1,
+          baseAsset: "sat",
+          divisibility: 1_000,
+        },
+      },
+    });
+    render(<SettlementProgress canReadStatus />);
+    const active = await screen.findByRole("region", { name: en.settlementProgress.title });
+    expect(await within(active).findByText(en.settlementProgress.Reconciling)).toBeVisible();
+    expect(within(active).getByText("Order on “Will Alice win the cup?”")).toBeVisible();
+    expect(active).not.toHaveTextContent(/Operation/);
+  });
+
+  it("shows an order that ended without a trade as final, with no Refresh control", async () => {
+    const record = fixture();
+    await database.ctfRangePreparations.put({
+      ...record,
+      lifecycleState: "order-request-rejected",
+      capability: null,
+    });
+    render(<SettlementProgress canReadStatus />);
+    const active = await screen.findByRole("region", { name: en.settlementProgress.title });
+    expect(
+      await within(active).findByText(pending(en.settlementProgress.endedWithoutTrade)),
+    ).toBeVisible();
+    expect(
+      within(active).queryByRole("button", { name: en.settlementProgress.refresh }),
+    ).not.toBeInTheDocument();
   });
 
   // Each tab bounds the notices after its own record or dismissal only. A
   // bound after another tab's write evicts that tab's notices, the union
   // merge brings them back, and the two tabs write to each other without end.
   it("does not write the notices again after another tab changes them", async () => {
-    const { record, markEnded } = useOrderFailureNotices.getState();
+    const { record, settleFunds } = useOrderFailureNotices.getState();
     const keys: string[] = [];
     for (let index = 1; index <= ORDER_FAILURE_NOTICES_MAX; index++) {
       record(
@@ -560,12 +704,13 @@ describe("active settlement progress", () => {
           orderId: `order-ended-${index}`,
           marketId: fixture().orderRouteId,
           reason: "Unspecified",
+          marketTitle: null,
         },
         index,
       );
       keys.push(orderFailureNoticeKey(fixture().scopeId, `ended-${index}`));
     }
-    markEnded(keys);
+    settleFunds(Object.fromEntries(keys.map((key) => [key, "ended" as const])));
     render(<SettlementProgress canReadStatus={false} />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     expect(within(failed).getAllByRole("listitem")).toHaveLength(ORDER_FAILURE_NOTICES_MAX);
@@ -581,9 +726,10 @@ describe("active settlement progress", () => {
       orderId: "order-other-1",
       marketId: fixture().orderRouteId,
       reason: "Unspecified",
+      marketTitle: null,
       recordedAtMs: 0,
       dismissed: false,
-      ended: true,
+      funds: "ended",
     };
     realSetItem.call(localStorage, ORDER_FAILURE_NOTICES_STORAGE_KEY, JSON.stringify(state));
     window.dispatchEvent(
@@ -615,6 +761,7 @@ describe("active settlement progress", () => {
           orderId: `order-ended-${index}`,
           marketId: fixture().orderRouteId,
           reason: "Unspecified",
+          marketTitle: null,
         },
         index,
       );
@@ -625,9 +772,7 @@ describe("active settlement progress", () => {
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     expect(within(failed).getAllByRole("listitem")).toHaveLength(1);
-    fireEvent.click(
-      within(failed).getByRole("button", { name: en.settlementProgress.dismissFailure }),
-    );
+    fireEvent.click(within(failed).getByRole("button", { name: dismissName("Alpha") }));
     await waitFor(() => expect(stored("ended-1")).toBeUndefined());
     expect(stored("ended-2")?.dismissed).toBe(true);
     expect(stored("range-1")?.dismissed).toBe(true);
@@ -700,7 +845,7 @@ describe("active settlement progress", () => {
       render(<SettlementProgress canReadStatus={canReadStatus} />);
       const active = await screen.findByRole("region", { name: en.settlementProgress.title });
       expect(
-        await within(active).findByText(en.settlementProgress.endedWithoutTrade),
+        await within(active).findByText(pending(en.settlementProgress.endedWithoutTrade)),
       ).toBeVisible();
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
@@ -743,7 +888,7 @@ describe("active settlement progress", () => {
       );
     await waitFor(() => expect(items()).toHaveLength(2));
     // An order alert that is not a refusal keeps the neutral text.
-    expect(items()[0]).toHaveTextContent(en.settlementProgress.endedWithoutTrade);
+    expect(items()[0]).toHaveTextContent(pending(en.settlementProgress.endedWithoutTrade));
 
     // The wallet records the engine refusal as an order alert after the journal write.
     await act(async () => {
@@ -761,7 +906,9 @@ describe("active settlement progress", () => {
     });
     await waitFor(() => expect(items()).toHaveLength(1));
     expect(items()[0]).toHaveTextContent(en.settlementProgress.prepared);
-    expect(screen.queryByText(en.settlementProgress.endedWithoutTrade)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(pending(en.settlementProgress.endedWithoutTrade)),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
     ).not.toBeInTheDocument();
@@ -775,7 +922,7 @@ describe("active settlement progress", () => {
       mocks.read.mockResolvedValue(statusRead(null, status));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
+      expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
       ).not.toBeInTheDocument();
@@ -791,7 +938,7 @@ describe("active settlement progress", () => {
       render(<SettlementProgress canReadStatus />);
       const active = await screen.findByRole("region", { name: en.settlementProgress.title });
       expect(
-        await within(active).findByText(en.settlementProgress.endedWithoutTrade),
+        await within(active).findByText(pending(en.settlementProgress.endedWithoutTrade)),
       ).toBeVisible();
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
@@ -920,6 +1067,32 @@ function stored(operationId: string) {
   return useOrderFailureNotices.getState().notices[
     orderFailureNoticeKey(fixture().scopeId, operationId)
   ];
+}
+
+/** A reason and the funds sentence of a pending refund, as one paragraph. */
+function pending(reason: string): string {
+  return `${reason} ${en.settlementProgress.fundsPending}`;
+}
+
+function returned(reason: string): string {
+  return `${reason} ${en.settlementProgress.fundsReturned}`;
+}
+
+function dismissName(market: string): string {
+  return en.settlementProgress.dismissFailure.replace("{{market}}", market);
+}
+
+/** A custody operation row of a range operation, with only the state that the panel reads. */
+function custodyOperation(rangeOperationId: string, operationState: "aborted" | "reconciled") {
+  return {
+    scopeId: fixture().scopeId,
+    operationId: browserRangeCustodyOperationId(fixture().scopeId, rangeOperationId),
+    revision: 1,
+    operationState,
+    nextAttemptAtMs: null,
+    estimatedBytes: 0,
+    record: {} as never,
+  };
 }
 
 function statusRead(

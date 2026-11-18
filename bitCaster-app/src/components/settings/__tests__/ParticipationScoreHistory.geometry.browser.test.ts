@@ -58,6 +58,12 @@ it.each([
     expect(new Set(edges(1)).size).toBe(1);
     expect(new Set(edges(2)).size).toBe(1);
     expect(new Set(amountWidths.map(Math.round)).size).toBe(1);
+    // The longest label does not wrap the time onto a second line.
+    for (const row of rows) {
+      const time = row.children[1] as HTMLElement;
+      const lineHeight = Number.parseFloat(getComputedStyle(time).lineHeight);
+      expect(time.getBoundingClientRect().height).toBeLessThan(lineHeight * 1.5);
+    }
     // The widest amount fits its column.
     for (const row of rows) {
       const amount = row.children[2] as HTMLElement;

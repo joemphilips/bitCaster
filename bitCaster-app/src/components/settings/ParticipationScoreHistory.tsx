@@ -80,7 +80,7 @@ export function ParticipationScoreHistory({
               <span className="text-slate-700 dark:text-slate-300">
                 {t(kindLabelKey(entry.kind))}
               </span>
-              <span className="ml-auto text-xs text-slate-500">
+              <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-slate-500">
                 {formatTimeAgo(entry.occurredAt)}
               </span>
               {/* A fixed column keeps the times and the amounts aligned. */}

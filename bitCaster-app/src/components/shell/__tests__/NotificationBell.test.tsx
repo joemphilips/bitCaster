@@ -2,7 +2,7 @@ import { render, screen, fireEvent, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotificationBell } from "../NotificationBell";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
-import { useOrderFailureNotices } from "@/stores/orderFailureNotices";
+import { orderFailureNoticeKey, useOrderFailureNotices } from "@/stores/orderFailureNotices";
 import i18n from "@/i18n";
 import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
@@ -164,13 +164,24 @@ describe("NotificationBell order failures", () => {
     expect(navigated).toBe(`/markets/${COND}`);
   });
 
+  // The reason and the funds sentence of the notice form one paragraph.
   it.each([
-    ["en", "OwnOutputReused", en.settlementProgress.OwnOutputReused],
-    ["ja", "GroupOutputReused", ja.settlementProgress.GroupOutputReused],
-    ["en", "Unspecified", en.settlementProgress.failed],
+    [
+      "en",
+      "OwnOutputReused",
+      "pending",
+      `${en.settlementProgress.OwnOutputReused} ${en.settlementProgress.fundsPending}`,
+    ],
+    [
+      "ja",
+      "GroupOutputReused",
+      "refunded",
+      `${ja.settlementProgress.GroupOutputReused}${ja.settlementProgress.fundsReturned}`,
+    ],
+    ["en", "Unspecified", "ended", en.settlementProgress.failed],
   ] as const)(
-    "shows the recorded failure reason in the %s Failed notification, also after dismissal",
-    async (language, reason, text) => {
+    "shows the recorded failure reason in the %s Failed notification, also after dismissal (%s, funds %s)",
+    async (language, reason, funds, text) => {
       await i18n.changeLanguage(language);
       useNotificationsStore.getState().add(orderNotice("Matched", 1_000, 0));
       useNotificationsStore
@@ -181,8 +192,13 @@ describe("NotificationBell order failures", () => {
         operationId: "operation-1",
         orderId: "order-1",
         marketId: `${COND}-Yes`,
+        marketTitle: null,
         reason,
       });
+      if (funds !== "pending")
+        useOrderFailureNotices
+          .getState()
+          .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: funds });
       useOrderFailureNotices.getState().dismiss("scope-1", "operation-1");
 
       openBell();
