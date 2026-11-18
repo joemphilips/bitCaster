@@ -5,3 +5,4 @@ export { UserMenu } from "./UserMenu";
 export { NotificationBell } from "./NotificationBell";
 export { DurableWalletErrors } from "./DurableWalletErrors";
 export { RecoveryIndexStatus } from "./RecoveryIndexStatus";
+export { ShellBanners } from "./ShellBanners";

@@ -204,22 +204,24 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
           {t("walletRecovery.morePending")}
         </p>
       )}
-      <div className="flex gap-3">
-        {after !== undefined && (
-          <button type="button" className="text-sm underline" onClick={() => setAfter(undefined)}>
-            {t("walletRecovery.firstAlerts")}
-          </button>
-        )}
-        {page.nextCursor !== null && (
-          <button
-            type="button"
-            className="text-sm underline"
-            onClick={() => setAfter(page.nextCursor!)}
-          >
-            {t("common.next")}
-          </button>
-        )}
-      </div>
+      {(after !== undefined || page.nextCursor !== null) && (
+        <div className="flex gap-3">
+          {after !== undefined && (
+            <button type="button" className="text-sm underline" onClick={() => setAfter(undefined)}>
+              {t("walletRecovery.firstAlerts")}
+            </button>
+          )}
+          {page.nextCursor !== null && (
+            <button
+              type="button"
+              className="text-sm underline"
+              onClick={() => setAfter(page.nextCursor!)}
+            >
+              {t("common.next")}
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

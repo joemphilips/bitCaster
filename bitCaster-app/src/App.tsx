@@ -1,6 +1,11 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
-import { AppShell, DurableWalletErrors, RecoveryIndexStatus } from "@/components/shell";
+import {
+  AppShell,
+  DurableWalletErrors,
+  RecoveryIndexStatus,
+  ShellBanners,
+} from "@/components/shell";
 import { SettlementProgress } from "@/components/shell/SettlementProgress";
 import { BetaNotice } from "@/components/shell/BetaNotice";
 import { MarketsPage } from "@/pages/MarketsPage";
@@ -143,9 +148,11 @@ export function ShellRoutes({
       }}
       onCreateClick={() => navigate("/creator")}
     >
-      <RecoveryIndexStatus />
-      <DurableWalletErrors />
-      <SettlementProgress canReadStatus={canReadOrderStatus} />
+      <ShellBanners>
+        <RecoveryIndexStatus />
+        <DurableWalletErrors />
+        <SettlementProgress canReadStatus={canReadOrderStatus} />
+      </ShellBanners>
       <Routes>
         <Route path="/" element={<MarketsPage />} />
         <Route path="/markets" element={<MarketsPage />} />

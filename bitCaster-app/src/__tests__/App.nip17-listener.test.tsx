@@ -36,6 +36,7 @@ vi.mock("@/components/shell", () => ({
   ),
   DurableWalletErrors: () => null,
   RecoveryIndexStatus: () => null,
+  ShellBanners: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 // The recovery index has its own tests. It needs no Nostr signer.
 vi.mock("@/hooks/useBrowserRecoveryIndex", () => ({ useBrowserRecoveryIndex: () => undefined }));

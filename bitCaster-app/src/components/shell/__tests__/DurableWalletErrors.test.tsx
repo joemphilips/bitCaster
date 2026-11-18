@@ -270,6 +270,15 @@ describe("DurableWalletErrors", () => {
     expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
   });
 
+  // An empty row in the stack would add one more uneven gap.
+  it("renders no paging row when there is no other page", () => {
+    render(<DurableWalletErrors />);
+
+    const section = screen.getByRole("region", { name: en.walletRecovery.title });
+    expect(section.children).toHaveLength(1);
+    expect(section.firstElementChild).toHaveAttribute("role", "alert");
+  });
+
   it("can read later alerts without dismissing an unresolved alert", () => {
     const cursor = {
       observedAtMs: 10,
