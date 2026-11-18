@@ -598,7 +598,7 @@ export class BrowserCtfRangeOrderError extends Error {
 }
 
 const REFUSED_SOURCE_RELEASED_MESSAGE =
-  "The mint refused this order. No order was submitted. The reserved funds are available again.";
+  "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.";
 
 /**
  * ADR-037 gives GUI immediate-order authorizations a short default lifetime.

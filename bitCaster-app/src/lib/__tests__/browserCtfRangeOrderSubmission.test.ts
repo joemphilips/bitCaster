@@ -1722,7 +1722,7 @@ describe("submitBrowserCtfRangeOrder", () => {
   it("stores the mint code of a refused submission with its order alert", async () => {
     const ended = new BrowserCtfRangeOrderError(
       "order-attempt-ended",
-      "The mint refused this order. No order was submitted. The reserved funds are available again.",
+      "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
     );
     Object.assign(ended, {
       mintError: { code: 11008, detail: "Duplicate outputs" },

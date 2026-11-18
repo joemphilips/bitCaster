@@ -148,7 +148,7 @@ daemon は注文を送信する前に、ミントで注文の資金を準備し�
 ミントの拒否の中には、準備が完了しておらず、今後も完了しないことを証明するものがあります。
 このような拒否の後、daemon は予約した資金をもう一度確認し、注文の試行を終了します。
 このとき `order submit` はコード `order-attempt-released` で失敗し、`mintError` にミントのコードを含めます。
-`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.」です。
+`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.」です。
 別の操作が資金の一部を使っていた場合、daemon は残りの資金だけを解放します。新しい注文を送信できます。
 
 その他の失敗では資金は予約されたままで、daemon は結果をもう一度確認します。

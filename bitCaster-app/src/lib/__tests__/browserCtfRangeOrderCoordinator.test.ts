@@ -3980,6 +3980,9 @@ describe("browser CTF range final mint refusal", () => {
     await expect(fixture.submit(coordinator)).rejects.toMatchObject({
       code: "order-attempt-ended",
       released: true,
+      // The consolidation rounds commit before the refused source swap.
+      message:
+        "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
       mintError: { code: 11001 },
     });
     await expectReleasedPartialSell(fixture, { spentSecrets: [fixture.cash.secret] });

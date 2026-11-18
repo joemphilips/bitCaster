@@ -59,8 +59,12 @@ export class CtfRangeSellPreparationPendingError extends Error {
   }
 }
 
+/**
+ * The consolidation rounds commit before the refused source swap, so a
+ * consolidation fee can already be paid. The browser says the same.
+ */
 export function rangeOrderReleasedMessage(code: number): string {
-  return `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds are available again.`
+  return `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.`
 }
 
 export function rangeOrderRetryCommand(operationId: string): string {

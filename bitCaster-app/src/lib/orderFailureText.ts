@@ -9,7 +9,8 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 /**
  * The funds sentence carries the fee clause (ADR-040, section 7). A journal
- * that ended without a refund gets no funds claim.
+ * that ended without a refund gets no funds claim. Nothing shows a settled
+ * order as a failure.
  */
 function fundsSentenceKey(funds: OrderFailureFunds): string | null {
   switch (funds) {
@@ -18,6 +19,7 @@ function fundsSentenceKey(funds: OrderFailureFunds): string | null {
     case "refunded":
       return "settlementProgress.fundsReturned";
     case "ended":
+    case "settled":
       return null;
     default:
       return assertNever(funds);

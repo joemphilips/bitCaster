@@ -10,7 +10,14 @@ import {
   type CtfRangeOrderPreparationLifecycle,
   type CtfRangeOrderPreparationRecord,
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
-import { BitcasterDB } from "@/stores/proof-db";
+import { BitcasterDB, activateBrowserWalletDatabase, db } from "@/stores/proof-db";
+import {
+  orderFailureFundsReader,
+  observeOrderFailureFunds,
+  orderFailureNoticeKey,
+  recordOrderFailureNotice,
+  useOrderFailureNotices,
+} from "@/stores/orderFailureNotices";
 import { browserCustodyOperationId } from "../browserCtfRangeOrderSource";
 import {
   browserRangeCustodyOperationId,
@@ -59,13 +66,18 @@ describe("CTF range order funds", () => {
     });
   });
 
-  it.each([
-    ["a settled custody operation", "reconciled" as const],
-    ["no custody operation", null],
-  ])("is ended, with no refund claim, for %s", async (_case, operationState) => {
+  it("is settled when the settlement reconciled the custody operation", async () => {
     const database = createDatabase();
     await database.ctfRangePreparations.put(journal("terminal"));
-    if (operationState !== null) await database.custodyOperations.put(custody(operationState));
+    await database.custodyOperations.put(custody("reconciled"));
+    expect(await readCtfRangeOrderFunds(scopeId, "range-1", database)).toEqual({
+      kind: "settled",
+    });
+  });
+
+  it("is ended, with no refund claim, without a custody operation", async () => {
+    const database = createDatabase();
+    await database.ctfRangePreparations.put(journal("terminal"));
     expect(await readCtfRangeOrderFunds(scopeId, "range-1", database)).toEqual({ kind: "ended" });
   });
 
@@ -86,10 +98,72 @@ describe("CTF range order funds", () => {
     // A refusal whose journal still waits for the order answer has no refund yet.
     ["order-submission-rejected", { kind: "active", lifecycleState: "order-requested" }, null],
     ["order-submission-rejected", { kind: "ended" }, null],
+    ["order-submission-rejected", { kind: "settled" }, null],
     // An uncertain result is not a refusal; no refund follows from it.
     ["order-submission-uncertain", { kind: "refunded" }, null],
   ] as const)("gives the funds of a %s alert in state %o: %s", (code, funds, expected) => {
     expect(refusedOrderAlertFunds(code, funds)).toBe(expected);
+  });
+});
+
+describe("order failure funds of the current wallet", () => {
+  const otherScopeId = deriveDurableCustodyScopeId({
+    scopeKind: "wallet",
+    walletId: deriveDurableCustodyWalletId(new Uint8Array(32).fill(8)),
+  });
+  const notice = {
+    scopeId,
+    operationId: "range-1",
+    orderId: "11111111-1111-4111-8111-111111111111",
+    marketId: "condition-a-Alpha",
+    marketTitle: null,
+    reason: "Unspecified" as const,
+  };
+  const stored = () =>
+    useOrderFailureNotices.getState().notices[orderFailureNoticeKey(scopeId, "range-1")];
+
+  afterEach(async () => {
+    useOrderFailureNotices.setState({ notices: {} });
+    for (const id of [scopeId, otherScopeId]) {
+      activateBrowserWalletDatabase(id);
+      await db.delete();
+    }
+  });
+
+  it("does not settle a notice from the database of another wallet", async () => {
+    // The journal operation of this wallet is still active.
+    activateBrowserWalletDatabase(scopeId);
+    await db.ctfRangePreparations.put(journal("order-submitted"));
+    // The user switched to another wallet before the check.
+    activateBrowserWalletDatabase(otherScopeId);
+
+    await recordOrderFailureNotice(notice);
+
+    expect(stored()?.funds).toBe("pending");
+  });
+
+  it("keeps a notice pending when the wallet changes during the check", async () => {
+    activateBrowserWalletDatabase(scopeId);
+    await db.ctfRangePreparations.put(journal("order-submitted"));
+    useOrderFailureNotices.getState().record(notice);
+    const read = orderFailureFundsReader(scopeId);
+    expect(read).not.toBeNull();
+    activateBrowserWalletDatabase(otherScopeId);
+
+    await observeOrderFailureFunds(scopeId, read!);
+
+    expect(stored()?.funds).toBe("pending");
+    expect(orderFailureFundsReader(scopeId)).toBeNull();
+  });
+
+  it("marks the notice of an order whose settlement completed as settled", async () => {
+    activateBrowserWalletDatabase(scopeId);
+    await db.ctfRangePreparations.put(journal("terminal"));
+    await db.custodyOperations.put(custody("reconciled"));
+
+    await recordOrderFailureNotice(notice);
+
+    expect(stored()?.funds).toBe("settled");
   });
 });
 

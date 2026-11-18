@@ -8,8 +8,10 @@ import { readBrowserCtfRangeOrderRefusalOperations } from "@/stores/ctf-range-or
 import {
   dismissOrderFailureNotice,
   isFinalFunds,
+  orderFailureFundsReader,
   orderFailureNoticeKey,
-  readOrderFailureFunds,
+  readOrderFailureFundsObservations,
+  showsOrderFailure,
   useOrderFailureNotices,
   type OrderFailureNotice,
 } from "@/stores/orderFailureNotices";
@@ -105,7 +107,9 @@ function TradeFailures({ scopeId }: { scopeId: string }) {
 /**
  * Settle the funds of this wallet's notices when the refund, or another end,
  * changes the journal. The query reads the journal and the custody operation,
- * so a refund that commits both together updates it.
+ * so a refund that commits both together updates it. It reads only the
+ * database of this wallet; while another wallet's database is active, the
+ * notices stay pending.
  */
 function useRefundObservation(
   stored: Readonly<Record<string, OrderFailureNotice>>,
@@ -118,25 +122,10 @@ function useRefundObservation(
       .sort(),
   );
   const observed = useLiveQuery(async () => {
-    const settled: Record<string, "refunded" | "ended"> = {};
-    for (const operationId of JSON.parse(key) as string[]) {
-      try {
-        const funds = await readOrderFailureFunds(scopeId, operationId);
-        switch (funds) {
-          case "pending":
-            break;
-          case "refunded":
-          case "ended":
-            settled[orderFailureNoticeKey(scopeId, operationId)] = funds;
-            break;
-          default:
-            assertNever(funds);
-        }
-      } catch {
-        // The next journal change reads it again.
-      }
-    }
-    return settled;
+    const read = orderFailureFundsReader(scopeId);
+    return read === null
+      ? {}
+      : readOrderFailureFundsObservations(scopeId, JSON.parse(key) as string[], read);
   }, [scopeId, key]);
   useEffect(() => {
     if (observed !== undefined) useOrderFailureNotices.getState().settleFunds(observed);
@@ -148,7 +137,9 @@ function visibleFailures(
   scopeId: string,
 ): OrderFailureNotice[] {
   return Object.values(notices)
-    .filter((notice) => notice.scopeId === scopeId && !notice.dismissed)
+    .filter(
+      (notice) => notice.scopeId === scopeId && !notice.dismissed && showsOrderFailure(notice),
+    )
     .sort(
       (left, right) =>
         left.recordedAtMs - right.recordedAtMs || left.operationId.localeCompare(right.operationId),

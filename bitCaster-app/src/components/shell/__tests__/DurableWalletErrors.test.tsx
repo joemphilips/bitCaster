@@ -229,7 +229,7 @@ describe("DurableWalletErrors", () => {
       const alert = screen.getByRole("alert");
       expect(alert).toHaveTextContent("Order was not completed");
       expect(alert).toHaveTextContent(
-        "The mint refused this order. No order was submitted. The reserved funds are available again.",
+        "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
       );
       expect(alert).toHaveTextContent("Mint code: 11008");
     } finally {

@@ -80,6 +80,18 @@ describe("final order failure copy", () => {
     }
   });
 
+  // Consolidation rounds commit before the mint refuses the source
+  // preparation, so a consolidation fee can already be paid on this path.
+  it.each([
+    ["en", en, "less any consolidation fee"],
+    ["ja", ja, "統合手数料"],
+  ] as const)(
+    "%s names the paid consolidation fee when the reserved funds are released",
+    (_locale, catalogue, fee) => {
+      expect(catalogue.walletRecovery.fundsReleased).toContain(fee);
+    },
+  );
+
   it("uses one English term for an order that was not completed", () => {
     expect(JSON.stringify(en)).not.toMatch(/did not go through/i);
     expect(en.walletRecovery.orderFailure).toBe("Order was not completed");

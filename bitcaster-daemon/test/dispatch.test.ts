@@ -2500,7 +2500,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.equal(response.code, 'order-attempt-released')
         assert.equal(
           response.error,
-          'The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.',
+          'The mint refused the order (mint code 11008). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.',
         )
         assert.deepEqual(response.mintError, { code: 11008, detail: 'Duplicate outputs' })
         assert.ok(response.clientOrderId)

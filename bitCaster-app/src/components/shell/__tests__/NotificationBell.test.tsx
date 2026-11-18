@@ -213,6 +213,29 @@ describe("NotificationBell order failures", () => {
     },
   );
 
+  it("shows no failure reason for an order whose settlement completed after all", () => {
+    useNotificationsStore
+      .getState()
+      .add({ ...orderNotice("Failed", 0, 1_000), id: "order-1-failed" });
+    useOrderFailureNotices.getState().record({
+      scopeId: "scope-1",
+      operationId: "operation-1",
+      orderId: "order-1",
+      marketId: `${COND}-Yes`,
+      marketTitle: null,
+      reason: "OwnOutputReused",
+    });
+    useOrderFailureNotices
+      .getState()
+      .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: "settled" });
+
+    openBell();
+
+    expect(screen.getByRole("listitem")).not.toHaveTextContent(
+      en.settlementProgress.OwnOutputReused,
+    );
+  });
+
   it("shows a Failed notification without a recorded reason as before", () => {
     useNotificationsStore
       .getState()

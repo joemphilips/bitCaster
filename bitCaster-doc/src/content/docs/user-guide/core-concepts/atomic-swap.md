@@ -105,7 +105,8 @@ return to the start. Dismissing an alert does not stop recovery or delete funds.
 
 An alert can show the code that the mint returned, for example
 **Mint code: 11008**. If the mint refused an order preparation, the alert says
-**Order was not completed**, and the reserved funds are available again. If the
+**Order was not completed**, and the reserved funds, less any consolidation fee
+already paid, are available again. If the
 wallet stopped the automatic retries, the alert shows **Retry**. Select
 **Retry** to send the check one more time.
 
@@ -126,7 +127,7 @@ refund fees, return to this wallet after the order expires.** The wallet
 recovers the funds automatically while the app is open. After the refund, the
 panel says **Your funds, less preparation and refund fees, were returned to
 this wallet.** The failure stays after the refund and after a reload until you
-dismiss it. The failed-order notification in the notification list shows the
+dismiss it. If the settlement completes after all, the failure leaves the panel. The failed-order notification in the notification list shows the
 same reason.
 
 When bitCaster refuses the order request itself, the wallet alert
@@ -137,8 +138,8 @@ show in either list. When you select **Stop waiting**, leave the market, or chan
 trade while the order waits between two attempts, that is not a failure. Until
 its refund, the order shows in **Active trade progress** as **This order ended
 without a trade. Your funds, less preparation and refund fees, return to this
-wallet after the order expires.** It has no **Refresh status** control, because
-only its refund is still active. An order that bitCaster cancels because it
+wallet after the order expires.** Only its refund is still active. When the
+list shows only such orders, it does not show **Refresh status**. An order that bitCaster cancels because it
 cannot fill at once shows the same text. If you stop while the wallet is sending an attempt, the result is
 uncertain, and the order can still fill. The wallet then reads the status of
 the order and does not send it again.

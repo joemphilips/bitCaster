@@ -2,16 +2,18 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import type { OrderSettlementFailureReason } from "@bitcaster/client-sdk/engineClient";
 import { assertNever } from "@/lib/enumDiscipline";
-import { readCtfRangeOrderFunds } from "@/lib/ctfRangeOrderFunds";
+import { readCtfRangeOrderFunds, walletDatabaseFor } from "@/lib/ctfRangeOrderFunds";
+import type { BitcasterDB } from "@/stores/proof-db";
 
 export const ORDER_FAILURE_NOTICES_STORAGE_KEY = "bitcaster-order-failures";
 
 /**
  * Above this count, the oldest notices that are safe to drop are evicted. A
- * notice is safe to drop when its funds are final, and the user
- * dismissed it or it belongs to another wallet. A notice with an active
- * journal operation stays: the panel would record its failure again. An
- * undismissed notice of the current wallet stays until the user dismisses it.
+ * notice is safe to drop when its order settled, or when its funds are final
+ * and the user dismissed it or it belongs to another wallet. A notice with an
+ * active journal operation stays: the panel would record its failure again.
+ * An undismissed failure of the current wallet stays until the user
+ * dismisses it.
  */
 export const ORDER_FAILURE_NOTICES_MAX = 100;
 
@@ -39,14 +41,19 @@ export interface OrderFailureNotice {
   /** The market title when the failure was recorded, or null when it was not known. */
   readonly marketTitle: string | null;
   /**
-   * Where the reserved funds are: the refund is pending, it returned them, or
-   * the journal ended another way. Each wallet has its own database, so only
-   * that wallet can settle this, while it is current.
+   * Where the reserved funds are: the refund is pending, it returned them,
+   * the settlement completed after all, or the journal ended another way.
+   * Each wallet has its own database, so only that wallet can settle this,
+   * while it is current.
    */
   readonly funds: OrderFailureFunds;
 }
 
-export type OrderFailureFunds = "pending" | "refunded" | "ended";
+/**
+ * `settled` is a trade that completed after all. Its notice stays, so the
+ * union with another tab cannot record the failure again, but nothing shows it.
+ */
+export type OrderFailureFunds = "pending" | "refunded" | "ended" | "settled";
 
 export type NewOrderFailureNotice = Omit<
   OrderFailureNotice,
@@ -62,7 +69,7 @@ interface OrderFailureNoticeState {
   record: (notice: NewOrderFailureNotice, nowMs?: number) => void;
   dismiss: (scopeId: string, operationId: string) => void;
   /** Settle the pending funds of these notices. A final state never changes. */
-  settleFunds: (updates: Readonly<Record<string, "refunded" | "ended">>) => void;
+  settleFunds: (updates: Readonly<Record<string, FinalOrderFailureFunds>>) => void;
   /** Keep the count within the limit; see ORDER_FAILURE_NOTICES_MAX. */
   evictBeyondLimit: (currentScopeId: string) => void;
 }
@@ -204,7 +211,24 @@ export function isSpecificReason(reason: OrderFailureReason): boolean {
 }
 
 function isEvictable(notice: OrderFailureNotice, currentScopeId: string): boolean {
-  return isFinalFunds(notice.funds) && (notice.dismissed || notice.scopeId !== currentScopeId);
+  return (
+    !showsOrderFailure(notice) ||
+    (isFinalFunds(notice.funds) && (notice.dismissed || notice.scopeId !== currentScopeId))
+  );
+}
+
+/** A notice shows a failure unless its settlement completed after all. */
+export function showsOrderFailure(notice: OrderFailureNotice): boolean {
+  switch (notice.funds) {
+    case "pending":
+    case "refunded":
+    case "ended":
+      return true;
+    case "settled":
+      return false;
+    default:
+      return assertNever(notice.funds);
+  }
 }
 
 /** A final state of the funds never changes. */
@@ -214,25 +238,43 @@ export function isFinalFunds(funds: OrderFailureFunds): boolean {
       return false;
     case "refunded":
     case "ended":
+    case "settled":
       return true;
     default:
       return assertNever(funds);
   }
 }
 
+export type FinalOrderFailureFunds = Exclude<OrderFailureFunds, "pending">;
+
 type ReadOrderFailureFunds = (scopeId: string, operationId: string) => Promise<OrderFailureFunds>;
 
-/** The funds state of a notice, from the journal and the custody operation. */
-export async function readOrderFailureFunds(
+/**
+ * A reader of this wallet's journal, or null when the active database
+ * belongs to another wallet. The reader holds that database for every read,
+ * so a wallet switch during a check cannot read the new wallet's database
+ * with this wallet's scope; a read of the closed database fails instead.
+ */
+export function orderFailureFundsReader(scopeId: string): ReadOrderFailureFunds | null {
+  const database = walletDatabaseFor(scopeId);
+  return database === null
+    ? null
+    : (readScopeId, operationId) => readOrderFailureFunds(readScopeId, operationId, database);
+}
+
+async function readOrderFailureFunds(
   scopeId: string,
   operationId: string,
+  database: BitcasterDB,
 ): Promise<OrderFailureFunds> {
-  const funds = await readCtfRangeOrderFunds(scopeId, operationId);
+  const funds = await readCtfRangeOrderFunds(scopeId, operationId, database);
   switch (funds.kind) {
     case "active":
       return "pending";
     case "refunded":
       return "refunded";
+    case "settled":
+      return "settled";
     case "ended":
       return "ended";
     default:
@@ -261,31 +303,44 @@ export function dismissOrderFailureNotice(scopeId: string, operationId: string):
 }
 
 async function boundOrderFailureNotices(scopeId: string): Promise<void> {
-  await observeOrderFailureFunds(scopeId, readOrderFailureFunds);
+  const read = orderFailureFundsReader(scopeId);
+  if (read !== null) await observeOrderFailureFunds(scopeId, read);
   useOrderFailureNotices.getState().evictBeyondLimit(scopeId);
 }
 
-/**
- * Settle the pending funds of the notices of the current wallet. A journal
- * that cannot be read keeps its notice pending.
- */
+/** Settle the pending funds of the notices of the current wallet. */
 export async function observeOrderFailureFunds(
   scopeId: string,
   read: ReadOrderFailureFunds,
 ): Promise<void> {
-  const pending = Object.entries(useOrderFailureNotices.getState().notices).filter(
-    ([, notice]) => notice.scopeId === scopeId && !isFinalFunds(notice.funds),
-  );
-  const updates: Record<string, "refunded" | "ended"> = {};
-  for (const [key, notice] of pending) {
+  const pending = Object.values(useOrderFailureNotices.getState().notices)
+    .filter((notice) => notice.scopeId === scopeId && !isFinalFunds(notice.funds))
+    .map((notice) => notice.operationId);
+  useOrderFailureNotices
+    .getState()
+    .settleFunds(await readOrderFailureFundsObservations(scopeId, pending, read));
+}
+
+/**
+ * The final funds observations of these operations of one wallet, by notice
+ * key. A journal that cannot be read keeps its notice pending.
+ */
+export async function readOrderFailureFundsObservations(
+  scopeId: string,
+  operationIds: readonly string[],
+  read: ReadOrderFailureFunds,
+): Promise<Record<string, FinalOrderFailureFunds>> {
+  const observations: Record<string, FinalOrderFailureFunds> = {};
+  for (const operationId of operationIds) {
     try {
-      const funds = await read(notice.scopeId, notice.operationId);
+      const funds = await read(scopeId, operationId);
       switch (funds) {
         case "pending":
           break;
         case "refunded":
         case "ended":
-          updates[key] = funds;
+        case "settled":
+          observations[orderFailureNoticeKey(scopeId, operationId)] = funds;
           break;
         default:
           assertNever(funds);
@@ -294,7 +349,7 @@ export async function observeOrderFailureFunds(
       // The next observation reads the journal again.
     }
   }
-  useOrderFailureNotices.getState().settleFunds(updates);
+  return observations;
 }
 
 /** The union by key. A dismissal, an end mark and a specific reason win. */
@@ -401,6 +456,7 @@ function decodeStoredFunds(value: unknown): OrderFailureFunds | null {
     case "pending":
     case "refunded":
     case "ended":
+    case "settled":
       return value;
     default:
       return null;

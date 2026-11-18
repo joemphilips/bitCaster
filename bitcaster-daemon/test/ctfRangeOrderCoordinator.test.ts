@@ -4546,7 +4546,7 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
         assert.deepEqual(error.mintError, { code, detail })
         assert.equal(
           error.message,
-          `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds are available again.`,
+          `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.`,
         )
         assert.equal(mint.convertRequests.length, 1)
         assert.equal(capabilityCalls, 0)
@@ -4613,7 +4613,7 @@ test('daemon releases a refused buy source with 11008 at submit', async () => {
       assert.equal(source.state, 'Failed')
       assert.equal(
         source.lastError,
-        'The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.',
+        'The mint refused the order (mint code 11008). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.',
       )
       const database = await openDaemonStateSqlite(directory)
       try {
@@ -5018,7 +5018,7 @@ for (const scenario of STUCK_PRODUCTION_CASES) {
           {
             operationId: source.operationId,
             mintError: { code: scenario.code, detail: scenario.detail },
-            message: `The mint refused the order (mint code ${scenario.code}). No order was submitted. The reserved funds are available again.`,
+            message: `The mint refused the order (mint code ${scenario.code}). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.`,
           },
         ])
         assert.equal(conversions.length, 2)
@@ -8194,7 +8194,7 @@ async function assertReleasedPartialSell(
   assert.equal(source.state, 'Failed')
   assert.equal(
     source.lastError,
-    `The mint refused the order (mint code ${expected.mintCode}). No order was submitted. The reserved funds are available again.`,
+    `The mint refused the order (mint code ${expected.mintCode}). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.`,
   )
   const database = await openDaemonStateSqlite(directory)
   try {

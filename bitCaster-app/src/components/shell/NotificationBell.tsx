@@ -7,7 +7,11 @@ import {
   selectUnreadCount,
   useNotificationsStore,
 } from "@/stores/notifications";
-import { useOrderFailureNotices, type OrderFailureNotice } from "@/stores/orderFailureNotices";
+import {
+  showsOrderFailure,
+  useOrderFailureNotices,
+  type OrderFailureNotice,
+} from "@/stores/orderFailureNotices";
 import { orderFailureText } from "@/lib/orderFailureText";
 import { assertNever } from "@/lib/enumDiscipline";
 import { splitMarketId } from "@/lib/orderStatus";
@@ -38,7 +42,12 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
   const items = useNotificationsStore((s) => (isOpen ? s.items : EMPTY_ITEMS));
   const notices = useOrderFailureNotices((s) => (isOpen ? s.notices : NO_FAILURES));
   const failures = useMemo(
-    () => new Map(Object.values(notices).map((notice) => [notice.orderId, notice] as const)),
+    () =>
+      new Map(
+        Object.values(notices)
+          .filter(showsOrderFailure)
+          .map((notice) => [notice.orderId, notice] as const),
+      ),
     [notices],
   );
   const markAllRead = useNotificationsStore((s) => s.markAllRead);

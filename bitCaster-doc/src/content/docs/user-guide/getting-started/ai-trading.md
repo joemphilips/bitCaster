@@ -144,9 +144,9 @@ Before the daemon submits an order, it prepares the order funds at the mint. Som
 prove that the preparation did not complete and cannot complete later. After such a refusal, the
 daemon checks the reserved funds again and ends the order attempt. Then `order submit` fails with
 the code `order-attempt-released` and the mint code in `mintError`. The `error` text is, for
-example, "The mint refused the order (mint code 11008). No order was submitted. The reserved funds
-are available again." If another operation spent part of the funds, the daemon releases only the
-remaining funds. You can submit a new order.
+example, "The mint refused the order (mint code 11008). No order was submitted. The reserved funds,
+less any consolidation fee already paid, are available again." If another operation spent part of
+the funds, the daemon releases only the remaining funds. You can submit a new order.
 
 After other failures, the funds stay reserved, and the daemon checks the result again. The interval
 increases after each failed check, up to 15 minutes. `order recovery` shows the order operations

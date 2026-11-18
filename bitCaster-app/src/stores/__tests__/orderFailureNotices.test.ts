@@ -4,6 +4,7 @@ import {
   ORDER_FAILURE_NOTICES_STORAGE_KEY,
   observeOrderFailureFunds,
   orderFailureNoticeKey,
+  showsOrderFailure,
   useOrderFailureNotices,
   type NewOrderFailureNotice,
 } from "../orderFailureNotices";
@@ -11,6 +12,8 @@ import {
 // The journal records of these operations are gone, so each bound sees them ended.
 vi.mock("@/lib/ctfRangeOrderFunds", () => ({
   readCtfRangeOrderFunds: vi.fn().mockResolvedValue({ kind: "ended" }),
+  // The test wallet database belongs to every scope of these tests.
+  walletDatabaseFor: () => ({}),
 }));
 
 function notice(operationId: string, overrides: Partial<NewOrderFailureNotice> = {}) {
@@ -354,6 +357,71 @@ describe("order failure notices", () => {
     record(notice("operation-1", { marketTitle: "Another title" }), 30);
 
     expect(stored("operation-1")?.marketTitle).toBe("Will Alice win the cup?");
+  });
+
+  it("hides the failure of an order whose settlement completed after all, also against another tab", async () => {
+    const { record } = useOrderFailureNotices.getState();
+    record(notice("operation-1"), 10);
+    record(notice("operation-2"), 20);
+    await observeOrderFailureFunds("scope-1", async (_scopeId, operationId) =>
+      operationId === "operation-1" ? "settled" : "pending",
+    );
+
+    expect(stored("operation-1")?.funds).toBe("settled");
+    expect(showsOrderFailure(stored("operation-1")!)).toBe(false);
+    expect(showsOrderFailure(stored("operation-2")!)).toBe(true);
+
+    // Another tab still holds the notice as pending. The settled state stays.
+    realSetItem.call(
+      localStorage,
+      ORDER_FAILURE_NOTICES_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          notices: {
+            [orderFailureNoticeKey("scope-1", "operation-1")]: {
+              ...notice("operation-1"),
+              recordedAtMs: 10,
+              dismissed: false,
+              funds: "pending",
+            },
+            [orderFailureNoticeKey("scope-1", "operation-3")]: {
+              ...notice("operation-3"),
+              recordedAtMs: 30,
+              dismissed: false,
+              funds: "pending",
+            },
+          },
+        },
+        version: 0,
+      }),
+    );
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: ORDER_FAILURE_NOTICES_STORAGE_KEY,
+        storageArea: localStorage,
+      }),
+    );
+
+    await vi.waitFor(() => expect(stored("operation-3")).toBeDefined());
+    expect(stored("operation-1")?.funds).toBe("settled");
+  });
+
+  it("above the limit, can evict the settled notice of the current wallet that is not dismissed", async () => {
+    recordMany(ORDER_FAILURE_NOTICES_MAX + 1, (index) => notice(`current-${index}`), {
+      dismissed: false,
+      fromMs: 0,
+    });
+    await observeOrderFailureFunds("scope-1", async (_scopeId, operationId) =>
+      operationId === "current-2" ? "settled" : "ended",
+    );
+
+    useOrderFailureNotices.getState().evictBeyondLimit("scope-1");
+
+    expect(Object.keys(useOrderFailureNotices.getState().notices)).toHaveLength(
+      ORDER_FAILURE_NOTICES_MAX,
+    );
+    expect(stored("current-2")).toBeUndefined();
+    expect(stored("current-1")).toBeDefined();
   });
 
   it("moves the funds of a notice only from pending to a final state", async () => {

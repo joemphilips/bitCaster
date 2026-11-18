@@ -77,6 +77,8 @@ vi.mock("@/lib/ctfRangeOrderFunds", async (original) => {
     ...actual,
     readCtfRangeOrderFunds: (scopeId: string, operationId: string) =>
       actual.readCtfRangeOrderFunds(scopeId, operationId, database),
+    // The test database is the wallet database of the rendered scope only.
+    walletDatabaseFor: (scopeId: string) => (scopeId === mocks.scopeId ? database : null),
   };
 });
 vi.mock("@/stores/ctf-range-order-messages", async (original) => {
@@ -628,11 +630,11 @@ describe("active settlement progress", () => {
     expect(stored("range-1")?.funds).toBe("refunded");
   });
 
-  it("makes no refund claim when the operation ended without a refund", async () => {
+  it("removes the failure when its settlement completed after all", async () => {
     await database.ctfRangePreparations.put(fixture());
     mocks.read.mockResolvedValue(statusRead(group("Refundable")));
     render(<SettlementProgress canReadStatus />);
-    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     // The settlement committed after all: the custody operation reconciled.
     await act(async () => {
       await database.transaction(
@@ -644,6 +646,21 @@ describe("active settlement progress", () => {
           await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
         },
       );
+    });
+    await waitFor(() => expect(stored("range-1")?.funds).toBe("settled"));
+    expect(
+      screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("makes no refund claim when the operation ended without a known refund", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(statusRead(group("Refundable")));
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    // The journal ended, and no custody operation records a refund or a settlement.
+    await act(async () => {
+      await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
     });
     await waitFor(() => expect(stored("range-1")?.funds).toBe("ended"));
     expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();

@@ -9,18 +9,36 @@ import {
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import { isOrderRequestRefusalCode } from "@/stores/ctf-range-order-messages";
 import { db, type BitcasterDB } from "@/stores/proof-db";
+import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import type { BrowserCustodyOperationRow } from "@/stores/durable-custody-types";
 
 /**
  * Where the reserved funds of one order attempt are. `refunded` is the exact
  * refund fact: the refund aborts the custody operation of the range order,
- * admits the refund proofs and ends the journal in one transaction. A journal
- * that ended another way, for example through a settlement, is `ended`.
+ * admits the refund proofs and ends the journal in one transaction.
+ * `settled` is a settlement that reconciled the custody operation: the trade
+ * completed. A journal that ended in another way is `ended`.
  */
 export type CtfRangeOrderFunds =
   | { readonly kind: "active"; readonly lifecycleState: CtfRangeOrderPreparationLifecycle }
   | { readonly kind: "refunded" }
+  | { readonly kind: "settled" }
   | { readonly kind: "ended" };
+
+/**
+ * The active database, only when it is the database of this wallet. Each
+ * wallet has its own database, and a wallet switch replaces the active one.
+ * A caller holds the returned database for all its reads, so a switch during
+ * the reads cannot mix two wallets.
+ */
+export function walletDatabaseFor(scopeId: string): BitcasterDB | null {
+  const database = db;
+  try {
+    return database.name === browserWalletDatabaseName(scopeId) ? database : null;
+  } catch {
+    return null;
+  }
+}
 
 export { browserRangeCustodyOperationId };
 
@@ -37,19 +55,18 @@ export async function readCtfRangeOrderFunds(
     scopeId,
     browserRangeCustodyOperationId(scopeId, operationId),
   ]);
-  return custody !== undefined && refundedCustody(custody.operationState)
-    ? { kind: "refunded" }
-    : { kind: "ended" };
+  return custody === undefined ? { kind: "ended" } : custodyOutcome(custody.operationState);
 }
 
-function refundedCustody(state: BrowserCustodyOperationRow["operationState"]): boolean {
+function custodyOutcome(state: BrowserCustodyOperationRow["operationState"]): CtfRangeOrderFunds {
   switch (state) {
     case "aborted":
-      return true;
+      return { kind: "refunded" };
     case "reconciled":
+      return { kind: "settled" };
     case "dispatch-intent":
     case "transport-attempted":
-      return false;
+      return { kind: "ended" };
     default:
       return assertNever(state);
   }
@@ -70,6 +87,7 @@ export function refusedOrderAlertFunds(
       return isLocalCtfRangeOrderRefusal(funds.lifecycleState) ? "pending" : null;
     case "refunded":
       return "refunded";
+    case "settled":
     case "ended":
       return null;
     default:
