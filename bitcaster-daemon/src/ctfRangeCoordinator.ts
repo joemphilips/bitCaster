@@ -77,6 +77,7 @@ import {
   completeCtfRangeRefundProofOperationFromDatabase,
   readDaemonProofOperationFromDatabase,
   readDaemonWalletProofFromDatabase,
+  retireCtfRangeRefundProofOperationFromDatabase,
   type CashuProofRecord,
   type StoredProofAsset,
 } from './state.ts'
@@ -373,6 +374,16 @@ export class DaemonCtfRangeCoordinator {
             }),
         )
         admitSpendableSuccessors(database, successors, input.observedAtMs)
+        // The settlement spent the refund inputs. Retire a refund that is still prepared.
+        retireCtfRangeRefundProofOperationFromDatabase(
+          database,
+          {
+            operationId: deriveDurableCtfRangeRefundOperationId(loaded.operation.operationId),
+            rangeOperationId: loaded.operation.operationId,
+            custodyOperationId: input.custodyOperationId,
+          },
+          input.observedAtMs,
+        )
         transaction.rebuildActiveWorkIndex({
           scopeId: current.scope.scopeId,
           operationRows: [
@@ -386,6 +397,41 @@ export class DaemonCtfRangeCoordinator {
       faultOptions(input.injectFault),
     )
     return (await this.#requireLoaded(input.custodyOperationId)).record
+  }
+
+  /**
+   * Retire the prepared refund of an applied settlement result. An earlier
+   * version applied the result and left the refund prepared. The settlement
+   * spent the refund inputs, so the refund can never commit.
+   */
+  async retireRefundOfAppliedResult(
+    input: DaemonCtfRangeMutationInput & { readonly custodyOperationId: string },
+  ): Promise<void> {
+    const loaded = await this.#requireLoaded(input.custodyOperationId)
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      input.observedAtMs,
+      (database) => {
+        const current = requireOperation(
+          new DurableCustodySqliteStore(database),
+          input.custodyOperationId,
+        )
+        if (current.operation.result.state !== 'applied') {
+          throw new Error('daemon CTF range refund retirement needs an applied result')
+        }
+        retireCtfRangeRefundProofOperationFromDatabase(
+          database,
+          {
+            operationId: deriveDurableCtfRangeRefundOperationId(loaded.operation.operationId),
+            rangeOperationId: loaded.operation.operationId,
+            custodyOperationId: input.custodyOperationId,
+          },
+          input.observedAtMs,
+        )
+      },
+      faultOptions(input.injectFault),
+    )
   }
 
   async readAppliedResult(input: {

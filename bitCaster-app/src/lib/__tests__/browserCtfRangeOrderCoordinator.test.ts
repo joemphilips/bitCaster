@@ -105,6 +105,7 @@ import {
   type BrowserCtfRangeEngine,
   type BrowserCtfRangeOrderCoordinatorDependencies,
 } from "../browserCtfRangeOrderCoordinator";
+import { BrowserSeedHandoffRefusal, handoffBrowserSeed } from "../browserSeedHandoff";
 import {
   BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT,
   BrowserCtfRangeRecoverySchedule,
@@ -3336,6 +3337,131 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("aborted");
   });
 
+  it.each([false, true])(
+    "classifies a settlement that wins the race against its refund swap: engineEnvelope=%s",
+    async (engineEnvelope) => {
+      const database = createRefundDatabase();
+      const preparation = persistedPreparation("range-refund-race");
+      let now = 20_000;
+      let settled = false;
+      let refundCalls = 0;
+      let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+      const wallet = sourceWallet();
+      wallet.checkProofsStates = async (proofs) =>
+        proofs.map(
+          (_, index): ProofState => ({
+            Y: `source-y-${index}`,
+            state: settled ? "SPENT" : "UNSPENT",
+            witness: null,
+          }),
+        );
+      const engine = engineMock({
+        result: () => {
+          if (!engineEnvelope || !settled) return null;
+          if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+          return confirmedEngineResult(
+            confirmed.operation,
+            confirmed.selection,
+            confirmed.signatures,
+          );
+        },
+      });
+      const unspentAtMint = refundableRecovery(preparation);
+      const coordinator = createCoordinator(database, wallet, engine, {
+        now: () => now,
+        createMintRecovery: (operation) => {
+          const unspent = unspentAtMint(operation);
+          confirmed = confirmedRangeRecovery(operation, preparation);
+          const settledRecovery = confirmed;
+          return {
+            async loadUncertainRecoveryObservation(input) {
+              if (!settled) return unspent.loadUncertainRecoveryObservation(input);
+              return {
+                allManifestRecovery: settledRecovery.allManifestRecovery,
+                resolveKeyset: settledRecovery.resolveKeyset,
+                observation: {
+                  selection: input.selection,
+                  inputStates: operation.inputs.map(({ secret }) => ({
+                    Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+                    state: "SPENT" as const,
+                    witness: null,
+                  })),
+                  ...settledRecovery.allManifestRecovery,
+                  now: input.now,
+                },
+              };
+            },
+          };
+        },
+        executeRefundSwap: async () => {
+          refundCalls += 1;
+          // The settlement commits first, so the mint refuses the refund inputs.
+          settled = true;
+          throw new MintOperationError(11001, "Token already spent");
+        },
+        // The production NUT-09 read of the refund plan. The mint never signed it.
+        restoreRefundOutputs: (input) =>
+          restoreDurableCtfRangeRefundOutputs({
+            ...input,
+            mint: {
+              async restore() {
+                return { outputs: [], signatures: [] };
+              },
+              async check() {
+                throw new Error("unexpected refund proof-state request");
+              },
+              async getKeys() {
+                throw new Error("refund recovery must not fetch fresh mint keys");
+              },
+            },
+          }),
+      });
+      await coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      });
+
+      now = preparation.expiry * 1_000;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+      });
+      expect(refundCalls).toBe(1);
+      const refundId = deriveDurableCtfRangeRefundOperationId(preparation.operationId);
+      expect((await database.proofOperations.get(refundId))?.state).toBe("prepared");
+      const outerOperationId = custodyOperationId(preparation.operationId);
+      const custody = new BrowserDurableCustodyAdapter(database);
+      expect(
+        (await custody.readOperation(walletScope(), outerOperationId))?.operation.result.state,
+      ).toBe("none");
+      expect(await seedHandoffRefusal(database)).toBe("active-wallet-work");
+
+      now += 60 * 60 * 1_000;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [preparation.operationId],
+        pending: [],
+      });
+      expect(refundCalls).toBe(1);
+      expect(engine.acknowledgeCalls).toBe(engineEnvelope ? 1 : 0);
+      expect(
+        (await custody.readOperation(walletScope(), outerOperationId))?.operation.result.state,
+      ).toBe("applied");
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("terminal");
+      // The settlement result retires the refund. It credits nothing, and it
+      // no longer blocks a seed handoff.
+      expect(await database.proofOperations.get(refundId)).toMatchObject({
+        state: "Failed",
+        lastError: "range settlement spent the refund inputs",
+      });
+      expect((await database.proofOperations.get(refundId))?.resultProofs).toBeUndefined();
+      expect(await seedHandoffRefusal(database)).toBe("passed-wallet-work-checks");
+    },
+  );
+
   it("rolls back outer refund completion and restores the exact refund after restart", async () => {
     const database = createRefundDatabase();
     const preparation = persistedPreparation("range-outer-refund-rollback");
@@ -5647,6 +5773,40 @@ function refundableRecovery(preparation: PersistedCtfRangeOrderPreparation) {
       },
     };
   };
+}
+
+/**
+ * Run the seed handoff checks up to the commit point. Return the refusal code,
+ * or "passed-wallet-work-checks" when every check before the commit point passes.
+ */
+async function seedHandoffRefusal(database: BitcasterDB): Promise<string> {
+  const passed = new Error("passed-wallet-work-checks");
+  try {
+    await handoffBrowserSeed({
+      database,
+      scopeId: walletScopeId(),
+      isCurrentProfile: () => true,
+      currentSeedBackupConfirmed: true,
+      acceptPartialBackup: true,
+      acceptCounterGap: true,
+      prepareRecoveryIndex: async () => ({ kind: "growing-write-refused" }),
+      assertNoPendingOrders: () => {
+        throw passed;
+      },
+      lockManager: {
+        request: async (_name: string, _options: unknown, callback: () => Promise<unknown>) =>
+          callback(),
+      } as never,
+      invalidateOldProfile: () => undefined,
+      activateNewProfile: async () => undefined,
+      restoreOldProfile: async () => undefined,
+    });
+  } catch (error) {
+    if (error === passed) return passed.message;
+    if (error instanceof BrowserSeedHandoffRefusal) return error.code;
+    throw error;
+  }
+  throw new Error("seed handoff passed its commit point");
 }
 
 function confirmedRangeRecovery(

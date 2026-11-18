@@ -2063,6 +2063,45 @@ export function completeCtfRangeRefundProofOperationFromDatabase(
   return completeProofOperation(database, operationId, { refund: [...refundProofs] }, observedAtMs)
 }
 
+/** The reason that a settlement result records on the refund that it retires. */
+export const CTF_RANGE_REFUND_SETTLED_REASON = 'range settlement spent the refund inputs'
+
+/**
+ * Retire the prepared refund of a range operation when its settlement result
+ * is applied. The settlement spent the refund inputs, so the refund can never
+ * commit. The failed state credits nothing. Run it in the transaction that
+ * applies the settlement result.
+ */
+export function retireCtfRangeRefundProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly rangeOperationId: string
+    readonly custodyOperationId: string
+  },
+  observedAtMs: number,
+): void {
+  const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (existing === null || existing.state !== 'prepared') return
+  if (
+    existing.kind !== 'swap-refund' ||
+    existing.metadata.purpose !== CTF_RANGE_REFUND_PURPOSE ||
+    existing.metadata.rangeOperationId !== input.rangeOperationId ||
+    existing.metadata.custodyOperationId !== input.custodyOperationId
+  ) {
+    throw new Error('daemon CTF range refund operation authority is invalid')
+  }
+  const failed = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET state = 'failed', last_error = ?,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+    )
+    .run(CTF_RANGE_REFUND_SETTLED_REASON, observedAtMs, readScopeId(database), input.operationId)
+  if (failed.changes !== 1) throw new Error('range refund retirement CAS lost')
+}
+
 function assertCtfRangeRefundProofOperationInput(input: PrepareProofOperationInput): void {
   if (
     input.kind !== 'swap-refund' ||

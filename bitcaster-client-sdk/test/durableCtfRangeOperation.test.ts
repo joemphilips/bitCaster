@@ -1456,6 +1456,46 @@ test('recovery queries the exact manifest and never invents terminal state', asy
   )
 })
 
+test('all-UNSPENT inputs never confirm or stage restored outputs', async () => {
+  const operation = fixture()
+  const record = await recordFor(operation)
+  const selection = createCtfSelectionBitmap(4, [1, 3])
+  const query = buildDurableCtfRangeRecoveryQuery(operation, null)
+  const selectedOutputs = buildDurableCtfRangeRecoveryQuery(operation, selection).outputs
+  const selectedSignatures = signaturesFor(operation, selection)
+  // The same restore confirms with SPENT inputs (previous test). With every
+  // input UNSPENT the swap had not committed at the check, so its result waits.
+  for (const [restoredOutputs, signatures, queryCompleted] of [
+    [selectedOutputs, selectedSignatures, true],
+    [selectedOutputs.slice(0, 1), selectedSignatures.slice(0, 1), true],
+    [selectedOutputs.slice(0, 1), selectedSignatures.slice(0, 1), false],
+  ] as const) {
+    for (const [now, expected] of [
+      [operation.expiry - 1, 'waiting'],
+      [operation.expiry, 'refundable'],
+    ] as const) {
+      const observation = {
+        selection: null,
+        inputStates: [{ Y: inputY(operation), state: 'UNSPENT' as const, witness: null }],
+        queriedOutputs: query.outputs,
+        restoredOutputs: [...restoredOutputs],
+        signatures: [...signatures],
+        queryCompleted,
+        now,
+      }
+      assert.equal(
+        classifyDurableCtfRangeRecovery({ operation, record, observation, resolveKeyset }).kind,
+        expected,
+      )
+      assert.equal(
+        prepareDurableCtfRangeRecoveredResult({ operation, record, observation, resolveKeyset })
+          .kind,
+        'reconciling',
+      )
+    }
+  }
+})
+
 test('mint-verified recovery stages the exact durable result without an engine envelope', async () => {
   const { operation, binding, resolveKeyset } = await sharedRangeBinding()
   const selection = createCtfSelectionBitmap(

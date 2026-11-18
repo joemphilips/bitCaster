@@ -87,6 +87,7 @@ import {
   CtfRangeSellPreparationPendingError,
 } from '../src/ctfRangeOrderRelease.ts'
 import { DaemonCtfRangeCoordinator } from '../src/ctfRangeCoordinator.ts'
+import { SeedRecoverySqliteStore } from '../src/seedRecoverySqlite.ts'
 import { createCtfRangeRecoveryLoop } from '../src/ctfRangeRecoveryLoop.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, type CustodyScopeFence } from '../src/profileFencing.ts'
@@ -3254,6 +3255,292 @@ for (const persistedStage of [false, true])
     )
   })
 
+// ADR-037 reused-output exclusion, decision 13: the excluded participant gets no result
+// envelope. Another operation signed one of its manifest outputs, so the all-manifest
+// NUT-09 restore returns that signature while every input stays UNSPENT.
+for (const signatureKeyset of ['same', 'other'] as const)
+  test(`daemon refunds an excluded order whose manifest output another operation signed: keyset=${signatureKeyset}`, async () => {
+    const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-reused-output-',
+        incarnationId: 'range-reused-output-test',
+        proofs: [sourceProof],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        let activeFence = fence
+        let nowMs = 10_000
+        let reusedOutput: string | null = null
+        const refundRequests: SwapRequest[] = []
+        const base = fakeMint()
+        const mint = {
+          ...base,
+          restore: async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
+            const restored = outputs.filter(({ B_ }) => B_ === reusedOutput)
+            return {
+              outputs: restored,
+              signatures: restored.map((output) =>
+                signBlindedOutput(
+                  signatureKeyset === 'same'
+                    ? output
+                    : {
+                        ...output,
+                        id: output.id === OFFER_KEYSET_ID ? RECEIVE_KEYSET_ID : OFFER_KEYSET_ID,
+                      },
+                ),
+              ),
+            }
+          },
+        }
+        const client: EngineClientLike = {
+          ...fakeEngineClient(boundCapability),
+          getOrderStatus: async () => cancelledOrderStatus(),
+        }
+        const ids = ['range-operation-reused-output', 'range-authorization-reused-output']
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => activeFence, {
+          createMint: () => mint,
+          createWallet: () => new FakeWallet([sourceProof]),
+          executeRefundSwap: async (_mintUrl, request) => {
+            refundRequests.push(structuredClone(request))
+            return { signatures: request.outputs.map(signBlindedOutput) }
+          },
+          now: () => nowMs,
+          randomId: () => ids.shift()!,
+        })
+        const request = orderRequest()
+        const prepared = await coordinator.prepare(request, client)
+        await recordSubmittedOrder(
+          request.marketId,
+          request.clientOrderId,
+          submittedOrder(),
+          null,
+          request.tokenSide,
+          request.side,
+          request.price,
+          request.amountSubunits,
+          request.baseAsset,
+          request.divisibility,
+        )
+        await acceptPrepared(prepared)
+        const database = await openDaemonStateSqlite(directory)
+        const custody = database
+          .prepare(
+            "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+          )
+          .get() as { operation_id: string }
+        database.close()
+        const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
+          custody.operation_id,
+        )
+        assert.ok(loaded)
+        reusedOutput = loaded.operation.manifest.entries[1]!.B_
+
+        const waiting = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.deepEqual(waiting.recovered, [])
+        assert.equal(waiting.pending.length, 1)
+        assert.match(waiting.pending[0]!.error, /remains unspent before expiry/)
+        assert.equal(waiting.pending[0]!.retryAtMs, loaded.operation.expiry * 1_000 + 1_000)
+        assert.equal(refundRequests.length, 0)
+
+        nowMs = (loaded.operation.expiry + 1) * 1_000
+        activeFence = await claimCustodyScopeLease(directory, {
+          scopeId: testScopeId(),
+          incarnationId: 'range-reused-output-refund',
+          observedAtMs: nowMs,
+        })
+        assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+          recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
+          pending: [],
+        })
+        assert.equal(refundRequests.length, 1)
+        assert.equal(await completedRefundCount(), 1)
+        const snapshot = await rangeRecoverySnapshot(directory)
+        assert.deepEqual(
+          snapshot.preparations.map(({ lifecycle }) => lifecycle),
+          ['terminal'],
+        )
+        assert.equal(
+          snapshot.custodyOperations.find(({ operationId }) => operationId === custody.operation_id)
+            ?.resultState,
+          'none',
+        )
+      },
+    )
+  })
+
+// Settlement can commit between the refundable observation and the refund swap. The mint
+// then refuses the refund, nothing is credited, and the next recovery classifies again.
+// The refund outputs are never signed, so the production NUT-09 restore of the refund
+// plan finds no signature. Only the mint is fake.
+for (const engineEnvelope of [false, true])
+  test(`daemon classifies a settlement that wins the race against its refund swap: engineEnvelope=${engineEnvelope}`, async () => {
+    const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-refund-race-',
+        incarnationId: 'range-refund-race-test',
+        proofs: [sourceProof],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        let activeFence = fence
+        let nowMs = 10_000
+        let settled = false
+        let settledOutputs = new Set<string>()
+        let result: SettlementCapabilityResultResponse | null = null
+        let acknowledged = false
+        const refundRequests: SwapRequest[] = []
+        const mint = {
+          ...fakeMint(64, 1_000, () => (settled ? settledOutputs : new Set<string>())),
+          check: async ({ Ys }: { Ys: string[] }) => ({
+            states: Ys.map((Y) => ({
+              Y,
+              state: settled ? ('SPENT' as const) : ('UNSPENT' as const),
+              witness: null,
+            })),
+          }),
+        }
+        const client: EngineClientLike = {
+          ...fakeEngineClient(boundCapability),
+          getOrderStatus: async () => cancelledOrderStatus(),
+          getSettlementCapabilityResultByOperation: async () =>
+            engineEnvelope && settled && result !== null
+              ? {
+                  ...result,
+                  acknowledgedAt: acknowledged ? new Date(12_000).toISOString() : null,
+                  version: acknowledged ? 2 : 1,
+                }
+              : null,
+          acknowledgeSettlementCapabilityResult: async () => {
+            acknowledged = true
+            return { ...result!, acknowledgedAt: new Date(12_000).toISOString(), version: 2 }
+          },
+        }
+        const ids = ['range-operation-refund-race', 'range-authorization-refund-race']
+        const dependencies: DaemonCtfRangeOrderCoordinatorDependencies = {
+          createMint: () => mint,
+          createWallet: () => new FakeWallet([sourceProof]),
+          executeRefundSwap: async (_mintUrl, request) => {
+            refundRequests.push(structuredClone(request))
+            // The settlement commits first, so the mint refuses the refund inputs.
+            settled = true
+            throw new MintOperationError(11001, 'Token already spent')
+          },
+          now: () => nowMs,
+          randomId: () => ids.shift()!,
+        }
+        const coordinator = new DaemonCtfRangeOrderCoordinator(
+          directory,
+          () => activeFence,
+          dependencies,
+        )
+        const seedRecoveryGate = () =>
+          new SeedRecoverySqliteStore({
+            directory,
+            fence: activeFence,
+            invocationId: 'range-refund-race-seed-recovery',
+            observedAtMs: nowMs,
+          }).readUncoveredCounterBindings({
+            mintUrl: request.mintUrl,
+            unit: 'msat',
+            keysetIds: [],
+          })
+        const request = orderRequest()
+        const prepared = await coordinator.prepare(request, client)
+        await recordSubmittedOrder(
+          request.marketId,
+          request.clientOrderId,
+          submittedOrder(),
+          null,
+          request.tokenSide,
+          request.side,
+          request.price,
+          request.amountSubunits,
+          request.baseAsset,
+          request.divisibility,
+        )
+        await acceptPrepared(prepared)
+        const database = await openDaemonStateSqlite(directory)
+        const custody = database
+          .prepare(
+            "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+          )
+          .get() as { operation_id: string }
+        database.close()
+        const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
+          custody.operation_id,
+        )
+        assert.ok(loaded)
+        const selection = validTerminalSelection(loaded.operation)
+        settledOutputs = manifestSelectionOutputs(loaded.operation)
+        result = engineResult(prepared, loaded.operation, selection.selection)
+
+        nowMs = (loaded.operation.expiry + 1) * 1_000
+        activeFence = await claimCustodyScopeLease(directory, {
+          scopeId: testScopeId(),
+          incarnationId: 'range-refund-race-refused',
+          observedAtMs: nowMs,
+        })
+        const refused = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.deepEqual(refused.recovered, [])
+        assert.equal(refused.pending.length, 1)
+        assert.match(refused.pending[0]!.error, /range refund rejection remains pending/)
+        assert.equal(refused.pending[0]!.mintError?.code, 11001)
+        assert.equal(refundRequests.length, 1)
+        assert.equal(await completedRefundCount(), 0)
+        assert.equal((await rangeRefundOperation()).state, 'prepared')
+        assert.equal(
+          (await rangeCustodyResultState(custody.operation_id, directory)).resultState,
+          'none',
+        )
+
+        nowMs += 1_000
+        assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+          recovered: [(await counterRangeId(directory, 'client-order-1')) + ':source'],
+          pending: [],
+        })
+        assert.equal(refundRequests.length, 1)
+        assert.equal(acknowledged, engineEnvelope)
+        assert.equal(await completedRefundCount(), 0)
+        assert.deepEqual(await rangeCustodyResultState(custody.operation_id, directory), {
+          resultState: 'applied',
+          lifecycle: 'terminal',
+        })
+        // The settlement result retires the refund. It credits nothing, and it
+        // no longer blocks a seed recovery.
+        const refund = await rangeRefundOperation()
+        assert.equal(refund.state, 'Failed')
+        assert.equal(refund.lastError, 'range settlement spent the refund inputs')
+        await seedRecoveryGate()
+
+        // An earlier version applied the settlement result and left the refund
+        // prepared. The terminal repair of a later start retires it.
+        const legacy = await openDaemonStateSqlite(directory)
+        legacy
+          .prepare(
+            `UPDATE target_proof_operations SET state = 'prepared', last_error = NULL
+             WHERE operation_id = ?`,
+          )
+          .run(refund.operationId)
+        legacy.close()
+        await assert.rejects(seedRecoveryGate(), /target-proof-operation-prepared/)
+        const restarted = new DaemonCtfRangeOrderCoordinator(
+          directory,
+          () => activeFence,
+          dependencies,
+        )
+        await restarted.recover(WALLET_SEED_HEX, client)
+        const repaired = await rangeRefundOperation()
+        assert.equal(repaired.state, 'Failed')
+        assert.equal(repaired.lastError, 'range settlement spent the refund inputs')
+        assert.equal(refundRequests.length, 1)
+        assert.equal(await completedRefundCount(), 0)
+        await seedRecoveryGate()
+      },
+    )
+  })
+
 test('daemon resumes the exact post-expiry refund after mint acknowledgement loss', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
@@ -3270,7 +3557,17 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       let rotatedRefundKeysetActive = false
       const refundRequests: SwapRequest[] = []
       const mint = {
-        ...fakeMint(64, 1_000, undefined, () => rotatedRefundKeysetActive),
+        ...fakeMint(
+          64,
+          1_000,
+          () =>
+            new Set(
+              refundCommitted
+                ? refundRequests.flatMap(({ outputs }) => outputs.map(({ B_ }) => B_))
+                : [],
+            ),
+          () => rotatedRefundKeysetActive,
+        ),
         check: async ({ Ys }: { Ys: string[] }) => ({
           states: Ys.map((Y) => ({
             Y,
@@ -3296,13 +3593,6 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
           refundCommitted = true
           throw new Error('refund mint acknowledgement lost')
         },
-        restoreOutputs: async (_mintUrl, groups) =>
-          Object.fromEntries(
-            Object.entries(deserializeOutputGroups(groups)).map(([label, outputs]) => [
-              label,
-              outputs.map(signedProof),
-            ]),
-          ),
       }
       const coordinator = new DaemonCtfRangeOrderCoordinator(
         directory,
@@ -5334,57 +5624,97 @@ test('daemon refund re-plans its outputs after 11008 and keeps the replaced plan
   )
 })
 
+/**
+ * A refund after one 11008 re-plan. The first swap gets 11008, and the second
+ * swap gets `secondSwap`. When `spent` is set, the mint signs the B_ values in
+ * `signed` and reads every input SPENT. Before that, it signs nothing.
+ */
+function replannedRefundMint(secondSwap: () => Error) {
+  const state = {
+    spent: false,
+    signed: new Set<string>(),
+    swaps: [] as SwapRequest[],
+    /** The B_ values of each NUT-09 request after the inputs read SPENT. */
+    restoreRequests: [] as string[][],
+  }
+  const mint = {
+    ...fakeMint(),
+    check: async ({ Ys }: { Ys: string[] }) => ({
+      states: Ys.map((Y) => ({
+        Y,
+        state: state.spent ? ('SPENT' as const) : ('UNSPENT' as const),
+        witness: null,
+      })),
+    }),
+    restore: async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
+      if (!state.spent) return { outputs: [], signatures: [] }
+      state.restoreRequests.push(outputs.map(({ B_ }) => B_))
+      const restored = outputs.filter(({ B_ }) => state.signed.has(B_))
+      return { outputs: restored, signatures: restored.map(signBlindedOutput) }
+    },
+  }
+  const dependencies: DaemonCtfRangeOrderCoordinatorDependencies = {
+    createMint: () => mint,
+    executeRefundSwap: async (_url, request) => {
+      state.swaps.push(structuredClone(request))
+      if (state.swaps.length === 1) throw new MintOperationError(11008, 'Duplicate outputs')
+      throw secondSwap()
+    },
+  }
+  return { state, dependencies }
+}
+
+function manifestSelectionOutputs(operation: DurableCtfRangeOperation): Set<string> {
+  const selection = validTerminalSelection(operation)
+  return new Set(
+    operation.manifest.entries
+      .filter((_, index) => selection.selectedIndices.includes(index))
+      .map(({ B_ }) => B_),
+  )
+}
+
+async function rangeCustodyResultState(custodyOperationId: string, directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const row = database
+      .prepare(
+        `SELECT operations.result_state AS resultState, preparations.lifecycle_state AS lifecycle
+         FROM custody_operations AS operations
+         JOIN daemon_ctf_range_preparations AS preparations
+           ON preparations.scope_id = operations.scope_id
+         WHERE operations.operation_id = ?`,
+      )
+      .get(custodyOperationId) as { resultState: string; lifecycle: string }
+    return { ...row }
+  } finally {
+    database.close()
+  }
+}
+
 test('daemon halts a refund whose spent inputs match only a replaced plan, and admits nothing', async () => {
   // Backlog "Refund restore from a replaced output plan": another client with
   // the same seed signed every output of the replaced plan, and the refund
   // inputs then read SPENT. The current plan has no signature. A replaced-plan
   // hit does not prove that this refund committed with it.
-  let spent = false
-  const base = fakeMint()
-  const mint = {
-    ...base,
-    check: async ({ Ys }: { Ys: string[] }) => ({
-      states: Ys.map((Y) => ({
-        Y,
-        state: spent ? ('SPENT' as const) : ('UNSPENT' as const),
-        witness: null,
-      })),
-    }),
-  }
-  const swaps: SwapRequest[] = []
-  const restoreRequests: string[][] = []
+  const { state, dependencies } = replannedRefundMint(
+    () => new Error('refund swap acknowledgement lost'),
+  )
   await withExpiredOrdinaryRefund(
-    {
-      createMint: () => mint,
-      executeRefundSwap: async (_url, request) => {
-        swaps.push(structuredClone(request))
-        if (swaps.length === 1) throw new MintOperationError(11008, 'Duplicate outputs')
-        throw new Error('refund swap acknowledgement lost')
-      },
-      restoreOutputs: async (_mintUrl, groups) => {
-        const outputs = deserializeOutputGroups(groups).refund ?? []
-        restoreRequests.push(outputs.map(({ blindedMessage }) => blindedMessage.B_))
-        // Only the outputs of the first plan are signed.
-        const first = new Set(swaps[0]!.outputs.map(({ B_ }) => B_))
-        return {
-          refund: outputs
-            .filter(({ blindedMessage }) => first.has(blindedMessage.B_))
-            .map(signedProof),
-        }
-      },
-    },
-    async ({ coordinator, client }) => {
+    dependencies,
+    async ({ coordinator, client, directory, custodyOperationId }) => {
       const uncertain = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.equal(uncertain.pending.length, 1)
-      assert.equal(swaps.length, 2)
+      assert.equal(state.swaps.length, 2)
 
-      spent = true
+      state.spent = true
+      for (const { B_ } of state.swaps[0]!.outputs) state.signed.add(B_)
       const halted = await coordinator.recover(WALLET_SEED_HEX, client)
 
-      // The current outputs are read first, then the replaced plan.
-      assert.deepEqual(restoreRequests, [
-        swaps[1]!.outputs.map(({ B_ }) => B_),
-        swaps[0]!.outputs.map(({ B_ }) => B_),
+      // The current outputs are read first, then the replaced plan. The
+      // settlement is not classified: no all-manifest NUT-09 request.
+      assert.deepEqual(state.restoreRequests, [
+        state.swaps[1]!.outputs.map(({ B_ }) => B_),
+        state.swaps[0]!.outputs.map(({ B_ }) => B_),
       ])
       assert.deepEqual(halted.recovered, [])
       assert.equal(halted.pending.length, 1)
@@ -5397,18 +5727,109 @@ test('daemon halts a refund whose spent inputs match only a replaced plan, and a
       })
       assert.equal((await rangeRefundOperation()).state, 'prepared')
       assert.equal(await completedRefundCount(), 0)
+      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+        resultState: 'none',
+        lifecycle: 'order-request-rejected',
+      })
 
       // A halted refund stays visible on every pass without a mint request.
       const still = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.equal(still.pending[0]!.halted, true)
-      assert.equal(restoreRequests.length, 2)
+      assert.equal(state.restoreRequests.length, 2)
 
       // A manual retry reads the mint once more, and the same evidence halts it again.
       assert.equal(coordinator.retryHaltedRecovery(operationId), true)
       const retried = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.equal(retried.pending[0]!.halted, true)
-      assert.equal(restoreRequests.length, 4)
+      assert.equal(state.restoreRequests.length, 4)
       assert.equal(await completedRefundCount(), 0)
+    },
+  )
+})
+
+test('daemon classifies the settlement when only a replaced refund plan is partly signed', async () => {
+  // The current plan has no signature, and the replaced plan is signed only
+  // in part, so no refund plan committed. The settlement spent the inputs.
+  const { state, dependencies } = replannedRefundMint(
+    () => new MintOperationError(11001, 'Token already spent'),
+  )
+  await withExpiredOrdinaryRefund(
+    dependencies,
+    async ({ coordinator, client, directory, fence, source, custodyOperationId, dependencies }) => {
+      const refused = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(refused.pending.length, 1)
+      assert.equal(state.swaps.length, 2)
+
+      state.spent = true
+      state.signed = manifestSelectionOutputs(source)
+      state.signed.add(state.swaps[0]!.outputs[0]!.B_)
+      // A crash after the settlement result is applied, and before the order ends:
+      // the lease is lost at once, so the order journal cannot end.
+      let crashFence = fence()
+      const crashing = new DaemonCtfRangeOrderCoordinator(directory, () => crashFence, {
+        ...dependencies,
+        observeOrderTimeline: ({ phase, outcome }) => {
+          if (phase === 'result-application' && outcome === 'success') {
+            crashFence = { ...crashFence, fencingEpoch: crashFence.fencingEpoch + 1 }
+          }
+        },
+      })
+      await assert.rejects(crashing.recover(WALLET_SEED_HEX, client), /stale or expired authority/)
+      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+        resultState: 'applied',
+        lifecycle: 'order-request-rejected',
+      })
+      assert.equal((await rangeRefundOperation()).state, 'Failed')
+      // The mint answer changes after the crash: another manifest output is now
+      // signed. The applied result stays the authority, so the order still ends.
+      const unselected = source.manifest.entries.find(({ B_ }) => !state.signed.has(B_))
+      assert.ok(unselected)
+      state.signed.add(unselected.B_)
+
+      const settled = await coordinator.recover(WALLET_SEED_HEX, client)
+
+      assert.deepEqual(settled.pending, [])
+      assert.equal(settled.recovered.length, 1)
+      assert.equal(state.swaps.length, 2)
+      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+        resultState: 'applied',
+        lifecycle: 'terminal',
+      })
+      const refund = await rangeRefundOperation()
+      assert.equal(refund.state, 'Failed')
+      assert.equal(refund.lastError, 'range settlement spent the refund inputs')
+      assert.equal(await completedRefundCount(), 0)
+    },
+  )
+})
+
+test('daemon neither ends nor credits a spent refund whose settlement stays reconciling', async () => {
+  // No refund plan and no settlement output is signed. The inputs read SPENT,
+  // so the refund did not commit, and the settlement result is not exact.
+  const { state, dependencies } = replannedRefundMint(
+    () => new MintOperationError(11001, 'Token already spent'),
+  )
+  await withExpiredOrdinaryRefund(
+    dependencies,
+    async ({ coordinator, client, directory, custodyOperationId }) => {
+      await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(state.swaps.length, 2)
+
+      state.spent = true
+      const reconciling = await coordinator.recover(WALLET_SEED_HEX, client)
+
+      assert.deepEqual(reconciling.recovered, [])
+      assert.equal(reconciling.pending.length, 1)
+      assert.equal(
+        reconciling.pending[0]!.error,
+        'range refund inputs are spent, and the settlement remains reconciling',
+      )
+      assert.equal((await rangeRefundOperation()).state, 'prepared')
+      assert.equal(await completedRefundCount(), 0)
+      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+        resultState: 'none',
+        lifecycle: 'order-request-rejected',
+      })
     },
   )
 })
@@ -5455,6 +5876,17 @@ test('daemon keeps a refund pending when the restore of its current outputs fail
   }
   const swaps: SwapRequest[] = []
   const restoreRequests: string[][] = []
+  mint.restore = async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
+    if (!spent) return { outputs: [], signatures: [] }
+    restoreRequests.push(outputs.map(({ B_ }) => B_))
+    const current = new Set(swaps[1]!.outputs.map(({ B_ }) => B_))
+    if (outputs.some(({ B_ }) => current.has(B_))) {
+      throw new NetworkError('Network request failed at https://mint.example')
+    }
+    // The replaced plan answers, but a transport failure proves nothing
+    // about which plan the mint signed.
+    return { outputs, signatures: outputs.map(signBlindedOutput) }
+  }
   await withExpiredOrdinaryRefund(
     {
       createMint: () => mint,
@@ -5462,17 +5894,6 @@ test('daemon keeps a refund pending when the restore of its current outputs fail
         swaps.push(structuredClone(request))
         if (swaps.length === 1) throw new MintOperationError(11008, 'Duplicate outputs')
         throw new Error('refund swap acknowledgement lost')
-      },
-      restoreOutputs: async (_mintUrl, groups) => {
-        const outputs = deserializeOutputGroups(groups).refund ?? []
-        restoreRequests.push(outputs.map(({ blindedMessage }) => blindedMessage.B_))
-        const current = new Set(swaps[1]!.outputs.map(({ B_ }) => B_))
-        if (outputs.some(({ blindedMessage }) => current.has(blindedMessage.B_))) {
-          throw new NetworkError('Network request failed at https://mint.example')
-        }
-        // The replaced plan answers, but a transport failure proves nothing
-        // about which plan the mint signed.
-        return { refund: outputs.map(signedProof) }
       },
     },
     async ({ coordinator, client }) => {
@@ -7388,15 +7809,12 @@ function signaturesFor(operation: DurableCtfRangeOperation, selection: string) {
 }
 
 function signBlindedOutput(output: SerializedBlindedMessage) {
-  const signature = createBlindSignature(
-    pointFromHex(output.B_),
-    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
-    output.id,
+  const privateKey = mintDenominationPrivateKey(
+    output.id === ROTATED_OFFER_KEYSET_ID ? ROTATED_MINT_PRIVATE_KEY : MINT_PRIVATE_KEY,
+    output.amount.toString(),
   )
-  const dleq = createDLEQProof(
-    pointFromHex(output.B_),
-    mintDenominationPrivateKey(MINT_PRIVATE_KEY, output.amount.toString()),
-  )
+  const signature = createBlindSignature(pointFromHex(output.B_), privateKey, output.id)
+  const dleq = createDLEQProof(pointFromHex(output.B_), privateKey)
   return {
     id: signature.id,
     amount: output.amount,

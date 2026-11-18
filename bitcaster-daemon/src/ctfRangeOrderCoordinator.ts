@@ -8,7 +8,6 @@ import {
   Amount,
   HttpResponseError,
   Mint as CashuMint,
-  NetworkError,
   OutputData,
   Wallet as CashuWallet,
   type MintKeys,
@@ -74,9 +73,11 @@ import {
 } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import {
   CtfRangeMintRecoveryAdapter,
+  CtfRangeRecoveryTransportError,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   readAppliedCtfRangeEngineResult,
+  restoreCtfRangeRefundPlanSignatures,
   type AppliedCtfRangeEngineResultRead,
   type CtfRangeEngineResult,
   type CtfRangeMintClient,
@@ -146,6 +147,7 @@ import {
   decodeReplacedCtfRangeRefundOutputPlans,
   restoreSpentCtfRangeRefund,
   savedReplacedCtfRangeRefundOutputPlans,
+  type CtfRangeSpentRefundRestore,
 } from '@bitcaster-market/client-sdk/ctfRangeRefundReplacedPlans'
 import {
   findLastSignedSeedCounter,
@@ -827,7 +829,8 @@ export class DaemonCtfRangeOrderCoordinator {
         return database
           .prepare(
             `SELECT operation_id AS operationId, updated_at_ms AS updatedAt
-        FROM target_proof_operations WHERE scope_id = ? AND purpose = ? AND state = 'completed'
+        FROM target_proof_operations WHERE scope_id = ? AND purpose = ?
+          AND state IN ('completed', 'prepared')
         ${after === undefined ? '' : 'AND (updated_at_ms > ? OR (updated_at_ms = ? AND operation_id > ?))'}
         ORDER BY updated_at_ms, operation_id LIMIT ?`,
           )
@@ -854,7 +857,7 @@ export class DaemonCtfRangeOrderCoordinator {
             const refund = readDaemonProofOperationFromDatabase(database, row.operationId)
             if (
               refund === null ||
-              refund.state !== 'completed' ||
+              (refund.state !== 'completed' && refund.state !== 'prepared') ||
               refund.metadata.purpose !== CTF_RANGE_REFUND_PURPOSE
             )
               throw new Error('terminal refund repair journal changed')
@@ -864,6 +867,15 @@ export class DaemonCtfRangeOrderCoordinator {
               throw new Error('terminal refund repair parent is absent')
             const preparation = readRangePreparation(database, fence.scopeId, sourceId)
             if (preparation?.lifecycleState !== 'terminal') return null
+            // An earlier version applied the settlement result and left the refund prepared.
+            if (refund.state === 'prepared') {
+              return {
+                kind: 'retire' as const,
+                refund,
+                custodyId,
+                sourceId: preparation.sourceOperationId,
+              }
+            }
             const proofs = completedRangeRefundProofs(refund)
             const store = new DurableCustodySqliteStore(database)
             const missing = proofs.some(
@@ -879,10 +891,30 @@ export class DaemonCtfRangeOrderCoordinator {
                   }),
                 ) === null,
             )
-            return missing ? { refund, custodyId, sourceId: preparation.sourceOperationId } : null
+            return missing
+              ? {
+                  kind: 'complete' as const,
+                  refund,
+                  custodyId,
+                  sourceId: preparation.sourceOperationId,
+                }
+              : null
           },
         )
-        if (candidate !== null) {
+        if (candidate?.kind === 'retire') {
+          const coordinator = new DaemonCtfRangeCoordinator(this.#directory, fence)
+          const loaded = await coordinator.load(candidate.custodyId)
+          if (loaded === null) throw new Error('terminal refund repair parent custody is absent')
+          // A prepared refund of a result that is not applied keeps its owner.
+          if (loaded.record.operation.result.state === 'applied') {
+            assertRangeRefundOperation(candidate.refund, candidate.custodyId, loaded.operation)
+            await coordinator.retireRefundOfAppliedResult({
+              custodyOperationId: candidate.custodyId,
+              observedAtMs: this.#nowMs(),
+            })
+            result.recovered.push(candidate.sourceId)
+          }
+        } else if (candidate !== null) {
           const coordinator = new DaemonCtfRangeCoordinator(this.#directory, fence)
           const loaded = await coordinator.load(candidate.custodyId)
           if (
@@ -1197,18 +1229,36 @@ export class DaemonCtfRangeOrderCoordinator {
     const custodyOperationId = rangeCustodyOperationId(walletSeedHex, input.operationId)
     const loaded = await coordinator.load(custodyOperationId)
     if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
+    if (loaded.record.operation.result.state !== 'none') {
+      // A crash stopped the order after its exact result was staged or applied.
+      // End it from that persisted result, as a submitted order does. The mint
+      // answer can have changed since, so it is not read again.
+      const resolveKeyset = createCtfRangeOrderPreparationKeysetResolver(input)
+      if (loaded.record.operation.result.state === 'verified-staged') {
+        await coordinator.applyStaged({
+          seed: walletSeed(walletSeedHex),
+          custodyOperationId,
+          resolveKeyset,
+          observedAtMs: this.#nowMs(),
+        })
+      }
+      await coordinator.readAppliedResult({ custodyOperationId, resolveKeyset })
+      await this.#markTerminal(input.operationId)
+      return
+    }
     const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
     const existingRefund = await getProofOperation(
       deriveDurableCtfRangeRefundOperationId(input.operationId),
     )
     if (existingRefund !== null) {
-      await this.#resumeOrCreateRefund(
+      await this.#refundOrClassifySettlement(
         coordinator,
         custodyOperationId,
         loaded.operation,
         walletSeedHex,
         mint,
         existingRefund,
+        { clientOrderId: input.request.clientOrderId, operationId: input.operationId },
       )
       await this.#markTerminal(input.operationId)
       return
@@ -1231,13 +1281,14 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation.expiry * 1_000 + 1_000,
         )
       case 'refundable':
-        await this.#resumeOrCreateRefund(
+        await this.#refundOrClassifySettlement(
           coordinator,
           custodyOperationId,
           loaded.operation,
           walletSeedHex,
           mint,
           null,
+          { clientOrderId: input.request.clientOrderId, operationId: input.operationId },
         )
         await this.#markTerminal(input.operationId)
         return
@@ -1681,14 +1732,20 @@ export class DaemonCtfRangeOrderCoordinator {
     if (existingRefund !== null) {
       const status = await this.#loadOrderStatus(input, capability, client)
       this.#requireFokNotActiveBeforeRefund(status)
-      await this.#resumeOrCreateRefund(
+      const settled = await this.#refundOrClassifySettlement(
         coordinator,
         custodyOperationId,
         loaded.operation,
         walletSeedHex,
         mint,
         existingRefund,
+        {
+          clientOrderId: input.request.clientOrderId,
+          operationId: input.operationId,
+          orderId: capability.orderId,
+        },
       )
+      if (settled !== null) this.#requireExactFokSettlement(input, loaded.operation, settled)
       await this.#markTerminal(input.operationId)
       return
     }
@@ -1761,14 +1818,20 @@ export class DaemonCtfRangeOrderCoordinator {
       case 'refundable': {
         const refundableStatus = await this.#loadOrderStatus(input, capability, client)
         this.#requireFokNotActiveBeforeRefund(refundableStatus)
-        await this.#resumeOrCreateRefund(
+        const settled = await this.#refundOrClassifySettlement(
           coordinator,
           custodyOperationId,
           loaded.operation,
           walletSeedHex,
           mint,
           null,
+          {
+            clientOrderId: input.request.clientOrderId,
+            operationId: input.operationId,
+            orderId: capability.orderId,
+          },
         )
+        if (settled !== null) this.#requireExactFokSettlement(input, loaded.operation, settled)
         await this.#markTerminal(input.operationId)
         return
       }
@@ -1997,7 +2060,7 @@ export class DaemonCtfRangeOrderCoordinator {
     mint: CtfRangeMintLike & CtfRangeMintClient,
     existing: ProofOperationRecord | null,
     replanned = false,
-  ): Promise<void> {
+  ): Promise<'refunded' | 'inputs-spent-elsewhere'> {
     const refund =
       existing ??
       (await this.#prepareRefundOperation(custodyOperationId, source, walletSeedHex, mint))
@@ -2020,7 +2083,7 @@ export class DaemonCtfRangeOrderCoordinator {
         refundAsset: rangeOfferStoredAsset(source),
         observedAtMs: this.#nowMs(),
       })
-      return
+      return 'refunded'
     }
     if (refund.state === 'Failed') {
       throw new Error(
@@ -2063,7 +2126,9 @@ export class DaemonCtfRangeOrderCoordinator {
       }
       proofs = unblindRangeRefund(outputData, response.signatures, keyset)
     } else if (states.every(({ state }) => state === 'SPENT')) {
-      proofs = await this.#restoreSpentRefund(refund)
+      const restored = await this.#restoreSpentRefund(refund, mint, keyset)
+      if (restored.kind === 'unsigned') return 'inputs-spent-elsewhere'
+      proofs = restored.proofs
     } else {
       throw new Error('range refund remains pending at the mint')
     }
@@ -2075,30 +2140,79 @@ export class DaemonCtfRangeOrderCoordinator {
       refundAsset: rangeOfferStoredAsset(source),
       observedAtMs: this.#nowMs(),
     })
+    return 'refunded'
   }
 
   /**
-   * Restore the outputs of the refund that the mint committed, from the
-   * current plan (ADR-037). A NUT-09 hit only on a replaced plan does not
-   * prove that this refund committed with it: the SDK throws
-   * `CtfRangeRefundReplacedPlanSignedError`, the refund halts at once, and
-   * the daemon admits nothing. A restore that the mint did not answer proves
-   * nothing, so the refund stays pending, as in the browser.
+   * Resume or create the refund. Return null after the refund completes.
+   * When every refund input is SPENT, the current refund plan has zero
+   * signatures, and no replaced plan restores completely and exactly, this
+   * refund did not commit: a swap signs all of its outputs when it commits,
+   * so the settlement spent the inputs first. Then classify the settlement
+   * again and return its exact confirmed result. Applying that result retires
+   * the refund. The refund admits nothing.
    */
-  async #restoreSpentRefund(refund: ProofOperationRecord): Promise<Proof[]> {
-    const restore = this.#dependencies.restoreOutputs ?? restoreOutputGroups
+  async #refundOrClassifySettlement(
+    coordinator: DaemonCtfRangeCoordinator,
+    custodyOperationId: string,
+    source: DurableCtfRangeOperation,
+    walletSeedHex: string,
+    mint: CtfRangeMintLike & CtfRangeMintClient,
+    existing: ProofOperationRecord | null,
+    identity: import('./orderTimeline.ts').OrderTimelineIdentity,
+  ): Promise<Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'] | null> {
+    const refund = await this.#resumeOrCreateRefund(
+      coordinator,
+      custodyOperationId,
+      source,
+      walletSeedHex,
+      mint,
+      existing,
+    )
+    if (refund === 'refunded') return null
+    const loaded = await coordinator.load(custodyOperationId)
+    if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
+    const decision = await this.#classifyMintRecovery(
+      coordinator,
+      walletSeedHex,
+      custodyOperationId,
+      loaded.record,
+      new CtfRangeMintRecoveryAdapter(source, mint),
+      identity,
+    )
+    if (decision.kind !== 'confirmed') {
+      throw new Error('range refund inputs are spent, and the settlement remains reconciling')
+    }
+    return decision.result
+  }
+
+  /**
+   * Decide a refund whose inputs are all SPENT, with the SDK rule that the
+   * browser also uses (ADR-037). Each plan is read with one exact NUT-09
+   * request to the mint. A hit only on a replaced plan throws
+   * `CtfRangeRefundReplacedPlanSignedError`: the refund halts at once, and
+   * the daemon admits nothing. A restore that the mint did not answer proves
+   * nothing, so the refund stays pending.
+   */
+  async #restoreSpentRefund(
+    refund: ProofOperationRecord,
+    mint: CtfRangeMintClient,
+    keyset: MintKeys,
+  ): Promise<CtfRangeSpentRefundRestore<Proof[]>> {
     return restoreSpentCtfRangeRefund({
       currentPlan: refund.outputs,
       replacedPlans: replacedRefundOutputGroups(refund),
-      restore: async (outputs) => {
-        const proofs = (await restore(refund.mintUrl, outputs)).refund ?? []
-        if (proofs.length === 0 || proofs.length !== (outputs.refund?.length ?? 0)) {
-          throw new Error('range refund restore is incomplete')
-        }
-        return proofs
+      restore: async (groups) => {
+        const outputs = deserializeOutputGroups(groups).refund ?? []
+        const restored = await restoreCtfRangeRefundPlanSignatures({
+          mint,
+          outputs: outputs.map(({ blindedMessage }) => blindedMessage),
+        })
+        return restored.kind === 'unsigned'
+          ? restored
+          : { kind: 'signed', proofs: unblindRangeRefund(outputs, restored.signatures, keyset) }
       },
-      isTransportFailure: (error) =>
-        error instanceof HttpResponseError || error instanceof NetworkError,
+      isTransportFailure: (error) => error instanceof CtfRangeRecoveryTransportError,
     })
   }
 

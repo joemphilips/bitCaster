@@ -53,6 +53,7 @@ import {
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
   readAppliedCtfRangeEngineResult,
+  restoreCtfRangeRefundPlanSignatures,
   restoreDurableCtfRangeRefundOutputs,
   verifyDurableCtfRangeRefundSignatures,
   type CtfRangeMintClient,
@@ -508,9 +509,7 @@ test('uncertain recovery queries the exact full manifest and delegates classific
     },
     async check(payload) {
       checkCalls.push(payload)
-      return {
-        states: payload.Ys.map((Y) => ({ Y, state: 'UNSPENT', witness: null })),
-      }
+      return spentStates(payload)
     },
     async getKeys(keysetId) {
       keyCalls.push(keysetId ?? '')
@@ -527,7 +526,7 @@ test('uncertain recovery queries the exact full manifest and delegates classific
   assert.equal(observed.observation.selection, selection)
   assert.deepEqual(
     observed.observation.inputStates.map(({ state }) => state),
-    operation.inputs.map(() => 'UNSPENT'),
+    operation.inputs.map(() => 'SPENT'),
   )
   const decision = await adapter.classifyUncertainRecovery({
     record: binding.record,
@@ -647,6 +646,164 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
         ) &&
         !error.message.includes(secret),
     )
+  }
+})
+
+test('mint recovery still rejects duplicate and malformed restore rows', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const restoreRows = (
+    rows: (outputs: SerializedBlindedMessage[]) => PostRestoreResponse,
+  ): CtfRangeMintClient => ({
+    async restore(payload) {
+      return rows(payload.outputs)
+    },
+    check: unspentStates,
+    async getKeys(keysetId) {
+      return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+    },
+  })
+  const mints = [
+    restoreRows((outputs) => ({
+      outputs: [outputs[1]!, outputs[1]!],
+      signatures: [signBlindedOutput(outputs[1]!), signBlindedOutput(outputs[1]!)],
+    })),
+    restoreRows((outputs) => ({
+      outputs: [outputs[1]!],
+      signatures: [{ ...signBlindedOutput(outputs[1]!), C_: 'zz'.repeat(33) }],
+    })),
+    restoreRows((outputs) => ({
+      outputs: [outputs[1]!],
+      signatures: [{ ...signBlindedOutput(outputs[1]!), id: 'not-a-keyset-id' }],
+    })),
+    restoreRows((outputs) => ({
+      outputs: [outputs[1]!],
+      signatures: [{ ...signBlindedOutput(outputs[1]!), amount: '01' as never }],
+    })),
+  ]
+  for (const mint of mints) {
+    await assert.rejects(
+      () =>
+        new CtfRangeMintRecoveryAdapter(operation, mint).classifyUncertainRecovery({
+          record: binding.record,
+          selection: null,
+          now: operation.expiry,
+        }),
+      /CTF range mint recovery response is invalid/,
+    )
+  }
+})
+
+test('uncertain recovery reads NUT-09 before NUT-07', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const events: string[] = []
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, {
+    async restore() {
+      events.push('restore-start')
+      await Promise.resolve()
+      events.push('restore-end')
+      return { outputs: [], signatures: [] }
+    },
+    async check(payload) {
+      events.push('check')
+      return unspentStates(payload)
+    },
+    async getKeys(keysetId) {
+      return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+    },
+  })
+
+  await adapter.loadUncertainRecoveryObservation({
+    record: binding.record,
+    selection: null,
+    now: 50,
+  })
+  assert.deepEqual(events, ['restore-start', 'restore-end', 'check'])
+})
+
+test('an all-UNSPENT operation with one manifest output signed elsewhere refunds after expiry', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const reused = buildDurableCtfRangeRecoveryQuery(operation, null).outputs[1]!
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, {
+    async restore() {
+      return { outputs: [reused], signatures: [signBlindedOutput(reused)] }
+    },
+    check: unspentStates,
+    async getKeys(keysetId) {
+      return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+    },
+  })
+
+  for (const [now, expected] of [
+    [operation.expiry - 1, 'waiting'],
+    [operation.expiry, 'refundable'],
+  ] as const) {
+    const decision = await adapter.classifyUncertainRecovery({
+      record: binding.record,
+      selection: null,
+      now,
+    })
+    assert.equal(decision.kind, expected)
+  }
+})
+
+test('a queried output signed under another keyset or amount never confirms', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const outputs = buildDurableCtfRangeRecoveryQuery(operation, null).outputs
+  const otherKeysetId = outputs[0]!.id === OFFER_KEYSET_ID ? RECEIVE_KEYSET_ID : OFFER_KEYSET_ID
+  const otherAmount = outputs[0]!.amount.toString() === '1' ? '2' : '1'
+  // Entries 1 and 3 alone are a valid result (first test). Entry 0 was signed
+  // by another operation, so its stored signature names another keyset or amount.
+  const foreignRows: Array<[SerializedBlindedMessage, SerializedBlindedSignature]> = [
+    [outputs[0]!, signBlindedOutput({ ...outputs[0]!, id: otherKeysetId })],
+    [outputs[0]!, signBlindedOutput({ ...outputs[0]!, amount: otherAmount as never })],
+    [
+      { ...outputs[0]!, id: otherKeysetId },
+      signBlindedOutput({ ...outputs[0]!, id: otherKeysetId }),
+    ],
+  ]
+  for (const [foreignOutput, foreignSignature] of foreignRows) {
+    for (const [check, now, expected] of [
+      [unspentStates, operation.expiry - 1, 'waiting'],
+      [unspentStates, operation.expiry, 'refundable'],
+      [spentStates, operation.expiry, 'reconciling'],
+    ] as const) {
+      const adapter = new CtfRangeMintRecoveryAdapter(operation, {
+        async restore() {
+          return {
+            outputs: [foreignOutput, outputs[1]!, outputs[3]!],
+            signatures: [
+              foreignSignature,
+              signBlindedOutput(outputs[1]!),
+              signBlindedOutput(outputs[3]!),
+            ],
+          }
+        },
+        check,
+        async getKeys(keysetId) {
+          return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+        },
+      })
+      const context = await adapter.loadUncertainRecoveryObservation({
+        record: binding.record,
+        selection: null,
+        now,
+      })
+      assert.deepEqual(
+        context.observation.restoredOutputs.map(({ B_ }) => B_),
+        [outputs[1]!.B_, outputs[3]!.B_],
+      )
+      assert.equal(context.observation.queryCompleted, false)
+      const decision = await adapter.classifyUncertainRecovery({
+        record: binding.record,
+        selection: null,
+        now,
+      })
+      assert.equal(decision.kind, expected)
+    }
   }
 })
 
@@ -784,7 +941,7 @@ test('invalid restored signature remains reconciling instead of becoming termina
         signatures: [{ ...signBlindedOutput(selected), C_: '00'.repeat(33) }],
       }
     },
-    check: unspentStates,
+    check: spentStates,
     async getKeys(keysetId) {
       return { keysets: [mintKeyset(operation, keysetId ?? '')] }
     },
@@ -958,8 +1115,36 @@ test('NUT-09 refund restore uses persisted keys and rejects missing or invalid D
       },
     })
 
-  assert.equal((await restore(signatures)).length, fixture.outputs.length)
+  const restored = await restore(signatures)
+  assert.equal(restored.kind, 'signed')
+  assert.equal(restored.kind === 'signed' ? restored.proofs.length : 0, fixture.outputs.length)
   assert.equal(keyFetches, 0)
+  assert.deepEqual(
+    await restoreDurableCtfRangeRefundOutputs({
+      ...fixture,
+      mint: {
+        async restore() {
+          return { outputs: [], signatures: [] }
+        },
+        check: unspentStates,
+        async getKeys() {
+          return { keysets: [] }
+        },
+      },
+    }),
+    { kind: 'unsigned' },
+  )
+  // A refund output signed by another operation under another keyset stays fatal here.
+  await assert.rejects(
+    restore(
+      signatures.map((signature, index) =>
+        index === 0 ? { ...signature, id: RECEIVE_KEYSET_ID } : signature,
+      ),
+    ),
+    (error: unknown) =>
+      error instanceof CtfRangeRecoveryResponseError &&
+      /refund restore response is invalid/i.test(error.message),
+  )
   await assert.rejects(
     restore(signatures.map(({ dleq: _, ...signature }) => signature)),
     (error: unknown) =>
@@ -1003,6 +1188,48 @@ test('NUT-09 refund restore uses persisted keys and rejects missing or invalid D
     }),
     /keyset|authority|keys/,
   )
+})
+
+test('one NUT-09 read of a refund plan is unsigned, exact, or invalid', async () => {
+  const fixture = await createRefundFixture()
+  const outputs = fixture.outputs.map(({ blindedMessage }) => blindedMessage)
+  assert.ok(outputs.length > 1)
+  const read = (response: PostRestoreResponse | Error) =>
+    restoreCtfRangeRefundPlanSignatures({
+      mint: {
+        async restore() {
+          if (response instanceof Error) throw response
+          return response
+        },
+      },
+      outputs,
+    })
+
+  assert.deepEqual(await read({ outputs: [], signatures: [] }), { kind: 'unsigned' })
+  // The mint can answer in another order. The signatures follow the plan order.
+  const reversed = [...outputs].reverse()
+  const signed = await read({ outputs: reversed, signatures: reversed.map(signBlindedOutput) })
+  assert.equal(signed.kind, 'signed')
+  assert.deepEqual(
+    signed.kind === 'signed' ? signed.signatures.map(({ C_ }) => C_) : [],
+    outputs.map((output) => signBlindedOutput(output).C_),
+  )
+  for (const invalid of [
+    { outputs: outputs.slice(0, 1), signatures: outputs.slice(0, 1).map(signBlindedOutput) },
+    {
+      outputs,
+      signatures: outputs.map((output, index) =>
+        signBlindedOutput(index === 0 ? { ...output, id: RECEIVE_KEYSET_ID } : output),
+      ),
+    },
+    {
+      outputs: [outputs[0]!, outputs[0]!],
+      signatures: [outputs[0]!, outputs[0]!].map(signBlindedOutput),
+    },
+  ]) {
+    await assert.rejects(read(invalid), CtfRangeRecoveryResponseError)
+  }
+  await assert.rejects(read(new Error('offline')), CtfRangeRecoveryTransportError)
 })
 
 function engineResult(
@@ -1181,6 +1408,12 @@ function signBlindedOutput(output: SerializedBlindedMessage): SerializedBlindedS
 async function unspentStates(payload: CheckStatePayload): Promise<CheckStateResponse> {
   return {
     states: payload.Ys.map((Y) => ({ Y, state: 'UNSPENT', witness: null })),
+  }
+}
+
+async function spentStates(payload: CheckStatePayload): Promise<CheckStateResponse> {
+  return {
+    states: payload.Ys.map((Y) => ({ Y, state: 'SPENT', witness: null })),
   }
 }
 

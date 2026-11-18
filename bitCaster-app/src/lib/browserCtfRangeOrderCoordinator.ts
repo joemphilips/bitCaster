@@ -136,6 +136,7 @@ import {
   decodeReplacedCtfRangeRefundOutputPlans,
   restoreSpentCtfRangeRefund,
   savedReplacedCtfRangeRefundOutputPlans,
+  type CtfRangeSpentRefundRestore,
 } from "@bitcaster/client-sdk/ctfRangeRefundReplacedPlans";
 import {
   restoreOutputGroups,
@@ -1140,7 +1141,7 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     if (existingRefund !== undefined) {
       if (!mintDue) return "awaiting-mint-retry";
-      await this.#resumeOuterRefund(
+      const refund = await this.#resumeOuterRefund(
         journalRecord,
         seed,
         scope,
@@ -1149,7 +1150,8 @@ export class BrowserCtfRangeOrderCoordinator {
         operation,
         existingRefund,
       );
-      return "recovered";
+      if (refund === "refunded") return "recovered";
+      // The refund did not commit, and its inputs are spent. Classify the settlement again.
     }
     const recovery = this.#createMintRecovery(operation);
     const capability = journalRecord.capability;
@@ -3326,7 +3328,7 @@ export class BrowserCtfRangeOrderCoordinator {
     const refund =
       existing ??
       (await this.#persistRefundPlan(journalRecord, seed, scope, owner, record, operation, null));
-    await this.#resumeOuterRefund(
+    const outcome = await this.#resumeOuterRefund(
       journalRecord,
       seed,
       scope,
@@ -3336,6 +3338,8 @@ export class BrowserCtfRangeOrderCoordinator {
       refund,
       true,
     );
+    // The settlement spent the inputs after the refundable observation. The next pass classifies it.
+    if (outcome === "inputs-spent-elsewhere") throw rangeError("recovery-pending");
   }
 
   /**
@@ -3535,7 +3539,7 @@ export class BrowserCtfRangeOrderCoordinator {
     refund: ProofOperationRecord,
     orderStatusChecked = false,
     replanned = false,
-  ): Promise<void> {
+  ): Promise<"refunded" | "inputs-spent-elsewhere"> {
     await this.#requireRefundOwner(scope, owner, record);
     if (!orderStatusChecked) await this.#requireSubmittedFokRefundSafe(journalRecord);
     assertExactRefundRecord(refund, operation);
@@ -3603,9 +3607,15 @@ export class BrowserCtfRangeOrderCoordinator {
       } else if (states.every(({ state }) => state === "SPENT")) {
         const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
         await this.#requireRefundOwner(scope, owner, record);
-        proofs = await this.#pendingOnRecoveryTransport(() =>
+        const restored = await this.#pendingOnRecoveryTransport(() =>
           this.#restoreSpentRefund(refund, record, operation, preparation.offerKeyset),
         );
+        // The current plan has zero signatures, and no replaced plan restores
+        // completely and exactly. A swap signs all of its outputs when it
+        // commits, so this refund did not commit: the settlement spent the
+        // inputs. The refund admits nothing.
+        if (restored.kind === "unsigned") return "inputs-spent-elsewhere";
+        proofs = restored.proofs;
       } else {
         throw rangeError("recovery-pending");
       }
@@ -3623,11 +3633,12 @@ export class BrowserCtfRangeOrderCoordinator {
       refund,
       proofs,
     );
+    return "refunded";
   }
 
   /**
-   * Restore the outputs of the refund that the mint committed, from the
-   * current plan (ADR-037). A NUT-09 hit only on a replaced plan does not
+   * Decide a refund whose inputs are all SPENT, with the SDK rule that the
+   * daemon also uses (ADR-037). A NUT-09 hit only on a replaced plan does not
    * prove that this refund committed with it. The refund then halts at once
    * with the alert and Retry, and the wallet admits nothing.
    */
@@ -3636,7 +3647,7 @@ export class BrowserCtfRangeOrderCoordinator {
     record: DurableCustodyRecord,
     operation: DurableCtfRangeOperation,
     keyset: PersistedCtfRangeOrderPreparation["offerKeyset"],
-  ): Promise<Proof[]> {
+  ): Promise<CtfRangeSpentRefundRestore<Proof[]>> {
     const current = refund.outputs.refund;
     if (current === undefined) {
       throw new Error("browser range refund output authority is missing");
@@ -3939,6 +3950,26 @@ export class BrowserCtfRangeOrderCoordinator {
         operation.inputs.map(({ secret }) => secret),
         legacySuccessors,
       );
+      await this.#retirePreparedRefund(operation, authorization.observedAtMs);
+    });
+  }
+
+  /**
+   * The settlement result spent the refund inputs, so a prepared refund can
+   * never commit. Fail it in the transaction that applies the result. The
+   * failed state credits nothing.
+   */
+  async #retirePreparedRefund(operation: DurableCtfRangeOperation, observedAtMs: number) {
+    const refund = await this.#database.proofOperations.get(
+      deriveDurableCtfRangeRefundOperationId(operation.operationId),
+    );
+    if (refund === undefined || refund.state !== "prepared") return;
+    assertExactRefundRecord(refund, operation);
+    await this.#database.proofOperations.put({
+      ...refund,
+      state: "Failed",
+      lastError: CTF_RANGE_REFUND_SETTLED_REASON,
+      updatedAt: Math.max(refund.updatedAt, observedAtMs),
     });
   }
 
@@ -4232,6 +4263,9 @@ export class BrowserCtfRangeOrderCoordinator {
     ] as const;
   }
 }
+
+/** The reason that a settlement result records on the refund that it retires. */
+const CTF_RANGE_REFUND_SETTLED_REASON = "range settlement spent the refund inputs";
 
 function requireFokRequest(
   request: CtfRangeOrderRequest,
@@ -4552,8 +4586,7 @@ export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderError
     "settlement-capability-score-required":
       "The engine requires more Participation Score for this capability.",
     "settlement-capability-not-found": "The engine could not find the capability request.",
-    "settlement-capability-conflict":
-      "The capability request conflicts with an existing operation.",
+    "settlement-capability-conflict": "The capability request conflicts with an earlier request.",
     "settlement-capability-market-unavailable": "The market is not available for this capability.",
     "settlement-capability-request-too-large":
       "The capability request exceeds a supported size or count limit.",

@@ -17,7 +17,9 @@ import {
  * committed with it: another client with the same seed can have signed the
  * same counters with the same amounts. A spent refund completes only from its
  * current plan. A hit only on a replaced plan halts the refund, and the
- * client admits nothing from it.
+ * client admits nothing from it. When the current plan has zero signatures
+ * and no replaced plan restores completely and exactly, the refund did not
+ * commit, and the client classifies the settlement again.
  */
 
 /** Replaced output plans that one refund record keeps. */
@@ -75,37 +77,65 @@ export function assertReplacedCtfRangeRefundOutputPlans(input: {
   }
 }
 
+/** One NUT-09 read of one refund output plan. */
+export type CtfRangeRefundPlanRestore<Result> =
+  /** The mint signed every output of the plan, exactly. */
+  | { readonly kind: 'signed'; readonly proofs: Result }
+  /** The mint holds no signature for any output of the plan. */
+  | { readonly kind: 'unsigned' }
+
+/** The result of a spent refund. */
+export type CtfRangeSpentRefundRestore<Result> =
+  /** This refund committed with its current plan. */
+  | { readonly kind: 'refunded'; readonly proofs: Result }
+  /**
+   * This refund did not commit: the current plan has no signature, and no
+   * replaced plan restores completely and exactly. A swap signs all of its
+   * outputs when it commits, so another request spent the refund inputs.
+   */
+  | { readonly kind: 'unsigned' }
+
 /**
- * Restore the proofs of a spent refund from its current plan. When the
- * current plan does not restore, read each replaced plan, newest first. A
- * replaced plan that restores throws `CtfRangeRefundReplacedPlanSignedError`:
- * the caller halts the refund and admits nothing. A restore that the mint
- * did not answer proves nothing, so a transport failure is thrown at once.
- * Otherwise the error of the current plan is thrown, and the refund stays
- * pending.
+ * Decide a refund whose inputs are all SPENT. Read the current plan first,
+ * then each replaced plan, newest first.
+ *
+ * - The current plan restores completely and exactly: `refunded`.
+ * - A replaced plan restores completely and exactly: throw
+ *   `CtfRangeRefundReplacedPlanSignedError`. The caller halts the refund and
+ *   admits nothing.
+ * - The current plan has zero signatures, and no replaced plan restores
+ *   completely and exactly: `unsigned`.
+ * - Otherwise throw the error of the current plan. The refund stays pending.
+ *
+ * `restore` throws for a partly signed or invalid answer. A restore that the
+ * mint did not answer proves nothing, so a transport failure is thrown at once.
  */
 export async function restoreSpentCtfRangeRefund<Plan, Result>(input: {
   readonly currentPlan: Plan
   /** The replaced plans, oldest first. */
   readonly replacedPlans: readonly Plan[]
-  readonly restore: (plan: Plan) => Promise<Result>
+  readonly restore: (plan: Plan) => Promise<CtfRangeRefundPlanRestore<Result>>
   readonly isTransportFailure: (error: unknown) => boolean
-}): Promise<Result> {
+}): Promise<CtfRangeSpentRefundRestore<Result>> {
+  let current: CtfRangeRefundPlanRestore<Result> | undefined
   let currentError: unknown
   try {
-    return await input.restore(input.currentPlan)
+    current = await input.restore(input.currentPlan)
   } catch (error) {
     if (input.isTransportFailure(error)) throw error
     currentError = error
   }
+  if (current?.kind === 'signed') return { kind: 'refunded', proofs: current.proofs }
   for (const plan of [...input.replacedPlans].reverse()) {
+    let replaced: CtfRangeRefundPlanRestore<Result>
     try {
-      await input.restore(plan)
+      replaced = await input.restore(plan)
     } catch (error) {
       if (input.isTransportFailure(error)) throw error
       continue
     }
-    throw new CtfRangeRefundReplacedPlanSignedError()
+    if (replaced.kind === 'signed') throw new CtfRangeRefundReplacedPlanSignedError()
   }
+  if (current?.kind === 'unsigned') return { kind: 'unsigned' }
   throw currentError
 }

@@ -53,6 +53,7 @@ import {
   type DurableCustodyPlannedOutput,
 } from './durableCustodyProofOperation.ts'
 import { readAllocationBoundedJsonResponse } from './boundedJsonResponse.ts'
+import type { CtfRangeRefundPlanRestore } from './ctfRangeRefundReplacedPlans.ts'
 import type {
   BitcasterEngineClient,
   SettlementCapabilityReference,
@@ -157,6 +158,72 @@ export class CtfRangeRecoveryResponseError extends Error {
   }
 }
 
+/** One NUT-09 read of one refund output plan, before unblinding. */
+export type CtfRangeRefundPlanSignatures =
+  | { readonly kind: 'signed'; readonly signatures: SerializedBlindedSignature[] }
+  | { readonly kind: 'unsigned' }
+
+/**
+ * Read one refund output plan with one NUT-09 request. Return `unsigned` when
+ * the mint holds no signature for any output of the plan. Return `signed`, in
+ * plan order, when it signed every output exactly. Throw for a partly signed
+ * plan, a foreign or malformed row, or a transport failure.
+ */
+export async function restoreCtfRangeRefundPlanSignatures(input: {
+  readonly mint: Pick<CtfRangeMintClient, 'restore'>
+  readonly outputs: readonly SerializedBlindedMessage[]
+}): Promise<CtfRangeRefundPlanSignatures> {
+  if (input.outputs.length === 0 || input.outputs.length > 256) {
+    throw new Error('CTF range refund restore output limit is invalid')
+  }
+  let response: PostRestoreResponse
+  try {
+    response = await input.mint.restore({ outputs: [...input.outputs] })
+  } catch (error) {
+    throw new CtfRangeRecoveryTransportError('CTF range refund restore transport failed', error)
+  }
+  try {
+    if (!Array.isArray(response.outputs) || !Array.isArray(response.signatures)) {
+      throw new Error('CTF range refund restore response is malformed')
+    }
+    if (response.outputs.length === 0 && response.signatures.length === 0) {
+      return { kind: 'unsigned' }
+    }
+    if (
+      response.outputs.length !== input.outputs.length ||
+      response.signatures.length !== response.outputs.length
+    ) {
+      throw new Error('CTF range refund restore response size is invalid')
+    }
+    const expected = new Map(input.outputs.map((output) => [output.B_, output]))
+    const restored = new Set<string>()
+    const signatures = new Map<string, SerializedBlindedSignature>()
+    response.outputs.forEach((output, index) => {
+      const signature = response.signatures[index]!
+      if (classifyRestoredPair(output, signature, expected, restored) !== 'exact') {
+        throw new Error('CTF range refund restore authority is foreign')
+      }
+      signatures.set(output.B_, signature)
+    })
+    return {
+      kind: 'signed',
+      signatures: input.outputs.map((output) => {
+        const signature = signatures.get(output.B_)
+        if (signature === undefined) {
+          throw new Error('CTF range refund restore authority is incomplete')
+        }
+        return signature
+      }),
+    }
+  } catch (error) {
+    throw new CtfRangeRecoveryResponseError('CTF range refund restore response is invalid', error)
+  }
+}
+
+/**
+ * Read one refund output plan on the offer keyset and verify its signatures
+ * against the persisted keys (`restoreCtfRangeRefundPlanSignatures`).
+ */
 export async function restoreDurableCtfRangeRefundOutputs(input: {
   mintUrl: string
   outputs: readonly DurableCustodyPlannedOutput[]
@@ -164,7 +231,7 @@ export async function restoreDurableCtfRangeRefundOutputs(input: {
   operation: DurableCtfRangeOperation
   keyset: DurableCtfRangeMintKeyset
   mint?: CtfRangeMintClient
-}): Promise<Proof[]> {
+}): Promise<CtfRangeRefundPlanRestore<Proof[]>> {
   const operation = decodeDurableCtfRangeOperation(input.operation)
   const mintUrl = decodeCanonicalMintOrigin(input.mintUrl)
   if (mintUrl !== operation.mintUrl) {
@@ -176,50 +243,22 @@ export async function restoreDurableCtfRangeRefundOutputs(input: {
     keyset: input.keyset,
   })
   const outputData = input.outputs.map(deserializeDurableCustodyOutput)
-  if (outputData.length === 0 || outputData.length > 256) {
-    throw new Error('CTF range refund restore output limit is invalid')
-  }
-  const mint = input.mint ?? createCtfRangeMintClient(mintUrl)
-  let response: PostRestoreResponse
+  const restored = await restoreCtfRangeRefundPlanSignatures({
+    mint: input.mint ?? createCtfRangeMintClient(mintUrl),
+    outputs: outputData.map(({ blindedMessage }) => blindedMessage),
+  })
+  if (restored.kind === 'unsigned') return restored
   try {
-    response = await mint.restore({
-      outputs: outputData.map(({ blindedMessage }) => blindedMessage),
-    })
-  } catch (error) {
-    throw new CtfRangeRecoveryTransportError('CTF range refund restore transport failed', error)
-  }
-  try {
-    if (
-      !Array.isArray(response.outputs) ||
-      !Array.isArray(response.signatures) ||
-      response.outputs.length !== outputData.length ||
-      response.signatures.length !== response.outputs.length
-    ) {
-      throw new Error('CTF range refund restore response size is invalid')
-    }
-    const expected = new Map(
-      outputData.map(({ blindedMessage }) => [blindedMessage.B_, blindedMessage]),
-    )
-    const restored = new Set<string>()
-    const signatures = new Map<string, SerializedBlindedSignature>()
-    response.outputs.forEach((output, index) => {
-      const signature = response.signatures[index]!
-      assertRestoredPair(output, signature, expected, restored)
-      signatures.set(output.B_, signature)
-    })
-    return verifyDurableCtfRangeRefundSignatures({
-      record: input.record,
-      operation: input.operation,
-      keyset: input.keyset,
-      outputs: input.outputs,
-      signatures: outputData.map((output) => {
-        const signature = signatures.get(output.blindedMessage.B_)
-        if (signature === undefined) {
-          throw new Error('CTF range refund restore authority is incomplete')
-        }
-        return signature
+    return {
+      kind: 'signed',
+      proofs: verifyDurableCtfRangeRefundSignatures({
+        record: input.record,
+        operation: input.operation,
+        keyset: input.keyset,
+        outputs: input.outputs,
+        signatures: restored.signatures,
       }),
-    })
+    }
   } catch (error) {
     throw new CtfRangeRecoveryResponseError('CTF range refund restore response is invalid', error)
   }
@@ -581,11 +620,19 @@ export class CtfRangeMintRecoveryAdapter {
   }): Promise<CtfRangeMintRecoveryObservationContext> {
     assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
     try {
-      const [allManifestRecovery, resolveKeyset, inputStates] = await Promise.all([
+      // Read NUT-09 before NUT-07. The swap spends its inputs and signs its
+      // outputs together, so a signature read before an all-UNSPENT check
+      // belongs to another operation, and a commit between the two reads
+      // shows SPENT inputs. The classifier depends on this order.
+      const [allManifestRecovery, resolveKeyset] = await Promise.all([
         this.#restoreExactAllManifest(),
         this.#loadBoundKeysets(input.record),
-        checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs, input.signal),
       ])
+      const inputStates = await checkCtfRangeInputProofStates(
+        this.#mint,
+        this.#operation.inputs,
+        input.signal,
+      )
       return {
         allManifestRecovery,
         resolveKeyset,
@@ -637,16 +684,22 @@ export class CtfRangeMintRecoveryAdapter {
 
     const expected = new Map(queriedOutputs.map((output) => [output.B_, output]))
     const restored = new Set<string>()
+    const restoredOutputs: SerializedBlindedMessage[] = []
+    const signatures: SerializedBlindedSignature[] = []
+    let foreign = false
     response.outputs.forEach((output, index) => {
       const signature = response.signatures[index]!
-      assertRestoredPair(output, signature, expected, restored)
+      if (classifyRestoredPair(output, signature, expected, restored) === 'foreign') {
+        foreign = true
+        return
+      }
+      restoredOutputs.push(output)
+      signatures.push(signature)
     })
-    return {
-      queriedOutputs,
-      restoredOutputs: response.outputs,
-      signatures: response.signatures,
-      queryCompleted: true,
-    }
+    // A foreign signature is never a proof of this operation. Without it the
+    // restore is incomplete, so it cannot confirm, and the exact input states
+    // decide the result (ADR-037 reused-output exclusion, decision 13).
+    return { queriedOutputs, restoredOutputs, signatures, queryCompleted: !foreign }
   }
 
   async #loadBoundKeysets(record: DurableCustodyRecord): Promise<DurableCtfRangeKeysetResolver> {
@@ -837,12 +890,19 @@ function assertCanonicalBase64Tail(value: string): void {
   }
 }
 
-function assertRestoredPair(
+/**
+ * Check one NUT-09 restore row. Throw for an output outside the query, a
+ * duplicate, or a malformed row. Return `'foreign'` for a queried output whose
+ * keyset id or amount differs: the mint returns the stored signature of the
+ * operation that signed that `B_`, so the row is a signature made for another
+ * operation (ADR-037 reused-output exclusion, decision 2).
+ */
+function classifyRestoredPair(
   output: SerializedBlindedMessage,
   signature: SerializedBlindedSignature,
   expected: ReadonlyMap<string, SerializedBlindedMessage>,
   restored: Set<string>,
-): void {
+): 'exact' | 'foreign' {
   if (typeof output?.B_ !== 'string' || output.B_.length > 192 || restored.has(output.B_)) {
     throw new Error('range restore output is invalid')
   }
@@ -850,17 +910,22 @@ function assertRestoredPair(
   const queried = expected.get(output.B_)
   if (
     queried === undefined ||
-    output.id !== queried.id ||
-    !boundedAmountEquals(output.amount, queried.amount) ||
-    signature.id !== output.id ||
-    !boundedAmountEquals(signature.amount, output.amount) ||
-    typeof signature.C_ !== 'string' ||
+    !isBoundedAmount(output.amount) ||
+    typeof signature?.C_ !== 'string' ||
     signature.C_.length !== 66 ||
-    !/^[0-9a-f]+$/.test(signature.C_)
+    !/^[0-9a-f]+$/.test(signature.C_) ||
+    !isBoundedAmount(signature.amount)
   ) {
     throw new Error('range restore authority is foreign')
   }
+  requireSupportedCashuKeysetId(signature.id)
   restored.add(output.B_)
+  return output.id === queried.id &&
+    boundedAmountEquals(output.amount, queried.amount) &&
+    signature.id === queried.id &&
+    boundedAmountEquals(signature.amount, queried.amount)
+    ? 'exact'
+    : 'foreign'
 }
 
 function assertProofState(
@@ -881,20 +946,14 @@ function assertProofState(
   }
 }
 
+function isBoundedAmount(value: unknown): boolean {
+  const text = String(value)
+  return text.length > 0 && text.length <= 20 && /^(0|[1-9][0-9]*)$/.test(text)
+}
+
 function boundedAmountEquals(left: unknown, right: unknown): boolean {
-  const leftText = String(left)
-  const rightText = String(right)
-  if (
-    leftText.length === 0 ||
-    leftText.length > 20 ||
-    rightText.length === 0 ||
-    rightText.length > 20 ||
-    !/^(0|[1-9][0-9]*)$/.test(leftText) ||
-    !/^(0|[1-9][0-9]*)$/.test(rightText)
-  ) {
-    return false
-  }
-  return Amount.from(leftText).equals(Amount.from(rightText))
+  if (!isBoundedAmount(left) || !isBoundedAmount(right)) return false
+  return Amount.from(String(left)).equals(Amount.from(String(right)))
 }
 
 function requireBoundedText(value: unknown): value is string {
