@@ -965,15 +965,19 @@ describe("active settlement progress", () => {
   );
 
   it("shows the accepted submission state while settlement status is still unknown", async () => {
-    mocks.read.mockResolvedValue(null);
+    // The read stays pending, so the status stays unknown. The read starts in
+    // an effect after the first paint: wait for its call, not for the text.
+    mocks.read.mockReturnValue(new Promise(() => {}));
     await database.ctfRangePreparations.put(fixture());
     render(<SettlementProgress canReadStatus />);
-    expect(await screen.findByText(en.settlementProgress.orderSubmitted)).toBeVisible();
-    expect(mocks.read).toHaveBeenCalledWith(
-      "condition-a-Alpha",
-      "11111111-1111-4111-8111-111111111111",
-      expect.any(AbortSignal),
+    await waitFor(() =>
+      expect(mocks.read).toHaveBeenCalledWith(
+        "condition-a-Alpha",
+        "11111111-1111-4111-8111-111111111111",
+        expect.any(AbortSignal),
+      ),
     );
+    expect(screen.getByText(en.settlementProgress.orderSubmitted)).toBeVisible();
   });
 
   it("removes terminal journal rows without claiming a trade or refund outcome", async () => {
