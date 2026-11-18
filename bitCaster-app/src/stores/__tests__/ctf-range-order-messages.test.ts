@@ -6,6 +6,7 @@ import {
   clearBrowserCtfRangeMessageRetry,
   pageActiveBrowserCtfRangeMessages,
   raiseBrowserCtfRangeAttentionMessage,
+  readBrowserCtfRangeOrderRefusalOperations,
   recordBrowserCtfRangeMessage,
   resolveTerminalBrowserCtfRangeMessages,
 } from "../ctf-range-order-messages";
@@ -21,6 +22,39 @@ afterEach(async () => {
 });
 
 describe("durable browser range messages", () => {
+  it("finds the operations whose alert names a refused order request, also after its dismissal", async () => {
+    const database = createDatabase();
+    const refused = { ...message(2, "order-market-closed", 10), kind: "order" as const };
+    await recordBrowserCtfRangeMessage(refused, database);
+    await acknowledgeBrowserCtfRangeMessage({ ...refused, acknowledgedAtMs: 11 }, database);
+    // A funds alert does not show an order failure.
+    await recordBrowserCtfRangeMessage(
+      { ...message(1, "recovery-pending", 12), operationId: "operation-2" },
+      database,
+    );
+    await recordBrowserCtfRangeMessage(
+      { ...refused, scopeId: "scope-2", operationId: "operation-3" },
+      database,
+    );
+    // An order alert that is not a refusal: the request result is uncertain.
+    await recordBrowserCtfRangeMessage(
+      {
+        ...message(1, "order-submission-uncertain", 13),
+        operationId: "operation-4",
+        kind: "order" as const,
+      },
+      database,
+    );
+
+    expect(
+      await readBrowserCtfRangeOrderRefusalOperations(
+        "scope-1",
+        ["operation-1", "operation-2", "operation-3", "operation-4"],
+        database,
+      ),
+    ).toEqual(new Set(["operation-1"]));
+  });
+
   it("retains an exact message until the user acknowledges it", async () => {
     const database = createDatabase();
     const input = message(1, "recovery-pending", 10);

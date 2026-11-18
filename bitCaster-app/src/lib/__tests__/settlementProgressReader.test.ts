@@ -30,10 +30,20 @@ describe("settlement progress reader", () => {
     const response = order(status);
     const read = vi.fn().mockResolvedValue(response);
     const reader = createSettlementProgressReader(read);
-    expect(await reader("condition-Alpha", "order-1", new AbortController().signal)).toEqual(
-      response.activeSettlementGroup,
-    );
+    expect(await reader("condition-Alpha", "order-1", new AbortController().signal)).toEqual({
+      status: "matched",
+      group: response.activeSettlementGroup,
+    });
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the order status of an order that the engine ended with no settlement group", async () => {
+    const response = { ...order(), status: "failed" as const, activeSettlementGroup: null };
+    const reader = createSettlementProgressReader(vi.fn().mockResolvedValue(response));
+    expect(await reader("condition-Alpha", "order-1", new AbortController().signal)).toEqual({
+      status: "failed",
+      group: null,
+    });
   });
 
   it("reads a terminal summary from fills when the active group is absent", () => {

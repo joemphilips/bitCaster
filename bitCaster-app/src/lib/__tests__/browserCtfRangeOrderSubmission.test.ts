@@ -1681,6 +1681,44 @@ describe("submitBrowserCtfRangeOrder", () => {
     });
   });
 
+  // The coordinator records a stopped wait as a refused request, because no
+  // attempt committed. The user stopped it, so it is not an order failure.
+  it("records no wallet alert when the user stopped the order wait", async () => {
+    const stopped = new BrowserCtfRangeOrderError(
+      "order-submission-rejected",
+      "The engine rejected the order. It will not retry.",
+    );
+    mocks.readPreparation.mockResolvedValue({
+      revision: 3,
+      lifecycleState: "order-request-rejected",
+    });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(stopped);
+    const stop = new AbortController();
+    stop.abort();
+
+    await expect(submitRangeOrder("client-stopped", 0, "1", stop.signal)).rejects.toBe(stopped);
+
+    expect(mocks.readPreparation).toHaveBeenCalled();
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an engine refusal", false, "order-request-rejected", "order-submission-rejected"],
+    ["a stop that interrupted an attempt", true, "order-requested", "order-submission-uncertain"],
+  ] as const)("records the order alert after %s", async (_case, aborted, lifecycleState, code) => {
+    const error = new BrowserCtfRangeOrderError(code, "message");
+    mocks.readPreparation.mockResolvedValue({ revision: 3, lifecycleState });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(error);
+    const control = new AbortController();
+    if (aborted) control.abort();
+
+    await expect(submitRangeOrder(`client-${code}`, 0, "1", control.signal)).rejects.toBe(error);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: 3, code, kind: "order" }),
+    );
+  });
+
   it("stores the mint code of a refused submission with its order alert", async () => {
     const ended = new BrowserCtfRangeOrderError(
       "order-attempt-ended",
@@ -2170,8 +2208,10 @@ function submitRangeOrder(
   clientOrderId: string,
   consolidationFeeSubunits = 0,
   sourceFeeSubunits = "1",
+  signal?: AbortSignal,
 ) {
   return submitBrowserCtfRangeOrder({
+    ...(signal === undefined ? {} : { signal }),
     market: market(),
     ticket: {
       marketId: "condition-1-YES",

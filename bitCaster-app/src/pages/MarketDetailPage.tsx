@@ -2769,6 +2769,16 @@ export function MarketDetailPage() {
           setShowNostrAuthModal(true);
           return;
         }
+        // Stop waiting, or a signer change, aborts this controller. The wallet
+        // then records the wait as a refused request because no attempt
+        // committed, but the engine refused nothing. Show no error; the
+        // progress panel shows the order until its refund.
+        if (
+          quoteRefreshController?.signal.aborted === true &&
+          e instanceof BrowserCtfRangeOrderError &&
+          e.code === "order-submission-rejected"
+        )
+          return;
         setTradeSubmitStatus({
           kind: "error",
           message: e instanceof Error ? e.message : "Failed to submit order.",

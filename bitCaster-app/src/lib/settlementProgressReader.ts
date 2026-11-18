@@ -1,4 +1,5 @@
 import type {
+  OrderLifecycleStatus,
   OrderSettlementFailure,
   SettlementGroupSummary,
 } from "@bitcaster/client-sdk/engineClient";
@@ -51,6 +52,16 @@ export function createSettlementReadSlot(): SettlementReadSlot {
   };
 }
 
+/**
+ * The order status and its settlement group. The engine can end an accepted
+ * order with no group, for example when it fails the order, so the status
+ * stays next to the group.
+ */
+export interface SettlementProgressRead {
+  readonly status: OrderLifecycleStatus;
+  readonly group: SettlementGroupSummary | null;
+}
+
 /** One slot survives page and wallet changes, including uncancellable signing. */
 export function createSettlementProgressReader(
   read = fetchOrderStatus,
@@ -60,10 +71,15 @@ export function createSettlementProgressReader(
     marketId: string,
     orderId: string,
     signal: AbortSignal,
-  ): Promise<SettlementGroupSummary | null> =>
+  ): Promise<SettlementProgressRead | null> =>
     slot(signal, async (readSignal) => {
       const response = await read(marketId, orderId, readSignal);
-      return response === null ? null : settlementGroupForOrder(response, marketId, orderId);
+      return response === null
+        ? null
+        : {
+            status: response.status,
+            group: settlementGroupForOrder(response, marketId, orderId),
+          };
     });
 }
 

@@ -71,6 +71,10 @@ import {
 } from "@/stores/ctf-range-order-messages";
 import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { classifyBrowserFundedPlan } from "./browserFundedPlan";
+import {
+  isLocalCtfRangeOrderRefusal,
+  isTerminalCtfRangePreparation,
+} from "./ctfRangeOrderLifecycle";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import {
@@ -359,7 +363,12 @@ export async function submitBrowserCtfRangeOrder(
     // A refused second sell locked nothing, so it needs no durable alert.
     if (durableCode !== null && durableCode !== "source-preparation-pending") {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
-      if (record !== null) {
+      if (record !== null && stoppedByUser(input.signal, record.lifecycleState)) {
+        // The user stopped the wait, left the page, or changed the preview.
+        // The coordinator records that as a refused request because no
+        // attempt committed, but the engine refused nothing. The progress
+        // panel shows the order until its refund; it is not an order failure.
+      } else if (record !== null) {
         await persistRangeMessages({
           scopeId,
           operationId: preparation.operationId,
@@ -1157,29 +1166,12 @@ async function resolveRecoveredRangeMessages(
 ): Promise<void> {
   for (const operationId of operationIds) {
     const record = await readCtfRangePreparation(scopeId, operationId);
-    if (record === null || !isTerminalRangePreparation(record.lifecycleState)) continue;
+    if (record === null || !isTerminalCtfRangePreparation(record.lifecycleState)) continue;
     await resolveTerminalBrowserCtfRangeMessages({
       scopeId,
       operationId,
       resolvedAtMs: Date.now(),
     });
-  }
-}
-
-function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): boolean {
-  switch (state) {
-    case "terminal":
-      return true;
-    case "prepared":
-    case "order-requested":
-    case "order-request-rejected":
-    case "capability-requested":
-    case "capability-bound":
-    case "order-submitted":
-    case "submission-rejected":
-      return false;
-    default:
-      return assertNever(state);
   }
 }
 
@@ -1275,6 +1267,14 @@ function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
   mintError?: BrowserCtfRangeMintError;
 } {
   return mintError === null ? {} : { mintError };
+}
+
+/** Only the user's own signal ends a wait as a refused request. */
+function stoppedByUser(
+  signal: AbortSignal | undefined,
+  lifecycleState: CtfRangeOrderPreparationLifecycle,
+): boolean {
+  return signal?.aborted === true && isLocalCtfRangeOrderRefusal(lifecycleState);
 }
 
 async function persistRangeMessages(input: {

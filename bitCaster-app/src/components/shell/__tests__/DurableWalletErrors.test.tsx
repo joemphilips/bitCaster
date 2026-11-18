@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
+import { useNotificationsStore } from "@/stores/notifications";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn().mockResolvedValue(undefined),
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
       fundsReleased?: true;
     }>,
     nextCursor: null,
+    orderMarkets: {} as Record<string, string>,
   },
 }));
 
@@ -56,9 +58,60 @@ vi.mock("@/stores/ctf-range-order-messages", () => ({
 vi.mock("@/lib/browserCtfRangeRecoveryRetry", () => ({
   retryBrowserCtfRangeOrderRecovery: mocks.retry,
 }));
+vi.mock("@/stores/ctf-range-order-db", () => ({
+  readCtfRangePreparation: vi.fn().mockResolvedValue(null),
+}));
 
 describe("DurableWalletErrors", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.readPage.mockResolvedValue({ messages: [], nextCursor: null });
+    useNotificationsStore.setState({ items: [] });
+  });
+
+  it("names the order of an order alert by its market, and keeps the operation of a funds alert", () => {
+    const original = mocks.page;
+    const funds = original.messages[0]!;
+    mocks.page = {
+      ...original,
+      messages: [
+        { ...funds, operationId: "range-1", code: "order-submission-rejected", kind: "order" },
+        { ...funds, operationId: "range-2", code: "order-market-closed", kind: "order" },
+        { ...funds, operationId: "range-3" },
+      ],
+      orderMarkets: { "range-1": "condition-a-Alpha", "range-2": "condition-b-Beta" },
+    };
+    useNotificationsStore.setState({
+      items: [
+        {
+          id: "order-1-failed",
+          kind: "Failed",
+          orderId: "order-1",
+          marketId: "condition-a-Alpha",
+          filledAmountSubunits: 0,
+          remainingAmountSubunits: 1_000,
+          unit: "sat",
+          divisibility: 1_000,
+          marketTitle: "Will Alice win the cup?",
+          occurredAt: 1,
+          read: false,
+        },
+      ],
+    });
+    try {
+      render(<DurableWalletErrors />);
+
+      const [titled, untitled, fundsAlert] = screen.getAllByRole("alert");
+      expect(titled).toHaveTextContent("Order on “Will Alice win the cup?”");
+      expect(titled).not.toHaveTextContent(/Operation/);
+      // Without a stored title, the alert names the outcome.
+      expect(untitled).toHaveTextContent("Order on “Beta”");
+      expect(untitled).not.toHaveTextContent(/Operation/);
+      expect(fundsAlert).toHaveTextContent("Operation: range-3");
+    } finally {
+      mocks.page = original;
+    }
+  });
 
   it("restores a durable funds error and acknowledges only its exact revision", () => {
     render(<DurableWalletErrors />);

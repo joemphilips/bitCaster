@@ -1014,14 +1014,17 @@
   "settlementProgress": {
     "journalUnavailable": "Wallet progress is unavailable. Keep your wallet data and reload to try again.",
     "title": "Active trade progress",
+    "failedTitle": "Trade failed",
+    "dismissFailure": "Dismiss this trade failure",
+    "failed": "This order was not completed. Your funds return to this wallet after the order expires.",
+    "failedOrder": "Order on “{{market}}”",
+    "endedWithoutTrade": "This order ended without a trade. Your funds return to this wallet after the order expires.",
     "first": "First operations",
     "refresh": "Refresh status",
     "prepared": "The wallet is preparing this order. The order submission is not confirmed.",
     "orderRequested": "The wallet sent the order. The engine has not confirmed it yet; the wallet reads its status and does not send it again.",
-    "orderRequestRejected": "The engine rejected the order. No order was placed. The reserved funds return after the authorization expires.",
     "capabilityRequested": "The wallet is requesting a settlement capability. The order submission is not confirmed.",
     "capabilityBound": "The engine created a settlement capability. The order submission is not confirmed; recovery will inspect this operation.",
-    "submissionRejected": "The engine rejected the order submission. The wallet will not retry it; funds recovery is separate.",
     "orderSubmitted": "The engine accepted the order submission. Settlement is not confirmed yet.",
     "terminal": "The wallet operation is complete.",
     "complete": "Trade complete.",
@@ -1033,12 +1036,8 @@
     "SubmissionPending": "Settlement is pending. The trade is not complete.",
     "Reconciling": "The engine is checking an uncertain settlement result.",
     "Confirmed": "The mint confirmed settlement. Wallet recovery can still be pending.",
-    "DefinitivelyRejected": "This settlement did not complete. This does not mean funds were refunded.",
-    "OwnOutputReused": "This order did not settle because one of its outputs was already used by another operation of this wallet, for example in another browser. A Participation Score penalty was charged, and the reserved funds return after the authorization expires.",
-    "GroupOutputReused": "This order did not settle because an output in this settlement was already used. No penalty was charged for this order, and the reserved funds return after the authorization expires.",
-    "Refundable": "The engine found refund eligibility. The wallet must still verify and complete recovery.",
-    "ExpiredBeforeSubmission": "The authorization expired before submission. Funds recovery is separate.",
-    "RejectedBeforeSubmission": "The engine stopped settlement before submission. Funds recovery is separate.",
+    "OwnOutputReused": "This order was not completed because this wallet was used in another browser or device at the same time. A Participation Score penalty was charged. Your funds return to this wallet after the order expires.",
+    "GroupOutputReused": "This order was not completed because another order in the same settlement failed. No penalty was charged. Your funds return to this wallet after the order expires.",
     "fees": "Preparation and refund fees can apply even when no trade completes."
   },
   "walletRecovery": {
@@ -1069,7 +1068,7 @@
       "settlement-capability-policy-rejected": "The engine rejected the capability because it does not meet admission policy.",
       "settlement-capability-score-required": "The engine requires more Participation Score for this capability.",
       "settlement-capability-not-found": "The engine could not find the capability request.",
-      "settlement-capability-conflict": "The capability request conflicts with an existing operation.",
+      "settlement-capability-conflict": "The capability request conflicts with an earlier request.",
       "settlement-capability-market-unavailable": "The market is not available for this capability.",
       "settlement-capability-request-too-large": "The capability request exceeds a supported size or count limit.",
       "settlement-capability-admission-limited": "Order admission is busy. No order was placed.",
@@ -1176,7 +1175,7 @@
       "purchase": "Purchase",
       "capability-binding": "Order admission",
       "invalid-capability-validation": "Invalid proof check",
-      "reused-output-penalty": "Reused output penalty"
+      "reused-output-penalty": "Penalty: wallet used in two places"
     }
   },
   "sort": {

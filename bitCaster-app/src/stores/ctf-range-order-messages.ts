@@ -211,6 +211,75 @@ function terminalJournalResolves(code: BrowserCtfRangeOrderErrorCode): boolean {
   }
 }
 
+/**
+ * The operations among `operationIds` whose alert, active or acknowledged,
+ * names a refused order request. That alert is where the refusal shows.
+ */
+export async function readBrowserCtfRangeOrderRefusalOperations(
+  scopeId: string,
+  operationIds: readonly string[],
+  database: BitcasterDB = db,
+): Promise<ReadonlySet<string>> {
+  const found = new Set<string>();
+  for (const operationId of operationIds) {
+    const rows = await database.ctfRangeMessages
+      .where("[scopeId+operationId+revision+code]")
+      // A shorter key sorts first and an array sorts after every revision.
+      .between([scopeId, operationId], [scopeId, operationId, []])
+      .limit(OPERATION_MESSAGE_LIMIT)
+      .toArray();
+    if (rows.some((row) => isOrderRequestRefusal(decodeMessage(row).code))) found.add(operationId);
+  }
+  return found;
+}
+
+/**
+ * The codes of an engine refusal of an order request. The wallet records them
+ * when the engine refuses the request before any write.
+ */
+function isOrderRequestRefusal(code: BrowserCtfRangeOrderErrorCode): boolean {
+  switch (code) {
+    case "settlement-capability-invalid-request":
+    case "settlement-capability-invalid-artifact":
+    case "settlement-capability-policy-rejected":
+    case "settlement-capability-score-required":
+    case "settlement-capability-not-found":
+    case "settlement-capability-conflict":
+    case "settlement-capability-market-unavailable":
+    case "settlement-capability-request-too-large":
+    case "settlement-capability-admission-limited":
+    case "settlement-capability-capacity-exhausted":
+    case "settlement-capability-admission-unavailable":
+    case "order-invalid-request":
+    case "order-invalid-comment":
+    case "order-market-not-found":
+    case "order-capability-not-found":
+    case "order-capability-route-mismatch":
+    case "order-capability-not-current":
+    case "order-processing-conflict":
+    case "order-market-closed":
+    case "order-submission-rejected":
+      return true;
+    case "invalid-order-type":
+    case "insufficient-funds":
+    case "score-top-up-required":
+    case "score-top-up-cancelled":
+    case "asset-recovery-failed":
+    case "source-preparation-failed":
+    case "source-preparation-pending":
+    case "mint-source-uncertain":
+    case "custody-commit-failed":
+    case "capability-creation-failed":
+    case "capability-validation-failed":
+    case "order-attempt-ended":
+    case "order-submission-uncertain":
+    case "recovery-pending":
+      return false;
+    default:
+      return assertNever(code);
+  }
+}
+
 export async function pageActiveBrowserCtfRangeMessages(
   input: {
     scopeId: string;

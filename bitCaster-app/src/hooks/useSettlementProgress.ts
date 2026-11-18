@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -8,13 +9,24 @@ import {
 } from "react";
 import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import type {
-  OrderSettlementFailure,
+  OrderLifecycleStatus,
   SettlementGroupStatus,
   SettlementGroupSummary,
 } from "@bitcaster/client-sdk/engineClient";
-import { readSettlementFailure, readSettlementProgress } from "@/lib/settlementProgressReader";
+import {
+  readSettlementFailure,
+  readSettlementProgress,
+  type SettlementProgressRead,
+} from "@/lib/settlementProgressReader";
 import { listenForSettlementProgressHints } from "@/lib/settlementProgressHints";
+import { isTerminalCtfRangePreparation } from "@/lib/ctfRangeOrderLifecycle";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
+import {
+  isSpecificReason,
+  orderFailureNoticeKey,
+  recordOrderFailureNotice,
+  useOrderFailureNotices,
+} from "@/stores/orderFailureNotices";
 import {
   useOrderSettlementObservations,
   type OrderSettlementObservation,
@@ -37,12 +49,23 @@ export interface SettlementProgressScope {
   readonly signerRevision: number;
 }
 
-interface Observation {
+export interface SettlementObservation {
   group: SettlementGroupSummary | null;
+  /** The status of the engine order, or null before a read returned it. */
+  orderStatus: OrderLifecycleStatus | null;
   unavailable: boolean;
-  /** Why a definitively rejected group failed for this order; absent until it is read. */
-  failure?: OrderSettlementFailure | null;
 }
+
+/**
+ * How the panel shows one active journal entry. `failed` is a final failure
+ * with a notice. `refusal` is a local refusal: its wallet alert shows an
+ * engine refusal; otherwise the user stopped it, and the entry shows
+ * `message` until the refund. `progress` shows `message`.
+ */
+export type SettlementEntryDisplay =
+  | { readonly kind: "failed" }
+  | { readonly kind: "refusal"; readonly message: string }
+  | { readonly kind: "progress"; readonly message: string };
 
 /** Read-only, visible-page observations. The durable journal owns membership. */
 export function useSettlementProgress(
@@ -50,7 +73,7 @@ export function useSettlementProgress(
   enabled: boolean,
   scope: SettlementProgressScope,
 ) {
-  const [observations, setObservations] = useState<Record<string, Observation>>({});
+  const [observations, setObservations] = useState<Record<string, SettlementObservation>>({});
   const [completed, setCompleted] = useState<readonly SettlementProgressEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const refreshRef = useRef(() => {});
@@ -75,33 +98,41 @@ export function useSettlementProgress(
     const stopObserving = useOrderSettlementObservations.subscribe((state, previous) => {
       if (state.byOrderId !== previous.byOrderId) adoptPublished(state.byOrderId);
     });
-    // The failure reason of a rejected group never changes, so one successful read is enough.
-    const failures: Record<string, OrderSettlementFailure | null> = {};
+    // The failure reason of a rejected group never changes, so one successful
+    // read is enough. A specific reason outlives the journal operation in its
+    // notice; a group with no recorded reason is read once for each run.
+    const withoutReason = new Set<string>();
     const readFailureOnce = async (
       entry: SettlementProgressEntry,
       group: SettlementGroupSummary | null,
     ) => {
-      if (group === null || !hasFailureReason(group.status) || entry.orderId === null) return;
+      const orderId = entry.orderId;
+      if (group === null || !hasFailureReason(group.status) || orderId === null) return;
       const key = `${entry.operationId}:${group.groupId}`;
-      if (!Object.hasOwn(failures, key)) {
-        try {
-          failures[key] = await readSettlementFailure(
-            entry.marketId,
-            entry.orderId,
-            controller.signal,
-          );
-        } catch {
-          // The generic rejection stays visible; the next refresh reads the reason again.
-          return;
-        }
+      const notice =
+        useOrderFailureNotices.getState().notices[
+          orderFailureNoticeKey(scopeId, entry.operationId)
+        ];
+      if (withoutReason.has(key) || (notice !== undefined && isSpecificReason(notice.reason)))
+        return;
+      let failure: Awaited<ReturnType<typeof readSettlementFailure>>;
+      try {
+        failure = await readSettlementFailure(entry.marketId, orderId, controller.signal);
+      } catch {
+        // The generic reason stays visible; the next read tries the reason again.
+        return;
       }
       if (controller.signal.aborted) return;
-      const failure = failures[key]!;
-      setObservations((current) => {
-        const observation = current[entry.operationId];
-        return observation?.group?.groupId === group.groupId
-          ? { ...current, [entry.operationId]: { ...observation, failure } }
-          : current;
+      if (failure === null) {
+        withoutReason.add(key);
+        return;
+      }
+      void recordOrderFailureNotice({
+        scopeId,
+        operationId: entry.operationId,
+        orderId,
+        marketId: entry.marketId,
+        reason: failure.reason,
       });
     };
     const run = async () => {
@@ -119,35 +150,25 @@ export function useSettlementProgress(
             if (controller.signal.aborted) return;
             if (!readsSettlementStatus(entry.lifecycleState) || entry.orderId === null) continue;
             try {
-              const group = await readSettlementProgress(
+              const read = await readSettlementProgress(
                 entry.marketId,
                 entry.orderId,
                 controller.signal,
               );
               if (controller.signal.aborted) return;
-              setObservations((current) => {
-                const previous = current[entry.operationId];
-                const next =
-                  group === null
-                    ? (previous?.group ?? null)
-                    : latestGroup(previous?.group ?? null, group);
-                return {
-                  ...current,
-                  [entry.operationId]: withFailure(
-                    { group: next, unavailable: group === null },
-                    previous,
-                  ),
-                };
-              });
-              await readFailureOnce(entry, group);
+              setObservations((current) => ({
+                ...current,
+                [entry.operationId]:
+                  read === null
+                    ? unavailableObservation(current[entry.operationId])
+                    : mergeRead(current[entry.operationId], read),
+              }));
+              await readFailureOnce(entry, read?.group ?? null);
             } catch {
               if (controller.signal.aborted) return;
               setObservations((current) => ({
                 ...current,
-                [entry.operationId]: withFailure(
-                  { group: current[entry.operationId]?.group ?? null, unavailable: true },
-                  current[entry.operationId],
-                ),
+                [entry.operationId]: unavailableObservation(current[entry.operationId]),
               }));
             }
           }
@@ -179,7 +200,34 @@ export function useSettlementProgress(
       stopObserving();
       refreshRef.current = () => {};
     };
-  }, [entries, enabled, walletId, signerRevision]);
+  }, [entries, enabled, scopeId, walletId, signerRevision]);
+
+  // A final failure keeps its notice after the journal operation ends. Record
+  // it before paint, so the order never shows under the in-progress heading.
+  // A recorded notice is never recorded again, so no read rewrites storage.
+  useLayoutEffect(() => {
+    const { notices } = useOrderFailureNotices.getState();
+    for (const entry of entries) {
+      const display = settlementEntryDisplay(
+        entry.lifecycleState,
+        observations[entry.operationId],
+        enabled,
+      );
+      if (
+        !recordsFailure(display) ||
+        entry.orderId === null ||
+        notices[orderFailureNoticeKey(scopeId, entry.operationId)] !== undefined
+      )
+        continue;
+      void recordOrderFailureNotice({
+        scopeId,
+        operationId: entry.operationId,
+        orderId: entry.orderId,
+        marketId: entry.marketId,
+        reason: "Unspecified",
+      });
+    }
+  }, [entries, observations, enabled, scopeId]);
 
   // The completion notice outlives a page change, but not this component.
   const lifetimeRef = useRef<AbortSignal | null>(null);
@@ -224,7 +272,8 @@ async function showCompletion(
   } catch {
     return;
   }
-  if (lifetime.aborted || lifecycleState === null || !isTerminal(lifecycleState)) return;
+  if (lifetime.aborted || lifecycleState === null || !isTerminalCtfRangePreparation(lifecycleState))
+    return;
   const others = (current: readonly SettlementProgressEntry[]) =>
     current.filter((item) => item.operationId !== entry.operationId);
   setCompleted((current) => [...others(current), entry]);
@@ -233,9 +282,9 @@ async function showCompletion(
 }
 
 function retainEntries(
-  current: Record<string, Observation>,
+  current: Record<string, SettlementObservation>,
   entries: readonly SettlementProgressEntry[],
-): Record<string, Observation> {
+): Record<string, SettlementObservation> {
   return Object.fromEntries(
     entries.flatMap((entry) => {
       const observation = current[entry.operationId];
@@ -245,12 +294,12 @@ function retainEntries(
 }
 
 function adoptPublishedGroups(
-  current: Record<string, Observation>,
+  current: Record<string, SettlementObservation>,
   entries: readonly SettlementProgressEntry[],
   published: Readonly<Record<string, OrderSettlementObservation>>,
   walletId: string,
   signerRevision: number,
-): Record<string, Observation> {
+): Record<string, SettlementObservation> {
   let next = current;
   for (const entry of entries) {
     if (!readsSettlementStatus(entry.lifecycleState) || entry.orderId === null) continue;
@@ -267,16 +316,133 @@ function adoptPublishedGroups(
     const group = latestGroup(previous?.group ?? null, observation.group);
     if (group !== observation.group || (previous?.group === group && !previous.unavailable))
       continue;
-    next = { ...next, [entry.operationId]: withFailure({ group, unavailable: false }, previous) };
+    next = {
+      ...next,
+      [entry.operationId]: { group, orderStatus: observation.status, unavailable: false },
+    };
   }
   return next;
 }
 
-/** Keep a read failure reason only while the observation names the same group. */
-function withFailure(next: Observation, previous: Observation | undefined): Observation {
-  return previous?.failure !== undefined && previous.group?.groupId === next.group?.groupId
-    ? { ...next, failure: previous.failure }
-    : next;
+/** A failed read keeps the last observation and marks it stale. */
+function unavailableObservation(
+  previous: SettlementObservation | undefined,
+): SettlementObservation {
+  return {
+    group: previous?.group ?? null,
+    orderStatus: previous?.orderStatus ?? null,
+    unavailable: true,
+  };
+}
+
+/** A later read wins, except an older revision of the same group, which keeps its status. */
+function mergeRead(
+  previous: SettlementObservation | undefined,
+  read: SettlementProgressRead,
+): SettlementObservation {
+  const previousGroup = previous?.group ?? null;
+  const group = read.group === null ? previousGroup : latestGroup(previousGroup, read.group);
+  const keepsPrevious = group !== null && group !== read.group;
+  return {
+    group,
+    orderStatus: keepsPrevious ? (previous?.orderStatus ?? read.status) : read.status,
+    unavailable: false,
+  };
+}
+
+const FAILED: SettlementEntryDisplay = { kind: "failed" };
+
+function progress(message: string): SettlementEntryDisplay {
+  return { kind: "progress", message };
+}
+
+/** Only a final failure of an engine order gets a failure notice. */
+function recordsFailure(display: SettlementEntryDisplay): boolean {
+  switch (display.kind) {
+    case "failed":
+      return true;
+    case "refusal":
+    case "progress":
+      return false;
+    default:
+      return assertNever(display);
+  }
+}
+
+/**
+ * What the panel shows for one active journal entry. A failure is final: a
+ * failed group or a failed order ends a browser FOK order, which never rests.
+ * An unavailable or pending read is not a failure.
+ */
+export function settlementEntryDisplay(
+  lifecycleState: CtfRangeOrderPreparationLifecycle,
+  observation: SettlementObservation | undefined,
+  canReadStatus: boolean,
+): SettlementEntryDisplay {
+  switch (lifecycleState) {
+    case "prepared":
+      return progress("prepared");
+    case "order-requested":
+      return progress("orderRequested");
+    case "capability-requested":
+      return progress("capabilityRequested");
+    case "capability-bound":
+      return progress("capabilityBound");
+    case "terminal":
+      return progress("terminal");
+    case "order-request-rejected":
+    case "submission-rejected":
+      return { kind: "refusal", message: "endedWithoutTrade" };
+    case "order-submitted":
+      if (!canReadStatus) return progress("authenticationRequired");
+      if (observation?.group) return groupDisplay(observation.group.status);
+      if (observation?.orderStatus) return orderStatusDisplay(observation.orderStatus);
+      return progress(observation?.unavailable ? "unavailable" : "orderSubmitted");
+    default:
+      return assertNever(lifecycleState);
+  }
+}
+
+/** The engine reports each failed group state as a `failed` order. */
+function groupDisplay(status: SettlementGroupStatus): SettlementEntryDisplay {
+  switch (status) {
+    case "Prepared":
+    case "SubmissionPending":
+    case "Reconciling":
+    case "Confirmed":
+      return progress(status);
+    case "DefinitivelyRejected":
+    case "Refundable":
+    case "ExpiredBeforeSubmission":
+    case "RejectedBeforeSubmission":
+      return FAILED;
+    default:
+      return assertNever(status);
+  }
+}
+
+/**
+ * An accepted order with no settlement group. The engine fails it, for
+ * example at capacity or when a bot fill is refused. A FOK that cannot fill is
+ * cancelled, and a cancellation or an expiry is not a failure.
+ */
+function orderStatusDisplay(status: OrderLifecycleStatus): SettlementEntryDisplay {
+  switch (status) {
+    case "failed":
+    case "rejected_capacity":
+    case "evicted_capacity":
+      return FAILED;
+    case "cancelled":
+    case "expired":
+      return progress("endedWithoutTrade");
+    case "resting":
+    case "matched":
+    case "partially_filled":
+    case "filled":
+      return progress("orderSubmitted");
+    default:
+      return assertNever(status);
+  }
 }
 
 /** Only a definitively rejected group can carry a recorded failure reason. */
@@ -324,23 +490,6 @@ function confirmsTrade(group: SettlementGroupSummary | null): boolean {
       return false;
     default:
       return assertNever(status);
-  }
-}
-
-function isTerminal(lifecycleState: CtfRangeOrderPreparationLifecycle): boolean {
-  switch (lifecycleState) {
-    case "terminal":
-      return true;
-    case "prepared":
-    case "order-requested":
-    case "order-request-rejected":
-    case "capability-requested":
-    case "capability-bound":
-    case "order-submitted":
-    case "submission-rejected":
-      return false;
-    default:
-      return assertNever(lifecycleState);
   }
 }
 

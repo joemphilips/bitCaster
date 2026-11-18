@@ -176,12 +176,13 @@ Two browsers that trade with one wallet at the same time can still use the
 same output. The mint then refuses the settlement that holds the order. When
 bitCaster can show that an output of your order was already used by another
 operation of your wallet, it removes your order from that settlement. The
-other orders can still settle. Your order fails, and **Active trade progress**
-shows the reason. A Participation Score penalty of 100 Score is charged once
-for that settlement. Your funds are not lost. The reserved funds return after
-the authorization expires, as for another failed order. Your order can also
-fail when another output in the same settlement was already used. Then no
-penalty is charged for your order.
+other orders can still settle. Your order fails, and the **Trade failed**
+panel shows the reason until you dismiss it. A Participation Score penalty of
+100 Score is charged once for that settlement. Your funds are not lost. They
+return to this wallet after the order expires, as for another failed order.
+The wallet recovers them automatically while the app is open. Your order can
+also fail when another output in the same settlement was already used. Then
+no penalty is charged for your order.
 
 ## What the web app stores
 

@@ -7,11 +7,15 @@ import type { BrowserCtfRangeOrderErrorCode } from "@/lib/browserCtfRangeOrderCo
 import { retryBrowserCtfRangeOrderRecovery } from "@/lib/browserCtfRangeRecoveryRetry";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { useWalletStore } from "@/stores/wallet";
+import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import {
   acknowledgeBrowserCtfRangeMessage,
   pageActiveBrowserCtfRangeMessages,
+  type BrowserCtfRangeMessage,
   type BrowserCtfRangeMessageCursor,
 } from "@/stores/ctf-range-order-messages";
+import { marketLabel, useMarketTitles } from "@/hooks/useMarketTitles";
+import { assertNever } from "@/lib/enumDiscipline";
 
 const VISIBLE_MESSAGE_LIMIT = 8;
 
@@ -22,6 +26,67 @@ const PARTICIPATION_SCORE_MESSAGE_CODES: ReadonlySet<BrowserCtfRangeOrderErrorCo
   "settlement-capability-score-required",
 ] as const);
 
+/**
+ * An order alert names its market in plain words, as the failure panel does.
+ * Other alerts name the wallet operation.
+ */
+function AlertSubject({
+  message,
+  marketId,
+  titles,
+}: {
+  message: BrowserCtfRangeMessage;
+  marketId: string | undefined;
+  titles: ReadonlyMap<string, string>;
+}) {
+  const { t } = useTranslation();
+  switch (message.kind) {
+    case "order":
+      return marketId === undefined ? null : (
+        <p className="mt-1 text-xs opacity-75">
+          {t("settlementProgress.failedOrder", { market: marketLabel(marketId, titles) })}
+        </p>
+      );
+    case "funds":
+      return (
+        <p className="mt-1 truncate font-mono text-xs opacity-75" title={message.operationId}>
+          {t("walletRecovery.operation", { operationId: message.operationId })}
+        </p>
+      );
+    default:
+      return assertNever(message.kind);
+  }
+}
+
+function namesMarket(kind: BrowserCtfRangeMessage["kind"]): boolean {
+  switch (kind) {
+    case "order":
+      return true;
+    case "funds":
+      return false;
+    default:
+      return assertNever(kind);
+  }
+}
+
+/** The market of each order alert, from its journal operation. */
+async function readOrderMarkets(
+  scopeId: string,
+  messages: readonly BrowserCtfRangeMessage[],
+): Promise<Readonly<Record<string, string>>> {
+  const markets: Record<string, string> = {};
+  for (const message of messages) {
+    if (!namesMarket(message.kind) || Object.hasOwn(markets, message.operationId)) continue;
+    try {
+      const record = await readCtfRangePreparation(scopeId, message.operationId);
+      if (record !== null) markets[message.operationId] = record.orderRouteId;
+    } catch {
+      // Without its journal record, the alert shows no market.
+    }
+  }
+  return markets;
+}
+
 export function DurableWalletErrors() {
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
@@ -31,15 +96,15 @@ export function DurableWalletErrors() {
 function WalletAlertPage({ scopeId }: { scopeId: string }) {
   const { t } = useTranslation();
   const [after, setAfter] = useState<BrowserCtfRangeMessageCursor>();
-  const page = useLiveQuery(
-    () =>
-      pageActiveBrowserCtfRangeMessages({
-        scopeId,
-        limit: VISIBLE_MESSAGE_LIMIT,
-        ...(after ? { after } : {}),
-      }),
-    [scopeId, after],
-  );
+  const titles = useMarketTitles();
+  const page = useLiveQuery(async () => {
+    const result = await pageActiveBrowserCtfRangeMessages({
+      scopeId,
+      limit: VISIBLE_MESSAGE_LIMIT,
+      ...(after ? { after } : {}),
+    });
+    return { ...result, orderMarkets: await readOrderMarkets(scopeId, result.messages) };
+  }, [scopeId, after]);
   if (!page || (page.messages.length === 0 && after === undefined)) return null;
 
   return (
@@ -70,9 +135,11 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
                 {t("walletRecovery.mintCode", { code: message.mintError.code })}
               </p>
             )}
-            <p className="mt-1 truncate font-mono text-xs opacity-75" title={message.operationId}>
-              {t("walletRecovery.operation", { operationId: message.operationId })}
-            </p>
+            <AlertSubject
+              message={message}
+              marketId={page.orderMarkets[message.operationId]}
+              titles={titles}
+            />
             {message.retryable === true && (
               <button
                 type="button"

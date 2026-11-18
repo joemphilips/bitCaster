@@ -1,11 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bell, Check, X, TrendingUp, AlertCircle, Flag, Trophy, CircleX } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   type Notification,
+  type NotificationKind,
   selectUnreadCount,
   useNotificationsStore,
 } from "@/stores/notifications";
+import {
+  orderFailureReasonTextKey,
+  useOrderFailureNotices,
+  type OrderFailureNotice,
+} from "@/stores/orderFailureNotices";
+import { assertNever } from "@/lib/enumDiscipline";
 import { splitMarketId } from "@/lib/orderStatus";
 import { portfolioClosedPositionHref } from "@/lib/portfolioRoute";
 import { formatTimeAgo } from "@/lib/format";
@@ -25,12 +32,18 @@ const BADGE_BASE_CLASSES =
 // reference — otherwise every notification-store mutation would re-render the
 // bell even while it's just displaying the badge.
 const EMPTY_ITEMS: Notification[] = [];
+const NO_FAILURES: Readonly<Record<string, OrderFailureNotice>> = {};
 
 export function NotificationBell({ onNavigate, variant = "desktop" }: NotificationBellProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const unreadCount = useNotificationsStore(selectUnreadCount);
   const items = useNotificationsStore((s) => (isOpen ? s.items : EMPTY_ITEMS));
+  const notices = useOrderFailureNotices((s) => (isOpen ? s.notices : NO_FAILURES));
+  const failures = useMemo(
+    () => new Map(Object.values(notices).map((notice) => [notice.orderId, notice] as const)),
+    [notices],
+  );
   const markAllRead = useNotificationsStore((s) => s.markAllRead);
   const clear = useNotificationsStore((s) => s.clear);
 
@@ -128,24 +141,34 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                 </div>
               ) : (
                 <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-                  {items.map((n) => (
-                    <li key={n.id}>
-                      <button
-                        onClick={() => handleNotificationClick(n)}
-                        className="w-full text-left px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-start gap-3"
-                      >
-                        <NotificationIcon kind={n.kind} />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm text-slate-900 dark:text-slate-100">
-                            {formatNotificationText(n, t)}
+                  {items.map((n) => {
+                    const failure = carriesFailureReason(n.kind)
+                      ? failures.get(n.orderId)
+                      : undefined;
+                    return (
+                      <li key={n.id}>
+                        <button
+                          onClick={() => handleNotificationClick(n)}
+                          className="w-full text-left px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-start gap-3"
+                        >
+                          <NotificationIcon kind={n.kind} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-slate-900 dark:text-slate-100">
+                              {formatNotificationText(n, t)}
+                            </div>
+                            {failure && (
+                              <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                                {t(orderFailureReasonTextKey(failure.reason))}
+                              </div>
+                            )}
+                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {formatTimeAgo(n.occurredAt)}
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                            {formatTimeAgo(n.occurredAt)}
-                          </div>
-                        </div>
-                      </button>
-                    </li>
-                  ))}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -176,6 +199,28 @@ function NotificationIcon({ kind }: { kind: Notification["kind"] }) {
     return <Trophy className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />;
   }
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />;
+}
+
+/** Only the Failed entry of an order shows why its settlement failed. */
+function carriesFailureReason(kind: NotificationKind): boolean {
+  switch (kind) {
+    case "Failed":
+      return true;
+    case "accepted":
+    case "Matched":
+    case "Filled":
+    case "partially_filled":
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
+    case "market_closed":
+    case "position_won":
+    case "position_lost":
+      return false;
+    default:
+      return assertNever(kind);
+  }
 }
 
 /**
